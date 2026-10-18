@@ -887,6 +887,7 @@ impl EngineClient for Reconciles {
                 Ok(EngineDto::IndexOperation { request: *request, basis: *basis, project: project.clone(),
                     operation: operation.clone(), observation: backend_library::IndexOperationObservation::Unknown { operation_key: operation.key } })
             }
+            EngineRequest::CancelIndexOperation { .. } => Err(EngineFault::Cancelled),
             EngineRequest::IndexOperationStatus { request, basis, project, operation, .. } => {
                 self.checks.fetch_add(1, Ordering::SeqCst);
                 Ok(EngineDto::IndexOperation { request: *request, basis: *basis, project: project.clone(),
@@ -963,6 +964,7 @@ impl EngineClient for ArchivedOperations {
                     else { crate::model::index_operation::tests::published(operation) };
                 Ok(EngineDto::IndexOperation { request: *request, basis: *basis, project: project.clone(), operation: operation.clone(), observation })
             }
+            EngineRequest::CancelIndexOperation { .. } => Err(EngineFault::Cancelled),
             EngineRequest::IndexOperationStatus { request, basis, project, operation, .. } => {
                 Ok(EngineDto::IndexOperation { request: *request, basis: *basis, project: project.clone(), operation: operation.clone(),
                     observation: crate::model::index_operation::tests::outside(operation) })
@@ -1260,5 +1262,72 @@ fn queued_path_enter_keeps_its_emitting_visit_across_a_native_replacement_paint(
     rig.keys("enter");
     assert_eq!(snapshot(&mut rig).workspace().projects.len(), 1, "the newly mounted native Enter still adds the exact real folder");
     assert_eq!(snapshot(&mut rig).workspace().projects[0].id, crate::core::LocalProjectId::from_path(&folder).expect("project"));
+    std::fs::remove_dir_all(parent).expect("remove owned fixture");
+}
+
+
+#[gpui::test]
+fn painted_accepted_cancel_captures_the_same_operation_ticket_and_owner(cx: &mut TestAppContext) {
+    use backend_library::{IndexJobStage, IndexJobTicket, IndexOperationFailureReason, IndexOperationState, ProductText};
+    use crate::runtime::actor::IndexMutationLease;
+    type Captured = (crate::model::IndexOperationClaim, IndexJobTicket, IndexMutationLease);
+    struct Cancellable { cancels: Arc<std::sync::Mutex<Vec<Captured>>> }
+    impl EngineClient for Cancellable {
+        fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+            match request {
+                EngineRequest::IndexProject { request, basis, project, operation, .. }
+                | EngineRequest::IndexOperationStatus { request, basis, project, operation, .. } => {
+                    let ticket = IndexJobTicket::new(std::num::NonZeroU64::MIN, [3; 16], operation.package.clone());
+                    Ok(EngineDto::IndexOperation { request: *request, basis: *basis, project: project.clone(),
+                        operation: operation.clone(), observation: crate::model::index_operation::tests::observation(operation,
+                            IndexOperationState::Active { ticket, stage: IndexJobStage::Compiling }) })
+                }
+                EngineRequest::CancelIndexOperation { owner, request, basis, project, operation, ticket, .. } => {
+                    let owner = owner.clone().expect("the painted control captured its serving owner");
+                    self.cancels.lock().expect("captured cancels").push((operation.clone(), ticket.clone(), owner));
+                    Ok(EngineDto::IndexOperation { request: *request, basis: *basis, project: project.clone(),
+                        operation: operation.clone(), observation: crate::model::index_operation::tests::observation(operation,
+                            IndexOperationState::Failed { reason: IndexOperationFailureReason::Cancelled,
+                                detail: ProductText::new("Cancelled this exact operation.").expect("detail"), compiler_failure: None }) })
+                }
+                other => static_owner_reply(other),
+            }
+        }
+    }
+    let (parent, folder) = project("painted-index-cancel");
+    let authority = crate::core::VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+    let gate = crate::runtime::owner::OwnerGate::ready(authority, crate::model::ServiceMode::Attached);
+    let owner = IndexMutationLease::capture(Some(&gate), gate.ready_epoch()).expect("same ready owner");
+    let cancels = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut rig = crate::shell::tests::rig_with_engine_gate(cx, Some(Route::Orbit(OrbitRoute::Home)), 663.0, 900.0,
+        ReadPool::start(2, |_| NothingYet).expect("pool"), Cancellable { cancels: cancels.clone() }, Some(gate));
+    rig.go(Intent::AddProject { project: crate::core::LocalProjectId::from_path(&folder).expect("project") });
+    assert_eq!(phases(&mut rig), [ProjectPhase::Indexing]);
+    let saved = snapshot(&mut rig).workspace().projects[0].operation.clone().expect("accepted exact operation");
+    let ticket = saved.cancellation_ticket().expect("admitted active ticket");
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.repaint();
+    let native = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native tree");
+    let tree: serde_json::Value = serde_json::from_str(&native).expect("native AccessKit JSON");
+    assert!(tree["nodes"].as_object().expect("native nodes").values().any(|node|
+        node["aria"]["role"].as_str() == Some("Button") && node["aria"]["label"].as_str() == Some("Cancel indexing")));
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let (target, bounds) = targets.iter().find(|(target, _)| target.label == "Cancel indexing").expect("painted accepted cancel");
+    assert!(bounds.size.width > gpui::px(0.0) && bounds.size.height > gpui::px(0.0));
+    assert!(!targets.iter().any(|(target, _)| target.label == "Stop pending request"), "accepted cancel is not local preflight stop");
+    let stale = target.action.callback();
+    click(&mut rig, "Cancel indexing");
+    assert_eq!(phases(&mut rig), [ProjectPhase::Cancelled]);
+    {
+        let received = cancels.lock().expect("received exact cancel");
+        assert_eq!(received.len(), 1);
+        assert!(received[0].0.same_request(&saved));
+        assert_eq!(received[0].1, ticket);
+        assert_eq!(received[0].2, owner);
+    }
+    rig.cx.update(|window, cx| stale(window, cx));
+    rig.settle();
+    assert_eq!(cancels.lock().expect("received cancels").len(), 1, "obsolete painted control cannot cancel again");
     std::fs::remove_dir_all(parent).expect("remove owned fixture");
 }

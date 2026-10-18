@@ -211,17 +211,33 @@ impl QueryPageRecipe {
         }
     }
 
-    /// Binds a fixed outline page to its package, source root and exact credit.
+    /// Binds one outline page's exact native order to its package, source,
+    /// fixed credit and absolute start. The order digest is the final segment
+    /// so portable clients can revalidate its canonical predecessor context.
     #[must_use]
-    pub fn outline(root: ViewStateRoot, package: PackageKey, limit: QueryLimit) -> Self {
-        let recipe = outline_page_recipe(package, limit);
-        let preimage =
-            crate::canonical::view_identity_preimage(&[b"query", &recipe, root.as_bytes(), &[0]])
-                .into_boxed_slice();
-        Self {
-            identity: ViewRecipeId::from_value(&preimage),
-            preimage,
-        }
+    pub fn outline(root: ViewStateRoot, package: PackageKey, limit: QueryLimit, order: &crate::OutlinePageOrder) -> Self {
+        Self::outline_digest(root, package, limit, order.start(), order.digest())
+    }
+
+    fn outline_digest(root: ViewStateRoot, package: PackageKey, limit: QueryLimit, start: u64, digest: [u8; 32]) -> Self {
+        let mut recipe = outline_page_recipe(package, limit);
+        recipe.extend_from_slice(&start.to_be_bytes());
+        let preimage = crate::canonical::view_identity_preimage(&[
+            b"query", &recipe, root.as_bytes(), &digest,
+        ]).into_boxed_slice();
+        Self { identity: ViewRecipeId::from_value(&preimage), preimage }
+    }
+
+    /// Rehashes a portable predecessor's complete canonical recipe. Its opaque
+    /// order digest supplies no authority: the owner still reconstructs the
+    /// exact prior ordered rows before admitting a successor.
+    #[must_use]
+    pub fn outline_predecessor(root: ViewStateRoot, package: PackageKey, limit: QueryLimit, cursor: Cursor, preimage: &[u8]) -> Option<Self> {
+        if cursor.query_position().predecessor().is_some() { return None; }
+        let start = cursor.query_offset().checked_sub(u64::from(limit.get()))?;
+        let digest: [u8; 32] = preimage.get(preimage.len().checked_sub(32)?..)?.try_into().ok()?;
+        let expected = Self::outline_digest(root, package, limit, start, digest);
+        (expected.canonical_preimage() == preimage && expected.identity() == cursor.recipe()).then_some(expected)
     }
 
     fn new(
@@ -271,7 +287,7 @@ impl QueryPageRecipe {
 }
 
 pub(crate) fn outline_page_recipe(package: PackageKey, limit: QueryLimit) -> Vec<u8> {
-    let mut bytes = b"outline-page-v3\0".to_vec();
+    let mut bytes = b"outline-page-v4\0".to_vec();
     bytes.extend_from_slice(package.as_bytes());
     bytes.extend_from_slice(&limit.get().to_be_bytes());
     bytes
@@ -379,27 +395,50 @@ impl Library {
         if !self.arrangement.has_package(package) {
             return Err(LibraryError::NotFound);
         }
-        let recipe_bytes = outline_page_recipe(package, page.limit());
-        let recipe = self.query_recipe(&recipe_bytes, None);
         let limit = usize::from(page.limit().get());
-        let cursor = page.continuation().map(crate::PageContinuation::cursor);
-        let start = self.check_query_cursor(cursor, recipe, limit, |offset, count| {
-            self.arrangement.outline_page(
-                package,
-                offset,
-                count,
-                |id| self.view.row_ref(id),
-                &self.work,
-            )
-        })?;
-        let result = self.arrangement.outline_page(
-            package,
-            start,
-            limit,
-            |id| self.view.row_ref(id),
-            &self.work,
-        );
-        self.projection_page(&recipe_bytes, &result, start, limit)
+        let fetch = |offset, count| {
+            self.arrangement.outline_page(package, offset, count, |id| self.view.row_ref(id), &self.work)
+        };
+        // The native arrangement alone can prove the historical singleton
+        // package fallback. Materialize that inferred membership in the page's
+        // certified rows; consumers must never infer it from a bounded page.
+        let single_package = self.arrangement.package_count() == 1;
+        let page_row = |id| self.view.row(id).map(|mut row| {
+            if single_package && row.package.is_none() {
+                row.package = Some(package);
+            }
+            row
+        });
+        let symbols = |ids: &[RowId]| ids.iter().filter_map(|id| match id {
+            RowId::Symbol(symbol) => Some(*symbol), _ => None,
+        }).collect::<Vec<_>>();
+        let start = if let Some(cursor) = page.continuation().map(crate::PageContinuation::cursor) {
+            let offset = usize::try_from(cursor.query_offset()).map_err(|_| LibraryError::CursorMismatch)?;
+            let previous = offset.checked_sub(limit).ok_or(LibraryError::CursorMismatch)?;
+            let predecessor = fetch(previous, limit);
+            let order = crate::OutlinePageOrder::new(previous as u64, symbols(&predecessor.ids))
+                .map_err(LibraryError::InvalidQuery)?;
+            let recipe = QueryPageRecipe::outline(self.revision_root(), package, page.limit(), &order);
+            self.check_query_cursor_with_rows(Some(cursor), recipe.identity(), limit, |at, count| {
+                if at == previous && count == limit {
+                    ArrangementPage { ids: predecessor.ids.clone(), has_more: predecessor.has_more }
+                } else { fetch(at, count) }
+            }, |id, _| page_row(id))?
+        } else { 0 };
+        let result = fetch(start, limit);
+        let order = crate::OutlinePageOrder::new(start as u64, symbols(&result.ids))
+            .map_err(LibraryError::InvalidQuery)?;
+        let recipe = QueryPageRecipe::outline(self.revision_root(), package, page.limit(), &order);
+        let rows = result.ids.iter().filter_map(|&id| page_row(id)).collect();
+        let snapshot = self.snapshot_with_recipe(
+            recipe.identity(), rows, result.has_more.then_some(self.cursor),
+            result.has_more.then_some(start.saturating_add(limit)),
+        )?;
+        order.validate(&snapshot, package, page.limit()).map_err(LibraryError::InvalidQuery)?;
+        let terminal = snapshot.next.map_or(PageTerminal::Complete, |cursor| {
+            PageTerminal::More(crate::PageContinuation::from_cursor(cursor))
+        });
+        Ok(ProjectionPage { snapshot, terminal, outline_order: Some(order) })
     }
 
     /// Pages one retained owner and its immediate members from the existing
@@ -1412,7 +1451,7 @@ impl Library {
         let terminal = snapshot.next.map_or(PageTerminal::Complete, |cursor| {
             PageTerminal::More(crate::PageContinuation::from_cursor(cursor))
         });
-        Ok(ProjectionPage { snapshot, terminal })
+        Ok(ProjectionPage { snapshot, terminal, outline_order: None })
     }
 
     fn projection_page(
@@ -1437,7 +1476,7 @@ impl Library {
         let terminal = snapshot.next.map_or(PageTerminal::Complete, |cursor| {
             PageTerminal::More(crate::PageContinuation::from_cursor(cursor))
         });
-        Ok(ProjectionPage { snapshot, terminal })
+        Ok(ProjectionPage { snapshot, terminal, outline_order: None })
     }
 }
 

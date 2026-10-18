@@ -81,8 +81,16 @@ impl WorkspaceProject {
     /// The attempt represented by a recovery control. Presentation changes
     /// do not retire it; a new phase, transport request or durable receipt does.
     pub(crate) fn same_index_attempt(&self, other: &Self) -> bool {
-        self.id == other.id && self.phase == other.phase
-            && self.request == other.request && self.operation == other.operation
+        self.id == other.id
+            && self.phase == other.phase
+            && self.request == other.request
+            && match (&self.operation, &other.operation) {
+                (Some(left), Some(right)) => {
+                    left.same_request(right) && left.observation == right.observation
+                }
+                (None, None) => true,
+                _ => false,
+            }
     }
 
     /// Creates an indeterminate indexing row from an admitted folder.
@@ -174,9 +182,45 @@ mod attempt_tests {
         let mut observed = current.clone();
         let operation = observed.operation.as_mut().expect("retained operation");
         operation.observation = Some(super::super::index_operation::tests::published(operation));
-        assert!(!observed.same_index_attempt(&expected), "a later receipt at the same caller key retires the represented state");
-        assert!(!WorkspaceProject { id: LocalProjectId::new("/fixture/other-project").expect("other"),
-            ..current }.same_index_attempt(&expected));
+        assert!(
+            !observed.same_index_attempt(&expected),
+            "a later receipt at the same caller key retires the represented state"
+        );
+        assert!(
+            !WorkspaceProject {
+                id: LocalProjectId::new("/fixture/other-project").expect("other"),
+                ..current
+            }
+            .same_index_attempt(&expected)
+        );
+    }
+    #[test]
+    fn transient_profile_display_does_not_retire_the_same_recovery_attempt() {
+        let mut original =
+            WorkspaceProject::indexing("/fixture/profile-progress-attempt").expect("project");
+        original.operation = Some(super::super::index_operation::tests::claim(
+            &original.id,
+            0x93,
+        ));
+        let mut displayed = original.clone();
+        let operation = displayed.operation.as_mut().expect("operation");
+        operation.profile_progress = Some(backend_library::IndexProgressPage {
+            ticket: backend_library::IndexJobTicket::new(
+                std::num::NonZeroU64::MIN,
+                [7; 16],
+                operation.package.clone(),
+            ),
+            stage: backend_library::IndexJobStage::Compiling,
+            events: Box::new([]),
+            next_sequence: 0,
+            truncated: false,
+            has_more: false,
+        });
+        assert_ne!(displayed, original, "display can update");
+        assert!(
+            displayed.same_index_attempt(&original),
+            "presentation does not replace an attempt"
+        );
     }
 }
 

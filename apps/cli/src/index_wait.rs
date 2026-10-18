@@ -80,8 +80,9 @@ pub(crate) fn finish_with_recovery(
         Ok(())
     };
     let progress = progress_sink();
+    let mut last_progress = None;
     let result = match binding {
-        Ok(()) => backend_client::wait_index_operation(
+        Ok(()) => backend_client::wait_index_operation_with_progress(
             initial,
             &context,
             |command| {
@@ -92,9 +93,14 @@ pub(crate) fn finish_with_recovery(
                     None => session.surface(command),
                 })
             },
-            |observation| {
+            |observation, page| {
                 if let Some(sender) = &progress {
-                    let _ = sender.try_send(progress_line(observation));
+                    let line = progress_line_with_profile(observation, page);
+                    if last_progress.as_ref() != Some(&line)
+                        && sender.try_send(line.clone()).is_ok()
+                    {
+                        last_progress = Some(line);
+                    }
                 }
             },
         ),
@@ -130,6 +136,19 @@ fn project_result(result: IndexOperationWaitResult) -> (Answer, Option<u8>) {
             Some(EXIT_WAIT_INCOMPLETE),
         ),
     }
+}
+
+fn progress_line_with_profile(
+    observation: &IndexOperationObservation,
+    page: Option<&backend_library::IndexProgressPage>,
+) -> String {
+    let mut line = progress_line(observation);
+    if let (IndexOperationObservation::Known(status), Some(page)) = (observation, page)
+        && let Ok(Some(words)) = backend_present::index_profile_progress_text(status, page)
+    {
+        line.push_str(&format!("; {words}"));
+    }
+    line
 }
 
 fn progress_line(observation: &IndexOperationObservation) -> String {
@@ -170,4 +189,61 @@ pub(crate) fn progress_sink() -> Option<std::sync::mpsc::SyncSender<String>> {
         })
         .ok()?;
     Some(sender)
+}
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "exact-ticket presentation fixture")]
+mod profile_progress_tests {
+    use super::*;
+    #[test]
+    fn wait_progress_line_names_real_profile_without_claiming_publication() {
+        use backend_library::{
+            CompileExecutionIntent, IndexJobProgressEvent, IndexJobProgressKind, IndexJobStage,
+            IndexJobTicket, IndexOperationKey, IndexOperationStatus, IndexProgressPage,
+            PackageReference, SemanticLanguageProfile,
+        };
+        let package = PackageReference::parse("/workspace/profile-progress".to_owned())
+            .expect("local package");
+        let ticket = IndexJobTicket::new(std::num::NonZeroU64::MIN, [1; 16], package.clone());
+        let status = IndexOperationStatus::new(
+            IndexOperationKey::from_bytes([2; 32]).expect("key"),
+            package,
+            CompileExecutionIntent::Interactive,
+            IndexOperationState::Active {
+                ticket: ticket.clone(),
+                stage: IndexJobStage::Compiling,
+            },
+        );
+        let profile = SemanticLanguageProfile::from_name("typescript").expect("native profile");
+        let mut page = IndexProgressPage {
+            ticket: ticket.clone(),
+            stage: IndexJobStage::Compiling,
+            events: vec![IndexJobProgressEvent {
+                ticket,
+                sequence: 3,
+                kind: IndexJobProgressKind::ProfileStarted {
+                    profile,
+                    ordinal: 2,
+                    total: 3,
+                },
+            }]
+            .into_boxed_slice(),
+            next_sequence: 3,
+            truncated: false,
+            has_more: false,
+        };
+        let observation = IndexOperationObservation::Known(status.clone());
+        let line = progress_line_with_profile(&observation, Some(&page));
+        assert!(line.contains("Compiling typescript profile 2/3"));
+        assert!(line.contains(&status.operation_key.to_hex()));
+        assert!(!line.contains('%'));
+        page.events[0].kind = IndexJobProgressKind::ProfileAdmitted {
+            profile,
+            ordinal: 2,
+            total: 3,
+        };
+        let line = progress_line_with_profile(&observation, Some(&page));
+        assert!(line.contains("staged; publication pending"));
+        assert!(!line.contains("published"));
+    }
 }

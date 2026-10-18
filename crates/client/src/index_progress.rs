@@ -248,6 +248,12 @@ pub enum IndexProgressUpdate {
     Unchanged(IndexProgressReference),
 }
 
+#[path = "index_compiler_progress.rs"]
+mod compiler_progress;
+pub use compiler_progress::{IndexCompilerProgressUpdate, IndexOperationProgress};
+#[cfg(any(unix, windows))]
+pub use compiler_progress::{observe_index_operation_progress, read_index_operation_progress};
+
 /// Why an exact-operation wait ended without an admitted terminal receipt.
 #[derive(Debug)]
 pub enum IndexOperationWaitStop {
@@ -295,12 +301,52 @@ pub fn wait_index_operation(
 
 #[cfg(any(unix, windows))]
 fn wait_operation_with_clock(
-    mut observation: IndexOperationObservation,
+    observation: IndexOperationObservation,
     context: &RequestContext,
-    mut observe: impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
+    observe: impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
     mut progress: impl FnMut(&IndexOperationObservation),
     clock: &mut impl ProgressClock,
 ) -> Result<IndexOperationWaitResult, ClientError> {
+    wait_operation_with_profiles(
+        observation,
+        context,
+        observe,
+        |observation, _| progress(observation),
+        clock,
+        false,
+    )
+}
+
+/// Waits for the same exact durable outcome while reporting admitted compiler milestones.
+/// # Errors
+/// Uses the same admission and original absolute deadline as `wait_index_operation`.
+#[cfg(any(unix, windows))]
+pub fn wait_index_operation_with_progress(
+    initial: IndexOperationObservation,
+    context: &RequestContext,
+    observe: impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
+    progress: impl FnMut(&IndexOperationObservation, Option<&backend_library::IndexProgressPage>),
+) -> Result<IndexOperationWaitResult, ClientError> {
+    wait_operation_with_profiles(
+        initial,
+        context,
+        observe,
+        progress,
+        &mut WallClock(Instant::now()),
+        true,
+    )
+}
+
+#[cfg(any(unix, windows))]
+fn wait_operation_with_profiles(
+    mut observation: IndexOperationObservation,
+    context: &RequestContext,
+    mut observe: impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
+    mut progress: impl FnMut(&IndexOperationObservation, Option<&backend_library::IndexProgressPage>),
+    clock: &mut impl ProgressClock,
+    include_profiles: bool,
+) -> Result<IndexOperationWaitResult, ClientError> {
+    let mut profile_progress = None;
     SurfaceReply::IndexOperationStatus(observation.clone())
         .admit(backend_library::CommandId::IndexProgress)
         .map_err(|error| ClientError::Protocol(error.to_string()))?;
@@ -315,7 +361,7 @@ fn wait_operation_with_clock(
     };
     let mut last_read_started: Option<Duration> = None;
     loop {
-        progress(&observation);
+        progress(&observation, profile_progress.as_ref());
         let status = match &observation {
             IndexOperationObservation::Known(status) => status,
             _ => {
@@ -347,7 +393,14 @@ fn wait_operation_with_clock(
                 reason: IndexOperationWaitStop::Client(error),
             });
         }
-        let after = IndexObservationFingerprint::active(status)?;
+        let after = if include_profiles {
+            IndexObservationFingerprint::active_with_profile_progress(
+                status,
+                profile_progress.as_ref(),
+            )?
+        } else {
+            IndexObservationFingerprint::active(status)?
+        };
         let accepted = matches!(status.state, IndexOperationState::Accepted);
         let query = IndexProgressRead::new(
             SurfaceCommand::IndexOperationStatus {
@@ -376,20 +429,32 @@ fn wait_operation_with_clock(
         last_read_started = Some(clock.elapsed());
         // Install no new deadline: the caller must retain one absolute wait
         // scope, including all conditional probes and replacement connections.
-        let result = read_with_clock(&query, context, &mut observe, clock);
+        let result = if include_profiles {
+            compiler_progress::read_operation_with_clock(&query, context, &mut observe, clock)
+        } else {
+            read_with_clock(&query, context, &mut observe, clock).and_then(|update| match update {
+                IndexProgressUpdate::Changed(SurfaceReply::IndexOperationStatus(observation)) => {
+                    Ok(IndexCompilerProgressUpdate::Changed(
+                        IndexOperationProgress {
+                            observation,
+                            profile_progress: None,
+                        },
+                    ))
+                }
+                IndexProgressUpdate::Unchanged(reference) => {
+                    Ok(IndexCompilerProgressUpdate::Unchanged(reference))
+                }
+                _ => Err(ClientError::Protocol(
+                    "operation wait reply changed shape".to_owned(),
+                )),
+            })
+        };
         let changed = match result {
-            Ok(IndexProgressUpdate::Changed(SurfaceReply::IndexOperationStatus(changed))) => {
-                changed
+            Ok(IndexCompilerProgressUpdate::Changed(changed)) => {
+                profile_progress = changed.profile_progress;
+                changed.observation
             }
-            Ok(IndexProgressUpdate::Changed(_)) => {
-                return Ok(IndexOperationWaitResult::Stopped {
-                    observation,
-                    reason: IndexOperationWaitStop::Client(ClientError::Protocol(
-                        "operation wait reply changed shape".to_owned(),
-                    )),
-                });
-            }
-            Ok(IndexProgressUpdate::Unchanged(_)) => {
+            Ok(IndexCompilerProgressUpdate::Unchanged(_)) => {
                 // The preceding slice already read this exact boundary.
                 // Retain the existing cadence before opening the next slice.
                 if let Err(error) = clock.wait(PROBE_INTERVAL, context) {

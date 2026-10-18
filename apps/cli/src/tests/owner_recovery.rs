@@ -773,6 +773,15 @@ fn repeated_saved_key_reobservation_stops_on_original_cancellation_without_start
 /// Scripted Accepted receipts prove recovery/identity, not compiler publication.
 #[test]
 fn saved_key_read_survives_three_real_frame_budget_retirements_without_new_start() {
+    saved_operation_reads_survive_real_frame_retirements(false);
+}
+
+#[test]
+fn composed_ticket_progress_survives_real_frame_retirements_without_new_start() {
+    saved_operation_reads_survive_real_frame_retirements(true);
+}
+
+fn saved_operation_reads_survive_real_frame_retirements(with_profiles: bool) {
     use backend_local_service::protocol::{
         EngineRequest, EngineStatus, FrameLimits, ProtocolError,
     };
@@ -784,11 +793,58 @@ fn saved_key_read_survives_three_real_frame_budget_retirements_without_new_start
         key: Option<backend_library::IndexOperationKey>,
         starts: usize,
         reads: usize,
+        ticket_reads: usize,
+        with_profiles: bool,
+    }
+    impl ReceiptOwner {
+        fn ticket(&self) -> backend_library::IndexJobTicket {
+            backend_library::IndexJobTicket::new(
+                std::num::NonZeroU64::new(2).expect("nonzero fixture ticket"),
+                [7; 16],
+                self.package.clone(),
+            )
+        }
     }
     impl OwnerService for ReceiptOwner {
         fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
             let request = CommandDto::decode_for_owner(body, self.library.cursor())
                 .expect("actual request admission");
+            if let Command::Surface(SurfaceCommand::IndexProgress {
+                ticket,
+                after_sequence,
+            }) = &request.command
+            {
+                assert!(
+                    self.with_profiles,
+                    "status-only control never requests a ticket"
+                );
+                assert_eq!(
+                    *ticket,
+                    self.ticket(),
+                    "the exact admitted ticket survives reconnect"
+                );
+                assert_eq!(
+                    *after_sequence, 0,
+                    "empty fixture history retains its cursor"
+                );
+                self.reads += 1;
+                self.ticket_reads += 1;
+                let page = backend_library::IndexProgressPage {
+                    ticket: ticket.clone(),
+                    stage: backend_library::IndexJobStage::Compiling,
+                    events: Box::new([]),
+                    next_sequence: 0,
+                    truncated: false,
+                    has_more: false,
+                };
+                return Ok(serde_json::to_vec(&ReplyDto::new(
+                    request.request_id,
+                    CommandReply::Surface(SurfaceReply::IndexProgress(
+                        backend_library::IndexJobObservation::Pending(page),
+                    )),
+                ))
+                .expect("exact ticket progress encoding"));
+            }
             let (key, started) = match request.command {
                 Command::Surface(SurfaceCommand::IndexOperationStart {
                     operation_key,
@@ -819,7 +875,14 @@ fn saved_key_read_survives_three_real_frame_budget_retirements_without_new_start
                 key,
                 self.package.clone(),
                 CompileExecutionIntent::Interactive,
-                IndexOperationState::Accepted,
+                if self.with_profiles {
+                    IndexOperationState::Active {
+                        ticket: self.ticket(),
+                        stage: backend_library::IndexJobStage::Compiling,
+                    }
+                } else {
+                    IndexOperationState::Accepted
+                },
             ));
             let reply = if started {
                 SurfaceReply::IndexOperationStarted(observation)
@@ -866,6 +929,8 @@ fn saved_key_read_survives_three_real_frame_budget_retirements_without_new_start
                 key: None,
                 starts: 0,
                 reads: 0,
+                ticket_reads: 0,
+                with_profiles,
             },
             FrameLimits::default(),
         )
@@ -898,6 +963,7 @@ fn saved_key_read_survives_three_real_frame_budget_retirements_without_new_start
             service.owner().key,
             service.owner().starts,
             service.owner().reads,
+            service.owner().ticket_reads,
         )
     });
     let mut original =
@@ -919,14 +985,31 @@ fn saved_key_read_survives_three_real_frame_budget_retirements_without_new_start
     let deadline = wait
         .read_deadline(std::time::Duration::from_secs(30))
         .expect("original read deadline");
-    for _ in 1..(frames * 4) {
-        let actual = recovery
-            .surface(
-                &mut original,
-                SurfaceCommand::IndexOperationStatus { operation_key: key },
-                Some(&wait),
+    for index in 1..(frames * 4) {
+        // The start consumes frame 1, so frame 257 is a compiler-ticket read.
+        // This is the subread that previously escaped keyed-wait recovery.
+        let actual = if with_profiles && index % 2 == 0 {
+            let composed = backend_client::observe_index_operation_progress(
+                IndexOperationObservation::Known(initial.clone()),
+                &wait,
+                |command| recovery.surface(&mut original, command, Some(&wait)),
             )
-            .expect("same-key read across healthy connection retirement");
+            .expect("composed exact-ticket progress across real connection retirement");
+            let IndexOperationState::Active { ticket, stage } = &initial.state else {
+                panic!("profile control starts with its exact active ticket");
+            };
+            assert!(matches!(&composed.profile_progress, Some(page)
+                if page.ticket == *ticket && page.stage == *stage));
+            SurfaceReply::IndexOperationStatus(composed.observation)
+        } else {
+            recovery
+                .surface(
+                    &mut original,
+                    SurfaceCommand::IndexOperationStatus { operation_key: key },
+                    Some(&wait),
+                )
+                .expect("same-key read across healthy connection retirement")
+        };
         assert_eq!(
             actual,
             SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(initial.clone()))
@@ -952,13 +1035,95 @@ fn saved_key_read_survives_three_real_frame_budget_retirements_without_new_start
     );
     assert_eq!(
         server.join().expect("bounded owner thread"),
-        (Some(key), 1, frames * 4 - 1)
+        (
+            Some(key),
+            1,
+            frames * 4 - 1,
+            if with_profiles {
+                (frames * 4 - 1) / 2
+            } else {
+                0
+            }
+        )
     );
 }
 
 // ---------------------------------------------------------------------------
 // Owner loss: classification, convergence and pacing.
 // ---------------------------------------------------------------------------
+
+#[test]
+fn ticket_progress_recovery_requires_original_scope_and_rejects_protocol_or_stop() {
+    for case in [
+        "unscoped",
+        "protocol",
+        "expired",
+        "cancelled",
+        "read-deadline",
+    ] {
+        let fixture = Fixture::new();
+        let command = SurfaceCommand::IndexProgress {
+            ticket: backend_library::IndexJobTicket::new(
+                std::num::NonZeroU64::new(2).expect("nonzero fixture ticket"),
+                [7; 16],
+                fixture.package.clone(),
+            ),
+            after_sequence: 7,
+        };
+        let expected = match case {
+            "protocol" => ClientError::Protocol("foreign exact-ticket reply".into()),
+            "expired" | "read-deadline" => ClientError::RemoteDeadlineExceeded,
+            "cancelled" => {
+                ClientError::RequestCancelled(backend_client::RequestCancellationReason::Explicit)
+            }
+            _ => ClientError::Disconnected(ErrorKind::BrokenPipe),
+        };
+        let response = expected.clone();
+        let requested = command.clone();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let seen = reads.clone();
+        let mut original = session(fixture.paths.endpoint(), move |request| {
+            assert_eq!(request.command, Command::Surface(requested.clone()));
+            seen.fetch_add(1, Ordering::Relaxed);
+            Err(response.clone())
+        });
+        let scope = RequestContext::new();
+        let _ = scope.read_deadline(if case == "expired" {
+            std::time::Duration::ZERO
+        } else {
+            backend_client::MAX_INDEX_OPERATION_WAIT
+        });
+        if case == "cancelled" {
+            scope.cancel(backend_client::RequestCancellationReason::Explicit);
+        }
+        let mut recovery =
+            OwnerRecovery::from_connector(fixture.paths.clone(), RequestContext::new(), |_| {
+                panic!("missing scope, protocol failure or caller stop cannot reconnect")
+            });
+        assert_eq!(
+            recovery.surface(
+                &mut original,
+                command,
+                if case == "unscoped" {
+                    None
+                } else {
+                    Some(&scope)
+                },
+            ),
+            Err(expected),
+            "{case}",
+        );
+        assert_eq!(
+            reads.load(Ordering::Relaxed),
+            if matches!(case, "expired" | "cancelled") {
+                0
+            } else {
+                1
+            },
+            "{case}: an ended original scope cannot send another read",
+        );
+    }
+}
 
 fn lost(kind: ErrorKind) -> ClientError {
     ClientError::Disconnected(kind)

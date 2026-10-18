@@ -34,6 +34,42 @@ fn binder_named_export_or_local(
 }
 
 impl CheckerContext<'_> {
+    /// Resolve an exact namespace import's public member while carrying each
+    /// binder owner through module exports and subsequent alias hops.
+    pub(crate) fn resolve_namespace_import_member_with_owner(
+        &self,
+        alias_id: SymbolId,
+        member_name: &str,
+    ) -> Option<(SymbolId, usize)> {
+        let alias = self.binder.get_symbol(alias_id)?;
+        if !alias.has_any_flags(tsz_binder::symbol_flags::ALIAS)
+            || alias.import_name() != Some("*")
+        {
+            return None;
+        }
+        let request = self.bound_module_request_for_alias(alias_id)?;
+        let target = self.select_module_request(request)?.file_target()?;
+        let mut visited = rustc_hash::FxHashSet::default();
+        let mut remaining_steps = MAX_OWNER_ALIAS_RESOLUTION_STEPS;
+        let (mut symbol, mut owner) = self.resolve_export_in_target_file_with_owner(
+            target, member_name, &mut visited, &mut remaining_steps,
+        )?;
+        let mut seen = SmallVec::<[(usize, SymbolId); 4]>::new();
+        loop {
+            if seen.contains(&(owner, symbol)) {
+                return None;
+            }
+            seen.push((owner, symbol));
+            let terminal = self.get_binder_for_file(owner)?.get_symbol(symbol)?;
+            if !terminal.has_any_flags(tsz_binder::symbol_flags::ALIAS) {
+                return Some((symbol, owner));
+            }
+            (symbol, owner) = self.resolve_import_alias_from_file_with_owner_and_register(
+                symbol, owner, &mut remaining_steps,
+            )?;
+        }
+    }
+
     /// Follow an import alias to its actual target symbol across file boundaries.
     ///
     /// For ALIAS symbols (created by `import {A} from "./file"`), resolves

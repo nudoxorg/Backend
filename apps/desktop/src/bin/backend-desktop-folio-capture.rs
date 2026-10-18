@@ -270,7 +270,15 @@ impl PageReader for Fixtures {
             ReadRequest::Health => Ok(PageValue::Health(HealthModel {
                 lanes: backend_present::CoverageLine::new(&[], Some(1)),
                 rows: 1,
-                ingest: IngestModel { files_discovered: 1, files_indexed: 1, files_unavailable: 0, declarations: 1, languages: Arc::from([]), faults: Arc::from([]) },
+                ingest: IngestModel {
+                    source_selection: None,
+                    files_discovered: 1,
+                    files_indexed: 1,
+                    files_unavailable: 0,
+                    declarations: 1,
+                    languages: Arc::from([]),
+                    faults: Arc::from([]),
+                },
                 ready_capabilities: Arc::from([]),
                 not_ready_capabilities: Arc::from([]),
             })),

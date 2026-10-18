@@ -884,6 +884,9 @@ pub struct OutlinePageDto {
 /// The engine's whole state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StatusDto {
+    /// Discovery exclusions separate from frontend readiness and compiler coverage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_selection: Option<backend_library::SourceSelectionObservation>,
     /// Owner availability proven by the admitted health reply.
     #[serde(default = "unknown_status_facet")]
     pub availability: String,
@@ -915,6 +918,9 @@ pub struct StatusDto {
     pub coverage: Vec<CoverageDto>,
     /// The rolled-up capability inventory.
     pub capabilities: CapabilitiesDto,
+    /// One revision/source-matched compiler-attempt cause, not served coverage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler_refusal: Option<FaultDto>,
 }
 
 fn unknown_status_facet() -> String {
@@ -955,6 +961,8 @@ impl StatusDto {
     pub fn new(status: &Status) -> Self {
         let capabilities = status.capabilities();
         Self {
+            compiler_refusal: status.compiler_refusal().map(FaultDto::new),
+            source_selection: status.source_selection().cloned(),
             availability: status.availability().to_owned(),
             publication: status.publication_state().name().to_owned(),
             readiness: status.readiness().to_owned(),

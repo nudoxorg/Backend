@@ -277,7 +277,8 @@ impl Answer {
             Self::Page(page) => page.expose_mcp_advice(exposure),
             Self::Shelf(shelf) => shelf.expose_mcp_advice(exposure),
             Self::Product(product) => product.expose_mcp_advice(exposure),
-            Self::Records(_) | Self::Outline(_) | Self::Status(_) => {}
+            Self::Status(status) => status.expose_mcp_advice(exposure),
+            Self::Records(_) | Self::Outline(_) => {}
         }
         self
     }
@@ -541,7 +542,11 @@ pub fn answer_paged(
             {
                 return Err(shape("outline-page terminal"));
             }
-            crate::outline::page_tree(path, &page.snapshot, *limit)
+            let order = page
+                .outline_order
+                .as_ref()
+                .ok_or_else(|| shape("outline-page order"))?;
+            crate::outline::page_tree(path, &page.snapshot, *limit, order)
                 .map(Box::new)
                 .map(Answer::Outline)
                 .map_err(|error| Fault::from_client_error(&error, Operand::Path(path.clone())))
@@ -568,10 +573,15 @@ fn shelf(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     // health report can. Read it so `packages` and `status` print the same
     // count; if it is unavailable or describes another revision, the shelf
     // reports the count as unread rather than inventing one.
-    Ok(Answer::Shelf(Box::new(match engine.health() {
-        Ok(health) => shelf_from_snapshot_with_health(&snapshot, tag, &health),
-        Err(_) => shelf_from_snapshot(&snapshot, tag),
-    })))
+    let health = engine.health().ok();
+    let shelf = match health.as_ref() {
+        Some(health) => shelf_from_snapshot_with_health(&snapshot, tag, health),
+        None => shelf_from_snapshot(&snapshot, tag),
+    };
+    let causes = health.as_ref().map_or_else(Default::default, |health| {
+        crate::compiler_causes::failed_package_causes(engine, &snapshot, health)
+    });
+    Ok(Answer::Shelf(Box::new(shelf.with_compiler_causes(&causes))))
 }
 
 /// Reads the whole engine state, without naming the caller's project.
@@ -587,9 +597,28 @@ fn status(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     let report = engine
         .health()
         .map_err(|error| Fault::from_client_error(&error, Operand::Whole))?;
-    Ok(Answer::Status(Box::new(Status::from_health_reply(
-        &report, None,
-    ))))
+    let mut status = Status::from_health_reply(&report, None);
+    // Preserve the one-health-read fast path for ready, partial, moving and
+    // cancelled lanes. Only an admitted terminal native refusal asks for a
+    // bounded failed-package sample; this never requests compiler work.
+    if report.coverage().iter().any(|coverage| {
+        matches!(
+            coverage,
+            backend_library::Coverage::Unavailable {
+                lane: backend_library::Lane::Semantic,
+                reason: backend_library::Reason::Incomplete | backend_library::Reason::Unconfigured,
+            }
+        )
+    }) && let Ok(reply) = read(engine, Probe::Packages)
+        && let CommandReply::Packages(snapshot) = reply.reply
+        && crate::compiler_causes::snapshot_matches_health(&snapshot, &report)
+    {
+        let cause = crate::compiler_causes::failed_package_causes(engine, &snapshot, &report)
+            .into_values()
+            .next();
+        status = status.with_compiler_refusal(cause);
+    }
+    Ok(Answer::Status(Box::new(status)))
 }
 
 fn index(
@@ -909,11 +938,11 @@ fn outline(engine: &mut dyn Engine, path: &str) -> Result<Answer, Fault> {
             Ok(snapshot)
         })
         .map_err(|error| Fault::from_client_error(&error, Operand::Path(path.to_owned())))?;
-    Ok(Answer::Outline(Box::new(outline_tree(
-        path,
-        &tree,
-        snapshot.root.rows(),
-    ))))
+    let mut rendered = outline_tree(path, &tree, snapshot.root.rows());
+    if snapshot.next.is_some() {
+        rendered = rendered.with_page(&snapshot, PROBE_ROWS);
+    }
+    Ok(Answer::Outline(Box::new(rendered)))
 }
 
 fn surface(engine: &mut dyn Engine, command: &SurfaceCommand) -> Result<Answer, Fault> {

@@ -40,6 +40,8 @@ pub(crate) struct HealthWire {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct IngestProgressWire {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source_selection: Option<crate::SourceSelectionObservation>,
     #[serde(default)]
     pub(crate) files_discovered: u64,
     #[serde(default)]
@@ -147,6 +149,7 @@ impl From<SourceFaultWire> for SourceUnavailableReason {
 /// Projects the owner's ingest counts onto the wire.
 pub(crate) fn progress_to_wire(progress: &IngestProgress) -> IngestProgressWire {
     IngestProgressWire {
+        source_selection: progress.source_selection().cloned(),
         files_discovered: progress.files_discovered(),
         files_indexed: progress.files_indexed(),
         files_unavailable: progress.files_unavailable(),
@@ -186,7 +189,7 @@ pub(crate) fn progress_from_wire(wire: IngestProgressWire) -> Result<IngestProgr
         .into_iter()
         .map(|row| FaultRows::new(row.reason.into(), row.files))
         .collect::<Vec<_>>();
-    IngestProgress::new(
+    let progress = IngestProgress::new(
         wire.files_discovered,
         wire.files_indexed,
         wire.files_unavailable,
@@ -194,7 +197,11 @@ pub(crate) fn progress_from_wire(wire: IngestProgressWire) -> Result<IngestProgr
         languages,
         faults,
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+    match wire.source_selection {
+        Some(observation) => progress.with_source_selection(observation),
+        None => Ok(progress),
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -747,5 +754,46 @@ fn unavailable_from_name(value: &str) -> Result<CapabilityUnavailable, String> {
         "missing_dependency" => Ok(CapabilityUnavailable::MissingDependency),
         "probe_failed" => Ok(CapabilityUnavailable::ProbeFailed),
         _ => Err("unknown capability unavailability reason".to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod source_selection_tests {
+    use super::*;
+
+    #[test]
+    fn health_selection_wire_keeps_legacy_unknown_and_supported_counts_separate() {
+        let legacy: IngestProgressWire = serde_json::from_str("{}").unwrap();
+        assert!(
+            progress_from_wire(legacy)
+                .unwrap()
+                .source_selection()
+                .is_none()
+        );
+        let progress = IngestProgress::new(5, 5, 0, 7, vec![], vec![])
+            .unwrap()
+            .with_source_selection(crate::SourceSelectionObservation::project_vue(12))
+            .unwrap();
+        let encoded = serde_json::to_vec(&progress_to_wire(&progress)).unwrap();
+        let cold = progress_from_wire(serde_json::from_slice(&encoded).unwrap()).unwrap();
+        assert_eq!(cold, progress);
+        assert_eq!(cold.files_discovered(), 5);
+        assert_eq!(cold.files_indexed(), 5);
+        assert_eq!(cold.files_unavailable(), 0);
+        assert_eq!(
+            cold.source_selection().unwrap().unsupported_extensions[0].files,
+            12
+        );
+        let no_observation =
+            serde_json::to_value(progress_to_wire(&IngestProgress::default())).unwrap();
+        assert!(no_observation.get("source_selection").is_none());
+        let mut forged = progress_to_wire(&progress);
+        forged
+            .source_selection
+            .as_mut()
+            .unwrap()
+            .unsupported_extensions[0]
+            .extension = "../vue".into();
+        assert!(progress_from_wire(forged).is_err());
     }
 }

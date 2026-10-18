@@ -1402,12 +1402,11 @@ fn validate_resolver_observations_with_host(
             });
         }
         if let Some(parent) = nearest_parent {
-            let observed = capture_directory_snapshot(parent, witness)?;
-            if !observations
-                .directories
-                .get(parent)
-                .is_some_and(|expected| expected == &observed)
-            {
+            // Every recorded directory is freshly replayed once below. A module
+            // resolver may probe many absent extensions in the same directory;
+            // repeating its entire entry snapshot for each miss adds no proof.
+            // Keep the parent edge check so a malformed ledger cannot omit it.
+            if !observations.directories.contains_key(parent) {
                 return Err(TypeScriptProjectHostError::WitnessChanged {
                     path: parent.clone().into_boxed_path(),
                 });
@@ -2432,10 +2431,20 @@ fn nearest_existing_admitted_parent(
     Ok(None)
 }
 
+// Count complete snapshots in real filesystem regression controls only.
+#[cfg(all(test, unix))]
+std::thread_local! {
+    static DIRECTORY_SNAPSHOT_CAPTURES: std::cell::Cell<u64> = const {
+        std::cell::Cell::new(0)
+    };
+}
+
 fn capture_directory_snapshot(
     path: &Path,
     witness: &TypeScriptProjectWitness,
 ) -> Result<DirectorySnapshot, TypeScriptProjectHostError> {
+    #[cfg(all(test, unix))]
+    DIRECTORY_SNAPSHOT_CAPTURES.with(|count| count.set(count.get() + 1));
     let canonical =
         fs::canonicalize(path).map_err(|source| TypeScriptProjectHostError::PackagePath {
             path: path.to_path_buf().into_boxed_path(),
@@ -7078,6 +7087,169 @@ printf 'Version 5.9.3\n'
             "next stage/publish boundary recaptures every shared file"
         );
         assert!(sealed.validate_current(&witness).is_err());
+    }
+
+    #[test]
+    fn native_directory_snapshot_keeps_full_targets_and_detects_atomic_symlink_replacement() {
+        let fixture = Fixture::new();
+        let outside = Fixture::new();
+        let directory = fixture.0.join("entries");
+        fs::create_dir_all(directory.join("subdir")).unwrap();
+        fs::write(directory.join("plain.ts"), "export const value = 1;").unwrap();
+        fs::write(outside.0.join("external.ts"), "export const outside = 1;").unwrap();
+        symlink("plain.ts", directory.join("file-link.ts")).unwrap();
+        symlink("subdir", directory.join("directory-link")).unwrap();
+        symlink("absent.ts", directory.join("dangling.ts")).unwrap();
+        symlink(outside.0.join("external.ts"), directory.join("outside.ts")).unwrap();
+        let witness = TypeScriptProjectWitness::capture_native(&fixture.0, None).unwrap();
+        DIRECTORY_SNAPSHOT_CAPTURES.with(|count| count.set(0));
+        let snapshot = capture_directory_snapshot(&directory, &witness).unwrap();
+        assert_eq!(
+            DIRECTORY_SNAPSHOT_CAPTURES.with(|count| count.replace(0)),
+            1
+        );
+        for entry in snapshot.entries.iter() {
+            let canonical = fs::canonicalize(&entry.path)
+                .ok()
+                .map(PathBuf::into_boxed_path);
+            assert_eq!(
+                entry.canonical_path, canonical,
+                "exact target identity: {:?}",
+                entry.path
+            );
+            let effective = canonical.as_deref().map(|path| {
+                let metadata = fs::metadata(path).unwrap();
+                if metadata.is_dir() {
+                    TypeScriptDirectoryEntryKind::Directory
+                } else if metadata.is_file() {
+                    TypeScriptDirectoryEntryKind::RegularFile
+                } else {
+                    TypeScriptDirectoryEntryKind::Other
+                }
+            });
+            assert_eq!(entry.effective_kind, effective);
+        }
+        let mut capability = TypeScriptResolverCapability {
+            witness: &witness,
+            observations: ResolverObservationLedger::default(),
+        };
+        assert!(
+            matches!(
+                capability.try_load_source(&directory.join("outside.ts")),
+                Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
+            ),
+            "a captured link never admits its outside target"
+        );
+        symlink("plain.ts", directory.join("new-link.ts")).unwrap();
+        assert_ne!(
+            capture_directory_snapshot(&directory, &witness).unwrap(),
+            snapshot,
+            "new children still change the full directory witness"
+        );
+        fs::remove_file(directory.join("new-link.ts")).unwrap();
+        fs::remove_file(directory.join("file-link.ts")).unwrap();
+        symlink("subdir", directory.join("file-link.ts")).unwrap();
+        assert_ne!(
+            capture_directory_snapshot(&directory, &witness).unwrap(),
+            snapshot,
+            "retargeted symlinks still change kind and canonical target"
+        );
+        let before_replacement = capture_directory_snapshot(&directory, &witness).unwrap();
+        symlink(
+            outside.0.join("external.ts"),
+            directory.join("replacement.tmp"),
+        )
+        .unwrap();
+        fs::rename(
+            directory.join("replacement.tmp"),
+            directory.join("plain.ts"),
+        )
+        .unwrap();
+        let after_replacement = capture_directory_snapshot(&directory, &witness).unwrap();
+        assert_ne!(
+            after_replacement, before_replacement,
+            "atomic replacement of a regular child with a persistent symlink changes the witness"
+        );
+        let replaced = after_replacement
+            .entries
+            .iter()
+            .find(|entry| entry.path.as_ref() == directory.join("plain.ts").as_path())
+            .unwrap();
+        assert_eq!(replaced.kind, TypeScriptDirectoryEntryKind::Symlink);
+        assert_eq!(
+            replaced.canonical_path.as_deref(),
+            Some(outside.0.join("external.ts").as_path())
+        );
+        assert!(
+            matches!(
+                capability.try_load_source(&directory.join("plain.ts")),
+                Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
+            ),
+            "a replaced child cannot admit its outside target"
+        );
+    }
+
+    #[test]
+    fn native_negative_resolution_replays_each_exact_parent_directory_once() {
+        let fixture = Fixture::new();
+        let directory = fixture.0.join("node_modules");
+        for index in 0..32 {
+            fs::create_dir_all(directory.join(format!("package-{index}"))).unwrap();
+        }
+        let witness = TypeScriptProjectWitness::capture_native(&fixture.0, None).unwrap();
+        let mut capability = TypeScriptResolverCapability {
+            witness: &witness,
+            observations: ResolverObservationLedger::default(),
+        };
+        for index in 0..24 {
+            assert!(
+                capability
+                    .try_load_source(&directory.join(format!("absent-{index}.d.ts")))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert_eq!(capability.observations.missing_paths.len(), 24);
+        assert_eq!(capability.observations.directories.len(), 1);
+        let fingerprint = capability.resolver_witness().unwrap();
+        DIRECTORY_SNAPSHOT_CAPTURES.with(|count| count.set(0));
+        capability.validate_current().unwrap();
+        assert_eq!(
+            DIRECTORY_SNAPSHOT_CAPTURES.with(|count| count.replace(0)),
+            1,
+            "24 distinct misses sharing32siblings require one complete fresh parent replay"
+        );
+        assert_eq!(
+            capability.resolver_witness().unwrap(),
+            fingerprint,
+            "the same exact witness digest and observation recipe remain authoritative"
+        );
+        fs::create_dir(directory.join("new-package")).unwrap();
+        assert!(
+            matches!(
+                capability.validate_current(),
+                Err(TypeScriptProjectHostError::WitnessChanged { .. })
+            ),
+            "a changed parent still refuses while all original misses remain absent"
+        );
+        fs::remove_dir(directory.join("new-package")).unwrap();
+        fs::write(directory.join("absent-0.d.ts"), "export {};").unwrap();
+        assert!(
+            matches!(
+                capability.validate_current(),
+                Err(TypeScriptProjectHostError::WitnessChanged { .. })
+            ),
+            "a materialized negative candidate still refuses independently"
+        );
+        fs::remove_file(directory.join("absent-0.d.ts")).unwrap();
+        capability.observations.directories.clear();
+        assert!(
+            matches!(
+                capability.validate_current(),
+                Err(TypeScriptProjectHostError::WitnessChanged { .. })
+            ),
+            "a forged parent edge without its directory proof never admits"
+        );
     }
 
     #[test]

@@ -211,7 +211,8 @@ impl OwnerRecovery {
         };
         let durable_start = held_start.is_some();
         let status_read = matches!(command, SurfaceCommand::IndexOperationStatus { .. });
-        if status_read && let Some(scope) = context {
+        let ticket_read = matches!(command, SurfaceCommand::IndexProgress { .. });
+        if (status_read || ticket_read) && let Some(scope) = context {
             return self.reobserve_saved_operation(session, command, scope, error);
         }
         if !error.is_connection_lost() || !(durable_start || status_read) {
@@ -248,9 +249,11 @@ impl OwnerRecovery {
         }
     }
 
-    /// A receipt read cannot duplicate owner work. Frame-budget retirement
-    /// may happen repeatedly during one long wait, so re-authenticate and read
-    /// the identical saved key under the original absolute caller scope.
+    /// A receipt read cannot duplicate owner work. A composed keyed wait also
+    /// reads compiler progress for its exact issued ticket. Frame-budget
+    /// retirement on either read re-authenticates that identical key/ticket
+    /// under the original absolute caller scope; a ticket is never a terminal
+    /// durable-operation receipt.
     fn reobserve_saved_operation(
         &mut self,
         session: &mut Session,

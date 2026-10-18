@@ -33,6 +33,8 @@ struct PublishedNames<'a> {
 struct Page<'a> {
     snapshot: Snapshot<'a>,
     terminal: PageTerminalWire,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outline_order: Option<super::super::reply_page::OutlinePageOrderWire>,
 }
 #[derive(Serialize)]
 struct Snapshot<'a> {
@@ -302,6 +304,7 @@ pub(super) fn serialize<S: serde::Serializer>(
         }
         CommandReply::ProjectionPage(page) => CatalogReply::ProjectionPage(Page {
             snapshot: Snapshot::new(&page.snapshot),
+            outline_order: page.outline_order.as_ref().map(super::super::reply_page::order_to_wire),
             terminal: match page.terminal {
                 PageTerminal::Complete => PageTerminalWire::Complete(EmptyWire {}),
                 PageTerminal::More(cursor) => {

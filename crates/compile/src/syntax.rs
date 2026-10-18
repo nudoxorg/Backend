@@ -817,6 +817,70 @@ impl SyntaxFrontend {
             .ok_or_else(|| SyntaxError::UnsupportedPath(path.to_path_buf()))
     }
 
+    /// Reads only the outer callable's grammar-owned parameter bindings from
+    /// one retained TypeScript excerpt. No declaration rows or checker facts
+    /// are created. Unknown/truncated syntax cannot prove an empty binding set.
+    /// # Errors
+    /// Returns parser/grammar setup failures for the selected source path.
+    pub fn callable_parameter_names(
+        &self,
+        path: &Path,
+        kind: DeclarationKind,
+        source: &str,
+    ) -> Result<Option<BTreeSet<String>>, SyntaxError> {
+        if self.language != SourceLanguage::TypeScript || source.len() > SourceExcerpt::MAX_BYTES
+            || !matches!(kind, DeclarationKind::Function | DeclarationKind::Method | DeclarationKind::Constructor) {
+            return Ok(None);
+        }
+        let variant = self.variant_for(path)?;
+        let mut parser = Parser::new();
+        parser.set_language(&variant.language)
+            .map_err(|error| SyntaxError::Parser(error.to_string()))?;
+        // The admitted declaration kind supplies method grammar context;
+        // never mistake a standalone call/block for a method or nested owner.
+        let wrapped = matches!(kind, DeclarationKind::Method | DeclarationKind::Constructor)
+            .then(|| format!("class __ParameterScope {{ {source} }}"));
+        let text = wrapped.as_deref().unwrap_or(source);
+        let Some(tree) = parser.parse(text.as_bytes(), None) else { return Ok(None); };
+        if tree.root_node().has_error() { return Ok(None); }
+        fn callable(node: Node<'_>) -> Option<Node<'_>> {
+            if matches!(node.kind(), "function_declaration" | "function_expression"
+                | "generator_function_declaration" | "generator_function"
+                | "arrow_function" | "method_definition" | "function_signature") {
+                return Some(node);
+            }
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if let Some(found) = callable(child) { return Some(found); }
+            }
+            None
+        }
+        fn names(node: Node<'_>, text: &str, output: &mut BTreeSet<String>) -> Option<()> {
+            match node.kind() {
+                "identifier" | "shorthand_property_identifier_pattern" => {
+                    output.insert(node.utf8_text(text.as_bytes()).ok()?.to_owned());
+                }
+                "this" | "comment" => {}
+                "required_parameter" | "optional_parameter" => {
+                    names(node.child_by_field_name("pattern").or_else(|| node.child_by_field_name("name"))?, text, output)?;
+                }
+                "pair_pattern" => names(node.child_by_field_name("value")?, text, output)?,
+                "assignment_pattern" | "object_assignment_pattern" => names(node.child_by_field_name("left")?, text, output)?,
+                "formal_parameters" | "object_pattern" | "array_pattern" | "rest_pattern" => {
+                    let mut cursor = node.walk();
+                    for child in node.named_children(&mut cursor) { names(child, text, output)?; }
+                }
+                _ => return None,
+            }
+            Some(())
+        }
+        let Some(owner) = callable(tree.root_node()) else { return Ok(None); };
+        let Some(parameters) = owner.child_by_field_name("parameters")
+            .or_else(|| owner.child_by_field_name("parameter")) else { return Ok(None); };
+        let mut output = BTreeSet::new();
+        Ok(names(parameters, text, &mut output).map(|()| output))
+    }
+
     /// Projects deduplicated captures into bounded declarations.
     ///
     /// Containment is resolved against the complete capture set rather than

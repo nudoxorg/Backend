@@ -59,7 +59,7 @@ const SOURCE_RECORD_FORMAT_MEMBERSHIP: &[u8; 4] = b"PSRD";
 const SOURCE_RECORD_FORMAT_MEMBERSHIP_OFFSETS: &[u8; 4] = b"PSRE";
 
 /// Newest source-record format version, as the tags above name it.
-const SOURCE_RECORD_VERSION: u8 = 17;
+const SOURCE_RECORD_VERSION: u8 = 18;
 
 /// File format with a literal supported Python minor, full facts, and optional identity.
 const SOURCE_RECORD_FORMAT_PYTHON_PROFILE: &[u8; 4] = b"PSRF";
@@ -207,6 +207,10 @@ const PROJECT_MEMBERSHIP_CUT_POLICY: CutPolicy = CutPolicy::new(
 fn source_record_format(value: &ProductSourceRecord) -> &'static [u8; 4] {
     match value {
         ProductSourceRecord::Project {
+            source_selection: Some(_),
+            ..
+        } => b"PSRI",
+        ProductSourceRecord::Project {
             cargo_aliases: Some(_),
             files: ProductProjectMembership::Inline(_),
             ..
@@ -280,6 +284,7 @@ fn format_version(format: &[u8]) -> Option<u8> {
         b'F' => 15,
         b'G' => 16,
         b'H' => 17,
+        b'I' => 18,
         digit if digit.is_ascii_digit() => digit.checked_sub(b'0')?,
         _ => return None,
     };
@@ -314,6 +319,8 @@ pub enum ProductSourceRecord {
         /// Exact bounded Cargo aliases joined to the current source observations.
         /// `None` preserves historical project-row encoding.
         cargo_aliases: Option<CargoPackageAliasEvidenceV1>,
+        /// Separate discovery exclusions; historical records did not observe this scope.
+        source_selection: Option<backend_library::SourceSelectionObservation>,
     },
     /// One independently versioned source file.
     File {
@@ -557,6 +564,8 @@ pub struct ProductProjectRef<'a> {
     pub files: ProductProjectFileMembership<'a>,
     /// Exact Cargo aliases with their per-profile source bindings.
     pub cargo_aliases: Option<&'a CargoPackageAliasEvidenceV1>,
+    /// Selected project discovery evidence; None means not recorded.
+    pub source_selection: Option<&'a backend_library::SourceSelectionObservation>,
 }
 
 /// Borrowed fields from one bounded project-membership page.
@@ -872,6 +881,30 @@ impl ProductSourceRecord {
     pub const MAX_PROJECT_MEMBERSHIP_PAGES: usize =
         Self::MAX_PROJECT_FILES.div_ceil(MIN_PROJECT_MEMBERSHIP_PAGE_FILES);
 
+    /// Binds discovery exclusions to this project CAS row without adding compiler sources.
+    pub fn with_source_selection(
+        mut self,
+        observation: backend_library::SourceSelectionObservation,
+    ) -> Result<Self, String> {
+        observation.admit()?;
+        if observation.observed_projects != 1 || observation.unknown_projects != 0 {
+            return Err("project source-selection observation is not one recorded project".into());
+        }
+        let Self::Project {
+            source_selection, ..
+        } = &mut self
+        else {
+            return Err("source-selection observation requires a project row".into());
+        };
+        *source_selection = Some(observation);
+        if self.encoded_value_bytes() > Self::ROW_VALUE_CAPACITY {
+            return Err(
+                "project source-selection observation exceeds canonical row capacity".into(),
+            );
+        }
+        Ok(self)
+    }
+
     fn encoded_value_bytes(&self) -> usize {
         let mut bytes = Vec::new();
         ProductSourceRelation::encode_value(self, &mut bytes);
@@ -922,6 +955,16 @@ impl ProductSourceRecord {
         files: impl Into<Vec<[u8; 32]>>,
         cargo_aliases: Option<CargoPackageAliasEvidenceV1>,
     ) -> Result<Self, String> {
+        Self::project_with_aliases_and_selection(label, source_version, files, cargo_aliases, None)
+    }
+
+    fn project_with_aliases_and_selection(
+        label: impl Into<String>,
+        source_version: [u8; 32],
+        files: impl Into<Vec<[u8; 32]>>,
+        cargo_aliases: Option<CargoPackageAliasEvidenceV1>,
+        source_selection: Option<backend_library::SourceSelectionObservation>,
+    ) -> Result<Self, String> {
         let label = label.into();
         let files = files.into();
         if label.is_empty() || label.len() > Self::MAX_LABEL_BYTES {
@@ -942,6 +985,7 @@ impl ProductSourceRecord {
             source_version,
             files: ProductProjectMembership::Inline(Arc::from(files.into_boxed_slice())),
             cargo_aliases,
+            source_selection,
         };
         let mut record = record;
         let mut encoded = record.encoded_value_bytes();
@@ -991,6 +1035,32 @@ impl ProductSourceRecord {
         files: impl Into<Vec<[u8; 32]>>,
         cargo_aliases: Option<CargoPackageAliasEvidenceV1>,
     ) -> Result<ProductSourceProjectUpdate, String> {
+        Self::project_with_membership_pages_and_source_selection(
+            label,
+            source_version,
+            files,
+            cargo_aliases,
+            None,
+        )
+    }
+
+    /// Plans membership against the complete encoded row, including its observation.
+    /// No count is dropped to make an inline row fit; paging carries the same frontier.
+    pub fn project_with_membership_pages_and_source_selection(
+        label: impl Into<String>,
+        source_version: [u8; 32],
+        files: impl Into<Vec<[u8; 32]>>,
+        cargo_aliases: Option<CargoPackageAliasEvidenceV1>,
+        source_selection: Option<backend_library::SourceSelectionObservation>,
+    ) -> Result<ProductSourceProjectUpdate, String> {
+        if let Some(observation) = &source_selection {
+            observation.admit()?;
+            if observation.observed_projects != 1 || observation.unknown_projects != 0 {
+                return Err(
+                    "project source-selection observation is not one recorded project".into(),
+                );
+            }
+        }
         let label = label.into();
         let files = files.into();
         validate_project_frontier(&label, &files)?;
@@ -1009,6 +1079,7 @@ impl ProductSourceRecord {
                     files.clone().into_boxed_slice(),
                 )),
                 cargo_aliases: cargo_aliases.clone(),
+                source_selection: source_selection.clone(),
             };
             if project.encoded_value_bytes() <= Self::ROW_VALUE_CAPACITY {
                 return Ok(ProductSourceProjectUpdate {
@@ -1020,8 +1091,13 @@ impl ProductSourceRecord {
             if files.is_empty() {
                 // Empty frontiers have nothing to page; preserve the legacy
                 // typed unavailable marker if optional aliases alone overflow.
-                let project =
-                    Self::project_with_aliases(label, source_version, files, cargo_aliases)?;
+                let project = Self::project_with_aliases_and_selection(
+                    label,
+                    source_version,
+                    files,
+                    cargo_aliases,
+                    source_selection,
+                )?;
                 return Ok(ProductSourceProjectUpdate {
                     project_key,
                     project,
@@ -1060,13 +1136,14 @@ impl ProductSourceRecord {
         if start != files.len() {
             return Err("project membership cuts did not cover the complete frontier".to_owned());
         }
-        let project = Self::paged_project_with_aliases(
+        let project = Self::paged_project_with_aliases_and_selection(
             label,
             source_version,
             files.len(),
             page_keys,
             Some(page_offsets),
             cargo_aliases,
+            source_selection,
         )?;
         Ok(ProductSourceProjectUpdate {
             project_key,
@@ -1082,6 +1159,26 @@ impl ProductSourceRecord {
         page_keys: Vec<[u8; 32]>,
         page_offsets: Option<Vec<u32>>,
         cargo_aliases: Option<CargoPackageAliasEvidenceV1>,
+    ) -> Result<Self, String> {
+        Self::paged_project_with_aliases_and_selection(
+            label,
+            source_version,
+            file_count,
+            page_keys,
+            page_offsets,
+            cargo_aliases,
+            None,
+        )
+    }
+
+    fn paged_project_with_aliases_and_selection(
+        label: String,
+        source_version: [u8; 32],
+        file_count: usize,
+        page_keys: Vec<[u8; 32]>,
+        page_offsets: Option<Vec<u32>>,
+        cargo_aliases: Option<CargoPackageAliasEvidenceV1>,
+        source_selection: Option<backend_library::SourceSelectionObservation>,
     ) -> Result<Self, String> {
         if label.is_empty() || label.len() > ProductSourceRecord::MAX_LABEL_BYTES {
             return Err("project source coordinate is empty or oversized".to_owned());
@@ -1102,6 +1199,7 @@ impl ProductSourceRecord {
                 page_offsets: page_offsets.map(|offsets| Arc::from(offsets.into_boxed_slice())),
             },
             cargo_aliases,
+            source_selection,
         };
         let mut encoded = record.encoded_value_bytes();
         if encoded > Self::ROW_VALUE_CAPACITY
@@ -1592,6 +1690,7 @@ impl ProductSourceRecord {
                 source_version,
                 files,
                 cargo_aliases,
+                source_selection,
             } => Some(ProductProjectRef {
                 label,
                 source_version: *source_version,
@@ -1610,6 +1709,7 @@ impl ProductSourceRecord {
                     },
                 },
                 cargo_aliases: cargo_aliases.as_ref(),
+                source_selection: source_selection.as_ref(),
             }),
             Self::File { .. } | Self::MembershipPage { .. } => None,
         }
@@ -1709,6 +1809,7 @@ impl ProductSourceRecord {
                 label,
                 source_version,
                 files,
+                source_selection,
                 ..
             } => {
                 cargo_aliases.admit().map_err(|_| {
@@ -1719,6 +1820,7 @@ impl ProductSourceRecord {
                     source_version,
                     files,
                     cargo_aliases: Some(cargo_aliases),
+                    source_selection,
                 };
                 let mut record = record;
                 if record.encoded_value_bytes() > Self::ROW_VALUE_CAPACITY
@@ -1920,6 +2022,28 @@ impl Relation for ProductSourceRelation {
     }
 
     fn encode_value(value: &Self::Value, output: &mut Vec<u8>) {
+        if let ProductSourceRecord::Project {
+            source_selection: Some(observation),
+            ..
+        } = value
+        {
+            // PSRI wraps exactly one legacy project encoding. Legacy rows keep
+            // byte-identical minimal tags; nesting and nonproject bodies are refused.
+            output.extend_from_slice(b"PSRI");
+            let bytes = serde_json::to_vec(observation)
+                .expect("source-selection observation serialization");
+            output.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            output.extend_from_slice(&bytes);
+            let mut legacy = value.clone();
+            if let ProductSourceRecord::Project {
+                source_selection, ..
+            } = &mut legacy
+            {
+                *source_selection = None;
+            }
+            Self::encode_value(&legacy, output);
+            return;
+        }
         let format = source_record_format(value);
         output.extend_from_slice(format);
         match value {
@@ -1928,6 +2052,7 @@ impl Relation for ProductSourceRelation {
                 source_version,
                 files,
                 cargo_aliases,
+                source_selection: _,
             } => {
                 output.push(1);
                 push_text(output, label);
@@ -2405,6 +2530,32 @@ const fn cargo_alias_unavailable_from_tag(tag: u8) -> Option<CargoPackageAliasUn
 }
 
 fn decode_source_record(bytes: &[u8]) -> Result<ProductSourceRecord, ()> {
+    if bytes.starts_with(b"PSRI") {
+        let length =
+            u32::from_be_bytes(bytes.get(4..8).ok_or(())?.try_into().map_err(|_| ())?) as usize;
+        if length > 2048 {
+            return Err(());
+        }
+        let end = 8usize.checked_add(length).ok_or(())?;
+        let encoded = bytes.get(8..end).ok_or(())?;
+        let observation: backend_library::SourceSelectionObservation =
+            serde_json::from_slice(encoded).map_err(|_| ())?;
+        observation.admit().map_err(|_| ())?;
+        if serde_json::to_vec(&observation).map_err(|_| ())? != encoded {
+            return Err(());
+        }
+        let legacy = bytes.get(end..).ok_or(())?;
+        if legacy.starts_with(b"PSRI") {
+            return Err(());
+        }
+        let record = decode_source_record(legacy)?;
+        let mut canonical = Vec::new();
+        ProductSourceRelation::encode_value(&record, &mut canonical);
+        if canonical != legacy {
+            return Err(());
+        }
+        return record.with_source_selection(observation).map_err(|_| ());
+    }
     let mut reader = SourceReader::new(bytes);
     let version = format_version(reader.take(4)?).ok_or(())?;
     let extension = FileRecordExtension::from_version(version);
@@ -3130,6 +3281,7 @@ fn source_entries(expanded: bool) -> Vec<([u8; 32], ProductSourceRecord)> {
             source_version: [0; 32],
             files: ProductProjectMembership::Inline(Arc::from([])),
             cargo_aliases: None,
+            source_selection: None,
         },
     )];
     if expanded {
@@ -3140,6 +3292,7 @@ fn source_entries(expanded: bool) -> Vec<([u8; 32], ProductSourceRecord)> {
                 source_version: [0; 32],
                 files: ProductProjectMembership::Inline(Arc::from([])),
                 cargo_aliases: None,
+                source_selection: None,
             },
         ));
     }
@@ -3148,6 +3301,302 @@ fn source_entries(expanded: bool) -> Vec<([u8; 32], ProductSourceRecord)> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn source_selection_membership_plans_complete_inline_and_paged_bytes_at_capacity_boundaries() {
+        fn keys(count: usize) -> Vec<[u8; 32]> {
+            (0..count)
+                .map(|index| {
+                    let mut key = [0; 32];
+                    key[..8].copy_from_slice(&(index as u64).to_be_bytes());
+                    key
+                })
+                .collect()
+        }
+        fn assert_cold_frontier(update: &super::ProductSourceProjectUpdate, expected: &[[u8; 32]]) {
+            let mut encoded = Vec::new();
+            ProductSourceRelation::encode_value(update.project_record(), &mut encoded);
+            assert!(encoded.len() <= ProductSourceRecord::ROW_VALUE_CAPACITY);
+            let cold = ProductSourceRelation::decode_value(&encoded).unwrap();
+            assert_eq!(&cold, update.project_record());
+            let restored = cold
+                .project_fields()
+                .unwrap()
+                .iter_file_keys(update.project_key(), |key| {
+                    Ok(update
+                        .membership_pages()
+                        .iter()
+                        .find(|(candidate, _)| candidate == key)
+                        .map(|(_, record)| record.clone()))
+                })
+                .collect::<Result<Vec<_>, String>>()
+                .unwrap();
+            assert_eq!(restored, expected);
+        }
+        let labels = [
+            "p".to_owned(),
+            "x".repeat(ProductSourceRecord::MAX_LABEL_BYTES),
+        ];
+        for label in labels {
+            for observation in [
+                None,
+                Some(backend_library::SourceSelectionObservation::project_vue(0)),
+                Some(backend_library::SourceSelectionObservation::project_vue(12)),
+            ] {
+                // Derive the exact byte boundary from the actual empty encoding,
+                // not a mirrored estimate of wrapper/label/alias overhead.
+                let mut empty =
+                    ProductSourceRecord::project(label.clone(), [7; 32], vec![]).unwrap();
+                if let Some(observation) = &observation {
+                    empty = empty.with_source_selection(observation.clone()).unwrap();
+                }
+                let mut empty_bytes = Vec::new();
+                ProductSourceRelation::encode_value(&empty, &mut empty_bytes);
+                let byte_boundary =
+                    (ProductSourceRecord::ROW_VALUE_CAPACITY - empty_bytes.len()) / 32;
+                let inline_boundary = byte_boundary.min(ProductSourceRecord::MAX_FRONTIER_FILES);
+                if label.len() == ProductSourceRecord::MAX_LABEL_BYTES && observation.is_some() {
+                    assert!(
+                        inline_boundary < ProductSourceRecord::MAX_FRONTIER_FILES,
+                        "even zero Vue files carry observation bytes beyond the old inline budget"
+                    );
+                }
+                for count in [0, inline_boundary, inline_boundary + 1] {
+                    let files = keys(count);
+                    let update =
+                        ProductSourceRecord::project_with_membership_pages_and_source_selection(
+                            label.clone(),
+                            [7; 32],
+                            files.clone(),
+                            None,
+                            observation.clone(),
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        update
+                            .project_record()
+                            .project_fields()
+                            .unwrap()
+                            .source_selection,
+                        observation.as_ref()
+                    );
+                    assert_eq!(
+                        update
+                            .project_record()
+                            .project_fields()
+                            .unwrap()
+                            .source_version,
+                        [7; 32]
+                    );
+                    assert_eq!(
+                        update.membership_pages().is_empty(),
+                        count <= inline_boundary
+                    );
+                    assert_cold_frontier(&update, &files);
+                }
+                if byte_boundary < ProductSourceRecord::MAX_FRONTIER_FILES {
+                    let last =
+                        ProductSourceRecord::project(label.clone(), [7; 32], keys(byte_boundary))
+                            .unwrap()
+                            .with_source_selection(observation.clone().unwrap())
+                            .unwrap();
+                    let mut bytes = Vec::new();
+                    ProductSourceRelation::encode_value(&last, &mut bytes);
+                    assert!(
+                        ProductSourceRecord::ROW_VALUE_CAPACITY - bytes.len() < 32,
+                        "this is the exact last complete inline encoding"
+                    );
+                    assert!(
+                        ProductSourceRecord::project(
+                            label.clone(),
+                            [7; 32],
+                            keys(byte_boundary + 1)
+                        )
+                        .unwrap()
+                        .with_source_selection(observation.clone().unwrap())
+                        .is_err(),
+                        "the boundary opponent really exceeds capacity without repaging"
+                    );
+                }
+            }
+        }
+
+        use backend_library::{
+            CargoPackageAliasCargoFactsV1, CargoPackageAliasCoverageV1,
+            CargoPackageAliasEvidenceV1, CargoPackageAliasObservationV1, CargoPackageAliasV1,
+            CargoTargetNameV1, MAX_CARGO_PACKAGE_ALIASES,
+        };
+        use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
+        let aliases = (0..MAX_CARGO_PACKAGE_ALIASES)
+            .map(|index| {
+                CargoPackageAliasV1::CargoTargetName(
+                    CargoTargetNameV1::new(format!("{index:02}-{}", "x".repeat(1_000))).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let capture = CargoPackageAliasObservationV1::from_wire_parts(
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            [31; 32],
+            Some(CargoPackageAliasCargoFactsV1::from_wire_parts(
+                [32; 32], [33; 32], [34; 32],
+            )),
+            (0..MAX_CARGO_PACKAGE_ALIASES)
+                .map(|index| u8::try_from(index).unwrap())
+                .collect(),
+            CargoPackageAliasCoverageV1::Complete,
+        )
+        .unwrap();
+        let evidence =
+            CargoPackageAliasEvidenceV1::from_wire_parts(aliases, vec![capture]).unwrap();
+        let label = "x".repeat(ProductSourceRecord::MAX_LABEL_BYTES);
+        for count in [0, ProductSourceRecord::MAX_FRONTIER_FILES + 1] {
+            let files = keys(count);
+            let legacy = ProductSourceRecord::project_with_membership_pages(
+                label.clone(),
+                [8; 32],
+                files.clone(),
+                Some(evidence.clone()),
+            )
+            .unwrap();
+            for vue_count in [0, 12] {
+                let update =
+                    ProductSourceRecord::project_with_membership_pages_and_source_selection(
+                        label.clone(),
+                        [8; 32],
+                        files.clone(),
+                        Some(evidence.clone()),
+                        Some(backend_library::SourceSelectionObservation::project_vue(
+                            vue_count,
+                        )),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    update.membership_pages(),
+                    legacy.membership_pages(),
+                    "observation capacity must not change page/source identities"
+                );
+                let fields = update.project_record().project_fields().unwrap();
+                assert_eq!(
+                    fields.source_selection.unwrap().unsupported_extensions[0].files,
+                    vue_count
+                );
+                assert_eq!(
+                    fields.cargo_aliases.unwrap().observations()[0].coverage(),
+                    CargoPackageAliasCoverageV1::Unavailable(
+                        backend_library::CargoPackageAliasUnavailableV1::ProjectRowCapacity
+                    )
+                );
+                assert_cold_frontier(&update, &files);
+            }
+        }
+    }
+
+    #[test]
+    fn source_selection_project_codec_preserves_legacy_none_and_exact_supported_frontier() {
+        let legacy =
+            ProductSourceRecord::project("vue-fixture", [7; 32], vec![[1; 32], [2; 32]]).unwrap();
+        let mut old_bytes = Vec::new();
+        ProductSourceRelation::encode_value(&legacy, &mut old_bytes);
+        let cold_legacy = ProductSourceRelation::decode_value(&old_bytes).unwrap();
+        assert!(
+            cold_legacy
+                .project_fields()
+                .unwrap()
+                .source_selection
+                .is_none()
+        );
+        let mut old_reencoded = Vec::new();
+        ProductSourceRelation::encode_value(&cold_legacy, &mut old_reencoded);
+        assert_eq!(
+            old_reencoded, old_bytes,
+            "old intent source bytes remain canonical"
+        );
+        let recorded = legacy
+            .clone()
+            .with_source_selection(backend_library::SourceSelectionObservation::project_vue(12))
+            .unwrap();
+        let mut bytes = Vec::new();
+        ProductSourceRelation::encode_value(&recorded, &mut bytes);
+        assert!(bytes.starts_with(b"PSRI"));
+        let cold = ProductSourceRelation::decode_value(&bytes).unwrap();
+        assert_eq!(cold, recorded);
+        assert_eq!(cold.project_fields().unwrap().files.file_count(), 2);
+        assert_eq!(cold.project_fields().unwrap().source_version, [7; 32]);
+        assert_ne!(
+            bytes, old_bytes,
+            "the project CAS row commits the exclusion observation"
+        );
+        let zero = legacy
+            .with_source_selection(backend_library::SourceSelectionObservation::project_vue(0))
+            .unwrap();
+        let mut zero_bytes = Vec::new();
+        ProductSourceRelation::encode_value(&zero, &mut zero_bytes);
+        assert_ne!(
+            bytes, zero_bytes,
+            "observed zero differs from both twelve and legacy unknown"
+        );
+        let length = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let mut nested = bytes[..8 + length].to_vec();
+        nested.extend_from_slice(&bytes);
+        assert!(ProductSourceRelation::decode_value(&nested).is_err());
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(ProductSourceRelation::decode_value(&trailing).is_err());
+        let mut noncanonical_inner = bytes.clone();
+        noncanonical_inner[8 + length + 3] = b'9';
+        assert!(ProductSourceRelation::decode_value(&noncanonical_inner).is_err());
+        let mut oversized = bytes.clone();
+        oversized[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(ProductSourceRelation::decode_value(&oversized).is_err());
+        let aliased = cold
+            .clone()
+            .with_cargo_aliases(cargo_alias_evidence())
+            .unwrap();
+        assert_eq!(
+            aliased.project_fields().unwrap().source_selection,
+            cold.project_fields().unwrap().source_selection
+        );
+        let keys = (0..=ProductSourceRecord::MAX_FRONTIER_FILES)
+            .map(|index| {
+                let mut key = [0; 32];
+                key[..4].copy_from_slice(&(index as u32).to_be_bytes());
+                key
+            })
+            .collect::<Vec<_>>();
+        let update = ProductSourceRecord::project_with_membership_pages_and_source_selection(
+            "paged-vue",
+            [8; 32],
+            keys.clone(),
+            None,
+            Some(backend_library::SourceSelectionObservation::project_vue(3)),
+        )
+        .unwrap();
+        assert!(!update.membership_pages().is_empty());
+        let mut paged_bytes = Vec::new();
+        ProductSourceRelation::encode_value(update.project_record(), &mut paged_bytes);
+        let paged = ProductSourceRelation::decode_value(&paged_bytes).unwrap();
+        assert_eq!(&paged, update.project_record());
+        assert_eq!(
+            paged.project_fields().unwrap().files.file_count(),
+            keys.len()
+        );
+        assert_eq!(
+            paged.project_fields().unwrap().files.page_keys(),
+            update
+                .project_record()
+                .project_fields()
+                .unwrap()
+                .files
+                .page_keys()
+        );
+        let mut unknown = backend_library::SourceSelectionObservation::project_vue(1);
+        unknown.unknown_projects = 1;
+        assert!(
+            cold.with_source_selection(unknown).is_err(),
+            "aggregated unknowns cannot masquerade as a project observation"
+        );
+    }
+
     use super::{
         DeclarationKind, DeclarationRetention, MAX_PROJECT_MEMBERSHIP_PAGE_FILES,
         MIN_PROJECT_MEMBERSHIP_PAGE_FILES, ProductProjectFileMembership, ProductProjectMembership,
@@ -3350,6 +3799,7 @@ mod tests {
                 page_offsets: Some(Arc::from(malformed_offsets.into_boxed_slice())),
             },
             cargo_aliases: None,
+            source_selection: None,
         };
         let error = malformed
             .project_fields()
@@ -3368,6 +3818,7 @@ mod tests {
                 page_offsets: None,
             },
             cargo_aliases: None,
+            source_selection: None,
         };
         let mut legacy_bytes = Vec::new();
         ProductSourceRelation::encode_value(&legacy, &mut legacy_bytes);
@@ -3554,6 +4005,7 @@ mod tests {
                     .map(|offsets| Arc::from(offsets.to_vec().into_boxed_slice())),
             },
             cargo_aliases: None,
+            source_selection: None,
         };
         let pages = page_rows(&update);
         let error = wrong_total

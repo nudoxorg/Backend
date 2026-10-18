@@ -916,7 +916,6 @@ impl Eq for SymbolArenaStorageKey<'_> {}
 
 impl std::hash::Hash for SymbolArenaStorageKey<'_> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        use std::hash::Hash;
         self.0.base_offset.hash(state);
         Arc::as_ptr(&self.0.shared_prefix).hash(state);
         Arc::as_ptr(&self.0.symbols).hash(state);

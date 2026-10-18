@@ -269,6 +269,7 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         | Intent::FolderPickerResult { .. }
         | Intent::IndexProject { .. }
         | Intent::ReconcileIndexProject { .. }
+        | Intent::CancelIndexOperation { .. }
         | Intent::CheckIndexOutcome(_)
         | Intent::AddProject { .. }
         | Intent::RejectProjectPath { .. }

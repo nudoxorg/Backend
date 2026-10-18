@@ -22,6 +22,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use super::{TszAuthorityError, TszFileWorkExhaustion, TszProject};
+use backend_semantic::ir::{NativeProgramSourceManifest, typescript_program_identity};
+use backend_version::{ContentId, SourceFactDomain};
 use tsz::tsz_solver::construction::TypeDatabase;
 use tsz_common::ExecutionCheckpoint;
 
@@ -37,8 +39,75 @@ pub struct TszProjectQuerySession<'project> {
     project: &'project TszProject,
     checker_session: tsz::parallel::ProjectCheckerSession<'project>,
     file_indexes: HashMap<&'project str, usize>,
+    native_sources: NativeSourceIdentities,
     /// The first file query that spent its per-file work allowance.
     file_work_exhausted: Mutex<Option<TszFileWorkExhaustion>>,
+}
+
+#[derive(Clone, Copy)]
+struct NativeSourceIdentity {
+    digest: [u8; 32],
+    byte_len: usize,
+}
+
+struct NativeSourceIdentities {
+    program: Option<[u8; 32]>,
+    files: Vec<Option<NativeSourceIdentity>>,
+    #[cfg(any(test, feature = "tsz-semantic-session-test-support"))]
+    hash_work: (usize, u64),
+}
+
+impl NativeSourceIdentities {
+    fn capture(
+        project: &TszProject,
+        checkpoint: &dyn ExecutionCheckpoint,
+    ) -> Result<Self, TszProjectQuerySessionError> {
+        let mut files = Vec::with_capacity(project.program().files.len());
+        let mut manifest = Vec::with_capacity(project.program().files.len());
+        let mut complete = true;
+        #[cfg(any(test, feature = "tsz-semantic-session-test-support"))]
+        let mut hash_work = (0, 0_u64);
+        for file in &project.program().files {
+            checkpoint
+                .checkpoint(0)
+                .map_err(TszProjectQuerySessionError::ExecutionStopped)?;
+            let source = file.arena.get_source_file_at(file.source_file);
+            let identity = source.map(|source| {
+                #[cfg(any(test, feature = "tsz-semantic-session-test-support"))]
+                {
+                    hash_work.0 += 1;
+                    hash_work.1 = hash_work.1.saturating_add(source.text.len() as u64);
+                }
+                NativeSourceIdentity {
+                    digest: *ContentId::<SourceFactDomain>::from_canonical_bytes(
+                        source.text.as_bytes(),
+                    ),
+                    byte_len: source.text.len(),
+                }
+            });
+            if let Some(identity) = identity {
+                manifest.push((file.file_name.clone(), identity.digest));
+            } else {
+                complete = false;
+            }
+            files.push(identity);
+            checkpoint
+                .checkpoint(0)
+                .map_err(TszProjectQuerySessionError::ExecutionStopped)?;
+        }
+        let program = complete
+            .then(|| typescript_program_identity(&manifest))
+            .flatten();
+        checkpoint
+            .checkpoint(0)
+            .map_err(TszProjectQuerySessionError::ExecutionStopped)?;
+        Ok(Self {
+            program,
+            files,
+            #[cfg(any(test, feature = "tsz-semantic-session-test-support"))]
+            hash_work,
+        })
+    }
 }
 
 impl std::fmt::Debug for TszProjectQuerySession<'_> {
@@ -150,10 +219,12 @@ impl<'project> TszProjectQuerySession<'project> {
             .enumerate()
             .map(|(index, file)| (file.file_name.as_str(), index))
             .collect();
+        let native_sources = NativeSourceIdentities::capture(project, checkpoint)?;
         Ok(Self {
             project,
             checker_session,
             file_indexes,
+            native_sources,
             file_work_exhausted: Mutex::new(None),
         })
     }
@@ -162,6 +233,98 @@ impl<'project> TszProjectQuerySession<'project> {
     #[must_use]
     pub const fn project(&self) -> &'project TszProject {
         self.project
+    }
+
+    /// Source-manifest identity captured once from this immutable native program.
+    /// This uses the existing TSZ source-coordinate codec, never a forest ID.
+    #[must_use]
+    pub const fn native_program_identity(&self) -> Option<[u8; 32]> {
+        self.native_sources.program
+    }
+
+    /// Exact content identity only when the supplied compile bytes match the
+    /// immutable native source at this merged-program index. Callers must
+    /// still authenticate this session's project before publishing facts.
+    #[must_use]
+    pub fn native_source_identity(&self, file_index: usize, bytes: &[u8]) -> Option<[u8; 32]> {
+        let file = self.project.program().files.get(file_index)?;
+        let source = file.arena.get_source_file_at(file.source_file)?;
+        if source.text.as_bytes() != bytes {
+            return None;
+        }
+        self.native_sources
+            .files
+            .get(file_index)
+            .copied()
+            .flatten()
+            .map(|source| source.digest)
+    }
+
+    /// Returns the cached identity for this exact immutable program file.
+    ///
+    /// Native declaration coordinates already borrow their target directly from
+    /// this session's checked program. Pointer identity authenticates that owner
+    /// without rehashing or comparing its full source text for every occurrence.
+    /// A file cloned from another program, even with identical text and path,
+    /// cannot borrow this session's source identity.
+    #[must_use]
+    pub fn native_source_identity_for_bound_file(
+        &self,
+        file_index: usize,
+        file: &tsz::parallel::BoundFile,
+    ) -> Option<[u8; 32]> {
+        let expected = self.project.program().files.get(file_index)?;
+        if !std::ptr::eq(expected, file) {
+            return None;
+        }
+        self.native_sources
+            .files
+            .get(file_index)
+            .copied()
+            .flatten()
+            .map(|source| source.digest)
+    }
+
+    /// Authenticates and adopts the compiler's already captured leaf manifest.
+    /// Every native path, content digest and byte length must match this
+    /// session; a forest envelope or another revision cannot supply its ID.
+    /// This checks source membership; toolchain/configuration admission remains
+    /// with the compiler owner.
+    ///
+    /// # Errors
+    /// Returns an exact source refusal or a project-session mismatch.
+    pub fn authenticate_native_program_sources(
+        mut self,
+        manifest: &NativeProgramSourceManifest,
+    ) -> Result<Self, TszAuthorityError> {
+        if manifest.sources().len() != self.native_sources.files.len()
+            || self.native_sources.program != Some(manifest.program())
+        {
+            return Err(TszAuthorityError::ProjectSessionMismatch);
+        }
+        for row in manifest.sources() {
+            let index = self.file_index(row.program_path)?;
+            let Some(Some(source)) = self.native_sources.files.get(index) else {
+                return Err(TszAuthorityError::MissingFile(index));
+            };
+            if source.digest != *row.source.identity
+                || source.byte_len != row.source.byte_len as usize
+            {
+                return Err(TszAuthorityError::SourceMismatch {
+                    path: row.program_path.to_owned(),
+                });
+            }
+        }
+        self.native_sources.program = Some(manifest.program());
+        Ok(self)
+    }
+
+    /// Actual source hashing calls and bytes spent constructing this session's
+    /// identity cache. Available only to native semantic regression fixtures.
+    #[cfg(any(test, feature = "tsz-semantic-session-test-support"))]
+    #[must_use]
+    pub const fn native_identity_hash_work_for_test(&self) -> (usize, u64) {
+        self.native_sources.hash_work
     }
 
     /// Opens one file-local checker from the shared project context and lends

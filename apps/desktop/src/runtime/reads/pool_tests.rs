@@ -16,6 +16,7 @@ pub(super) fn health(rows: u64) -> PageValue {
         lanes: backend_present::CoverageLine::new(&[], Some(rows)),
         rows,
         ingest: IngestModel {
+            source_selection: None,
             files_discovered: 0,
             files_indexed: 0,
             files_unavailable: 0,

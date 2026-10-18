@@ -130,6 +130,12 @@ impl Invocation {
                 format!("usage: {}", self.grammar.installed_usage()),
             ));
         }
+        if self.grammar.name() == "search" && self.at(0) == Some("") {
+            return Err(Fault::usage(
+                "query",
+                "search requires a nonempty literal query; pass at least one character",
+            ));
+        }
         if self
             .grammar
             .options()

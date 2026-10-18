@@ -228,7 +228,9 @@ impl CommandTransport for Transport {
                         .to_vec()
                 }
                 Command::OutlinePage { package, page } => {
-                    QueryPageRecipe::outline(library.revision_root(), *package, page.limit())
+                    let CommandReply::ProjectionPage(projection) = &reply.reply else { panic!("outline page"); };
+                    QueryPageRecipe::outline(library.revision_root(), *package, page.limit(),
+                        projection.outline_order.as_ref().expect("native outline order"))
                         .canonical_preimage()
                         .to_vec()
                 }
@@ -3527,6 +3529,8 @@ fn portable_outline_reopens_exact_native_proof_and_rejects_credit_package_and_sc
     let CommandReply::ProjectionPage(first) = first.reply else {
         panic!("projection");
     };
+    assert_eq!(first.outline_order.as_ref().expect("first order").start(), 0);
+    assert!(first.snapshot.root.rows().iter().all(|row| row.score.is_none()));
     let next = PageContinuation::from_cursor(first.snapshot.next.expect("more"));
     let token = issuing
         .encode_query_continuation(next)
@@ -3542,6 +3546,7 @@ fn portable_outline_reopens_exact_native_proof_and_rejects_credit_package_and_sc
         panic!("projection");
     };
     assert_eq!(resumed.snapshot.root.row_count(), 3);
+    assert_eq!(resumed.outline_order.as_ref().expect("resumed order").start(), 3);
     assert_eq!(
         resumed
             .snapshot
@@ -3569,6 +3574,10 @@ fn portable_outline_reopens_exact_native_proof_and_rejects_credit_package_and_sc
             .is_err(),
         "native recipe binds exact credit"
     );
+    let mut wrong_predecessor = token_value(&token);
+    wrong_predecessor["command"]["data"]["page"]["continuation"]["query_offset"] = serde_json::json!(6);
+    assert!(session(&owner, &requests).decode_page_continuation(&self::token(&wrong_predecessor)).is_err(),
+        "the same predecessor row proof cannot claim another ordered start");
     *owner.lock().expect("owner") = owner_with_package(2, 7, 0, &["Thing"], Some("/p"));
     assert!(
         session(&owner, &requests)

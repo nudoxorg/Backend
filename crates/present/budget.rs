@@ -314,6 +314,7 @@ pub fn encode_answer_with_call(
                     detail,
                     next_cursor,
                     SummaryStatusDto {
+                        source_selection: status.source_selection,
                         availability: status.availability,
                         publication: status.publication,
                         readiness: status.readiness,
@@ -323,6 +324,7 @@ pub fn encode_answer_with_call(
                         project: status.project,
                         coverage: status.coverage,
                         capabilities: status.capabilities,
+                        compiler_refusal: status.compiler_refusal,
                     },
                     budget,
                     continuation_call,
@@ -786,6 +788,8 @@ struct SummaryOutlineDto {
 
 #[derive(Serialize)]
 struct SummaryStatusDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_selection: Option<backend_library::SourceSelectionObservation>,
     availability: String,
     publication: String,
     readiness: String,
@@ -796,6 +800,8 @@ struct SummaryStatusDto {
     project: Option<String>,
     coverage: Vec<CoverageDto>,
     capabilities: CapabilitiesDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compiler_refusal: Option<FaultDto>,
 }
 
 #[derive(Serialize)]

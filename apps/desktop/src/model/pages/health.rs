@@ -26,6 +26,8 @@ pub struct FaultProgress {
 /// Typed ingest counts for the visible revision.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IngestModel {
+    /// Separate discovery exclusions; None means not observed.
+    pub source_selection: Option<String>,
     /// Files the revision selected.
     pub files_discovered: u64,
     /// Files that published declarations.
