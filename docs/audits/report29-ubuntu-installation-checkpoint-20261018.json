@@ -1,0 +1,53 @@
+{
+  "actual_Ubuntu_acceptance": {
+    "commands_exit0": 16,
+    "environment": "Official Ubuntu24.04 base, CPython3.12, glibc2.39, private namespaces, fresh install prefixes, no host Nix mount",
+    "exact_markers_and_repeat_reuse": true,
+    "fresh_installs": 2,
+    "independent_installed_payload_files_per_prefix": 11,
+    "installed_payload_rehashed_after_scope_closed": true,
+    "normal_scope_reaped_closed_released": true,
+    "producing_config_sha256": "1ca46c375696692cc6c2aa37074498c5c16a9d86a5726dab53f1d3837fbefccd",
+    "raw_courier_sha256": "f73dd1c9deec64ccdede0f68788a5c1aa165df688a3caaa4640f40427a74be62",
+    "same_version_repeat_installs": 2,
+    "startup_probes": 12,
+    "strict_replay_sha256": "48f88141b42f37416011899d40a58efc9db29ed233345e660f44849b32f19605",
+    "verified_aliases_per_prefix": 6
+  },
+  "boundaries": {
+    "CLI_MCP_owner_index_acceptance": "UNRUN_BY_THIS_CASE",
+    "GUI": "NO_DESKTOP_IN_THIS_SCHEMA1_PAYLOAD",
+    "Mac_Homebrew": "UNRUN",
+    "current_report29_repair_payload": "NOT_PUBLISHED_BY_THIS_CASE",
+    "older_to_newer_upgrade": "UNRUN",
+    "production_ready": false
+  },
+  "current_report29_repair_validation": {
+    "actual_codegen_exit": 101,
+    "actual_metadata_exit": 0,
+    "cause": "jemalloc configure could not find GNU sed in the selected Nix PATH; no Rust compiler-message errors",
+    "current_attempted_native": 0,
+    "current_native_unrun": 107,
+    "current_passed_native": 0,
+    "failure_replay_sha256": "9792208c50c6028bbb75e45e84556fc6aa859e38d38f6adbc698b63610003834",
+    "held_real_Clang": 1,
+    "report_closed_end_to_end": false,
+    "runtime_remedy": "Exact PATH store outputs restored and GC rooted; compiler/source/flags unchanged; retry remains a separate admitted run",
+    "selected_native": 107,
+    "source": "60635b212e3ca2045933996428dbb714426b92c0",
+    "tree": "d17f7088adaf5940e113d669db46e2dd552473a2"
+  },
+  "installer_sha256": "a599eda8015a165d751552a82a209ab117cfffe4e8593dace00ba7374452cbe1",
+  "installer_url": "https://github.com/nudoxorg/Backend/releases/download/nudox-preview-installer/install-linux-x64-a599eda8015a165d.py",
+  "recorded_utc": "2026-10-18T04:43:11.969939+00:00",
+  "release": {
+    "archive_sha256": "3e0a50ac59712eb208bbcb300325866b04a2961cf195c9efa71449625a31cf45",
+    "minimum_glibc": "2.39",
+    "platform": "linux-x64",
+    "schema": 1,
+    "source": "df93af4890005c2bb748928c5a524d1f203fe04f",
+    "tag": "checkpoint-20261016-df93af4890-linux-x64",
+    "tree": "5bf42577232e1ee3b98533bd851476e2aaaa6718"
+  },
+  "schema": "nudox.report29-installation-checkpoint.v1"
+}
