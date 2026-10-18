@@ -564,6 +564,10 @@ pub fn status(status: &Status, theme: Theme) -> String {
     }
     lines.push(coverage(status.coverage(), theme));
     lines.push(theme.paint(Style::Dim, &status.capabilities().render()));
+    if let Some(cause) = status.compiler_refusal() {
+        lines.push("observed failed compiler attempt (served coverage above is unchanged)");
+        lines.push(fault(cause, theme));
+    }
     lines.finish()
 }
 

@@ -818,6 +818,10 @@ pub fn status(status: &Status) -> String {
     }
     lines.push(coverage(status.coverage()));
     lines.push(status.capabilities().render());
+    if let Some(cause) = status.compiler_refusal() {
+        lines.push("Observed failed compiler attempt (served coverage above is unchanged):");
+        lines.push(fault(cause));
+    }
     lines.finish()
 }
 

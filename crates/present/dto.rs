@@ -915,6 +915,9 @@ pub struct StatusDto {
     pub coverage: Vec<CoverageDto>,
     /// The rolled-up capability inventory.
     pub capabilities: CapabilitiesDto,
+    /// One revision/source-matched compiler-attempt cause, not served coverage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler_refusal: Option<FaultDto>,
 }
 
 fn unknown_status_facet() -> String {
@@ -955,6 +958,7 @@ impl StatusDto {
     pub fn new(status: &Status) -> Self {
         let capabilities = status.capabilities();
         Self {
+            compiler_refusal: status.compiler_refusal().map(FaultDto::new),
             availability: status.availability().to_owned(),
             publication: status.publication_state().name().to_owned(),
             readiness: status.readiness().to_owned(),

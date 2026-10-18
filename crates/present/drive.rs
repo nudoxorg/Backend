@@ -277,7 +277,8 @@ impl Answer {
             Self::Page(page) => page.expose_mcp_advice(exposure),
             Self::Shelf(shelf) => shelf.expose_mcp_advice(exposure),
             Self::Product(product) => product.expose_mcp_advice(exposure),
-            Self::Records(_) | Self::Outline(_) | Self::Status(_) => {}
+            Self::Status(status) => status.expose_mcp_advice(exposure),
+            Self::Records(_) | Self::Outline(_) => {}
         }
         self
     }
@@ -568,10 +569,12 @@ fn shelf(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     // health report can. Read it so `packages` and `status` print the same
     // count; if it is unavailable or describes another revision, the shelf
     // reports the count as unread rather than inventing one.
-    Ok(Answer::Shelf(Box::new(match engine.health() {
+    let shelf = match engine.health() {
         Ok(health) => shelf_from_snapshot_with_health(&snapshot, tag, &health),
         Err(_) => shelf_from_snapshot(&snapshot, tag),
-    })))
+    };
+    let causes = crate::compiler_causes::failed_package_causes(engine, &snapshot);
+    Ok(Answer::Shelf(Box::new(shelf.with_compiler_causes(&causes))))
 }
 
 /// Reads the whole engine state, without naming the caller's project.
@@ -587,9 +590,29 @@ fn status(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     let report = engine
         .health()
         .map_err(|error| Fault::from_client_error(&error, Operand::Whole))?;
-    Ok(Answer::Status(Box::new(Status::from_health_reply(
-        &report, None,
-    ))))
+    let mut status = Status::from_health_reply(&report, None);
+    // Preserve the one-health-read fast path for ready, partial, moving and
+    // cancelled lanes. Only an admitted terminal native refusal asks for a
+    // bounded failed-package sample; this never requests compiler work.
+    if report.coverage().iter().any(|coverage| {
+        matches!(
+            coverage,
+            backend_library::Coverage::Unavailable {
+                lane: backend_library::Lane::Semantic,
+                reason: backend_library::Reason::Incomplete | backend_library::Reason::Unconfigured,
+            }
+        )
+    }) && let Ok(reply) = read(engine, Probe::Packages)
+        && let CommandReply::Packages(snapshot) = reply.reply
+        && snapshot.root.root() == report.revision().root()
+        && snapshot.root.basis() == report.basis()
+    {
+        let cause = crate::compiler_causes::failed_package_causes(engine, &snapshot)
+            .into_values()
+            .next();
+        status = status.with_compiler_refusal(cause);
+    }
+    Ok(Answer::Status(Box::new(status)))
 }
 
 fn index(

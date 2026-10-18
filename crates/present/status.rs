@@ -336,6 +336,7 @@ pub struct Status {
     coverage: CoverageLine,
     rows: PublishedRows,
     capabilities: CapabilitySummary,
+    compiler_refusal: Option<crate::Fault>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -379,6 +380,7 @@ impl Status {
             coverage: CoverageLine::new(report.coverage(), Some(report.row_count())),
             rows: PublishedRows::new(report.row_count()),
             capabilities: CapabilitySummary::from_inventory(report.capabilities()),
+            compiler_refusal: None,
         }
     }
 
@@ -388,6 +390,23 @@ impl Status {
         let mut status = Self::from_report(report, project);
         status.availability = OwnerAvailability::Available;
         status
+    }
+
+    pub(crate) fn expose_mcp_advice(&mut self, exposure: crate::McpExposure) {
+        if let Some(fault) = &mut self.compiler_refusal {
+            *fault = fault.clone().with_mcp_exposure(exposure);
+        }
+    }
+
+    /// One exact bounded failed-project attempt cause, independent of served lane coverage.
+    #[must_use]
+    pub fn compiler_refusal(&self) -> Option<&crate::Fault> {
+        self.compiler_refusal.as_ref()
+    }
+
+    pub(crate) fn with_compiler_refusal(mut self, fault: Option<crate::Fault>) -> Self {
+        self.compiler_refusal = fault;
+        self
     }
 
     /// Returns the active project, when one is selected.
