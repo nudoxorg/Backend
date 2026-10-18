@@ -995,6 +995,133 @@ impl StatusDto {
     }
 }
 
+/// Readable discovery facts only. This is not a native source reference or page proof.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SemanticVersionsSummaryDto {
+    /// Requested package spelling.
+    pub package: backend_library::PackageReference,
+    /// Whole native discovery count.
+    pub total: u64,
+    /// Starting offset of these returned entries.
+    pub offset: u64,
+    /// Whether the exact native continuation has another page.
+    pub more: bool,
+    /// Whether discovery reached the end of this exact native snapshot.
+    pub complete: bool,
+    /// Every version on this admitted page in native order.
+    pub entries: Vec<SemanticVersionSummaryDto>,
+    /// Explicit fresh discovery, not a promise to reopen this page's old roots.
+    pub full_detail: SemanticVersionsFullDetailDto,
+}
+
+/// Facts retained by summary without exposing native hash/proof byte arrays.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SemanticVersionSummaryDto {
+    /// Complete captured package coordinate.
+    pub coordinate: String,
+    /// Captured compiler language and dialect.
+    pub profile: backend_library::SemanticLanguageProfile,
+    /// Full immutable generation identity in hexadecimal.
+    pub generation: String,
+    /// Complete native image count.
+    pub artifacts: u32,
+    /// Captured manifest byte extent.
+    pub semantic_bytes: u32,
+    /// Whether the declared scope is complete.
+    pub complete: bool,
+    /// Whether this generation was selected when observed.
+    pub selected: bool,
+    /// Current, historical, or unverified source-input observation.
+    pub freshness: String,
+    /// Whether native source retention issued a reference.
+    pub source_available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Complete retained source-retention refusal when unavailable.
+    pub source_unavailable_reason: Option<String>,
+    /// Complete observed history publication state.
+    pub history: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Whole image count when published; never a preview count.
+    pub history_images: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Retained deferred or refused publication reason.
+    pub history_reason: Option<String>,
+}
+
+/// Read-only full-detail discovery through either installed surface.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SemanticVersionsFullDetailDto {
+    /// The action starts a fresh read and does not claim this page's roots.
+    pub scope: String,
+    /// Copyable full-detail CLI discovery command.
+    pub cli: Option<String>,
+    /// Copyable read-only MCP full-detail discovery call.
+    pub call: serde_json::Value,
+}
+
+
+impl SemanticVersionsSummaryDto {
+    pub(crate) fn new(page: &backend_library::SemanticVersionsPage, exposure: crate::McpExposure) -> Self {
+        use backend_library::{SemanticSourceHistory as History, SemanticVersionDescriptor as Descriptor};
+        Self {
+            package: page.package.clone(),
+            total: page.total,
+            offset: page.offset,
+            more: page.more,
+            complete: page.complete,
+            entries: page.entries.iter().map(|entry| {
+                let metadata = entry.metadata();
+                let (history, history_images, history_reason) = match entry.history() {
+                    History::NotSelected => ("not-selected", None, None),
+                    History::NotRequested { .. } => ("not-requested", None, None),
+                    History::Pending { .. } => ("pending", None, None),
+                    History::Deferred { reason, .. } => ("deferred", None, Some(reason.clone())),
+                    History::Refused { reason, .. } => ("refused", None, Some(reason.clone())),
+                    History::Superseded { .. } => ("superseded", None, None),
+                    History::Published { proof, .. } => ("published", Some(proof.image_count), None),
+                };
+                SemanticVersionSummaryDto {
+                    coordinate: metadata.coordinate.as_str().to_owned(),
+                    profile: metadata.profile,
+                    generation: backend_library::encode_id(&metadata.generation.to_bytes()),
+                    artifacts: metadata.artifacts,
+                    semantic_bytes: metadata.semantic_bytes,
+                    complete: metadata.complete,
+                    selected: metadata.selected,
+                    freshness: match metadata.freshness {
+                        backend_library::SemanticVersionFreshness::Current { .. } => "current",
+                        backend_library::SemanticVersionFreshness::Historical { .. } => "historical",
+                        backend_library::SemanticVersionFreshness::Unverified => "unverified",
+                    }.to_owned(),
+                    source_available: matches!(entry, Descriptor::Available { .. }),
+                    source_unavailable_reason: match entry {
+                        Descriptor::Unavailable { reason, .. } => Some(reason.clone()),
+                        _ => None,
+                    },
+                    history: history.to_owned(),
+                    history_images,
+                    history_reason,
+                }
+            }).collect(),
+            full_detail: SemanticVersionsFullDetailDto {
+                scope: "fresh-discovery".to_owned(),
+                cli: (backend_library::PackageReference::parse(page.package.as_str()).ok().as_ref() == Some(&page.package))
+                    .then(|| crate::shell::command("semantic-versions", &[
+                        page.package.as_str().to_owned(), "--detail".to_owned(), "full".to_owned(),
+                    ])).flatten(),
+                call: exposure.expose_call(serde_json::json!({
+                    "name":"backend.surface",
+                    "arguments":{"command": backend_library::SurfaceCommand::SemanticVersions {
+                        package: page.package.clone(),
+                        limit: backend_library::DEFAULT_SEMANTIC_VERSIONS_LIMIT,
+                        cursor: None,
+                    }, "detail":"full"}
+                })),
+            },
+        }
+    }
+}
+
 /// One durable product answer.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProductDto {
@@ -1039,6 +1166,9 @@ pub struct ProductDto {
     /// Exact existing shape wire tree exported after direct certificate admission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_data: Option<crate::product::ProductSemanticData>,
+    /// Display-only version discovery; native operands require explicit full detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_versions_summary: Option<SemanticVersionsSummaryDto>,
     /// Exact source-only package metadata lookup evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_discovery: Option<crate::product::PackageDiscoveryProjection>,
@@ -1186,7 +1316,7 @@ impl ProductDto {
         Self::project(view, None)
     }
 
-    /// Projects the complete receipt and preserves detail in its next action.
+    /// Projects requested display detail and preserves detail in its next action.
     #[must_use]
     pub fn for_detail(view: &ProductView, detail: Detail) -> Self {
         Self::project(view, Some(detail))
@@ -1234,8 +1364,102 @@ impl ProductDto {
             package_source_membership_page: view.package_source_membership_page().cloned(),
             compiler_outcomes: view.compiler_outcomes().cloned(),
             package_graph_page: view.package_graph_page().cloned(),
-            semantic_data: view.semantic_data().cloned(),
+            semantic_data: match (detail, view.semantic_data()) {
+                (Some(Detail::Summary), Some(crate::ProductSemanticData::VersionsPage(_))) => None,
+                _ => view.semantic_data().cloned(),
+            },
+            semantic_versions_summary: match (detail, view.semantic_data()) {
+                (Some(Detail::Summary), Some(crate::ProductSemanticData::VersionsPage(page))) =>
+                    Some(SemanticVersionsSummaryDto::new(page, view.mcp_exposure)),
+                _ => None,
+            },
             package_discovery: view.package_discovery().cloned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod semantic_versions_summary_tests {
+    #![allow(clippy::expect_used)]
+    use super::*;
+
+    fn captured_page() -> backend_library::SemanticVersionsPage {
+        let packet: serde_json::Value = serde_json::from_str(include_str!(
+            "fixtures/semantic-versions-semver-public.json"
+        )).expect("unchanged captured42 fixture");
+        let record: backend_library::SemanticVersionRecord = serde_json::from_value(
+            packet["surface"]["data"][0].clone(),
+        ).expect("complete captured native record");
+        let root = record.selected_source_frontier.as_ref()
+            .map_or([8; 32], |frontier| frontier.source_relation_root);
+        let reference = backend_library::SemanticSourceReference::capture(
+            &record, root, [34; 32], &[7; 32],
+        ).expect("transport reference from genuine captured metadata");
+        let page = backend_library::SemanticVersionsPage {
+            package: record.package.clone(), source_relation_root: root,
+            semantic_relation_root: [34; 32], total: 1, offset: 0,
+            entries: Box::new([backend_library::SemanticVersionDescriptor::Available { reference }]),
+            next_cursor: None, more: false, complete: true,
+        };
+        page.admit().expect("native page shape");
+        page
+    }
+
+    #[test]
+    fn semantic_versions_summary_retains_discovery_facts_and_full_native_projection_unchanged() {
+        let page = captured_page();
+        let view = crate::product_view(&backend_library::SurfaceReply::SemanticVersionsPage(page.clone()));
+        let original = ProductDto::new(&view);
+        let full = ProductDto::for_detail(&view, Detail::Full);
+        assert_eq!(full, original, "full DTO and serialized bytes keep the old projection");
+        assert_eq!(serde_json::to_vec(&full).expect("admitted transport fixture"), serde_json::to_vec(&original).expect("admitted transport fixture"));
+        assert_eq!(full.semantic_data, Some(crate::ProductSemanticData::VersionsPage(page.clone())));
+        let summary = ProductDto::for_detail(&view, Detail::Summary);
+        assert_eq!(summary.records, full.records, "no useful display row is discarded");
+        assert!(summary.semantic_data.is_none(), "display summary cannot pretend to be a native source guard");
+        let data = summary.semantic_versions_summary.as_ref().expect("explicit display facet");
+        let metadata = page.entries[0].metadata();
+        assert_eq!(data.entries.len(), 1);
+        assert_eq!(data.entries[0].coordinate, metadata.coordinate.as_str());
+        assert_eq!(data.entries[0].generation, backend_library::encode_id(&metadata.generation.to_bytes()));
+        assert_eq!(data.entries[0].profile, metadata.profile);
+        assert_eq!(data.entries[0].selected, metadata.selected);
+        assert_eq!(data.entries[0].complete, metadata.complete);
+        assert_eq!(data.entries[0].artifacts, metadata.artifacts);
+        assert_eq!(data.entries[0].history, "published");
+        assert_eq!(data.entries[0].history_images, Some(42), "whole native history count");
+        assert_eq!(data.full_detail.scope, "fresh-discovery");
+        assert_eq!(data.full_detail.call["arguments"]["detail"], "full");
+        assert!(serde_json::from_value::<backend_library::SemanticVersionsPage>(serde_json::to_value(data).expect("admitted transport fixture")).is_err());
+        assert!(serde_json::to_vec(&summary).expect("admitted transport fixture").len() < serde_json::to_vec(&full).expect("admitted transport fixture").len());
+    }
+
+    #[test]
+    fn semantic_versions_summary_keeps_unavailable_source_and_refused_history_reasons() {
+        let mut page = captured_page();
+        let metadata = page.entries[0].metadata().clone();
+        let reason = "native history retention is unavailable for this exact generation".to_owned();
+        page.entries = Box::new([backend_library::SemanticVersionDescriptor::Unavailable {
+            metadata, reason: reason.clone(),
+            history: backend_library::SemanticSourceHistory::Refused {
+                selection_id: [7; 32], reason: "captured history publication was refused".to_owned(),
+            },
+        }]);
+        page.admit().expect("real unavailable descriptor variant");
+        let data = SemanticVersionsSummaryDto::new(&page, crate::McpExposure::Direct);
+        assert!(!data.entries[0].source_available);
+        assert_eq!(data.entries[0].source_unavailable_reason.as_deref(), Some(reason.as_str()));
+        assert_eq!(data.entries[0].history, "refused");
+        assert_eq!(data.entries[0].history_reason.as_deref(), Some("captured history publication was refused"));
+        assert_eq!(data.entries[0].history_images, None, "unpublished history has no invented count");
+        page.package = backend_library::PackageReference::Local(backend_library::ProductText::new(captured_page().entries[0].metadata().coordinate.as_str()).expect("admitted local namespace spelling"));
+        let expert = SemanticVersionsSummaryDto::new(&page, crate::McpExposure::Direct);
+        let command: backend_library::SurfaceCommand = serde_json::from_value(
+            expert.full_detail.call["arguments"]["command"].clone(),
+        ).expect("typed read action");
+        assert!(matches!(command, backend_library::SurfaceCommand::SemanticVersions { package, cursor: None, .. }
+            if package == page.package), "display action must not reclassify a tagged package by spelling");
+        assert_ne!(backend_library::PackageReference::parse(page.package.as_str()).ok().as_ref(), Some(&page.package));
+        assert!(expert.full_detail.cli.is_none(), "do not offer a lossy string-grammar action");
     }
 }

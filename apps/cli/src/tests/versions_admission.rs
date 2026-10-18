@@ -322,3 +322,48 @@ fn cli_versions_resizing_refuses_changed_basis_fixed_cursor_and_expired_original
     );
     Ok(())
 }
+
+#[test]
+fn cli_versions_summary_keeps_exact_continuation_and_explicit_full_discovery() -> Result<(), String> {
+    let package = captured()?.package;
+    let mut engine = Versions { calls: vec![], moved: false };
+    let answer = fixture(versions_with_output_admission(
+        &mut engine, &package, 2, None, || Ok(()),
+        |answer| backend_present::encode_answer(answer, backend_present::Detail::Summary, None,
+            backend_present::DEFAULT_RESPONSE_BUDGET_BYTES).map(|_| ()).map_err(backend_present::oversized_fault),
+    ))?;
+    assert_eq!(engine.calls.len(), 1, "summary formatting does not reread or resize a small page");
+    let selected = selected_page(&answer);
+    let next = selected.next_cursor.as_ref().ok_or("actual native next cursor")?;
+    let claims = fixture(next.claims())?;
+    assert_eq!(claims.limit, 2);
+    assert_eq!(claims.offset, selected.entries.len() as u64);
+    let summary = fixture(backend_present::encode_answer(&answer, backend_present::Detail::Summary,
+        Some(next.as_str()), backend_present::MAX_RESPONSE_BUDGET_BYTES))?;
+    let full = fixture(backend_present::encode_answer(&answer, backend_present::Detail::Full,
+        Some(next.as_str()), backend_present::MAX_RESPONSE_BUDGET_BYTES))?;
+    let projected: Value = fixture(serde_json::from_slice(&summary.bytes))?;
+    assert_eq!(projected["nextCursor"], next.as_str());
+    assert!(projected.get("semantic_data").is_none());
+    let display = &projected["semantic_versions_summary"];
+    assert_eq!(display["entries"].as_array().ok_or("all summary rows")?.len(), selected.entries.len());
+    assert_eq!(display["full_detail"]["scope"], "fresh-discovery");
+    assert_eq!(display["full_detail"]["call"]["arguments"]["command"]["package"], json!(package));
+    let words = vec!["semantic-versions".to_owned(), package.as_str().to_owned(),
+        "--detail".to_owned(), "full".to_owned()];
+    let full_invocation = fixture(crate::invoke::parse(&words, None))?;
+    assert!(matches!(fixture(backend_present::lower(&full_invocation, "/fixture"))?,
+        Request::Surface(command) if matches!(*command,SurfaceCommand::SemanticVersions { package: actual,cursor:None,.. } if actual == package)));
+    let exact: Value = fixture(serde_json::from_slice(&full.bytes))?;
+    let restored: SemanticVersionsPage = fixture(serde_json::from_value(exact["semantic_data"]["value"].clone()))?;
+    assert_eq!(&restored, selected, "full output still owns every exact native reference");
+    assert!(summary.bytes.len() < full.bytes.len());
+    for rendered in [backend_present::text::answer_with_detail(&answer, backend_present::Theme::plain(),
+        backend_present::Detail::Summary,None,backend_present::ContinuationTarget::CliOption),
+        backend_present::markdown::answer_with_detail(&answer,backend_present::Detail::Summary,
+        None,backend_present::ContinuationTarget::CliOption)] {
+        assert!(rendered.contains("--detail full (fresh discovery)"));
+        assert!(rendered.contains(next.as_str()), "exact original continuation survives");
+    }
+    Ok(())
+}

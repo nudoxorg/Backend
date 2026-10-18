@@ -745,11 +745,90 @@ fn default_versions_credit_is_shared_and_two_complete_descriptors_need_one_owner
             assert!(wire_tokens(&response).map_err(|error|format!("{error:?}"))?<=MCP_CL100K_TOKEN_LIMIT);
             assert_eq!(response["jsonrpc"],"2.0");assert_eq!(response["id"],9);assert!(response.get("error").is_none());
             let result=&response["result"];assert_eq!(result["isError"],false,"{response}");
-            let actual:SemanticVersionsPage=serde_json::from_value(result["structuredContent"]["semantic_data"]["value"].clone()).expect("complete typed descriptors");
-            assert_eq!(actual,page(credit,0,2,8));assert_eq!(actual.entries.len(),2);assert!(!actual.more);assert!(actual.complete);assert!(actual.next_cursor.is_none());
+            if detail == Detail::Summary {
+                let summary = &result["structuredContent"]["semantic_versions_summary"];
+                assert_eq!(summary["entries"].as_array().expect("all readable descriptors").len(),2);
+                assert_eq!(summary["total"],2);assert_eq!(summary["more"],false);assert_eq!(summary["complete"],true);
+                assert!(result["structuredContent"].get("semantic_data").is_none());
+            } else {
+                let actual:SemanticVersionsPage=serde_json::from_value(result["structuredContent"]["semantic_data"]["value"].clone()).expect("complete typed descriptors");
+                assert_eq!(actual,page(credit,0,2,8));assert_eq!(actual.entries.len(),2);assert!(!actual.more);assert!(actual.complete);assert!(actual.next_cursor.is_none());
+            }
             assert!(result["structuredContent"].get("continuation_call").is_none());
             assert!(matches!(&server.product.surface_commands[..],[SurfaceCommand::SemanticVersions{limit,cursor:None,..}] if *limit==credit));
         }
     }
     Ok(())
+}
+
+#[test]
+fn versions_summary_preserves_exact_page_continuation_and_full_native_guards_on_every_mcp_route() {
+    for exposure in [McpExposure::Direct, McpExposure::RegisteredCall] {
+        for raw in [false, true] {
+            let initial = if raw {
+                json!({"name":"backend.surface","arguments":{"command":SurfaceCommand::SemanticVersions {
+                    package:captured().package,limit:2,cursor:None},"detail":"summary"}})
+            } else {
+                json!({"name":"backend.semantic_versions","arguments":{
+                    "package":captured().package.as_str(),"limit":2,"detail":"summary"}})
+            };
+            let mut server = ready(Fake { semantic_versions_total: Some(3), ..Fake::default() });
+            let response = request(&mut server,"tools/call",&exposure.expose_call(initial.clone()));
+            assert_eq!(response["result"]["isError"], false, "{response}");
+            assert_context_bounded(&response);
+            let structured = &response["result"]["structuredContent"];
+            let summary = if raw {
+                assert_eq!(structured["surface"]["result"], "semantic-versions-summary");
+                &structured["surface"]["data"]
+            } else { &structured["semantic_versions_summary"] };
+            assert_eq!(summary["total"],3);
+            assert_eq!(summary["offset"],0);
+            assert_eq!(summary["entries"].as_array().expect("admitted transport fixture").len(),2);
+            assert_eq!(summary["entries"][0]["history_images"],42);
+            assert_eq!(summary["entries"][0]["coordinate"],captured().coordinate.as_str());
+            assert_eq!(summary["full_detail"]["scope"],"fresh-discovery");
+            assert_eq!(summary["full_detail"]["call"]["name"],
+                if exposure == McpExposure::RegisteredCall { "backend.call" } else { "backend.surface" });
+            assert!(serde_json::from_value::<SemanticVersionsPage>(summary.clone()).is_err());
+            let next = structured["continuation_call"].clone();
+            let continued = request(&mut server,"tools/call",&next);
+            assert_eq!(continued["result"]["isError"],false,"{continued}");
+            let expected = page(2,0,3,8);
+            assert!(matches!(&server.product.surface_commands[..],
+                [SurfaceCommand::SemanticVersions{limit:2,cursor:None,..},
+                 SurfaceCommand::SemanticVersions{limit:2,cursor:Some(actual),..}]
+                    if Some(actual) == expected.next_cursor.as_ref()),
+                "formatting never changes effective credit or owner-issued scope");
+            let tail = &continued["result"]["structuredContent"];
+            let tail_summary = if raw { &tail["surface"]["data"] } else { &tail["semantic_versions_summary"] };
+            assert_eq!(tail_summary["offset"],2);
+            assert_eq!(tail_summary["entries"].as_array().expect("admitted transport fixture").len(),1);
+            assert_eq!(tail_summary["complete"],true);
+            // Full-detail action is explicitly fresh discovery; never a replay
+            // or false reopening of the old summary page's captured roots.
+            let full = request(&mut server,"tools/call",&summary["full_detail"]["call"]);
+            assert_eq!(full["result"]["isError"],false,"{full}");
+            let restored: SemanticVersionsPage = serde_json::from_value(
+                full["result"]["structuredContent"]["surface"]["data"].clone(),
+            ).expect("unchanged raw native full-detail page");
+            assert_eq!(restored,page(backend_library::DEFAULT_SEMANTIC_VERSIONS_LIMIT,0,3,8));
+            let SemanticVersionDescriptor::Available { reference } = &restored.entries[0] else { unreachable!() };
+            assert_eq!(reference.metadata.generation,captured().generation);
+            assert_eq!(reference.history,descriptor(&captured()).history().clone());
+            // Compare the same requested two-entry page, not a smaller limit
+            // or a truncated record. Exact full payload remains native-decodable.
+            let mut full_initial = initial.clone();
+            full_initial["arguments"]["detail"] = json!("full");
+            let mut full_server = ready(Fake {semantic_versions_total:Some(3),..Fake::default()});
+            let full_same_page = request(&mut full_server,"tools/call",&exposure.expose_call(full_initial));
+            let full_page_value = if raw { &full_same_page["result"]["structuredContent"]["surface"]["data"] }
+                else { &full_same_page["result"]["structuredContent"]["semantic_data"]["value"] };
+            assert_eq!(serde_json::from_value::<SemanticVersionsPage>(full_page_value.clone()).expect("admitted transport fixture"),expected);
+            assert!(serde_json::to_vec(&response).expect("admitted transport fixture").len() < serde_json::to_vec(&full_same_page).expect("admitted transport fixture").len());
+            assert!(wire_tokens(&response).expect("admitted transport fixture") < wire_tokens(&full_same_page).expect("admitted transport fixture"));
+            eprintln!("real42-backed descriptors raw={raw} exposure={exposure:?}: summary_bytes={} summary_cl100k={} full_bytes={} full_cl100k={}",
+                serde_json::to_vec(&response).expect("admitted transport fixture").len(),wire_tokens(&response).expect("admitted transport fixture"),
+                serde_json::to_vec(&full_same_page).expect("admitted transport fixture").len(),wire_tokens(&full_same_page).expect("admitted transport fixture"));
+        }
+    }
 }

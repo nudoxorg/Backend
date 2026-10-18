@@ -395,6 +395,7 @@ pub struct ProductView {
     package_graph_page: Option<backend_library::PackageGraphPage>,
     package_graph_request_authority: Option<backend_library::PackageGraphSourceAuthority>,
     semantic_data: Option<ProductSemanticData>,
+    pub(crate) mcp_exposure: crate::McpExposure,
     package_discovery: Option<PackageDiscoveryProjection>,
 }
 
@@ -577,6 +578,7 @@ impl IndexSearchPageInfo {
 impl ProductView {
     /// Projects executable advice through the reader’s exposed MCP route.
     pub fn expose_mcp_advice(&mut self, exposure: crate::McpExposure) {
+        self.mcp_exposure = exposure;
         self.fault = self
             .fault
             .take()
@@ -1109,6 +1111,7 @@ impl ProductView {
             package_graph_request_authority: None,
             semantic_data: None,
             package_discovery: None,
+            mcp_exposure: crate::McpExposure::Direct,
         }
     }
 
@@ -1133,6 +1136,7 @@ impl ProductView {
             package_graph_request_authority: None,
             semantic_data: None,
             package_discovery: None,
+            mcp_exposure: crate::McpExposure::Direct,
         }
     }
 
@@ -1155,6 +1159,7 @@ impl ProductView {
             package_graph_request_authority: None,
             semantic_data: None,
             package_discovery: None,
+            mcp_exposure: crate::McpExposure::Direct,
         }
     }
 
@@ -1177,6 +1182,7 @@ impl ProductView {
             package_graph_request_authority: None,
             semantic_data: None,
             package_discovery: None,
+            mcp_exposure: crate::McpExposure::Direct,
         }
     }
 
@@ -1199,6 +1205,7 @@ impl ProductView {
             package_graph_request_authority: None,
             semantic_data: None,
             package_discovery: None,
+            mcp_exposure: crate::McpExposure::Direct,
         }
     }
 }

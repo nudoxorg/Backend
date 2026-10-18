@@ -609,7 +609,10 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
     if let Some(note) = view.note() {
         lines.push(format!("  {note}"));
         if view.records().is_empty() {
-            index_search_page_footer(view, &mut lines);
+            if detail == Detail::Summary && matches!(view.semantic_data(), Some(crate::ProductSemanticData::VersionsPage(_))) {
+        lines.push("For native source references, request --detail full (fresh discovery).".to_owned());
+    }
+    index_search_page_footer(view, &mut lines);
             index_job_footer(view, &mut lines, theme);
             return lines.finish();
         }

@@ -871,7 +871,10 @@ fn product_projection(
         lines.push(note);
         if view.records().is_empty() {
             semantic_source_footer(view, &mut lines, target);
-            index_search_page_footer(view, &mut lines, target);
+            if detail == Some(Detail::Summary) && matches!(view.semantic_data(), Some(crate::ProductSemanticData::VersionsPage(_))) {
+        lines.push("For native source references, request --detail full (fresh discovery).".to_owned());
+    }
+    index_search_page_footer(view, &mut lines, target);
             index_job_footer(view, detail, &mut lines);
             return lines.finish();
         }
