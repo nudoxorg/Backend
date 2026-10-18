@@ -194,15 +194,16 @@ mod source_selection_tests {
     fn source_selection_tally_retains_known_exclusions_alongside_unknown_legacy_projects() {
         let mut tally = ProgressTally::default();
         let known = ProductSourceRecord::project("known", [1; 32], vec![])
-            .unwrap()
+            .expect("known project source record is valid")
             .with_source_selection(backend_library::SourceSelectionObservation::project_vue(12))
-            .unwrap();
-        let historical = ProductSourceRecord::project("legacy", [2; 32], vec![]).unwrap();
-        tally.observe(&known).unwrap();
-        tally.observe(&historical).unwrap();
-        let progress = tally.finish().unwrap();
+            .expect("known source-selection observation is valid");
+        let historical = ProductSourceRecord::project("legacy", [2; 32], vec![])
+            .expect("legacy project source record is valid");
+        tally.observe(&known).expect("known source record is tallyable");
+        tally.observe(&historical).expect("legacy source record is tallyable");
+        let progress = tally.finish().expect("test tally is within its count bounds");
         assert_eq!(progress.files_discovered(), 0);
-        let observation = progress.source_selection().unwrap();
+        let observation = progress.source_selection().expect("known and legacy records produce an observation");
         assert_eq!(observation.observed_projects, 1);
         assert_eq!(observation.unknown_projects, 1);
         assert_eq!(observation.unsupported_extensions[0].files, 12);
@@ -212,12 +213,12 @@ mod source_selection_tests {
         assert!(text.contains("totals cover supported extensions"));
         let mut overflow = ProgressTally::default();
         let maximum = ProductSourceRecord::project("maximum", [3; 32], vec![])
-            .unwrap()
+            .expect("maximum-count source record is valid")
             .with_source_selection(backend_library::SourceSelectionObservation::project_vue(
                 u64::MAX,
             ))
-            .unwrap();
-        overflow.observe(&maximum).unwrap();
+            .expect("maximum source-selection count is valid");
+        overflow.observe(&maximum).expect("maximum count is accepted before overflow control");
         assert!(
             overflow.observe(&known).is_err(),
             "counts never saturate or silently disappear"

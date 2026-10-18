@@ -344,7 +344,12 @@ fn mcp_summary_record(record: &Record) -> Option<String> {
     if let Some(kind) = record.kind() {
         tags.push(kind.name());
     }
-    tags.push(record.language().name());
+    if record.is_external_reference() {
+        tags.push("external reference");
+    }
+    if !record.is_external_reference() || record.language() != crate::Language::Unknown {
+        tags.push(record.language().name());
+    }
     if record.state() != crate::record::RecordState::Ready {
         tags.push(record.state().name());
     }
@@ -694,7 +699,12 @@ fn push_record(lines: &mut Lines, record: &Record, within: Option<&ProjectRef>) 
     if let Some(kind) = record.kind() {
         tags.push(kind.name().to_owned());
     }
-    tags.push(record.language().name().to_owned());
+    if record.is_external_reference() {
+        tags.push("external reference".to_owned());
+    }
+    if !record.is_external_reference() || record.language() != crate::Language::Unknown {
+        tags.push(record.language().name().to_owned());
+    }
     if record.state() != crate::record::RecordState::Ready {
         tags.push(record.state().name().to_owned());
     }
@@ -850,6 +860,16 @@ fn product_projection(
 ) -> String {
     let mut lines = Lines::new();
     lines.push(format!("# {}", view.heading()));
+    if detail == Some(Detail::Summary)
+        && matches!(
+            view.semantic_data(),
+            Some(crate::ProductSemanticData::VersionsPage(_))
+        )
+    {
+        lines.push(
+            "For native source references, request --detail full (fresh discovery).".to_owned(),
+        );
+    }
     if let Some(reason) = view.fault() {
         lines.push(fault(reason));
         if view.records().is_empty() {

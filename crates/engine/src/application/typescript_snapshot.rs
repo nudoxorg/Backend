@@ -49,7 +49,11 @@ impl TypeScriptSnapshotReuse {
             self.entry.alive.load(Ordering::Acquire)
                 && !cancelled.is_some_and(|flag| flag.load(Ordering::Acquire))
         };
-        active() && self.entry.forest.validate_current(&self.entry.host).is_ok() && active()
+        let mut control = || {
+            if active() { Ok(()) }
+            else { Err(crate::application::typescript_host::TypeScriptProjectHostError::CompilerProgramCancelled) }
+        };
+        active() && self.entry.forest.validate_current_controlled(&self.entry.host, &mut control).is_ok() && active()
     }
 }
 
@@ -530,6 +534,45 @@ mod tests {
                 "final admission must reject {mutation}"
             );
         }
+    }
+
+    #[test]
+    fn native_snapshot_replay_cancellation_interrupts_observation_steps_without_admitting_partial_proof() {
+        let fixture = Fixture::new();
+        let staged = fixture.compile();
+        let (host, forest) = staged.typescript_snapshot_witness(&fixture.0).unwrap();
+        let owner = client();
+        let binding = *staged.binding_facts().identity.as_ref();
+        owner.remember_typescript_snapshot(&fixture.0, [1; 32], binding, &staged);
+        let proof = owner.typescript_snapshot_reuse(&fixture.0, profile(), [1; 32], binding,
+            &AtomicBool::new(false)).expect("the real native read closure enters the owning cache");
+        let mut complete_steps = 0usize;
+        forest.validate_current_controlled(&host, &mut || {
+            complete_steps += 1;
+            Ok(())
+        }).expect("actual retained native read ledger is initially current");
+        assert!(complete_steps > 4, "fixture exercises multiple actual filesystem replay steps");
+        for stop_at in [2, complete_steps / 2, complete_steps - 1] {
+            let cancelled = AtomicBool::new(false);
+            let mut steps = 0usize;
+            let result = forest.validate_current_controlled(&host, &mut || {
+                steps += 1;
+                if steps == stop_at { cancelled.store(true, Ordering::Release); }
+                if cancelled.load(Ordering::Acquire) {
+                    Err(crate::application::typescript_host::TypeScriptProjectHostError::CompilerProgramCancelled)
+                } else { Ok(()) }
+            });
+            assert!(matches!(result, Err(crate::application::typescript_host::TypeScriptProjectHostError::CompilerProgramCancelled)));
+            assert_eq!(steps, stop_at, "no later observation runs after cancellation");
+            assert!(!proof.is_current(Some(&cancelled)), "public replay observes the same actual cancellation flag");
+            assert!(proof.is_current(None), "cancellation does not mutate the owning cache's retained witness");
+            forest.validate_current(&host).expect("cancelled replay does not mutate retained proof");
+        }
+        owner.shared.alive.store(false, Ordering::Release);
+        assert!(!proof.is_current(None), "a retired actual owner cannot reuse its cached producer fence");
+        fixture.write("node_modules/dep/index.d.ts", "export const value: string;");
+        assert!(forest.validate_current_controlled(&host, &mut || Ok(())).is_err(),
+            "healthy controlled replay still refuses a changed actual dependency");
     }
 
     #[cfg(unix)]

@@ -429,11 +429,6 @@ impl Session {
                 })?
             }
             Command::OutlinePage { package, page } => {
-                if page.window().is_windowed() || cursor.query_position().predecessor().is_some() {
-                    return Err(ClientError::Protocol(
-                        "outline token changed fixed page credit".to_owned(),
-                    ));
-                }
                 let encoded = encode_id(cursor.recipe().as_bytes());
                 let mut preimages = certificate.claims.iter().filter_map(|claim| match claim {
                     WireClaim::KeyBytes { schema: WireSchema::ViewRecipe, id, value } if id == &encoded => Some(value.as_ref()),
@@ -443,8 +438,8 @@ impl Session {
                 if preimages.next().is_some() {
                     return Err(ClientError::Protocol("outline token duplicated its recipe".to_owned()));
                 }
-                backend_library::QueryPageRecipe::outline_predecessor(
-                    revision.root, *package, page.limit(), cursor, preimage,
+                backend_library::QueryPageRecipe::outline_window_predecessor(
+                    revision.root, *package, page.window(), cursor, preimage,
                 ).ok_or_else(|| ClientError::Protocol("outline token changed its order-bound predecessor context".to_owned()))?
             }
             _ => {
@@ -555,7 +550,7 @@ impl Session {
     pub(super) fn resume_prepared_outline(
         &mut self,
         package: backend_library::PackageKey,
-        limit: u16,
+        window: backend_library::QueryWindow,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
         let request = self
@@ -571,14 +566,19 @@ impl Session {
                 "continuation changed query family".to_owned(),
             ));
         };
-        if *actual != package || page.limit().get() != limit || page.continuation() != continuation
+        if *actual != package || page.limit() != window.issued() || page.continuation() != continuation
         {
             return Err(ClientError::Protocol(
                 "continuation changed outline package/credit/predecessor".to_owned(),
             ));
         }
         let certificate = request.certificate().cloned();
-        self.send_success(request.command, certificate)
+        let Command::OutlinePage { package, page } = request.command else {
+            return Err(ClientError::Protocol("outline delivery changed family".to_owned()));
+        };
+        let page = page.with_window(window).ok_or_else(|| ClientError::Protocol(
+            "outline delivery changed issued ceiling".to_owned()))?;
+        self.send_success(Command::OutlinePage { package, page }, certificate)
     }
 
     pub(super) fn resume_prepared_graph(
