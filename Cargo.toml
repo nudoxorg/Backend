@@ -132,6 +132,19 @@ opt-level = 2
 [profile.dev.package.backend-engine]
 opt-level = 2
 
+# Match the engine's dev optimization for the linked TypeScript compiler
+# crates; debug assertions and overflow checks retain their dev defaults.
+[profile.dev.package.tsz-core]
+opt-level = 2
+[profile.dev.package.tsz-parser]
+opt-level = 2
+[profile.dev.package.tsz-binder]
+opt-level = 2
+[profile.dev.package.tsz-solver]
+opt-level = 2
+[profile.dev.package.tsz-checker]
+opt-level = 2
+
 # backend-desktop's --lib test binary stopped linking on 2026-09-28:
 # `ld: b(l) ARM64 branch out of range (-151592460 max is +/-128MB)`, a call
 # out of a gpui_ce_macos objc class-registration ctor, once __TEXT,__text
