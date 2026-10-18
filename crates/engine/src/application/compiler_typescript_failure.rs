@@ -706,7 +706,7 @@ fn program_probe_failure(error: &super::toolchain_probe::ToolchainProbeError) ->
     }
 }
 
-fn native_failure(error: &TszAuthorityError) -> F {
+pub(super) fn native_failure(error: &TszAuthorityError) -> F {
     match error {
         TszAuthorityError::Source(error) | TszAuthorityError::SourceAt { source: error, .. } => match error {
             TszSourceError::InvalidPath => F::NativeSourceInvalidPath,
