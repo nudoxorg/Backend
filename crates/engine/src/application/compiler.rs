@@ -3037,6 +3037,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                                 file: Some(file.path.as_str().into()),
                                 work_charged: file.allowance,
                                 work_allowance: file.allowance,
+                                measurement: None,
                             });
                         }
                         let toolchain = self
@@ -4059,6 +4060,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             file: Some(exhaustion.path.as_str().into()),
                             work_charged: exhaustion.allowance,
                             work_allowance: exhaustion.allowance,
+                            measurement: None,
                         });
                         return Err(PackageSemanticError::Compile {
                             path: source.relative_path.into(),
@@ -5610,7 +5612,14 @@ const fn typescript_stop_phase(
         P::FileCheck => S::FileCheck,
         P::FilePostprocess => S::FilePostprocess,
         P::FileQuery => S::FileQuery,
-        P::SourcePreparation => S::SourcePreparation,
+        P::SourcePreparation
+        | P::SourcePreparationFunctionDefs
+        | P::SourcePreparationWarmDefinitions
+        | P::SourcePreparationHeritage
+        | P::SourcePreparationWellKnownSymbols
+        | P::SourcePreparationTypeEnvironment
+        | P::SourcePreparationReconciliation
+        | P::SourcePreparationBoxedTypes => S::SourcePreparation,
         P::SourceStatements => S::SourceStatements,
         P::SourcePostchecks => S::SourcePostchecks,
         P::LibraryBaseline => S::LibraryBaseline,
@@ -5645,14 +5654,27 @@ fn with_typescript_stop_site(
             cause: CompilerCause::Authority {
                 phase,
                 class,
-                diagnostic: Some(diagnostic.with_typescript_stop_site(
-                    backend_library::interface::TypeScriptStopSite::new(
-                        site.phase.map(typescript_stop_phase),
-                        site.file.as_deref(),
-                        site.work_charged,
-                        site.work_allowance,
-                    ),
-                )),
+                diagnostic: Some({
+                    let diagnostic = diagnostic.with_typescript_stop_site(
+                        backend_library::interface::TypeScriptStopSite::new(
+                            site.phase.map(typescript_stop_phase),
+                            site.file.as_deref(),
+                            site.work_charged,
+                            site.work_allowance,
+                        ),
+                    );
+                    // Retain the existing closed cause and public coarse phase.
+                    // Measurements are advisory fixed labels/numbers in the
+                    // already bounded optional cause slot, never new wire facts.
+                    if diagnostic.typescript_stop_site.is_some() && diagnostic.typescript_cause.is_none() {
+                        match site.measurement.as_ref().and_then(|measurement| measurement.cause()) {
+                            Some(cause) => diagnostic.with_typescript_cause(cause),
+                            None => diagnostic,
+                        }
+                    } else {
+                        diagnostic
+                    }
+                }),
             },
         },
         other => other,
@@ -7701,6 +7723,60 @@ mod typescript_work_gap_tests {
     }
 
     #[test]
+    fn preparation_measurements_keep_closed_public_phase_and_failure_authority() {
+        use super::super::compiler_typescript_observation::{PreparationTiming, StopMeasurement};
+        for phase in [P::SourcePreparationFunctionDefs, P::SourcePreparationWarmDefinitions,
+            P::SourcePreparationHeritage, P::SourcePreparationWellKnownSymbols,
+            P::SourcePreparationTypeEnvironment, P::SourcePreparationReconciliation,
+            P::SourcePreparationBoxedTypes] {
+            assert_eq!(typescript_stop_phase(phase), TypeScriptStopPhase::SourcePreparation);
+        }
+        let terminal = |kind| CompilerTerminal::Compile {
+            attempted: CompilerAttempt {
+                source: SourceAuthority { identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"x"), byte_len: 1 },
+                recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"measurement"),
+            },
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::TypeCheck, class: AuthorityDiagnosticClass::Authority,
+                diagnostic: CompilerDiagnostic::from_native(b"native", 6, false)
+                    .map(|diagnostic| diagnostic.with_typescript_failure(kind)),
+            },
+        };
+        let site = ObservedStopSite {
+            reason: TszProjectExecutionStop::Deadline,
+            phase: Some(P::SourcePreparationTypeEnvironment), file: Some("src/value.ts".into()),
+            work_charged: 4, work_allowance: 10,
+            measurement: Some(StopMeasurement { elapsed: std::time::Duration::from_secs(6),
+                started: 3, completed: 2, merges: 1,
+                preparation: Some(PreparationTiming { durations: [Some(std::time::Duration::from_millis(1)); 7], active: Some(4) }),
+            }),
+        };
+        for (kind, expected) in [(TypeScriptAuthorityFailureKind::NativeProjectCheckDeadline, true),
+            (TypeScriptAuthorityFailureKind::CheckerExit, false)] {
+            let CompilerTerminal::Compile { cause: CompilerCause::Authority { diagnostic: Some(facts), .. }, .. }
+                = with_typescript_stop_site(terminal(kind), Some(&site)) else { panic!("same typed refusal"); };
+            assert_eq!(facts.typescript_failure, Some(kind));
+            assert_eq!(facts.typescript_cause.is_some(), expected);
+            assert_eq!(facts.typescript_stop_site.is_some(), expected);
+            if expected {
+                assert_eq!(facts.typescript_stop_site.as_ref().unwrap().phase, Some(TypeScriptStopPhase::SourcePreparation));
+                let cause = facts.typescript_cause.as_ref().unwrap();
+                assert!(cause.as_str().contains("active=type"));
+                assert!(!cause.as_str().contains("src/value.ts"), "only the existing typed stop site carries the exact source path");
+                assert!(backend_library::interface::TypeScriptFailureCause::new(cause.as_str()).is_some());
+            }
+        }
+        let prior = backend_library::interface::TypeScriptFailureCause::new("previous retained cause").unwrap();
+        let mut previous = terminal(TypeScriptAuthorityFailureKind::NativeProjectCheckDeadline);
+        if let CompilerTerminal::Compile { cause: CompilerCause::Authority { diagnostic, .. }, .. } = &mut previous {
+            *diagnostic = diagnostic.take().map(|diagnostic| diagnostic.with_typescript_cause(prior.clone()));
+        }
+        let CompilerTerminal::Compile { cause: CompilerCause::Authority { diagnostic: Some(retained), .. }, .. }
+            = with_typescript_stop_site(previous, Some(&site)) else { panic!("same existing cause"); };
+        assert_eq!(retained.typescript_cause.as_ref(), Some(&prior), "advisory timings never replace an existing cause");
+    }
+
+    #[test]
     fn the_observed_stop_site_rides_the_authority_refusal_and_nothing_else() {
         let terminal = |kind| CompilerTerminal::Compile {
             attempted: CompilerAttempt {
@@ -7723,6 +7799,7 @@ mod typescript_work_gap_tests {
             file: Some("src/app/index.tsx".into()),
             work_charged: 9,
             work_allowance: 9,
+            measurement: None,
         };
         let CompilerTerminal::Compile {
             cause: CompilerCause::Authority { diagnostic: Some(named), .. },

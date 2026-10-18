@@ -11,7 +11,7 @@ use backend_frontend_typescript::{
 use std::cell::RefCell;
 use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 // Program admission bounds members at 16,384. Boundary-only observation has
 // no per-statement or per-type logging. Disclose truncation rather than silently
@@ -23,6 +23,8 @@ struct ActiveBoundary {
     budget: usize,
     phase: backend_frontend_typescript::TszProjectExecutionPhase,
     file: Option<(usize, String)>,
+    started: Option<Instant>,
+    preparation: Option<PreparationTiming>,
 }
 
 thread_local! {
@@ -30,6 +32,57 @@ thread_local! {
     // compiler handles or mutable semantic state, and are drained by the
     // existing span return/unwind observations.
     static ACTIVE_BOUNDARIES: RefCell<Vec<ActiveBoundary>> = const { RefCell::new(Vec::new()) };
+}
+
+// Seven fixed slots on the observing worker, never a global timing map.
+// None means the subpass was not observed; an active subpass is a partial time.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct PreparationTiming {
+    pub(super) durations: [Option<Duration>; 7],
+    pub(super) active: Option<usize>,
+}
+
+fn preparation_index(phase: backend_frontend_typescript::TszProjectExecutionPhase) -> Option<usize> {
+    use backend_frontend_typescript::TszProjectExecutionPhase as P;
+    match phase {
+        P::SourcePreparationFunctionDefs => Some(0),
+        P::SourcePreparationWarmDefinitions => Some(1),
+        P::SourcePreparationHeritage => Some(2),
+        P::SourcePreparationWellKnownSymbols => Some(3),
+        P::SourcePreparationTypeEnvironment => Some(4),
+        P::SourcePreparationReconciliation => Some(5),
+        P::SourcePreparationBoxedTypes => Some(6),
+        _ => None,
+    }
+}
+
+/// Boundary-only observations from the first failed checkpoint, not a hotspot
+/// ranking. Counters belong to this budget; preparation times to this worker's
+/// currently active source. Other threads' timings are deliberately absent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct StopMeasurement {
+    pub(super) elapsed: Duration,
+    pub(super) started: u64,
+    pub(super) completed: u64,
+    pub(super) merges: u64,
+    pub(super) preparation: Option<PreparationTiming>,
+}
+
+impl StopMeasurement {
+    pub(super) fn cause(&self) -> Option<backend_library::interface::TypeScriptFailureCause> {
+        let times: Vec<_> = (0..7).map(|index| {
+            self.preparation.as_ref().and_then(|timing| timing.durations[index])
+                .map_or_else(|| "-".to_owned(), |duration| format!("{:.2e}", duration.as_secs_f64()))
+        }).collect();
+        let active = self.preparation.as_ref().and_then(|timing| timing.active)
+            .and_then(|index| ["func", "warm", "herit", "sym", "type", "env", "box"].get(index).copied())
+            .unwrap_or("-");
+        backend_library::interface::TypeScriptFailureCause::new(&format!(
+            "First stop; prep~s[func,warm,herit,sym,type,env,box]={}; checks done/start={}/{}; merges={}; age~s={:.2e}; active={}; -=unknown",
+            times.join(","), self.completed, self.started, self.merges,
+            self.elapsed.as_secs_f64(), active,
+        ))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -91,6 +144,7 @@ struct ObservedStopContext {
     program: ObservedTypeScriptProgram,
     phase: Option<backend_frontend_typescript::TszProjectExecutionPhase>,
     file: Option<(usize, String)>,
+    preparation: Option<PreparationTiming>,
 }
 
 pub(super) struct ObservedTypeScriptBudget<'cancel> {
@@ -108,6 +162,7 @@ pub(super) struct ObservedTypeScriptBudget<'cancel> {
     started_source_checks: AtomicU64,
     completed_source_checks: AtomicU64,
     reused_source_checks: AtomicU64,
+    merge_enters: AtomicU64,
 }
 
 /// First observed stopped computation under this exact program budget.
@@ -118,6 +173,7 @@ pub(super) struct ObservedStopSite {
     pub(super) file: Option<Box<str>>,
     pub(super) work_charged: u64,
     pub(super) work_allowance: u64,
+    pub(super) measurement: Option<StopMeasurement>,
 }
 
 impl<'cancel> ObservedTypeScriptBudget<'cancel> {
@@ -141,6 +197,7 @@ impl<'cancel> ObservedTypeScriptBudget<'cancel> {
             started_source_checks: AtomicU64::new(0),
             completed_source_checks: AtomicU64::new(0),
             reused_source_checks: AtomicU64::new(0),
+            merge_enters: AtomicU64::new(0),
         }
     }
 
@@ -191,8 +248,23 @@ impl<'cancel> ObservedTypeScriptBudget<'cancel> {
         let budget = std::ptr::from_ref(self) as usize;
         ACTIVE_BOUNDARIES.with(|active| {
             let active = active.borrow();
+            let preparation = active.iter().rposition(|entry| entry.budget == budget
+                && entry.phase == backend_frontend_typescript::TszProjectExecutionPhase::SourcePreparation)
+                .and_then(|parent| {
+                    let mut timing = active[parent].preparation.clone()?;
+                    for entry in &active[parent + 1..] {
+                        if entry.budget == budget {
+                            if let (Some(index), Some(started)) = (preparation_index(entry.phase), entry.started) {
+                                timing.durations[index] = Some(timing.durations[index].unwrap_or_default().saturating_add(started.elapsed()));
+                                timing.active = Some(index);
+                            }
+                        }
+                    }
+                    Some(timing)
+                });
             ObservedStopContext {
                 program: self.observed_program(),
+                preparation,
                 phase: active
                     .iter()
                     .rev()
@@ -219,6 +291,8 @@ impl<'cancel> ObservedTypeScriptBudget<'cancel> {
                     budget,
                     phase: event.phase,
                     file: event.file.map(|file| (file.index, file.path.to_owned())),
+                    started: preparation_index(event.phase).map(|_| Instant::now()),
+                    preparation: (event.phase == Phase::SourcePreparation).then(PreparationTiming::default),
                 }),
                 Transition::Returned | Transition::Unwound => {
                     if let Some(index) = active.iter().rposition(|entry| {
@@ -230,12 +304,24 @@ impl<'cancel> ObservedTypeScriptBudget<'cancel> {
                                 .map(|(index, path)| (*index, path.as_str()))
                                 == event.file.map(|file| (file.index, file.path))
                     }) {
-                        active.remove(index);
+                        let returned = active.remove(index);
+                        if let (Some(slot), Some(started)) = (preparation_index(returned.phase), returned.started) {
+                            if let Some(parent) = active.iter_mut().rev().find(|entry| entry.budget == budget
+                                && entry.phase == Phase::SourcePreparation) {
+                                if let Some(timing) = parent.preparation.as_mut() {
+                                    timing.durations[slot] = Some(timing.durations[slot].unwrap_or_default().saturating_add(started.elapsed()));
+                                }
+                            }
+                        }
                     }
                 }
             }
         });
         match (event.phase, event.transition) {
+            (Phase::Merge, Transition::Entered) => {
+                // One counter increment per whole-program merge, not per type/query.
+                self.merge_enters.fetch_add(1, Ordering::Relaxed);
+            }
             (Phase::FileCheck, Transition::Entered) => {
                 self.started_source_checks.fetch_add(1, Ordering::Relaxed);
             }
@@ -277,20 +363,26 @@ impl TszExecutionCheckpoint for ObservedTypeScriptBudget<'_> {
                 // remaining/charged snapshot.
                 let remaining = self.budget.remaining_work_units();
                 let context = self.active_context();
+                let completed = self.completed_source_checks.load(Ordering::Acquire);
+                let started = self.started_source_checks.load(Ordering::Acquire);
                 let _ = self.stop_site.set(ObservedStopSite {
                     reason: stop,
                     phase: context.phase,
                     file: context.file.as_ref().map(|(_, path)| path.as_str().into()),
                     work_charged: self.initial_work.saturating_sub(remaining),
                     work_allowance: self.initial_work,
+                    measurement: Some(StopMeasurement {
+                        elapsed: self.started.elapsed(),
+                        started, completed,
+                        merges: self.merge_enters.load(Ordering::Relaxed),
+                        preparation: context.preparation.clone(),
+                    }),
                 });
                 let _ = self.stop_context.set(context.clone());
                 let thread = std::thread::current();
                 // Sample completions before starts. Each completed boundary
                 // publishes its earlier start, so the counters cannot present
                 // a completed check that this snapshot has not yet started.
-                let completed = self.completed_source_checks.load(Ordering::Acquire);
-                let started = self.started_source_checks.load(Ordering::Acquire);
                 tracing::warn!(target: "compiler.typescript_project", transition = "stopped",
                     reason = ?stop, project_elapsed_millis = self.started.elapsed().as_millis() as u64,
                     project_initial_work_units = self.initial_work,
@@ -772,4 +864,72 @@ mod tests {
         assert_eq!(budget.budget.stop_reason(), None);
         assert_eq!(budget.checkpoint(0), Err(TszProjectExecutionStop::Deadline));
     }
+    #[test]
+    fn preparation_stop_retains_current_worker_times_counts_and_unobserved_slots() {
+        use backend_frontend_typescript::{TszProjectExecutionFile, TszProjectExecutionPhase as P,
+            TszProjectExecutionTransition as T};
+        let cancelled = AtomicBool::new(false);
+        let budget = ObservedTypeScriptBudget::new(Instant::now() + Duration::from_secs(30), &cancelled, 100);
+        let event = |phase, transition, file| TszProjectExecutionEvent { phase, transition, file };
+        let file = Some(TszProjectExecutionFile { index: 2, path: "src/actual.ts" });
+        budget.observe(event(P::Merge, T::Entered, None));
+        budget.observe(event(P::Merge, T::Returned, None));
+        budget.observe(event(P::FileCheck, T::Entered, file));
+        budget.observe(event(P::SourcePreparation, T::Entered, file));
+        budget.observe(event(P::SourcePreparationFunctionDefs, T::Entered, None));
+        budget.observe(event(P::SourcePreparationFunctionDefs, T::Returned, None));
+        budget.observe(event(P::SourcePreparationTypeEnvironment, T::Entered, None));
+        let other_cancelled = AtomicBool::new(false);
+        let other = ObservedTypeScriptBudget::new(Instant::now() + Duration::from_secs(30), &other_cancelled, 100);
+        other.observe(event(P::SourcePreparation, T::Entered,
+            Some(TszProjectExecutionFile { index: 9, path: "src/unrelated.ts" })));
+        other.observe(event(P::SourcePreparationBoxedTypes, T::Entered, None));
+        // A deterministic clock origin proves that an active subpass contributes
+        // partial elapsed time; no sleeping or elapsed-time performance assertion.
+        let identity = std::ptr::from_ref(&budget) as usize;
+        ACTIVE_BOUNDARIES.with(|active| {
+            let mut active = active.borrow_mut();
+            let frame = active.iter_mut().rev().find(|frame| frame.budget == identity
+                && frame.phase == P::SourcePreparationTypeEnvironment).unwrap();
+            frame.started = Instant::now().checked_sub(Duration::from_secs(3));
+        });
+        assert_eq!(budget.budget.remaining_work_units(), 100, "observation never charges work");
+        assert_eq!(budget.budget.stop_reason(), None, "observation never polls the deadline");
+        cancelled.store(true, Ordering::Release);
+        assert_eq!(budget.checkpoint(0), Err(TszProjectExecutionStop::Cancelled));
+        let stop = budget.stop_site.get().unwrap();
+        assert_eq!(stop.phase, Some(P::SourcePreparationTypeEnvironment));
+        assert_eq!(stop.file.as_deref(), Some("src/actual.ts"));
+        let observed = stop.measurement.as_ref().unwrap();
+        assert_eq!((observed.started, observed.completed, observed.merges), (1, 0, 1));
+        let times = observed.preparation.as_ref().unwrap();
+        assert_eq!(times.active, Some(4));
+        assert!(times.durations[0].is_some());
+        assert!(times.durations[4].unwrap() >= Duration::from_secs(3));
+        for index in [1, 2, 3, 5, 6] { assert_eq!(times.durations[index], None); }
+        assert!(observed.cause().unwrap().as_str().contains("active=type"));
+        // Returning/unwinding these lexical observations cannot replace the
+        // original failure or its immutable timing snapshot.
+        budget.observe(event(P::SourcePreparationTypeEnvironment, T::Unwound, None));
+        budget.observe(event(P::SourcePreparation, T::Unwound, file));
+        budget.observe(event(P::FileCheck, T::Unwound, file));
+        assert_eq!(budget.stop_site.get(), Some(stop));
+    }
+
+    #[test]
+    fn preparation_cause_keeps_maximum_counts_and_all_seven_times_in_existing_bound() {
+        let observed = StopMeasurement {
+            elapsed: Duration::MAX, started: u64::MAX, completed: u64::MAX, merges: u64::MAX,
+            preparation: Some(PreparationTiming { durations: [Some(Duration::MAX); 7], active: Some(6) }),
+        };
+        let cause = observed.cause().expect("bounded fixed labels and approximate elapsed values");
+        assert!(cause.as_str().len() <= backend_library::interface::TypeScriptFailureCause::MAX_BYTES);
+        assert_eq!(cause.as_str().matches(u64::MAX.to_string().as_str()).count(), 3,
+            "source-check and merge counters are exact, never truncated");
+        assert!(cause.as_str().contains("active=box"));
+        assert!(!cause.as_str().contains("..."));
+        let unknown = StopMeasurement { preparation: None, ..observed }.cause().unwrap();
+        assert!(unknown.as_str().contains("=-,-,-,-,-,-,-;"), "missing observation is not fabricated zero time");
+    }
+
 }
