@@ -64,7 +64,9 @@ impl IndexObservationFingerprint {
                         .iter()
                         .any(|source| source.profile == *profile)
                 }
-                backend_library::IndexJobProgressKind::StageChanged { .. } => false,
+                backend_library::IndexJobProgressKind::StageChanged { .. }
+                | backend_library::IndexJobProgressKind::PublicationPending { .. }
+                | backend_library::IndexJobProgressKind::PublicationRetryAdmitted => false,
             }) {
                 return Err(ClientError::Protocol(
                     "compiler progress profile is outside this operation source capture".to_owned(),
@@ -491,6 +493,165 @@ mod tests {
         );
         assert_eq!(observed.profile_progress, Some(after));
         assert_eq!(now.get(), Duration::ZERO);
+    }
+
+    #[test]
+    fn publication_pending_wakes_conditional_progress_without_a_terminal() {
+        let mut status = status();
+        let IndexOperationState::Active { stage, .. } = &mut status.state else {
+            panic!("actual active fixture")
+        };
+        *stage = IndexJobStage::Publishing;
+        let mut before = page(&status, 3, false);
+        before.events[0].kind = IndexJobProgressKind::StageChanged {
+            stage: IndexJobStage::Publishing,
+        };
+        let mut after = page(&status, 4, false);
+        after.events[0].kind = IndexJobProgressKind::PublicationPending {
+            detail: backend_library::ProductText::from_static(
+                "view journal snapshot exceeds record bound",
+            ),
+            detail_truncated: false,
+        };
+        let now = Rc::new(Cell::new(Duration::ZERO));
+        let result = read_operation_with_clock(
+            &query(&status, &before, 10000),
+            &RequestContext::new(),
+            |command| match command {
+                SurfaceCommand::IndexOperationStatus { .. } => Ok(keyed(&status)),
+                SurfaceCommand::IndexProgress { .. } => Ok(SurfaceReply::IndexProgress(
+                    IndexJobObservation::Pending(after.clone()),
+                )),
+                _ => panic!("read-only pending observation"),
+            },
+            &mut Clock(now.clone()),
+        )
+        .expect("publication observation advances conditional progress");
+        let IndexCompilerProgressUpdate::Changed(observed) = result else {
+            panic!("actual publication error must change the observation")
+        };
+        assert_eq!(
+            observed.observation,
+            IndexOperationObservation::Known(status.clone())
+        );
+        assert_eq!(observed.profile_progress, Some(after.clone()));
+        assert_eq!(
+            now.get(),
+            Duration::ZERO,
+            "do not wait out the 10-second poll"
+        );
+        assert!(matches!(status.state, IndexOperationState::Active { .. }));
+        let mut reads = 0;
+        let result = super::super::wait_operation_with_profiles(
+            IndexOperationObservation::Known(status.clone()),
+            &RequestContext::new(),
+            |command| {
+                reads += 1;
+                match command {
+                    SurfaceCommand::IndexOperationStatus { .. } => Ok(keyed(&status)),
+                    SurfaceCommand::IndexProgress { .. } => Ok(SurfaceReply::IndexProgress(
+                        IndexJobObservation::Pending(after.clone()),
+                    )),
+                    _ => panic!("no owner mutation or resubmission"),
+                }
+            },
+            |_, _| {},
+            &mut Clock(now.clone()),
+            true,
+        )
+        .expect("caller wait stops on the original retained failure");
+        assert!(
+            matches!(result, super::super::IndexOperationWaitResult::Stopped {
+            observation: IndexOperationObservation::Known(ref actual),
+            reason: super::super::IndexOperationWaitStop::PublicationPending { ref detail, detail_truncated: false },
+        } if actual == &status && detail.as_str() == "view journal snapshot exceeds record bound")
+        );
+        assert_eq!(
+            reads, 2,
+            "one keyed read and one ticket read; no 900-second retry loop"
+        );
+        assert_eq!(now.get(), Duration::ZERO);
+        // A later admitted retry supersedes the retained pending error. The
+        // caller waits on this same operation instead of stopping on history.
+        let mut retrying = after.clone();
+        retrying.events = vec![
+            after.events[0].clone(),
+            IndexJobProgressEvent {
+                ticket: retrying.ticket.clone(),
+                sequence: 5,
+                kind: IndexJobProgressKind::PublicationRetryAdmitted,
+            },
+        ]
+        .into_boxed_slice();
+        retrying.next_sequence = 5;
+        let mut retry_reads = 0;
+        let retry_clock = Rc::new(Cell::new(Duration::ZERO));
+        let result = super::super::wait_operation_with_profiles(
+            IndexOperationObservation::Known(status.clone()),
+            &RequestContext::new(),
+            |command| {
+                retry_reads += 1;
+                match command {
+                    SurfaceCommand::IndexOperationStatus { .. } if retry_reads == 1 => {
+                        Ok(keyed(&status))
+                    }
+                    SurfaceCommand::IndexProgress { .. } => Ok(SurfaceReply::IndexProgress(
+                        IndexJobObservation::Pending(retrying.clone()),
+                    )),
+                    SurfaceCommand::IndexOperationStatus { .. } => {
+                        Err(ClientError::RemoteDeadlineExceeded)
+                    }
+                    _ => panic!("no owner mutation or resubmission"),
+                }
+            },
+            |_, _| {},
+            &mut Clock(retry_clock.clone()),
+            true,
+        )
+        .expect("wait on accepted original retry");
+        assert!(
+            matches!(result, super::super::IndexOperationWaitResult::Stopped {
+            observation: IndexOperationObservation::Known(ref actual),
+            reason: super::super::IndexOperationWaitStop::Client(ClientError::RemoteDeadlineExceeded),
+        } if actual == &status)
+        );
+        assert_eq!(
+            retry_reads, 3,
+            "retry milestone permits the next ordinary keyed observation"
+        );
+        assert!(
+            retry_clock.get() > Duration::ZERO,
+            "the active retry was actually awaited"
+        );
+        let mut foreign = after.clone();
+        foreign.ticket = backend_library::IndexJobTicket::new(
+            std::num::NonZeroU64::MIN,
+            [99; 16],
+            status.package.clone(),
+        );
+        for event in &mut foreign.events {
+            event.ticket = foreign.ticket.clone();
+        }
+        assert!(
+            IndexObservationFingerprint::active_with_profile_progress(&status, Some(&foreign))
+                .is_err()
+        );
+        let mut wrong_stage = after.clone();
+        wrong_stage.stage = IndexJobStage::Compiling;
+        assert!(
+            SurfaceReply::IndexProgress(IndexJobObservation::Pending(wrong_stage))
+                .admit(backend_library::CommandId::IndexProgress)
+                .is_err()
+        );
+        after.events[0].kind = IndexJobProgressKind::PublicationPending {
+            detail: backend_library::ProductText::new("x".repeat(1025))
+                .expect("product text bound"),
+            detail_truncated: false,
+        };
+        assert!(
+            IndexObservationFingerprint::active_with_profile_progress(&status, Some(&after))
+                .is_err()
+        );
     }
 
     #[test]
