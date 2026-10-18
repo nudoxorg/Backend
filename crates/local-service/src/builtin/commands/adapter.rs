@@ -373,6 +373,7 @@ pub(in crate::builtin) struct CommandAdapter {
     compiler: LocalCompilerClient,
     search_snapshots: super::super::query::SearchSnapshotOwner,
     search_lane: SearchLane,
+    local_search_lane: super::local_search_lane::LocalSearchLane,
     search_preparation_eager: bool,
     search_preparation_failure: Option<(
         backend_engine::WorkspaceRoot,
@@ -869,6 +870,7 @@ impl CommandAdapter {
             compiler,
             search_snapshots,
             search_lane: SearchLane::default(),
+            local_search_lane: super::local_search_lane::LocalSearchLane::default(),
             search_preparation_eager: false,
             search_preparation_failure: None,
             remote_semantic,
@@ -2014,6 +2016,7 @@ impl CommandAdapter {
         }
         self.index_input_workers.request_close();
         self.search_lane.request_close();
+        self.local_search_lane.request_close();
         self.remote_semantic.request_close_local();
         self.browse_lane.request_close();
         self.journal_readiness.request_close();
@@ -2033,6 +2036,7 @@ impl CommandAdapter {
         self.semantic_search_replies.clear();
         self.journal_readiness.close();
         self.search_lane.close();
+        self.local_search_lane.close();
         self.remote_semantic.close_local();
         self.search_preparation_failure = None;
         self.browse_lane.close();
@@ -3926,6 +3930,10 @@ impl CommandAdapter {
         mut ready: Vec<(u64, Result<Vec<u8>, BuiltinModelError>)>,
     ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
         self.retain_live_semantic_completion();
+        self.local_search_lane.poll(
+            daemon.engine().daemon().library().view(),
+            &mut self.product_state,
+        );
         ready.extend(self.search_completions(daemon));
         ready.extend(self.semantic_search_completion(daemon));
         self.retain_live_semantic_completion();
@@ -5952,6 +5960,18 @@ impl CommandAdapter {
         surface: backend_engine::SurfaceCommand,
         request_id: u64,
     ) -> Result<AdmittedReply, BuiltinModelError> {
+        if matches!(&surface, backend_engine::SurfaceCommand::IndexSearch { .. }) {
+            let view = daemon.engine().daemon().library().view();
+            if let Some(failure) = self
+                .local_search_lane
+                .prepare(view, &mut self.product_state)
+            {
+                // Refuse the complete query while its exact local plane prepares.
+                // No registry/discovery result is silently omitted, and no stale
+                // projection can certify readiness for the current view.
+                return Ok((CommandReply::Failed(failure), None));
+            }
+        }
         let reply = match surface {
             backend_engine::SurfaceCommand::PackageProfile {
                 package,
@@ -8583,13 +8603,31 @@ mod tests {
                     Command::Surface(surface),
                 ))
                 .expect("real surface request DTO");
-                let Executed::Reply(bytes) = adapter
-                    .execute_or_defer(daemon, &body, request + 0x1000)
-                    .expect("HTTPie cannot poison the shared graph")
-                else {
-                    panic!("local graph reads must reply without deferred compilation");
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                let dto = loop {
+                    let Executed::Reply(bytes) = adapter
+                        .execute_or_defer(daemon, &body, request + 0x1000)
+                        .expect("HTTPie cannot poison the shared graph")
+                    else {
+                        panic!("local graph reads must reply without deferred compilation");
+                    };
+                    let dto =
+                        backend_engine::decode_reply_dto(&bytes).expect("strict reply admission");
+                    if offset == 5
+                        && matches!(&dto.reply,
+                        CommandReply::Failed(backend_library::CommandFailure::QueryPreparation {
+                            basis, ..
+                        }) if *basis == daemon.engine().daemon().library().view().root())
+                    {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "bounded cold index preparation"
+                        );
+                        std::thread::sleep(Duration::from_millis(2));
+                        continue;
+                    }
+                    break dto;
                 };
-                let dto = backend_engine::decode_reply_dto(&bytes).expect("strict reply admission");
                 assert_eq!(dto.request_id, request);
                 match (offset, dto.reply) {
                     (0 | 1, backend_engine::CommandReply::Surface(R::Package(rows))) => {
@@ -11984,6 +12022,290 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    #[test]
+    fn cold_index_search_cancellation_samples_non_symbols_and_native_commit_boundaries() {
+        let mut fixture = AdapterFixture::new();
+        let view = fixture.parts().1.engine().daemon().library().view().clone();
+        assert!(view.row_refs().next().is_some());
+        assert!(
+            view.row_refs()
+                .all(|row| !matches!(row.id, backend_library::RowId::Symbol(_)))
+        );
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let _guard = crate::builtin::cancel_search_preparation_after(
+            "local-declaration-row",
+            1,
+            Arc::clone(&cancelled),
+        );
+        assert!(
+            super::super::super::discovery_search::LocalDeclarationSearchIndex::build_controlled(
+                &view,
+                Some(&cancelled)
+            )
+            .is_err(),
+            "non-symbol scan must observe cancellation"
+        );
+        assert!(cancelled.load(Ordering::Acquire));
+        let row = backend_library::Row::in_package(
+            backend_library::RowId::Symbol(backend_library::symbol_key("commit-cancel-local")),
+            view.basis(),
+            fixture.package,
+            format!("{}::src/lib.rs:1::commit_cancel_local", fixture.label),
+        )
+        .with_source(backend_library::SourceLocation::new("src/lib.rs", 1).expect("source"));
+        fixture.publish_rows(vec![row]);
+        let view = fixture.parts().1.engine().daemon().library().view().clone();
+        for point in [
+            "local-declaration-before-commit",
+            "local-declaration-after-commit",
+        ] {
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let _guard =
+                crate::builtin::cancel_search_preparation_after(point, 1, Arc::clone(&cancelled));
+            assert!(super::super::super::discovery_search::LocalDeclarationSearchIndex::build_controlled(
+                &view, Some(&cancelled)).is_err(), "cancelled native build cannot install: {point}");
+            assert!(cancelled.load(Ordering::Acquire));
+        }
+    }
+
+    #[test]
+    fn cold_index_search_old_cursor_is_refused_after_changed_view_finishes_preparing() {
+        let mut fixture = AdapterFixture::new();
+        let view = fixture.parts().1.engine().daemon().library().view().clone();
+        let rows = (0..2)
+            .map(|index| {
+                let coordinate = format!(
+                    "{}::src/lib.rs:{}::cursor_needle_{index}",
+                    fixture.label,
+                    index + 1
+                );
+                backend_library::Row::in_package(
+                    backend_library::RowId::Symbol(backend_library::symbol_key(&coordinate)),
+                    view.basis(),
+                    fixture.package,
+                    coordinate,
+                )
+                .with_source(
+                    backend_library::SourceLocation::new("src/lib.rs", index + 1).expect("source"),
+                )
+            })
+            .collect();
+        fixture.publish_rows(rows);
+        fn ready(adapter: &mut CommandAdapter, daemon: &ProductDaemon) {
+            let view = daemon.engine().daemon().library().view();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "bounded exact local preparation"
+                );
+                match adapter
+                    .local_search_lane
+                    .prepare(view, &mut adapter.product_state)
+                {
+                    None => break,
+                    Some(backend_library::CommandFailure::QueryPreparation { basis, .. })
+                        if basis == view.root() =>
+                    {
+                        std::thread::sleep(Duration::from_millis(2))
+                    }
+                    other => panic!("unexpected preparation outcome: {other:?}"),
+                }
+            }
+        }
+        let query = backend_library::ProductText::from_static("cursor_needle");
+        let old_cursor = {
+            let (adapter, daemon) = fixture.parts();
+            ready(adapter, daemon);
+            let reply = adapter
+                .surface(
+                    daemon,
+                    backend_library::SurfaceCommand::IndexSearch {
+                        query: query.clone(),
+                        limit: 1,
+                        cursor: None,
+                    },
+                    1702,
+                )
+                .expect("old exact first page")
+                .0;
+            let CommandReply::Surface(backend_library::SurfaceReply::IndexSearchPage(page)) = reply
+            else {
+                panic!("old exact page: {reply:?}");
+            };
+            assert_eq!(page.hits.len(), 1);
+            page.next_cursor.expect("original exact issued cursor")
+        };
+        let row = backend_library::Row::in_package(
+            backend_library::RowId::Symbol(backend_library::symbol_key("cursor-new-selection")),
+            view.basis(),
+            fixture.package,
+            format!("{}::src/lib.rs:3::cursor_needle_2", fixture.label),
+        )
+        .with_source(backend_library::SourceLocation::new("src/lib.rs", 3).expect("source"));
+        fixture.publish_rows(vec![row]);
+        let (adapter, daemon) = fixture.parts();
+        let (entered, release) = adapter.local_search_lane.hold_next();
+        let original = backend_library::SurfaceCommand::IndexSearch {
+            query: query.clone(),
+            limit: 1,
+            cursor: Some(old_cursor),
+        };
+        assert!(matches!(
+            adapter
+                .surface(daemon, original.clone(), 1703)
+                .expect("typed readiness")
+                .0,
+            CommandReply::Failed(backend_library::CommandFailure::QueryPreparation { .. })
+        ));
+        entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("replacement held");
+        release.send(()).expect("finish changed view");
+        ready(adapter, daemon);
+        assert!(
+            matches!(adapter.surface(daemon, original, 1704).expect("original cursor refusal").0,
+            CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(detail))
+                if detail.contains("cursor does not match")),
+            "readiness must not rebase or repair the old composite snapshot cursor"
+        );
+        let fresh = adapter
+            .surface(
+                daemon,
+                backend_library::SurfaceCommand::IndexSearch {
+                    query,
+                    limit: 3,
+                    cursor: None,
+                },
+                1705,
+            )
+            .expect("fresh exact current query")
+            .0;
+        let CommandReply::Surface(backend_library::SurfaceReply::IndexSearchPage(page)) = fresh
+        else {
+            panic!("fresh current page: {fresh:?}");
+        };
+        assert_eq!(page.hits.len(), 3, "new current source row is not lost");
+    }
+
+    #[test]
+    fn cold_index_search_changed_view_retires_worker_before_exact_successor() {
+        let mut fixture = AdapterFixture::new();
+        let old_view = fixture.parts().1.engine().daemon().library().view().clone();
+        let (entered, release) = fixture.parts().0.local_search_lane.hold_next();
+        {
+            let (adapter, _) = fixture.parts();
+            assert!(
+                matches!(adapter.local_search_lane.prepare(&old_view, &mut adapter.product_state),
+                Some(backend_library::CommandFailure::QueryPreparation {
+                    basis, state: backend_library::QueryPreparationState::Preparing,
+                }) if basis == old_view.root())
+            );
+        }
+        entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("actual held worker");
+        let cancelled = fixture
+            .parts()
+            .0
+            .local_search_lane
+            .active_cancellation()
+            .expect("exclusive worker cancellation");
+        let row = backend_library::Row::in_package(
+            backend_library::RowId::Symbol(backend_library::symbol_key("new-local-cold-row")),
+            old_view.basis(),
+            fixture.package,
+            format!("{}::src/new.rs:1::new_local_cold_row", fixture.label),
+        )
+        .with_source(backend_library::SourceLocation::new("src/new.rs", 1).expect("source"));
+        fixture.publish_rows(vec![row]);
+        let (adapter, daemon) = fixture.parts();
+        let new_view = daemon.engine().daemon().library().view().clone();
+        assert_ne!(new_view.root(), old_view.root());
+        assert!(
+            matches!(adapter.local_search_lane.prepare(&new_view, &mut adapter.product_state),
+            Some(backend_library::CommandFailure::QueryPreparation { basis, .. })
+                if basis == new_view.root()),
+            "old worker cannot grant current readiness"
+        );
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(!adapter.product_state.local_search_ready(&new_view));
+        drop(release); // Superseded worker also observes cancellation while held.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "bounded exact successor build"
+            );
+            match adapter
+                .local_search_lane
+                .prepare(&new_view, &mut adapter.product_state)
+            {
+                None => break,
+                Some(backend_library::CommandFailure::QueryPreparation { basis, .. })
+                    if basis == new_view.root() =>
+                {
+                    std::thread::sleep(Duration::from_millis(2))
+                }
+                other => panic!("unexpected successor result: {other:?}"),
+            }
+        }
+        assert!(adapter.product_state.local_search_ready(&new_view));
+        assert!(!adapter.product_state.local_search_ready(&old_view));
+        let reply = adapter
+            .surface(
+                daemon,
+                backend_library::SurfaceCommand::IndexSearch {
+                    query: backend_library::ProductText::from_static("new_local_cold_row"),
+                    limit: 2,
+                    cursor: None,
+                },
+                1701,
+            )
+            .expect("exact successor full query")
+            .0;
+        let CommandReply::Surface(backend_library::SurfaceReply::IndexSearchPage(page)) = reply
+        else {
+            panic!("current-root index page required: {reply:?}");
+        };
+        assert_eq!(
+            page.hits.len(),
+            1,
+            "replacement includes the new selected source row"
+        );
+    }
+
+    #[test]
+    fn cold_index_search_shutdown_broadcasts_cancellation_before_worker_join() {
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        let view = daemon.engine().daemon().library().view().clone();
+        let (entered, _release) = adapter.local_search_lane.hold_next();
+        assert!(
+            adapter
+                .local_search_lane
+                .prepare(&view, &mut adapter.product_state)
+                .is_some()
+        );
+        entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("actual worker held");
+        let cancelled = adapter
+            .local_search_lane
+            .active_cancellation()
+            .expect("worker");
+        adapter.local_search_lane.request_close();
+        assert!(cancelled.load(Ordering::Acquire));
+        adapter.local_search_lane.close();
+        assert!(!adapter.product_state.local_search_ready(&view));
+        assert!(matches!(
+            adapter
+                .local_search_lane
+                .prepare(&view, &mut adapter.product_state),
+            Some(backend_library::CommandFailure::IncoherentView(_))
+        ));
     }
 
     #[test]

@@ -169,6 +169,20 @@ pub(super) struct ProductState {
 }
 
 impl ProductState {
+    pub(in crate::builtin) fn local_search_ready(&self, view: &ViewRoot) -> bool {
+        self.local_declaration_search.revision() == Some(view.root())
+    }
+
+    pub(in crate::builtin) fn take_local_search(&mut self) -> LocalDeclarationSearchIndex {
+        std::mem::take(&mut self.local_declaration_search)
+    }
+
+    pub(in crate::builtin) fn install_local_search(
+        &mut self, index: LocalDeclarationSearchIndex,
+    ) -> LocalDeclarationSearchIndex {
+        std::mem::replace(&mut self.local_declaration_search, index)
+    }
+
     /// Runs one independent product-state transaction on the control owner.
     /// The reply is admitted before persistence and the in-memory state is
     /// replaced only after the atomic write succeeds, exactly as on the general path.

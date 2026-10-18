@@ -8,6 +8,7 @@ mod index;
 mod index_input_workers;
 mod index_operation;
 mod journal_readiness;
+mod local_search_lane;
 mod package_profile;
 mod search_lane;
 mod semantic_query;

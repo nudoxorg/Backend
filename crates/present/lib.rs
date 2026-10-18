@@ -134,7 +134,7 @@ pub use dto::{
     OutlineNodeDto, OutlinePageDto, PageDto, ProductDto, ProductIndexSearchPageDto,
     ProductRecordDto, ReasonDto, RecordDto, RecordListDto, RelationGroupDto, SelectedSymbolIdDto,
     ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto, StatusDto, SummaryPageDto, answer_value,
-    fault_value,
+    fault_value, SemanticVersionsSummaryDto, SemanticVersionSummaryDto, SemanticVersionsFullDetailDto,
 };
 pub use fault::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand, OwnerContext};
 pub use glyph::{KindGlyph, LanguageGlyph, RelationDirection, RelationLabel, relation_label};

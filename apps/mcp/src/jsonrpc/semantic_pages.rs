@@ -277,7 +277,32 @@ impl<P: Product> Server<P> {
         let next = next_command
             .as_ref()
             .map(|command| invocation.surface_semantic_continuation_call(command));
-        let view = backend_present::product_view_for_command(command, &reply);
+        let mut view = backend_present::product_view_for_command(command, &reply);
+        view.expose_mcp_advice(invocation.exposure());
+        // Raw full detail remains the canonical native SurfaceReply. Summary
+        // explicitly names a display projection and keeps the same exact next call.
+        if detail == Detail::Summary && let SurfaceReply::SemanticVersionsPage(page) = &reply {
+            let projected = backend_present::ProductDto::for_detail(&view, detail);
+            let mut body = serde_json::json!({
+                "surface": {
+                    "result": "semantic-versions-summary",
+                    "data": projected.semantic_versions_summary,
+                },
+                "continuation_call": next,
+            });
+            if next.is_none() && let Some(fields) = body.as_object_mut() {
+                fields.remove("continuation_call");
+            }
+            let payload = encode_serializable(
+                "surface", detail, None, body, DEFAULT_RESPONSE_BUDGET_BYTES,
+            ).map_err(|error| RpcError::from_fault(&oversized_fault(error)))?;
+            let structured = serde_json::from_slice(&payload.bytes)
+                .map_err(|error| RpcError::tool(error.to_string()))?;
+            return Ok(complete_tool_result(
+                &format!("{}\nFor native source references, request detail=full (fresh discovery).\n",
+                    versions_preview(page, next_command.is_some(), invocation)), structured, false,
+            ));
+        }
         let payload = encode_serializable(
             "surface",
             detail,

@@ -3322,9 +3322,9 @@ pub fn abandon_pending_result(
 fn compiler_failure_reason(error: &PackageSemanticRuntimeError) -> ExecutionFailureReason {
     match error {
         PackageSemanticRuntimeError::Admission(_) => ExecutionFailureReason::CompilerRejected,
-        PackageSemanticRuntimeError::Package(PackageSemanticError::Capacity { .. }) => {
-            ExecutionFailureReason::OutputBudget
-        }
+        PackageSemanticRuntimeError::Package(
+            PackageSemanticError::Capacity { .. } | PackageSemanticError::FragmentCapacity { .. },
+        ) => ExecutionFailureReason::OutputBudget,
         PackageSemanticRuntimeError::Runtime(_) | PackageSemanticRuntimeError::Package(_) => {
             ExecutionFailureReason::CompilerFailed
         }
@@ -5779,6 +5779,32 @@ mod tests {
         fn encode(value: &Self::Value, output: &mut Vec<u8>) {
             output.extend_from_slice(value);
         }
+    }
+
+    #[test]
+    fn profile_fragment_capacity_preserves_output_budget_classification() {
+        use backend_semantic::vocabulary::{GoVersion, LanguageProfile, PythonVersion};
+        for profile in [
+            LanguageProfile::Go(GoVersion::Go124),
+            LanguageProfile::Python(PythonVersion::Python314),
+        ] {
+            let error =
+                PackageSemanticRuntimeError::Package(PackageSemanticError::FragmentCapacity {
+                    profile,
+                    used_bytes: 536_870_913,
+                    limit_bytes: 536_870_912,
+                });
+            assert_eq!(
+                compiler_failure_reason(&error),
+                ExecutionFailureReason::OutputBudget
+            );
+        }
+        assert_eq!(
+            compiler_failure_reason(&PackageSemanticRuntimeError::Package(
+                PackageSemanticError::Lineage,
+            )),
+            ExecutionFailureReason::CompilerFailed
+        );
     }
 
     #[test]

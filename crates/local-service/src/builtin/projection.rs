@@ -319,7 +319,7 @@ fn projection_page_certificate(
         } => {
             let order = page.outline_order.as_ref().ok_or_else(|| BuiltinModelError("outline page omitted its native order".to_owned()))?;
             order.validate(&page.snapshot, *package, request.limit()).map_err(BuiltinModelError)?;
-            backend_engine::QueryPageRecipe::outline(page.snapshot.root.basis().root, *package, request.limit(), order)
+            backend_engine::QueryPageRecipe::outline_window(page.snapshot.root.basis().root, *package, request.window(), order)
         },
         Command::MembersPage {
             owner,

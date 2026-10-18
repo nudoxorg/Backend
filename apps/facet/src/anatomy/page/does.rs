@@ -12,7 +12,7 @@ use crate::anatomy::plan::Ty;
 use crate::hover::{self, Lit};
 use crate::measure::Measure;
 use crate::tokens::{Palette, rhythm, scale};
-use gpui::{AnyElement, InteractiveElement, IntoElement, ParentElement, Pixels, StatefulInteractiveElement, Styled, div, px};
+use gpui::{AnyElement, IntoElement, ParentElement, Pixels, Styled, div, px};
 use std::rc::Rc;
 
 

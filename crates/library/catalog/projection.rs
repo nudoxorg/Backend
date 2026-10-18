@@ -216,11 +216,24 @@ impl QueryPageRecipe {
     /// so portable clients can revalidate its canonical predecessor context.
     #[must_use]
     pub fn outline(root: ViewStateRoot, package: PackageKey, limit: QueryLimit, order: &crate::OutlinePageOrder) -> Self {
-        Self::outline_digest(root, package, limit, order.start(), order.digest())
+        Self::outline_window(root, package, QueryWindow::fixed(limit), order)
     }
 
-    fn outline_digest(root: ViewStateRoot, package: PackageKey, limit: QueryLimit, start: u64, digest: [u8; 32]) -> Self {
-        let mut recipe = outline_page_recipe(package, limit);
+    /// Binds a complete outline delivery to its unchanged issued ceiling,
+    /// actual delivery bound, absolute order and exact immutable source.
+    #[must_use]
+    pub fn outline_window(root: ViewStateRoot, package: PackageKey, window: QueryWindow, order: &crate::OutlinePageOrder) -> Self {
+        Self::outline_window_digest(root, package, window, order.start(), order.digest())
+    }
+
+    fn outline_window_digest(root: ViewStateRoot, package: PackageKey, window: QueryWindow, start: u64, digest: [u8; 32]) -> Self {
+        let mut recipe = if window.is_windowed() {
+            let mut bytes = b"outline-window-v1\0".to_vec();
+            bytes.extend_from_slice(package.as_bytes());
+            bytes.extend_from_slice(&window.issued().get().to_be_bytes());
+            bytes.extend_from_slice(&window.delivery().get().to_be_bytes());
+            bytes
+        } else { outline_page_recipe(package, window.issued()) };
         recipe.extend_from_slice(&start.to_be_bytes());
         let preimage = crate::canonical::view_identity_preimage(&[
             b"query", &recipe, root.as_bytes(), &digest,
@@ -233,10 +246,17 @@ impl QueryPageRecipe {
     /// exact prior ordered rows before admitting a successor.
     #[must_use]
     pub fn outline_predecessor(root: ViewStateRoot, package: PackageKey, limit: QueryLimit, cursor: Cursor, preimage: &[u8]) -> Option<Self> {
-        if cursor.query_position().predecessor().is_some() { return None; }
-        let start = cursor.query_offset().checked_sub(u64::from(limit.get()))?;
+        Self::outline_window_predecessor(root, package, QueryWindow::fixed(limit), cursor, preimage)
+    }
+
+    /// Rehashes the exact prior outline span, retaining fixed legacy recipes
+    /// until a native windowed successor is actually issued.
+    #[must_use]
+    pub fn outline_window_predecessor(root: ViewStateRoot, package: PackageKey, window: QueryWindow, cursor: Cursor, preimage: &[u8]) -> Option<Self> {
+        let previous = window.predecessor(cursor.query_position())?;
+        let start = cursor.query_offset().checked_sub(u64::from(previous.delivery().get()))?;
         let digest: [u8; 32] = preimage.get(preimage.len().checked_sub(32)?..)?.try_into().ok()?;
-        let expected = Self::outline_digest(root, package, limit, start, digest);
+        let expected = Self::outline_window_digest(root, package, previous, start, digest);
         (expected.canonical_preimage() == preimage && expected.identity() == cursor.recipe()).then_some(expected)
     }
 
@@ -383,19 +403,12 @@ impl Library {
         page: PageRequest,
     ) -> Result<ProjectionPage, LibraryError> {
         self.check_basis(page.basis())?;
-        if page.window().is_windowed()
-            || page
-                .continuation()
-                .is_some_and(|cursor| cursor.cursor().query_position().predecessor().is_some())
-        {
-            return Err(LibraryError::InvalidQuery(
-                "this projection requires a legacy fixed page and position".to_owned(),
-            ));
-        }
         if !self.arrangement.has_package(package) {
             return Err(LibraryError::NotFound);
         }
-        let limit = usize::from(page.limit().get());
+        let window = page.window();
+        let limit = usize::from(window.issued().get());
+        let delivery = usize::from(window.delivery().get());
         let fetch = |offset, count| {
             self.arrangement.outline_page(package, offset, count, |id| self.view.row_ref(id), &self.work)
         };
@@ -414,25 +427,26 @@ impl Library {
         }).collect::<Vec<_>>();
         let start = if let Some(cursor) = page.continuation().map(crate::PageContinuation::cursor) {
             let offset = usize::try_from(cursor.query_offset()).map_err(|_| LibraryError::CursorMismatch)?;
-            let previous = offset.checked_sub(limit).ok_or(LibraryError::CursorMismatch)?;
-            let predecessor = fetch(previous, limit);
+            let previous_window = window.predecessor(cursor.query_position()).ok_or(LibraryError::CursorMismatch)?;
+            let previous_count = usize::from(previous_window.delivery().get());
+            let previous = offset.checked_sub(previous_count).ok_or(LibraryError::CursorMismatch)?;
+            let predecessor = fetch(previous, previous_count);
             let order = crate::OutlinePageOrder::new(previous as u64, symbols(&predecessor.ids))
                 .map_err(LibraryError::InvalidQuery)?;
-            let recipe = QueryPageRecipe::outline(self.revision_root(), package, page.limit(), &order);
+            let recipe = QueryPageRecipe::outline_window(self.revision_root(), package, previous_window, &order);
             self.check_query_cursor_with_rows(Some(cursor), recipe.identity(), limit, |at, count| {
-                if at == previous && count == limit {
+                if at == previous && count == previous_count {
                     ArrangementPage { ids: predecessor.ids.clone(), has_more: predecessor.has_more }
                 } else { fetch(at, count) }
             }, |id, _| page_row(id))?
         } else { 0 };
-        let result = fetch(start, limit);
+        let result = fetch(start, delivery);
         let order = crate::OutlinePageOrder::new(start as u64, symbols(&result.ids))
             .map_err(LibraryError::InvalidQuery)?;
-        let recipe = QueryPageRecipe::outline(self.revision_root(), package, page.limit(), &order);
+        let recipe = QueryPageRecipe::outline_window(self.revision_root(), package, window, &order);
         let rows = result.ids.iter().filter_map(|&id| page_row(id)).collect();
-        let snapshot = self.snapshot_with_recipe(
-            recipe.identity(), rows, result.has_more.then_some(self.cursor),
-            result.has_more.then_some(start.saturating_add(limit)),
+        let snapshot = self.snapshot_with_window(
+            recipe.identity(), rows, result.has_more.then_some(self.cursor), start, window,
         )?;
         order.validate(&snapshot, package, page.limit()).map_err(LibraryError::InvalidQuery)?;
         let terminal = snapshot.next.map_or(PageTerminal::Complete, |cursor| {

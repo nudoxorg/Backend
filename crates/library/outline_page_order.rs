@@ -139,4 +139,69 @@ mod tests {
         assert!(matches!(library.outline_page(package, request.with_continuation(PageContinuation::from_cursor(forged))),
             Err(crate::LibraryError::CursorMismatch)), "rehashing the same rows with a foreign predecessor order is refused");
     }
+    #[test]
+    fn outline_windows_preserve_legacy_recipe_and_authenticate_actual_predecessor_spans() {
+        let package = package_key("/window-order");
+        let basis = Basis::new(view_state_root(&[]), object_version(b"window-order"));
+        let mut rows = (0..11).map(|n| Row::in_package(
+            RowId::Symbol(symbol_key(&format!("window-{n}"))), basis, package,
+            format!("/window-order::Item{n:02}"),
+        )).collect::<Vec<_>>();
+        rows.push(Row::new(RowId::Package(package), basis, "/window-order"));
+        let root = ViewRoot::new_incomplete(view_key(b"window-order"), basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0), rows,
+            vec![Coverage::Unavailable { lane: Lane::Exact, reason: Reason::NoIndex }]).expect("catalog");
+        let library = Library::from_view(root.clone(), Cursor::for_view_root(&root)).expect("library");
+        let credit = QueryLimit::new(4).expect("issued credit");
+        let request = PageRequest::new(library.revision_root(), credit);
+        let legacy = library.outline_page(package, request).expect("legacy page");
+        let order = legacy.outline_order.as_ref().expect("order");
+        // Independent historical preimage, not a comparison of two new wrappers.
+        let mut recipe = b"outline-page-v4\0".to_vec();
+        recipe.extend_from_slice(package.as_bytes());
+        recipe.extend_from_slice(&credit.get().to_be_bytes());
+        recipe.extend_from_slice(&0_u64.to_be_bytes());
+        let historical = crate::canonical::view_identity_preimage(&[
+            b"query", &recipe, library.revision_root().as_bytes(), &order.digest(),
+        ]);
+        assert_eq!(QueryPageRecipe::outline(library.revision_root(), package, credit, order).canonical_preimage(), historical.as_slice());
+        assert_eq!(legacy.snapshot.root.recipe(), crate::ViewRecipeId::from_value(&historical));
+        let legacy_cursor = legacy.snapshot.next.expect("legacy successor");
+        assert!(legacy_cursor.query_position().predecessor().is_none());
+        let narrow = crate::QueryWindow::new(credit, QueryLimit::new(1).expect("one")).expect("window");
+        let request = request.with_window(narrow).expect("unchanged credit")
+            .with_continuation(PageContinuation::from_cursor(legacy_cursor));
+        let second = library.outline_page(package, request).expect("legacy predecessor, narrow successor");
+        assert_eq!(second.outline_order.as_ref().expect("order").start(), 4);
+        assert_eq!(second.snapshot.root.row_count(), 1);
+        let next = second.snapshot.next.expect("next");
+        assert_eq!(next.query_offset(), 5);
+        assert_eq!(next.query_position().predecessor(), Some(narrow));
+        assert!(library.outline_page(package, PageRequest::new(library.revision_root(), credit)
+            .with_continuation(PageContinuation::from_cursor(next))).is_err(), "windowed cursor cannot downgrade to fixed");
+        let mut seen = order.symbols().iter().copied().chain(second.outline_order.as_ref().expect("order").symbols().iter().copied())
+            .collect::<BTreeSet<_>>();
+        let mut cursor = next;
+        for delivery in [2, 4] {
+            let window = crate::QueryWindow::new(credit, QueryLimit::new(delivery).expect("positive")).expect("window");
+            let request = PageRequest::new(library.revision_root(), credit).with_window(window).expect("credit")
+                .with_continuation(PageContinuation::from_cursor(cursor));
+            let page = library.outline_page(package, request).expect("exact prior span, new delivery");
+            assert_eq!(page.outline_order.as_ref().expect("order").start(), cursor.query_offset());
+            for id in page.outline_order.as_ref().expect("order").symbols() { assert!(seen.insert(*id)); }
+            if let Some(next) = page.snapshot.next { cursor = next; }
+            else { assert_eq!(delivery, 4); }
+        }
+        assert_eq!(seen.len(), 11);
+        let wrong_credit = QueryLimit::new(3).expect("wrong credit");
+        let wrong = PageRequest::new(library.revision_root(), wrong_credit)
+            .with_window(crate::QueryWindow::new(wrong_credit, QueryLimit::new(1).expect("one")).expect("window")).expect("request")
+            .with_continuation(PageContinuation::from_cursor(next));
+        assert!(library.outline_page(package, wrong).is_err(), "issued ceiling is immutable");
+        let forged_span = crate::QueryWindow::new(credit, QueryLimit::new(2).expect("wrong span")).expect("window");
+        let forged = next.with_query_position(crate::QueryPosition::windowed(next.query_offset(), forged_span).expect("legal shape"));
+        assert!(library.outline_page(package, request.with_continuation(PageContinuation::from_cursor(forged))).is_err(),
+            "legal span metadata cannot replace the actual predecessor rows/order");
+    }
+
 }

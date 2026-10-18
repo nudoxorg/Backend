@@ -1348,7 +1348,9 @@ pub enum CommandFailure {
     InvalidQuery(String),
     /// This query needs a corpus which the single owner is preparing or retiring.
     QueryPreparation {
-        /// Exact published view requested by the caller.
+        /// Exact requested view for basis-bearing queries. For IndexSearch,
+        /// this only observes the owner's current local-plane selection and
+        /// grants no result or continuation authority.
         basis: ViewRevision,
         /// Current preparation state; no query result is implied.
         state: QueryPreparationState,
