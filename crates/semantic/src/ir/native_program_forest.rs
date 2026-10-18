@@ -545,10 +545,10 @@ mod tests {
             vec![NativeProgramSource {
                 program_path: path.into(),
                 package_path: Some(path.into()),
-                source: SourceIdentity::from_bytes(b"export {};").unwrap(),
+                source: SourceIdentity::from_bytes(b"export {};").expect("fixture source bytes are valid"),
             }],
         )
-        .unwrap()
+        .expect("fixture source manifest is valid")
     }
     fn nodes() -> Vec<NativeProgramNode> {
         vec![
@@ -586,9 +586,9 @@ mod tests {
             1,
             nodes(),
         )
-        .unwrap();
+        .expect("forest fixture is structurally valid");
         assert_eq!(
-            NativeProgramSources::decode(forest.as_bytes()).unwrap(),
+            NativeProgramSources::decode(forest.as_bytes()).expect("encoded forest fixture decodes"),
             forest
         );
         let rows = forest.sources().collect::<Vec<_>>();
@@ -603,7 +603,7 @@ mod tests {
                 1,
                 changed
             )
-            .unwrap()
+            .expect("changed forest fixture remains valid")
             .membership_identity(),
             forest.membership_identity()
         );
@@ -629,7 +629,7 @@ mod tests {
             1,
             nodes(),
         )
-        .unwrap();
+        .expect("forest fixture is structurally valid");
         let image = *SemanticImageIdentity::from_encoded_bytes(b"actual encoded fixture").as_ref();
         let wrong =
             *SemanticImageIdentity::from_encoded_bytes(b"different encoded fixture").as_ref();
@@ -637,8 +637,8 @@ mod tests {
         let bound = forest
             .clone()
             .with_image_bindings([("src/app.ts".into(), image)])
-            .unwrap();
-        let cold = NativeProgramSources::decode(bound.as_bytes()).unwrap();
+            .expect("image binding fixture is valid");
+        let cold = NativeProgramSources::decode(bound.as_bytes()).expect("encoded image binding fixture decodes");
         assert_eq!(cold, bound);
         assert!(cold.image_matches("src/app.ts", &image));
         assert!(!cold.image_matches("src/app.ts", &wrong));
@@ -685,13 +685,13 @@ mod tests {
                 vec![NativeProgramSource {
                     program_path: "src/app.ts".into(),
                     package_path: None,
-                    source: SourceIdentity::from_bytes(b"export {};").unwrap(),
+                    source: SourceIdentity::from_bytes(b"export {};").expect("fixture source bytes are valid"),
                 }],
             )
-            .unwrap(),
+            .expect("contradictory fixture manifest is valid"),
         );
         assert!(NativeProgramSources::from_forest(toolchain, 1, contradictory).is_err());
-        let first = NativeProgramSources::from_forest(toolchain, 1, base.clone()).unwrap();
+        let first = NativeProgramSources::from_forest(toolchain, 1, base.clone()).expect("base forest fixture is valid");
         let mut options = base.clone();
         options[0].environment[0] ^= 1;
         assert_eq!(
@@ -706,7 +706,7 @@ mod tests {
         edges[1].references.reverse();
         assert_ne!(
             NativeProgramSources::from_forest(toolchain, 1, edges)
-                .unwrap()
+                .expect("changed edge fixture remains a valid forest")
                 .membership_identity(),
             first.membership_identity()
         );

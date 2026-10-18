@@ -4950,12 +4950,12 @@ mod tests {
 
         let member_wire = jumbo_wire_value(fields.members, &mut objects);
         assert_eq!(
-            u32::from_be_bytes(member_wire[..4].try_into().unwrap()),
+            u32::from_be_bytes(member_wire[..4].try_into().expect("member wire contains a four-byte count")),
             185
         );
         let decoded: Vec<[u8; 32]> = member_wire[4..]
             .chunks_exact(32)
-            .map(|chunk| chunk.try_into().unwrap())
+            .map(|chunk| chunk.try_into().expect("member wire chunks are exactly one identity wide"))
             .collect();
         let expected = (1..=185)
             .map(|index| identity_wire(core_fixture_version(index).identity()))
@@ -5038,11 +5038,11 @@ mod tests {
         assert_eq!(fields.attributes.byte_length(), 4 + 4 + 4117);
         let attribute_wire = jumbo_wire_value(fields.attributes, &mut objects);
         assert_eq!(
-            u32::from_be_bytes(attribute_wire[..4].try_into().unwrap()),
+            u32::from_be_bytes(attribute_wire[..4].try_into().expect("attribute wire contains a four-byte count")),
             1
         );
         assert_eq!(
-            u32::from_be_bytes(attribute_wire[4..8].try_into().unwrap()),
+            u32::from_be_bytes(attribute_wire[4..8].try_into().expect("attribute wire contains a second four-byte count")),
             4117
         );
         assert_eq!(&attribute_wire[8..], attribute.as_slice());
@@ -5243,8 +5243,8 @@ mod tests {
             if overflow {
                 let fields =
                     declarations::core_jumbo_descriptors_for_record_with_row_limit(record, 4096)
-                        .unwrap()
-                        .unwrap();
+                        .expect("core jumbo fixture has the expected record shape")
+                        .expect("core jumbo fixture exposes its typed descriptors");
                 assert!(
                     fields.name.is_none(),
                     "anonymous anchor keeps its typed inline grammar"
