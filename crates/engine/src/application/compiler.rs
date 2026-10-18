@@ -2953,9 +2953,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         first_authority,
                         toolchain,
                         PackageAuthorityError::TypeScriptProjectHost(
-                            super::compiler_typescript_failure::describe_host_error(
+                            super::compiler_typescript_failure::describe_program_admission_error(
                                 cause,
-                                &[package.package_root, inputs.workspace_root],
+                                &inputs,
                             ),
                         ),
                     )),
