@@ -971,6 +971,9 @@ pub(crate) fn package_summary(
 fn fault(error: ClientError) -> EngineFault {
     let code = match error {
         ClientError::RequestCancelled(_) => return EngineFault::Cancelled,
+        ClientError::OwnerUpdate { found, supported, ref detail } => {
+            return EngineFault::Failed(crate::core::ErrorValue::owner_update(found, supported, detail));
+        }
         ClientError::Protocol(_) | ClientError::IncoherentView => FaultCode::Protocol,
         ClientError::Startup(_)
         | ClientError::Disconnected(_)
@@ -1014,6 +1017,20 @@ mod publication_revision_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_update_is_manual_action_without_transport_or_cancellation_reclassification() {
+        let update = ClientError::OwnerUpdate { found: 35, supported: 36, detail: "custody could not be proven".into() };
+        let EngineFault::Failed(error) = fault(update) else { panic!("manual update is a visible failure"); };
+        assert_eq!(error.code(), FaultCode::OwnerUpdate);
+        assert!(error.message().contains("35 → 36"));
+        assert!(error.message().contains("Restart the previous NuDox owner, then retry."));
+        assert!(error.message().contains("custody could not be proven"));
+        assert!(matches!(fault(ClientError::RequestCancelled(backend_client::RequestCancellationReason::Explicit)), EngineFault::Cancelled));
+        assert!(matches!(fault(ClientError::Protocol("bad frame".into())), EngineFault::Failed(error) if error.code() == FaultCode::Protocol));
+        assert!(matches!(fault(ClientError::Io("unreachable".into())), EngineFault::Failed(error) if error.code() == FaultCode::Transport));
+    }
+
     use crate::navigation::RequestId;
 
     #[cfg(unix)]
@@ -1024,7 +1041,7 @@ mod tests {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::time::Instant;
 
-        for case in ["expired", "cancelled", "suspended", "healthy", "protocol"] {
+        for case in ["expired", "cancelled", "suspended", "healthy", "protocol", "owner_update"] {
             let directory = std::env::temp_dir().join(format!(
                 "ndi-{}-{:x}", std::process::id(),
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
@@ -1095,6 +1112,7 @@ mod tests {
                     }
                     "healthy" => Ok(7),
                     "protocol" => Err(ClientError::Protocol("correlated refusal".into())),
+                    "owner_update" => Err(ClientError::OwnerUpdate { found: 35, supported: 36, detail: "manual restart required".into() }),
                     _ => unreachable!(),
                 }
             });
@@ -1108,6 +1126,11 @@ mod tests {
                 "cancelled" => assert!(matches!(result, Err(EngineFault::Cancelled))),
                 "suspended" => assert!(matches!(result, Err(EngineFault::Superseded))),
                 "healthy" => assert!(matches!(result, Ok(7))),
+                "owner_update" => assert!(matches!(result, Err(EngineFault::Failed(ref error))
+                    if error.code() == FaultCode::OwnerUpdate
+                        && error.message().contains("35 → 36")
+                        && error.message().contains("Restart the previous NuDox owner, then retry.")
+                        && error.message().contains("manual restart required"))),
                 "protocol" => assert!(matches!(result, Err(EngineFault::Failed(ref error))
                     if error.code() == FaultCode::Protocol && error.message() == "protocol: correlated refusal")),
                 _ => unreachable!(),
@@ -1115,7 +1138,7 @@ mod tests {
             if case != "suspended" {
                 assert_eq!(gate.ready_epoch(), Some(attachment), "{case}: read failure cannot declare owner dead");
             }
-            assert_eq!(client.session.is_some(), matches!(case, "healthy" | "protocol"));
+            assert_eq!(client.session.is_some(), matches!(case, "healthy" | "protocol" | "owner_update"));
             drop(client);
             std::fs::remove_file(endpoint).expect("remove endpoint");
             std::fs::remove_dir(directory).expect("remove private directory");
