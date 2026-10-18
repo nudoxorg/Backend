@@ -5,7 +5,7 @@ use super::super::{
 };
 use super::call_join::foreign_display_name;
 use super::identity::{
-    declaration_kind, external_semantic_coordinate, external_semantic_symbol, semantic_coordinate,
+    declaration_kind, external_semantic_coordinate, external_semantic_symbol,
     semantic_identity, semantic_symbol,
 };
 use super::image_rows::{Charge, DuplicatePolicy, ProjectedImage, ProjectedRow};
@@ -32,6 +32,8 @@ use backend_semantic::ir::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
+#[cfg(test)]
+use super::identity::semantic_coordinate;
 
 fn package_row_name(label: &str, workspace: &std::path::Path) -> Result<String, String> {
     super::super::local_manifest::indexed_package_row_name(label, workspace)
@@ -126,7 +128,7 @@ pub(crate) fn rows_for_indexed_sources(
     let mut ledger = semantics.ledger;
     ledger.extend(projection.take_ledger());
     let mut rows = projection.finish(semantics.rows)?;
-    super::super::coverage::qualify_package_rows(snapshot, &mut rows)?;
+    super::super::coverage::qualify_package_rows(snapshot, &mut rows, generations)?;
     Ok(ProjectedRows {
         rows,
         activated: semantics.activated,
@@ -1384,29 +1386,30 @@ pub(super) fn project_image_rows(
     let kinds = entity_kinds(profile, image, &session, site_declarations)?;
     let sites = &kinds.sites;
     let locations = super::retained_locations::RetainedLocations::for_entities(profile, image, &session, site_declarations, &kinds.exact).map_err(BuiltinModelError)?;
-    let canonical_identities = session
-        .publication_entities()
-        .map(|entity| {
-            entity
-                .map(|entity| entity.entity.version.identity())
-                .map_err(|error| {
-                    BuiltinModelError(format!("project semantic declaration: {error}"))
-                })
-        })
-        .collect::<Result<BTreeSet<_>, _>>()?;
+    let mut placements = BTreeMap::new();
+    let mut coordinates = super::identity::semantic_coordinates(
+        &project.label,
+        session.publication_entities().map(|entity| {
+            let entity = entity.map_err(|error| BuiltinModelError(format!("project semantic declaration: {error}")))?;
+            let identity = entity.entity.version.identity();
+            let placement = locations.place(image, &entity.entity);
+            let location = placement.as_ref().map(|placement| placement.location.clone())
+                .or_else(|| kinds.exact_location(profile, identity, path));
+            placements.insert(identity, placement);
+            Ok((identity, entity.name, location))
+        }),
+        None,
+    )?;
+    let canonical_identities = coordinates.keys().copied().collect::<BTreeSet<_>>();
     let mut projected = Vec::new();
     for entity in session.publication_entities() {
         let entity = entity
             .map_err(|error| BuiltinModelError(format!("project semantic declaration: {error}")))?;
-        let name = super::semantic_display_name(entity.name)?;
         let identity = entity.entity.version.identity();
-        let placement = locations.place(image, &entity.entity);
-        let location = placement.as_ref().map(|placement| placement.location.clone())
-            .or_else(|| kinds.exact_location(profile, identity, path));
-        let coordinate = match &location {
-            Some(location) => super::identity::declaration_coordinate(&project.label, location.path(), location.start_line(), name),
-            None => semantic_coordinate(&project.label, identity, name),
-        };
+        let placement = placements.remove(&identity).flatten();
+        let coordinate = coordinates.remove(&identity).ok_or_else(|| {
+            BuiltinModelError("semantic declaration has no exact coordinate".to_owned())
+        })?;
         let symbol = semantic_symbol(project.package, identity);
         let content =
             semantic_row_content(profile, image, &entity, project.package, image_identity)?;

@@ -11,10 +11,14 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy)]
 enum Script {
+    ProfileProgress,
+    ProfileEof,
     LaterFailure,
     Disconnected,
     Active,
     ImmediateFailure,
+    WaitDeadline,
+    Cancelled,
 }
 struct Owner {
     script: Script,
@@ -72,6 +76,14 @@ impl CommandTransport for Owner {
                         std::io::ErrorKind::ConnectionReset,
                     ));
                 }
+                if matches!(self.script, Script::WaitDeadline) {
+                    return Err(ClientError::RemoteDeadlineExceeded);
+                }
+                if matches!(self.script, Script::Cancelled) {
+                    return Err(ClientError::RequestCancelled(
+                        backend_client::RequestCancellationReason::Explicit,
+                    ));
+                }
                 status.state = match status.state {
                     IndexOperationState::Accepted => IndexOperationState::Active {
                         ticket: IndexJobTicket::new(
@@ -81,9 +93,51 @@ impl CommandTransport for Owner {
                         ),
                         stage: IndexJobStage::Compiling,
                     },
+                    _ if matches!(self.script, Script::ProfileProgress | Script::ProfileEof) => {
+                        status.state.clone()
+                    }
                     _ => failed(),
                 };
                 SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status.clone()))
+            }
+            SurfaceCommand::IndexProgress {
+                ticket,
+                after_sequence,
+            } => {
+                assert!(matches!(self.status.as_ref().map(|status| &status.state),
+                    Some(IndexOperationState::Active { ticket: active, .. }) if active == &ticket));
+                if matches!(self.script, Script::ProfileEof) {
+                    return Err(ClientError::Disconnected(std::io::ErrorKind::UnexpectedEof));
+                }
+                let events = if matches!(self.script, Script::ProfileProgress) && after_sequence < 3
+                {
+                    vec![backend_library::IndexJobProgressEvent {
+                        ticket: ticket.clone(),
+                        sequence: 3,
+                        kind: backend_library::IndexJobProgressKind::ProfileStarted {
+                            profile: backend_library::SemanticLanguageProfile::from_name(
+                                "typescript",
+                            )
+                            .expect("native profile"),
+                            ordinal: 2,
+                            total: 3,
+                        },
+                    }]
+                    .into_boxed_slice()
+                } else {
+                    Box::new([])
+                };
+                let next_sequence = events.last().map_or(after_sequence, |event| event.sequence);
+                SurfaceReply::IndexProgress(backend_library::IndexJobObservation::Pending(
+                    backend_library::IndexProgressPage {
+                        ticket,
+                        stage: IndexJobStage::Compiling,
+                        events,
+                        next_sequence,
+                        truncated: false,
+                        has_more: false,
+                    },
+                ))
             }
             other => panic!("unexpected command: {other:?}"),
         };
@@ -249,11 +303,29 @@ fn cli_wait_later_failure_retains_exact_operation_and_returns_nonzero_terminal()
         status.operation_key.to_hex()
     );
     let commands = fixture.commands.lock().expect("commands");
-    assert_eq!(commands.len(), 3);
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| !matches!(command, SurfaceCommand::IndexProgress { .. }))
+            .count(),
+        3
+    );
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| matches!(command, SurfaceCommand::IndexProgress { .. }))
+            .count(),
+        1
+    );
     assert!(
         matches!(&commands[0], SurfaceCommand::IndexOperationStart { operation_key, .. } if *operation_key == status.operation_key)
     );
-    assert!(commands[1..].iter().all(|command| matches!(command, SurfaceCommand::IndexOperationStatus { operation_key } if *operation_key == status.operation_key)));
+    assert!(commands[1..].iter().all(|command| match command {
+        SurfaceCommand::IndexOperationStatus { operation_key } =>
+            *operation_key == status.operation_key,
+        SurfaceCommand::IndexProgress { ticket, .. } => ticket.package() == &status.package,
+        _ => false,
+    }));
     assert!(
         fixture.claims().is_empty(),
         "only terminal acknowledgement removes the exact claim"
@@ -306,14 +378,15 @@ fn cli_async_default_and_zero_wait_keep_the_saved_identity_for_resumption() {
             serde_json::to_value(status.operation_key).expect("same key")
         );
         if args.len() != 1 {
+            let expected_poll = format!("nudox index_progress --operation-key {}", status.operation_key);
+            assert!(product.fault().is_none(), "pending durable work is not an endpoint failure");
             assert_eq!(
                 product
-                    .fault()
-                    .expect("wait ended")
-                    .affordance()
-                    .tool_call()
-                    .expect("resume")["arguments"]["operation_key"],
-                serde_json::to_value(status.operation_key).expect("same key")
+                    .index_poll_affordance()
+                    .expect("same operation poll")
+                    .shell()
+                    .as_deref(),
+                Some(expected_poll.as_str())
             );
             let (resumed, code) = fixture.run(&[
                 "index_progress",
@@ -324,6 +397,68 @@ fn cli_async_default_and_zero_wait_keep_the_saved_identity_for_resumption() {
             assert!(resumed.fault().is_some());
             assert!(fixture.claims().is_empty());
         }
+    }
+}
+
+#[test]
+fn cli_wait_deadline_and_cancellation_report_pending_work_without_endpoint_fault() {
+    for (script, expected_reason) in [
+        (Script::WaitDeadline, "The CLI wait deadline expired"),
+        (Script::Cancelled, "The CLI wait was cancelled (request explicitly cancelled by client)"),
+    ] {
+        let mut fixture = Fixture::new(script);
+        let (answer, exit) = fixture.run(&["add", "--wait", "--wait-timeout", "900"]);
+        assert_eq!(exit, ExitCode::from(crate::index_wait::EXIT_WAIT_INCOMPLETE));
+        let Answer::Product(product) = &answer else {
+            panic!("retained product observation");
+        };
+        let Some(IndexOperationObservation::Known(status)) = product.index_operation() else {
+            panic!("exact durable operation status");
+        };
+        assert!(matches!(status.state, IndexOperationState::Active { .. }));
+        assert!(product.fault().is_none(), "caller wait stop is not an endpoint/index failure");
+        assert!(product.cli_context().is_none(),
+            "this plan fixture does not run the executable's CLI-context attachment");
+        let note = product.note().expect("reason and recovery instruction");
+        assert!(note.contains(expected_reason));
+        assert!(note.contains("last admitted owner status was active"));
+        assert!(note.contains("did not cancel owner work"));
+        assert!(note.contains("Do not resubmit `add`"));
+        let poll = format!("nudox index_progress --operation-key {}", status.operation_key);
+        assert!(note.contains(&poll));
+        assert_eq!(product.index_poll_affordance().and_then(|poll| poll.shell()), Some(poll.clone()));
+        assert_eq!(fixture.commands.lock().expect("commands").len(), 2);
+        assert_eq!(fixture.claims().len(), 1, "a nonterminal wait keeps the durable claim");
+        let rendered = render_admitted_answer(
+            &fixture.session,
+            &answer,
+            &Options::plain(options::Format::Human),
+        )
+        .expect("bounded human response");
+        assert!(rendered.contains(expected_reason));
+        assert!(rendered.contains(&poll));
+        assert!(rendered.contains("Do not resubmit `add`"));
+        let json_options = Options::plain(options::Format::Json);
+        let json = render_admitted_answer(&fixture.session, &answer, &json_options)
+            .expect("bounded typed response");
+        let json: serde_json::Value = serde_json::from_str(&json).expect("JSON answer");
+        assert!(json["fault"].is_null());
+        assert!(
+            json["index_poll"].get("shell").is_none(),
+            "plain fixture has no observed installed-CLI context for a shell command"
+        );
+        assert_eq!(
+            json["index_poll"]["call"],
+            serde_json::json!({
+                "name": "backend.index_progress",
+                "arguments": {
+                    "operation_key": status.operation_key.to_hex(),
+                    "detail": json_options.detail().name(),
+                },
+            }),
+            "the exact saved operation remains copyable without inventing CLI authority"
+        );
+        assert!(json["note"].as_str().is_some_and(|note| note.contains(expected_reason)));
     }
 }
 
@@ -372,4 +507,81 @@ fn cli_disconnected_wait_preserves_acceptance_and_immediate_failure_is_terminal(
     );
     assert_eq!(terminal.commands.lock().expect("commands").len(), 1);
     assert!(terminal.claims().is_empty());
+}
+
+#[test]
+fn cli_explicit_operation_progress_reads_real_ticket_milestone_without_a_second_start() {
+    let mut fixture = Fixture::new(Script::ProfileProgress);
+    let (accepted, _) = fixture.run(&["add"]);
+    let Answer::Product(view) = accepted else {
+        panic!("durable acceptance")
+    };
+    let Some(IndexOperationObservation::Known(status)) = view.index_operation() else {
+        panic!("exact key")
+    };
+    let key = status.operation_key.to_hex();
+    let (answer, exit) = fixture.run(&["index_progress", "--operation-key", &key]);
+    assert_eq!(exit, ExitCode::SUCCESS);
+    let Answer::Product(view) = answer else {
+        panic!("composed progress")
+    };
+    assert_eq!(
+        view.index_operation(),
+        Some(&IndexOperationObservation::Known(status.clone()))
+    );
+    assert!(
+        matches!(view.index_job(), Some(backend_present::IndexJobProjection::Progress(backend_library::IndexJobObservation::Pending(page))) if page.next_sequence == 3 && page.events.len() == 1)
+    );
+    let commands = fixture.commands.lock().expect("commands");
+    assert!(
+        matches!(commands.as_slice(), [SurfaceCommand::IndexOperationStart { .. }, SurfaceCommand::IndexOperationStatus { operation_key }, SurfaceCommand::IndexProgress { ticket, after_sequence: 0 }]
+        if *operation_key == status.operation_key && ticket.package() == &status.package)
+    );
+    assert_eq!(fixture.claims().len(), 1);
+    assert!(
+        fixture.session.request_context().is_none(),
+        "original session binding restored"
+    );
+}
+
+#[test]
+fn cli_ticket_progress_eof_preserves_key_journal_and_original_session_scope() {
+    let mut fixture = Fixture::new(Script::ProfileEof);
+    let (accepted, _) = fixture.run(&["add"]);
+    let Answer::Product(view) = accepted else {
+        panic!("durable acceptance")
+    };
+    let Some(IndexOperationObservation::Known(status)) = view.index_operation() else {
+        panic!("exact key")
+    };
+    let key = status.operation_key.to_hex();
+    let args = vec![
+        "index_progress".to_owned(),
+        "--operation-key".to_owned(),
+        key.clone(),
+    ];
+    let planned = plan(
+        &args,
+        &Options::fallback(),
+        fixture.paths.project().to_str().expect("project"),
+    )
+    .expect("real CLI grammar");
+    let fault = execute_plan(&mut fixture.session, &planned, &fixture.paths)
+        .expect_err("secondary read EOF is unproven progress");
+    assert_eq!(fault.operand(), &backend_present::Operand::Text(key));
+    assert_eq!(fixture.claims().len(), 1);
+    assert_eq!(
+        fixture
+            .commands
+            .lock()
+            .expect("commands")
+            .iter()
+            .filter(|command| matches!(command, SurfaceCommand::IndexOperationStart { .. }))
+            .count(),
+        1
+    );
+    assert!(
+        fixture.session.request_context().is_none(),
+        "binding restored even on secondary EOF"
+    );
 }

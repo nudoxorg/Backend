@@ -245,6 +245,7 @@ fn health() -> HealthModel {
         lanes: backend_present::CoverageLine::new(&[], Some(1_234)),
         rows: 1_234,
         ingest: IngestModel {
+            source_selection: None,
             files_discovered: 20,
             files_indexed: 20,
             files_unavailable: 0,

@@ -15,7 +15,7 @@ use backend_library::{
     Fragment, Freshness, Frontier, IndexCancelReceipt, IndexCancelStatus, IndexJobObservation,
     IndexJobOutcome, IndexJobProgressEvent, IndexJobProgressKind, IndexJobStage, IndexJobTerminal,
     IndexJobTicket, IndexProgressPage, IndexSearchCursor, IndexSearchPage, IndexSearchResultCount,
-    IndexStartResult, Intent, Lane, Outline, OutlineExtent, OutlineNode, PackageReference,
+    IndexStartResult, Intent, Lane, PackageReference,
     ProjectionPage, Reason, Row, RowId, SourceAvailability, SourceExcerpt, SourceExcerptExtent,
     SourceLocation, SurfaceReply, ViewRoot, ViewSnapshot, object_version, package_key, symbol_key,
     view_key, view_state_root,
@@ -27,6 +27,8 @@ use backend_present::{domain_name, encode_answer, grammar_for, grammar_for_tool}
 mod index_overlap;
 #[path = "tests/initial_owner.rs"]
 mod initial_owner;
+#[path = "tests/search_admission.rs"]
+mod search_admission;
 #[path = "tests/named_call.rs"]
 mod named_call;
 #[path = "tests/package_compiler_outcomes.rs"]
@@ -611,6 +613,9 @@ struct Fake {
     continuation_error: Option<ClientError>,
     /// Optional product reply used by the high-fanout surface budget case.
     surface_reply: Option<SurfaceReply>,
+    /// Retains the active durable fixture for separately requested ticket reads.
+    last_operation_status: Option<backend_library::IndexOperationStatus>,
+    profile_progress_reply: Option<backend_library::IndexProgressPage>,
     /// Exact captured bytes; responds to the actual selected native range.
     semantic_source_document: Option<std::sync::Arc<backend_library::SemanticSourceDocument>>,
     /// Synthetic immutable membership; portable source bytes remain real42.
@@ -677,6 +682,51 @@ struct Fake {
 }
 
 impl Fake {
+    fn fixture_catalog(&mut self, path: &str) -> Result<backend_library::Library, ClientError> {
+        if self.offline { return Err(unreachable()); }
+        if let Some(error) = self.outline_error.take() { return Err(error); }
+        if self.empty_outline {
+            return Err(ClientError::CommandFailed(backend_library::CommandFailure::NotFound));
+        }
+        let mut members = vec![module_row(), declaration_row()];
+        // A source-availability override supplies a selected native
+        // document. Its owner must also be present in the fixture's
+        // otherwise complete member projection; omission is a real
+        // protocol failure, independent of optional source absence.
+        if let Some(document) = &self.document_override
+            && !self.omit_document_override_member
+            && !members.iter().any(|row| row.id == RowId::Symbol(document.symbol))
+        {
+            members.push(Row::in_package(
+                RowId::Symbol(document.symbol),
+                snapshot(Vec::new()).root.basis(),
+                package_key(path),
+                self.document_coordinates.last().map_or(DECLARATION, String::as_str),
+            ));
+        }
+        members.push(Row::new(RowId::Package(package_key(path)), basis(), path));
+        let owner = root(members);
+        let cursor = backend_library::Cursor::for_view_root(&owner);
+        Ok(backend_library::Library::from_view(owner, cursor).expect("immutable fixture catalog"))
+    }
+
+    fn fixture_outline_page(
+        &mut self,
+        path: &str,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ProjectionPage, ClientError> {
+        let library = self.fixture_catalog(path)?;
+        let request = backend_library::PageRequest::new(
+            library.revision_root(), backend_library::QueryLimit::new(limit).expect("bounded outline"),
+        );
+        let request = continuation.map_or(request, |cursor| request.with_continuation(cursor));
+        let page = library.outline_page(package_key(path), request)
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        self.next_continuation = page.snapshot.next.map(PageContinuation::from_cursor);
+        Ok(page)
+    }
+
     fn catalog_probe(
         &mut self,
         probe: Probe<'_>,
@@ -689,6 +739,11 @@ impl Fake {
             }
         }
         let Some(catalog) = &self.page_catalog else {
+            if let Probe::OutlinePage { path, limit } = probe {
+                self.probe_calls += 1;
+                return self.fixture_outline_page(path, limit, continuation)
+                    .map(|page| ReplyDto::new(1, CommandReply::ProjectionPage(page)));
+            }
             if continuation.is_some() {
                 return Err(ClientError::StaleCursor);
             }
@@ -798,6 +853,7 @@ impl Fake {
         Ok(ReplyDto::new(
             1,
             CommandReply::ProjectionPage(ProjectionPage {
+                outline_order: None,
                 snapshot: snapshot(vec![declaration_row()]),
                 terminal: PageTerminal::Complete,
             }),
@@ -924,44 +980,27 @@ impl Engine for Fake {
         {
             self.page_catalog = Some(replacement);
         }
-        if let Some(catalog) = &self.page_catalog {
+        let fixture = if self.page_catalog.is_none() {
+            self.probe_calls += 1;
+            Some(self.fixture_catalog(PROJECT)?)
+        } else {
             self.page_limits.push(limit);
-            let request = backend_library::PageRequest::new(
-                document.basis,
-                backend_library::QueryLimit::new(limit).expect("credit"),
-            );
-            let request = continuation.map_or(request, |cursor| request.with_continuation(cursor));
-            let mut owner =
-                backend_library::DocumentQuery::selected(document.symbol, document.basis);
-            if let Some(source) = document.source_basis() {
-                owner = owner.with_source_basis(source);
-            }
-            let page = catalog
-                .members_page(owner, request)
-                .map_err(|error| ClientError::Protocol(error.to_string()))?;
-            return Ok(ReplyDto::new(1, CommandReply::ProjectionPage(page)));
-        }
-        if continuation.is_some() {
-            return Err(ClientError::StaleCursor);
-        }
-        let reply = self.probe(Probe::OutlinePage {
-            path: PROJECT,
-            limit,
-        })?;
-        let CommandReply::ProjectionPage(mut page) = reply.reply else {
-            return Err(ClientError::Protocol("wrong member fixture".to_owned()));
+            None
         };
-        let rows = page
-            .snapshot
-            .root
-            .rows()
-            .iter()
-            .filter(|row| {
-                row.id == RowId::Symbol(document.symbol) || row.parent == Some(document.symbol)
-            })
-            .cloned()
-            .collect();
-        page.snapshot = snapshot(rows);
+        let catalog = self.page_catalog.as_ref().or(fixture.as_ref())
+            .expect("explicit or default immutable fixture catalog");
+        let request = backend_library::PageRequest::new(
+            document.basis,
+            backend_library::QueryLimit::new(limit).expect("credit"),
+        );
+        let request = continuation.map_or(request, |cursor| request.with_continuation(cursor));
+        let mut owner = backend_library::DocumentQuery::selected(document.symbol, document.basis);
+        if let Some(source) = document.source_basis() {
+            owner = owner.with_source_basis(source);
+        }
+        let page = catalog.members_page(owner, request)
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        self.next_continuation = page.snapshot.next.map(PageContinuation::from_cursor);
         Ok(ReplyDto::new(1, CommandReply::ProjectionPage(page)))
     }
     fn index(
@@ -988,7 +1027,10 @@ impl Engine for Fake {
         if let Some(error) = self.adapter_error.take() {
             return Err(error);
         }
-        Ok(view_state_root(&[]))
+        Ok(self.page_catalog.as_ref().map_or_else(
+            || view_state_root(&[]),
+            backend_library::Library::revision_root,
+        ))
     }
 
     fn health(&mut self) -> Result<HealthReport, ClientError> {
@@ -1087,63 +1129,16 @@ impl Engine for Fake {
                 None => CommandReply::Search(snapshot(vec![declaration_row()])),
             },
             Probe::Names { .. } => CommandReply::Names(snapshot(vec![declaration_row()])),
-            Probe::Outline(_) => {
-                if let Some(error) = self.outline_error.take() {
-                    return Err(error);
-                }
-                if self.empty_outline {
-                    return Err(ClientError::CommandFailed(
-                        backend_library::CommandFailure::NotFound,
-                    ));
-                }
-                CommandReply::Outline(
-                    Outline::new(
-                        package_key(PROJECT),
-                        view_state_root(&[]),
-                        OutlineNode {
-                            symbol: symbol_key(MODULE),
-                            children: vec![OutlineNode {
-                                symbol: symbol_key(DECLARATION),
-                                children: Box::new([]),
-                            }]
-                            .into_boxed_slice(),
-                        },
-                    )
-                    .with_extent(OutlineExtent::Complete)
-                    .with_source_basis(
-                        snapshot(vec![module_row(), declaration_row()]).root.basis(),
-                    ),
-                )
+            Probe::Outline(path) => {
+                // Legacy resource trees and their native name pages must attest
+                // the same immutable source, including its complete basis.
+                let catalog = self.fixture_catalog(path)?;
+                CommandReply::Outline(catalog.outline(backend_library::OutlineQuery::new(
+                    package_key(path), catalog.revision_root(),
+                )).map_err(|error| ClientError::Protocol(error.to_string()))?)
             }
-            Probe::OutlinePage { path, .. } => {
-                if let Some(error) = self.outline_error.take() {
-                    return Err(error);
-                }
-                if self.empty_outline {
-                    return Err(ClientError::CommandFailed(
-                        backend_library::CommandFailure::NotFound,
-                    ));
-                }
-                let mut members = vec![module_row(), declaration_row()];
-                // A source-availability override supplies a selected native
-                // document. Its owner must also be present in the fixture's
-                // otherwise complete member projection; omission is a real
-                // protocol failure, independent of optional source absence.
-                if let Some(document) = &self.document_override
-                    && !self.omit_document_override_member
-                    && !members.iter().any(|row| row.id == RowId::Symbol(document.symbol))
-                {
-                    members.push(Row::in_package(
-                        RowId::Symbol(document.symbol),
-                        snapshot(Vec::new()).root.basis(),
-                        package_key(path),
-                        self.document_coordinates.last().map_or(DECLARATION, String::as_str),
-                    ));
-                }
-                CommandReply::ProjectionPage(ProjectionPage {
-                    snapshot: snapshot(members),
-                    terminal: PageTerminal::Complete,
-                })
+            Probe::OutlinePage { path, limit } => {
+                CommandReply::ProjectionPage(self.fixture_outline_page(path, limit, None)?)
             }
         };
         Ok(ReplyDto::new(1, reply))
@@ -1200,13 +1195,54 @@ impl Engine for Fake {
         if let Some(admitted) = self.surface_admitted.take() {
             admitted.send(()).expect("actual progress read admitted");
         }
+        if let SurfaceCommand::IndexProgress {
+            ticket,
+            after_sequence,
+        } = &command
+        {
+            if !matches!(
+                self.surface_replies.front(),
+                Some(SurfaceReply::IndexProgress(_))
+            ) && !matches!(&self.surface_reply, Some(SurfaceReply::IndexProgress(_)))
+            {
+                if let Some(status) = &self.last_operation_status {
+                    if matches!(&status.state, backend_library::IndexOperationState::Active { ticket: active, .. } if active == ticket)
+                    {
+                        let stage = match &status.state {
+                            backend_library::IndexOperationState::Active { stage, .. } => *stage,
+                            _ => unreachable!(),
+                        };
+                        let page = self.profile_progress_reply.clone().unwrap_or_else(|| {
+                            backend_library::IndexProgressPage {
+                                ticket: ticket.clone(),
+                                stage,
+                                events: Box::new([]),
+                                next_sequence: *after_sequence,
+                                truncated: false,
+                                has_more: false,
+                            }
+                        });
+                        return Ok(SurfaceReply::IndexProgress(
+                            backend_library::IndexJobObservation::Pending(page),
+                        ));
+                    }
+                }
+            }
+        }
         if let Some(error) = self.surface_error.take() {
             return Err(error);
         }
-        if let Some(reply) = self.surface_replies.pop_front() {
-            return Ok(reply);
-        }
-        if let Some(reply) = self.surface_reply.take() {
+        if let Some(reply) = self
+            .surface_replies
+            .pop_front()
+            .or_else(|| self.surface_reply.take())
+        {
+            if let SurfaceReply::IndexOperationStatus(
+                backend_library::IndexOperationObservation::Known(status),
+            ) = &reply
+            {
+                self.last_operation_status = Some(status.clone());
+            }
             return Ok(reply);
         }
         if let (SurfaceCommand::PackageGraphPage { request }, Some(rows)) =
@@ -3263,13 +3299,19 @@ fn index_first_use_returns_one_admitted_durable_poll_and_copying_it_only_observe
                 serde_json::to_value(&next_operation)
                     .expect("exact next receipt; changed active stage is immediate")
             );
-            assert_eq!(
-                server.product.surface_commands,
-                [
-                    start.clone(),
-                    SurfaceCommand::IndexOperationStatus { operation_key: key }
-                ]
-            );
+            let mut expected_commands = vec![
+                start.clone(),
+                SurfaceCommand::IndexOperationStatus { operation_key: key },
+            ];
+            if let IndexOperationObservation::Known(status) = &operation
+                && let IndexOperationState::Active { ticket, .. } = &status.state
+            {
+                expected_commands.push(SurfaceCommand::IndexProgress {
+                    ticket: ticket.clone(),
+                    after_sequence: 0,
+                });
+            }
+            assert_eq!(server.product.surface_commands, expected_commands);
             assert_eq!(
                 server.product.probe_calls, 0,
                 "copying a poll adds no other owner work"
@@ -4711,6 +4753,107 @@ fn default_search_summary_keeps_exact_native_records_with_a_concise_coverage_pre
 }
 
 #[test]
+fn positive_default_fake_outline_pages_retain_order_and_sequential_cursor() {
+    fn coordinates(value: &Value, out: &mut Vec<String>) {
+        if let Some(coordinate) = value.get("coordinate").and_then(Value::as_str) {
+            out.push(coordinate.to_owned());
+        }
+        if let Some(children) = value.get("children").and_then(Value::as_array) {
+            for child in children { coordinates(child, out); }
+        }
+    }
+    let mut server = ready(Fake::default());
+    let mut cursor = None;
+    let mut retained = Vec::new();
+    for start in 0..2 {
+        let mut args = json!({"path":PROJECT,"limit":1,"detail":"full"});
+        if let Some(token) = cursor.take() { args["cursor"] = Value::String(token); }
+        let result = call(&mut server, "backend.outline", &args);
+        assert_eq!(result["isError"], false, "{result}");
+        let typed: backend_present::OutlineDto = serde_json::from_value(result["structuredContent"].clone())
+            .expect("actual positive Fake page reaches typed presenter");
+        assert_eq!(typed.page.as_ref().expect("bounded page").limit, 1);
+        let before = retained.len();
+        for root in result["structuredContent"]["roots"].as_array().expect("roots") {
+            coordinates(root, &mut retained);
+        }
+        assert_eq!(retained.len() - before, 1, "exact fixed credit at page {start}");
+        cursor = result["structuredContent"]["nextCursor"].as_str().map(str::to_owned);
+        assert_eq!(cursor.is_some(), start == 0, "native sequential completion");
+    }
+    assert_eq!(retained, [MODULE.to_owned(), DECLARATION.to_owned()]);
+    assert!(cursor.is_none());
+
+    let override_symbol = symbol_key("selected-override-owner");
+    let mut selected = document();
+    selected.symbol = override_symbol;
+    let mut fake = Fake { document_override: Some(selected), ..Fake::default() };
+    let reply = fake.probe(Probe::OutlinePage { path: PROJECT, limit: 200 }).expect("positive override page");
+    let CommandReply::ProjectionPage(page) = reply.reply else { panic!("outline page"); };
+    let order = page.outline_order.as_ref().expect("positive override retains native order");
+    order.validate(&page.snapshot, package_key(PROJECT), backend_library::QueryLimit::new(200).expect("limit"))
+        .expect("all overridden members are exact native witnesses");
+    assert!(order.symbols().contains(&override_symbol));
+    let mut members_fake = Fake::default();
+    let catalog = members_fake.fixture_catalog(PROJECT).expect("native members catalog");
+    let owner = catalog.document(backend_library::DocumentQuery::selected(
+        symbol_key(MODULE), catalog.revision_root(),
+    )).expect("document at the exact native catalog revision");
+    let reply = members_fake.members_page(&owner, 200, None).expect("positive separate members family");
+    let CommandReply::ProjectionPage(members) = reply.reply else { panic!("members page"); };
+    assert!(members.outline_order.is_none(), "outline metadata cannot leak into MembersPage");
+}
+
+#[test]
+fn positive_default_fake_members_pages_preserve_credit_cursor_family_and_override() {
+    let mut fake = Fake::default();
+    let catalog = fake.fixture_catalog(PROJECT).expect("native members catalog");
+    let owner = catalog.document(backend_library::DocumentQuery::selected(
+        symbol_key(MODULE), catalog.revision_root(),
+    )).expect("document at the exact native catalog revision");
+    let mut cursor = None;
+    let mut rows = Vec::new();
+    for start in 0..2 {
+        let reply = fake.members_page(&owner, 1, cursor).expect("native members selection");
+        let CommandReply::ProjectionPage(page) = reply.reply else { panic!("members page"); };
+        assert!(page.outline_order.is_none(), "MembersPage never carries OutlinePage metadata");
+        assert_eq!(page.snapshot.root.rows().len(), 1, "actual member credit at page {start}");
+        rows.extend(page.snapshot.root.rows().iter().map(|row| row.id));
+        assert_eq!(page.terminal, page.snapshot.next.map_or(PageTerminal::Complete,
+            |next| PageTerminal::More(PageContinuation::from_cursor(next))));
+        cursor = match page.terminal {
+            PageTerminal::More(next) => {
+                assert_eq!(start, 0);
+                let token = fake.encode_continuation(next).expect("encode actual issued members cursor");
+                let decoded = fake.decode_continuation(&token).expect("decode same members cursor");
+                assert_eq!(decoded, next);
+                assert!(fake.members_page(&owner, 2, Some(decoded)).is_err(), "changed member credit is refused");
+                Some(decoded)
+            }
+            PageTerminal::Complete => { assert_eq!(start, 1); None }
+            other => panic!("unexpected member terminal: {other:?}"),
+        };
+    }
+    assert_eq!(rows, [RowId::Symbol(symbol_key(MODULE)), RowId::Symbol(symbol_key(DECLARATION))]);
+    assert!(cursor.is_none());
+
+    let mut selected = document();
+    selected.symbol = symbol_key("selected-override-member-owner");
+    let mut overridden = Fake { document_override: Some(selected.clone()), ..Fake::default() };
+    selected.basis = overridden.fixture_catalog(PROJECT)
+        .expect("native catalog includes the overridden owner").revision_root();
+    overridden.document_override = Some(selected.clone());
+    let reply = overridden.members_page(&selected, 1, None).expect("selected override owner is present");
+    let CommandReply::ProjectionPage(page) = reply.reply else { panic!("members page"); };
+    assert!(page.outline_order.is_none());
+    assert_eq!(page.snapshot.root.rows().len(), 1);
+    assert_eq!(page.snapshot.root.rows()[0].id, RowId::Symbol(selected.symbol));
+    assert_eq!(page.terminal, PageTerminal::Complete, "override has no fabricated children");
+    overridden.omit_document_override_member = true;
+    assert!(overridden.members_page(&selected, 1, None).is_err(), "the missing selected owner remains a refusal");
+}
+
+#[test]
 fn an_outline_call_is_a_tree_of_names_never_bare_digests() {
     let mut server = ready(Fake::default());
     let result = call(&mut server, "backend.outline", &json!({}));
@@ -5939,6 +6082,19 @@ fn a_missing_resource_is_refused_rather_than_guessed() {
 fn outline_resource_templates_preserve_readable_and_absent_projects() {
     let uri = "backend://outline/%2Fabs%2Fpolyglot";
     let mut published = ready(Fake::default());
+    let catalog = published.product.fixture_catalog(PROJECT)
+        .expect("resource revision and outline share the same native catalog");
+    let legacy = published.product.probe(Probe::Outline(PROJECT)).expect("legacy outline");
+    let CommandReply::Outline(tree) = legacy.reply else { panic!("legacy outline reply"); };
+    assert_eq!(tree.basis(), catalog.revision_root());
+    let names = catalog.outline_page(package_key(PROJECT), backend_library::PageRequest::new(
+        catalog.revision_root(),
+        backend_library::QueryLimit::new(200).expect("bounded resource name page"),
+    )).expect("actual native name-page producer");
+    assert_eq!(names.snapshot.root.basis().root, catalog.revision_root());
+    assert_eq!(tree.source_basis(), Some(names.snapshot.root.basis()),
+        "the complete tree and name-page producer bases must match");
+    published.product.page_catalog = Some(catalog);
     let readable = request(&mut published, "resources/read", &json!({"uri": uri}));
     assert!(
         readable["result"]["contents"][0]["text"]
@@ -5997,6 +6153,22 @@ fn resource_discovery_needs_no_owner_and_outline_reads_preserve_protocol_failure
     );
     assert_eq!(read["error"]["code"], -32603, "{read}");
     assert_eq!(read["error"]["data"]["kind"], "protocol", "{read}");
+
+    let mut moved = ready(Fake {
+        outline_error: Some(ClientError::CommandFailed(
+            backend_library::CommandFailure::WrongBasis {
+                expected: view_state_root(&[]).into(),
+                observed: view_state_root(&[("new".to_owned(), "revision".to_owned())]).into(),
+            },
+        )),
+        ..Fake::default()
+    });
+    let read = request(&mut moved, "resources/read", &json!({
+        "uri": "backend://outline/%2Fabs%2Fpolyglot"
+    }));
+    assert_eq!(read["error"]["code"], -32603, "{read}");
+    assert_eq!(read["error"]["data"]["kind"], "wrong-basis", "{read}");
+    assert!(read.get("result").is_none(), "a moved owner is never resource absence");
 }
 
 #[test]
@@ -8703,6 +8875,107 @@ mod conditional_progress_tests {
             .map(|run| serde_json::from_value(run["reply"].clone()).expect("actual receipt"))
             .collect()
     }
+    #[test]
+    fn operation_progress_exposes_real_profile_events_and_resumes_by_durable_key() {
+        use backend_library::{
+            IndexJobProgressEvent, IndexJobProgressKind, IndexOperationObservation,
+            IndexOperationState, IndexProgressPage, SemanticLanguageProfile,
+        };
+        let active = phases().remove(1);
+        let SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status)) = &active
+        else {
+            panic!("active status")
+        };
+        let IndexOperationState::Active { ticket, stage } = &status.state else {
+            panic!("active ticket")
+        };
+        let page = IndexProgressPage {
+            ticket: ticket.clone(),
+            stage: *stage,
+            events: vec![IndexJobProgressEvent {
+                ticket: ticket.clone(),
+                sequence: 3,
+                kind: IndexJobProgressKind::ProfileStarted {
+                    profile: SemanticLanguageProfile::from_name("typescript")
+                        .expect("native profile"),
+                    ordinal: 2,
+                    total: 3,
+                },
+            }]
+            .into_boxed_slice(),
+            next_sequence: 3,
+            truncated: false,
+            has_more: false,
+        };
+        for detail in ["summary", "standard", "full"] {
+            let mut server = ready(Fake {
+                surface_reply: Some(active.clone()),
+                profile_progress_reply: Some(page.clone()),
+                ..Fake::default()
+            });
+            let full = call(
+                &mut server,
+                INDEX_PROGRESS_TOOL,
+                &json!({"operation_key":status.operation_key,"detail":detail}),
+            );
+            assert_eq!(full["isError"], false);
+            assert!(text_of(&full).contains("profile 2/3"));
+            assert_eq!(
+                full["structuredContent"]["surface"]["index_job"],
+                serde_json::to_value(backend_present::IndexJobProjection::Progress(
+                    backend_library::IndexJobObservation::Pending(page.clone())
+                ))
+                .expect("existing progress DTO")
+            );
+            let action = full["structuredContent"]["index_poll"]["call"].clone();
+            assert_eq!(
+                action["arguments"]["operation_key"],
+                json!(status.operation_key)
+            );
+            assert!(action["arguments"].get("ticket").is_none());
+            server.product.surface_reply = Some(active.clone());
+            let mut arguments = action["arguments"].clone();
+            arguments["wait_millis"] = json!(0);
+            let unchanged = call(&mut server, INDEX_PROGRESS_TOOL, &arguments);
+            assert_eq!(
+                unchanged["structuredContent"]["surface"]["data"]["state"],
+                "pending-unchanged"
+            );
+            server.product.surface_reply = Some(active.clone());
+            let mut advanced = page.clone();
+            advanced.next_sequence = 4;
+            advanced.events[0].sequence = 4;
+            advanced.events[0].kind = IndexJobProgressKind::ProfileAdmitted {
+                profile: SemanticLanguageProfile::from_name("typescript").expect("profile"),
+                ordinal: 2,
+                total: 3,
+            };
+            server.product.profile_progress_reply = Some(advanced);
+            let changed = call(&mut server, INDEX_PROGRESS_TOOL, &arguments);
+            assert_eq!(changed["isError"], false);
+            assert!(text_of(&changed).contains("staged; publication pending"));
+            assert_ne!(
+                changed["structuredContent"]["index_poll"]["call"]["arguments"]["after_observation"],
+                arguments["after_observation"]
+            );
+            assert_eq!(durable_commands(&server.product).len(), 3);
+            assert_eq!(server.product.surface_commands.iter().filter(|command| matches!(command, SurfaceCommand::IndexProgress { ticket: actual, .. } if actual == ticket)).count(), 3);
+            assert_eq!(server.product.probe_calls, 0);
+            assert_context_bounded(&full);
+            assert_context_bounded(&unchanged);
+            assert_context_bounded(&changed);
+        }
+    }
+
+    fn durable_commands(product: &Fake) -> Vec<SurfaceCommand> {
+        product
+            .surface_commands
+            .iter()
+            .filter(|command| !matches!(command, SurfaceCommand::IndexProgress { .. }))
+            .cloned()
+            .collect()
+    }
+
     fn active_arguments() -> Value {
         let replies = phases();
         let SurfaceReply::IndexOperationStatus(backend_library::IndexOperationObservation::Known(
@@ -8768,7 +9041,7 @@ mod conditional_progress_tests {
                 json!({"operation_key":arguments["operation_key"], "after_observation":arguments["after_observation"], "wait_millis":10000, "detail":"full"})
             );
             assert_eq!(
-                server.product.surface_commands.len(),
+                durable_commands(&server.product).len(),
                 2,
                 "legacy request remains immediate"
             );
@@ -8815,10 +9088,10 @@ mod conditional_progress_tests {
                 serde_json::to_value(&terminal).expect("entire failed receipt")
             );
             assert!(failed["structuredContent"].get("index_poll").is_none());
-            assert_eq!(server.product.surface_commands.len(), 2);
+            assert_eq!(durable_commands(&server.product).len(), 2);
             assert_eq!(
-                server.product.surface_commands[0],
-                server.product.surface_commands[1]
+                durable_commands(&server.product)[0],
+                durable_commands(&server.product)[1]
             );
             assert_eq!(
                 server.product.probe_calls, 0,
@@ -8851,7 +9124,7 @@ mod conditional_progress_tests {
                     observed["structuredContent"]["surface"]["data"]["state"],
                     "pending-unchanged"
                 );
-                assert_eq!(server.product.surface_commands.len(), 1);
+                assert_eq!(durable_commands(&server.product).len(), 1);
                 assert_eq!(
                     server.product.surface_replies.len(),
                     1,
@@ -8862,7 +9135,7 @@ mod conditional_progress_tests {
                     observed["structuredContent"]["surface"],
                     serde_json::to_value(&terminal).expect("changed failure")
                 );
-                assert_eq!(server.product.surface_commands.len(), 2);
+                assert_eq!(durable_commands(&server.product).len(), 2);
             }
         }
     }
@@ -8906,7 +9179,7 @@ mod conditional_progress_tests {
                 );
             }
             assert!(
-                server.product.surface_commands.is_empty(),
+                durable_commands(&server.product).is_empty(),
                 "stopped before owner read"
             );
         }
@@ -8933,7 +9206,7 @@ mod conditional_progress_tests {
             );
             assert!(result["structuredContent"].get("index_poll").is_none());
             assert_eq!(
-                server.product.surface_commands.len(),
+                durable_commands(&server.product).len(),
                 1,
                 "terminal returns immediately despite requested wait"
             );

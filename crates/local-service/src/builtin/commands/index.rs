@@ -804,11 +804,12 @@ fn replace_project_cargo_aliases(
     let fields = project.project_fields().ok_or_else(|| {
         BuiltinModelError("Cargo alias update does not contain a project row".to_owned())
     })?;
-    let update = ProductSourceRecord::project_with_membership_pages(
+    let update = ProductSourceRecord::project_with_membership_pages_and_source_selection(
         fields.label,
         fields.source_version,
         file_keys,
         Some(evidence),
+        fields.source_selection.cloned(),
     )
     .map_err(BuiltinModelError)?;
     let project = update.project_record();

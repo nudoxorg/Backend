@@ -526,6 +526,16 @@ pub enum EngineRequest {
         /// Cancellation request; terminal state is still owner-driven.
         cancel: CancellationToken,
     },
+    /// One ticket-bound cancellation mutation, never replayed as a status read.
+    CancelIndexOperation {
+        owner: Option<IndexMutationLease>,
+        operation: crate::model::IndexOperationClaim,
+        ticket: backend_library::IndexJobTicket,
+        project: LocalProjectId,
+        request: RequestId,
+        basis: VersionedRoot,
+        cancel: CancellationToken,
+    },
     /// Read-only reconciliation of an exact saved caller operation.
     IndexOperationStatus {
         operation: crate::model::IndexOperationClaim,
@@ -544,7 +554,8 @@ impl EngineRequest {
             | Self::Object { basis, .. }
             | Self::Surface { basis, .. }
             | Self::IndexProject { basis, .. }
-            | Self::IndexOperationStatus { basis, .. } => *basis,
+            | Self::IndexOperationStatus { basis, .. }
+            | Self::CancelIndexOperation { basis, .. } => *basis,
         }
     }
 
@@ -555,7 +566,8 @@ impl EngineRequest {
             | Self::Object { request, .. }
             | Self::Surface { request, .. }
             | Self::IndexProject { request, .. }
-            | Self::IndexOperationStatus { request, .. } => *request,
+            | Self::IndexOperationStatus { request, .. }
+            | Self::CancelIndexOperation { request, .. } => *request,
         }
     }
 
@@ -570,7 +582,8 @@ impl EngineRequest {
             | Self::Object { cancel, .. }
             | Self::Surface { cancel, .. }
             | Self::IndexProject { cancel, .. }
-            | Self::IndexOperationStatus { cancel, .. } => cancel,
+            | Self::IndexOperationStatus { cancel, .. }
+            | Self::CancelIndexOperation { cancel, .. } => cancel,
         }
     }
 }
@@ -582,7 +595,8 @@ impl Coalescible for EngineRequest {
             Self::Root { .. } => Some(CoalesceKey::Root),
             Self::Object { object, .. } => Some(CoalesceKey::Object(*object)),
             Self::Surface { command, .. } => Some(CoalesceKey::Surface(command.id())),
-            Self::IndexProject { project, .. } | Self::IndexOperationStatus { project, .. } => Some(CoalesceKey::Index(project.key())),
+            Self::IndexProject { project, .. } | Self::IndexOperationStatus { project, .. }
+            | Self::CancelIndexOperation { project, .. } => Some(CoalesceKey::Index(project.key())),
         }
     }
 }
@@ -802,9 +816,9 @@ pub trait EngineClient: Send + 'static {
     /// Returns the typed [`EngineFault`] the producer or transport reported.
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault>;
 
-    /// A separate session for read-only exact operation receipts. Production
-    /// clients provide it so hydration cannot monopolize completion progress.
-    /// The actor routes only IndexOperationStatus into this client.
+    /// A separate session for exact operation receipts and owner-ticket Cancel.
+    /// Hydration cannot monopolize completion or cancellation. The actor routes
+    /// status and lease-bound Cancel here, never a new IndexProject/Start.
     fn operation_observer(&self) -> Option<Box<dyn EngineClient>> {
         None
     }
@@ -1043,7 +1057,7 @@ impl EngineActor {
         observation_owner: Option<super::store::OwnerAttachment>,
     ) -> PushResult<EngineRequest> {
         let key = request.coalesce_key();
-        let mailbox = if matches!(&request, EngineRequest::IndexOperationStatus { .. }) {
+        let mailbox = if matches!(&request, EngineRequest::IndexOperationStatus { .. } | EngineRequest::CancelIndexOperation { .. }) {
             self.operation
                 .as_ref()
                 .map_or(&self.mailbox, |lane| &lane.mailbox)
@@ -1184,6 +1198,7 @@ fn run_actor(
         let index_lane = matches!(
             &request,
             EngineRequest::IndexProject { .. } | EngineRequest::IndexOperationStatus { .. }
+            | EngineRequest::CancelIndexOperation { .. }
         );
         if request.cancelled() {
             if !events.push_wait(
@@ -1230,15 +1245,18 @@ fn run_actor(
             active.cancel = Some(request.cancellation().clone());
         }
         let _lifetime = match &request {
-            EngineRequest::IndexProject {
-                owner: Some(owner), ..
-            } => owner.bind_cancellation(request.cancellation()),
+            EngineRequest::IndexProject { owner: Some(owner), .. }
+            | EngineRequest::CancelIndexOperation { owner: Some(owner), .. } => owner.bind_cancellation(request.cancellation()),
             EngineRequest::IndexOperationStatus { .. } => observation_owner
                 .as_ref()
                 .and_then(|owner| owner.bind_cancellation(request.cancellation())),
             _ => None,
         };
         let admission = match &request {
+            EngineRequest::CancelIndexOperation { owner, project, .. } => owner.as_ref()
+                .ok_or_else(|| EngineFault::IndexUnconfirmed { project: project.clone() })
+                .and_then(|owner| owner.ready_for_send(basis, request.cancellation())
+                    .map(|_| ()).map_err(|_| EngineFault::IndexUnconfirmed { project: project.clone() })),
             EngineRequest::IndexOperationStatus { project, .. }
                 if !observation_owner
                     .as_ref()
@@ -1367,7 +1385,8 @@ fn cancelled_before_execute(request: &EngineRequest) -> EngineFault {
 }
 
 fn cancelled_fault(request: &EngineRequest) -> EngineFault {
-    if let EngineRequest::IndexProject { project, .. } | EngineRequest::IndexOperationStatus { project, .. } = request {
+    if let EngineRequest::IndexProject { project, .. } | EngineRequest::IndexOperationStatus { project, .. }
+        | EngineRequest::CancelIndexOperation { project, .. } = request {
         return EngineFault::IndexUnconfirmed {
             project: project.clone(),
         };

@@ -339,6 +339,15 @@ fn index(store: &super::Pages, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
                     ctx,
                 ));
             }
+            if let Some(observation) = &health.ingest.source_selection {
+                leaves.push(value_row(
+                    "Source selection",
+                    observation,
+                    ty::SMALL,
+                    palette.ink2,
+                    ctx,
+                ));
+            }
             for language in health.ingest.languages.iter() {
                 leaves.push(value_row(
                     &language.language,

@@ -156,25 +156,35 @@ pub(super) fn prepare_scan_source(
         ingest::present_compiler_paths(&scan.compiler_sources, &scan.reused_compiler_files);
     let lost = ingest::lost_compiler_profiles(source_root, &reusable, &present)
         .map_err(BuiltinModelError)?;
-    // This first reuse contract covers a single native TS profile. Mixed-profile
-    // indexing keeps compiling until every retained closure can follow its async
-    // continuation through publication. No read-completeness state is invented.
-    let typescript_reuse = if live.len() == 1 && lost.is_empty() {
-        let profile = *live.first().expect("single live profile");
-        if matches!(profile, LanguageProfile::TypeScript(_)) {
-            let binding = selected_semantic_binding_for_snapshot(
-                base_snapshot, package, &label, coordinate, profile,
-            )?;
-            binding.and_then(|binding| compiler.typescript_snapshot_reuse(
-                source_root, profile, semantic_input_digest(&scan, profile), binding,
-                cancellation.as_ref(),
-            ))
-        } else {
-            None
+    // Each profile needs its own selected native producer fence. A matching
+    // scan digest only identifies the candidate; replay proves its full read
+    // closure, including dependencies and negative filesystem observations.
+    let mut typescript_reused_profiles = BTreeSet::new();
+    for &profile in &live {
+        if !matches!(profile, LanguageProfile::TypeScript(_)) || lost.contains(&profile) {
+            continue;
         }
-    } else {
-        None
-    };
+        let binding = selected_semantic_binding_for_snapshot(
+            base_snapshot,
+            package,
+            &label,
+            coordinate,
+            profile,
+        )?;
+        let proof = binding.and_then(|binding| {
+            compiler.typescript_snapshot_reuse(
+                source_root,
+                profile,
+                semantic_input_digest(&scan, profile),
+                binding,
+                cancellation.as_ref(),
+            )
+        });
+        if let Some(proof) = proof {
+            typescript_reused_profiles.insert(profile);
+            final_revision_fence.typescript_reuse.push(proof);
+        }
+    }
     // Persist candidate observations first. They fence compilation but remain
     // private to freshness and query paths until the combined product intent
     // commits.
@@ -210,11 +220,12 @@ pub(super) fn prepare_scan_source(
         );
     }
     let file_keys = scan.files.iter().map(|(key, _)| *key).collect::<Vec<_>>();
-    let project_update = ProductSourceRecord::project_with_membership_pages(
+    let project_update = ProductSourceRecord::project_with_membership_pages_and_source_selection(
         &label,
         scan.source_version,
         file_keys.clone(),
         None,
+        Some(scan.source_selection.clone()),
     )
     .map_err(BuiltinModelError)?;
     let project = project_update.project_record().clone();
@@ -289,10 +300,8 @@ pub(super) fn prepare_scan_source(
     // Keep these source rows private until every semantic profile has been
     // admitted. The eventual BuiltinIntent carries source and semantic roots
     // in one workspace transition.
-    // This compiler owner does not expose a complete typed present-and-negative
-    // read set, so its source/configuration digest cannot authorize reuse.
-    // Every live semantic profile rebuilds until the authority can prove its
-    // complete input closure.
+    // Profiles without a replayed compiler-owned witness still rebuild; the
+    // source/configuration digest alone cannot authorize reuse.
 
     let fresh_profiles = scan
         .compiler_sources
@@ -317,12 +326,10 @@ pub(super) fn prepare_scan_source(
             reusable_inputs.insert(*profile);
         }
     }
-    let dirty =
+    let mut dirty =
         profiles_requiring_compilation(&live, &lost, &fresh_profiles, &inputs, &reusable_inputs);
-    let profiles = if let Some(proof) = typescript_reuse {
-        final_revision_fence.typescript_reuse = Some(proof);
-        PreparedScanProfiles::Reused
-    } else if dirty.is_empty() {
+    dirty.retain(|profile| !typescript_reused_profiles.contains(profile));
+    let profiles = if dirty.is_empty() {
         PreparedScanProfiles::Reused
     } else {
         let (captures, pending_changes, _) = prepare_source_capture_changes_for_snapshot(

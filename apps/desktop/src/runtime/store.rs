@@ -1683,6 +1683,7 @@ mod tests {
             lanes: backend_present::CoverageLine::new(&[], Some(rows)),
             rows,
             ingest: IngestModel {
+                source_selection: None,
                 files_discovered: 1,
                 files_indexed: 1,
                 files_unavailable: 0,

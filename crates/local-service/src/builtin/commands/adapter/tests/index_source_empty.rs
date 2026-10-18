@@ -173,3 +173,115 @@ fn owned_source_preparation_preserves_real_file_facts_with_pending_capture()
     }
     Ok(())
 }
+
+#[test]
+fn unsupported_vue_count_change_publishes_without_supported_source_change_and_unchanged_repeat_is_noop()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = AdapterFixture::open(TempTree::new(), false);
+    let (package, label) = fixture.add_target();
+    fs::write(
+        Path::new(&label).join("App.vue"),
+        "<template>unsupported</template>",
+    )?;
+    let (adapter, daemon) = fixture.parts();
+    let initial_head = daemon.engine().daemon().owner().head();
+    let mut previous = (*initial_head.root().as_bytes(), initial_head.sequence());
+    let mut supported_source_version = None;
+    for (request, expected) in [(171_u8, 1_u64), (172, 2), (173, 2)] {
+        if request == 172 {
+            fs::write(
+                Path::new(&label).join("Other.vue"),
+                "<script>not a TS compiler member</script>",
+            )?;
+        }
+        let operation = backend_library::IndexOperationKey::from_bytes([request; 32])
+            .map_err(|error| error.to_string())?;
+        assert!(matches!(
+            adapter.start_index_operation(
+                daemon,
+                operation,
+                backend_library::PackageReference::parse(label.clone())
+                    .map_err(|error| error.to_string())?,
+                CompileExecutionIntent::Interactive,
+                u64::from(request)
+            )?,
+            Executed::Reply(_)
+        ));
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while adapter.indexing.is_some() {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Vue observation must settle without a compiler capture"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let observed = adapter
+            .resolve_index_operation(daemon, operation, None)
+            .map_err(|error| error.to_string())?;
+        let backend_library::IndexOperationObservation::Known(status) = observed else {
+            return Err(
+                BuiltinModelError("Vue observation lost its durable operation".into()).into(),
+            );
+        };
+        assert!(matches!(
+            status.state,
+            backend_library::IndexOperationState::Published(_)
+        ));
+        assert!(
+            status.source_capture.is_none(),
+            "unsupported files do not invent semantic profiles"
+        );
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let relation = snapshot
+            .relation::<crate::builtin::BuiltinWorkspaceRelation>()
+            .map_err(|error| error.to_string())?;
+        let row = relation
+            .lookup(&package.to_bytes())
+            .map_err(|error| error.to_string())?
+            .ok_or("published Vue observation has no project row")?;
+        let fields = row
+            .project_fields()
+            .ok_or("published row is not a project")?;
+        assert_eq!(
+            fields.files.file_count(),
+            0,
+            "no unsupported file enters the supported denominator"
+        );
+        if let Some(previous_source) = supported_source_version {
+            assert_eq!(
+                fields.source_version, previous_source,
+                "count-only observation does not dirty the supported/compiler input digest"
+            );
+        }
+        supported_source_version = Some(fields.source_version);
+        assert_eq!(
+            fields.source_selection.unwrap().unsupported_extensions[0].files,
+            expected
+        );
+        let health = crate::builtin::ingest_progress(&snapshot)?;
+        assert_eq!(health.files_discovered(), 0);
+        assert_eq!(
+            health.source_selection().unwrap().unsupported_extensions[0].files,
+            expected,
+            "health reads the newly committed observation, including on the reuse/no-compile branch"
+        );
+        let head = daemon.engine().daemon().owner().head();
+        let current = (*head.root().as_bytes(), head.sequence());
+        if request == 173 {
+            assert_eq!(
+                current, previous,
+                "an identical observation is a real no-op"
+            );
+        } else {
+            assert_ne!(
+                current, previous,
+                "a changed exclusion count must publish its project row"
+            );
+        }
+        finish_search_lane(adapter, daemon);
+        let head = daemon.engine().daemon().owner().head();
+        previous = (*head.root().as_bytes(), head.sequence());
+    }
+    Ok(())
+}

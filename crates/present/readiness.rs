@@ -136,7 +136,7 @@ pub(crate) fn project_readiness(
             rows: if sole_project { facts.rows() } else { None },
         },
         RowState::Failed => Readiness::Failed {
-            fault: unfinished_index(label, facts.lanes()),
+            fault: unfinished_index(label, if sole_project { facts.lanes() } else { None }),
         },
     }
 }
@@ -173,7 +173,7 @@ fn unfinished_index(label: &str, lanes: Option<&CoverageLine>) -> Fault {
     let sentence = if cancelled {
         "indexing was cancelled before it published a readable result; index the project again to retry"
     } else {
-        "indexing did not finish: it was refused, cancelled, interrupted by an owner restart, or is stale against the current sources; indexing the project again reports the exact cause"
+        "indexing did not finish; no matching retained compiler diagnostic was read for this revision; inspect the index operation or index the project again to retry"
     };
     Fault::new(
         FaultSlug::Rejected,
@@ -299,7 +299,7 @@ mod tests {
             fault
                 .cause()
                 .sentence()
-                .contains("interrupted by an owner restart")
+                .contains("no matching retained compiler diagnostic was read")
         );
     }
 }

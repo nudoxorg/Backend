@@ -813,3 +813,189 @@ fn lane_and_project_row_always_agree_for_every_profile_outcome_combination() -> 
     assert_eq!(checked, 7 + 49 + 343);
     Ok(())
 }
+
+/// Resolve a cancelled attempt only after its selected generation and source
+/// proofs have been compared. The operation outcome itself stays cancelled.
+fn cancellation_projection(
+    coverage: SemanticPublicationCoverage,
+    source_current: bool,
+    selected_input: Option<[u8; 32]>,
+) -> Result<(Vec<ViewCoverage>, backend_engine::RowState), String> {
+    use backend_engine::builtin::{
+        ProductSemanticCaptureOutcome as Outcome, SemanticPublicationVersion, SemanticSourceCapture,
+    };
+    let key = selected_key("cancelled-selected");
+    let claim = claim(b"cancelled-selected");
+    let prior = SemanticPublicationVersion::new(coverage, claim);
+    let capture = SemanticSourceCapture::new(None, [1; 32], [2; 32], 1, 2).test_value()?;
+    let cancelled = Outcome::Failed {
+        prior,
+        reason: SemanticUnavailableReason::Cancelled,
+    };
+    let current = super::cancelled_selection_matches(
+        prior,
+        coverage,
+        claim,
+        capture,
+        source_current,
+        selected_input,
+    )
+    .test_value()?;
+    let projected = if current {
+        Outcome::Published { coverage, claim }
+    } else {
+        cancelled
+    };
+    let selected = ProductSemanticPublicationRecord::Published { coverage, claim };
+    let mut tally = SemanticTally::default();
+    tally
+        .observe_current(&key, Some(&selected), Some(projected), &activated(&[&key]))
+        .test_value()?;
+    Ok((tally.coverage(), super::capture_row_state(projected)))
+}
+
+#[test]
+fn cancelled_refresh_keeps_current_selected_complete_semantic_coverage() -> Result<(), String> {
+    assert_eq!(
+        cancellation_projection(SemanticPublicationCoverage::Complete, true, Some([2; 32]))?,
+        (
+            vec![ViewCoverage::Complete],
+            backend_engine::RowState::Ready
+        ),
+    );
+    Ok(())
+}
+
+#[test]
+fn cancelled_refresh_cannot_certify_changed_source_or_different_compiler_input()
+-> Result<(), String> {
+    for (source_current, selected_input) in [(false, Some([2; 32])), (true, Some([3; 32]))] {
+        let (lane, state) = cancellation_projection(
+            SemanticPublicationCoverage::Complete,
+            source_current,
+            selected_input,
+        )?;
+        assert_eq!(state, backend_engine::RowState::Failed);
+        assert_eq!(
+            lane,
+            vec![
+                ViewCoverage::Complete,
+                ViewCoverage::Unavailable {
+                    lane: Lane::Semantic,
+                    reason: Reason::Cancelled,
+                }
+            ]
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn cancelled_refresh_without_native_selected_input_proof_stays_unavailable() -> Result<(), String> {
+    assert_eq!(
+        cancellation_projection(SemanticPublicationCoverage::Complete, true, None)?,
+        (
+            vec![
+                ViewCoverage::Complete,
+                ViewCoverage::Unavailable {
+                    lane: Lane::Semantic,
+                    reason: Reason::Cancelled,
+                }
+            ],
+            backend_engine::RowState::Failed
+        ),
+    );
+    let key = selected_key("cancelled-no-selection");
+    let mut no_selection = SemanticTally::default();
+    no_selection
+        .observe_current(
+            &key,
+            None,
+            Some(
+                backend_engine::builtin::ProductSemanticCaptureOutcome::Unavailable {
+                    reason: SemanticUnavailableReason::Cancelled,
+                },
+            ),
+            &ActivatedProfiles::new(),
+        )
+        .test_value()?;
+    assert_eq!(
+        no_selection.coverage(),
+        vec![
+            ViewCoverage::Complete,
+            ViewCoverage::Unavailable {
+                lane: Lane::Semantic,
+                reason: Reason::Cancelled,
+            }
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn cancelled_refresh_preserves_partial_selected_coverage_and_mixed_profile_failure()
+-> Result<(), String> {
+    use backend_engine::builtin::{
+        PartialSemanticCoverage, ProductSemanticCaptureOutcome as Outcome,
+    };
+    let partial = SemanticPublicationCoverage::Partial(
+        PartialSemanticCoverage::new(
+            core::num::NonZeroU32::new(1).test_value()?,
+            core::num::NonZeroU32::new(2).test_value()?,
+        )
+        .test_value()?,
+    );
+    let expected = vec![
+        ViewCoverage::Complete,
+        ViewCoverage::Gapped {
+            lane: Lane::Semantic,
+        },
+    ];
+    assert_eq!(
+        cancellation_projection(partial, true, Some([2; 32]))?,
+        (expected.clone(), backend_engine::RowState::Ready)
+    );
+    let current = selected_key("mixed-current");
+    let missing = ProductSemanticPublicationKey::new(
+        current.package().clone(),
+        current.coordinate().clone(),
+        LanguageProfile::Rust(RustEdition::Rust2021),
+    )
+    .test_value()?;
+    assert_eq!(current.package_key(), missing.package_key());
+    assert_ne!(current.profile(), missing.profile());
+    let mut mixed = SemanticTally::default();
+    mixed
+        .observe_current(
+            &current,
+            Some(&ProductSemanticPublicationRecord::Published {
+                coverage: partial,
+                claim: claim(b"mixed-current"),
+            }),
+            Some(Outcome::Published {
+                coverage: partial,
+                claim: claim(b"mixed-current"),
+            }),
+            &activated(&[&current]),
+        )
+        .test_value()?;
+    mixed
+        .observe_current(
+            &missing,
+            None,
+            Some(Outcome::Unavailable {
+                reason: SemanticUnavailableReason::Cancelled,
+            }),
+            &ActivatedProfiles::new(),
+        )
+        .test_value()?;
+    assert_eq!(mixed.coverage(), expected);
+    assert_eq!(
+        super::merge_package_state(
+            backend_engine::RowState::Ready,
+            backend_engine::RowState::Failed
+        ),
+        backend_engine::RowState::Ready
+    );
+    Ok(())
+}

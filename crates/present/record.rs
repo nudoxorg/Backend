@@ -98,7 +98,7 @@ impl Record {
         let signature = row
             .signature
             .as_ref()
-            .map(|text| Signature::tokenize(text, language));
+            .map(|text| Signature::preview(text, language));
         Self {
             identity,
             kind: row.kind,
@@ -308,5 +308,81 @@ impl RecordList {
     #[must_use]
     pub fn empty_reason(&self) -> Option<&str> {
         self.empty_reason.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod signature_preview_tests {
+    use super::*;
+    use backend_library::{
+        Basis, Coverage, DeclarationKind, SourceExcerpt, SourceExcerptExtent, SourceLocation,
+        package_key, symbol_key,
+    };
+
+    #[test]
+    fn result_lists_share_bounded_previews_and_keep_the_captured_declaration() {
+        for (name, signature) in [
+            (
+                "Workout",
+                format!(
+                    "@Component({{\r\n  template: `{}`\r\n}})\r\nexport class Workout {{}}",
+                    "<div>workout</div>".repeat(80)
+                ),
+            ),
+            (
+                "routes",
+                format!(
+                    "const routes = [\r\n{}\r\n];",
+                    "  { path: '/workouts', component: Workout },\r\n".repeat(30)
+                ),
+            ),
+        ] {
+            let coordinate = format!("/abs/app::src/app.ts:4::{name}");
+            let row = Row::in_package(
+                backend_library::RowId::Symbol(symbol_key(&coordinate)),
+                Basis::new(
+                    backend_library::view_state_root(&[]),
+                    backend_library::object_version(&[]),
+                ),
+                package_key("/abs/app"),
+                &coordinate,
+            )
+            .with_kind(if name == "Workout" {
+                DeclarationKind::Class
+            } else {
+                DeclarationKind::Constant
+            })
+            .with_signature(&signature)
+            .with_source(SourceLocation::new("src/app.ts", 4).expect("source site"))
+            .with_excerpt(
+                SourceExcerpt::captured(&signature, SourceExcerptExtent::Complete)
+                    .expect("captured source"),
+            );
+            let list = crate::assemble::record_list_from_rows(
+                name,
+                std::slice::from_ref(&row),
+                &[Coverage::Complete],
+                false,
+            );
+            let dto = crate::dto::RecordListDto::new(&list);
+            let preview = dto.records[0]
+                .signature
+                .as_ref()
+                .expect("result signature preview");
+            assert!(preview.chars().count() <= 240);
+            assert!(preview.ends_with('…'));
+            assert!(!preview.contains(['\r', '\n']));
+            assert_eq!(dto.records[0].identity.coordinate, coordinate);
+            assert_eq!(row.signature.as_deref(), Some(signature.as_str()));
+            assert_eq!(row.excerpt.text(), Some(signature.as_str()));
+            let text = crate::render::text::records(&list, None, crate::Theme::plain());
+            let markdown = crate::render::markdown::records(&list, None);
+            assert!(text.contains(preview));
+            assert!(markdown.contains(preview));
+            assert!(text.contains(&coordinate));
+            assert!(markdown.contains(&coordinate));
+            assert!(!text.contains("\r\n"));
+            assert!(!markdown.contains("\r\n"));
+        }
     }
 }

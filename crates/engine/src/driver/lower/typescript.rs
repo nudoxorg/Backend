@@ -32,7 +32,6 @@ use backend_semantic::ir::{
     OccurrenceTarget, PackageLineage, PrimitiveShape, ProductChildRole, ReferenceKind, RelSpan,
     SemanticProductConstructor, SemanticTypeChild, SemanticTypeRecord, SemanticTypeTag, TypeId,
     TypeParameterListId, TypeReason, TypeScriptSourceCoordinate, TypeWidth,
-    typescript_program_identity,
 };
 use backend_semantic::vocabulary::{
     ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
@@ -4298,24 +4297,6 @@ pub(crate) fn collect_with_checker<'source, 'report>(
     .map_err(TypeScriptCollectError::Authority)?
 }
 
-/// Projects one exact file from the caller-owned native TSZ project directly
-/// into the existing TypeScript fact lanes. The checker and type database are
-/// borrowed only inside TSZ's file transaction; no JSON report or parallel
-/// type tree is materialized.
-fn native_tsz_program_identity(files: &[TszBoundFile]) -> Option<[u8; 32]> {
-    let mut sources = Vec::with_capacity(files.len());
-    for file in files {
-        let source = file
-            .arena
-            .get_source_file_at(file.source_file)?
-            .text
-            .as_bytes();
-        let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source);
-        sources.push((file.file_name.clone(), *identity));
-    }
-    typescript_program_identity(&sources)
-}
-
 /// Returns the one TSZ binder symbol attached to an exact identifier source
 /// span. The parser node and byte range are checked together; matching names
 /// elsewhere in the file cannot lend an identity.
@@ -4438,17 +4419,28 @@ enum NativeCallableScopeEvent {
     },
 }
 
-/// Resolves a property name through the receiver's exact checker type and
-/// that type symbol's member table. No project-wide name scan participates in
-/// this operation, so same-spelled members on unrelated receivers stay apart.
+/// Resolves a property name through an exact namespace import or the receiver's
+/// checker type and member table. Namespace exports retain their terminal file
+/// owner because raw symbol IDs are binder-relative. No project-wide name scan
+/// participates, so same-spelled members on unrelated receivers stay apart.
 fn native_tsz_member_symbol(
     checker: &mut TszCheckerState<'_>,
     binder: &backend_frontend_typescript::TszBinderState,
     arena: &TszNodeArena,
     receiver: TszNodeIndex,
     member_name: TszNodeIndex,
-) -> Option<TszSymbolId> {
+) -> Option<(TszSymbolId, Option<usize>)> {
     let member_name = arena.get_identifier_at(member_name)?.escaped_text.as_str();
+    if let Some(receiver_symbol) = binder.resolve_identifier(arena, receiver)
+        && let Some(receiver_symbol) = binder.symbols.get(receiver_symbol)
+        && receiver_symbol.import_name() == Some("*")
+    {
+        // A namespace import's raw type symbol cannot be read from the
+        // caller's binder. Even a refused namespace resolution must not fall
+        // through to a same-numbered local symbol.
+        let target = checker.resolve_project_namespace_member_with_owner(receiver, member_name)?;
+        return Some((target.symbol_id, Some(target.owner_file_idx)));
+    }
     let receiver_type = checker.get_type_of_node(receiver);
     let owner = checker.ctx.resolve_type_to_symbol_id(receiver_type);
     let owner = owner?;
@@ -4464,7 +4456,7 @@ fn native_tsz_member_symbol(
                 .as_ref()
                 .and_then(|exports| exports.get(member_name))
         });
-    member
+    member.map(|symbol| (symbol, None))
 }
 
 /// An object method is a source-owned callable even though it has no
@@ -4887,9 +4879,10 @@ fn hash_callable_anchor_step(hash: &mut Sha256, step: CallableAnchorStep<'_>) {
 fn native_tsz_declaration_coordinate(
     binder: &backend_frontend_typescript::TszBinderState,
     symbol_id: TszSymbolId,
-    program_files: &[TszBoundFile],
+    session: &backend_frontend_typescript::TszProjectQuerySession<'_>,
     callable: bool,
 ) -> Option<NativeTszDeclarationCoordinate> {
+    let program_files = &session.project().program().files;
     let symbol_id = binder.resolve_import_symbol(symbol_id).unwrap_or(symbol_id);
     let symbol = binder.symbols.get(symbol_id)?;
     if symbol.declarations.is_empty()
@@ -4955,11 +4948,12 @@ fn native_tsz_declaration_coordinate(
         {
             continue;
         }
-        let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source.text.as_bytes());
+        let identity = session
+            .native_source_identity_for_bound_file(stable.file_idx as usize, file)?;
         let coordinate = NativeTszDeclarationCoordinate {
             file_index: stable.file_idx,
             path: file.file_name.clone(),
-            source_identity: *identity,
+            source_identity: identity,
             declaration_start: stable.pos,
             declaration_end: stable.end,
             name_start,
@@ -4994,6 +4988,47 @@ fn native_tsz_declaration_coordinate(
     fields.into_iter().next()
 }
 
+/// The binder records a destructured variable symbol at its exact identifier
+/// leaf. Follow only native binding-name edges to its variable declaration;
+/// property labels, default initializers and parameter patterns are not owners.
+fn native_tsz_destructured_variable_kind(
+    arena: &TszNodeArena,
+    identifier: TszNodeIndex,
+) -> Option<EntityKind> {
+    arena.get_identifier_at(identifier)?;
+    let mut current = identifier;
+    let mut in_pattern = false;
+    // Every admitted edge must advance in the finite native node graph. A
+    // malformed parent cycle cannot manufacture declaration authority.
+    for _ in 0..arena.nodes.len() {
+        let parent = arena.get_extended(current)?.parent;
+        let node = arena.get(parent)?;
+        if let Some(binding) = arena.get_binding_element(node) {
+            if binding.name != current {
+                return None;
+            }
+        } else if let Some(pattern) = arena.get_binding_pattern(node) {
+            if !pattern.elements.nodes.contains(&current) {
+                return None;
+            }
+            in_pattern = true;
+        } else if let Some(variable) = arena.get_variable_declaration(node) {
+            if !in_pattern || variable.name != current {
+                return None;
+            }
+            return Some(if arena.is_const_variable_declaration(parent) {
+                EntityKind::Constant
+            } else {
+                EntityKind::Static
+            });
+        } else {
+            return None;
+        }
+        current = parent;
+    }
+    None
+}
+
 /// Import aliases may denote a value or a type. The importing spelling never
 /// chooses that role: only the terminal TSZ symbol's unique stable declaration
 /// in this admitted program can supply it. Callable overload selection keeps
@@ -5002,8 +5037,9 @@ fn native_tsz_declaration_coordinate(
 fn native_tsz_import_declaration_coordinate(
     binder: &TszBinderState,
     symbol: TszSymbolId,
-    program_files: &[TszBoundFile],
+    session: &backend_frontend_typescript::TszProjectQuerySession<'_>,
 ) -> Option<NativeTszDeclarationCoordinate> {
+    let program_files = &session.project().program().files;
     let declaration_symbol = binder.symbols.get(symbol)?;
     if declaration_symbol.declarations.len() != declaration_symbol.stable_declarations.len() {
         return None;
@@ -5025,7 +5061,7 @@ fn native_tsz_import_declaration_coordinate(
     {
         return None;
     }
-    if let Some(target) = native_tsz_declaration_coordinate(binder, symbol, program_files, false) {
+    if let Some(target) = native_tsz_declaration_coordinate(binder, symbol, session, false) {
         return Some(target);
     }
     let symbol = binder.symbols.get(symbol)?;
@@ -5058,10 +5094,17 @@ fn native_tsz_import_declaration_coordinate(
             EntityKind::Static
         };
         (variable.name, kind)
+    } else if arena.get_identifier_at(*declaration).is_some() {
+        (
+            *declaration,
+            native_tsz_destructured_variable_kind(arena, *declaration)?,
+        )
     } else {
         return None;
     };
-    // Destructured/export-assignment carriers do not prove a named target.
+    // Aggregate patterns/export assignments do not prove a named target.
+    // A destructured leaf above retains its exact identifier primary extent,
+    // matching the already published authored leaf rather than the aggregate.
     let identifier = arena.get_identifier_at(name)?;
     let (name_start, name_end) = arena.pos_end_at(name)?;
     if identifier.escaped_text.is_empty()
@@ -5076,7 +5119,8 @@ fn native_tsz_import_declaration_coordinate(
     Some(NativeTszDeclarationCoordinate {
         file_index: stable.file_idx,
         path: file.file_name.clone(),
-        source_identity: *ContentId::<SourceFactDomain>::from_canonical_bytes(source.text.as_bytes()),
+        source_identity: session
+            .native_source_identity_for_bound_file(stable.file_idx as usize, file)?,
         declaration_start: stable.pos,
         declaration_end: stable.end,
         name_start,
@@ -5111,10 +5155,15 @@ pub(crate) fn collect_with_tsz<'source, 'session>(
     let declaration_file = source_path.ends_with(".d.ts")
         || source_path.ends_with(".d.mts")
         || source_path.ends_with(".d.cts");
-    let program_files = &project.program().files;
-    let program_identity = native_tsz_program_identity(program_files);
-    let source_identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes());
-    facts.set_native_tsz_identity(program_identity, *source_identity);
+    let program_identity = session.native_program_identity();
+    let source_identity = session
+        .native_source_identity(file_index, source.as_bytes())
+        .ok_or_else(|| {
+            TypeScriptCollectError::TszAuthority(TszAuthorityError::SourceMismatch {
+                path: source_path.to_owned(),
+            })
+        })?;
+    facts.set_native_tsz_identity(program_identity, source_identity);
     macro_rules! lower_with_tsz_checker {
         ($checker:ident, $binder:ident, $bound_file:ident, $database:ident) => {{
             let build = |module: OxcModule<'_>| {
@@ -5167,7 +5216,7 @@ pub(crate) fn collect_with_tsz<'source, 'session>(
                     &mut *$checker,
                     $binder,
                     $bound_file,
-                    program_files,
+                    session,
                     file_index,
                     program_identity,
                 )?;
@@ -6764,10 +6813,11 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         checker: &mut TszCheckerState<'_>,
         binder: &backend_frontend_typescript::TszBinderState,
         bound_file: &TszBoundFile,
-        program_files: &[TszBoundFile],
+        session: &backend_frontend_typescript::TszProjectQuerySession<'_>,
         current_file_index: usize,
         program_identity: Option<[u8; 32]>,
     ) -> Result<(), TypeScriptCollectError> {
+        let program_files = &session.project().program().files;
         let current_file_index = u32::try_from(current_file_index).map_err(|_| lane_rejection())?;
         if program_files
             .get(current_file_index as usize)
@@ -6819,7 +6869,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 continue;
             };
             let Some(target) = native_tsz_import_declaration_coordinate(
-                target_binder, resolved.symbol_id, program_files,
+                target_binder, resolved.symbol_id, session,
             ) else { continue; };
             self.commit_native_tsz_occurrence(
                 owner, Span::new(start, end), occurrence.kind, target,
@@ -6851,7 +6901,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                     continue;
                 }
                 called_member_accesses.insert(call.expression.0);
-                let Some(target) = native_tsz_member_symbol(
+                let Some((target, target_owner)) = native_tsz_member_symbol(
                     checker,
                     binder,
                     arena,
@@ -6863,7 +6913,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 (
                     access.name_or_argument,
                     target,
-                    None,
+                    target_owner,
                     ReferenceKind::MethodCall,
                 )
             } else if arena.get_identifier_at(call.expression).is_some() {
@@ -6896,7 +6946,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             let Some(target) = native_tsz_declaration_coordinate(
                 target_binder,
                 target_symbol,
-                program_files,
+                session,
                 true,
             ) else {
                 continue;
@@ -6930,7 +6980,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             if arena.get_identifier_at(access.name_or_argument).is_none() {
                 continue;
             }
-            let Some(target_symbol) = native_tsz_member_symbol(
+            let Some((target_symbol, target_owner)) = native_tsz_member_symbol(
                 checker,
                 binder,
                 arena,
@@ -6945,8 +6995,17 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             let Some(owner) = self.owning_fact(site_start) else {
                 continue;
             };
-            let Some(target) =
-                native_tsz_declaration_coordinate(binder, target_symbol, program_files, false)
+            let target_binder = match target_owner {
+                Some(owner) => checker.ctx.get_binder_for_file(owner),
+                None => Some(binder),
+            };
+            let Some(target_binder) = target_binder else { continue; };
+            let target = if target_owner.is_some() {
+                native_tsz_import_declaration_coordinate(target_binder, target_symbol, session)
+            } else {
+                native_tsz_declaration_coordinate(target_binder, target_symbol, session, false)
+            };
+            let Some(target) = target
             else {
                 continue;
             };
@@ -13051,6 +13110,470 @@ describe('suite', () => {\n\
     }
 
     #[test]
+    fn native_tsz_occurrence_targets_reuse_only_their_exact_session_source() -> Result<(), LaneError> {
+        let models = format!(
+            "/* {} */\nexport const version = 1;\nexport function alpha(value: number): number {{ return value; }}\nexport class Box {{ value = 1; getValue(): number {{ return this.value; }} }}\n",
+            "target source padding ".repeat(256)
+        );
+        let mut caller = String::from(
+            "import { alpha as run, version, Box } from './models';\nconst box = new Box();\nfunction local(value: number): number { return value; }\nexport function repeated() { let total = version;\n",
+        );
+        for value in 0..8 {
+            caller.push_str(&format!(
+                    "total += run({value}); total += box.getValue(); total += box.value; total += local({value});\n"
+                ));
+        }
+        caller.push_str("return total; }\n");
+        let resolutions = [module_resolution(
+            "caller.ts",
+            "./models",
+            TszProjectModuleRequestKind::EsmImport,
+            TszProjectModuleResolutionTarget::File {
+                path: "models.ts".to_owned(),
+            },
+        )];
+        let authority = native_tsz_project_with_resolutions(
+            &[
+                ("models.ts", models.as_str()),
+                ("caller.ts", caller.as_str()),
+            ],
+            &resolutions,
+        )?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("target cache project"))?;
+        let session = project
+            .checked_query_session_unmetered_for_test()
+            .map_err(|_| LaneError::Missing("target cache session"))?;
+        let model_index = session
+            .file_index("models.ts")
+            .map_err(|_| LaneError::Missing("exact model index"))?;
+        let caller_index = session
+            .file_index("caller.ts")
+            .map_err(|_| LaneError::Missing("exact caller index"))?;
+        let model_file = &project.program().files[model_index];
+        let expected = *ContentId::<SourceFactDomain>::from_canonical_bytes(models.as_bytes());
+        assert_eq!(
+            session.native_source_identity_for_bound_file(model_index, model_file),
+            Some(expected)
+        );
+        assert_eq!(
+            session.native_source_identity_for_bound_file(
+                model_index,
+                &project.program().files[caller_index]
+            ),
+            None,
+            "another file at an admitted index cannot acquire the target digest"
+        );
+        assert_eq!(
+            session.native_source_identity_for_bound_file(usize::MAX, model_file),
+            None
+        );
+        let initial_work = session.native_identity_hash_work_for_test();
+        assert_eq!(initial_work, (2, (models.len() + caller.len()) as u64));
+
+        // Same paths/text in a separately checked program are still another owner.
+        let other_authority = native_tsz_project_with_resolutions(
+            &[
+                ("caller.ts", caller.as_str()),
+                ("models.ts", models.as_str()),
+            ],
+            &resolutions,
+        )?;
+        let other = other_authority
+            .project()
+            .ok_or(LaneError::Missing("other target cache project"))?;
+        let other_session = other
+            .checked_query_session_unmetered_for_test()
+            .map_err(|_| LaneError::Missing("other target cache session"))?;
+        let other_model = &other.program().files[other_session
+            .file_index("models.ts")
+            .map_err(|_| LaneError::Missing("exact model index"))?];
+        assert_eq!(
+            session.native_source_identity_for_bound_file(model_index, other_model),
+            None
+        );
+
+        for _ in 0..2 {
+            let mut facts = FactSet::new();
+            collect_with_tsz(
+                TypeScriptSource::TypeScript,
+                caller.as_bytes(),
+                project,
+                "caller.ts",
+                &session,
+                &mut facts,
+            )?;
+            let alpha_name = models.find("alpha(value").ok_or(LaneError::Missing("authored alpha name"))?;
+            let box_name = models.find("Box {").ok_or(LaneError::Missing("authored Box name"))?;
+            let constructor_site = caller.find("new Box()").ok_or(LaneError::Missing("authored constructor"))? + 4;
+            let mut alpha_sites = std::collections::BTreeSet::new();
+            let mut constructors = 0;
+            let mut calls = 0;
+            let mut methods = 0;
+            let mut fields = 0;
+            let mut local_calls = 0;
+            for index in 0..facts.occurrence_len {
+                let occurrence = facts.occurrences[index];
+                if matches!(occurrence.target, OccurrenceTarget::Local(_))
+                    && occurrence.kind == ReferenceKind::FunctionCall
+                    && occurrence.confidence == OccurrenceConfidence::Oracle
+                {
+                    local_calls += 1;
+                }
+                let Some(slot) = facts.occurrence_source_coordinate_slot[index] else {
+                    continue;
+                };
+                let coordinate = TypeScriptSourceCoordinate::decode(
+                    &facts.foreign_source_coordinate_text[slot as usize],
+                )
+                .ok_or(LaneError::Missing("cached native target coordinate"))?;
+                assert_eq!(coordinate.path, "models.ts");
+                assert_eq!(coordinate.source, expected);
+                assert_eq!(Some(coordinate.program), session.native_program_identity());
+                assert_eq!(occurrence.confidence, OccurrenceConfidence::Oracle);
+                match occurrence.kind {
+                    ReferenceKind::FunctionCall => {
+                        let owner = facts.provenance.source_spans()[facts.occurrence_owners[index] as usize]
+                            .ok_or(LaneError::Missing("authored occurrence owner span"))?;
+                        let start = owner.start + occurrence.span.start;
+                        let end = owner.start + occurrence.span.end;
+                        if coordinate.name_start as usize == alpha_name {
+                            assert_eq!(caller.get(start as usize..end as usize), Some("run"));
+                            assert!(alpha_sites.insert((start, end)), "one occurrence per authored alpha call");
+                            calls += 1;
+                        } else {
+                            assert_eq!(coordinate.name_start as usize, box_name,
+                                "only the authored Box construction is an additional foreign call");
+                            assert_eq!((start as usize, end as usize), (constructor_site, constructor_site + 3));
+                            assert_eq!(caller.get(start as usize..end as usize), Some("Box"));
+                            constructors += 1;
+                        }
+                        assert!(coordinate.declaration_start <= coordinate.name_start
+                            && coordinate.name_start < coordinate.declaration_end);
+                    },
+                    ReferenceKind::MethodCall => methods += 1,
+                    ReferenceKind::FieldAccess => fields += 1,
+                    _ => {}
+                }
+            }
+            assert_eq!(
+                calls, 8,
+                "every imported call retains its exact authored target"
+            );
+            assert_eq!(constructors, 1, "the actual new Box() site retains its exact class target");
+            let expected_alpha_sites = caller.match_indices("run(").map(|(start, _)|
+                (start as u32, start as u32 + 3)).collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(alpha_sites, expected_alpha_sites, "all eight authored imported sites, with no extras");
+            assert_eq!(
+                methods, 8,
+                "repeated receiver-owned methods retain their target"
+            );
+            assert!(
+                fields >= 8,
+                "each receiver-owned field read retains a native target"
+            );
+            assert_eq!(
+                local_calls, 8,
+                "same-file calls remain local rather than foreign"
+            );
+            assert_eq!(session.native_identity_hash_work_for_test(), initial_work);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_session_identity_cache_preserves_outputs_and_exact_source_ownership()
+    -> Result<(), LaneError> {
+        use backend_semantic::ir::{
+            NativeProgramSource, NativeProgramSourceManifest, SourceIdentity,
+            encode_full_semantic_image, full_semantic_image_len, typescript_program_identity,
+        };
+
+        fn manifest(project: &TszProject, wrong_length: bool) -> NativeProgramSourceManifest {
+            let rows = project
+                .program()
+                .files
+                .iter()
+                .enumerate()
+                .map(|(index, file)| {
+                    let source = file
+                        .arena
+                        .get_source_file_at(file.source_file)
+                        .expect("actual source");
+                    NativeProgramSource {
+                        program_path: file.file_name.clone(),
+                        source: SourceIdentity {
+                            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(
+                                source.text.as_bytes(),
+                            ),
+                            byte_len: u32::try_from(source.text.len())
+                                .expect("fixture source length")
+                                + if wrong_length && index == 0 { 1 } else { 0 },
+                        },
+                        package_path: Some(file.file_name.clone()),
+                    }
+                })
+                .collect();
+            NativeProgramSourceManifest::from_sources(
+                ContentId::<ToolchainDomain>::from_canonical_bytes(
+                    b"native-identity-cache-fixture",
+                ),
+                rows,
+            )
+            .expect("actual native membership")
+        }
+        fn bytes(facts: &FactSet<'_>, source: &str) -> Result<Vec<u8>, LaneError> {
+            let identity = SourceIdentity {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
+                byte_len: u32::try_from(source.len())?,
+            };
+            let recipe = CompileRecipeFact::derive(
+                LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                Stage::LowerIr,
+                NativeTool::TypeScriptCompiler,
+                identity.identity,
+                ContentId::<ToolchainDomain>::from_canonical_bytes(
+                    b"native-identity-cache-fixture",
+                ),
+            );
+            let ir = facts.build_ir(
+                recipe.profile,
+                identity,
+                recipe,
+                crate::driver::types::DeclarationScope::fixture(),
+            )?;
+            let mut encoded = vec![
+                0;
+                full_semantic_image_len(&ir)
+                    .map_err(|_| LaneError::Missing("canonical image size"))?
+            ];
+            encode_full_semantic_image(&ir, &mut encoded)
+                .map_err(|_| LaneError::Missing("canonical image encoding"))?;
+            Ok(encoded)
+        }
+        let models = "export function alpha(value: number): number { return value; }\n";
+        let caller =
+            "import { alpha } from './models';\nexport function read() { return alpha(1); }\n";
+        let resolutions = [module_resolution(
+            "caller.ts",
+            "./models",
+            TszProjectModuleRequestKind::EsmImport,
+            TszProjectModuleResolutionTarget::File {
+                path: "models.ts".to_owned(),
+            },
+        )];
+        let authority = native_tsz_project_with_resolutions(
+            &[("models.ts", models), ("caller.ts", caller)],
+            &resolutions,
+        )?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("native cache project"))?;
+        let actual_manifest = manifest(project, false);
+        let expected_members = project
+            .program()
+            .files
+            .iter()
+            .map(|file| {
+                let source = file
+                    .arena
+                    .get_source_file_at(file.source_file)
+                    .expect("native source");
+                (
+                    file.file_name.clone(),
+                    *ContentId::<SourceFactDomain>::from_canonical_bytes(source.text.as_bytes()),
+                )
+            })
+            .collect::<Vec<_>>();
+        let expected_program = typescript_program_identity(&expected_members);
+        let expected_bytes = project
+            .program()
+            .files
+            .iter()
+            .map(|file| {
+                file.arena
+                    .get_source_file_at(file.source_file)
+                    .expect("source")
+                    .text
+                    .len() as u64
+            })
+            .sum::<u64>();
+        let session = project
+            .checked_query_session_unmetered_for_test()
+            .expect("native session")
+            .authenticate_native_program_sources(&actual_manifest)
+            .expect("exact captured source membership");
+        assert_eq!(session.native_program_identity(), expected_program);
+        assert_eq!(
+            session.native_program_identity(),
+            Some(actual_manifest.program())
+        );
+        let initial_work = session.native_identity_hash_work_for_test();
+        assert_eq!(
+            initial_work,
+            (project.program().files.len(), expected_bytes)
+        );
+        let mut outputs = std::collections::BTreeMap::new();
+        for (path, source) in [
+            ("models.ts", models),
+            ("caller.ts", caller),
+            ("caller.ts", caller),
+            ("models.ts", models),
+        ] {
+            let index = session.file_index(path).expect("exact selected file");
+            assert_eq!(
+                session.native_source_identity(index, source.as_bytes()),
+                Some(*ContentId::<SourceFactDomain>::from_canonical_bytes(
+                    source.as_bytes()
+                ))
+            );
+            assert_eq!(
+                session.native_source_identity(index, b"different compile bytes"),
+                None
+            );
+            let mut facts = FactSet::new();
+            collect_with_tsz(
+                TypeScriptSource::TypeScript,
+                source.as_bytes(),
+                project,
+                path,
+                &session,
+                &mut facts,
+            )?;
+            assert_eq!(facts.tsz_program_identity, expected_program);
+            assert_eq!(
+                facts.tsz_source_identity,
+                Some(*ContentId::<SourceFactDomain>::from_canonical_bytes(
+                    source.as_bytes()
+                ))
+            );
+            let encoded = bytes(&facts, source)?;
+            if let Some(previous) = outputs.insert(path, encoded.clone()) {
+                assert_eq!(
+                    previous, encoded,
+                    "query order cannot change canonical output"
+                );
+            }
+        }
+        assert_eq!(
+            session.native_identity_hash_work_for_test(),
+            initial_work,
+            "repeated actual lowering never rehashes the whole program in the identity cache"
+        );
+        assert!(
+            project
+                .checked_query_session_unmetered_for_test()
+                .expect("native session")
+                .authenticate_native_program_sources(&manifest(project, true))
+                .is_err(),
+            "equal source hashes cannot admit a false byte length"
+        );
+
+        // These are real separate TSZ programs, not fabricated IR. Reordering
+        // inputs preserves identity; source edits, adopted files and path moves
+        // must not borrow the original program's cached ownership.
+        let edited = "export function alpha(value: number): number { return value + 1; }\n";
+        for (files, target, same_program) in [
+            (
+                vec![("caller.ts", caller), ("models.ts", models)],
+                "models.ts",
+                true,
+            ),
+            (
+                vec![("caller.ts", caller), ("models.ts", edited)],
+                "models.ts",
+                false,
+            ),
+            (
+                vec![
+                    ("caller.ts", caller),
+                    ("models.ts", models),
+                    ("adopted.ts", models),
+                ],
+                "models.ts",
+                false,
+            ),
+            (
+                vec![("caller.ts", caller), ("moved.ts", models)],
+                "moved.ts",
+                false,
+            ),
+        ] {
+            let resolutions = [module_resolution(
+                "caller.ts",
+                "./models",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: target.to_owned(),
+                },
+            )];
+            let other_authority = native_tsz_project_with_resolutions(&files, &resolutions)?;
+            let other = other_authority
+                .project()
+                .ok_or(LaneError::Missing("other native program"))?;
+            let other_manifest = manifest(other, false);
+            let other_session = other
+                .checked_query_session_unmetered_for_test()
+                .expect("native session")
+                .authenticate_native_program_sources(&other_manifest)
+                .expect("other exact source membership");
+            assert_eq!(
+                other_session.native_program_identity() == expected_program,
+                same_program
+            );
+            if !same_program {
+                assert!(
+                    other
+                        .checked_query_session_unmetered_for_test()
+                        .expect("native session")
+                        .authenticate_native_program_sources(&actual_manifest)
+                        .is_err(),
+                    "changed/adopted/moved source cannot adopt a stale membership"
+                );
+            }
+            let mut facts = FactSet::new();
+            let result = collect_with_tsz(
+                TypeScriptSource::TypeScript,
+                caller.as_bytes(),
+                other,
+                "caller.ts",
+                &session,
+                &mut facts,
+            );
+            assert!(matches!(
+                result,
+                Err(TypeScriptCollectError::TszAuthority(
+                    backend_frontend_typescript::TszAuthorityError::ProjectSessionMismatch
+                ))
+            ));
+            assert_eq!(
+                facts.len(),
+                0,
+                "wrong owner is refused before any fact publication"
+            );
+        }
+        let mut facts = FactSet::new();
+        assert!(
+            collect_with_tsz(
+                TypeScriptSource::TypeScript,
+                b"different source",
+                project,
+                "caller.ts",
+                &session,
+                &mut facts
+            )
+            .is_err()
+        );
+        assert_eq!(
+            facts.len(),
+            0,
+            "changed compile bytes publish no cached facts"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn native_tsz_named_import_sites_and_bare_uses_keep_exact_local_targets() -> Result<(), LaneError> {
         use backend_compile::SourceBindingIdentity;
         let scheduler = "export interface Workout { name: string; }\nexport function generateSchedule(request: Workout): string { return request.name; }\nexport const scheduleVersion = 1;\n";
@@ -13152,6 +13675,285 @@ describe('suite', () => {\n\
     }
 
     #[test]
+    fn native_tsz_named_imports_of_destructured_exports_keep_exact_leaf_targets()
+    -> Result<(), LaneError> {
+        use backend_semantic::ir::{
+            DeclarationPublicationRole, ExternalTarget, ForeignTargetOrigin,
+            SemanticCoreReader as _, SemanticImageView, encode_full_semantic_image,
+            full_semantic_image_len,
+        };
+
+        fn canonical_bytes<'source>(
+            facts: &FactSet<'source>,
+            source: &str,
+            path: &'source str,
+        ) -> Result<Vec<u8>, LaneError> {
+            let identity = backend_semantic::ir::SourceIdentity {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
+                byte_len: u32::try_from(source.len())?,
+            };
+            let recipe = CompileRecipeFact::derive(
+                LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                Stage::LowerIr,
+                NativeTool::TypeScriptCompiler,
+                identity.identity,
+                ContentId::<ToolchainDomain>::from_canonical_bytes(
+                    b"tsz-destructured-import-fixture",
+                ),
+            );
+            let lineage =
+                backend_semantic::ir::PackageLineage::new("npm", "destructured-import-fixture")
+                    .map_err(|_| LaneError::Missing("fixture package lineage"))?;
+            let scope = crate::driver::types::DeclarationScope::new(lineage, path)
+                .map_err(|_| LaneError::Missing("exact package source scope"))?;
+            let ir = facts.build_ir(recipe.profile, identity, recipe, scope)?;
+            let length = full_semantic_image_len(&ir)
+                .map_err(|_| LaneError::Missing("canonical native image length"))?;
+            let mut bytes = vec![0; length];
+            assert_eq!(
+                encode_full_semantic_image(&ir, &mut bytes)
+                    .map_err(|_| LaneError::Missing("canonical native image encoding"))?,
+                length
+            );
+            Ok(bytes)
+        }
+
+        let dependency = concat!(
+            "declare function fallback(): number;\n",
+            "declare const input: { source?: number; nested: { count: number }; extra: boolean };\n",
+            "export const { source: workout = fallback(), nested: { count }, ...rest } = input;\n",
+            "export let [head, , ...tail]: number[] = [1, 2, 3];\n",
+            "export function parameter({ workout }: { workout: number }) { return workout; }\n",
+        );
+        let caller = concat!(
+            "import { workout as localWorkout, count, rest, head, tail } from '@/models';\n",
+            "import { remote } from 'vendor';\n",
+            "export function read() { return localWorkout + count + head + tail.length + rest.extra + remote(); }\n",
+            "export function shadow(localWorkout: number) { return localWorkout; }\n",
+        );
+        let resolutions = [
+            module_resolution(
+                "caller.ts",
+                "@/models",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "models.ts".to_owned(),
+                },
+            ),
+            module_resolution(
+                "caller.ts",
+                "vendor",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::Unresolved,
+            ),
+        ];
+        let authority = native_tsz_project_with_resolutions(
+            &[("models.ts", dependency), ("caller.ts", caller)],
+            &resolutions,
+        )?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("native import project"))?;
+        assert_exact_module_resolution_metadata(project, &resolutions);
+        let targets = collect_native_tsz_file(project, "models.ts", dependency)?;
+        let facts = collect_native_tsz_file(project, "caller.ts", caller)?;
+        let target_bytes = canonical_bytes(&targets, dependency, "models.ts")?;
+        let caller_bytes = canonical_bytes(&facts, caller, "caller.ts")?;
+        let target_image = SemanticImageView::reopen(&target_bytes)
+            .map_err(|_| LaneError::Missing("reopened actual target image"))?;
+        let caller_image = SemanticImageView::reopen(&caller_bytes)
+            .map_err(|_| LaneError::Missing("reopened actual caller image"))?;
+        let bound_file = project
+            .program()
+            .files
+            .iter()
+            .find(|file| file.file_name == "models.ts")
+            .ok_or(LaneError::Missing("native target file"))?;
+
+        for (local, target_name, expected_kind) in [
+            ("localWorkout", "workout", EntityKind::Constant),
+            ("count", "count", EntityKind::Constant),
+            ("rest", "rest", EntityKind::Constant),
+            ("head", "head", EntityKind::Static),
+            ("tail", "tail", EntityKind::Static),
+        ] {
+            let leaves = (0..targets.len())
+                .filter(|&index| {
+                    targets.names[index] == target_name.as_bytes()
+                        && targets.kinds[index] == expected_kind
+                        && targets.publication_roles[index]
+                            == DeclarationPublicationRole::PrimaryOwned
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(leaves.len(), 1, "one actual authored target: {target_name}");
+            let extent =
+                targets.provenance.source_spans()[leaves[0]].expect("authored leaf extent");
+            assert_eq!(
+                &dependency.as_bytes()[extent.start as usize..extent.end as usize],
+                target_name.as_bytes()
+            );
+            let native_leaf = bound_file
+                .arena
+                .nodes
+                .iter()
+                .enumerate()
+                .find_map(|(raw, _)| {
+                    let node = super::TszNodeIndex(u32::try_from(raw).ok()?);
+                    (bound_file.arena.get_identifier_at(node).is_some()
+                        && bound_file.arena.pos_end_at(node) == Some((extent.start, extent.end)))
+                    .then_some(node)
+                })
+                .expect("actual native identifier leaf");
+            assert_eq!(
+                super::native_tsz_destructured_variable_kind(&bound_file.arena, native_leaf),
+                Some(expected_kind)
+            );
+            let imported = (0..facts.len())
+                .find(|&index| {
+                    facts.names[index] == local.as_bytes()
+                        && facts.kinds[index] == EntityKind::Reexport
+                })
+                .expect("actual authored import binding");
+            let import_sites = (0..facts.occurrence_len)
+                .filter(|&index| {
+                    facts.occurrence_owners[index] == imported as u32
+                        && facts.occurrences[index].kind == ReferenceKind::Import
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(import_sites.len(), 1, "one written import edge: {local}");
+            let slot = facts.occurrence_source_coordinate_slot[import_sites[0]]
+                .expect("destructured export must have native source target");
+            assert_eq!(
+                facts.occurrences[import_sites[0]].confidence,
+                OccurrenceConfidence::Oracle
+            );
+            let coordinate = TypeScriptSourceCoordinate::decode(
+                &facts.foreign_source_coordinate_text[slot as usize],
+            )
+            .expect("typed native target");
+            assert_eq!(coordinate.path, "models.ts");
+            assert_eq!(
+                coordinate.source,
+                *ContentId::<SourceFactDomain>::from_canonical_bytes(dependency.as_bytes())
+            );
+            assert_eq!(
+                (
+                    coordinate.declaration_start,
+                    coordinate.declaration_end,
+                    coordinate.name_start
+                ),
+                (extent.start, extent.end, extent.start)
+            );
+            // The native coordinate survives actual canonical image encoding
+            // and names the exact owned target extent, never the aggregate.
+            assert_eq!(
+                target_image
+                    .canonical_entities()
+                    .filter(|entity| entity.kind == expected_kind
+                        && entity.authority.publication == DeclarationPublicationRole::PrimaryOwned
+                        && entity
+                            .name
+                            .named_atom()
+                            .and_then(|atom| target_image.atom(atom))
+                            == Some(target_name.as_bytes())
+                        && entity.source.is_some_and(
+                            |span| (span.start(), span.end()) == (extent.start, extent.end)
+                        ))
+                    .count(),
+                1
+            );
+            assert!(
+                caller_image.canonical_externals().any(|(_, target)| {
+                    let ExternalTarget::Foreign(foreign) = target else {
+                        return false;
+                    };
+                    let ForeignTargetOrigin::Universe { ecosystem } = foreign.origin else {
+                        return false;
+                    };
+                    if caller_image.atom(ecosystem)
+                        != Some(TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM.as_bytes())
+                        || foreign.kind != Some(expected_kind)
+                    {
+                        return false;
+                    }
+                    caller_image
+                        .atom(foreign.path)
+                        .and_then(|path| std::str::from_utf8(path).ok())
+                        .and_then(TypeScriptSourceCoordinate::decode)
+                        .is_some_and(|reopened| reopened == coordinate)
+                }),
+                "canonical endpoint retains exact leaf identity: {local}"
+            );
+            let body = caller.find("return localWorkout").expect("read body");
+            let start = (body + caller[body..].find(local).expect("bare imported use")) as u32;
+            assert!(
+                (0..facts.occurrence_len).any(|index| facts.occurrence_source_coordinate_slot
+                    [index]
+                    .is_some()
+                    && facts.occurrences[index].confidence == OccurrenceConfidence::Oracle
+                    && facts.provenance.source_spans()[facts.occurrence_owners[index] as usize]
+                        .is_some_and(
+                            |owner| owner.start + facts.occurrences[index].span.start == start
+                        )),
+                "bare use retains native leaf authority: {local}"
+            );
+        }
+        // Native parent edges must exclude property labels, default-expression
+        // callees and parameter-pattern leaves from variable-target authority.
+        for prefix in [
+            "source: workout",
+            "fallback(), nested",
+            "workout }: { workout",
+        ] {
+            let start = dependency.find(prefix).expect("opposing native site") as u32;
+            let end = start
+                + prefix
+                    .split(|c: char| !c.is_alphanumeric())
+                    .next()
+                    .expect("identifier")
+                    .len() as u32;
+            let node = bound_file
+                .arena
+                .nodes
+                .iter()
+                .enumerate()
+                .find_map(|(raw, _)| {
+                    let node = super::TszNodeIndex(u32::try_from(raw).ok()?);
+                    (bound_file.arena.get_identifier_at(node).is_some()
+                        && bound_file.arena.pos_end_at(node) == Some((start, end)))
+                    .then_some(node)
+                })
+                .expect("actual opposing native identifier");
+            assert_eq!(
+                super::native_tsz_destructured_variable_kind(&bound_file.arena, node),
+                None,
+                "{prefix}"
+            );
+        }
+        let remote = (0..facts.len())
+            .find(|&index| {
+                facts.names[index] == b"remote" && facts.kinds[index] == EntityKind::Reexport
+            })
+            .expect("vendor binding");
+        assert!(
+            (0..facts.occurrence_len).any(|index| facts.occurrence_owners[index] == remote as u32
+                && facts.occurrences[index].confidence == OccurrenceConfidence::Import
+                && matches!(facts.occurrences[index].target, OccurrenceTarget::Foreign(key)
+                    if matches!(key.origin, ForeignOrigin::Package(_)))),
+            "unresolved vendor remains foreign"
+        );
+        let shadow = caller.rfind("localWorkout;").expect("shadow use") as u32;
+        assert!(
+            (0..facts.occurrence_len).any(|index| facts.provenance.source_spans()
+                [facts.occurrence_owners[index] as usize]
+                .is_some_and(|owner| owner.start + facts.occurrences[index].span.start == shadow)
+                && matches!(facts.occurrences[index].target, OccurrenceTarget::Local(_))),
+            "same-spelled parameter never borrows the imported target"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn native_tsz_type_only_imports_do_not_guess_merged_or_overloaded_targets() -> Result<(), LaneError> {
         let dependency = "export interface Workout { name: string; }\nexport interface Merged { first: number; }\nexport interface Merged { second: number; }\nexport declare function pick(value: string): string;\nexport declare function pick(value: number): number;\nexport function Mixed() {}\nexport namespace Mixed { export const version = 1; }\n";
         let caller = "import type { Workout, Merged } from '@/models';\nimport { pick, Mixed } from '@/models';\nexport function take(value: Workout, merged: Merged) { const bothRoles = Mixed; return pick; }\n";
@@ -13171,6 +13973,95 @@ describe('suite', () => {\n\
                 "only a singular exact declaration supplies the import target: {name}");
             assert_eq!(facts.occurrences[edge].confidence,
                 if exact { OccurrenceConfidence::Oracle } else { OccurrenceConfidence::Import });
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_namespace_members_keep_terminal_export_owner_and_preserve_opposers()
+    -> Result<(), LaneError> {
+        let scheduler = "export function generateSchedule(value: number) { return value; }\nexport const version = 1;\nexport default class NavBar {}\n";
+        let barrel = "export { generateSchedule as schedule } from './scheduler';\n";
+        let caller = concat!(
+            "import * as scheduler from '@/scheduler';\n",
+            "import * as api from './barrel';\n",
+            "import * as vendor from 'vendor';\n",
+            "export function POST() { const run = scheduler.generateSchedule; const component = scheduler.default; return scheduler.generateSchedule(scheduler.version) + api.schedule(1); }\n",
+            "export function shadow(scheduler: { generateSchedule(value: number): number }) { return scheduler.generateSchedule(2); }\n",
+            "export function foreign() { return vendor.generateSchedule(3); }\n",
+        );
+        let resolutions = [
+            module_resolution("caller.ts", "@/scheduler", TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File { path: "scheduler.ts".to_owned() }),
+            module_resolution("caller.ts", "./barrel", TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File { path: "barrel.ts".to_owned() }),
+            module_resolution("barrel.ts", "./scheduler", TszProjectModuleRequestKind::EsmReExport,
+                TszProjectModuleResolutionTarget::File { path: "scheduler.ts".to_owned() }),
+            module_resolution("caller.ts", "vendor", TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::Unresolved),
+        ];
+        let authority = native_tsz_project_with_resolutions(
+            &[("scheduler.ts", scheduler), ("barrel.ts", barrel), ("caller.ts", caller)],
+            &resolutions,
+        )?;
+        let project = authority.project().ok_or(LaneError::Missing("namespace import project"))?;
+        assert_exact_module_resolution_metadata(project, &resolutions);
+        let facts = collect_native_tsz_file(project, "caller.ts", caller)?;
+        let target_facts = collect_native_tsz_file(project, "scheduler.ts", scheduler)?;
+        for (prefix, name, kind) in [
+            ("const run = scheduler.", "generateSchedule", EntityKind::Function),
+            ("const component = scheduler.", "default", EntityKind::Record),
+            ("return scheduler.", "generateSchedule", EntityKind::Function),
+            ("generateSchedule(scheduler.", "version", EntityKind::Constant),
+            (" + api.", "schedule", EntityKind::Function),
+        ] {
+            let start = (caller.find(prefix).expect("exact namespace member site") + prefix.len()) as u32;
+            let sites = (0..facts.occurrence_len).filter(|&index| {
+                let owner = facts.occurrence_owners[index] as usize;
+                facts.provenance.source_spans()[owner].is_some_and(|span|
+                    span.start + facts.occurrences[index].span.start == start
+                        && span.start + facts.occurrences[index].span.end == start + name.len() as u32)
+            }).collect::<Vec<_>>();
+            assert_eq!(sites.len(), 1, "one exact namespace member occurrence: {prefix}{name}");
+            let site = sites[0];
+            let slot = facts.occurrence_source_coordinate_slot[site]
+                .expect("namespace member has its terminal export's source coordinate");
+            let coordinate = TypeScriptSourceCoordinate::decode(
+                &facts.foreign_source_coordinate_text[slot as usize],
+            ).expect("typed terminal namespace member target");
+            let target_name = match name { "schedule" => "generateSchedule", "default" => "NavBar", _ => name };
+            let target = (0..target_facts.len()).find(|&index|
+                target_facts.names[index] == target_name.as_bytes() && target_facts.kinds[index] == kind)
+                .expect("actual published terminal export");
+            let extent = target_facts.provenance.source_spans()[target].expect("terminal declaration extent");
+            assert_eq!(coordinate.path, "scheduler.ts");
+            assert_eq!(coordinate.source, *ContentId::<SourceFactDomain>::from_canonical_bytes(scheduler.as_bytes()));
+            assert_eq!((coordinate.declaration_start, coordinate.declaration_end), (extent.start, extent.end));
+            assert_eq!(facts.occurrences[site].confidence, OccurrenceConfidence::Oracle);
+            assert!(matches!(facts.occurrences[site].target, OccurrenceTarget::Foreign(key) if key.kind == Some(kind)));
+        }
+        for prefix in ["return scheduler.generateSchedule(2)", "return vendor.generateSchedule(3)"] {
+            let start = (caller.find(prefix).expect("opposing member site") + "return ".len()
+                + prefix["return ".len()..].find('.').expect("receiver member") + 1) as u32;
+            assert!(!(0..facts.occurrence_len).any(|index| {
+                let owner = facts.occurrence_owners[index] as usize;
+                facts.provenance.source_spans()[owner].is_some_and(|span|
+                    span.start + facts.occurrences[index].span.start == start)
+                    && facts.occurrence_source_coordinate_slot[index].is_some()
+            }), "shadowing or unresolved namespace receiver never borrows a local module: {prefix}");
+        }
+        // A whole module has no authored declaration corresponding to the
+        // namespace alias. Keep that honest external edge independently of
+        // the exact declaration targets available for its named members.
+        for name in ["scheduler", "api", "vendor"] {
+            let binding = (0..facts.len()).find(|&index| facts.names[index] == name.as_bytes()
+                && facts.kinds[index] == EntityKind::Reexport).expect("written namespace import");
+            assert!((0..facts.occurrence_len).any(|index|
+                facts.occurrence_owners[index] == binding as u32
+                    && facts.occurrences[index].kind == ReferenceKind::Import
+                    && facts.occurrences[index].confidence == OccurrenceConfidence::Import
+                    && facts.occurrence_source_coordinate_slot[index].is_none()),
+                "namespace binding keeps its module operand: {name}");
         }
         Ok(())
     }

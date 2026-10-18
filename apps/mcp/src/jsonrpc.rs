@@ -962,7 +962,23 @@ impl<P: Product> Server<P> {
         response_id: &Value,
     ) -> Result<Value, RpcError> {
         let invocation = McpInvocation::new(exposure, name, arguments);
-        self.call_routed_tool(arguments, name, route, invocation, response_id)
+        let preflight = if name == "backend.search" {
+            let grammar = backend_present::grammar_for_tool(name)
+                .ok_or_else(|| RpcError::new(-32602, "Unknown tool"));
+            grammar.and_then(|grammar| {
+                let mut search_arguments = arguments.clone();
+                search_arguments.remove("detail");
+                validate_registry_arguments(grammar, &search_arguments)
+                    .map_err(|fault| RpcError::from_fault(&fault))?;
+                Invocation::from_json(grammar, &search_arguments)
+                    .map(|_| ())
+                    .map_err(|fault| RpcError::from_fault(&fault))
+            })
+        } else {
+            Ok(())
+        };
+        preflight
+            .and_then(|()| self.call_routed_tool(arguments, name, route, invocation, response_id))
             .or_else(|error| error.into_tool_result_for_invocation(invocation))
     }
     /// A recognized route owns input/domain refusals. Envelope and retained
@@ -1802,7 +1818,27 @@ impl<P: Product> Server<P> {
         context: &[u8],
         exposure: McpExposure,
     ) -> Result<Value, RpcError> {
-        let mut view = backend_present::product_view_for_command(command, reply);
+        self.surface_reply_with_profile_progress(command, reply, None, detail, context, exposure)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn surface_reply_with_profile_progress(
+        &mut self,
+        command: &SurfaceCommand,
+        reply: &SurfaceReply,
+        profile_progress: Option<backend_library::IndexProgressPage>,
+        detail: Detail,
+        context: &[u8],
+        exposure: McpExposure,
+    ) -> Result<Value, RpcError> {
+        let mut view = backend_present::product_view_for_command(command, reply)
+            .with_index_profile_progress(profile_progress)
+            .map_err(|error| {
+                RpcError::from_fault(&Fault::from_client_error(
+                    &error,
+                    surface_error_operand(command),
+                ))
+            })?;
         view.expose_mcp_advice(exposure);
         let view = view
             .with_cli_context(self.product.cli_context())
@@ -3394,6 +3430,12 @@ impl Serialize for SurfaceProjection<'_> {
                     },
                 )?;
                 map.end()
+            }
+            SurfaceReply::IndexOperationStatus(data)
+                if matches!(self.index_job,
+                Some(backend_present::IndexJobProjection::Progress(backend_library::IndexJobObservation::Pending(page))) if !page.events.is_empty()) =>
+            {
+                self.serialize_job(serializer, "index-operation-status", data)
             }
             SurfaceReply::IndexStarted(data) => {
                 self.serialize_job(serializer, "index-started", data)

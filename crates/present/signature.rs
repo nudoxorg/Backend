@@ -17,6 +17,9 @@
 use crate::identity::{Coordinate, IdentityKey};
 use crate::language::Language;
 use core::fmt;
+use std::borrow::Cow;
+
+const PREVIEW_CHARACTERS: usize = 240;
 
 /// What one signature token reads as.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -123,7 +126,7 @@ impl Token {
         }
     }
 
-    /// Returns the lexeme text exactly as it appeared.
+    /// Returns the lexeme's display text. Physical CRLF is normalized to LF.
     #[must_use]
     pub fn text(&self) -> &str {
         &self.text
@@ -161,9 +164,48 @@ impl Signature {
     /// Tokenizes one signature under the rules of its source language.
     #[must_use]
     pub fn tokenize(text: &str, language: Language) -> Self {
+        let text = display_line_endings(text);
         Self {
-            tokens: classify(&lex(text), language),
+            tokens: classify(&lex(&text), language),
         }
+    }
+
+    /// Builds a single-line result-list preview of at most 240 characters,
+    /// including an ellipsis when content is omitted. Spaces and authored
+    /// backslash escapes are preserved. Physical controls and line separators
+    /// are escaped visibly, so this preview is not a source excerpt.
+    /// Declaration pages retain the complete signature through
+    /// [`Self::tokenize`], and source reads retain captured bytes independently.
+    #[must_use]
+    pub fn preview(text: &str, language: Language) -> Self {
+        let mut characters = Vec::with_capacity(PREVIEW_CHARACTERS + 1);
+        let mut ellipsis_boundary = 0;
+        'preview: for character in text.chars() {
+            if characters.len() < PREVIEW_CHARACTERS {
+                ellipsis_boundary = characters.len();
+            }
+            if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') {
+                for escaped in character.escape_default() {
+                    characters.push(escaped);
+                    if characters.len() > PREVIEW_CHARACTERS {
+                        break 'preview;
+                    }
+                }
+            } else {
+                characters.push(character);
+            }
+            if characters.len() > PREVIEW_CHARACTERS {
+                break;
+            }
+        }
+        if characters.len() > PREVIEW_CHARACTERS {
+            // An escape is one displayed source-character chunk. Reserve room
+            // for the ellipsis by removing entire chunks, even when an earlier
+            // escape fitted exactly before later content proved truncation.
+            characters.truncate(ellipsis_boundary);
+            characters.push('…');
+        }
+        Self::tokenize(&characters.into_iter().collect::<String>(), language)
     }
 
     /// Returns the classified tokens in source order.
@@ -178,7 +220,7 @@ impl Signature {
         self.tokens.is_empty()
     }
 
-    /// Returns the signature text, reassembled exactly.
+    /// Returns the display signature, reassembled with CRLF normalized to LF.
     #[must_use]
     pub fn text(&self) -> String {
         self.tokens.iter().map(Token::text).collect()
@@ -205,6 +247,14 @@ impl Signature {
                 })
                 .collect(),
         }
+    }
+}
+
+fn display_line_endings(text: &str) -> Cow<'_, str> {
+    if text.contains("\r\n") {
+        Cow::Owned(text.replace("\r\n", "\n"))
+    } else {
+        Cow::Borrowed(text)
     }
 }
 
@@ -621,3 +671,183 @@ const C: &[&str] = &[
 const CXX: &[&str] = &[
     "auto", "concept", "constexpr", "decltype", "explicit", "friend", "inline", "mutable", "namespace", "noexcept", "operator", "private", "protected", "public", "requires", "sizeof", "template", "this", "typedef", "typename", "union", "using", "virtual", "volatile",
 ];
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    #[test]
+    fn display_signatures_normalize_crlf_without_interpreting_authored_escapes() {
+        let windows =
+            "export async function generateSchedule(\r\n  request: Request\r\n): Promise<string>";
+        let unix = windows.replace("\r\n", "\n");
+        assert_eq!(
+            Signature::tokenize(windows, Language::TypeScript),
+            Signature::tokenize(&unix, Language::TypeScript)
+        );
+        assert_eq!(
+            Signature::tokenize(windows, Language::TypeScript).text(),
+            unix
+        );
+        assert!(
+            windows.contains("\r\n"),
+            "display does not change the input"
+        );
+        let escaped = r"const newline = String.raw`\r\n`";
+        assert_eq!(
+            Signature::tokenize(escaped, Language::TypeScript).text(),
+            escaped
+        );
+        assert_eq!(
+            Signature::preview(escaped, Language::TypeScript).text(),
+            escaped
+        );
+        let short = "function generateSchedule(request: Request): string";
+        assert_eq!(
+            Signature::preview(short, Language::TypeScript).text(),
+            short
+        );
+    }
+
+    #[test]
+    fn signature_previews_bound_unicode_without_truncating_document_signatures() {
+        let text = format!("const routes = [\r\n  {}\r\n];", "東京界".repeat(120));
+        let full = Signature::tokenize(&text, Language::TypeScript).text();
+        let preview = Signature::preview(&text, Language::TypeScript).text();
+        assert!(preview.starts_with("const routes = [\\r\\n  東京界"));
+        assert!(preview.ends_with('…'));
+        assert!(preview.chars().count() <= PREVIEW_CHARACTERS);
+        assert!(
+            !preview
+                .chars()
+                .any(|character| character == '\r' || character == '\n')
+        );
+        assert!(full.ends_with("\n];"));
+        assert!(full.contains(&"東京界".repeat(120)));
+        let exact = "x".repeat(PREVIEW_CHARACTERS);
+        assert_eq!(Signature::preview(&exact, Language::Unknown).text(), exact);
+        assert!(
+            Signature::preview(&(exact + " "), Language::Unknown)
+                .text()
+                .ends_with('…'),
+            "omitting even an authored space must be marked"
+        );
+    }
+
+    #[test]
+    fn signature_previews_preserve_literal_spaces_and_authored_escapes_in_every_language() {
+        for (language, text, expected) in [
+            (
+                Language::TypeScript,
+                r#"const label = "one  two""#,
+                r#"const label = "one  two""#,
+            ),
+            (
+                Language::TypeScript,
+                "const label = 'one  two'",
+                "const label = 'one  two'",
+            ),
+            (
+                Language::TypeScript,
+                "const label = `one  two\nthree`",
+                "const label = `one  two\\nthree`",
+            ),
+            (
+                Language::TypeScript,
+                r#"const label = "one\n  two""#,
+                r#"const label = "one\n  two""#,
+            ),
+            (
+                Language::Python,
+                "label = \"\"\"one  two\nthree\"\"\"",
+                "label = \"\"\"one  two\\nthree\"\"\"",
+            ),
+            (
+                Language::Python,
+                "label = '''one  two\r\nthree'''",
+                "label = '''one  two\\r\\nthree'''",
+            ),
+            (
+                Language::Rust,
+                "const LABEL: &str = r#\"one  two\nthree\"#;",
+                "const LABEL: &str = r#\"one  two\\nthree\"#;",
+            ),
+            (
+                Language::Rust,
+                r###"const LABEL: &str = r##"one  two\n"##;"###,
+                r###"const LABEL: &str = r##"one  two\n"##;"###,
+            ),
+            (
+                Language::Unknown,
+                "  label\t= one  two\u{2028}three\u{2029}",
+                "  label\\t= one  two\\u{2028}three\\u{2029}",
+            ),
+        ] {
+            assert_eq!(
+                Signature::preview(text, language).text(),
+                expected,
+                "{language}: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn signature_preview_boundaries_keep_generated_escapes_atomic() {
+        for (character, displayed) in [
+            ('\n', "\\n"),
+            ('\r', "\\r"),
+            ('\t', "\\t"),
+            ('\0', "\\u{0}"),
+            ('\u{1b}', "\\u{1b}"),
+            ('\u{85}', "\\u{85}"),
+            ('\u{2028}', "\\u{2028}"),
+            ('\u{2029}', "\\u{2029}"),
+            ('界', "界"),
+            ('🦀', "🦀"),
+        ] {
+            let width = displayed.chars().count();
+            for end in [239, 240] {
+                let prefix = "x".repeat(end - width);
+                let source = format!("{prefix}{character}");
+                let complete = format!("{prefix}{displayed}");
+                assert_eq!(
+                    Signature::preview(&source, Language::Unknown).text(),
+                    complete,
+                    "an entire source character fits at displayed length {end}: {character:?}"
+                );
+                let truncated = if end == 239 {
+                    complete.clone() + "…"
+                } else {
+                    prefix.clone() + "…"
+                };
+                assert_eq!(
+                    Signature::preview(&(source.clone() + "YZ"), Language::Unknown).text(),
+                    truncated,
+                    "only complete chunks fit before the ellipsis at {end}: {character:?}"
+                );
+                let with_tail = Signature::preview(&(source + "Y"), Language::Unknown).text();
+                let expected = if end == 239 {
+                    complete + "Y"
+                } else {
+                    prefix + "…"
+                };
+                assert_eq!(
+                    with_tail, expected,
+                    "a later source character cannot leave a partial escape at {end}: {character:?}"
+                );
+            }
+            let prefix = "x".repeat(241 - width);
+            let source = format!("{prefix}{character}");
+            let expected = "x".repeat((241 - width).min(239)) + "…";
+            assert_eq!(
+                Signature::preview(&source, Language::Unknown).text(),
+                expected,
+                "an overflowing escape is omitted as a whole: {character:?}"
+            );
+        }
+        assert_eq!(
+            Signature::preview(&("x".repeat(238) + "\nY"), Language::Unknown).text(),
+            "x".repeat(238) + "…"
+        );
+    }
+}

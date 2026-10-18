@@ -7,6 +7,7 @@ use super::{Arc, AtomicBool, LocalCompilerClient, Ordering, Path, PathBuf, Stage
 use crate::application::typescript_host::TypeScriptProjectWitness;
 use crate::application::typescript_program::TypeScriptForestClosureWitness;
 use backend_semantic::vocabulary::LanguageProfile;
+use std::collections::VecDeque;
 
 const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 
@@ -16,8 +17,9 @@ fn fits_retained_budget(host_bytes: usize, forest_bytes: usize) -> bool {
 
 #[derive(Default)]
 pub(super) struct TypeScriptSnapshotCache {
-    // One root/profile only. Eviction can only lose the opportunity to reuse.
-    entry: Option<TypeScriptSnapshotReuse>,
+    // One entry per root/profile, bounded across all retained producer ledgers.
+    // Eviction can only lose the opportunity to reuse.
+    entries: VecDeque<TypeScriptSnapshotReuse>,
 }
 
 /// Opaque compiler-produced fence for one exact selected native TypeScript output.
@@ -35,6 +37,7 @@ struct Entry {
     alive: Arc<AtomicBool>,
     host: Arc<TypeScriptProjectWitness>,
     forest: Arc<TypeScriptForestClosureWitness>,
+    retained_bytes: usize,
 }
 
 impl TypeScriptSnapshotReuse {
@@ -61,7 +64,15 @@ impl LocalCompilerClient {
         binding: [u8; 32],
         cancelled: &AtomicBool,
     ) -> Option<TypeScriptSnapshotReuse> {
-        let proof = self.shared.typescript_snapshot.lock().ok()?.entry.clone()?;
+        let proof = self
+            .shared
+            .typescript_snapshot
+            .lock()
+            .ok()?
+            .entries
+            .iter()
+            .find(|proof| proof.entry.root == root && proof.entry.profile == profile)
+            .cloned()?;
         let entry = &proof.entry;
         if entry.root != root
             || entry.profile != profile
@@ -89,15 +100,12 @@ impl LocalCompilerClient {
         // This exact output has superseded the previous selection. Retire a
         // predecessor even when the new result is ineligible for reuse, so a
         // transient outcome cannot recover an older eligibility decision.
-        if let Ok(mut cache) = self.shared.typescript_snapshot.lock() {
-            if cache.entry.as_ref().is_some_and(|proof| {
-                proof.entry.root == root && proof.entry.profile == staged.profile()
-            }) {
-                cache.entry = None;
-            }
-        } else {
+        let Ok(mut cache) = self.shared.typescript_snapshot.lock() else {
             return;
-        }
+        };
+        cache
+            .entries
+            .retain(|proof| proof.entry.root != root || proof.entry.profile != staged.profile());
         let Some((host, forest)) = staged.typescript_snapshot_witness(root) else {
             return;
         };
@@ -106,11 +114,26 @@ impl LocalCompilerClient {
         let Some(host_bytes) = host.retained_native_bytes() else {
             return;
         };
+        // Include the per-entry root and conservative cache/Arc allocation
+        // overhead in addition to both compiler-owned ledgers.
+        let host_bytes = host_bytes
+            .saturating_add(root.as_os_str().as_encoded_bytes().len())
+            .saturating_add(1024);
         if !fits_retained_budget(host_bytes, forest.retained_bytes()) {
             return;
         }
-        if let Ok(mut cache) = self.shared.typescript_snapshot.lock() {
-            cache.entry = Some(TypeScriptSnapshotReuse {
+        {
+            let retained_bytes = host_bytes + forest.retained_bytes();
+            let mut total = cache.entries.iter().fold(0usize, |total, proof| {
+                total.saturating_add(proof.entry.retained_bytes)
+            });
+            while !fits_retained_budget(total, retained_bytes) {
+                let Some(evicted) = cache.entries.pop_front() else {
+                    return;
+                };
+                total = total.saturating_sub(evicted.entry.retained_bytes);
+            }
+            cache.entries.push_back(TypeScriptSnapshotReuse {
                 entry: Arc::new(Entry {
                     root: root.to_path_buf(),
                     profile: staged.profile(),
@@ -119,6 +142,7 @@ impl LocalCompilerClient {
                     alive: Arc::clone(&self.shared.alive),
                     host,
                     forest,
+                    retained_bytes,
                 }),
             });
         }
@@ -179,6 +203,13 @@ mod tests {
             self.compile_sources(false)
         }
         fn compile_sources(&self, excluded_source: bool) -> StagedSemanticPackage {
+            self.compile_profile(profile(), excluded_source)
+        }
+        fn compile_profile(
+            &self,
+            selected_profile: LanguageProfile,
+            excluded_source: bool,
+        ) -> StagedSemanticPackage {
             let host = TypeScriptProjectHost::direct(
                 None,
                 ToolchainProbeLimits::new(Duration::from_secs(5), NonZeroUsize::new(1024).unwrap())
@@ -216,13 +247,17 @@ mod tests {
             let request = PackageCompileRequest::new(
                 GenerateTarget {
                     correlation: CorrelationId(1),
-                    profile: profile(),
+                    profile: selected_profile,
                     stage: Stage::LowerIr,
                 },
                 PackageUrl::try_from("pkg:npm/snapshot-fixture@1.0.0".to_owned()).unwrap(),
             )
             .unwrap();
-            let mut sources = vec![PackageSource::new("src/main.ts", MAIN).unwrap()];
+            let mut sources = if selected_profile == tsx_profile() {
+                vec![PackageSource::new("src/view.tsx", "export const view = 1;").unwrap()]
+            } else {
+                vec![PackageSource::new("src/main.ts", MAIN).unwrap()]
+            };
             if excluded_source {
                 const EXCLUDED: &str = "export const excluded = 1;";
                 self.write("excluded.ts", EXCLUDED);
@@ -245,6 +280,9 @@ mod tests {
     fn profile() -> LanguageProfile {
         LanguageProfile::TypeScript(TypeScriptSource::TypeScript)
     }
+    fn tsx_profile() -> LanguageProfile {
+        LanguageProfile::TypeScript(TypeScriptSource::Tsx)
+    }
     fn client() -> LocalCompilerClient {
         LocalCompilerClient {
             shared: Arc::new(super::super::request_lease_tests::shared()),
@@ -258,6 +296,117 @@ mod tests {
         assert!(fits_retained_budget(MAX_RETAINED_BYTES - 1, 1));
         assert!(!fits_retained_budget(MAX_RETAINED_BYTES - 1, 2));
         assert!(!fits_retained_budget(usize::MAX, 1));
+    }
+
+    #[test]
+    fn native_ts_and_tsx_retain_independent_selected_producer_fences() {
+        let fixture = Fixture::new();
+        fixture.write("src/view.tsx", "export const view = 1;");
+        let typescript = fixture.compile();
+        let tsx = fixture.compile_profile(tsx_profile(), false);
+        let ts_binding = *typescript.binding_facts().identity.as_ref();
+        let tsx_binding = *tsx.binding_facts().identity.as_ref();
+        let owner = client();
+        let cancelled = AtomicBool::new(false);
+        owner.remember_typescript_snapshot(&fixture.0, [1; 32], ts_binding, &typescript);
+        // A present TS generation cannot supply a missing TSX producer fence,
+        // even if a caller supplies the TS input and binding for that profile.
+        assert!(
+            owner
+                .typescript_snapshot_reuse(
+                    &fixture.0,
+                    tsx_profile(),
+                    [1; 32],
+                    ts_binding,
+                    &cancelled,
+                )
+                .is_none()
+        );
+        owner.remember_typescript_snapshot(&fixture.0, [2; 32], tsx_binding, &tsx);
+        let ts_proof = owner
+            .typescript_snapshot_reuse(&fixture.0, profile(), [1; 32], ts_binding, &cancelled)
+            .expect("TS profile must survive a TSX publication");
+        let tsx_proof = owner
+            .typescript_snapshot_reuse(&fixture.0, tsx_profile(), [2; 32], tsx_binding, &cancelled)
+            .expect("TSX has its own producer proof");
+        assert!(
+            owner
+                .typescript_snapshot_reuse(&fixture.0, profile(), [3; 32], ts_binding, &cancelled,)
+                .is_none(),
+            "changed TS input requests compilation"
+        );
+        assert!(
+            owner
+                .typescript_snapshot_reuse(
+                    &fixture.0,
+                    tsx_profile(),
+                    [1; 32],
+                    ts_binding,
+                    &cancelled,
+                )
+                .is_none(),
+            "TSX must never borrow the TS binding"
+        );
+        assert!(
+            tsx_proof.is_current(None),
+            "unchanged TSX remains independently reusable"
+        );
+        fixture.write("src/missing.ts", "export interface Missing {}");
+        assert!(
+            !ts_proof.is_current(None),
+            "a negative lookup mutation rejects the retained final fence"
+        );
+        assert!(
+            owner
+                .typescript_snapshot_reuse(&fixture.0, profile(), [1; 32], ts_binding, &cancelled,)
+                .is_none(),
+            "matching scan identity cannot override the changed read closure"
+        );
+        fixture.write("src/view.tsx", "export const view = 'changed';");
+        assert!(
+            !tsx_proof.is_current(None),
+            "the TSX final fence also rejects its own source mutation"
+        );
+    }
+
+    #[test]
+    fn native_profile_cache_budget_is_aggregate_and_replacement_does_not_evict_siblings() {
+        let fixture = Fixture::new();
+        fixture.write("src/view.tsx", "export const view = 1;");
+        let typescript = fixture.compile();
+        let tsx = fixture.compile_profile(tsx_profile(), false);
+        let ts_binding = *typescript.binding_facts().identity.as_ref();
+        let tsx_binding = *tsx.binding_facts().identity.as_ref();
+        let owner = client();
+        owner.remember_typescript_snapshot(&fixture.0, [1; 32], ts_binding, &typescript);
+        owner.remember_typescript_snapshot(&fixture.0, [2; 32], tsx_binding, &tsx);
+        owner.remember_typescript_snapshot(&fixture.0, [3; 32], ts_binding, &typescript);
+        {
+            let mut cache = owner.shared.typescript_snapshot.lock().unwrap();
+            assert_eq!(
+                cache.entries.len(),
+                2,
+                "replacement retains only one proof per profile"
+            );
+            assert!(
+                cache
+                    .entries
+                    .iter()
+                    .map(|proof| proof.entry.retained_bytes)
+                    .sum::<usize>()
+                    <= MAX_RETAINED_BYTES
+            );
+            // Charge the oldest entry the full budget; a new entry must evict
+            // that ledger rather than grant every profile a separate 64MiB.
+            Arc::get_mut(&mut cache.entries.front_mut().unwrap().entry)
+                .unwrap()
+                .retained_bytes = MAX_RETAINED_BYTES;
+        }
+        owner.remember_typescript_snapshot(&fixture.0, [4; 32], ts_binding, &typescript);
+        let cache = owner.shared.typescript_snapshot.lock().unwrap();
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(cache.entries[0].entry.profile, profile());
+        assert!(cache.entries[0].entry.retained_bytes <= MAX_RETAINED_BYTES);
     }
 
     #[test]
@@ -312,10 +461,19 @@ mod tests {
                 .typescript_snapshot_reuse(&fixture.0, profile(), input, [0x64; 32], &cancelled)
                 .is_none()
         );
+        let another_owner = client();
+        another_owner
+            .shared
+            .typescript_snapshot
+            .lock()
+            .unwrap()
+            .entries
+            .push_back(proof.clone());
         assert!(
-            client()
+            another_owner
                 .typescript_snapshot_reuse(&fixture.0, profile(), input, binding, &cancelled)
-                .is_none()
+                .is_none(),
+            "even a copied ledger cannot transfer producer authority to another toolchain session"
         );
         cancelled.store(true, Ordering::Release);
         assert!(!proof.is_current(Some(&cancelled)));

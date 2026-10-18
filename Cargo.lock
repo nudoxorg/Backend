@@ -1402,6 +1402,7 @@ version = "0.2.0"
 dependencies = [
  "backend-compile",
  "backend-semantic",
+ "backend-version",
  "flate2",
  "oxc_allocator",
  "oxc_ast",

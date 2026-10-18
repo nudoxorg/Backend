@@ -1171,7 +1171,7 @@ fn view_for_snapshot(
         image_rows,
         generations,
     )?;
-    let coverage = view_coverage(snapshot, &projected.activated, deployment)?;
+    let coverage = view_coverage(snapshot, &projected.activated, deployment, generations)?;
     let _admitted_bytes = admitted_view_bytes(&projected.rows)?;
     let view = ViewRoot::new_checked(
         initial.recipe(),
@@ -1497,7 +1497,7 @@ fn prepare_package_view(
             .clone(),
     )
     .map_err(|error| BuiltinModelError(format!("package projection reference: {error}")))?;
-    let package_state = coverage::package_row_state(&snapshot, &package_reference)?;
+    let package_state = coverage::package_row_state(&snapshot, &package_reference, generations)?;
     let same_package_state = current
         .row_ref(backend_engine::RowId::Package(package))
         .is_some_and(|row| package_state.is_none_or(|state| row.state == state));
@@ -1521,7 +1521,7 @@ fn prepare_package_view(
             &replacement,
         ) {
             Ok(changes) => {
-                let coverage = view_coverage(&snapshot, &prior.activated, deployment)?;
+                let coverage = view_coverage(&snapshot, &prior.activated, deployment, generations)?;
                 let same_coverage = coverage.as_slice() == current.coverage();
                 let same_basis = current.basis() == initial.basis();
                 if changes.is_empty() && same_coverage && same_basis {
@@ -1571,6 +1571,7 @@ fn prepare_package_view(
                     source_target,
                     semantic_target,
                     changed.len(),
+                    generations,
                 )
                 .map(Some);
             }
@@ -1592,7 +1593,7 @@ fn prepare_package_view(
     let mut activated = prior.activated.clone();
     activated.retain(|(key, _)| *key != package);
     activated.extend(projected.activated);
-    let coverage = view_coverage(&snapshot, &activated, deployment)?;
+    let coverage = view_coverage(&snapshot, &activated, deployment, generations)?;
     let same_witness = activated == prior.activated
         && coverage.as_slice() == current.coverage()
         && current.basis() == initial.basis();
@@ -1648,6 +1649,7 @@ fn prepare_package_view(
         source_target,
         semantic_target,
         files,
+        generations,
     )
     .map(Some)
 }
@@ -1734,8 +1736,9 @@ fn admit_spliced_package(
     source_target: [u8; 32],
     semantic_target: [u8; 32],
     files: usize,
+    generations: &SemanticGenerationResidence,
 ) -> Result<view_publish::PublicationOutcome, BuiltinModelError> {
-    let coverage = view_coverage(snapshot, &activated, deployment)?;
+    let coverage = view_coverage(snapshot, &activated, deployment, generations)?;
     let _admitted_bytes = admitted_view_bytes(&merged)?;
     let target = ViewRoot::new_checked(
         initial.recipe(),

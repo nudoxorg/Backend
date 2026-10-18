@@ -139,6 +139,25 @@ impl GraphViewRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AddProjectVisit { owner: gpui::EntityId, sequence: u64 }
 
+/// A rendered cancel control owns this exact attempt and mutation lifetime.
+#[derive(Clone, Debug)]
+pub(crate) struct AcceptedIndexCancellation {
+    row: crate::model::WorkspaceProject,
+    ticket: backend_library::IndexJobTicket,
+    basis: crate::core::VersionedRoot,
+    owner: super::actor::IndexMutationLease,
+}
+
+impl AcceptedIndexCancellation {
+    fn admits(&self, current: &Self) -> bool {
+        current.owner == self.owner && current.ticket == self.ticket
+            && current.basis.same_authority(self.basis) && current.row.id == self.row.id
+            && current.row.phase == crate::model::ProjectPhase::Indexing
+            && current.row.operation.as_ref().zip(self.row.operation.as_ref()).is_some_and(|(now, saved)|
+                now.same_request(saved) && now.cancellation_ticket().as_ref() == Some(&self.ticket))
+    }
+}
+
 enum QueuedIntent {
     Plain(Intent),
     AddProject { intent: Intent, visit: AddProjectVisit },
@@ -1281,6 +1300,37 @@ impl UiRootEntity {
             attachment,
         });
         self.schedule_flush(cx);
+    }
+
+    /// Capture from the rendered row, not a later project-only click. Neither
+    /// a new operation, a different ticket nor a replacement owner may inherit it.
+    pub(crate) fn accepted_index_cancellation(&self, rendered: &crate::model::WorkspaceProject, cx: &App) -> Option<AcceptedIndexCancellation> {
+        if self.quitting || self.index_preflights.contains_key(&rendered.id) { return None; }
+        let expected = rendered.operation.as_ref()?;
+        if !expected.belongs_to(&rendered.id) { return None; }
+        let ticket = expected.cancellation_ticket()?;
+        let snapshot = self.snapshot();
+        let basis = snapshot.key();
+        let row = snapshot.workspace().projects.iter().find(|row| row.id == rendered.id
+            && row.phase == crate::model::ProjectPhase::Indexing
+            && row.operation.as_ref().is_some_and(|saved| saved.same_request(expected)
+                && saved.cancellation_ticket().as_ref() == Some(&ticket)))?;
+        let store = self.store.as_ref()?.read(cx);
+        if !store.snapshot().key().same_authority(basis) { return None; }
+        Some(AcceptedIndexCancellation { row: row.clone(), ticket, basis, owner: store.current_index_owner()? })
+    }
+
+    pub(crate) fn cancel_accepted_index(&mut self, captured: AcceptedIndexCancellation, cx: &mut Context<Self>) {
+        let Some(current) = self.accepted_index_cancellation(&captured.row, cx) else { return; };
+        if !captured.admits(&current) { return; }
+        let Some(operation) = captured.row.operation else { return; };
+        let request = self.runtime.allocate_request();
+        let intent = Intent::CancelIndexOperation {
+            project: captured.row.id, operation, ticket: captured.ticket,
+            basis: captured.basis, request,
+        };
+        let events = self.runtime.dispatch_index_cancellation(intent, captured.owner);
+        self.apply_events(events, cx);
     }
 
     fn schedule_index_check(

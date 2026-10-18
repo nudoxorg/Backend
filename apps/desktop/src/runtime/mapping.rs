@@ -281,8 +281,8 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
             use backend_library::{IndexOperationFailureReason, IndexOperationObservation, IndexOperationState};
             let (phase, error) = match &observation {
                 IndexOperationObservation::Known(status) => match &status.state {
-                    IndexOperationState::Accepted => (ProjectPhase::Indexing, None),
-                    IndexOperationState::Active { .. } => (ProjectPhase::Indexing, None),
+                    IndexOperationState::Accepted | IndexOperationState::Active { .. } => (
+                        if row.phase == ProjectPhase::Cancelling { ProjectPhase::Cancelling } else { ProjectPhase::Indexing }, None),
                     IndexOperationState::Published(_) | IndexOperationState::PartiallyPublished { .. } => (ProjectPhase::Ready, None),
                     IndexOperationState::Failed { reason, detail, .. } => (
                         if *reason == IndexOperationFailureReason::Cancelled { ProjectPhase::Cancelled } else { ProjectPhase::Failed },
@@ -301,8 +301,15 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
             row.request = None;
             row.error = error;
             row.recent = true;
-            if let Some(saved) = row.operation.as_mut() { saved.observation = Some(observation); }
-            if phase == ProjectPhase::Ready && workspace.active.as_ref() == Some(&project) { workspace.host = Some(project.clone()); }
+            if let Some(saved) = row.operation.as_mut() {
+                saved.profile_progress = operation.profile_progress.filter(|page|
+                    matches!(&observation, IndexOperationObservation::Known(status)
+                        if backend_client::IndexObservationFingerprint::active_with_profile_progress(status, Some(page)).is_ok()));
+                saved.observation = Some(observation);
+            }
+            if phase == ProjectPhase::Ready && workspace.active.as_ref() == Some(&project) {
+                workspace.host = Some(project.clone());
+            }
             workspace.projects = rows.into();
             let snapshot = current.with_workspace(workspace);
             // A new published attempt may have changed local manifest facts.
@@ -493,6 +500,58 @@ mod tests {
         request: RequestId, observation: backend_library::IndexOperationObservation) -> EngineEvent {
         EngineEvent { basis: root(), request, lane: None, result: Ok(EngineDto::IndexOperation {
             request, basis: root(), project, operation, observation }) }
+    }
+
+    #[test]
+    fn accepted_cancel_keeps_served_projection_and_ignores_the_obsolete_attempt_reply() {
+        use backend_library::{IndexJobStage, IndexJobTicket, IndexOperationFailureReason, IndexOperationState, ProductText};
+        use crate::navigation::{Effect, EngineCommand, Intent};
+        let (submitted, project, mut operation, old_request) = saved_operation();
+        let ticket = IndexJobTicket::new(std::num::NonZeroU64::MIN, [7; 16], operation.package.clone());
+        let active = crate::model::index_operation::tests::observation(&operation,
+            IndexOperationState::Active { ticket: ticket.clone(), stage: IndexJobStage::Compiling });
+        let running = map_event(&submitted, operation_event(project.clone(), operation.clone(), old_request, active.clone())).expect("active receipt");
+        operation = running.workspace().projects[0].operation.clone().expect("retained active claim");
+        let served = crate::model::ProjectState { id: project.clone(), label: "served generation".into(), packages: Arc::new([]) };
+        let running = running.with_project(served, root()).with_catalog(CatalogState { packages: Arc::new([]) }, root());
+        let request = RequestId::new(71);
+        let reduced = crate::navigation::reduce(&running, Intent::CancelIndexOperation {
+            project: project.clone(), operation: operation.clone(), ticket: ticket.clone(), basis: root(), request,
+        });
+        assert!(reduced.effects.iter().any(|effect| matches!(effect, Effect::Engine(EngineCommand::CancelIndexOperation {
+            project: id, operation: saved, ticket: exact, request: next, ..
+        }) if id == &project && saved.same_request(&operation) && exact == &ticket && next == &request)));
+        let cancelling = reduced.snapshot;
+        assert_eq!(cancelling.workspace().projects[0].phase, ProjectPhase::Cancelling);
+        assert_eq!(cancelling.workspace().projects[0].request, Some(request));
+        let late = map_event(&cancelling, operation_event(project.clone(), operation.clone(), old_request,
+            crate::model::index_operation::tests::published(&operation))).expect("obsolete completion");
+        assert_eq!(late.workspace().projects[0], cancelling.workspace().projects[0], "old request cannot win over captured cancellation");
+        let still_running = map_event(&cancelling, operation_event(project.clone(), operation.clone(), request, active)).expect("Requested is not terminal");
+        assert_eq!(still_running.workspace().projects[0].phase, ProjectPhase::Cancelling);
+        let next = RequestId::new(72);
+        let polling = crate::navigation::reduce(&still_running, Intent::ReconcileIndexProject {
+            project: project.clone(), operation: still_running.workspace().projects[0].operation.clone().expect("same claim"),
+            basis: root(), request: next,
+        }).snapshot;
+        let terminal = crate::model::index_operation::tests::observation(&operation,
+            IndexOperationState::Failed { reason: IndexOperationFailureReason::Cancelled,
+                detail: ProductText::new("Exact operation cancelled; selected generation retained.").expect("detail"), compiler_failure: None });
+        let cancelled = map_event(&polling, operation_event(project.clone(), operation.clone(), next, terminal)).expect("terminal owner evidence");
+        assert_eq!(cancelled.workspace().projects[0].phase, ProjectPhase::Cancelled);
+        assert!(cancelled.workspace().projects[0].operation.as_ref().expect("claim retained").same_request(&operation));
+        assert_eq!(cancelled.key(), running.key());
+        assert_eq!(cancelled.project(), running.project(), "served project is retained");
+        assert_eq!(cancelled.catalog(), running.catalog(), "served catalog is retained");
+        assert_eq!(cancelled.local_package(), running.local_package());
+        let mut replacement = cancelling.workspace().clone();
+        replacement.projects = replacement.projects.iter().cloned().map(|mut row| {
+            row.operation = Some(crate::model::index_operation::tests::claim(&project, 0x62)); row
+        }).collect::<Vec<_>>().into();
+        let newer = cancelling.with_workspace(replacement);
+        let late = map_event(&newer, operation_event(project, operation.clone(), request,
+            crate::model::index_operation::tests::published(&operation))).expect("replaced operation");
+        assert_eq!(late.workspace().projects, newer.workspace().projects, "same request ID cannot alias another durable operation");
     }
 
     #[test]

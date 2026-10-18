@@ -243,6 +243,142 @@ pub(crate) fn describe_host_error(
     }
 }
 
+/// Adds context only at the native program-admission boundary. Node/Compiler API
+/// failures keep their existing path and typed classification.
+pub(crate) fn describe_program_admission_error(
+    error: TypeScriptProjectHostError,
+    inputs: &super::typescript_host::TypeScriptProjectInputs<'_>,
+) -> TypeScriptProjectHostError {
+    if matches!(
+        inputs.authority,
+        super::typescript_host::TypeScriptProjectInputAuthority::Native
+    ) && matches!(
+        peel(&error),
+        TypeScriptProjectHostError::CompilerProgramDeadline
+    ) {
+        return describe_native_admission_deadline(
+            error,
+            observed_slow_project_mount(inputs.package_root),
+        );
+    }
+    describe_host_error(error, &[inputs.package_root, inputs.workspace_root])
+}
+
+fn describe_native_admission_deadline(
+    error: TypeScriptProjectHostError,
+    filesystem: Option<&str>,
+) -> TypeScriptProjectHostError {
+    let mut text =
+        "Native TSZ program admission reached its deadline; this admission does not use Node."
+            .to_owned();
+    if let Some(filesystem @ ("9p" | "drvfs")) = filesystem {
+        text.push_str(&format!(
+            " Project mount: {filesystem}. On WSL, try the project and dependencies on the Linux filesystem; Windows-mounted reads may be slow."
+        ));
+    }
+    // All text is fixed here except the two admitted filesystem names.
+    let cause = TypeScriptFailureCause::new(&text).expect("bounded native admission context");
+    TypeScriptProjectHostError::Described {
+        cause,
+        source: Box::new(error),
+    }
+}
+
+/// Read kernel-local metadata only after a native admission deadline. Do not
+/// issue another filesystem operation against the possibly stalled project.
+#[cfg(target_os = "linux")]
+fn observed_slow_project_mount(project: &Path) -> Option<&'static str> {
+    use std::io::Read;
+    const MAX_MOUNTINFO_BYTES: u64 = 1024 * 1024;
+    let mut text = String::new();
+    std::fs::File::open("/proc/self/mountinfo")
+        .ok()?
+        .take(MAX_MOUNTINFO_BYTES + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    if text.len() as u64 > MAX_MOUNTINFO_BYTES {
+        return None;
+    }
+    slow_project_mount(&text, project)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn observed_slow_project_mount(_: &Path) -> Option<&'static str> {
+    None
+}
+
+/// A lexical longest mountpoint match is safe here because admission inputs
+/// already contain the canonical package root. A narrower Linux bind mount
+/// must override an enclosing Windows mount; ambiguous duplicate mounts omit
+/// advice rather than guessing which mount is visible.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+fn slow_project_mount(mountinfo: &str, project: &Path) -> Option<&'static str> {
+    fn decode_mountpoint(field: &str) -> Option<std::path::PathBuf> {
+        let mut bytes = field.bytes();
+        let mut decoded = Vec::new();
+        while let Some(byte) = bytes.next() {
+            decoded.push(if byte == b'\\' {
+                match (bytes.next()?, bytes.next()?, bytes.next()?) {
+                    (b'0', b'4', b'0') => b' ',
+                    (b'0', b'1', b'1') => b'\t',
+                    (b'0', b'1', b'2') => b'\n',
+                    (b'1', b'3', b'4') => b'\\',
+                    _ => return None,
+                }
+            } else {
+                byte
+            });
+        }
+        Some(String::from_utf8(decoded).ok()?.into())
+    }
+    if !project.is_absolute() {
+        return None;
+    }
+    let mut selected = None;
+    let mut depth = None;
+    for line in mountinfo.lines() {
+        let Some((left, right)) = line.split_once(" - ") else {
+            continue;
+        };
+        let fields = left.split_whitespace().collect::<Vec<_>>();
+        if fields.len() < 6 {
+            continue;
+        }
+        let Some(mount) = decode_mountpoint(fields[4]) else {
+            continue;
+        };
+        if !mount.is_absolute() || !project.starts_with(&mount) {
+            continue;
+        }
+        let mut right = right.split_whitespace();
+        let Some(filesystem) = right.next() else {
+            continue;
+        };
+        if right.next().is_none() || right.next().is_none() {
+            continue;
+        }
+        let observed = match filesystem {
+            "9p" => Some("9p"),
+            "drvfs" => Some("drvfs"),
+            _ => None,
+        };
+        let current_depth = mount.components().count();
+        match depth {
+            Some(previous) if current_depth < previous => {}
+            Some(previous) if current_depth == previous => {
+                if selected != observed {
+                    selected = None;
+                }
+            }
+            _ => {
+                depth = Some(current_depth);
+                selected = observed;
+            }
+        }
+    }
+    selected
+}
+
 /// Canonical and as-given spellings of the roots a public cause may name.
 struct PathScope {
     roots: Vec<String>,
@@ -702,6 +838,84 @@ fn stop_failure(reason: TszProjectExecutionStop, site: StopSite) -> F {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_admission_deadline_context_preserves_kind_without_node_or_mount_inference() {
+        for (mount, expected) in [
+            (None, None),
+            (Some("ext4"), None),
+            (Some("9p"), Some("9p")),
+            (Some("drvfs"), Some("drvfs")),
+        ] {
+            let error =
+                PackageAuthorityError::TypeScriptProjectHost(describe_native_admission_deadline(
+                    TypeScriptProjectHostError::CompilerProgramDeadline,
+                    mount,
+                ));
+            assert_eq!(failure_kind(&error), Some(F::HostProgramDeadline));
+            assert_eq!(admission_detail(&error), None);
+            let cause = failure_cause(&error).unwrap();
+            assert!(cause.as_str().contains("Native TSZ program admission"));
+            assert!(cause.as_str().contains("does not use Node"));
+            assert_eq!(cause.as_str().contains("On WSL"), expected.is_some());
+            assert_eq!(
+                cause.as_str().contains("Project mount:"),
+                expected.is_some()
+            );
+            assert!(cause.as_str().len() <= TypeScriptFailureCause::MAX_BYTES);
+            assert!(!cause.as_str().contains("ready"));
+        }
+        let existing =
+            describe_host_error(TypeScriptProjectHostError::CompilerProgramDeadline, &[]);
+        assert!(
+            matches!(
+                existing,
+                TypeScriptProjectHostError::CompilerProgramDeadline
+            ),
+            "the generic Compiler API path must not claim native authority or a mount"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_admission_mount_advice_requires_the_exact_visible_project_mount() {
+        let mounts = "1 0 0:1 / / rw - ext4 /dev/root rw\n\
+            2 1 0:2 / /mnt/z rw,relatime shared:7 - 9p Z: rw,aname=drvfs\n\
+            3 2 0:3 / /mnt/z/linux rw - ext4 /dev/project rw\n\
+            4 1 0:4 / /mnt/space\\040drive rw - drvfs X: rw\n";
+        assert_eq!(
+            slow_project_mount(mounts, Path::new("/mnt/z/app")),
+            Some("9p")
+        );
+        assert_eq!(slow_project_mount(mounts, Path::new("/mnt/z")), Some("9p"));
+        assert_eq!(
+            slow_project_mount(mounts, Path::new("/mnt/z/linux/app")),
+            None
+        );
+        assert_eq!(slow_project_mount(mounts, Path::new("/mnt/zed/app")), None);
+        assert_eq!(slow_project_mount(mounts, Path::new("/home/app")), None);
+        assert_eq!(
+            slow_project_mount(mounts, Path::new("/mnt/space drive/app")),
+            Some("drvfs")
+        );
+        assert_eq!(slow_project_mount(mounts, Path::new("mnt/z/app")), None);
+        assert_eq!(
+            slow_project_mount("malformed\n", Path::new("/mnt/z/app")),
+            None
+        );
+        let ambiguous = format!("{mounts}5 1 0:5 / /mnt/z rw - ext4 /dev/other rw\n");
+        assert_eq!(
+            slow_project_mount(&ambiguous, Path::new("/mnt/z/app")),
+            None
+        );
+        assert_eq!(
+            slow_project_mount(
+                "1 0 0:1 / /mnt/bad\\999 rw - 9p Z: rw\n",
+                Path::new("/mnt/bad/app")
+            ),
+            None
+        );
+    }
 
     #[test]
     fn native_source_refusal_retains_the_actual_member_with_the_existing_failure_tag() {

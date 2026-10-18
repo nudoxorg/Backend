@@ -150,12 +150,16 @@ impl<'a> ModuleIndex<'a> {
 struct FileFacts<'a> {
     key: [u8; 32],
     path: &'a str,
+    language: backend_engine::SourceLanguage,
     declarations: Cow<'a, [backend_compile::SourceDeclaration]>,
 }
 
 #[derive(Default)]
 struct FileDeclarations<'a> {
+    require_exact_imports: bool,
     scope_parents: BTreeMap<backend_compile::SourceBinding, Option<backend_compile::SourceBinding>>,
+    parameter_names: BTreeMap<backend_compile::SourceBinding, BTreeSet<String>>,
+    unknown_parameters: BTreeSet<backend_compile::SourceBinding>,
     scoped_names:
         BTreeMap<&'a str, BTreeMap<Option<backend_compile::SourceBinding>, ScopedCallName>>,
     callable: BTreeMap<&'a str, BTreeSet<DeclarationId>>,
@@ -178,6 +182,24 @@ enum LocalCallTarget {
 }
 
 impl FileDeclarations<'_> {
+    fn parameter_shadows(&self, caller: backend_compile::SourceBinding, name: &str) -> bool {
+        let mut scope = Some(caller);
+        for _ in 0..256 {
+            let Some(binding) = scope else { return false; };
+            if self.unknown_parameters.contains(&binding)
+                || self.parameter_names.get(&binding).is_some_and(|names| names.contains(name)) {
+                return true;
+            }
+            // A nearer captured local/import binding cuts off outer parameters.
+            if self.scoped_names.get(name).is_some_and(|scopes| scopes.contains_key(&scope)) {
+                return false;
+            }
+            let Some(parent) = self.scope_parents.get(&binding) else { return true; };
+            scope = *parent;
+        }
+        true
+    }
+
     /// The nearest captured lexical scope that binds this name wins. An
     /// observed noncallable/ambiguous binding shadows farther declarations and
     /// imports. This remains syntactic evidence, not checker resolution.
@@ -221,6 +243,7 @@ struct ImportedCalls {
     // selected through the nearest captured lexical binding first.
     unqualified: BTreeMap<String, BTreeSet<DeclarationId>>,
     exact_unqualified: BTreeMap<backend_compile::SourceBinding, BTreeSet<DeclarationId>>,
+    exact_members: BTreeMap<backend_compile::SourceBinding, BTreeMap<String, BTreeSet<DeclarationId>>>,
     qualified: BTreeMap<String, BTreeMap<String, BTreeSet<DeclarationId>>>,
     classes: BTreeMap<String, BTreeMap<String, BTreeSet<DeclarationId>>>,
 }
@@ -252,6 +275,10 @@ impl ImportedCalls {
                                 .entry(name.to_owned())
                                 .or_default()
                                 .extend(targets);
+                            if let Some(binding) = binding {
+                                joined.exact_members.entry(binding).or_default()
+                                    .entry(name.to_owned()).or_default().extend(targets);
+                            }
                         }
                     }
                     ImportBindingKind::Value { exported, .. } => {
@@ -265,6 +292,10 @@ impl ImportedCalls {
                                         .entry(name.to_owned())
                                         .or_default()
                                         .extend(targets);
+                                    if let Some(binding) = binding {
+                                        joined.exact_members.entry(binding).or_default()
+                                            .entry(name.to_owned()).or_default().extend(targets);
+                                    }
                                 }
                             }
                         } else if let Some(targets) = file.callable.get(exported.as_str()) {
@@ -299,6 +330,13 @@ impl ImportedCalls {
         call: &CallSite,
         exact_caller: Option<backend_compile::SourceBinding>,
     ) -> Option<DeclarationId> {
+        let written_binding = match &call.receiver {
+            CallReceiver::Bare => Some(call.name.as_str()),
+            CallReceiver::Path { root, .. } => Some(root.as_str()),
+            CallReceiver::Expression { .. } => None,
+        };
+        if let (Some(caller), Some(name)) = (exact_caller, written_binding)
+            && local.parameter_shadows(caller, name) { return None; }
         match &call.receiver {
             CallReceiver::Bare => {
                 if let Some(caller) = exact_caller {
@@ -329,10 +367,17 @@ impl ImportedCalls {
                             .filter(|target| !methods.contains(target)),
                     );
                 }
+                if local.require_exact_imports { return None; }
                 unique_target(self.unqualified.get(&call.name)?.iter().copied())
             }
             CallReceiver::Path { root, depth: 1, .. } => {
-                if let Some(names) = self.qualified.get(root).or_else(|| self.classes.get(root)) {
+                if local.require_exact_imports {
+                    if let Some(caller) = exact_caller
+                        && let LocalCallTarget::Imported(binding) = local.scoped_target(caller, root) {
+                        return unique_target(self.exact_members.get(&binding)?
+                            .get(&call.name)?.iter().copied());
+                    }
+                } else if let Some(names) = self.qualified.get(root).or_else(|| self.classes.get(root)) {
                     return unique_target(names.get(&call.name)?.iter().copied());
                 }
                 // An exact written type name can select its own associated
@@ -433,6 +478,7 @@ impl ProjectCalls {
             files.push(FileFacts {
                 key: *key,
                 path: file.path,
+                language: file.language,
                 declarations,
             });
         }
@@ -453,8 +499,14 @@ impl ProjectCalls {
         };
         let mut declarations = Vec::with_capacity(files.len());
         let mut callers = Vec::with_capacity(files.len());
+        let ts_parameters = files.iter().any(|file| file.language == backend_engine::SourceLanguage::TypeScript)
+            .then(backend_frontend_typescript::syntax_frontend).transpose()
+            .map_err(|error| BuiltinModelError(format!("structural parameter grammar: {error}")))?;
         for file in &files {
-            let mut lookup = FileDeclarations::default();
+            let mut lookup = FileDeclarations {
+                require_exact_imports: file.language == backend_engine::SourceLanguage::TypeScript,
+                ..FileDeclarations::default()
+            };
             let mut file_callers = Vec::new();
             let binding_names = file
                 .declarations
@@ -482,6 +534,18 @@ impl ProjectCalls {
                 };
                 if let Some((binding, scope)) = exact_scope {
                     lookup.scope_parents.insert(binding, scope);
+                }
+                // TypeScript members are property keys, not lexical bindings.
+                // Keep their scope ancestry and member indexes, but do not let
+                // a parameter type's property mask an imported bare identifier.
+                let lexical_scope = exact_scope.filter(|_| {
+                    file.language != backend_engine::SourceLanguage::TypeScript
+                        || !matches!(declaration.kind(),
+                            backend_compile::DeclarationKind::Method
+                                | backend_compile::DeclarationKind::Field
+                                | backend_compile::DeclarationKind::Property)
+                });
+                if let Some((binding, scope)) = lexical_scope {
                     let name = lookup
                         .scoped_names
                         .entry(declaration.name())
@@ -495,6 +559,16 @@ impl ProjectCalls {
                 }
                 if !structural_callable(declaration.kind()) {
                     continue;
+                }
+                if file.language == backend_engine::SourceLanguage::TypeScript
+                    && let Some((binding, _)) = exact_scope {
+                    let parameters = if declaration.source_excerpt().extent()
+                        == Some(backend_compile::SourceExcerptExtent::Complete) {
+                        declaration.source_excerpt().text().and_then(|excerpt|
+                            ts_parameters.as_ref()?.callable_parameter_names(std::path::Path::new(file.path), declaration.kind(), excerpt).ok().flatten())
+                    } else { None };
+                    if let Some(names) = parameters { lookup.parameter_names.insert(binding, names); }
+                    else { lookup.unknown_parameters.insert(binding); }
                 }
                 let prepared = plan.declaration(file.key, index)?;
                 let id = match declaration.binding_identity() {
@@ -538,7 +612,7 @@ impl ProjectCalls {
                         }
                     }
                 };
-                if let Some((_, scope)) = exact_scope {
+                if let Some((_, scope)) = lexical_scope {
                     lookup
                         .scoped_names
                         .entry(declaration.name())

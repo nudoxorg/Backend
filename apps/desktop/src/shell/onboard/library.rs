@@ -76,11 +76,15 @@ fn project_stages(project: &WorkspaceProject) -> Option<[Stage; 3]> {
 
 fn project_door(project: &WorkspaceProject) -> Door {
     let lifecycle = project.lifecycle();
+    let compiler_progress = project.compiler_progress_words();
     Door::tip(move |step, measure, window, cx| {
         let (title, body) = if step == 0 {
             ("Folder added", "It is on your shelf.")
         } else if step == 1 {
-            (lifecycle.label(), lifecycle.detail())
+            (
+                lifecycle.label(),
+                compiler_progress.as_deref().unwrap_or(lifecycle.detail()),
+            )
         } else {
             (
                 "Publication",
@@ -89,7 +93,7 @@ fn project_door(project: &WorkspaceProject) -> Door {
         };
         content(TipText {
             title: Some(title.into()),
-            body: body.into(),
+            body: body.to_owned().into(),
             chord: Vec::new(),
         })(measure, window, cx)
     })
@@ -508,9 +512,15 @@ pub(crate) fn indexing(
         let lifecycle = project.lifecycle();
         let can_stop = ctx.links.root.upgrade().is_some_and(|root|
             root.read(cx).unsent_index_revision(project).is_some());
+        let can_cancel = !can_stop && ctx.links.root.upgrade().is_some_and(|root|
+            root.read(cx).accepted_index_cancellation(project, cx).is_some());
         let headline = ctx.say(format!("{}: {}.", project.label, lifecycle.label()));
         let native_status = headline.clone();
-        let promise = ctx.say(lifecycle.detail());
+        let promise = ctx.say(
+            project
+                .compiler_progress_words()
+                .unwrap_or_else(|| lifecycle.detail().to_owned()),
+        );
         let since = lifecycle
             .started()
             .then(|| ctx.say(format!("waiting {}", ago(ages.of(&project.id)))));
@@ -550,8 +560,11 @@ pub(crate) fn indexing(
                 .children(if can_stop {
                     Some(super::failure::act(ctx, format!("stop-pending-{}", project.path),
                         super::commands::ProjectCommand::StopPending, project, cx))
+                } else if can_cancel {
+                    Some(super::failure::act(ctx, format!("cancel-indexing-{}", project.path),
+                        super::commands::ProjectCommand::CancelAccepted, project, cx))
                 } else { None })
-                .children(project.operation.as_ref().filter(|_| !can_stop).map(|_| {
+                .children(project.operation.as_ref().filter(|_| !can_stop && !can_cancel).map(|_| {
                     quiet(ctx.say("This index may already be running. Its outcome will be checked."), &measure, palette)
                         .text_center()
                 })),
