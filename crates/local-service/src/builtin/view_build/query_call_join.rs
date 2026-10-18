@@ -261,6 +261,50 @@ fn schema_worked_referenced_by_joins_exact_typescript_imports() -> Result<(), St
 }
 
 #[test]
+fn typescript_member_keys_do_not_bind_bare_import_calls() -> Result<(), String> {
+    use backend_compile::{DeclarationKind, SourceBindingIdentity};
+    for (case, body, member_kind, expected_callers) in [
+        ("parameter type property", "function use(arg: {load: () => number}) { return load(); }", Some(DeclarationKind::Property), 1),
+        ("nested type property", "function use(arg: {nested: {load: () => number}}) { return load(); }", Some(DeclarationKind::Property), 1),
+        ("destructuring key", "function use({load: other}: {load: () => number}) { return load(); }", Some(DeclarationKind::Property), 1),
+        ("class field", "class Caller { load = 0; use() { return load(); } }", Some(DeclarationKind::Field), 1),
+        ("class method", "class Caller { load() { return 0; } use() { return load(); } }", Some(DeclarationKind::Method), 1),
+        ("actual parameter", "function use(load: () => number) { return load(); }", None, 0),
+        ("actual destructured parameter", "function use({token: load}: {token: () => number}) { return load(); }", None, 0),
+        ("actual local variable", "function use() { let load = () => 0; return load(); }", None, 0),
+        ("property plus actual parameter", "function use(load: () => number, arg: {load: () => number}) { return load(); }", Some(DeclarationKind::Property), 0),
+        ("property plus actual local", "function use(arg: {load: () => number}) { let load = () => 0; return load(); }", Some(DeclarationKind::Property), 0),
+    ] {
+        let source = format!("import {{ getTeachersByClass as load }} from './repo'; {body}");
+        let caller = analyze_source(SourceLanguage::TypeScript, "caller.ts", &source)?;
+        if let Some(kind) = member_kind {
+            assert!(caller.iter().any(|declaration|
+                declaration.name() == "load" && declaration.kind() == kind
+                    && matches!(declaration.binding_identity(), SourceBindingIdentity::Exact(_))),
+                "fixture must retain the actual grammar-owned member: {case}");
+        }
+        let files = [
+            ("repo.ts", SourceLanguage::TypeScript, analyze_source(SourceLanguage::TypeScript,
+                "repo.ts", "export function getTeachersByClass() { return 1; }")?),
+            ("caller.ts", SourceLanguage::TypeScript, caller),
+        ];
+        let (sources, package) = cross_file_sources(&files)?;
+        let plan = StructuralProjectionPlan::of(&sources, &BTreeSet::new())
+            .map_err(|error| error.to_string())?;
+        let mut facts = vec![package_fact(package)];
+        append_structural_query_facts(&sources, &plan, &mut facts)
+            .map_err(|error| error.to_string())?;
+        let rows = referenced_by(facts, "getTeachersByClass")?;
+        let callers = rows.iter().filter(|row| row.get("caller") != Some(&FieldValue::Null)).collect::<Vec<_>>();
+        assert_eq!(callers.len(), expected_callers, "{case}: {rows:?}");
+        if expected_callers != 0 {
+            assert_eq!(callers[0].get("caller"), Some(&FieldValue::from("use")), "{case}: {rows:?}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn query_call_edges_follow_exact_binding_rows_and_omit_absent_targets() -> Result<(), String> {
     use backend_compile::SourceBindingIdentity;
     let files = [

@@ -534,6 +534,18 @@ impl ProjectCalls {
                 };
                 if let Some((binding, scope)) = exact_scope {
                     lookup.scope_parents.insert(binding, scope);
+                }
+                // TypeScript members are property keys, not lexical bindings.
+                // Keep their scope ancestry and member indexes, but do not let
+                // a parameter type's property mask an imported bare identifier.
+                let lexical_scope = exact_scope.filter(|_| {
+                    file.language != backend_engine::SourceLanguage::TypeScript
+                        || !matches!(declaration.kind(),
+                            backend_compile::DeclarationKind::Method
+                                | backend_compile::DeclarationKind::Field
+                                | backend_compile::DeclarationKind::Property)
+                });
+                if let Some((binding, scope)) = lexical_scope {
                     let name = lookup
                         .scoped_names
                         .entry(declaration.name())
@@ -600,7 +612,7 @@ impl ProjectCalls {
                         }
                     }
                 };
-                if let Some((_, scope)) = exact_scope {
+                if let Some((_, scope)) = lexical_scope {
                     lookup
                         .scoped_names
                         .entry(declaration.name())
