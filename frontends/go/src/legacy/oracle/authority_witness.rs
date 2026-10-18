@@ -466,8 +466,9 @@ impl GoPackageAuthorityWitness {
         environment: Option<&GoOracleChildEnvironment>,
         oracle: GoOracle,
         cancelled: Option<&AtomicBool>,
+        deadline: Option<std::time::Instant>,
     ) -> Result<Self, GoPackageAuthorityWitnessError> {
-        let mut scratch = CaptureScratch::default();
+        let mut scratch = CaptureScratch::with_deadline(deadline);
         let mut witness =
             capture_go_package_authority_witness(package_root, &mut scratch, cancelled)?;
         if let Some(environment) = environment {
@@ -562,9 +563,30 @@ impl GoPackageAuthorityWitness {
         package_root: impl AsRef<Path>,
         cancelled: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<bool, GoPackageAuthorityWitnessError> {
-        let mut scratch = CaptureScratch::default();
+        self.matches_current_inner(package_root.as_ref(), cancelled, None)
+    }
+
+    /// Re-proves the same witness using the enclosing package's original deadline.
+    pub fn matches_current_controlled(
+        &self,
+        package_root: &Path,
+        control: super::GoOracleControl<'_>,
+    ) -> Result<bool, super::OracleError> {
+        control.check("witness_reproof")?;
+        let result = self.matches_current_inner(package_root, control.cancelled, control.deadline);
+        control.check("witness_reproof")?;
+        Ok(result?)
+    }
+
+    fn matches_current_inner(
+        &self,
+        package_root: &Path,
+        cancelled: Option<&AtomicBool>,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<bool, GoPackageAuthorityWitnessError> {
+        let mut scratch = CaptureScratch::with_deadline(deadline);
         let mut current =
-            capture_go_package_authority_witness(package_root.as_ref(), &mut scratch, cancelled)?;
+            capture_go_package_authority_witness(package_root, &mut scratch, cancelled)?;
         if let Some(closure) = &self.dependency_closure {
             let roots = current.dependency_roots(closure.environment());
             current.dependency_closure = Some(Box::new(closure.recapture(
@@ -1054,7 +1076,7 @@ fn walk_local_tree(
     entries: &mut Vec<GoLocalTreeEntry>,
     incomplete_reasons: &mut Vec<GoLocalOnlyReason>,
 ) -> bool {
-    if is_cancelled(cancelled) {
+    if is_cancelled(cancelled) || scratch.deadline_expired() {
         incomplete_reasons.push(GoLocalOnlyReason::UnreadableTreeEntry {
             path: path.to_path_buf(),
         });
@@ -1271,7 +1293,7 @@ fn walk_local_tree(
         Ok(children) => {
             let mut entries = Vec::new();
             for child in children {
-                if is_cancelled(cancelled) {
+                if is_cancelled(cancelled) || scratch.deadline_expired() {
                     incomplete_reasons.push(GoLocalOnlyReason::UnreadableTreeEntry {
                         path: path.to_path_buf(),
                     });
@@ -1332,7 +1354,7 @@ fn walk_local_tree(
             incomplete_reasons,
         );
         complete &= child_complete;
-        if budget.exhausted || is_cancelled(cancelled) {
+        if budget.exhausted || is_cancelled(cancelled) || scratch.deadline_expired() {
             break;
         }
     }
@@ -1522,6 +1544,10 @@ fn capture_go_package_authority_witness(
                         .as_deref()
                         .unwrap_or_else(|| workspace.path().expect("captured workspace"));
                     for value in directives.uses {
+                        if is_cancelled(cancelled) || scratch.deadline_expired() {
+                            complete = false;
+                            break;
+                        }
                         let path = resolve_go_local_path(
                             workspace_file
                                 .module_directory
@@ -1603,6 +1629,10 @@ fn capture_go_package_authority_witness(
                         directives.replacements,
                     );
                     for target in replacement_targets {
+                        if is_cancelled(cancelled) || scratch.deadline_expired() {
+                            complete = false;
+                            break;
+                        }
                         reasons.push(GoLocalOnlyReason::FilesystemTarget {
                             kind: target.kind,
                             manifest: target.manifest.clone(),
@@ -1635,11 +1665,19 @@ fn capture_go_package_authority_witness(
 
     let mut unique_targets = BTreeMap::<PathBuf, GoLocalDirectiveTarget>::new();
     for target in targets {
+        if is_cancelled(cancelled) || scratch.deadline_expired() {
+            complete = false;
+            break;
+        }
         unique_targets.entry(target.path.clone()).or_insert(target);
     }
     let mut tree_budget = GoLocalTreeBudget::default();
     let mut local_trees = Vec::new();
     for target in unique_targets.into_values() {
+        if is_cancelled(cancelled) || scratch.deadline_expired() {
+            complete = false;
+            break;
+        }
         let tree = capture_local_tree(&target.path, &mut tree_budget, scratch, cancelled);
         complete &= tree.witness.complete;
         if !tree.root_available {

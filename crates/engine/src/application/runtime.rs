@@ -32,7 +32,9 @@ use arrayvec::ArrayVec;
 use backend_compile::{EmbeddingCacheSession, EmbeddingExecutable};
 use backend_frontend_csharp::legacy::{CSharpAuthorityConfiguration, CSharpOracle};
 use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
-use backend_frontend_go::legacy::{ConfiguredGoOracle, GoOracleInvocationModeV1};
+use backend_frontend_go::legacy::{
+    ConfiguredGoOracle, GoOracleControl, GoOracleInvocationModeV1, OracleError,
+};
 use backend_frontend_java::legacy::harness::JdkToolchain;
 use backend_frontend_python::legacy::Pyrefly;
 use backend_frontend_python::legacy::checker::NativePythonProjectAuthority;
@@ -172,6 +174,9 @@ impl OwnedPackageSource {
 /// Complete owned package frontier transferred through the bounded runtime channel.
 #[derive(Clone, Debug)]
 pub struct OwnedPackageSourceSet {
+    // Operational control only: excluded from source/recipe/authority identity.
+    go_compile_deadline: Option<Instant>,
+    go_witness_deadline_phase: Option<&'static str>,
     request: PackageCompileRequest,
     package_target: CompilerPackageTargetV2,
     package_root: Box<Path>,
@@ -217,6 +222,8 @@ impl OwnedPackageSourceSet {
             request,
             package_target,
             package_root: package_root.into_boxed_path(),
+            go_compile_deadline: None,
+            go_witness_deadline_phase: None,
             sources,
             input_claim: None,
             python_environment: None,
@@ -3804,7 +3811,9 @@ impl LocalCompilerClient {
             .map_err(PackageSemanticRuntimeError::Runtime)?;
         self.wait_for_toolchain(facts, &lease.cancelled)
             .map_err(PackageSemanticRuntimeError::Runtime)?;
-        let go_authority_witness = self.capture_go_authority_witness(&request, &lease.cancelled)?;
+        let mut request = request;
+        let go_authority_witness =
+            self.capture_go_authority_witness(&mut request, &lease.cancelled)?;
         let (response, returned) = sync_channel(1);
         let sender = self.shared.command.as_ref().ok_or_else(|| {
             PackageSemanticRuntimeError::Runtime(
@@ -3873,7 +3882,9 @@ impl LocalCompilerClient {
                 .map_err(PackageSemanticRuntimeError::Runtime)?;
         self.wait_for_toolchain(facts, &lease.cancelled)
             .map_err(PackageSemanticRuntimeError::Runtime)?;
-        let go_authority_witness = self.capture_go_authority_witness(&request, &lease.cancelled)?;
+        let mut request = request;
+        let go_authority_witness =
+            self.capture_go_authority_witness(&mut request, &lease.cancelled)?;
         let (response, returned) = sync_channel(1);
         let sender = self.shared.command.as_ref().ok_or_else(|| {
             PackageSemanticRuntimeError::Runtime(
@@ -3912,7 +3923,7 @@ impl LocalCompilerClient {
     // child cannot block the compiler owner's status, cancellation, or peers.
     fn capture_go_authority_witness(
         &self,
-        request: &OwnedPackageSourceSet,
+        request: &mut OwnedPackageSourceSet,
         cancelled: &AtomicBool,
     ) -> Result<Option<GoPackageAuthorityWitness>, PackageSemanticRuntimeError> {
         let facts = request.facts();
@@ -3927,18 +3938,47 @@ impl LocalCompilerClient {
                 facts.terminal(CompilerRuntimeCause::RequestCancelled),
             ));
         }
-        let witness = oracle
-            .package_authority_witness_cancellable(&request.package_root, Some(cancelled))
-            .map_err(|error| {
-                PackageSemanticRuntimeError::Package(PackageSemanticError::GoAuthorityWitness(
-                    error,
-                ))
-            })?;
-        if cancelled.load(Ordering::Acquire) {
-            return Err(PackageSemanticRuntimeError::Runtime(
-                facts.terminal(CompilerRuntimeCause::RequestCancelled),
-            ));
+        // This is the same configured package timeout used by the compiler
+        // lanes. Start it before the requesting worker's potentially slow Go
+        // witness, then carry this exact Instant through queueing and reproof.
+        // Construction failure stays with the existing compiler terminal; no
+        // native work is attempted on that path.
+        let Ok(deadline) = (LocalCompilerControl {
+            timeout: self.shared.native_python_timeout,
+            cancelled,
+        })
+        .deadline() else {
+            return Ok(None);
+        };
+        request.go_compile_deadline = Some(deadline);
+        let result = oracle.package_authority_witness_controlled(
+            &request.package_root,
+            GoOracleControl::new(Some(cancelled), deadline),
+        );
+        if let Err(error) = &result
+            && let Some(phase) = GoOracleControl::deadline_phase(error)
+        {
+            // The compiler lane owns the selected toolchain/recipe needed
+            // to project this exact original stop as a typed terminal.
+            request.go_witness_deadline_phase = Some(phase);
+            return Ok(None);
         }
+        let witness = match result {
+            Ok(witness) => witness,
+            Err(OracleError::Cancelled) => {
+                return Err(PackageSemanticRuntimeError::Runtime(
+                    facts.terminal(CompilerRuntimeCause::RequestCancelled),
+                ));
+            }
+            Err(OracleError::PackageAuthorityWitness(error)) => {
+                return Err(PackageSemanticRuntimeError::Package(
+                    PackageSemanticError::GoAuthorityWitness(error),
+                ));
+            }
+            Err(_) => {
+                unreachable!("controlled witness capture returns only witness or control errors")
+            }
+        };
         Ok(Some(witness))
     }
 
@@ -5516,7 +5556,11 @@ fn run_lane(
                                 None => package,
                             };
                             let package = package
-                                .with_python_environment(request.python_environment.as_ref());
+                                .with_python_environment(request.python_environment.as_ref())
+                                .with_go_compile_control(
+                                    request.go_compile_deadline,
+                                    request.go_witness_deadline_phase,
+                                );
                             let package = match go_authority_witness.as_ref() {
                                 Some(witness) => package.with_go_authority_witness(witness),
                                 None => package,

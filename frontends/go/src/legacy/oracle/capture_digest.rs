@@ -40,6 +40,7 @@ struct CachedDigest {
 #[derive(Default)]
 pub(super) struct CaptureScratch {
     files: BTreeMap<PathBuf, CachedDigest>,
+    pub(super) deadline: Option<std::time::Instant>,
     pub(super) hash_bytes: u64,
     pub(super) hash_files: usize,
     #[cfg(test)]
@@ -92,6 +93,30 @@ fn file_stamp(file: &std::fs::File) -> std::io::Result<FileStamp> {
 }
 
 impl CaptureScratch {
+    pub(super) fn with_deadline(deadline: Option<std::time::Instant>) -> Self {
+        Self {
+            deadline,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn deadline_expired(&self) -> bool {
+        self.deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+    }
+
+    pub(super) fn control<'a>(
+        &self,
+        cancelled: Option<&'a AtomicBool>,
+    ) -> super::GoOracleControl<'a> {
+        super::GoOracleControl {
+            cancelled,
+            deadline: self.deadline,
+            #[cfg(test)]
+            after_hash_chunk: None,
+        }
+    }
+
     pub(super) fn capture_file(
         &mut self,
         path: &Path,
@@ -100,7 +125,7 @@ impl CaptureScratch {
         limits: CaptureLimits,
         cancelled: Option<&AtomicBool>,
     ) -> CapturedFile {
-        if is_cancelled(cancelled) || !admitted_path(path, roots) {
+        if (is_cancelled(cancelled) || self.deadline_expired()) || !admitted_path(path, roots) {
             return CapturedFile::Unavailable;
         }
         let Ok(resolved) = path.canonicalize() else {
@@ -141,7 +166,7 @@ impl CaptureScratch {
             let mut buffer = [0u8; 64 * 1024];
             self.hash_files += 1;
             loop {
-                if is_cancelled(cancelled) {
+                if (is_cancelled(cancelled) || self.deadline_expired()) {
                     return CapturedFile::Unavailable;
                 }
                 let Ok(count) = file.read(&mut buffer) else {
@@ -173,7 +198,7 @@ impl CaptureScratch {
             }
             digest.finalize().into()
         };
-        if is_cancelled(cancelled)
+        if (is_cancelled(cancelled) || self.deadline_expired())
             || file_stamp(&file).ok().as_ref() != Some(&before)
             || path.canonicalize().ok().as_ref() != Some(&resolved)
             || !admitted_path(path, roots)
@@ -220,6 +245,30 @@ mod tests {
             },
             cancelled,
         )
+    }
+
+    #[test]
+    fn witness_hash_stops_between_real_chunks_at_the_same_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("large.go");
+        std::fs::write(&path, vec![b'x'; 256 * 1024]).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut scratch = CaptureScratch::with_deadline(Some(deadline));
+        scratch.after_chunk = Some(Box::new(move || {
+            std::thread::sleep(
+                deadline.saturating_duration_since(std::time::Instant::now())
+                    + std::time::Duration::from_millis(1),
+            )
+        }));
+        let cancelled = AtomicBool::new(false);
+        let result = capture(&mut scratch, &path, root.path(), &mut 0, Some(&cancelled));
+        assert_eq!(result, CapturedFile::Unavailable);
+        assert!(scratch.hash_bytes > 0 && scratch.hash_bytes < 256 * 1024);
+        assert!(
+            matches!(scratch.control(Some(&cancelled)).check("witness_capture"), Err(error) if super::super::GoOracleControl::deadline_phase(&error) == Some("witness_capture"))
+        );
+        assert!(!is_cancelled(Some(&cancelled)));
+        assert_eq!(scratch.deadline, Some(deadline));
     }
 
     #[test]

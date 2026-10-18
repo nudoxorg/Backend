@@ -30,7 +30,134 @@ mod authority_session;
 mod authority_witness;
 mod capture_digest;
 mod dependency_witness;
-fn check_go_cancellation(cancelled: Option<&std::sync::atomic::AtomicBool>) -> Result<(), OracleError> {
+/// One enclosing package's cancellation and absolute monotonic deadline.
+/// Copies retain the same deadline; nested work never receives a fresh interval.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GoOracleControl<'cancel> {
+    cancelled: Option<&'cancel std::sync::atomic::AtomicBool>,
+    deadline: Option<std::time::Instant>,
+    #[cfg(test)]
+    after_hash_chunk: Option<fn(std::time::Instant)>,
+}
+
+impl<'cancel> GoOracleControl<'cancel> {
+    /// Binds the already-admitted deadline without changing the caller's token.
+    #[must_use]
+    pub const fn new(
+        cancelled: Option<&'cancel std::sync::atomic::AtomicBool>,
+        deadline: std::time::Instant,
+    ) -> Self {
+        Self {
+            cancelled,
+            deadline: Some(deadline),
+            #[cfg(test)]
+            after_hash_chunk: None,
+        }
+    }
+
+    fn cancellation_only(cancelled: Option<&'cancel std::sync::atomic::AtomicBool>) -> Self {
+        Self {
+            cancelled,
+            deadline: None,
+            #[cfg(test)]
+            after_hash_chunk: None,
+        }
+    }
+
+    /// Checks this original deadline, retaining external cancellation precedence.
+    ///
+    /// # Errors
+    /// Returns cancellation or the reserved absolute-package timeout carrier.
+    pub fn check(self, phase: &'static str) -> Result<(), OracleError> {
+        check_go_cancellation(self.cancelled)?;
+        if self
+            .deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            let phase = match phase {
+                "authority_admission" => "absolute_package/authority_admission",
+                "batch_decode" => "absolute_package/batch_decode",
+                "batch_image" => "absolute_package/batch_image",
+                "batch_plan" => "absolute_package/batch_plan",
+                "compiler_lane_wait" => "absolute_package/compiler_lane_wait",
+                "dependency_list" => "absolute_package/dependency_list",
+                "helper_build" => "absolute_package/helper_build",
+                "helper_preparation" => "absolute_package/helper_preparation",
+                "helper_publish" => "absolute_package/helper_publish",
+                "helper_source" => "absolute_package/helper_source",
+                "helper_source_hash" => "absolute_package/helper_source_hash",
+                "oracle_child" => "absolute_package/oracle_child",
+                "package_batch" => "absolute_package/package_batch",
+                "package_batch_child" => "absolute_package/package_batch_child",
+                "selected_image" => "absolute_package/selected_image",
+                "selected_image_child" => "absolute_package/selected_image_child",
+                "toolchain_or_helper_hash" => "absolute_package/toolchain_or_helper_hash",
+                "toolchain_reproof" => "absolute_package/toolchain_reproof",
+                "witness_capture" => "absolute_package/witness_capture",
+                "witness_reproof" => "absolute_package/witness_reproof",
+                "real_sdk_child" => "absolute_package/real_sdk_child",
+                "real_sdk_version" => "absolute_package/real_sdk_version",
+                "checkpoint" => "absolute_package/checkpoint",
+                _ => "absolute_package/checkpoint",
+            };
+            // Zero is a discriminator for an exhausted absolute Instant, not a
+            // replacement child timeout or a newly started duration.
+            return Err(OracleError::Timeout {
+                phase,
+                milliseconds: 0,
+            });
+        }
+        Ok(())
+    }
+
+    /// Decodes only this adapter's closed absolute-deadline carrier set.
+    /// Normal child timeouts and arbitrary timeout phases are never promoted.
+    #[must_use]
+    pub fn deadline_phase(error: &OracleError) -> Option<&'static str> {
+        let OracleError::Timeout {
+            phase,
+            milliseconds: 0,
+        } = error
+        else {
+            return None;
+        };
+        match *phase {
+            "absolute_package/authority_admission" => Some("authority_admission"),
+            "absolute_package/batch_decode" => Some("batch_decode"),
+            "absolute_package/batch_image" => Some("batch_image"),
+            "absolute_package/batch_plan" => Some("batch_plan"),
+            "absolute_package/compiler_lane_wait" => Some("compiler_lane_wait"),
+            "absolute_package/dependency_list" => Some("dependency_list"),
+            "absolute_package/helper_build" => Some("helper_build"),
+            "absolute_package/helper_preparation" => Some("helper_preparation"),
+            "absolute_package/helper_publish" => Some("helper_publish"),
+            "absolute_package/helper_source" => Some("helper_source"),
+            "absolute_package/helper_source_hash" => Some("helper_source_hash"),
+            "absolute_package/oracle_child" => Some("oracle_child"),
+            "absolute_package/package_batch" => Some("package_batch"),
+            "absolute_package/package_batch_child" => Some("package_batch_child"),
+            "absolute_package/selected_image" => Some("selected_image"),
+            "absolute_package/selected_image_child" => Some("selected_image_child"),
+            "absolute_package/toolchain_or_helper_hash" => Some("toolchain_or_helper_hash"),
+            "absolute_package/toolchain_reproof" => Some("toolchain_reproof"),
+            "absolute_package/witness_capture" => Some("witness_capture"),
+            "absolute_package/witness_reproof" => Some("witness_reproof"),
+            "absolute_package/real_sdk_child" => Some("real_sdk_child"),
+            "absolute_package/real_sdk_version" => Some("real_sdk_version"),
+            "absolute_package/checkpoint" => Some("checkpoint"),
+            _ => None,
+        }
+    }
+
+    fn io_checkpoint(self) -> std::io::Result<()> {
+        self.check("toolchain_or_helper_hash")
+            .map_err(std::io::Error::other)
+    }
+}
+
+fn check_go_cancellation(
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(), OracleError> {
     if cancelled.is_some_and(|token| token.load(std::sync::atomic::Ordering::Acquire)) {
         Err(OracleError::Cancelled)
     } else {
@@ -749,11 +876,17 @@ struct EmbeddedGoOracleSource(tempfile::TempDir);
 
 impl EmbeddedGoOracleSource {
     fn materialize() -> Result<Self, OracleError> {
+        Self::materialize_controlled(GoOracleControl::default())
+    }
+
+    fn materialize_controlled(control: GoOracleControl<'_>) -> Result<Self, OracleError> {
+        control.check("helper_source")?;
         let directory = tempfile::Builder::new()
             .prefix("nudox-go-oracle-")
             .tempdir()
             .map_err(OracleError::GoOracleSourceDirectory)?;
         for (name, contents) in GO_ORACLE_SOURCE_FILES {
+            control.check("helper_source")?;
             let path = directory.path().join(name);
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(OracleError::GoOracleSourceDirectory)?;
@@ -1146,13 +1279,22 @@ impl GoOracleChildEnvironment {
     /// file's identity, size or timestamps differ from the last complete hash
     /// (see [`ToolchainMemo`]).
     fn revalidate_toolchain(&self) -> Result<(), OracleError> {
-        let observed =
-            self.toolchain_memo.identity(&self.go_executable, &self.goroot).map_err(|source| {
-                OracleError::ToolingUnavailable {
-                    tool: "Go toolchain identity",
-                    source,
-                }
-            })?;
+        self.revalidate_toolchain_controlled(GoOracleControl::default())
+    }
+
+    fn revalidate_toolchain_controlled(
+        &self,
+        control: GoOracleControl<'_>,
+    ) -> Result<(), OracleError> {
+        control.check("toolchain_reproof")?;
+        let result =
+            self.toolchain_memo
+                .identity_controlled(&self.go_executable, &self.goroot, control);
+        control.check("toolchain_reproof")?;
+        let observed = result.map_err(|source| OracleError::ToolingUnavailable {
+            tool: "Go toolchain identity",
+            source,
+        })?;
         if observed != self.toolchain_identity {
             return Err(OracleError::GoToolchainIdentityChanged);
         }
@@ -1493,9 +1635,22 @@ impl GoOracle {
         configured: bool,
         cancelled: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<Vec<u8>, OracleError> {
-        if cancelled.is_some_and(|token| token.load(std::sync::atomic::Ordering::Acquire)) {
-            return Err(OracleError::Cancelled);
-        }
+        self.execute_with_origin_controlled(
+            command,
+            configured,
+            GoOracleControl::cancellation_only(cancelled),
+            "oracle_child",
+        )
+    }
+
+    fn execute_with_origin_controlled(
+        &self,
+        command: &mut std::process::Command,
+        configured: bool,
+        control: GoOracleControl<'_>,
+        phase: &'static str,
+    ) -> Result<Vec<u8>, OracleError> {
+        control.check(phase)?;
         command
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -1545,11 +1700,11 @@ impl GoOracle {
         let mut stdout_done = false;
         let mut stderr_done = false;
         loop {
-            if cancelled.is_some_and(|token| token.load(std::sync::atomic::Ordering::Acquire)) {
+            if let Err(stopped) = control.check(phase) {
                 terminate_child(&mut child);
                 drop(out_thread);
                 drop(err_thread);
-                return Err(OracleError::Cancelled);
+                return Err(stopped);
             }
             if let Ok((stream, observed)) = limit_rx.try_recv() {
                 terminate_child(&mut child);
@@ -1559,6 +1714,7 @@ impl GoOracle {
                 // bounded output rejection into an unbounded join.
                 drop(out_thread);
                 drop(err_thread);
+                control.check(phase)?;
                 return Err(OracleError::OutputLimit {
                     phase: "collect",
                     stream,
@@ -1586,6 +1742,7 @@ impl GoOracle {
                 terminate_child(&mut child);
                 drop(out_thread);
                 drop(err_thread);
+                control.check(phase)?;
                 return Err(OracleError::Timeout {
                     phase: "collect",
                     milliseconds: self.timeout.as_millis() as u64,
@@ -1593,6 +1750,7 @@ impl GoOracle {
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+        control.check(phase)?;
         let stdout = out_thread
             .join()
             .map_err(|payload| OracleError::WorkerPanic {
@@ -1634,6 +1792,7 @@ impl GoOracle {
                 stderr: diagnostic,
             });
         }
+        control.check(phase)?;
         Ok(stdout.bytes)
     }
 }
@@ -1661,44 +1820,63 @@ impl ConfiguredGoOracle {
         self.cached_helper_binary_cancellable(None)
     }
 
-    fn cached_helper_binary_cancellable(&self, cancelled: Option<&std::sync::atomic::AtomicBool>) -> Result<(Option<PathBuf>, bool), OracleError> {
-        check_go_cancellation(cancelled)?;
+    fn cached_helper_binary_cancellable(
+        &self,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<(Option<PathBuf>, bool), OracleError> {
+        self.cached_helper_binary_controlled(GoOracleControl::cancellation_only(cancelled))
+    }
+
+    fn cached_helper_binary_controlled(
+        &self,
+        control: GoOracleControl<'_>,
+    ) -> Result<(Option<PathBuf>, bool), OracleError> {
+        control.check("helper_preparation")?;
         let GoOracleConfiguration::GoToolchain(executable) = &self.configuration else {
             return Ok((None, false));
         };
         let Some(environment) = &self.child_environment else {
             return Ok((None, false));
         };
-        self.prepare_cached_helper(executable.as_ref(), environment, cancelled)
-            .map(|(path, revalidated_after_build)| (Some(path), revalidated_after_build))
+        let result = self.prepare_cached_helper(executable.as_ref(), environment, control);
+        if matches!(&result, Err(error) if matches!(error, OracleError::Cancelled) || GoOracleControl::deadline_phase(error).is_some())
+        {
+            return result
+                .map(|(path, revalidated_after_build)| (Some(path), revalidated_after_build));
+        }
+        control.check("helper_preparation")?;
+        result.map(|(path, revalidated_after_build)| (Some(path), revalidated_after_build))
     }
 
     fn prepare_cached_helper(
         &self,
         executable: &Path,
         environment: &GoOracleChildEnvironment,
-        cancelled: Option<&std::sync::atomic::AtomicBool>,
+        control: GoOracleControl<'_>,
     ) -> Result<(PathBuf, bool), OracleError> {
         use fs4::fs_std::FileExt;
         use std::time::Instant;
 
-        let source_identity = helper_source_identity();
+        let source_identity = helper_source_identity_controlled(control)?;
         let toolchain_identity = environment.toolchain_identity();
         let key = helper_cache_key(&source_identity, &toolchain_identity);
         let cache_root_path = environment.build_cache().join("nudox-go-oracle-v1");
+        control.check("helper_preparation")?;
         let cache_root = open_private_helper_cache(&cache_root_path).map_err(|error| {
             OracleError::GoOracleHelperCache {
                 detail: format!("open private cache root {cache_root_path:?}: {error}"),
             }
         })?;
+        control.check("helper_preparation")?;
         let lock_file = cache_root
             .open_private_file_read_write("build.lock", true)
             .map_err(|error| OracleError::GoOracleHelperCache {
                 detail: format!("open private cache lock in {cache_root_path:?}: {error}"),
             })?;
+        control.check("helper_preparation")?;
         let started = Instant::now();
         loop {
-            check_go_cancellation(cancelled)?;
+            control.check("helper_preparation")?;
             let acquired = match FileExt::try_lock_exclusive(&lock_file) {
                 Ok(acquired) => acquired,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => false,
@@ -1719,7 +1897,8 @@ impl ConfiguredGoOracle {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
 
-        clean_abandoned_helper_staging(&cache_root).map_err(|error| {
+        control.check("helper_preparation")?;
+        clean_abandoned_helper_staging(&cache_root, control).map_err(|error| {
             OracleError::GoOracleHelperCache {
                 detail: format!("clean bounded cache staging in {cache_root_path:?}: {error}"),
             }
@@ -1735,11 +1914,17 @@ impl ConfiguredGoOracle {
             digest_hex(&toolchain_identity),
         );
         let binary_path = cache_root_path.join(&key).join(binary_name);
-        if validate_helper_cache_entry(&cache_root, &key, binary_name, &manifest_prefix).map_err(
-            |error| OracleError::GoOracleHelperCache {
-                detail: format!("validate bounded cache entry {binary_path:?}: {error}"),
-            },
-        )? {
+        let valid = validate_helper_cache_entry_controlled(
+            &cache_root,
+            &key,
+            binary_name,
+            &manifest_prefix,
+            control,
+        );
+        control.check("helper_preparation")?;
+        if valid.map_err(|error| OracleError::GoOracleHelperCache {
+            detail: format!("validate bounded cache entry {binary_path:?}: {error}"),
+        })? {
             cache_root.verify_path(&cache_root_path).map_err(|error| {
                 OracleError::GoOracleHelperCache {
                     detail: format!("cache root identity changed at {cache_root_path:?}: {error}"),
@@ -1747,18 +1932,21 @@ impl ConfiguredGoOracle {
             })?;
             return Ok((binary_path, false));
         }
+        control.check("helper_preparation")?;
         remove_helper_cache_entry(&cache_root, &key).map_err(|error| {
             OracleError::GoOracleHelperCache {
                 detail: format!("remove invalid bounded cache entry {binary_path:?}: {error}"),
             }
         })?;
 
+        control.check("helper_preparation")?;
         let staging = tempfile::Builder::new()
             .prefix("go-oracle-build-")
             .tempdir_in(&cache_root_path)
             .map_err(|error| OracleError::GoOracleHelperCache {
                 detail: format!("create staging directory in {cache_root_path:?}: {error}"),
             })?;
+        control.check("helper_preparation")?;
         let staging_path = staging.path().to_path_buf();
         let staging_name = staging_path
             .file_name()
@@ -1783,7 +1971,9 @@ impl ConfiguredGoOracle {
                 detail: format!("cache root identity changed before helper build: {error}"),
             }
         })?;
-        let source = EmbeddedGoOracleSource::materialize()?;
+        control.check("helper_source")?;
+        let source = EmbeddedGoOracleSource::materialize_controlled(control)?;
+        control.check("helper_source")?;
         let staged_binary = staging_path.join(binary_name);
         let mut build = std::process::Command::new(executable);
         build
@@ -1798,11 +1988,12 @@ impl ConfiguredGoOracle {
             .arg(".")
             .current_dir(source.path());
         environment.apply_to(&mut build, &GoWorkWitness::Disabled, true);
-        self.oracle.execute_with_origin(&mut build, true, cancelled)?;
-        check_go_cancellation(cancelled)?;
+        self.oracle
+            .execute_with_origin_controlled(&mut build, true, control, "helper_build")?;
+        control.check("helper_preparation")?;
         // Reject toolchain drift caused by the helper build before publishing
         // a manifest that would bind its output to the old identity.
-        environment.revalidate_toolchain()?;
+        environment.revalidate_toolchain_controlled(control)?;
         cache_root
             .verify_path(&cache_root_path)
             .and_then(|()| staging_capability.verify_path(&staging_path))
@@ -1815,11 +2006,12 @@ impl ConfiguredGoOracle {
                 detail: format!("open staged helper binary {staged_binary:?}: {error}"),
             })?;
         let mut binary_digest = Sha256::new();
-        hash_regular_file_handle(
+        hash_regular_file_handle_controlled(
             &mut binary_file,
             MAX_HELPER_BINARY_BYTES,
             RegularFileRole::PrivateHelperBinary,
             &mut binary_digest,
+            control,
         )
         .map_err(|error| OracleError::GoOracleHelperCache {
             detail: format!("hash bounded staged helper binary {staged_binary:?}: {error}"),
@@ -1852,23 +2044,29 @@ impl ConfiguredGoOracle {
             .map_err(|error| OracleError::GoOracleHelperCache {
                 detail: format!("sync staged helper manifest: {error}"),
             })?;
+        control.check("helper_publish")?;
         staging_capability
             .sync_all()
             .map_err(|error| OracleError::GoOracleHelperCache {
                 detail: format!("sync staged helper generation: {error}"),
             })?;
-        check_go_cancellation(cancelled)?;
+        control.check("helper_preparation")?;
         let _staging_path = staging.keep();
         cache_root
             .rename(&staging_name, &key, false)
             .map_err(|error| OracleError::GoOracleHelperCache {
                 detail: format!("atomically publish helper generation {binary_path:?}: {error}"),
             })?;
-        if !validate_helper_cache_entry(&cache_root, &key, binary_name, &manifest_prefix).map_err(
-            |error| OracleError::GoOracleHelperCache {
-                detail: format!("verify published helper generation {binary_path:?}: {error}"),
-            },
-        )? {
+        if !validate_helper_cache_entry_controlled(
+            &cache_root,
+            &key,
+            binary_name,
+            &manifest_prefix,
+            control,
+        )
+        .map_err(|error| OracleError::GoOracleHelperCache {
+            detail: format!("verify published helper generation {binary_path:?}: {error}"),
+        })? {
             return Err(OracleError::GoOracleHelperCache {
                 detail: format!(
                     "published helper generation failed bounded validation: {binary_path:?}"
@@ -1912,7 +2110,26 @@ impl ConfiguredGoOracle {
             self.child_environment.as_ref(),
             self.oracle,
             cancelled,
+            None,
         )
+    }
+
+    /// Captures the selected graph under the enclosing package's absolute deadline.
+    pub fn package_authority_witness_controlled(
+        &self,
+        package_root: &Path,
+        control: GoOracleControl<'_>,
+    ) -> Result<GoPackageAuthorityWitness, OracleError> {
+        control.check("witness_capture")?;
+        let result = GoPackageAuthorityWitness::capture_selected(
+            package_root,
+            self.child_environment.as_ref(),
+            self.oracle,
+            control.cancelled,
+            control.deadline,
+        );
+        control.check("witness_capture")?;
+        Ok(result?)
     }
 
     /// Returns path-independent invocation mode and helper-source identity.
@@ -2122,7 +2339,23 @@ impl ConfiguredGoOracle {
         witness: &GoPackageAuthorityWitness,
         cancelled: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<Vec<u8>, OracleError> {
-        check_go_cancellation(cancelled)?;
+        self.authority_image_for_package_with_authority_witness_controlled(
+            source,
+            package_root,
+            witness,
+            GoOracleControl::cancellation_only(cancelled),
+        )
+    }
+
+    /// Produces one selected image without resetting the enclosing package deadline.
+    pub fn authority_image_for_package_with_authority_witness_controlled(
+        &self,
+        source: &Path,
+        package_root: &Path,
+        witness: &GoPackageAuthorityWitness,
+        control: GoOracleControl<'_>,
+    ) -> Result<Vec<u8>, OracleError> {
+        control.check("selected_image")?;
         let environment = self
             .child_environment
             .as_ref()
@@ -2133,17 +2366,18 @@ impl ConfiguredGoOracle {
             return Err(OracleError::UnsupportedCgoOracleBinary);
         }
 
-        environment.revalidate_toolchain()?;
+        environment.revalidate_toolchain_controlled(control)?;
         if let Some(failure) = witness.dependency_closure_failure() {
             return Err(OracleError::DependencyClosureUnavailable { failure });
         }
         // Helper preparation reads the selected toolchain and embedded helper
         // sources. The complete package closure is checked immediately before
         // the project child below, then again after its output is collected.
-        check_go_cancellation(cancelled)?;
-        let (helper_binary, revalidated_after_build) = self.cached_helper_binary_cancellable(cancelled)?;
+        control.check("selected_image")?;
+        let (helper_binary, revalidated_after_build) =
+            self.cached_helper_binary_controlled(control)?;
         if !revalidated_after_build {
-            environment.revalidate_toolchain()?;
+            environment.revalidate_toolchain_controlled(control)?;
         }
         let mut command = GoOracle::configured_command(
             &self.configuration,
@@ -2156,19 +2390,24 @@ impl ConfiguredGoOracle {
             witness.go_work_witness(),
             matches!(&self.configuration, GoOracleConfiguration::GoToolchain(_)),
         );
-        let current = witness.matches_current_cancellable(package_root, cancelled)?;
-        check_go_cancellation(cancelled)?;
+        let current = witness.matches_current_controlled(package_root, control)?;
+        control.check("selected_image")?;
         if !current {
             return Err(OracleError::PackageAuthorityWitnessChanged);
         }
-        let image = self.oracle.execute_with_origin(command.command_mut(), true, cancelled)?;
-        let current = witness.matches_current_cancellable(package_root, cancelled)?;
-        check_go_cancellation(cancelled)?;
+        let image = self.oracle.execute_with_origin_controlled(
+            command.command_mut(),
+            true,
+            control,
+            "selected_image_child",
+        )?;
+        let current = witness.matches_current_controlled(package_root, control)?;
+        control.check("selected_image")?;
         if !current {
             return Err(OracleError::PackageAuthorityWitnessChanged);
         }
-        environment.revalidate_toolchain()?;
-        check_go_cancellation(cancelled)?;
+        environment.revalidate_toolchain_controlled(control)?;
+        control.check("selected_image")?;
         Ok(image)
     }
 
@@ -2213,12 +2452,30 @@ fn cache_entry_is_valid(
         .unwrap_or(false)
 }
 
+#[cfg(test)]
 fn validate_helper_cache_entry(
     cache_root: &DirectoryCapability,
     entry_name: &str,
     binary_name: &str,
     manifest_prefix: &str,
 ) -> std::io::Result<bool> {
+    validate_helper_cache_entry_controlled(
+        cache_root,
+        entry_name,
+        binary_name,
+        manifest_prefix,
+        GoOracleControl::default(),
+    )
+}
+
+fn validate_helper_cache_entry_controlled(
+    cache_root: &DirectoryCapability,
+    entry_name: &str,
+    binary_name: &str,
+    manifest_prefix: &str,
+    control: GoOracleControl<'_>,
+) -> std::io::Result<bool> {
+    control.io_checkpoint()?;
     let entry = match cache_root.open_dir(entry_name) {
         Ok(entry) => entry,
         Err(_) => return Ok(false),
@@ -2261,16 +2518,21 @@ fn validate_helper_cache_entry(
         Err(_) => return Ok(false),
     };
     let mut binary_digest = Sha256::new();
-    if hash_regular_file_handle(
+    if hash_regular_file_handle_controlled(
         &mut binary,
         MAX_HELPER_BINARY_BYTES,
         RegularFileRole::PrivateHelperBinary,
         &mut binary_digest,
+        control,
     )
     .is_err()
     {
+        // A stopped hash is not evidence of a corrupt cache entry. Propagate
+        // it before the caller can remove or rebuild a previously valid entry.
+        control.io_checkpoint()?;
         return Ok(false);
     }
+    control.io_checkpoint()?;
     Ok(digest_hex(&binary_digest.finalize()) == expected_binary_hash)
 }
 
@@ -2393,12 +2655,24 @@ fn validate_regular_file_handle(
     Ok(metadata)
 }
 
+#[cfg(test)]
 fn hash_regular_file_handle(
     file: &mut std::fs::File,
     maximum: u64,
     role: RegularFileRole,
     digest: &mut Sha256,
 ) -> std::io::Result<u64> {
+    hash_regular_file_handle_controlled(file, maximum, role, digest, GoOracleControl::default())
+}
+
+fn hash_regular_file_handle_controlled(
+    file: &mut std::fs::File,
+    maximum: u64,
+    role: RegularFileRole,
+    digest: &mut Sha256,
+    control: GoOracleControl<'_>,
+) -> std::io::Result<u64> {
+    control.io_checkpoint()?;
     use std::io::Read;
 
     let before = validate_regular_file_handle(file, maximum, role)?;
@@ -2406,6 +2680,7 @@ fn hash_regular_file_handle(
     let mut total = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
     loop {
+        control.io_checkpoint()?;
         let remaining = maximum.saturating_sub(total).saturating_add(1);
         let read_limit = usize::try_from(remaining.min(buffer.len() as u64))
             .map_err(|_| std::io::Error::other("bounded file read does not fit memory"))?;
@@ -2423,7 +2698,12 @@ fn hash_regular_file_handle(
             ));
         }
         digest.update(&buffer[..read]);
+        #[cfg(test)]
+        if let (Some(observe), Some(deadline)) = (control.after_hash_chunk, control.deadline) {
+            observe(deadline);
+        }
     }
+    control.io_checkpoint()?;
     let after = validate_regular_file_handle(file, maximum, role)?;
     if after.len() != before.len() || total != before.len() || after.modified()? != before_modified
     {
@@ -2549,9 +2829,14 @@ fn open_private_helper_cache(path: &Path) -> std::io::Result<DirectoryCapability
     }
 }
 
-fn clean_abandoned_helper_staging(cache_root: &DirectoryCapability) -> std::io::Result<()> {
+fn clean_abandoned_helper_staging(
+    cache_root: &DirectoryCapability,
+    control: GoOracleControl<'_>,
+) -> std::io::Result<()> {
+    control.io_checkpoint()?;
     let entries = cache_root.entries(MAX_HELPER_CACHE_ROOT_ENTRIES)?;
     for entry in entries {
+        control.io_checkpoint()?;
         let Some(name) = entry.name.to_str() else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -2565,6 +2850,7 @@ fn clean_abandoned_helper_staging(cache_root: &DirectoryCapability) -> std::io::
                     "helper cache staging name is not a regular directory",
                 ));
             }
+            control.io_checkpoint()?;
             cache_root.remove_dir_all(name, MAX_HELPER_CACHE_ENTRY_ENTRIES)?;
         }
     }
@@ -2602,6 +2888,22 @@ fn helper_source_identity() -> [u8; 32] {
     digest.finalize().into()
 }
 
+fn helper_source_identity_controlled(
+    control: GoOracleControl<'_>,
+) -> Result<[u8; 32], OracleError> {
+    let mut digest = Sha256::new();
+    digest.update(b"nudox.go-oracle-helper-source.v2\0");
+    for (name, contents) in GO_ORACLE_SOURCE_FILES {
+        control.check("helper_source_hash")?;
+        digest.update((name.len() as u64).to_be_bytes());
+        digest.update(name.as_bytes());
+        digest.update((contents.len() as u64).to_be_bytes());
+        digest.update(contents);
+    }
+    control.check("helper_source_hash")?;
+    Ok(digest.finalize().into())
+}
+
 /// The result of walking the Go executable and GOROOT once.
 struct ToolchainWalk {
     /// Content identity. Meaningful only when the walk read file contents.
@@ -2613,6 +2915,7 @@ struct ToolchainWalk {
 }
 
 /// Content identity of the Go executable and its complete GOROOT.
+#[cfg(test)]
 fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<[u8; 32]> {
     Ok(walk_toolchain(executable, goroot, true)?.identity)
 }
@@ -2642,17 +2945,32 @@ const TOOLCHAIN_STAMP_SETTLE_SECONDS: i64 = 2;
 
 impl ToolchainMemo {
     fn identity(&self, executable: &Path, goroot: &Path) -> std::io::Result<[u8; 32]> {
-        let mut remembered = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.identity_controlled(executable, goroot, GoOracleControl::default())
+    }
+
+    fn identity_controlled(
+        &self,
+        executable: &Path,
+        goroot: &Path,
+        control: GoOracleControl<'_>,
+    ) -> std::io::Result<[u8; 32]> {
+        let mut remembered = loop {
+            control.io_checkpoint()?;
+            match self.0.try_lock() {
+                Ok(guard) => break guard,
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    std::thread::sleep(std::time::Duration::from_millis(2))
+                }
+            }
+        };
         if let Some((identity, stamp)) = *remembered {
-            if walk_toolchain(executable, goroot, false)?.stamp == stamp {
+            if walk_toolchain_controlled(executable, goroot, false, control)?.stamp == stamp {
                 return Ok(identity);
             }
         }
-        let walk = walk_toolchain(executable, goroot, true)?;
-        let after = walk_toolchain(executable, goroot, false)?;
+        let walk = walk_toolchain_controlled(executable, goroot, true, control)?;
+        let after = walk_toolchain_controlled(executable, goroot, false, control)?;
         if after.stamp != walk.stamp {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
                 "the Go toolchain changed during its content read"));
@@ -2663,10 +2981,31 @@ impl ToolchainMemo {
     }
 }
 
-fn walk_toolchain(executable: &Path, goroot: &Path, read_contents: bool) -> std::io::Result<ToolchainWalk> {
+#[cfg(test)]
+fn walk_toolchain(
+    executable: &Path,
+    goroot: &Path,
+    read_contents: bool,
+) -> std::io::Result<ToolchainWalk> {
+    walk_toolchain_controlled(
+        executable,
+        goroot,
+        read_contents,
+        GoOracleControl::default(),
+    )
+}
+
+fn walk_toolchain_controlled(
+    executable: &Path,
+    goroot: &Path,
+    read_contents: bool,
+    control: GoOracleControl<'_>,
+) -> std::io::Result<ToolchainWalk> {
+    control.io_checkpoint()?;
     use std::io::ErrorKind;
 
-    struct WalkBudget {
+    struct WalkBudget<'a> {
+        control: GoOracleControl<'a>,
         entries: usize,
         bytes: u64,
         read_contents: bool,
@@ -2750,9 +3089,10 @@ fn walk_toolchain(executable: &Path, goroot: &Path, read_contents: bool) -> std:
         logical: &Path,
         maximum: u64,
         role: RegularFileRole,
-        budget: &mut WalkBudget,
+        budget: &mut WalkBudget<'_>,
         digest: &mut Sha256,
     ) -> std::io::Result<()> {
+        budget.control.io_checkpoint()?;
         let metadata = validate_regular_file_handle(file, maximum, role)?;
         budget.bytes = budget
             .bytes
@@ -2796,7 +3136,7 @@ fn walk_toolchain(executable: &Path, goroot: &Path, read_contents: bool) -> std:
             budget.newest_change = i64::MAX;
         }
         if budget.read_contents {
-            hash_regular_file_handle(file, maximum, role, digest)?;
+            hash_regular_file_handle_controlled(file, maximum, role, digest, budget.control)?;
         }
         Ok(())
     }
@@ -2810,7 +3150,7 @@ fn walk_toolchain(executable: &Path, goroot: &Path, read_contents: bool) -> std:
         shared_root: &mut Option<DirectoryCapability>,
         shared_root_hashed: &mut bool,
         allow_debian_shared_links: bool,
-        budget: &mut WalkBudget,
+        budget: &mut WalkBudget<'_>,
         digest: &mut Sha256,
     ) -> std::io::Result<()> {
         if depth > MAX_GO_TOOLCHAIN_DEPTH {
@@ -2828,6 +3168,7 @@ fn walk_toolchain(executable: &Path, goroot: &Path, read_contents: bool) -> std:
         budget.stamp.update(logical_bytes);
         let entries = directory.entries(MAX_GO_TOOLCHAIN_ENTRIES)?;
         for entry in entries {
+            budget.control.io_checkpoint()?;
             budget.entries = budget
                 .entries
                 .checked_add(1)
@@ -2991,6 +3332,7 @@ fn walk_toolchain(executable: &Path, goroot: &Path, read_contents: bool) -> std:
     let mut digest = Sha256::new();
     digest.update(b"nudox.go-toolchain-identity.v3\0");
     let mut budget = WalkBudget {
+        control,
         entries: 0,
         bytes: 0,
         read_contents,
@@ -3126,10 +3468,10 @@ fn tail(bytes: &[u8]) -> String {
 mod read_tests {
     use super::{
         DirectoryCapability, GoCgoPolicy, GoOracle, GoOracleChildEnvironment,
-        GoOracleConfiguration, GoOracleConfigurationError, GoOracleInvocationModeV1,
-        GoPackageAuthorityWitness, GoWorkWitness, MAX_GO_TOOLCHAIN_DEPTH,
-        MAX_GO_TOOLCHAIN_FILE_BYTES, MAX_HELPER_MANIFEST_BYTES, cache_entry_is_valid, digest_hex,
-        hash_regular_file, hash_toolchain_identity, read_bounded,
+        GoOracleConfiguration, GoOracleConfigurationError, GoOracleControl,
+        GoOracleInvocationModeV1, GoPackageAuthorityWitness, GoWorkWitness, MAX_GO_TOOLCHAIN_DEPTH,
+        MAX_GO_TOOLCHAIN_FILE_BYTES, MAX_HELPER_MANIFEST_BYTES, OracleError, ToolchainMemo,
+        cache_entry_is_valid, digest_hex, hash_regular_file, hash_toolchain_identity, read_bounded,
     };
     use std::io::{self, Read};
     use std::path::{Path, PathBuf};
@@ -4021,6 +4363,254 @@ if [ -f '{}' ]; then printf '%s\n' changed > "$GOROOT/VERSION"; fi
             !helper_cwd.exists(),
             "the private helper source workspace is removed after the one-time build"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn absolute_go_control_keeps_deadline_phase_and_external_cancel_distinct() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let cancelled = AtomicBool::new(false);
+        let original = std::time::Instant::now() - std::time::Duration::from_millis(1);
+        let control = GoOracleControl::new(Some(&cancelled), original);
+        let copied = control;
+        assert_eq!(copied.deadline, Some(original));
+        assert!(
+            matches!(copied.check("witness_reproof"), Err(error) if GoOracleControl::deadline_phase(&error) == Some("witness_reproof"))
+        );
+        assert!(!cancelled.load(Ordering::Acquire));
+        cancelled.store(true, Ordering::Release);
+        assert!(matches!(
+            copied.check("witness_reproof"),
+            Err(OracleError::Cancelled)
+        ));
+        assert!(matches!(
+            GoOracleControl::cancellation_only(Some(&cancelled)).check("helper_build"),
+            Err(OracleError::Cancelled)
+        ));
+        assert!(GoOracleControl::default().check("helper_build").is_ok());
+    }
+
+    #[test]
+    fn package_deadline_decoder_rejects_child_and_arbitrary_timeouts() {
+        for phase in [
+            "collect",
+            "witness_capture",
+            "absolute_package/not-a-checkpoint",
+            "absolute_package/witness_capture/extra",
+        ] {
+            assert_eq!(
+                GoOracleControl::deadline_phase(&OracleError::Timeout {
+                    phase,
+                    milliseconds: 0
+                }),
+                None
+            );
+        }
+        assert_eq!(
+            GoOracleControl::deadline_phase(&OracleError::Timeout {
+                phase: "absolute_package/witness_capture",
+                milliseconds: 600_000
+            }),
+            None
+        );
+        assert_eq!(
+            GoOracleControl::deadline_phase(&OracleError::Cancelled),
+            None
+        );
+        let expired = GoOracleControl::new(None, std::time::Instant::now());
+        for phase in [
+            "witness_capture",
+            "witness_reproof",
+            "helper_build",
+            "package_batch_child",
+            "compiler_lane_wait",
+        ] {
+            let error = expired.check(phase).unwrap_err();
+            assert_eq!(GoOracleControl::deadline_phase(&error), Some(phase));
+        }
+    }
+
+    #[test]
+    fn expired_helper_binary_hash_is_not_a_corrupt_entry_or_cache_mutation() -> io::Result<()> {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir()?;
+        let entry = root.path().join("entry");
+        std::fs::create_dir(&entry)?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o700))?;
+        let binary = entry.join("oracle");
+        std::fs::write(&binary, vec![7_u8; 256 * 1024])?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))?;
+        let before = hash_regular_file(&binary)?;
+        let prefix = format!(
+            "schema=1\nsource={}\ntoolchain={}\n",
+            "a".repeat(64),
+            "b".repeat(64)
+        );
+        let manifest = format!("{prefix}binary={}\n", digest_hex(&before));
+        std::fs::write(entry.join("manifest.txt"), &manifest)?;
+        let root_cap = DirectoryCapability::open(root.path())?;
+        assert!(cache_entry_is_valid(&root_cap, "entry", "oracle", &prefix));
+        static CHUNKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn observe_chunk(deadline: std::time::Instant) {
+            CHUNKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            std::thread::sleep(
+                deadline.saturating_duration_since(std::time::Instant::now())
+                    + std::time::Duration::from_millis(1),
+            );
+        }
+        let mut control = GoOracleControl::new(
+            None,
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
+        );
+        control.after_hash_chunk = Some(observe_chunk);
+        let error = super::validate_helper_cache_entry_controlled(
+            &root_cap, "entry", "oracle", &prefix, control,
+        )
+        .expect_err("an expired hash must not become Ok(false) and trigger invalid-cache removal");
+        let stop = error
+            .get_ref()
+            .and_then(|e| e.downcast_ref::<OracleError>())
+            .expect("typed stop retained");
+        assert_eq!(
+            GoOracleControl::deadline_phase(stop),
+            Some("toolchain_or_helper_hash")
+        );
+        assert_eq!(
+            CHUNKS.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "expiration was observed between actual binary hash chunks"
+        );
+        assert_eq!(hash_regular_file(&binary)?, before);
+        assert_eq!(
+            std::fs::read_to_string(entry.join("manifest.txt"))?,
+            manifest
+        );
+        assert_eq!(std::fs::read_dir(&entry)?.count(), 2);
+        assert_eq!(std::fs::read_dir(root.path())?.count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn go_toolchain_memo_lock_wait_keeps_the_original_absolute_deadline() {
+        let memo = ToolchainMemo::default();
+        let guard = memo.0.lock().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(20);
+        let control = GoOracleControl::new(None, deadline);
+        let error = memo
+            .identity_controlled(Path::new("unused-go"), Path::new("unused-root"), control)
+            .unwrap_err();
+        assert!(
+            matches!(error.get_ref().and_then(|e| e.downcast_ref::<OracleError>()), Some(error) if GoOracleControl::deadline_phase(error).is_some())
+        );
+        assert_eq!(control.deadline, Some(deadline));
+        assert!(guard.is_none());
+    }
+
+    #[test]
+    fn real_go_sdk_child_observes_package_deadline_without_fabricating_cancellation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let go = std::env::var_os("COMPILER_GO_COMPILER")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                io::Error::other(
+                    "COMPILER_GO_COMPILER is required for real Go deadline qualification",
+                )
+            })?
+            .canonicalize()?;
+        let (goroot, _) = explicit_go_roots(&go)?;
+        let root = tempfile::tempdir()?;
+        let module_cache = root.path().join("modules");
+        std::fs::create_dir(&module_cache)?;
+        let environment = GoOracleChildEnvironment::new(
+            go.clone(),
+            goroot,
+            module_cache,
+            root.path().join("build-cache"),
+        )?;
+        let module = root.path().join("module");
+        std::fs::create_dir(&module)?;
+        std::fs::write(
+            module.join("go.mod"),
+            "module example.com/deadline\n\ngo 1.23\n",
+        )?;
+        std::fs::write(
+            module.join("main.go"),
+            "package main\nimport \"time\"\nfunc main() { time.Sleep(30*time.Second) }\n",
+        )?;
+        let cancelled = AtomicBool::new(false);
+        let mut version = std::process::Command::new(&go);
+        version.arg("version");
+        environment.apply_to(&mut version, &GoWorkWitness::Disabled, true);
+        let observed = GoOracle::default().execute_with_origin_controlled(
+            &mut version,
+            true,
+            GoOracleControl::new(
+                Some(&cancelled),
+                std::time::Instant::now() + std::time::Duration::from_secs(5),
+            ),
+            "real_sdk_version",
+        )?;
+        assert!(observed.starts_with(b"go version "));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+        let mut child = std::process::Command::new(&go);
+        child.args(["run", "."]).current_dir(&module);
+        environment.apply_to(&mut child, &GoWorkWitness::Disabled, true);
+        let result = GoOracle::default().execute_with_origin_controlled(
+            &mut child,
+            true,
+            GoOracleControl::new(Some(&cancelled), deadline),
+            "real_sdk_child",
+        );
+        assert!(
+            matches!(result, Err(error) if GoOracleControl::deadline_phase(&error) == Some("real_sdk_child"))
+        );
+        assert!(
+            !cancelled.load(Ordering::Acquire),
+            "deadline must never mutate the external cancellation token"
+        );
+        let mut internally_bounded = std::process::Command::new(&go);
+        internally_bounded.args(["run", "."]).current_dir(&module);
+        environment.apply_to(&mut internally_bounded, &GoWorkWitness::Disabled, true);
+        let internal = GoOracle {
+            timeout: std::time::Duration::from_millis(10),
+            ..GoOracle::default()
+        }
+        .execute_with_origin_controlled(
+            &mut internally_bounded,
+            true,
+            GoOracleControl::new(
+                Some(&cancelled),
+                std::time::Instant::now() + std::time::Duration::from_secs(5),
+            ),
+            "real_sdk_child",
+        );
+        assert!(
+            matches!(
+                internal,
+                Err(OracleError::Timeout {
+                    phase: "collect",
+                    ..
+                })
+            ),
+            "an earlier child limit stays an internal timeout, not a package deadline"
+        );
+        assert!(!cancelled.load(Ordering::Acquire));
+        cancelled.store(true, Ordering::Release);
+        let mut no_child = std::process::Command::new(&go);
+        no_child.arg("version");
+        assert!(matches!(
+            GoOracle::default().execute_with_origin_controlled(
+                &mut no_child,
+                true,
+                GoOracleControl::new(Some(&cancelled), deadline),
+                "real_sdk_child"
+            ),
+            Err(OracleError::Cancelled)
+        ));
         Ok(())
     }
 

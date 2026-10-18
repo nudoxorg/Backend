@@ -126,6 +126,7 @@ impl GoDependencyClosureWitness {
         scratch: &mut CaptureScratch,
         cancelled: Option<&AtomicBool>,
     ) -> Self {
+        let control = scratch.control(cancelled);
         let mut command = std::process::Command::new(environment.go_executable());
         command.current_dir(root).args([
             "list",
@@ -137,9 +138,15 @@ impl GoDependencyClosureWitness {
         ]);
         environment.apply_to(&mut command, work, false);
         let output = match environment
-            .revalidate_toolchain()
-            .and_then(|()| oracle.execute_with_origin(&mut command, true, cancelled))
-        {
+            .revalidate_toolchain_controlled(control)
+            .and_then(|()| {
+                oracle.execute_with_origin_controlled(
+                    &mut command,
+                    true,
+                    control,
+                    "dependency_list",
+                )
+            }) {
             Ok(output) => output,
             Err(error) => {
                 return Self {
@@ -165,7 +172,7 @@ impl GoDependencyClosureWitness {
                 }
             };
             count += 1;
-            if count > FILE_COUNT_LIMIT || is_cancelled(cancelled) {
+            if count > FILE_COUNT_LIMIT || is_cancelled(cancelled) || scratch.deadline_expired() {
                 failure = Some(GoDependencyClosureFailure::Limit);
                 break;
             }
@@ -176,6 +183,10 @@ impl GoDependencyClosureWitness {
                 let mut module = Some(module);
                 let mut depth = 0usize;
                 while let Some(current) = module {
+                    if is_cancelled(cancelled) || scratch.deadline_expired() {
+                        failure = Some(GoDependencyClosureFailure::Limit);
+                        break;
+                    }
                     depth += 1;
                     if depth > MODULE_REPLACEMENT_LIMIT {
                         failure = Some(GoDependencyClosureFailure::Protocol);
@@ -221,6 +232,10 @@ impl GoDependencyClosureWitness {
                     .collect()
             };
             for path in go_files.into_iter().chain(package.embed_files) {
+                if is_cancelled(cancelled) || scratch.deadline_expired() {
+                    failure = Some(GoDependencyClosureFailure::Limit);
+                    break;
+                }
                 if !clean_components(&path) {
                     failure.get_or_insert(GoDependencyClosureFailure::UnsafePath);
                     break;
@@ -249,6 +264,10 @@ impl GoDependencyClosureWitness {
         let mut total = 0u64;
         let mut files = Vec::new();
         for path in paths.into_iter().take(FILE_COUNT_LIMIT) {
+            if is_cancelled(cancelled) || scratch.deadline_expired() {
+                failure = Some(GoDependencyClosureFailure::Limit);
+                break;
+            }
             let state = capture_file(&path, roots, &mut total, scratch, cancelled);
             if failure.is_none() {
                 failure = match state {
