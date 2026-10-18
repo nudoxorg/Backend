@@ -819,6 +819,9 @@ impl<E: ReadEngine> PageReader for SessionReader<E> {
 pub fn failure(error: &ClientError) -> ReadFailure {
     let code = match error {
         ClientError::RequestCancelled(_) => return ReadFailure::Cancelled,
+        ClientError::OwnerUpdate { found, supported, detail } => {
+            return ReadFailure::Fault(ErrorValue::owner_update(*found, *supported, detail));
+        }
         ClientError::CommandFailed(CommandFailure::NotFound) => FaultCode::Missing,
         ClientError::CommandFailed(_) | ClientError::Protocol(_) | ClientError::IncoherentView => {
             FaultCode::Protocol
@@ -1890,6 +1893,29 @@ fn verified_registry_releases(
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_update_read_failure_keeps_the_observed_versions_and_manual_action() {
+        let update = ClientError::OwnerUpdate { found: 35, supported: 36, detail: "exact old owner still shutting down".into() };
+        let ReadFailure::Fault(error) = failure(&update) else { panic!("manual update is a visible read failure"); };
+        assert_eq!(error.code(), FaultCode::OwnerUpdate);
+        assert!(error.message().contains("35 → 36"));
+        assert!(error.message().contains("Restart the previous NuDox owner, then retry."));
+        assert!(error.message().contains("No command was submitted."));
+        assert!(error.message().contains("exact old owner still shutting down"));
+        let bounded = ClientError::OwnerUpdate { found: 35, supported: 36, detail: "証明\n".repeat(200) };
+        let ReadFailure::Fault(bounded) = failure(&bounded) else { panic!("manual update remains visible"); };
+        assert_eq!(bounded.code(), FaultCode::OwnerUpdate);
+        assert!(bounded.message().len() <= 512);
+        assert!(bounded.message().contains("35 → 36"));
+        assert!(bounded.message().contains("Restart the previous NuDox owner, then retry."));
+        assert!(bounded.message().contains("No command was submitted."));
+        assert!(!bounded.message().chars().any(char::is_control));
+        assert!(matches!(failure(&ClientError::RequestCancelled(backend_client::RequestCancellationReason::Explicit)), ReadFailure::Cancelled));
+        assert!(matches!(failure(&ClientError::Protocol("bad frame".into())), ReadFailure::Fault(error) if error.code() == FaultCode::Protocol));
+        assert!(matches!(failure(&ClientError::Io("unreachable".into())), ReadFailure::Fault(error) if error.code() == FaultCode::Transport));
+    }
+
     use crate::host::registry::{
         Availability, CrateName, Published, RegistryPackageIdentity, SourceError, SourceTree,
     };

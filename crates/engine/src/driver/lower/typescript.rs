@@ -14002,6 +14002,9 @@ describe('suite', () => {\n\
         let exports = concat!(
             "export const NavBar = (value: number): number => value;\n",
             "export let mutable = (value: number): number => value + 1;\n",
+            "export const block = (value: number): number => { return value; } /* ;, not owned */ ;\n",
+            "export const asi = (value: number): number => value\n",
+            "export const comma = (value: number): number => value, last = (value: number): number => value;\n",
             "export const notCallable = 42;\n",
             "export function Mixed(value: number): number { return value; }\n",
             "export namespace Mixed { export const version = 1; }\n",
@@ -14013,7 +14016,7 @@ describe('suite', () => {\n\
             "import * as direct from './exports';\n",
             "import * as second from './other';\n",
             "import * as vendor from 'vendor';\n",
-            "export function POST() { return api.draw(1) + direct.NavBar(2) + direct.mutable(3) + second.NavBar(4) + direct.Mixed(5); }\n",
+            "export function POST() { return api.draw(1) + direct.NavBar(2) + direct.mutable(3) + second.NavBar(4) + direct.Mixed(5) + direct.block(6) + direct.asi(7) + direct.comma(8) + direct.last(9); }\n",
             "export function shadow(api: { draw(value: number): number }) { return api.draw(6); }\n",
             "export function foreign() { return vendor.draw(7); }\n",
             "export const bothRoles = direct.Mixed;\n",
@@ -14117,6 +14120,28 @@ describe('suite', () => {\n\
                         "Mixed",
                         EntityKind::Function,
                     ),
+                    (
+                        "direct.",
+                        "block",
+                        "exports.ts",
+                        "block",
+                        EntityKind::Constant,
+                    ),
+                    ("direct.", "asi", "exports.ts", "asi", EntityKind::Constant),
+                    (
+                        "direct.",
+                        "comma",
+                        "exports.ts",
+                        "comma",
+                        EntityKind::Constant,
+                    ),
+                    (
+                        "direct.",
+                        "last",
+                        "exports.ts",
+                        "last",
+                        EntityKind::Constant,
+                    ),
                 ],
             ),
             (
@@ -14128,8 +14153,7 @@ describe('suite', () => {\n\
             let facts = collect_native_tsz_file(project, path, source)?;
             for (receiver, name, target_path, target_name, kind) in cases {
                 let token = format!("{receiver}{name}(");
-                let start =
-                    (source.find(&token).expect("authored exact call") + receiver.len()) as u32;
+                let start = (source.find(&token).expect("authored exact call") + receiver.len()) as u32;
                 let sites = (0..facts.occurrence_len)
                     .filter(|&index| {
                         let owner = facts.occurrence_owners[index] as usize;
@@ -14165,12 +14189,10 @@ describe('suite', () => {\n\
                 let targets = collect_native_tsz_file(project, target_path, target_source)?;
                 let target = (0..targets.len())
                     .find(|&index| {
-                        targets.names[index] == target_name.as_bytes()
-                            && targets.kinds[index] == kind
+                        targets.names[index] == target_name.as_bytes() && targets.kinds[index] == kind
                     })
                     .expect("actual published declaration, not a display-name guess");
-                let span =
-                    targets.provenance.source_spans()[target].expect("authored target extent");
+                let span = targets.provenance.source_spans()[target].expect("authored target extent");
                 assert_eq!(coordinate.path, target_path);
                 assert_eq!(
                     coordinate.source,
