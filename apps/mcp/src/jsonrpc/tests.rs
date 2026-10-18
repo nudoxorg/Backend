@@ -27,6 +27,8 @@ use backend_present::{domain_name, encode_answer, grammar_for, grammar_for_tool}
 mod index_overlap;
 #[path = "tests/initial_owner.rs"]
 mod initial_owner;
+#[path = "tests/search_admission.rs"]
+mod search_admission;
 #[path = "tests/named_call.rs"]
 mod named_call;
 #[path = "tests/package_compiler_outcomes.rs"]

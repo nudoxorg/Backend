@@ -962,7 +962,23 @@ impl<P: Product> Server<P> {
         response_id: &Value,
     ) -> Result<Value, RpcError> {
         let invocation = McpInvocation::new(exposure, name, arguments);
-        self.call_routed_tool(arguments, name, route, invocation, response_id)
+        let preflight = if name == "backend.search" {
+            let grammar = backend_present::grammar_for_tool(name)
+                .ok_or_else(|| RpcError::new(-32602, "Unknown tool"));
+            grammar.and_then(|grammar| {
+                let mut search_arguments = arguments.clone();
+                search_arguments.remove("detail");
+                validate_registry_arguments(grammar, &search_arguments)
+                    .map_err(|fault| RpcError::from_fault(&fault))?;
+                Invocation::from_json(grammar, &search_arguments)
+                    .map(|_| ())
+                    .map_err(|fault| RpcError::from_fault(&fault))
+            })
+        } else {
+            Ok(())
+        };
+        preflight
+            .and_then(|()| self.call_routed_tool(arguments, name, route, invocation, response_id))
             .or_else(|error| error.into_tool_result_for_invocation(invocation))
     }
     /// A recognized route owns input/domain refusals. Envelope and retained
