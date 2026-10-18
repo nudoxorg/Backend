@@ -278,6 +278,44 @@ mod tests {
     }
 
     #[test]
+    fn outline_order_cutover_refuses_dto33_before_page_shape_or_verification() {
+        assert_eq!(crate::DTO_VERSION, 34);
+        let current = serde_json::to_vec(&serde_json::json!({
+            "request_id": 41,
+            "certificate": null,
+            "reply": {"kind": "projection_page", "data": {
+                "outline_order": {"start": 0, "symbols": [], "unknown_future_field": true}
+            }},
+            "version": crate::DTO_VERSION
+        })).expect("new outline envelope");
+        // The maintained v33 byte-entry version preflight, not a replay of an
+        // old binary, rejects the new cohort before its strict page grammar.
+        let old_peer = super::check_version_header_against(&current, "reply", 33)
+            .expect_err("v33 peer refuses the v34 owner");
+        assert!(old_peer.contains("reply DTO version 34"));
+        assert!(old_peer.contains("this build supports 33"));
+        assert!(!old_peer.contains("unknown field"));
+        let mut old: serde_json::Value = serde_json::from_slice(&current).expect("envelope");
+        old["version"] = serde_json::json!(33);
+        old["reply"]["data"].as_object_mut().expect("page").remove("outline_order");
+        let bytes = serde_json::to_vec(&old).expect("old owner reply");
+        let verifier = CountingVerifier::new();
+        for error in [
+            decode_reply_body(&bytes).expect_err("v34 client refuses v33 owner"),
+            decode_reply_body_with_verifier(&bytes, &verifier).expect_err("refuse before verification"),
+            ReplyDto::decode_with_certificate(&bytes, None).expect_err("certificate path version guard"),
+        ] {
+            assert!(error.contains("reply DTO version 33"));
+            assert!(error.contains("this build supports 34"));
+            assert!(!error.contains("unknown field"));
+        }
+        assert_eq!(verifier.calls(), 0);
+        assert!(decode_reply_body(&current).expect_err("same-version closed grammar").contains("unknown field"));
+        let journal = crate::JournalViewGrammarV3::from_checked_container(3).expect("unchanged journal container");
+        assert!(journal.check_envelope_version(33).is_ok(), "persisted snapshots/events retain their exact grammar");
+    }
+
+    #[test]
     fn protocol_mismatch_precedes_unknown_strict_python_payload_fields() {
         let verifier = CountingVerifier::new();
         for version in [crate::DTO_VERSION - 1, crate::DTO_VERSION + 1] {

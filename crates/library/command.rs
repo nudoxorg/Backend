@@ -1062,6 +1062,8 @@ pub struct ProjectionPage {
     pub snapshot: ViewSnapshot,
     /// Explicit completion, continuation, or cancellation state.
     pub terminal: PageTerminal,
+    /// Outline-only native ordering witness; other page families leave it absent.
+    pub outline_order: Option<crate::OutlinePageOrder>,
 }
 
 impl GraphNeighborhoodQuery {

@@ -19,7 +19,7 @@ fn typescript_admission_current_dto_refuses_old28_before_populated_fact_shape()
 -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(
         super::DTO_VERSION,
-        33,
+        34,
         "coverage and populated TypeScript causes require the current matched cohort"
     );
     let detail = TypeScriptCompilerAdmissionDetail::new(
@@ -112,7 +112,7 @@ fn typescript_cause_requires_a_matched_cohort_before_strict_dto30_shape_admissio
     use crate::interface::{TypeScriptAuthorityFailureKind, TypeScriptFailureCause};
     assert_eq!(
         super::DTO_VERSION,
-        33,
+        34,
         "strict DTO30 readers reject the populated cause field"
     );
     #[derive(serde::Deserialize)]
@@ -190,7 +190,7 @@ fn plain_facts() -> CompilerAuthorityDiagnosticFacts {
 #[test]
 fn typescript_stop_site_current_cohort_refuses_dto30_before_the_strict_field()
 -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(super::DTO_VERSION, 33);
+    assert_eq!(super::DTO_VERSION, 34);
     let mut facts = plain_facts();
     facts.typescript_failure = Some(
         crate::interface::TypeScriptAuthorityFailureKind::NativeProjectCheckWorkBudgetExhausted,
@@ -228,7 +228,7 @@ fn native_resolution_dto32_refuses_dto31_before_closed_failure_kinds()
         AuthorityDiagnosticClass, AuthorityPhase, CompilerDiagnostic, CompilerTerminal,
         SourceAuthority, TypeScriptAuthorityFailureKind as F,
     };
-    assert_eq!(super::DTO_VERSION, 33);
+    assert_eq!(super::DTO_VERSION, 34);
     for kind in [
         F::NativeSessionModuleResolution,
         F::NativeModuleInvalidReference,
@@ -269,7 +269,7 @@ fn native_resolution_dto32_refuses_dto31_before_closed_failure_kinds()
             super::super::codec::check_version_header_against(&bytes, "reply", 31),
             "DTO31 peer must reject the new enum cohort first",
         )?;
-        assert!(old_peer.contains("reply DTO version 33"));
+        assert!(old_peer.contains("reply DTO version 34"));
         assert!(old_peer.contains("this build supports 31"));
         assert!(old_peer.contains("same build"));
         assert!(!old_peer.contains("unknown variant"));
@@ -282,7 +282,7 @@ fn native_resolution_dto32_refuses_dto31_before_closed_failure_kinds()
             "DTO31 relabelled live envelope must be refused",
         )?;
         assert!(error.contains("reply DTO version 31"));
-        assert!(error.contains("this build supports 33"));
+        assert!(error.contains("this build supports 34"));
         assert!(!error.contains("unknown variant"));
     }
     Ok(())

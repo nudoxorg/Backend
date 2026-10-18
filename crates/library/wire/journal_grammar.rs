@@ -1,7 +1,7 @@
 //! The maintained grammar of checked BVIEWJ01 version-3 journal frames.
 //!
 //! Snapshot rows, bases, certificates and compact transition records
-//! use the current DTO contract and the maintained historical envelopes 21–32.
+//! use the current DTO contract and the maintained historical envelopes 21–33.
 //! Versions 26–30 change only live command/reply fields/failures; window fields occur
 //! only on positive-offset query cursors, never persisted owner cursors. View rows, snapshot certificates
 //! and compact events remain unchanged. Every snapshot and event still passes current strict proof admission.
@@ -16,6 +16,10 @@
 //! DTO33 adds only live package-profile compiler capture projections/selectors;
 //! persisted snapshot/event rows, roots and certificates retain DTO32 grammar.
 
+//! DTO34 adds order metadata only to live outline query pages. Persisted
+//! snapshots and compact events have no ProjectionPage wrapper or order witness;
+//! their row/root/certificate fields and canonical bytes retain DTO33 grammar.
+
 use super::DTO_VERSION;
 use crate::{CommittedViewDelta, CoverageCapability, Cursor, ViewDto, ViewRoot};
 
@@ -23,7 +27,7 @@ use crate::{CommittedViewDelta, CoverageCapability, Cursor, ViewDto, ViewRoot};
 // Review snapshot/event fields and historical compatibility before moving
 // this fence, or introduce a new journal grammar for incompatible fields.
 const _: () = assert!(
-    DTO_VERSION == 33,
+    DTO_VERSION == 34,
     "review persisted view journal compatibility before accepting a new DTO version"
 );
 
@@ -60,12 +64,12 @@ impl JournalViewGrammarV3 {
     /// Refuses unknown and incompatible persisted envelope versions.
     pub fn check_envelope_version(self, version: u16) -> Result<(), String> {
         if version == DTO_VERSION
-            || matches!(version, 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32)
+            || matches!(version, 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33)
         {
             Ok(())
         } else {
             Err(format!(
-                "unsupported persisted view envelope version {version}; journal grammar 3 reads current {DTO_VERSION} and historical 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31 and 32"
+                "unsupported persisted view envelope version {version}; journal grammar 3 reads current {DTO_VERSION} and historical 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32 and 33"
             ))
         }
     }

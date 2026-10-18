@@ -59,6 +59,14 @@ pub fn answer_with_detail(
     match value {
         Answer::Page(value) => page_projection(&PageProjection::new(value, detail), theme),
         Answer::Records(value) => records_with_cursor(value, None, theme, cursor, target),
+        Answer::Outline(value) => {
+            let mut text = outline(value, theme);
+            if let Some(cursor) = cursor.filter(|_| value.continuation().is_some()) {
+                text.push_str("\n\n");
+                text.push_str(&continuation_note(target, cursor));
+            }
+            text
+        }
         Answer::Product(view) => product_projection(view, theme, detail),
         _ => answer(value, theme),
     }
@@ -502,6 +510,9 @@ pub fn outline(tree: &OutlineTree, theme: Theme) -> String {
         let _ = write!(summary, " · {} unnamed", tree.unresolved());
     }
     lines.push(theme.paint(Style::Dim, &summary));
+    if let Some(page) = tree.page().filter(|page| page.continuation.is_some()) {
+        lines.push(format!("More declarations remain beyond this bounded prefix. Continue outline with --limit {} and the next cursor.", page.limit));
+    }
     lines.finish()
 }
 

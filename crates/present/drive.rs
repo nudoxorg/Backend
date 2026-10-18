@@ -541,7 +541,8 @@ pub fn answer_paged(
             {
                 return Err(shape("outline-page terminal"));
             }
-            crate::outline::page_tree(path, &page.snapshot, *limit)
+            let order = page.outline_order.as_ref().ok_or_else(|| shape("outline-page order"))?;
+            crate::outline::page_tree(path, &page.snapshot, *limit, order)
                 .map(Box::new)
                 .map(Answer::Outline)
                 .map_err(|error| Fault::from_client_error(&error, Operand::Path(path.clone())))
@@ -909,11 +910,9 @@ fn outline(engine: &mut dyn Engine, path: &str) -> Result<Answer, Fault> {
             Ok(snapshot)
         })
         .map_err(|error| Fault::from_client_error(&error, Operand::Path(path.to_owned())))?;
-    Ok(Answer::Outline(Box::new(outline_tree(
-        path,
-        &tree,
-        snapshot.root.rows(),
-    ))))
+    let mut rendered = outline_tree(path, &tree, snapshot.root.rows());
+    if snapshot.next.is_some() { rendered = rendered.with_page(&snapshot, PROBE_ROWS); }
+    Ok(Answer::Outline(Box::new(rendered)))
 }
 
 fn surface(engine: &mut dyn Engine, command: &SurfaceCommand) -> Result<Answer, Fault> {

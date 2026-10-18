@@ -316,11 +316,11 @@ fn projection_page_certificate(
         Command::OutlinePage {
             package,
             page: request,
-        } => backend_engine::QueryPageRecipe::outline(
-            page.snapshot.root.basis().root,
-            *package,
-            request.limit(),
-        ),
+        } => {
+            let order = page.outline_order.as_ref().ok_or_else(|| BuiltinModelError("outline page omitted its native order".to_owned()))?;
+            order.validate(&page.snapshot, *package, request.limit()).map_err(BuiltinModelError)?;
+            backend_engine::QueryPageRecipe::outline(page.snapshot.root.basis().root, *package, request.limit(), order)
+        },
         Command::MembersPage {
             owner,
             page: request,
@@ -1563,7 +1563,7 @@ mod tests {
             let CommandReply::ProjectionPage(page) = &reply else {
                 panic!("outline page");
             };
-            let recipe = QueryPageRecipe::outline(owner.root(), package, limit);
+            let recipe = QueryPageRecipe::outline(owner.root(), package, limit, page.outline_order.as_ref().expect("native order"));
             assert_eq!(page.snapshot.root.recipe(), recipe.identity());
             let certificate = reply_certificate(&command, &reply, &owner, library.cursor(), None)
                 .expect("service certificate")
@@ -1577,9 +1577,20 @@ mod tests {
                 &ReplyDto::new(page_index, reply.clone()).with_certificate(certificate.clone()),
             )
             .expect("actual service reply bytes");
+            let mut dto33: serde_json::Value = serde_json::from_slice(&encoded).expect("actual page JSON");
+            dto33["version"] = serde_json::json!(33);
+            dto33["reply"]["data"].as_object_mut().expect("page").remove("outline_order");
+            let old = serde_json::to_vec(&dto33).expect("old owner envelope");
+            for error in [
+                ReplyDto::decode_with_certificate(&old, owner.capability()).expect_err("old owner cohort"),
+                backend_library::decode_reply_body(&old).expect_err("old process reply cohort"),
+            ] {
+                assert!(error.contains("reply DTO version 33"));
+                assert!(!error.contains("outline order") && !error.contains("DigestMismatch"));
+            }
             let decoded = ReplyDto::decode_with_certificate(&encoded, owner.capability())
                 .expect("independent client identity admission");
-            backend_library::admit_reply(&CommandDto::new(page_index, command), &decoded)
+            backend_library::admit_reply(&CommandDto::new(page_index, command.clone()), &decoded)
                 .expect("same requested outline and credit");
             let CommandReply::ProjectionPage(page) = &decoded.reply else {
                 panic!("decoded outline page");
@@ -1588,6 +1599,33 @@ mod tests {
                 page.snapshot.root.row_count(),
                 if page_index == 2 { 1 } else { 3 }
             );
+            assert!(page.snapshot.root.rows().iter().all(|row| row.score.is_none()),
+                "native order is never exposed as a relevance score");
+            assert_eq!(page.outline_order.as_ref().expect("decoded order").symbols().len() as u64,
+                page.snapshot.root.row_count());
+            for tamper in ["missing", "duplicate", "foreign", "short", "reorder", "start", "extra"] {
+                let mut value: serde_json::Value = serde_json::from_slice(&encoded).expect("actual reply JSON");
+                let body = &mut value["reply"]["data"];
+                let count = body["outline_order"]["symbols"].as_array().expect("symbols").len();
+                match tamper {
+                    "missing" => { body.as_object_mut().expect("page").remove("outline_order"); }
+                    "duplicate" if count > 1 => {
+                        body["outline_order"]["symbols"][1] = body["outline_order"]["symbols"][0].clone();
+                    }
+                    "foreign" => { body["outline_order"]["symbols"][0] = serde_json::json!(backend_engine::encode_id(backend_engine::symbol_key("foreign").as_bytes())); }
+                    "short" => { body["outline_order"]["symbols"].as_array_mut().expect("symbols").pop(); }
+                    "reorder" if count > 1 => { body["outline_order"]["symbols"].as_array_mut().expect("symbols").reverse(); }
+                    "start" => { body["outline_order"]["start"] = serde_json::json!(page.outline_order.as_ref().expect("order").start() + 1); }
+                    "extra" => { body["outline_order"]["unrecognized"] = serde_json::json!(true); }
+                    _ => continue,
+                }
+                let bytes = serde_json::to_vec(&value).expect("hostile order bytes");
+                let admitted = ReplyDto::decode_with_certificate(&bytes, owner.capability())
+                    .ok().is_some_and(|reply| backend_library::admit_reply(
+                        &CommandDto::new(page_index, command.clone()), &reply,
+                    ).is_ok());
+                assert!(!admitted, "untrusted outline order {tamper} must be refused");
+            }
             for foreign in [
                 Command::OutlinePage {
                     package,

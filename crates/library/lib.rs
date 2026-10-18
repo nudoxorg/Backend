@@ -32,6 +32,7 @@ mod delta;
 mod error;
 mod forge_identity;
 mod graph_query;
+mod outline_page_order;
 /// Transport-independent application service and reply vocabulary.
 pub mod interface;
 /// Spelling of absolute fixture paths in the host's native form, for tests.
@@ -332,6 +333,7 @@ pub use view::{
     ViewProjectionError, ViewRoot, ViewRootDescriptor, ViewRootDescriptorClaim, ViewSnapshot,
     ViewSnapshotPage, resolve_selected_document_row, resolve_selected_view_address,
 };
+pub use outline_page_order::OutlinePageOrder;
 pub use wire::SemanticShapeExport;
 pub use wire::{BoundedJsonError, encode_reply_body_bounded};
 pub use wire::{

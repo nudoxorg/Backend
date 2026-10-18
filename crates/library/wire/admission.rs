@@ -478,12 +478,26 @@ fn admit_projection_page(
         Command::OutlinePage {
             package,
             page: request,
-        } => crate::QueryPageRecipe::outline(
-            page.snapshot.root.basis().root,
-            *package,
-            request.limit(),
-        )
-        .identity(),
+        } => {
+            let order = page.outline_order.as_ref().ok_or_else(|| {
+                ReplyAdmissionError::Protocol("outline page omitted its native order".to_owned())
+            })?;
+            let start = request.continuation().map_or(0, |cursor| cursor.cursor().query_offset());
+            if order.start() != start {
+                return Err(ReplyAdmissionError::Protocol("outline order changed its absolute start".to_owned()));
+            }
+            order.validate(&page.snapshot, *package, request.limit())
+                .map_err(ReplyAdmissionError::Protocol)?;
+            if let Some(next) = page.snapshot.next {
+                if order.symbols().len() != usize::from(request.limit().get())
+                    || next.query_offset() != start.checked_add(order.symbols().len() as u64)
+                        .ok_or_else(|| ReplyAdmissionError::Protocol("outline offset overflow".to_owned()))?
+                {
+                    return Err(ReplyAdmissionError::Protocol("outline continuation changed its ordered predecessor count".to_owned()));
+                }
+            }
+            crate::QueryPageRecipe::outline(page.snapshot.root.basis().root, *package, request.limit(), order).identity()
+        },
         Command::MembersPage {
             owner,
             page: request,
@@ -508,6 +522,9 @@ fn admit_projection_page(
             ));
         }
     };
+    if !matches!(command, Command::OutlinePage { .. }) && page.outline_order.is_some() {
+        return Err(ReplyAdmissionError::Protocol("outline order crossed its page family".to_owned()));
+    }
     if page.snapshot.root.recipe != expected_recipe {
         return Err(ReplyAdmissionError::Protocol(
             "projection page recipe does not match the requested query".to_owned(),
@@ -576,6 +593,11 @@ pub fn reply_memory_bound(reply: &ReplyDto) -> usize {
         | CommandReply::Search(snapshot)
         | CommandReply::Graph(snapshot) => {
             add_bound(&mut bound, snapshot.root.encoded_size_bound());
+            if let CommandReply::ProjectionPage(page) = &reply.reply {
+                if let Some(order) = &page.outline_order {
+                    add_bound(&mut bound, 256usize.saturating_add(order.symbols().len().saturating_mul(128)));
+                }
+            }
         }
         CommandReply::PublishedNameSearch(page) => {
             add_bound(

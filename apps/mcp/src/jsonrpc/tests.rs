@@ -677,6 +677,51 @@ struct Fake {
 }
 
 impl Fake {
+    fn fixture_catalog(&mut self, path: &str) -> Result<backend_library::Library, ClientError> {
+        if self.offline { return Err(unreachable()); }
+        if let Some(error) = self.outline_error.take() { return Err(error); }
+        if self.empty_outline {
+            return Err(ClientError::CommandFailed(backend_library::CommandFailure::NotFound));
+        }
+        let mut members = vec![module_row(), declaration_row()];
+        // A source-availability override supplies a selected native
+        // document. Its owner must also be present in the fixture's
+        // otherwise complete member projection; omission is a real
+        // protocol failure, independent of optional source absence.
+        if let Some(document) = &self.document_override
+            && !self.omit_document_override_member
+            && !members.iter().any(|row| row.id == RowId::Symbol(document.symbol))
+        {
+            members.push(Row::in_package(
+                RowId::Symbol(document.symbol),
+                snapshot(Vec::new()).root.basis(),
+                package_key(path),
+                self.document_coordinates.last().map_or(DECLARATION, String::as_str),
+            ));
+        }
+        members.push(Row::new(RowId::Package(package_key(path)), basis(), path));
+        let owner = root(members);
+        let cursor = backend_library::Cursor::for_view_root(&owner);
+        Ok(backend_library::Library::from_view(owner, cursor).expect("immutable fixture catalog"))
+    }
+
+    fn fixture_outline_page(
+        &mut self,
+        path: &str,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ProjectionPage, ClientError> {
+        let library = self.fixture_catalog(path)?;
+        let request = backend_library::PageRequest::new(
+            library.revision_root(), backend_library::QueryLimit::new(limit).expect("bounded outline"),
+        );
+        let request = continuation.map_or(request, |cursor| request.with_continuation(cursor));
+        let page = library.outline_page(package_key(path), request)
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        self.next_continuation = page.snapshot.next.map(PageContinuation::from_cursor);
+        Ok(page)
+    }
+
     fn catalog_probe(
         &mut self,
         probe: Probe<'_>,
@@ -689,6 +734,11 @@ impl Fake {
             }
         }
         let Some(catalog) = &self.page_catalog else {
+            if let Probe::OutlinePage { path, limit } = probe {
+                self.probe_calls += 1;
+                return self.fixture_outline_page(path, limit, continuation)
+                    .map(|page| ReplyDto::new(1, CommandReply::ProjectionPage(page)));
+            }
             if continuation.is_some() {
                 return Err(ClientError::StaleCursor);
             }
@@ -798,6 +848,7 @@ impl Fake {
         Ok(ReplyDto::new(
             1,
             CommandReply::ProjectionPage(ProjectionPage {
+                outline_order: None,
                 snapshot: snapshot(vec![declaration_row()]),
                 terminal: PageTerminal::Complete,
             }),
@@ -924,44 +975,27 @@ impl Engine for Fake {
         {
             self.page_catalog = Some(replacement);
         }
-        if let Some(catalog) = &self.page_catalog {
+        let fixture = if self.page_catalog.is_none() {
+            self.probe_calls += 1;
+            Some(self.fixture_catalog(PROJECT)?)
+        } else {
             self.page_limits.push(limit);
-            let request = backend_library::PageRequest::new(
-                document.basis,
-                backend_library::QueryLimit::new(limit).expect("credit"),
-            );
-            let request = continuation.map_or(request, |cursor| request.with_continuation(cursor));
-            let mut owner =
-                backend_library::DocumentQuery::selected(document.symbol, document.basis);
-            if let Some(source) = document.source_basis() {
-                owner = owner.with_source_basis(source);
-            }
-            let page = catalog
-                .members_page(owner, request)
-                .map_err(|error| ClientError::Protocol(error.to_string()))?;
-            return Ok(ReplyDto::new(1, CommandReply::ProjectionPage(page)));
-        }
-        if continuation.is_some() {
-            return Err(ClientError::StaleCursor);
-        }
-        let reply = self.probe(Probe::OutlinePage {
-            path: PROJECT,
-            limit,
-        })?;
-        let CommandReply::ProjectionPage(mut page) = reply.reply else {
-            return Err(ClientError::Protocol("wrong member fixture".to_owned()));
+            None
         };
-        let rows = page
-            .snapshot
-            .root
-            .rows()
-            .iter()
-            .filter(|row| {
-                row.id == RowId::Symbol(document.symbol) || row.parent == Some(document.symbol)
-            })
-            .cloned()
-            .collect();
-        page.snapshot = snapshot(rows);
+        let catalog = self.page_catalog.as_ref().or(fixture.as_ref())
+            .expect("explicit or default immutable fixture catalog");
+        let request = backend_library::PageRequest::new(
+            document.basis,
+            backend_library::QueryLimit::new(limit).expect("credit"),
+        );
+        let request = continuation.map_or(request, |cursor| request.with_continuation(cursor));
+        let mut owner = backend_library::DocumentQuery::selected(document.symbol, document.basis);
+        if let Some(source) = document.source_basis() {
+            owner = owner.with_source_basis(source);
+        }
+        let page = catalog.members_page(owner, request)
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        self.next_continuation = page.snapshot.next.map(PageContinuation::from_cursor);
         Ok(ReplyDto::new(1, CommandReply::ProjectionPage(page)))
     }
     fn index(
@@ -1115,35 +1149,8 @@ impl Engine for Fake {
                     ),
                 )
             }
-            Probe::OutlinePage { path, .. } => {
-                if let Some(error) = self.outline_error.take() {
-                    return Err(error);
-                }
-                if self.empty_outline {
-                    return Err(ClientError::CommandFailed(
-                        backend_library::CommandFailure::NotFound,
-                    ));
-                }
-                let mut members = vec![module_row(), declaration_row()];
-                // A source-availability override supplies a selected native
-                // document. Its owner must also be present in the fixture's
-                // otherwise complete member projection; omission is a real
-                // protocol failure, independent of optional source absence.
-                if let Some(document) = &self.document_override
-                    && !self.omit_document_override_member
-                    && !members.iter().any(|row| row.id == RowId::Symbol(document.symbol))
-                {
-                    members.push(Row::in_package(
-                        RowId::Symbol(document.symbol),
-                        snapshot(Vec::new()).root.basis(),
-                        package_key(path),
-                        self.document_coordinates.last().map_or(DECLARATION, String::as_str),
-                    ));
-                }
-                CommandReply::ProjectionPage(ProjectionPage {
-                    snapshot: snapshot(members),
-                    terminal: PageTerminal::Complete,
-                })
+            Probe::OutlinePage { path, limit } => {
+                CommandReply::ProjectionPage(self.fixture_outline_page(path, limit, None)?)
             }
         };
         Ok(ReplyDto::new(1, reply))
@@ -4708,6 +4715,96 @@ fn default_search_summary_keeps_exact_native_records_with_a_concise_coverage_pre
     assert_eq!(row["language"], "rust");
     assert_eq!(row["state"], "ready");
     assert!(structured.get("nextCursor").is_none());
+}
+
+#[test]
+fn positive_default_fake_outline_pages_retain_order_and_sequential_cursor() {
+    fn coordinates(value: &Value, out: &mut Vec<String>) {
+        if let Some(coordinate) = value.get("coordinate").and_then(Value::as_str) {
+            out.push(coordinate.to_owned());
+        }
+        if let Some(children) = value.get("children").and_then(Value::as_array) {
+            for child in children { coordinates(child, out); }
+        }
+    }
+    let mut server = ready(Fake::default());
+    let mut cursor = None;
+    let mut retained = Vec::new();
+    for start in 0..2 {
+        let mut args = json!({"path":PROJECT,"limit":1,"detail":"full"});
+        if let Some(token) = cursor.take() { args["cursor"] = Value::String(token); }
+        let result = call(&mut server, "backend.outline", &args);
+        assert_eq!(result["isError"], false, "{result}");
+        let typed: backend_present::OutlineDto = serde_json::from_value(result["structuredContent"].clone())
+            .expect("actual positive Fake page reaches typed presenter");
+        assert_eq!(typed.page.as_ref().expect("bounded page").limit, 1);
+        let before = retained.len();
+        for root in result["structuredContent"]["roots"].as_array().expect("roots") {
+            coordinates(root, &mut retained);
+        }
+        assert_eq!(retained.len() - before, 1, "exact fixed credit at page {start}");
+        cursor = result["structuredContent"]["nextCursor"].as_str().map(str::to_owned);
+        assert_eq!(cursor.is_some(), start == 0, "native sequential completion");
+    }
+    assert_eq!(retained, [MODULE.to_owned(), DECLARATION.to_owned()]);
+    assert!(cursor.is_none());
+
+    let override_symbol = symbol_key("selected-override-owner");
+    let mut selected = document();
+    selected.symbol = override_symbol;
+    let mut fake = Fake { document_override: Some(selected), ..Fake::default() };
+    let reply = fake.probe(Probe::OutlinePage { path: PROJECT, limit: 200 }).expect("positive override page");
+    let CommandReply::ProjectionPage(page) = reply.reply else { panic!("outline page"); };
+    let order = page.outline_order.as_ref().expect("positive override retains native order");
+    order.validate(&page.snapshot, package_key(PROJECT), backend_library::QueryLimit::new(200).expect("limit"))
+        .expect("all overridden members are exact native witnesses");
+    assert!(order.symbols().contains(&override_symbol));
+    let reply = Fake::default().members_page(&document(), 200, None).expect("positive separate members family");
+    let CommandReply::ProjectionPage(members) = reply.reply else { panic!("members page"); };
+    assert!(members.outline_order.is_none(), "outline metadata cannot leak into MembersPage");
+}
+
+#[test]
+fn positive_default_fake_members_pages_preserve_credit_cursor_family_and_override() {
+    let mut fake = Fake::default();
+    let owner = document();
+    let mut cursor = None;
+    let mut rows = Vec::new();
+    for start in 0..2 {
+        let reply = fake.members_page(&owner, 1, cursor).expect("native members selection");
+        let CommandReply::ProjectionPage(page) = reply.reply else { panic!("members page"); };
+        assert!(page.outline_order.is_none(), "MembersPage never carries OutlinePage metadata");
+        assert_eq!(page.snapshot.root.rows().len(), 1, "actual member credit at page {start}");
+        rows.extend(page.snapshot.root.rows().iter().map(|row| row.id));
+        assert_eq!(page.terminal, page.snapshot.next.map_or(PageTerminal::Complete,
+            |next| PageTerminal::More(PageContinuation::from_cursor(next))));
+        cursor = match page.terminal {
+            PageTerminal::More(next) => {
+                assert_eq!(start, 0);
+                let token = fake.encode_continuation(next).expect("encode actual issued members cursor");
+                let decoded = fake.decode_continuation(&token).expect("decode same members cursor");
+                assert_eq!(decoded, next);
+                assert!(fake.members_page(&owner, 2, Some(decoded)).is_err(), "changed member credit is refused");
+                Some(decoded)
+            }
+            PageTerminal::Complete => { assert_eq!(start, 1); None }
+            other => panic!("unexpected member terminal: {other:?}"),
+        };
+    }
+    assert_eq!(rows, [RowId::Symbol(symbol_key(MODULE)), RowId::Symbol(symbol_key(DECLARATION))]);
+    assert!(cursor.is_none());
+
+    let mut selected = document();
+    selected.symbol = symbol_key("selected-override-member-owner");
+    let mut overridden = Fake { document_override: Some(selected.clone()), ..Fake::default() };
+    let reply = overridden.members_page(&selected, 1, None).expect("selected override owner is present");
+    let CommandReply::ProjectionPage(page) = reply.reply else { panic!("members page"); };
+    assert!(page.outline_order.is_none());
+    assert_eq!(page.snapshot.root.rows().len(), 1);
+    assert_eq!(page.snapshot.root.rows()[0].id, RowId::Symbol(selected.symbol));
+    assert_eq!(page.terminal, PageTerminal::Complete, "override has no fabricated children");
+    overridden.omit_document_override_member = true;
+    assert!(overridden.members_page(&selected, 1, None).is_err(), "the missing selected owner remains a refusal");
 }
 
 #[test]
