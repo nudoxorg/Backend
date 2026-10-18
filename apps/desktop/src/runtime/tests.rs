@@ -66,6 +66,7 @@ impl EngineClient for EchoClient {
                 command: command.clone(),
                 reply: backend_library::SurfaceReply::Explored(Box::new([])),
             }),
+            EngineRequest::CancelIndexOperation { .. } => Err(EngineFault::Cancelled),
             EngineRequest::IndexOperationStatus { request, project, operation, basis, .. } => Ok(EngineDto::IndexOperation {
                 request: *request, basis: *basis, project: project.clone(), operation: operation.clone(),
                 observation: backend_library::IndexOperationObservation::Unknown { operation_key: operation.key },

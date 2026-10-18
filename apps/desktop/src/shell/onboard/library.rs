@@ -512,6 +512,8 @@ pub(crate) fn indexing(
         let lifecycle = project.lifecycle();
         let can_stop = ctx.links.root.upgrade().is_some_and(|root|
             root.read(cx).unsent_index_revision(project).is_some());
+        let can_cancel = !can_stop && ctx.links.root.upgrade().is_some_and(|root|
+            root.read(cx).accepted_index_cancellation(project, cx).is_some());
         let headline = ctx.say(format!("{}: {}.", project.label, lifecycle.label()));
         let native_status = headline.clone();
         let promise = ctx.say(
@@ -558,8 +560,11 @@ pub(crate) fn indexing(
                 .children(if can_stop {
                     Some(super::failure::act(ctx, format!("stop-pending-{}", project.path),
                         super::commands::ProjectCommand::StopPending, project, cx))
+                } else if can_cancel {
+                    Some(super::failure::act(ctx, format!("cancel-indexing-{}", project.path),
+                        super::commands::ProjectCommand::CancelAccepted, project, cx))
                 } else { None })
-                .children(project.operation.as_ref().filter(|_| !can_stop).map(|_| {
+                .children(project.operation.as_ref().filter(|_| !can_stop && !can_cancel).map(|_| {
                     quiet(ctx.say("This index may already be running. Its outcome will be checked."), &measure, palette)
                         .text_center()
                 })),

@@ -220,11 +220,12 @@ pub(super) fn prepare_scan_source(
         );
     }
     let file_keys = scan.files.iter().map(|(key, _)| *key).collect::<Vec<_>>();
-    let project_update = ProductSourceRecord::project_with_membership_pages(
+    let project_update = ProductSourceRecord::project_with_membership_pages_and_source_selection(
         &label,
         scan.source_version,
         file_keys.clone(),
         None,
+        Some(scan.source_selection.clone()),
     )
     .map_err(BuiltinModelError)?;
     let project = project_update.project_record().clone();

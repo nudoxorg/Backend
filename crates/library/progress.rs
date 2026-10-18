@@ -68,6 +68,96 @@ impl core::fmt::Display for SourceUnavailableReason {
     }
 }
 
+/// One extension observed by discovery but excluded because no frontend claims it.
+/// These counts are independent of supported-file and compiler membership totals.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceExtensionExclusion {
+    /// Lowercase extension without a dot. Zero records an observed empty scope.
+    pub extension: String,
+    /// Regular, nonignored files observed by the existing discovery walk.
+    pub files: u64,
+}
+
+/// Project-bound source-selection evidence, or a checked aggregate of project rows.
+/// None at the enclosing field means historical evidence was not recorded.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceSelectionObservation {
+    /// Projects whose selected source row records the observation.
+    pub observed_projects: u64,
+    /// Historical project rows with no observation; never inferred to have zero exclusions.
+    pub unknown_projects: u64,
+    /// Strict extension order, at most sixteen rows; each extension has an explicit count.
+    pub unsupported_extensions: Box<[SourceExtensionExclusion]>,
+}
+
+impl SourceSelectionObservation {
+    /// Checks complete bounded counts; no row is shed or truncated.
+    pub fn admit(&self) -> Result<(), String> {
+        if self
+            .observed_projects
+            .checked_add(self.unknown_projects)
+            .is_none_or(|n| n == 0)
+            || (self.observed_projects > 0 && self.unsupported_extensions.is_empty())
+            || self.unsupported_extensions.len() > 16
+            || (self.observed_projects == 0 && !self.unsupported_extensions.is_empty())
+            || self.unsupported_extensions.iter().any(|row| {
+                row.extension.is_empty()
+                    || row.extension.len() > 16
+                    || !row
+                        .extension
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+            })
+            || self
+                .unsupported_extensions
+                .windows(2)
+                .any(|rows| rows[0].extension >= rows[1].extension)
+        {
+            return Err("invalid source-selection observation".to_owned());
+        }
+        Ok(())
+    }
+
+    /// The fixed unsupported-extension scope this producer explicitly observed.
+    pub fn project_vue(files: u64) -> Self {
+        Self {
+            observed_projects: 1,
+            unknown_projects: 0,
+            unsupported_extensions: vec![SourceExtensionExclusion {
+                extension: "vue".into(),
+                files,
+            }]
+            .into_boxed_slice(),
+        }
+    }
+
+    /// Shared wording for CLI, MCP, and desktop, independent of capability readiness.
+    pub fn render(&self) -> String {
+        let mut parts = self
+            .unsupported_extensions
+            .iter()
+            .map(|row| {
+                format!(
+                    ".{}: {} excluded (unsupported extension)",
+                    row.extension, row.files
+                )
+            })
+            .collect::<Vec<_>>();
+        if self.unknown_projects != 0 {
+            parts.push(format!(
+                "exclusions unknown for {} historical project(s)",
+                self.unknown_projects
+            ));
+        }
+        format!(
+            "source selection: {}; file/compiler totals cover supported extensions",
+            parts.join("; ")
+        )
+    }
+}
+
 /// Largest number of distinct languages one progress report may carry.
 ///
 /// The owner supports a closed set of language authorities, so a report that
@@ -190,9 +280,25 @@ pub struct IngestProgress {
     declarations: u64,
     languages: Box<[LanguageRows]>,
     faults: Box<[FaultRows]>,
+    source_selection: Option<SourceSelectionObservation>,
 }
 
 impl IngestProgress {
+    /// Attaches discovery evidence without changing any supported-file total.
+    pub fn with_source_selection(
+        mut self,
+        observation: SourceSelectionObservation,
+    ) -> Result<Self, String> {
+        observation.admit()?;
+        self.source_selection = Some(observation);
+        Ok(self)
+    }
+
+    /// Observed exclusions; absence is not evidence of zero excluded files.
+    pub fn source_selection(&self) -> Option<&SourceSelectionObservation> {
+        self.source_selection.as_ref()
+    }
+
     /// Admits one complete progress report.
     ///
     /// The language rows are sorted by language and the fault rows by reason,
@@ -246,6 +352,7 @@ impl IngestProgress {
             declarations,
             languages: languages.into_boxed_slice(),
             faults: faults.into_boxed_slice(),
+            source_selection: None,
         })
     }
 

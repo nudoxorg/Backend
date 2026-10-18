@@ -78,6 +78,8 @@ pub(super) struct IndexSnapshot {
     pub(super) python_environment:
         Option<backend_frontend_python::legacy::checker::PythonEnvironmentInput>,
     pub(super) source_version: [u8; 32],
+    /// Separate discovery evidence, not a compiler or supported-source member.
+    pub(super) source_selection: backend_library::SourceSelectionObservation,
     pub(super) files: Vec<([u8; 32], ProductSourceRecord)>,
     /// Complete file-facts updates produced before compact source-row retention.
     pub(super) source_facts: Vec<ProductSourceFileFactsUpdate>,
@@ -2063,6 +2065,9 @@ fn scan_project_with_configuration_policy_attempt(
     files.sort_by_key(|(key, _)| *key);
     encoded_fact_bytes.sort_unstable_by_key(|(key, _)| *key);
     let snapshot = IndexSnapshot {
+        source_selection: backend_library::SourceSelectionObservation::project_vue(
+            project_paths.unsupported_vue,
+        ),
         python_environment: python_environment.map(PythonEnvironmentInput::Captured),
         source_version: *source.finalize().as_bytes(),
         files,
@@ -2237,6 +2242,7 @@ fn supported_paths_with_policy(
 
 struct ProjectPaths {
     sources: Vec<PathBuf>,
+    unsupported_vue: u64,
     configurations: Vec<(Language, PathBuf)>,
     directories: Vec<(PathBuf, Option<FileSystemRevision>)>,
     file_revisions: BTreeMap<PathBuf, Option<FileSystemRevision>>,
@@ -2252,6 +2258,7 @@ fn project_paths_with_policy(
     cancellation: Option<&AtomicBool>,
 ) -> Result<ProjectPaths, String> {
     let mut sources = Vec::new();
+    let mut unsupported_vue = 0_u64;
     let mut configurations = Vec::new();
     #[cfg(windows)]
     let root_revision = Some(_root_capability.revision()?);
@@ -2280,12 +2287,28 @@ fn project_paths_with_policy(
             .map_err(|error| format!("{error}: {}", entry.path().display()))?;
         directory_entries = directory_entries.saturating_add(1);
         if entry.is_file() {
+            // Count only recognized unsupported source containers from this
+            // same nonignored walk. Do not read them, assign TS authority, or
+            // insert them into supported/compiler membership.
+            let claimed = frontends.and_then(|set| set.for_path(entry.path()));
+            if frontends.is_some()
+                && claimed.is_none()
+                && entry
+                    .path()
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("vue"))
+            {
+                unsupported_vue = unsupported_vue
+                    .checked_add(1)
+                    .ok_or("unsupported Vue source count overflow")?;
+            }
             let mut revision_path = entry
                 .path()
                 .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(source_frontier::is_policy_file_name);
-            if frontends.is_some_and(|frontends| frontends.for_path(entry.path()).is_some()) {
+            if claimed.is_some() {
                 if sources.len() >= ProductSourceRecord::MAX_PROJECT_FILES {
                     return Err("project contains too many supported source files".to_owned());
                 }
@@ -2392,6 +2415,7 @@ fn project_paths_with_policy(
     }
     Ok(ProjectPaths {
         sources,
+        unsupported_vue,
         configurations,
         directories,
         file_revisions,
@@ -6288,6 +6312,88 @@ mod robustness_tests {
 #[cfg(test)]
 mod profile_tests {
     use super::*;
+
+    #[test]
+    fn vue_discovery_exclusions_are_counted_without_claiming_ts_authority_or_compiler_membership()
+    -> Result<(), String> {
+        let scratch = scratch("unsupported-vue")?;
+        fs::create_dir_all(scratch.0.join("src")).map_err(|e| e.to_string())?;
+        fs::create_dir_all(scratch.0.join("node_modules/hidden")).map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join(".gitignore"), "ignored.vue\n").map_err(|e| e.to_string())?;
+        for path in [
+            "src/App.vue",
+            "src/Other.VUE",
+            "ignored.vue",
+            "node_modules/hidden/Hidden.vue",
+        ] {
+            fs::write(
+                scratch.0.join(path),
+                "<template><h1>unsupported Vue</h1></template>",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        fs::write(scratch.0.join("src/App.vue"), [0xff, 0xfe]).map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("src/main.ts"), "export const typed = 1;")
+            .map_err(|e| e.to_string())?;
+        fs::write(
+            scratch.0.join("src/helpers.js"),
+            "export const scripted = 2;",
+        )
+        .map_err(|e| e.to_string())?;
+        let first = scan(&scratch)?;
+        assert_eq!(
+            first.source_selection,
+            backend_library::SourceSelectionObservation::project_vue(2)
+        );
+        let mut supported = paths_of(&first);
+        supported.sort();
+        assert_eq!(supported, ["src/helpers.js", "src/main.ts"]);
+        assert_eq!(first.compiler_sources.len(), 2);
+        assert_eq!(
+            first.source_bytes_read,
+            "export const typed = 1;".len() + "export const scripted = 2;".len(),
+            "unsupported container bytes are not admitted or charged as compiler source"
+        );
+        assert!(
+            !first.revision_fence.files.iter().any(|file| file
+                .relative_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("vue"))),
+            "directory fences protect discovery counts without per-container metadata expansion"
+        );
+
+        assert!(
+            first
+                .compiler_sources
+                .iter()
+                .all(|source| !source.relative_path.ends_with(".vue"))
+        );
+        assert!(
+            source_profile(Path::new("src/App.vue"))?.is_none(),
+            "no Vue authority is fabricated"
+        );
+        let source_version = first.source_version;
+        let before = first.source_selection;
+        fs::write(
+            scratch.0.join("src/New.vue"),
+            "<script>not submitted to TSZ</script>",
+        )
+        .map_err(|e| e.to_string())?;
+        let second = scan(&scratch)?;
+        assert_eq!(
+            second.source_selection,
+            backend_library::SourceSelectionObservation::project_vue(3)
+        );
+        assert_ne!(second.source_selection, before);
+        assert_eq!(
+            second.source_version, source_version,
+            "supported source identities are independent of excluded containers"
+        );
+        assert_eq!(second.compiler_sources.len(), 2);
+        Ok(())
+    }
+
     use backend_engine::DeclarationRetention;
 
     struct Scratch(PathBuf);

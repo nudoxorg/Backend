@@ -81,6 +81,22 @@ impl IndexOperationClaim {
         }
     }
 
+    /// Only an admitted active operation supplies a process-local cancel ticket.
+    /// Accepted-but-not-started, terminal and unknown observations supply none.
+    #[must_use]
+    pub fn cancellation_ticket(&self) -> Option<backend_library::IndexJobTicket> {
+        let observation = self.observation.as_ref()?;
+        if !self.admits_observation(observation) { return None; }
+        match observation {
+            backend_library::IndexOperationObservation::Known(status) => match &status.state {
+                backend_library::IndexOperationState::Active { ticket, .. }
+                    if ticket.package() == &self.package => Some(ticket.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// A compact consumed-key tombstone cannot erase a checked exact receipt
     /// already owned by this caller. It supplies no new publication proof.
     #[must_use]

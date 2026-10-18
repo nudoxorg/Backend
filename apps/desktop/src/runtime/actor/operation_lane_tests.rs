@@ -313,3 +313,55 @@ fn cancelling_an_active_status_does_not_cancel_an_entered_start_on_the_main_lane
         .expect("finish entered mutation explicitly");
     actor.stop();
 }
+
+#[test]
+fn exact_ticket_cancel_uses_the_operation_lane_while_root_hydration_is_held() {
+    struct CancelMain {
+        root_entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+        cancelled: mpsc::Sender<(crate::core::LocalProjectId, backend_library::IndexOperationKey, backend_library::IndexJobTicket)>,
+    }
+    struct CancelObserver(mpsc::Sender<(crate::core::LocalProjectId, backend_library::IndexOperationKey, backend_library::IndexJobTicket)>);
+    impl EngineClient for CancelMain {
+        fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+            assert!(matches!(request, EngineRequest::Root { .. }), "Cancel must not wait behind hydration");
+            self.root_entered.send(()).expect("root entry");
+            self.release.recv_timeout(Duration::from_secs(5)).expect("bounded root release");
+            Err(EngineFault::Cancelled)
+        }
+        fn operation_observer(&self) -> Option<Box<dyn EngineClient>> {
+            Some(Box::new(CancelObserver(self.cancelled.clone())))
+        }
+    }
+    impl EngineClient for CancelObserver {
+        fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+            let EngineRequest::CancelIndexOperation { owner: Some(_), project, operation, ticket, .. } = request else {
+                panic!("operation control cannot submit Start");
+            };
+            self.0.send((project.clone(), operation.key, ticket.clone())).expect("exact cancellation packet");
+            Err(EngineFault::IndexUnconfirmed { project: project.clone() })
+        }
+    }
+    let (entered, seen_root) = mpsc::channel();
+    let (release, held) = mpsc::channel();
+    let (cancelled, seen_cancel) = mpsc::channel();
+    let actor = EngineActor::start(CancelMain { root_entered: entered, release: held, cancelled }, 4).expect("existing lanes");
+    let project = crate::core::LocalProjectId::new("/fixture/independent-cancel").expect("project");
+    let basis = crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[]), 1);
+    let mut operation = crate::model::index_operation::tests::claim(&project, 0x64);
+    let ticket = backend_library::IndexJobTicket::new(std::num::NonZeroU64::MIN, [6; 16], operation.package.clone());
+    operation.observation = Some(crate::model::index_operation::tests::observation(&operation,
+        backend_library::IndexOperationState::Active { ticket: ticket.clone(), stage: backend_library::IndexJobStage::Compiling }));
+    let gate = crate::runtime::owner::OwnerGate::ready(basis, crate::model::ServiceMode::Attached);
+    let owner = IndexMutationLease::capture(Some(&gate), gate.ready_epoch()).expect("captured actual owner");
+    assert!(matches!(actor.try_submit(EngineRequest::Root { project: None,
+        request: crate::navigation::RequestId::new(1), basis, cancel: CancellationToken::new() }), PushResult::Enqueued));
+    seen_root.recv_timeout(Duration::from_secs(1)).expect("held hydration entered");
+    let pushed = actor.try_submit(EngineRequest::CancelIndexOperation { owner: Some(owner),
+        operation: operation.clone(), ticket: ticket.clone(), project: project.clone(),
+        request: crate::navigation::RequestId::new(2), basis, cancel: CancellationToken::new() });
+    let actual = seen_cancel.recv_timeout(Duration::from_secs(1));
+    release.send(()).expect("release hydration before asserting");
+    assert!(matches!(pushed, PushResult::Enqueued));
+    assert_eq!(actual.expect("Cancel bypasses held Root"), (project, operation.key, ticket));
+}

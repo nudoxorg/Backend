@@ -75,6 +75,7 @@ mod package_graph;
 mod page;
 mod document_sections;
 pub use document_sections::{DocumentContinuation, DocumentSectionPage};
+mod compiler_causes;
 mod product;
 mod projection;
 #[cfg(test)]

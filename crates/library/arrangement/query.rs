@@ -9,7 +9,7 @@ use crate::command::{AddressSelection, NameSelection};
 use crate::{PackageKey, Row, RowId, SymbolKey};
 use backend_flow::MaterializedIndex;
 use std::cmp::{Ordering, Reverse};
-use std::collections::BinaryHeap;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 struct NameRanked {
     id: RowId,
@@ -131,10 +131,6 @@ fn outline_order(row: &Row) -> (Reverse<(bool, bool, u8)>, &str, RowId) {
         row.id,
     )
 }
-
-// Retain the borrowed key once: heap comparisons never rescan a source path.
-#[derive(Eq, PartialEq, Ord, PartialOrd)]
-struct OutlineRanked<'a>((Reverse<(bool, bool, u8)>, &'a str, RowId));
 
 fn retained_page_capacity(start: usize, limit: usize) -> usize {
     start.saturating_add(limit).saturating_add(1)
@@ -306,18 +302,11 @@ impl ProjectionArrangement {
         row_for_id: impl Fn(RowId) -> Option<&'view Row>,
         work: &WorkCounters,
     ) -> ArrangementPage {
-        let capacity = retained_page_capacity(start, limit);
-        let mut retained =
-            BinaryHeap::with_capacity(capacity.min(usize::from(crate::QueryLimit::MAX)));
-        let mut visited = 0_usize;
+        let mut rows = Vec::new();
+        let mut visited_rows = 0_usize;
         let mut visit = |id| {
-            visited = visited.saturating_add(1);
-            if let Some(row) = row_for_id(id) {
-                retained.push(OutlineRanked(outline_order(row)));
-                if retained.len() > capacity {
-                    retained.pop();
-                }
-            }
+            visited_rows = visited_rows.saturating_add(1);
+            if let Some(row) = row_for_id(id) { rows.push((outline_order(row), row)); }
         };
         let mut scoped = false;
         if let Some(tree) = self.package_symbols.as_ref() {
@@ -340,18 +329,41 @@ impl ProjectionArrangement {
                 }
             }
         }
-        work.record_scan(visited);
-        let mut retained = retained.into_vec();
-        work.record_sort(retained.len());
-        retained.sort_unstable();
-        let has_more = retained.len() > start.saturating_add(limit);
-        let ids = retained
-            .into_iter()
-            .skip(start)
-            .take(limit)
-            .map(|row| row.0.2)
-            .collect();
-        ArrangementPage { ids, has_more }
+        work.record_scan(visited_rows);
+        work.record_sort(rows.len());
+        rows.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        let selected = rows.iter().map(|(_, row)| row.id).collect::<BTreeSet<_>>();
+        let mut children = BTreeMap::<RowId, Vec<RowId>>::new();
+        let mut roots = Vec::new();
+        for (_, row) in &rows {
+            match row.parent.map(RowId::Symbol).filter(|parent| selected.contains(parent)) {
+                Some(parent) => children.entry(parent).or_default().push(row.id),
+                None => roots.push(row.id),
+            }
+        }
+        // Page one stable containment preorder, rather than rebuilding a new
+        // traversal from each page's induced forest. Cycle components are
+        // promoted once in the same seed order. No payloads are copied here.
+        let mut visited = BTreeSet::new();
+        let mut ids = Vec::with_capacity(limit.saturating_add(1));
+        let mut ordinal = 0_usize;
+        for seed in roots.into_iter().chain(rows.iter().map(|(_, row)| row.id)) {
+            if visited.contains(&seed) { continue; }
+            let mut stack = vec![seed];
+            while let Some(id) = stack.pop() {
+                if !visited.insert(id) { continue; }
+                if ordinal >= start { ids.push(id); }
+                ordinal = ordinal.saturating_add(1);
+                if ids.len() > limit {
+                    ids.truncate(limit);
+                    return ArrangementPage { ids, has_more: true };
+                }
+                if let Some(children) = children.get(&id) {
+                    stack.extend(children.iter().rev().copied());
+                }
+            }
+        }
+        ArrangementPage { ids, has_more: false }
     }
 
     /// Returns at most `limit` children from one package/parent range and

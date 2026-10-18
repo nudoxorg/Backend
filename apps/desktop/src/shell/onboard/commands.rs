@@ -27,6 +27,8 @@ pub(crate) enum ProjectCommand {
     Resume,
     /// Stop a positively identified local preflight before its first send.
     StopPending,
+    /// Cancel an exact active owner ticket captured by the rendered control.
+    CancelAccepted,
     /// Read the durable outcome of its saved operation; starts no new index.
     CheckOutcome,
     /// Deliberately start distinct work after an exact consumed-key tombstone.
@@ -59,6 +61,7 @@ impl ProjectCommand {
             Self::Retry => "Try again",
             Self::Resume => "Resume",
             Self::StopPending => "Stop pending request",
+            Self::CancelAccepted => "Cancel indexing",
             Self::CheckOutcome => "Check outcome",
             Self::StartNewIndex => "Start a new index",
             Self::Reveal => "Reveal",
@@ -73,7 +76,7 @@ impl ProjectCommand {
         match self {
             Self::Retry | Self::Resume | Self::Locate | Self::CheckOutcome | Self::StartNewIndex => Weight::Primary,
             Self::Activate | Self::Reveal => Weight::Plain,
-            Self::Remove | Self::StopPending => Weight::Danger,
+            Self::Remove | Self::StopPending | Self::CancelAccepted => Weight::Danger,
         }
     }
 
@@ -84,6 +87,9 @@ impl ProjectCommand {
             Self::Activate => Intent::ActivateProject(project.clone()),
             Self::Retry | Self::Resume | Self::StartNewIndex => Intent::RetryIndex(project.clone()),
             Self::StopPending => Intent::CancelIndex(project.clone()),
+            // A project name is insufficient authority. `failure::act` captures
+            // the operation/ticket/owner and dispatches through the root.
+            Self::CancelAccepted => Intent::Noop,
             Self::CheckOutcome => Intent::CheckIndexOutcome(project.clone()),
             Self::Reveal => Intent::RevealProject(project.clone()),
             Self::Locate => Intent::OpenAddProject,
@@ -94,6 +100,10 @@ impl ProjectCommand {
     /// A recovery read needs both the exact saved claim and a serving owner.
     pub(crate) fn for_project(project: &crate::model::WorkspaceProject, active: bool, owner_serving: bool) -> Vec<Self> {
         let mut commands = Self::for_phase(project.phase, active);
+        if owner_serving && project.phase == ProjectPhase::Indexing
+            && project.operation.as_ref().is_some_and(|operation|
+                operation.belongs_to(&project.id) && operation.cancellation_ticket().is_some())
+        { commands.insert(0, Self::CancelAccepted); }
         if owner_serving && project.request.is_none()
             && project.lifecycle() == crate::model::ProjectLifecycle::PartiallyPublished
             && project.operation.as_ref().is_some_and(crate::model::IndexOperationClaim::has_terminal_observation)
@@ -126,6 +136,29 @@ impl ProjectCommand {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepted_cancel_requires_an_admitted_active_ticket_and_serving_owner() {
+        use backend_library::{IndexJobStage, IndexJobTicket, IndexOperationState};
+        let project = LocalProjectId::new("/fixture/cancel-command").expect("project");
+        let mut row = crate::model::WorkspaceProject::indexing_with_id(project.clone());
+        let mut operation = crate::model::index_operation::tests::claim(&project, 0x87);
+        operation.observation = Some(crate::model::index_operation::tests::observation(&operation,
+            IndexOperationState::Active { ticket: IndexJobTicket::new(std::num::NonZeroU64::MIN,
+                [7; 16], operation.package.clone()), stage: IndexJobStage::Compiling }));
+        row.operation = Some(operation.clone());
+        assert_eq!(ProjectCommand::for_project(&row, true, true), [ProjectCommand::CancelAccepted, ProjectCommand::Reveal]);
+        assert_eq!(ProjectCommand::for_project(&row, true, false), [ProjectCommand::Reveal]);
+        assert_eq!(ProjectCommand::CancelAccepted.label(), "Cancel indexing");
+        assert_eq!(ProjectCommand::CancelAccepted.intent(&project), Intent::Noop,
+            "a project-only intent cannot cancel whichever operation happens to be current");
+        operation.observation = Some(crate::model::index_operation::tests::observation(&operation, IndexOperationState::Accepted));
+        row.operation = Some(operation.clone());
+        assert_eq!(ProjectCommand::for_project(&row, true, true), [ProjectCommand::Reveal], "no ticket has been issued yet");
+        operation.observation = Some(crate::model::index_operation::tests::published(&operation));
+        row.operation = Some(operation);
+        assert_eq!(ProjectCommand::for_project(&row, true, true), [ProjectCommand::Reveal], "terminal receipt cannot offer Cancel");
+    }
 
     #[test]
     fn new_attempt_control_requires_checked_consumed_key_and_live_owner() {

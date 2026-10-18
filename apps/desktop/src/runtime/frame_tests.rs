@@ -54,6 +54,7 @@ impl EngineClient for HeldIndexClient {
                     catalog: None,
                 })
             }
+            EngineRequest::CancelIndexOperation { .. } => Err(EngineFault::Cancelled),
             EngineRequest::IndexOperationStatus { request, project, operation, basis, .. } => Ok(EngineDto::IndexOperation {
                 request: *request, basis: *basis, project: project.clone(), operation: operation.clone(),
                 observation: backend_library::IndexOperationObservation::Unknown { operation_key: operation.key },

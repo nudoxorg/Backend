@@ -200,6 +200,14 @@ pub enum Intent {
         /// Compatibility request retained until the service owner replies.
         request: RequestId,
     },
+    /// Cancel only the exact owner-issued active ticket captured by the root.
+    CancelIndexOperation {
+        project: LocalProjectId,
+        operation: crate::model::IndexOperationClaim,
+        ticket: backend_library::IndexJobTicket,
+        basis: VersionedRoot,
+        request: RequestId,
+    },
     /// Ask to check a saved exact operation; no new index starts.
     CheckIndexOutcome(LocalProjectId),
     /// Root-owned reconciliation after admitting a live owner and saved claim.
@@ -239,7 +247,8 @@ pub enum Intent {
     /// owner indexes it (`runtime::acquire`, run by the window root; never
     /// reduced).
     AddRelease(crate::model::release::Release),
-    /// Cancel an active index job while retaining the shelf row.
+    /// Stop a positively identified local request before its first send.
+    /// Owner-accepted jobs use the distinct ticket-bound cancellation path.
     CancelIndex(LocalProjectId),
     /// Run a local, read-only service revision check.
     TestConnection,
@@ -364,6 +373,14 @@ pub enum EngineCommand {
         /// Root basis captured before submission.
         basis: VersionedRoot,
         /// Request identity used for terminal projection matching.
+        request: RequestId,
+    },
+    /// Cancel only the exact owner-issued active ticket captured by the root.
+    CancelIndexOperation {
+        project: LocalProjectId,
+        operation: crate::model::IndexOperationClaim,
+        ticket: backend_library::IndexJobTicket,
+        basis: VersionedRoot,
         request: RequestId,
     },
     /// Read the durable outcome of one exact caller operation.

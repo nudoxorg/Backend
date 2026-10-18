@@ -2830,6 +2830,7 @@ mod tests {
             lanes: backend_present::CoverageLine::new(&[], None),
             rows: 0,
             ingest: IngestModel {
+                source_selection: None,
                 files_discovered: 0,
                 files_indexed: 0,
                 files_unavailable: 0,

@@ -216,6 +216,8 @@ pub(super) fn act(
 ) -> gpui::AnyElement {
     let links = ctx.links.clone();
     let intent = command.intent(&project.id);
+    let accepted_cancel = (command == ProjectCommand::CancelAccepted).then(||
+        links.root.upgrade().and_then(|root| root.read(cx).accepted_index_cancellation(project, cx))).flatten();
     let expected = ctx
         .links
         .snapshot(cx)
@@ -230,6 +232,13 @@ pub(super) fn act(
     let cancellation_attempt = expected_attempt.clone();
     let project = project.id.clone();
     let act: Act = Rc::new(move |_, cx| {
+        if command == ProjectCommand::CancelAccepted {
+            if let Some(captured) = accepted_cancel.clone()
+                && let Some(root) = links.root.upgrade() {
+                root.update(cx, |root, cx| root.cancel_accepted_index(captured, cx));
+            }
+            return;
+        }
         if command == ProjectCommand::StopPending {
             let Some(revision) = pending_revision else { return; };
             if let Some(root) = links.root.upgrade() {

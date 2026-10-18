@@ -350,6 +350,7 @@ pub(crate) fn reply_to_wire(reply: &CommandReply) -> Result<ReplyWire, String> {
         CommandReply::Packages(snapshot) => ReplyWire::Packages(snapshot_to_wire(snapshot)),
         CommandReply::ProjectionPage(page) => ReplyWire::ProjectionPage(ProjectionPageWire {
             snapshot: snapshot_to_wire(&page.snapshot),
+            outline_order: page.outline_order.as_ref().map(super::reply_page::order_to_wire),
             terminal: match page.terminal {
                 PageTerminal::Complete => PageTerminalWire::Complete(EmptyWire {}),
                 PageTerminal::More(continuation) => {

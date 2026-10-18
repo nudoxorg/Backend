@@ -6,7 +6,7 @@
 //! carries the [`Fault`] that explains it rather than a word.
 
 use crate::fault::Fault;
-use crate::identity::{Identity, KeyTag};
+use crate::identity::{Identity, IdentityKey, KeyTag};
 use crate::language::Language;
 use crate::readiness::PublishedFacts;
 use backend_library::Lane;
@@ -287,6 +287,23 @@ impl Shelf {
     #[must_use]
     pub const fn revision(&self) -> KeyTag {
         self.revision
+    }
+
+    /// Adds only source/revision-matched compiler causes to already failed rows.
+    /// Readiness, selected coverage, publication counts and operation outcomes stay unchanged.
+    pub(crate) fn with_compiler_causes(
+        mut self,
+        causes: &std::collections::BTreeMap<backend_library::PackageKey, Fault>,
+    ) -> Self {
+        for entry in &mut self.entries {
+            if let Readiness::Failed { fault } = &mut entry.readiness
+                && let IdentityKey::Package(package) = entry.identity.key()
+                && let Some(cause) = causes.get(&package)
+            {
+                *fault = cause.clone();
+            }
+        }
+        self
     }
 
     /// Returns the workspace-level statement every renderer prints under the

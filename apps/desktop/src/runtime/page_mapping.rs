@@ -2531,6 +2531,9 @@ pub fn health_model(report: &HealthReport) -> HealthModel {
         lanes: CoverageLine::new(report.coverage(), Some(report.row_count())),
         rows: report.row_count(),
         ingest: IngestModel {
+            source_selection: progress
+                .source_selection()
+                .map(|observation| observation.render()),
             files_discovered: progress.files_discovered(),
             files_indexed: progress.files_indexed(),
             files_unavailable: progress.files_unavailable(),

@@ -336,6 +336,8 @@ pub struct Status {
     coverage: CoverageLine,
     rows: PublishedRows,
     capabilities: CapabilitySummary,
+    compiler_refusal: Option<crate::Fault>,
+    source_selection: Option<backend_library::SourceSelectionObservation>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -379,6 +381,8 @@ impl Status {
             coverage: CoverageLine::new(report.coverage(), Some(report.row_count())),
             rows: PublishedRows::new(report.row_count()),
             capabilities: CapabilitySummary::from_inventory(report.capabilities()),
+            compiler_refusal: None,
+            source_selection: report.progress().source_selection().cloned(),
         }
     }
 
@@ -388,6 +392,28 @@ impl Status {
         let mut status = Self::from_report(report, project);
         status.availability = OwnerAvailability::Available;
         status
+    }
+
+    pub(crate) fn expose_mcp_advice(&mut self, exposure: crate::McpExposure) {
+        if let Some(fault) = &mut self.compiler_refusal {
+            *fault = fault.clone().with_mcp_exposure(exposure);
+        }
+    }
+
+    /// One exact bounded failed-project attempt cause, independent of served lane coverage.
+    #[must_use]
+    pub fn compiler_refusal(&self) -> Option<&crate::Fault> {
+        self.compiler_refusal.as_ref()
+    }
+
+    pub(crate) fn with_compiler_refusal(mut self, fault: Option<crate::Fault>) -> Self {
+        self.compiler_refusal = fault;
+        self
+    }
+
+    /// Separate supported-extension discovery scope for the committed workspace.
+    pub fn source_selection(&self) -> Option<&backend_library::SourceSelectionObservation> {
+        self.source_selection.as_ref()
     }
 
     /// Returns the active project, when one is selected.
@@ -469,5 +495,51 @@ impl Status {
     #[must_use]
     pub fn readiness(&self) -> &'static str {
         self.coverage.readiness()
+    }
+}
+
+#[cfg(test)]
+mod source_selection_tests {
+    use super::*;
+
+    #[test]
+    fn status_keeps_unsupported_vue_counts_in_text_markdown_and_every_cli_mcp_detail() {
+        let library = backend_library::Library::new();
+        let progress = backend_library::IngestProgress::new(5, 5, 0, 7, vec![], vec![])
+            .unwrap()
+            .with_source_selection(backend_library::SourceSelectionObservation::project_vue(12))
+            .unwrap();
+        let report =
+            HealthReport::from_root(library.view(), library.cursor()).with_progress(progress);
+        let status = Status::from_report(&report, None);
+        let text = crate::render::text::status(&status, crate::Theme::plain());
+        let markdown = crate::render::markdown::status(&status);
+        for rendered in [&text, &markdown] {
+            assert!(rendered.contains(".vue: 12 excluded (unsupported extension)"));
+            assert!(rendered.contains("totals cover supported extensions"));
+        }
+        let answer = crate::Answer::Status(Box::new(status));
+        for detail in [
+            crate::Detail::Summary,
+            crate::Detail::Standard,
+            crate::Detail::Full,
+        ] {
+            let encoded = crate::budget::encode_answer(&answer, detail, None, 48 * 1024).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&encoded.bytes).unwrap();
+            assert_eq!(
+                value["source_selection"]["unsupported_extensions"][0]["files"],
+                12
+            );
+            assert_eq!(value["source_selection"]["observed_projects"], 1);
+        }
+        let legacy = Status::from_report(
+            &HealthReport::from_root(library.view(), library.cursor()),
+            None,
+        );
+        let value = serde_json::to_value(crate::dto::StatusDto::new(&legacy)).unwrap();
+        assert!(
+            value.get("source_selection").is_none(),
+            "absent old observation is never rewritten as zero"
+        );
     }
 }
