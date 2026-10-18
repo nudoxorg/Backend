@@ -667,24 +667,19 @@ impl SymbolTypeCache {
 
     #[inline]
     pub fn entry_or_insert(&self, key: SymbolId, value: TypeId) -> TypeId {
-        // Same NONE-storage guard as `NodeTypeCache::or_insert` — `insert`
-        // explicitly removes NONE entries to maintain the cache invariant
-        // that `get`/`contains_key` only see real types. `entry().or_insert()`
-        // with `value == NONE` would silently break that.
+        // A hit is a read: child checkers inherit this Arc snapshot, so
+        // make_mut here would clone every populated entry without changing
+        // any lookup result. Preserve both sharing and first-writer semantics.
+        if let Some(existing) = self.data.borrow().get(&key).copied() {
+            return existing;
+        }
+        // NONE is never stored, including when the key is absent.
         if value == TypeId::NONE {
-            return self
-                .data
-                .borrow()
-                .get(&key)
-                .copied()
-                .unwrap_or(TypeId::NONE);
+            return TypeId::NONE;
         }
-        if !self.data.borrow().contains_key(&key) {
-            self.bump_version();
-        }
-        *Arc::make_mut(&mut self.data.borrow_mut())
-            .entry(key)
-            .or_insert(value)
+        self.bump_version();
+        Arc::make_mut(&mut self.data.borrow_mut()).insert(key, value);
+        value
     }
 
     pub fn len(&self) -> usize {
@@ -1108,6 +1103,71 @@ mod tests {
         assert!(!Arc::ptr_eq(&parent.data.borrow(), &child.data.borrow()));
         assert_eq!(parent.get(&sym), Some(TypeId::STRING));
         assert_eq!(child.get(&sym), None);
+    }
+
+    #[test]
+    fn symbol_type_cache_present_entry_preserves_shared_snapshot_and_first_writer() {
+        let parent = SymbolTypeCache::new();
+        for index in 0..256 {
+            parent.insert(SymbolId(index), TypeId::STRING);
+        }
+        let child = parent.clone();
+        let version = child.version();
+
+        for index in 0..256 {
+            for proposed in [TypeId::NUMBER, TypeId::STRING, TypeId::NONE] {
+                assert_eq!(
+                    child.entry_or_insert(SymbolId(index), proposed),
+                    TypeId::STRING
+                );
+                assert_eq!(
+                    child.version(),
+                    version,
+                    "an inherited hit changes no lookup"
+                );
+                assert!(
+                    Arc::ptr_eq(&parent.data.borrow(), &child.data.borrow()),
+                    "a present-key read must not copy the inherited map"
+                );
+            }
+        }
+        assert_eq!(child.len(), parent.len());
+        assert_eq!(parent.version(), version);
+    }
+
+    #[test]
+    fn symbol_type_cache_absent_entry_preserves_none_and_isolates_real_writes() {
+        let parent = SymbolTypeCache::new();
+        parent.insert(SymbolId(1), TypeId::STRING);
+        let child = parent.clone();
+        let version = child.version();
+
+        assert_eq!(
+            child.entry_or_insert(SymbolId(2), TypeId::NONE),
+            TypeId::NONE
+        );
+        assert!(!child.contains_key(&SymbolId(2)));
+        assert_eq!(child.version(), version);
+        assert!(Arc::ptr_eq(&parent.data.borrow(), &child.data.borrow()));
+
+        assert_eq!(
+            child.entry_or_insert(SymbolId(2), TypeId::NUMBER),
+            TypeId::NUMBER
+        );
+        assert_eq!(child.version(), version + 1);
+        assert!(!Arc::ptr_eq(&parent.data.borrow(), &child.data.borrow()));
+        assert_eq!(parent.get(&SymbolId(2)), None);
+        assert_eq!(child.get(&SymbolId(1)), Some(TypeId::STRING));
+
+        let sibling = child.clone();
+        assert_eq!(
+            child.entry_or_insert(SymbolId(2), TypeId::BOOLEAN),
+            TypeId::NUMBER
+        );
+        assert_eq!(child.version(), version + 1);
+        assert!(Arc::ptr_eq(&sibling.data.borrow(), &child.data.borrow()));
+        assert_eq!(sibling.get(&SymbolId(2)), Some(TypeId::NUMBER));
+        assert_eq!(parent.version(), version);
     }
 
     #[test]
