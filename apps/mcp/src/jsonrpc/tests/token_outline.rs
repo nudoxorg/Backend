@@ -413,10 +413,13 @@ fn late_token_dense_outline_continuations_shrink_delivery_keep_credit_and_preser
     // of one repeated letter compresses and does not exercise token admission.
     let dense_segment = "p0".repeat(125);
     assert_eq!(cl100k_tokens(&dense_segment).expect("named dense fixture tokenizer"), 250);
-    let ids = (0..200).map(|n| symbol_key(&format!("late-outline-id-{n}"))).collect::<Vec<_>>();
+    let mut ids = (0..200).map(|n| symbol_key(&format!("late-outline-id-{n}"))).collect::<Vec<_>>();
+    // These rows have the same kind and no retained source site. The real
+    // outline order therefore uses RowId, not their coordinate spelling.
+    ids.sort_unstable();
     let mut rows = ids.iter().enumerate().map(|(n, id)| {
         let coordinate = if n < 50 { format!("{PROJECT}::A{n:03}") }
-            else if n < 100 { format!("{PROJECT}::z/{}::Late", dense_segment) }
+            else if n < 100 { format!("{PROJECT}::z/{}::Late{n:03}", dense_segment) }
             else { format!("{PROJECT}::zzTail{n:03}") };
         Row::in_package(RowId::Symbol(*id), source, package_key(PROJECT), coordinate)
             .with_kind(DeclarationKind::Function)
@@ -429,14 +432,27 @@ fn late_token_dense_outline_continuations_shrink_delivery_keep_credit_and_preser
     let credit = backend_library::QueryLimit::new(50).expect("actual failing issued credit");
     let first_request = backend_library::PageRequest::new(catalog.revision_root(), credit);
     let first = catalog.outline_page(package_key(PROJECT), first_request).expect("small first page");
+    assert_eq!(first.outline_order.as_ref().expect("actual first-page order").symbols(),
+        &ids[..50], "the first page must contain the entire sparse band");
     let dense = catalog.outline_page(package_key(PROJECT), first_request.with_continuation(
         PageContinuation::from_cursor(first.snapshot.next.expect("next")))).expect("native dense later page");
     assert_eq!(dense.snapshot.root.row_count(), 50);
+    assert_eq!(dense.outline_order.as_ref().expect("actual later-page order").symbols(),
+        &ids[50..100], "the real continuation must select all 50 dense IDs");
     let dense_answer = backend_present::catalog_page_answer(&Request::OutlinePage { path: PROJECT.to_owned(), limit: 50 },
         ReplyDto::new(1, CommandReply::ProjectionPage(dense))).expect("real admitted projection");
     let encoded = encode_answer(&dense_answer, Detail::Full, None, DEFAULT_RESPONSE_BUDGET_BYTES).expect("complete native DTO fits byte policy");
     let structured: Value = serde_json::from_slice(&encoded.bytes).expect("typed JSON");
+    let dense_coordinates = structured["roots"].as_array().expect("actual dense projection roots")
+        .iter().filter_map(|node| node["coordinate"].as_str())
+        .filter(|coordinate| coordinate.contains(dense_segment.as_str()))
+        .map(str::to_owned).collect::<BTreeSet<_>>();
+    assert_eq!(dense_coordinates.len(), 50,
+        "the real projected wire DTO must retain 50 distinct token-dense coordinates");
     let witness = attach_wire_budget(success(json!(60), complete_tool_result("", structured, false)), ResponseTransport::StdioLine);
+    eprintln!("late-outline actual dense_ids={} dense_coordinates={} wire_bytes={} wire_tokens={}",
+        50, dense_coordinates.len(), transport_serialized_bytes(&witness, ResponseTransport::StdioLine),
+        wire_tokens(&witness).expect("named actual dense wire tokenizer"));
     assert!(transport_serialized_bytes(&witness, ResponseTransport::StdioLine) < MCP_RESULT_BUDGET_BYTES,
         "the actual later-page boundary is token density, not byte overflow");
     assert!(wire_tokens(&witness).expect("named actual tokenizer") > MCP_CL100K_TOKEN_LIMIT);
