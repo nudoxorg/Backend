@@ -1268,33 +1268,13 @@ impl<P: Product> Server<P> {
                 ));
             }
             pinned = Some(basis);
-            let mut result = match self.rendered(
+            let mut result = self.rendered(
                 answer,
                 detail,
                 &context,
                 CursorTarget::CliOption,
                 invocation.with_arguments(&page_arguments),
-            ) {
-                Ok(result) => result,
-                Err(error)
-                    if continuation.is_none()
-                        && effective > 1
-                        && semantic_pages::oversized(&error) =>
-                {
-                    // Structured projection can exceed its own byte cap before
-                    // the complete envelope reaches the fitting step below.
-                    effective = effective.div_ceil(2);
-                    page_arguments.insert("limit".to_owned(), json!(effective));
-                    context = continuation_context(
-                        &self.project,
-                        "backend.outline",
-                        &page_arguments,
-                        detail,
-                    );
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
+            )?;
             // The opaque token appears once. Copy these exact arguments and
             // take cursor from structuredContent.nextCursor; no second token
             // copy is charged to the agent context.
