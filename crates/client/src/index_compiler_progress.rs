@@ -946,10 +946,14 @@ mod tests {
             "ui/main.ts",
             CompilerAttempt {
                 source: SourceAuthority {
-                    identity: [1; 32].try_into().expect("source identity"),
+                    identity: backend_version::ContentId::<
+                        backend_version::SourceFactDomain,
+                    >::from_canonical_bytes(b"source bytes"),
                     byte_len: 12,
                 },
-                recipe: [2; 32].try_into().expect("recipe identity"),
+                recipe: backend_version::ContentId::<
+                    backend_version::CompileRecipeDomain,
+                >::from_canonical_bytes(b"recipe bytes"),
             },
             &CompilerFragmentFailure::build(BuildError::InvalidOccurrenceSpan {
                 owner: EntityId::new(7),
