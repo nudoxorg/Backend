@@ -468,14 +468,14 @@ pub(super) fn stage(
 }
 
 impl StagedIntent {
-    pub fn validate_control_union(
+    pub(super) fn validate_control_union(
         &self,
         controls: &backend_store::ClosureManifest,
     ) -> Result<(), BuiltinModelError> {
         self.validate_membership_union(&self.membership, controls)
     }
 
-    pub fn validate_membership_union(
+    pub(super) fn validate_membership_union(
         &self,
         membership: &DurableClosureManifest,
         controls: &backend_store::ClosureManifest,
@@ -515,7 +515,7 @@ impl StagedIntent {
         }
         Ok(())
     }
-    pub fn decode(
+    pub(super) fn decode(
         bytes: &[u8],
         store: &FileStore,
         closure: backend_store::ClosureId,
@@ -576,10 +576,10 @@ impl StagedIntent {
         }
         Ok(staged)
     }
-    pub fn request(&self) -> [u8; 32] {
+    pub(super) fn request(&self) -> [u8; 32] {
         self.basis.source_capture
     }
-    pub fn encode(&self) -> Vec<u8> {
+    pub(super) fn encode(&self) -> Vec<u8> {
         let mut bytes = Vec::from(&POINTER_MAGIC[..]);
         bytes.extend_from_slice(self.manifest.as_bytes());
         bytes.extend_from_slice(&self.basis.owner_epoch.to_be_bytes());
@@ -594,7 +594,7 @@ impl StagedIntent {
         }
         bytes
     }
-    pub fn hydrate(
+    pub(super) fn hydrate(
         &self,
         expected: Option<&WorkspaceSnapshot>,
     ) -> Result<BuiltinIntent, BuiltinModelError> {
