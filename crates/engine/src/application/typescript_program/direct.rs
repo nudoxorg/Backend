@@ -501,6 +501,95 @@ mod tests {
     }
 
     #[test]
+    fn native_admission_keeps_conditional_dependencies_and_automatic_types_among_unrelated_packages() {
+        let fixture = Fixture::new();
+        fixture.write("tsconfig.json", r#"{"compilerOptions":{"noLib":true,"module":"ESNext","moduleResolution":"Bundler"},"include":["src/**/*"]}"#);
+        const SOURCE: &str =
+            "import { value } from 'selected/feature'; export const answer: Environment = value;";
+        fixture.write("src/main.ts", SOURCE);
+        fixture.write("node_modules/selected/package.json", r#"{"name":"selected","exports":{"./feature":{"types":"./types/feature.d.ts","default":"./wrong.js"}}}"#);
+        fixture.write(
+            "node_modules/selected/types/feature.d.ts",
+            "export declare const value: number;",
+        );
+        fixture.write(
+            "node_modules/selected/wrong.js",
+            "export const value = 'wrong';",
+        );
+        fixture.write(
+            "node_modules/@types/environment/package.json",
+            r#"{"name":"@types/environment","types":"index.d.ts"}"#,
+        );
+        fixture.write(
+            "node_modules/@types/environment/index.d.ts",
+            "declare type Environment = number;",
+        );
+        for index in 0..32 {
+            fixture.write(
+                &format!("node_modules/unrelated-{index}/package.json"),
+                r#"{"name":"unused"}"#,
+            );
+            fixture.write(
+                &format!("node_modules/unrelated-{index}/index.d.ts"),
+                "export type Unused = string;",
+            );
+        }
+        let admitted = fixture.admit();
+        let input = admitted.inputs();
+        assert!(matches!(
+            input.authority,
+            TypeScriptProjectInputAuthority::Native
+        ));
+        let mut resolver = input.resolver();
+        let native = build_native_inputs(
+            &input,
+            &mut resolver,
+            &[PackageSource::new("src/main.ts", SOURCE).unwrap()],
+            Instant::now() + Duration::from_secs(30),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(
+            native
+                .sources
+                .iter()
+                .any(|source| source.path == "node_modules/selected/types/feature.d.ts")
+        );
+        assert!(
+            native
+                .sources
+                .iter()
+                .any(|source| source.path == "node_modules/@types/environment/index.d.ts"),
+            "implicit global types remain compiler-selected roots"
+        );
+        assert!(
+            !native
+                .sources
+                .iter()
+                .any(|source| source.path.contains("unrelated-") || source.path.ends_with("wrong.js")),
+            "unrelated siblings and the non-selected export arm are not source members"
+        );
+        assert!(native.options.module_resolutions.iter().any(|request|
+                request.specifier == "selected/feature" && matches!(&request.target,
+                    TszProjectModuleResolutionTarget::File { path } if path == "node_modules/selected/types/feature.d.ts")));
+        native
+            .closure_witness
+            .validate_current(admitted.witness())
+            .unwrap();
+        fixture.write(
+            "node_modules/selected/types/feature.d.ts",
+            "export declare const value: string;",
+        );
+        assert!(
+            native
+                .closure_witness
+                .validate_current(admitted.witness())
+                .is_err(),
+            "changed selected dependency bytes cannot reuse a successful directory proof"
+        );
+    }
+
+    #[test]
     fn direct_tsz_has_no_host_compiler_and_keeps_config_module_and_mixed_source_authority() {
         let fixture = configured();
         let admitted = fixture.admit();

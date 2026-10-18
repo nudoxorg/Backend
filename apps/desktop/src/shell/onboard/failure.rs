@@ -85,7 +85,11 @@ fn card(
             .map(str::to_owned)
     });
     let headline = format!("{}: {}.", project.label, lifecycle.label());
-    let mut lines = vec![lifecycle.detail().to_owned()];
+    let mut lines = vec![
+        project
+            .compiler_progress_words()
+            .unwrap_or_else(|| lifecycle.detail().to_owned()),
+    ];
     if let Some(words) = compiler_words {
         lines.push(words);
     }

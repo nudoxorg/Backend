@@ -301,8 +301,15 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
             row.request = None;
             row.error = error;
             row.recent = true;
-            if let Some(saved) = row.operation.as_mut() { saved.observation = Some(observation); }
-            if phase == ProjectPhase::Ready && workspace.active.as_ref() == Some(&project) { workspace.host = Some(project.clone()); }
+            if let Some(saved) = row.operation.as_mut() {
+                saved.profile_progress = operation.profile_progress.filter(|page|
+                    matches!(&observation, IndexOperationObservation::Known(status)
+                        if backend_client::IndexObservationFingerprint::active_with_profile_progress(status, Some(page)).is_ok()));
+                saved.observation = Some(observation);
+            }
+            if phase == ProjectPhase::Ready && workspace.active.as_ref() == Some(&project) {
+                workspace.host = Some(project.clone());
+            }
             workspace.projects = rows.into();
             let snapshot = current.with_workspace(workspace);
             // A new published attempt may have changed local manifest facts.
