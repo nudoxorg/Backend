@@ -3163,8 +3163,10 @@ fn index_first_use_returns_one_admitted_durable_poll_and_copying_it_only_observe
     // A fixture for the presentation seam after the caller journal has chosen
     // its key. Closed backend decoding/admission checks the key, package and
     // intent first; this does not claim to exercise a compiler or disk journal.
+    let fixture = LazyAuthorityFixture::new();
+    let project = fixture.project.to_str().expect("UTF-8 project");
     let key = IndexOperationKey::from_bytes([0x52; 32]).expect("key");
-    let package = PackageReference::parse(PROJECT).expect("package");
+    let package = PackageReference::parse(project).expect("package");
     let ticket = IndexJobTicket::new(std::num::NonZeroU64::MIN, [7; 16], package.clone());
     for state in [
         IndexOperationState::Accepted,
@@ -3206,7 +3208,7 @@ fn index_first_use_returns_one_admitted_durable_poll_and_copying_it_only_observe
                 &mut server,
                 "tools/call",
                 &json!({
-                    "name":"backend.index", "arguments":{"path":PROJECT, "detail":detail}
+                    "name":"backend.index", "arguments":{"path":project, "detail":detail}
                 }),
             );
             assert_eq!(wire["id"], 9);
@@ -3930,7 +3932,8 @@ fn index_requires_its_advertised_path_before_owner_admission() {
         assert_eq!(server.product.adapter_boundary, None, "{params}");
     }
 
-    let explicit = "/abs/explicit-index-project";
+    let fixture = LazyAuthorityFixture::new();
+    let explicit = fixture.project.to_str().expect("UTF-8 project");
     let accepted = call(&mut server, "backend.index", &json!({ "path": explicit }));
     assert_eq!(accepted["isError"], false);
     assert_eq!(server.product.index_paths, [explicit]);
@@ -3938,6 +3941,8 @@ fn index_requires_its_advertised_path_before_owner_admission() {
 
 #[test]
 fn index_tool_advertises_and_validates_execution_intent() {
+    let fixture = LazyAuthorityFixture::new();
+    let project = fixture.project.to_str().expect("UTF-8 project");
     let mut server = ready(Fake::default());
     let listed = request(&mut server, "tools/list", &json!({}));
     let tool = tool_named(&listed["result"]["tools"], "backend.index");
@@ -3954,14 +3959,14 @@ fn index_tool_advertises_and_validates_execution_intent() {
     let accepted = call(
         &mut server,
         "backend.index",
-        &json!({ "path": PROJECT, "execution_intent": "background" }),
+        &json!({ "path": project, "execution_intent": "background" }),
     );
     assert_eq!(accepted["isError"], false);
 
     let malformed = call(
         &mut server,
         "backend.index",
-        &json!({ "path": PROJECT, "execution_intent": "remote" }),
+        &json!({ "path": project, "execution_intent": "remote" }),
     );
     assert_eq!(malformed["isError"], true);
     assert!(
@@ -3974,7 +3979,7 @@ fn index_tool_advertises_and_validates_execution_intent() {
     let wrong_type = call(
         &mut server,
         "backend.index",
-        &json!({ "path": PROJECT, "execution_intent": ["background"] }),
+        &json!({ "path": project, "execution_intent": ["background"] }),
     );
     assert_eq!(wrong_type["isError"], true);
     assert!(
@@ -6284,9 +6289,11 @@ fn workspace_resource_projection_counts_launch_context_before_admission() {
 
 #[test]
 fn an_explicit_project_is_active_even_when_the_launch_directory_differs() {
+    let fixture = LazyAuthorityFixture::new();
+    let project = fixture.project.to_str().expect("UTF-8 project");
     let mut server = Server::with_invocation_context(
         Fake::default(),
-        PROJECT.to_owned(),
+        project.to_owned(),
         Some("/another/checkout".to_owned()),
         [9; 32],
     );
@@ -6297,7 +6304,7 @@ fn an_explicit_project_is_active_even_when_the_launch_directory_differs() {
         .as_str()
         .unwrap_or_default();
     assert!(
-        instructions.contains("selected project: /abs/polyglot"),
+        instructions.contains(&format!("selected project: {project}")),
         "{instructions}"
     );
     assert!(
@@ -6320,12 +6327,15 @@ fn an_explicit_project_is_active_even_when_the_launch_directory_differs() {
     let text = status["result"]["contents"][0]["text"]
         .as_str()
         .unwrap_or_default();
-    assert!(text.contains("selected project: /abs/polyglot"), "{text}");
+    assert!(
+        text.contains(&format!("selected project: {project}")),
+        "{text}"
+    );
     assert!(text.contains("selected project is active"), "{text}");
     assert!(!text.contains("configuration mismatch"), "{text}");
-    let indexed = call(&mut server, "backend.index", &json!({"path": PROJECT}));
+    let indexed = call(&mut server, "backend.index", &json!({"path": project}));
     assert_eq!(indexed["isError"], false, "{indexed}");
-    assert_eq!(server.product.index_paths, [PROJECT]);
+    assert_eq!(server.product.index_paths, [project]);
 }
 
 #[test]
