@@ -116,6 +116,22 @@ impl Engine for SessionEngine<'_> {
         }
     }
 
+    fn probe_page_window(
+        &mut self,
+        probe: Probe<'_>,
+        continuation: Option<PageContinuation>,
+        window: backend_library::QueryWindow,
+    ) -> Result<ReplyDto, ClientError> {
+        match probe {
+            Probe::OutlinePage { path, limit } if limit == window.issued().get() => {
+                self.session.outline_page_window(path, window, continuation)
+            }
+            _ => Err(ClientError::Protocol(
+                "CLI outline delivery changed query family or credit".to_owned(),
+            )),
+        }
+    }
+
     fn prepare_query_continuation(&mut self, token: &str) -> Result<PageContinuation, ClientError> {
         self.session.decode_page_continuation(token)
     }
@@ -274,13 +290,80 @@ pub(crate) fn execute_with_output_admission(
     recovery: Option<&mut crate::owner_recovery::OwnerRecovery>,
     detail: backend_present::Detail,
     cli_context: Option<&backend_present::StartupRecoveryContext>,
-    mut admit: impl FnMut(&Answer) -> Result<(), Fault>,
+    mut admit: impl FnMut(&Answer, Option<&str>) -> Result<(), Fault>,
 ) -> Result<Answer, Fault> {
     let mut engine = SessionEngine {
         session,
         paths,
         recovery,
     };
+    let outline = match request {
+        Request::Outline(path) => Some((path.as_str(), backend_library::QueryLimit::MAX, None)),
+        Request::OutlinePage { path, limit } => Some((path.as_str(), *limit, None)),
+        Request::ResumeQuery { query, cursor } => match query.as_ref() {
+            Request::OutlinePage { path, limit } => {
+                Some((path.as_str(), *limit, Some(cursor.as_str())))
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some((path, issued, cursor)) = outline {
+        let original = engine.session.request_context().cloned();
+        let lifetime = original.clone().unwrap_or_default();
+        lifetime
+            .read_deadline(backend_client::CLIENT_REQUEST_TIMEOUT)
+            .map_err(|error| {
+                Fault::from_client_error(&error, backend_present::Operand::Path(path.to_owned()))
+            })?;
+        engine
+            .session
+            .set_request_context(Some(lifetime.clone()))
+            .map_err(|error| {
+                Fault::from_client_error(&error, backend_present::Operand::Path(path.to_owned()))
+            })?;
+        let result = outline_with_output_admission(
+            &mut engine,
+            path,
+            issued,
+            cursor,
+            || {
+                lifetime.check().map_err(|error| {
+                    Fault::from_client_error(
+                        &error,
+                        backend_present::Operand::Path(path.to_owned()),
+                    )
+                })
+            },
+            |engine, answer| {
+                let exported = answer
+                    .continuation()
+                    .map(|continuation| {
+                        if !engine.session.has_portable_query_continuation(continuation) {
+                            return Err(ClientError::Protocol(
+                                "outline successor lacks its portable owner proof".to_owned(),
+                            ));
+                        }
+                        engine.session.encode_query_continuation(continuation)
+                    })
+                    .transpose()
+                    .map_err(|error| {
+                        Fault::from_client_error(
+                            &error,
+                            backend_present::Operand::Argument("cursor".to_owned()),
+                        )
+                    })?;
+                admit(answer, exported.as_deref())
+            },
+        );
+        let restored = engine
+            .session
+            .set_request_context(original)
+            .map_err(|error| {
+                Fault::from_client_error(&error, backend_present::Operand::Path(path.to_owned()))
+            });
+        return result.and_then(|answer| restored.map(|()| answer));
+    }
     let Request::Surface(command) = request else {
         return answer_with_compiler_progress(&mut engine, request);
     };
@@ -309,7 +392,7 @@ pub(crate) fn execute_with_output_admission(
                     Fault::from_client_error(&error, backend_present::Operand::Whole)
                 })
             },
-            &mut admit,
+            |answer| admit(answer, None),
         );
         let restored = engine
             .session
@@ -336,7 +419,7 @@ pub(crate) fn execute_with_output_admission(
                     Fault::from_client_error(&error, backend_present::Operand::Whole)
                 })
             },
-            &mut admit,
+            |answer| admit(answer, None),
         );
         let restored = engine
             .session
@@ -379,7 +462,7 @@ pub(crate) fn execute_with_output_admission(
                 backend_present::Operand::Whole,
             ));
         }
-        match admit(&answer) {
+        match admit(&answer, None) {
             Ok(()) => return Ok(answer),
             Err(fault) if selection.shrink_after(&fault) => continue,
             Err(fault) => {
@@ -408,6 +491,118 @@ pub(crate) fn execute_with_output_admission(
         .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole));
     result.and_then(|answer| restored.map(|()| answer))
 }
+
+/// Selects complete native outline pages under the original issued query credit.
+/// An oversized candidate never advances the authenticated input cursor. Each
+/// retry reimports that exact input and changes only its delivery span.
+fn outline_with_output_admission<E: Engine>(
+    engine: &mut E,
+    path: &str,
+    issued: u16,
+    cursor: Option<&str>,
+    mut check: impl FnMut() -> Result<(), Fault>,
+    mut admit: impl FnMut(&mut E, &Answer) -> Result<(), Fault>,
+) -> Result<Answer, Fault> {
+    let limit = backend_library::QueryLimit::new(issued)
+        .ok_or_else(|| Fault::usage("limit", "invalid outline query credit"))?;
+    let moved = || {
+        Fault::new(
+            backend_present::FaultSlug::Freshness,
+            backend_present::Operand::Path(path.to_owned()),
+            backend_present::Cause::new(
+                backend_present::CauseSlug::Moved,
+                "outline source changed during bounded delivery; restart explicitly",
+            ),
+            backend_present::Affordance::None,
+        )
+    };
+    let mut delivery = issued;
+    let mut pinned_revision = None;
+    let mut pinned_basis = None;
+    let mut pinned_input = None;
+    let request = Request::OutlinePage {
+        path: path.to_owned(),
+        limit: issued,
+    };
+    let probe = Probe::OutlinePage {
+        path,
+        limit: issued,
+    };
+    loop {
+        check()?;
+        let continuation = cursor
+            .map(|token| engine.prepare_query_continuation(token))
+            .transpose()
+            .map_err(|error| {
+                Fault::from_client_error(
+                    &error,
+                    backend_present::Operand::Argument("cursor".to_owned()),
+                )
+            })?;
+        if pinned_input.is_some_and(|previous| previous != continuation) {
+            return Err(Fault::usage(
+                "cursor",
+                "outline retry changed its authenticated input frontier",
+            ));
+        }
+        pinned_input = Some(continuation);
+        let span = backend_library::QueryLimit::new(delivery)
+            .ok_or_else(|| Fault::usage("limit", "invalid outline delivery span"))?;
+        let window = backend_library::QueryWindow::new(limit, span)
+            .ok_or_else(|| Fault::usage("limit", "outline delivery exceeds original credit"))?;
+        let reply = engine.probe_page_window(probe, continuation, window);
+        check()?;
+        let reply = match reply {
+            Err(ClientError::ResponseTooLarge { basis: Some(basis) }) => {
+                if pinned_revision.is_some_and(|previous| previous != basis) {
+                    return Err(moved());
+                }
+                pinned_revision = Some(basis);
+                if delivery > 1 {
+                    delivery = delivery.div_ceil(2);
+                    continue;
+                }
+                return Err(backend_present::probe_fault(
+                    &ClientError::ResponseTooLarge { basis: Some(basis) },
+                    probe,
+                ));
+            }
+            Err(error) => return Err(backend_present::probe_fault(&error, probe)),
+            Ok(reply) => reply,
+        };
+        let answer = backend_present::catalog_page_answer(&request, reply)?;
+        let Answer::Outline(tree) = &answer else {
+            return Err(Fault::usage("outline", "native outline page changed shape"));
+        };
+        let basis = tree
+            .page_basis()
+            .ok_or_else(|| Fault::usage("outline", "native outline omitted its source basis"))?;
+        let revision = basis.0.root.into();
+        if pinned_revision.is_some_and(|previous| previous != revision)
+            || pinned_basis.is_some_and(|previous| previous != basis)
+        {
+            return Err(moved());
+        }
+        pinned_revision = Some(revision);
+        pinned_basis = Some(basis);
+        let result = admit(engine, &answer);
+        check()?;
+        match result {
+            Ok(()) => return Ok(answer),
+            Err(fault)
+                if delivery > 1
+                    && fault.cause().slug() == backend_present::CauseSlug::Oversized =>
+            {
+                delivery = delivery.div_ceil(2);
+            }
+            Err(fault) => return Err(fault),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/outline_admission.rs"]
+mod outline_admission_tests;
 
 /// The first native descriptor page may shrink under actual output admission;
 /// a continuation's authenticated credit is never changed. Each attempt keeps
@@ -690,7 +885,7 @@ mod graph_admission_tests {
                 None,
                 backend_present::Detail::Summary,
                 context.as_ref(),
-                |answer| crate::render::admit_graph_answer(answer, &options),
+                |answer, cursor| crate::render::admit_answer_with_cursor(answer, &options, cursor),
             )
             .expect_err("real complete human graph exceeds its preview budget");
             assert_eq!(fault.cause().slug(), backend_present::CauseSlug::Oversized);

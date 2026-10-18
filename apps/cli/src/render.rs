@@ -81,13 +81,23 @@ pub(crate) fn try_answer_with_cursor(
 /// Admits complete selected native pages under the actual CLI format,
 /// without preview truncation hiding a row, edge or continuation. Other commands
 /// retain their existing response policy.
+#[cfg(test)]
 pub(crate) fn admit_graph_answer(answer: &Answer, options: &Options) -> Result<(), Fault> {
+    admit_answer_with_cursor(answer, options, None)
+}
+
+/// Measures the exact emitted CLI continuation, not a token-free estimate.
+pub(crate) fn admit_answer_with_cursor(
+    answer: &Answer,
+    options: &Options,
+    cursor: Option<&str>,
+) -> Result<(), Fault> {
     let mut text = match options.format() {
         Format::Json => {
             let payload = encode_answer(
                 answer,
                 options.detail(),
-                None,
+                cursor,
                 DEFAULT_RESPONSE_BUDGET_BYTES,
             )
             .map_err(oversized_fault)?;
@@ -98,13 +108,13 @@ pub(crate) fn admit_graph_answer(answer: &Answer, options: &Options) -> Result<(
             answer,
             options.theme(),
             options.detail(),
-            None,
+            cursor,
             ContinuationTarget::CliOption,
         ),
         Format::Markdown => markdown::answer_with_detail(
             answer,
             options.detail(),
-            None,
+            cursor,
             ContinuationTarget::CliOption,
         ),
     };
@@ -129,7 +139,7 @@ pub(crate) fn admit_graph_answer(answer: &Answer, options: &Options) -> Result<(
             backend_present::Cause::new(
                 backend_present::CauseSlug::Oversized,
                 format!(
-                    "complete graph output has {tokens} cl100k_base/ordinary-v1 tokens, above the {} token budget",
+                    "complete page output has {tokens} cl100k_base/ordinary-v1 tokens, above the {} token budget",
                     backend_present::DEFAULT_RESPONSE_TOKEN_BUDGET
                 ),
             ),
