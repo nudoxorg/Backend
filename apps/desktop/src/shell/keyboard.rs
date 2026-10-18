@@ -39,7 +39,7 @@ impl LocalReadingScope {
     }
 
     pub(crate) fn native_editor_frame(&self, snapshot: &crate::model::AppSnapshot,
-        handle: &FocusHandle, window: &gpui::Window, cx: &gpui::App) -> Option<LocalNativeEditorFrame>
+        handle: &FocusHandle, window: &gpui::Window, _cx: &gpui::App) -> Option<LocalNativeEditorFrame>
     {
         (self.admits_input(snapshot) && window.is_window_active()
             && window.is_focus_handle_mounted(handle) && handle.is_focused(window))
