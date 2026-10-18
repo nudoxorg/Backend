@@ -3,7 +3,7 @@ use crate::drive::Engine;
 use crate::fault::{Fault, Operand};
 use crate::identity::Coordinate;
 use backend_library::{
-    PackageCompilerDiagnostic, PackageCompilerOutcomeRead as Read,
+    HealthReport, PackageCompilerDiagnostic, PackageCompilerOutcomeRead as Read,
     PackageCompilerOutcomes as Outcomes, PackageReference, RowId, RowState, SurfaceCommand,
     SurfaceReply, ViewSnapshot,
 };
@@ -17,6 +17,7 @@ const MAX_CAUSE_BYTES: usize = 4096;
 pub(crate) fn failed_package_causes(
     engine: &mut dyn Engine,
     snapshot: &ViewSnapshot,
+    health: &HealthReport,
 ) -> BTreeMap<backend_library::PackageKey, Fault> {
     let failed: Vec<_> = snapshot
         .root
@@ -28,21 +29,34 @@ pub(crate) fn failed_package_causes(
         })
         .take(MAX_PROJECTS)
         .collect();
-    if failed.is_empty() || engine.revision().ok() != Some(snapshot.root.root()) {
+    if failed.is_empty()
+        || !snapshot_matches_health(snapshot, health)
+        || engine.revision().ok() != Some(health.revision().root())
+    {
         return BTreeMap::new();
     }
     let mut found = BTreeMap::new();
     for (key, label) in failed {
-        if let Some(fault) = package_cause(engine, snapshot, key, label) {
+        if let Some(fault) = package_cause(engine, health, key, label) {
             found.insert(key, fault);
         }
     }
     // A source-equal but capture-changed response must not explain another
     // selected view. Reject the whole optional addition if the view moved.
-    if engine.revision().ok() != Some(snapshot.root.root()) {
+    if engine.revision().ok() != Some(health.revision().root()) {
         return BTreeMap::new();
     }
     found
+}
+
+/// Package rows are a query projection: its result root differs from the
+/// owner's view root, while its basis pins that exact view and source object.
+pub(crate) fn snapshot_matches_health(snapshot: &ViewSnapshot, health: &HealthReport) -> bool {
+    snapshot.root.basis()
+        == backend_library::Basis {
+            root: health.revision().root(),
+            ..health.basis()
+        }
 }
 
 fn outcomes(reply: SurfaceReply) -> Option<Outcomes> {
@@ -57,7 +71,7 @@ fn outcomes(reply: SurfaceReply) -> Option<Outcomes> {
 
 fn package_cause(
     engine: &mut dyn Engine,
-    snapshot: &ViewSnapshot,
+    health: &HealthReport,
     key: backend_library::PackageKey,
     label: &str,
 ) -> Option<Fault> {
@@ -87,7 +101,7 @@ fn package_cause(
         return None;
     };
     if basis.package_key != key.to_bytes()
-        || basis.source_relation_root != *snapshot.root.basis().root.as_bytes()
+        || basis.source_relation_root != *health.basis().root.as_bytes()
     {
         return None;
     }
@@ -273,7 +287,7 @@ mod tests {
                 source_relation_root: if matches!(self.mode, Mode::WrongSource) {
                     [0x99; 32]
                 } else {
-                    *self.snapshot.root.basis().root.as_bytes()
+                    *self.library.view().basis().root.as_bytes()
                 },
                 source_version: [4; 32],
                 capture_relation_root: [5; 32],
@@ -338,7 +352,7 @@ mod tests {
                 if matches!(self.mode, Mode::ChangedView) && self.surfaces > 0 {
                     view_state_root(&[("changed".to_owned(), "view".to_owned())])
                 } else {
-                    self.snapshot.root.root()
+                    self.library.revision_root()
                 },
             )
         }
@@ -380,6 +394,12 @@ mod tests {
     #[test]
     fn failed_project_uses_current_native_cause_in_cli_mcp_and_summary_status() {
         let mut engine = Fake::new(Mode::Known, RowState::Failed, 1, refused());
+        assert_ne!(engine.snapshot.root.root(), engine.library.revision_root());
+        assert_ne!(
+            engine.snapshot.root.basis().root,
+            engine.health.basis().root
+        );
+        assert!(snapshot_matches_health(&engine.snapshot, &engine.health));
         let answer = crate::answer(&mut engine, &crate::Request::Shelf).expect("shelf");
         let Answer::Shelf(shelf) = &answer else {
             panic!("shelf")
@@ -431,7 +451,8 @@ mod tests {
         ] {
             let mut engine = Fake::new(mode, RowState::Failed, 1, refused());
             let snapshot = engine.snapshot.clone();
-            assert!(failed_package_causes(&mut engine, &snapshot).is_empty());
+            let health = engine.health.clone();
+            assert!(failed_package_causes(&mut engine, &snapshot, &health).is_empty());
             assert!(engine.surfaces <= 2);
         }
     }
@@ -498,10 +519,44 @@ mod tests {
     }
 
     #[test]
+    fn cause_projection_requires_exact_owner_revision_and_source_basis() {
+        let mut engine = Fake::new(Mode::Known, RowState::Failed, 1, refused());
+        let snapshot = engine.snapshot.clone();
+        let mut foreign_basis = engine.health.basis();
+        foreign_basis.object = object_version(b"other source");
+        let foreign_health = HealthReport::from_admitted_parts(
+            engine.health.revision(),
+            foreign_basis,
+            engine.health.coverage().to_vec().into_boxed_slice(),
+            engine.health.row_count(),
+            engine.health.capabilities().clone(),
+        );
+        assert!(!snapshot_matches_health(&snapshot, &foreign_health));
+        assert!(failed_package_causes(&mut engine, &snapshot, &foreign_health).is_empty());
+        assert_eq!(engine.surfaces, 0);
+
+        let foreign_revision = HealthReport::from_admitted_parts(
+            backend_library::RevisionReceipt::new(
+                view_state_root(&[("other owner".to_owned(), "view".to_owned())]),
+                engine.health.revision().cursor(),
+                engine.health.basis().object,
+            ),
+            engine.health.basis(),
+            engine.health.coverage().to_vec().into_boxed_slice(),
+            engine.health.row_count(),
+            engine.health.capabilities().clone(),
+        );
+        assert!(!snapshot_matches_health(&snapshot, &foreign_revision));
+        assert!(failed_package_causes(&mut engine, &snapshot, &foreign_revision).is_empty());
+        assert_eq!(engine.surfaces, 0);
+    }
+
+    #[test]
     fn hundreds_of_failed_projects_read_at_most_two_diagnostics() {
         let mut engine = Fake::new(Mode::Known, RowState::Failed, 400, refused());
         let snapshot = engine.snapshot.clone();
-        let causes = failed_package_causes(&mut engine, &snapshot);
+        let health = engine.health.clone();
+        let causes = failed_package_causes(&mut engine, &snapshot, &health);
         assert_eq!(causes.len(), MAX_PROJECTS);
         assert_eq!(engine.surfaces, MAX_PROJECTS * 2);
         assert!(causes.values().all(|fault| {

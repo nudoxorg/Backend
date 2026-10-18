@@ -542,7 +542,10 @@ pub fn answer_paged(
             {
                 return Err(shape("outline-page terminal"));
             }
-            let order = page.outline_order.as_ref().ok_or_else(|| shape("outline-page order"))?;
+            let order = page
+                .outline_order
+                .as_ref()
+                .ok_or_else(|| shape("outline-page order"))?;
             crate::outline::page_tree(path, &page.snapshot, *limit, order)
                 .map(Box::new)
                 .map(Answer::Outline)
@@ -570,11 +573,14 @@ fn shelf(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     // health report can. Read it so `packages` and `status` print the same
     // count; if it is unavailable or describes another revision, the shelf
     // reports the count as unread rather than inventing one.
-    let shelf = match engine.health() {
-        Ok(health) => shelf_from_snapshot_with_health(&snapshot, tag, &health),
-        Err(_) => shelf_from_snapshot(&snapshot, tag),
+    let health = engine.health().ok();
+    let shelf = match health.as_ref() {
+        Some(health) => shelf_from_snapshot_with_health(&snapshot, tag, health),
+        None => shelf_from_snapshot(&snapshot, tag),
     };
-    let causes = crate::compiler_causes::failed_package_causes(engine, &snapshot);
+    let causes = health.as_ref().map_or_else(Default::default, |health| {
+        crate::compiler_causes::failed_package_causes(engine, &snapshot, health)
+    });
     Ok(Answer::Shelf(Box::new(shelf.with_compiler_causes(&causes))))
 }
 
@@ -605,10 +611,9 @@ fn status(engine: &mut dyn Engine) -> Result<Answer, Fault> {
         )
     }) && let Ok(reply) = read(engine, Probe::Packages)
         && let CommandReply::Packages(snapshot) = reply.reply
-        && snapshot.root.root() == report.revision().root()
-        && snapshot.root.basis() == report.basis()
+        && crate::compiler_causes::snapshot_matches_health(&snapshot, &report)
     {
-        let cause = crate::compiler_causes::failed_package_causes(engine, &snapshot)
+        let cause = crate::compiler_causes::failed_package_causes(engine, &snapshot, &report)
             .into_values()
             .next();
         status = status.with_compiler_refusal(cause);
@@ -934,7 +939,9 @@ fn outline(engine: &mut dyn Engine, path: &str) -> Result<Answer, Fault> {
         })
         .map_err(|error| Fault::from_client_error(&error, Operand::Path(path.to_owned())))?;
     let mut rendered = outline_tree(path, &tree, snapshot.root.rows());
-    if snapshot.next.is_some() { rendered = rendered.with_page(&snapshot, PROBE_ROWS); }
+    if snapshot.next.is_some() {
+        rendered = rendered.with_page(&snapshot, PROBE_ROWS);
+    }
     Ok(Answer::Outline(Box::new(rendered)))
 }
 
