@@ -4438,17 +4438,28 @@ enum NativeCallableScopeEvent {
     },
 }
 
-/// Resolves a property name through the receiver's exact checker type and
-/// that type symbol's member table. No project-wide name scan participates in
-/// this operation, so same-spelled members on unrelated receivers stay apart.
+/// Resolves a property name through an exact namespace import or the receiver's
+/// checker type and member table. Namespace exports retain their terminal file
+/// owner because raw symbol IDs are binder-relative. No project-wide name scan
+/// participates, so same-spelled members on unrelated receivers stay apart.
 fn native_tsz_member_symbol(
     checker: &mut TszCheckerState<'_>,
     binder: &backend_frontend_typescript::TszBinderState,
     arena: &TszNodeArena,
     receiver: TszNodeIndex,
     member_name: TszNodeIndex,
-) -> Option<TszSymbolId> {
+) -> Option<(TszSymbolId, Option<usize>)> {
     let member_name = arena.get_identifier_at(member_name)?.escaped_text.as_str();
+    if let Some(receiver_symbol) = binder.resolve_identifier(arena, receiver)
+        && let Some(receiver_symbol) = binder.symbols.get(receiver_symbol)
+        && receiver_symbol.import_name() == Some("*")
+    {
+        // A namespace import's raw type symbol cannot be read from the
+        // caller's binder. Even a refused namespace resolution must not fall
+        // through to a same-numbered local symbol.
+        let target = checker.resolve_project_namespace_member_with_owner(receiver, member_name)?;
+        return Some((target.symbol_id, Some(target.owner_file_idx)));
+    }
     let receiver_type = checker.get_type_of_node(receiver);
     let owner = checker.ctx.resolve_type_to_symbol_id(receiver_type);
     let owner = owner?;
@@ -4464,7 +4475,7 @@ fn native_tsz_member_symbol(
                 .as_ref()
                 .and_then(|exports| exports.get(member_name))
         });
-    member
+    member.map(|symbol| (symbol, None))
 }
 
 /// An object method is a source-owned callable even though it has no
@@ -6851,7 +6862,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                     continue;
                 }
                 called_member_accesses.insert(call.expression.0);
-                let Some(target) = native_tsz_member_symbol(
+                let Some((target, target_owner)) = native_tsz_member_symbol(
                     checker,
                     binder,
                     arena,
@@ -6863,7 +6874,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 (
                     access.name_or_argument,
                     target,
-                    None,
+                    target_owner,
                     ReferenceKind::MethodCall,
                 )
             } else if arena.get_identifier_at(call.expression).is_some() {
@@ -6930,7 +6941,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             if arena.get_identifier_at(access.name_or_argument).is_none() {
                 continue;
             }
-            let Some(target_symbol) = native_tsz_member_symbol(
+            let Some((target_symbol, target_owner)) = native_tsz_member_symbol(
                 checker,
                 binder,
                 arena,
@@ -6945,8 +6956,17 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             let Some(owner) = self.owning_fact(site_start) else {
                 continue;
             };
-            let Some(target) =
-                native_tsz_declaration_coordinate(binder, target_symbol, program_files, false)
+            let target_binder = match target_owner {
+                Some(owner) => checker.ctx.get_binder_for_file(owner),
+                None => Some(binder),
+            };
+            let Some(target_binder) = target_binder else { continue; };
+            let target = if target_owner.is_some() {
+                native_tsz_import_declaration_coordinate(target_binder, target_symbol, program_files)
+            } else {
+                native_tsz_declaration_coordinate(target_binder, target_symbol, program_files, false)
+            };
+            let Some(target) = target
             else {
                 continue;
             };
@@ -13171,6 +13191,95 @@ describe('suite', () => {\n\
                 "only a singular exact declaration supplies the import target: {name}");
             assert_eq!(facts.occurrences[edge].confidence,
                 if exact { OccurrenceConfidence::Oracle } else { OccurrenceConfidence::Import });
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_namespace_members_keep_terminal_export_owner_and_preserve_opposers()
+    -> Result<(), LaneError> {
+        let scheduler = "export function generateSchedule(value: number) { return value; }\nexport const version = 1;\nexport default class NavBar {}\n";
+        let barrel = "export { generateSchedule as schedule } from './scheduler';\n";
+        let caller = concat!(
+            "import * as scheduler from '@/scheduler';\n",
+            "import * as api from './barrel';\n",
+            "import * as vendor from 'vendor';\n",
+            "export function POST() { const run = scheduler.generateSchedule; const component = scheduler.default; return scheduler.generateSchedule(scheduler.version) + api.schedule(1); }\n",
+            "export function shadow(scheduler: { generateSchedule(value: number): number }) { return scheduler.generateSchedule(2); }\n",
+            "export function foreign() { return vendor.generateSchedule(3); }\n",
+        );
+        let resolutions = [
+            module_resolution("caller.ts", "@/scheduler", TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File { path: "scheduler.ts".to_owned() }),
+            module_resolution("caller.ts", "./barrel", TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File { path: "barrel.ts".to_owned() }),
+            module_resolution("barrel.ts", "./scheduler", TszProjectModuleRequestKind::EsmReExport,
+                TszProjectModuleResolutionTarget::File { path: "scheduler.ts".to_owned() }),
+            module_resolution("caller.ts", "vendor", TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::Unresolved),
+        ];
+        let authority = native_tsz_project_with_resolutions(
+            &[("scheduler.ts", scheduler), ("barrel.ts", barrel), ("caller.ts", caller)],
+            &resolutions,
+        )?;
+        let project = authority.project().ok_or(LaneError::Missing("namespace import project"))?;
+        assert_exact_module_resolution_metadata(project, &resolutions);
+        let facts = collect_native_tsz_file(project, "caller.ts", caller)?;
+        let target_facts = collect_native_tsz_file(project, "scheduler.ts", scheduler)?;
+        for (prefix, name, kind) in [
+            ("const run = scheduler.", "generateSchedule", EntityKind::Function),
+            ("const component = scheduler.", "default", EntityKind::Record),
+            ("return scheduler.", "generateSchedule", EntityKind::Function),
+            ("generateSchedule(scheduler.", "version", EntityKind::Constant),
+            (" + api.", "schedule", EntityKind::Function),
+        ] {
+            let start = (caller.find(prefix).expect("exact namespace member site") + prefix.len()) as u32;
+            let sites = (0..facts.occurrence_len).filter(|&index| {
+                let owner = facts.occurrence_owners[index] as usize;
+                facts.provenance.source_spans()[owner].is_some_and(|span|
+                    span.start + facts.occurrences[index].span.start == start
+                        && span.start + facts.occurrences[index].span.end == start + name.len() as u32)
+            }).collect::<Vec<_>>();
+            assert_eq!(sites.len(), 1, "one exact namespace member occurrence: {prefix}{name}");
+            let site = sites[0];
+            let slot = facts.occurrence_source_coordinate_slot[site]
+                .expect("namespace member has its terminal export's source coordinate");
+            let coordinate = TypeScriptSourceCoordinate::decode(
+                &facts.foreign_source_coordinate_text[slot as usize],
+            ).expect("typed terminal namespace member target");
+            let target_name = match name { "schedule" => "generateSchedule", "default" => "NavBar", _ => name };
+            let target = (0..target_facts.len()).find(|&index|
+                target_facts.names[index] == target_name.as_bytes() && target_facts.kinds[index] == kind)
+                .expect("actual published terminal export");
+            let extent = target_facts.provenance.source_spans()[target].expect("terminal declaration extent");
+            assert_eq!(coordinate.path, "scheduler.ts");
+            assert_eq!(coordinate.source, *ContentId::<SourceFactDomain>::from_canonical_bytes(scheduler.as_bytes()));
+            assert_eq!((coordinate.declaration_start, coordinate.declaration_end), (extent.start, extent.end));
+            assert_eq!(facts.occurrences[site].confidence, OccurrenceConfidence::Oracle);
+            assert!(matches!(facts.occurrences[site].target, OccurrenceTarget::Foreign(key) if key.kind == Some(kind)));
+        }
+        for prefix in ["return scheduler.generateSchedule(2)", "return vendor.generateSchedule(3)"] {
+            let start = (caller.find(prefix).expect("opposing member site") + "return ".len()
+                + prefix["return ".len()..].find('.').expect("receiver member") + 1) as u32;
+            assert!(!(0..facts.occurrence_len).any(|index| {
+                let owner = facts.occurrence_owners[index] as usize;
+                facts.provenance.source_spans()[owner].is_some_and(|span|
+                    span.start + facts.occurrences[index].span.start == start)
+                    && facts.occurrence_source_coordinate_slot[index].is_some()
+            }), "shadowing or unresolved namespace receiver never borrows a local module: {prefix}");
+        }
+        // A whole module has no authored declaration corresponding to the
+        // namespace alias. Keep that honest external edge independently of
+        // the exact declaration targets available for its named members.
+        for name in ["scheduler", "api", "vendor"] {
+            let binding = (0..facts.len()).find(|&index| facts.names[index] == name.as_bytes()
+                && facts.kinds[index] == EntityKind::Reexport).expect("written namespace import");
+            assert!((0..facts.occurrence_len).any(|index|
+                facts.occurrence_owners[index] == binding as u32
+                    && facts.occurrences[index].kind == ReferenceKind::Import
+                    && facts.occurrences[index].confidence == OccurrenceConfidence::Import
+                    && facts.occurrence_source_coordinate_slot[index].is_none()),
+                "namespace binding keeps its module operand: {name}");
         }
         Ok(())
     }
