@@ -37,7 +37,7 @@ fn schema_worked_query() -> Result<&'static str, String> {
         "/../../apps/mcp/src/jsonrpc/resources.rs"
     ));
     resource
-        .split_once("Who in this package references one named declaration:")
+        .split_once("Who references one named declaration in the selected revision:")
         .and_then(|(_, text)| text.split_once("```graphql\n"))
         .and_then(|(_, text)| text.split_once("```"))
         .map(|(query, _)| query.trim())

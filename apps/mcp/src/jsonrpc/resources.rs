@@ -145,7 +145,7 @@ Each declaration and what it is nested inside:
 }
 ```
 
-Who in this package references one named declaration:
+Who references one named declaration in the selected revision:
 
 ```graphql
 {
