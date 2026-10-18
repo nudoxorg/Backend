@@ -9,24 +9,26 @@
   "platforms": {
     "linux-x64": {
       "status": "diagnostic-preview",
-      "source": "df93af4890005c2bb748928c5a524d1f203fe04f",
-      "tag": "checkpoint-20261016-df93af4890-linux-x64",
+      "source": "9e854f75034495b5f6bbf69a37e3cabb771b6b27",
+      "tag": "checkpoint-20261018-9e854f7503-linux-x64",
       "known_failures": [
         "Requires Ubuntu 24.04 or newer with glibc 2.39 or newer; older glibc versions are unsupported.",
-        "Angular semantic coverage is reported as partial (41/50).",
-        "SearXNG TypeScript/JavaScript and Python indexing remain incomplete under current deadlines.",
-        "Required local embeddings currently fail activation after setup; vector inference is not proven.",
-        "GUI acceptance and upgrades from older releases have not been proven."
+        "Large Paperless indexing remains blocked by the 64 MiB selected-view persistence journal-record bound; the PR562 repair is not included. The same run recorded a native TSZ project-check timeout after600seconds at global-search.component.ts, not a Node failure.",
+        "Fresh AngularRealWorld publishes with 41/50 TypeScript coverage; complete 18-tool acceptance and outline uniqueness remain unverified/failing. HTML/CSS/browser runtime is outside this TypeScript tool scope.",
+        "Diagnostic preview; complete Rust native validation remains incomplete.",
+        "Installed Ubuntu validation covers a basic Python project; other language and tool coverage is not established by these installer checks.",
+        "The Node SDK is not bundled. Embeddings are unconfigured and vector inference is not proven.",
+        "This archive contains CLI, local daemon and MCP commands only. GUI and upgrades from older releases are not proven."
       ],
       "installer": {
-        "url": "https://github.com/nudoxorg/Backend/releases/download/nudox-preview-installer/install-linux-x64-a599eda8015a165d.py",
-        "sha256": "a599eda8015a165d751552a82a209ab117cfffe4e8593dace00ba7374452cbe1",
+        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261018-9e854f7503-linux-x64/install-linux-x64.py",
+        "sha256": "74e7bfc966d47c115633e328727ca1c816ee1cd776a895a7a75b06ed1a6578c1",
         "bytes": 62050
       },
       "archive": {
-        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261016-df93af4890-linux-x64/nudox-linux-x86_64-df93af4890.tar.gz",
-        "sha256": "3e0a50ac59712eb208bbcb300325866b04a2961cf195c9efa71449625a31cf45",
-        "bytes": 185968883
+        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261018-9e854f7503-linux-x64/nudox-linux-x86_64-9e854f7503.tar.gz",
+        "sha256": "1112ab968e18498425fc56c675ef78e3c5290920b26bbaa49c65af54cd87d0bb",
+        "bytes": 92935979
       }
     },
     "macos-arm64": {
