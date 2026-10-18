@@ -256,13 +256,13 @@ fn unsupported_vue_count_change_publishes_without_supported_source_change_and_un
         }
         supported_source_version = Some(fields.source_version);
         assert_eq!(
-            fields.source_selection.unwrap().unsupported_extensions[0].files,
+            fields.source_selection.expect("newly committed source selection is present").unsupported_extensions[0].files,
             expected
         );
         let health = crate::builtin::ingest_progress(&snapshot)?;
         assert_eq!(health.files_discovered(), 0);
         assert_eq!(
-            health.source_selection().unwrap().unsupported_extensions[0].files,
+            health.source_selection().expect("ingest progress exposes the committed source selection").unsupported_extensions[0].files,
             expected,
             "health reads the newly committed observation, including on the reuse/no-compile branch"
         );

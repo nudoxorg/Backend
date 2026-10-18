@@ -506,9 +506,9 @@ mod source_selection_tests {
     fn status_keeps_unsupported_vue_counts_in_text_markdown_and_every_cli_mcp_detail() {
         let library = backend_library::Library::new();
         let progress = backend_library::IngestProgress::new(5, 5, 0, 7, vec![], vec![])
-            .unwrap()
+            .expect("valid status progress fixture")
             .with_source_selection(backend_library::SourceSelectionObservation::project_vue(12))
-            .unwrap();
+            .expect("status fixture source selection is valid");
         let report =
             HealthReport::from_root(library.view(), library.cursor()).with_progress(progress);
         let status = Status::from_report(&report, None);
@@ -524,8 +524,10 @@ mod source_selection_tests {
             crate::Detail::Standard,
             crate::Detail::Full,
         ] {
-            let encoded = crate::budget::encode_answer(&answer, detail, None, 48 * 1024).unwrap();
-            let value: serde_json::Value = serde_json::from_slice(&encoded.bytes).unwrap();
+            let encoded = crate::budget::encode_answer(&answer, detail, None, 48 * 1024)
+                .expect("status detail fits its test budget");
+            let value: serde_json::Value = serde_json::from_slice(&encoded.bytes)
+                .expect("encoded status detail is valid JSON");
             assert_eq!(
                 value["source_selection"]["unsupported_extensions"][0]["files"],
                 12
@@ -536,7 +538,8 @@ mod source_selection_tests {
             &HealthReport::from_root(library.view(), library.cursor()),
             None,
         );
-        let value = serde_json::to_value(crate::dto::StatusDto::new(&legacy)).unwrap();
+        let value = serde_json::to_value(crate::dto::StatusDto::new(&legacy))
+            .expect("legacy status DTO serializes");
         assert!(
             value.get("source_selection").is_none(),
             "absent old observation is never rewritten as zero"
