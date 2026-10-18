@@ -6087,8 +6087,13 @@ fn outline_resource_templates_preserve_readable_and_absent_projects() {
     let legacy = published.product.probe(Probe::Outline(PROJECT)).expect("legacy outline");
     let CommandReply::Outline(tree) = legacy.reply else { panic!("legacy outline reply"); };
     assert_eq!(tree.basis(), catalog.revision_root());
-    assert_eq!(tree.source_basis(), Some(catalog.view().basis()),
-        "the complete producer basis must match the native name-page catalog");
+    let names = catalog.outline_page(package_key(PROJECT), backend_library::PageRequest::new(
+        catalog.revision_root(),
+        backend_library::QueryLimit::new(200).expect("bounded resource name page"),
+    )).expect("actual native name-page producer");
+    assert_eq!(names.snapshot.root.basis().root, catalog.revision_root());
+    assert_eq!(tree.source_basis(), Some(names.snapshot.root.basis()),
+        "the complete tree and name-page producer bases must match");
     published.product.page_catalog = Some(catalog);
     let readable = request(&mut published, "resources/read", &json!({"uri": uri}));
     assert!(
