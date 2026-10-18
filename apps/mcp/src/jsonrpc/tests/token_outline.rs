@@ -230,3 +230,177 @@ fn original_byte_legal_dense_payload_is_honestly_refused_without_losing_request_
             .contains(CL100K_POLICY)
     );
 }
+
+#[test]
+fn outline_selector_bytes_shrink_native_first_page_and_preserve_complete_ids() {
+    use super::super::tools::CALL_TOOL;
+    // Identical authored display coordinates deliberately cannot stand in for
+    // exact IDs. The old node shape fits 200 rows; retained selectors do not.
+    let source = Basis::new(view_state_root(&[]), object_version(b"selector-budget"));
+    let coordinate = format!("{PROJECT}::ui/prism.min.js:3::{}", "u".repeat(40));
+    let symbols = (0..320)
+        .map(|i| symbol_key(&format!("selected-outline-{i}")))
+        .collect::<Vec<_>>();
+    let mut rows = symbols
+        .iter()
+        .map(|id| {
+            Row::in_package(
+                RowId::Symbol(*id),
+                source,
+                package_key(PROJECT),
+                &coordinate,
+            )
+            .with_kind(DeclarationKind::Function)
+        })
+        .collect::<Vec<_>>();
+    rows.push(Row::new(
+        RowId::Package(package_key(PROJECT)),
+        source,
+        PROJECT,
+    ));
+    let root = ViewRoot::new_incomplete(
+        view_key(b"selector-budget"),
+        source,
+        Frontier::new(source.branch, source.log, source.schema, source.root, 0),
+        rows,
+        vec![Coverage::Unavailable {
+            lane: Lane::Exact,
+            reason: Reason::NoIndex,
+        }],
+    )
+    .expect("no compiler coverage minted");
+    let catalog = backend_library::Library::from_view(
+        root.clone(),
+        backend_library::Cursor::for_view_root(&root),
+    )
+    .expect("immutable catalog");
+    let expected = symbols
+        .iter()
+        .map(|id| backend_library::encode_id(id.as_bytes()))
+        .collect::<BTreeSet<_>>();
+    let mut producer = Fake {
+        page_catalog: Some(catalog.clone()),
+        ..Fake::default()
+    };
+    let answer = answer_paged(
+        &mut producer,
+        &Request::OutlinePage {
+            path: PROJECT.to_owned(),
+            limit: 200,
+        },
+        None,
+    )
+    .expect("real native first-page producer");
+    let complete = encode_answer(
+        &answer,
+        Detail::Full,
+        None,
+        backend_present::MAX_RESPONSE_BUDGET_BYTES,
+    )
+    .expect("complete boundary projection");
+    assert!(
+        complete.bytes.len() > DEFAULT_RESPONSE_BUDGET_BYTES,
+        "new structured DTO itself crosses the cap, before envelope admission"
+    );
+    let mut without_selectors: Value = serde_json::from_slice(&complete.bytes).expect("JSON");
+    let nodes = without_selectors["roots"]
+        .as_array_mut()
+        .expect("flat roots");
+    assert_eq!(nodes.len(), 200);
+    for node in nodes {
+        assert!(
+            node.as_object_mut()
+                .expect("node")
+                .remove("semantic_data")
+                .is_some()
+        );
+    }
+    assert!(
+        serde_json::to_vec(&without_selectors)
+            .expect("old shape")
+            .len()
+            < DEFAULT_RESPONSE_BUDGET_BYTES,
+        "only removing the new selector fields restores structured admission"
+    );
+    assert!(encode_answer(&answer, Detail::Full, None, DEFAULT_RESPONSE_BUDGET_BYTES).is_err());
+
+    for forwarded in [false, true] {
+        let mut server = ready(Fake {
+            page_catalog: Some(catalog.clone()),
+            ..Fake::default()
+        });
+        let invoke = |server: &mut Server<Fake>, arguments: Value| {
+            let params = if forwarded {
+                json!({"name":CALL_TOOL,"arguments":{"name":"backend.outline","arguments":arguments}})
+            } else {
+                json!({"name":"backend.outline","arguments":arguments})
+            };
+            request(server, "tools/call", &params)
+        };
+        let mut frame = invoke(
+            &mut server,
+            json!({"path":PROJECT,"limit":200,"detail":"full"}),
+        );
+        assert_eq!(frame["result"]["isError"], false, "{frame}");
+        assert!(
+            server.product.page_limits.len() >= 2,
+            "actual structured overflow must reach another native page request"
+        );
+        assert_eq!(server.product.page_limits[0], 200);
+        let page = &frame["result"]["structuredContent"];
+        let limit = page["page"]["limit"].as_u64().expect("effective limit");
+        assert!(limit < 200);
+        let basis = page["page"]["source_root"].clone();
+        let mut ids = BTreeSet::new();
+        let mut cursors = BTreeSet::new();
+        let mut pages = 0;
+        loop {
+            assert!(wire_fits(&frame, ResponseTransport::StdioLine));
+            assert!(wire_fits(&frame, ResponseTransport::HttpBody));
+            let page = &frame["result"]["structuredContent"];
+            assert_eq!(page["page"]["limit"], limit);
+            assert_eq!(page["page"]["source_root"], basis);
+            let nodes = page["roots"].as_array().expect("roots");
+            assert_eq!(page["declarations"], nodes.len());
+            for node in nodes {
+                assert_eq!(node["coordinate"], coordinate);
+                assert_eq!(node["semantic_data"]["kind"], "selected-symbol-id");
+                let bytes: [u8; 32] =
+                    serde_json::from_value(node["semantic_data"]["value"].clone())
+                        .expect("exact selected ID");
+                assert!(
+                    ids.insert(backend_library::encode_id(&bytes)),
+                    "no exact ID repeated"
+                );
+            }
+            pages += 1;
+            assert!(pages <= symbols.len(), "bounded progress");
+            let Some(cursor) = page["nextCursor"].as_str().map(str::to_owned) else {
+                assert_eq!(page["page"]["more"], false);
+                assert_eq!(page["extent"], "complete");
+                break;
+            };
+            assert_eq!(page["page"]["more"], true);
+            assert!(cursors.insert(cursor.clone()));
+            if pages == 1 {
+                let wrong = invoke(
+                    &mut server,
+                    json!({"path":PROJECT,"limit":limit+1,
+                    "detail":"full","cursor":cursor}),
+                );
+                assert!(
+                    wrong.get("error").is_some() || wrong["result"]["isError"] == true,
+                    "issued continuation cannot silently change its limit"
+                );
+            }
+            frame = invoke(
+                &mut server,
+                json!({"path":PROJECT,"limit":limit,
+                "detail":"full","cursor":cursor}),
+            );
+            assert_eq!(frame["result"]["isError"], false, "{frame}");
+        }
+        assert_eq!(ids, expected);
+        assert!(pages > 1);
+    }
+}
