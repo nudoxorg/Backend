@@ -15,7 +15,7 @@ use backend_library::{
     Fragment, Freshness, Frontier, IndexCancelReceipt, IndexCancelStatus, IndexJobObservation,
     IndexJobOutcome, IndexJobProgressEvent, IndexJobProgressKind, IndexJobStage, IndexJobTerminal,
     IndexJobTicket, IndexProgressPage, IndexSearchCursor, IndexSearchPage, IndexSearchResultCount,
-    IndexStartResult, Intent, Lane, Outline, OutlineExtent, OutlineNode, PackageReference,
+    IndexStartResult, Intent, Lane, PackageReference,
     ProjectionPage, Reason, Row, RowId, SourceAvailability, SourceExcerpt, SourceExcerptExtent,
     SourceLocation, SurfaceReply, ViewRoot, ViewSnapshot, object_version, package_key, symbol_key,
     view_key, view_state_root,
@@ -1129,33 +1129,13 @@ impl Engine for Fake {
                 None => CommandReply::Search(snapshot(vec![declaration_row()])),
             },
             Probe::Names { .. } => CommandReply::Names(snapshot(vec![declaration_row()])),
-            Probe::Outline(_) => {
-                if let Some(error) = self.outline_error.take() {
-                    return Err(error);
-                }
-                if self.empty_outline {
-                    return Err(ClientError::CommandFailed(
-                        backend_library::CommandFailure::NotFound,
-                    ));
-                }
-                CommandReply::Outline(
-                    Outline::new(
-                        package_key(PROJECT),
-                        view_state_root(&[]),
-                        OutlineNode {
-                            symbol: symbol_key(MODULE),
-                            children: vec![OutlineNode {
-                                symbol: symbol_key(DECLARATION),
-                                children: Box::new([]),
-                            }]
-                            .into_boxed_slice(),
-                        },
-                    )
-                    .with_extent(OutlineExtent::Complete)
-                    .with_source_basis(
-                        snapshot(vec![module_row(), declaration_row()]).root.basis(),
-                    ),
-                )
+            Probe::Outline(path) => {
+                // Legacy resource trees and their native name pages must attest
+                // the same immutable source, including its complete basis.
+                let catalog = self.fixture_catalog(path)?;
+                CommandReply::Outline(catalog.outline(backend_library::OutlineQuery::new(
+                    package_key(path), catalog.revision_root(),
+                )).map_err(|error| ClientError::Protocol(error.to_string()))?)
             }
             Probe::OutlinePage { path, limit } => {
                 CommandReply::ProjectionPage(self.fixture_outline_page(path, limit, None)?)
@@ -6102,8 +6082,14 @@ fn a_missing_resource_is_refused_rather_than_guessed() {
 fn outline_resource_templates_preserve_readable_and_absent_projects() {
     let uri = "backend://outline/%2Fabs%2Fpolyglot";
     let mut published = ready(Fake::default());
-    published.product.page_catalog = Some(published.product.fixture_catalog(PROJECT)
-        .expect("resource revision and outline share the same native catalog"));
+    let catalog = published.product.fixture_catalog(PROJECT)
+        .expect("resource revision and outline share the same native catalog");
+    let legacy = published.product.probe(Probe::Outline(PROJECT)).expect("legacy outline");
+    let CommandReply::Outline(tree) = legacy.reply else { panic!("legacy outline reply"); };
+    assert_eq!(tree.basis(), catalog.revision_root());
+    assert_eq!(tree.source_basis(), Some(catalog.view().basis()),
+        "the complete producer basis must match the native name-page catalog");
+    published.product.page_catalog = Some(catalog);
     let readable = request(&mut published, "resources/read", &json!({"uri": uri}));
     assert!(
         readable["result"]["contents"][0]["text"]
@@ -6162,6 +6148,22 @@ fn resource_discovery_needs_no_owner_and_outline_reads_preserve_protocol_failure
     );
     assert_eq!(read["error"]["code"], -32603, "{read}");
     assert_eq!(read["error"]["data"]["kind"], "protocol", "{read}");
+
+    let mut moved = ready(Fake {
+        outline_error: Some(ClientError::CommandFailed(
+            backend_library::CommandFailure::WrongBasis {
+                expected: view_state_root(&[]).into(),
+                observed: view_state_root(&[("new".to_owned(), "revision".to_owned())]).into(),
+            },
+        )),
+        ..Fake::default()
+    });
+    let read = request(&mut moved, "resources/read", &json!({
+        "uri": "backend://outline/%2Fabs%2Fpolyglot"
+    }));
+    assert_eq!(read["error"]["code"], -32603, "{read}");
+    assert_eq!(read["error"]["data"]["kind"], "wrong-basis", "{read}");
+    assert!(read.get("result").is_none(), "a moved owner is never resource absence");
 }
 
 #[test]
