@@ -3313,7 +3313,7 @@ mod tests {
                 })
                 .collect()
         }
-        fn assert_cold_frontier(update: &ProductSourceProjectUpdate, expected: &[[u8; 32]]) {
+        fn assert_cold_frontier(update: &super::ProductSourceProjectUpdate, expected: &[[u8; 32]]) {
             let mut encoded = Vec::new();
             ProductSourceRelation::encode_value(update.project_record(), &mut encoded);
             assert!(encoded.len() <= ProductSourceRecord::ROW_VALUE_CAPACITY);
