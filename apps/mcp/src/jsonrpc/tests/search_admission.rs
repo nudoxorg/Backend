@@ -92,3 +92,60 @@ fn invalid_search_is_typed_before_owner_and_same_session_reads_still_work() {
         }
     }
 }
+
+#[test]
+fn physical_crlf_search_previews_match_lf_on_direct_and_registered_mcp_routes() {
+    let unix = "pub fn ferris(\n  pattern: &str, // keep \\r\\n\n) -> Beacon";
+    let windows = unix.replace('\n', "\r\n");
+    let expected = unix.replace('\n', "\\n");
+    for signature in [unix, windows.as_str()] {
+        for detail in ["summary", "standard", "full"] {
+            for forwarded in [false, true] {
+                let row = declaration_row().with_signature(signature).with_excerpt(
+                    backend_library::SourceExcerpt::captured(
+                        signature,
+                        backend_library::SourceExcerptExtent::Complete,
+                    )
+                    .expect("exact captured declaration"),
+                );
+                let native = root(vec![package_row(), module_row(), row]);
+                let original = native.canonical_relation_bytes().expect("native row preimage");
+                let cursor = backend_library::Cursor::for_view_root(&native);
+                let catalog = backend_library::Library::from_view(native, cursor)
+                    .expect("immutable native fixture catalog");
+                let mut server = ready(Fake {
+                    page_catalog: Some(catalog),
+                    ..Fake::default()
+                });
+                let arguments = json!({"query":"ferris", "detail":detail});
+                let result = if forwarded {
+                    call(&mut server, "backend.call", &json!({
+                        "name":"backend.search", "arguments":arguments,
+                    }))
+                } else {
+                    call(&mut server, "backend.search", &arguments)
+                };
+                assert_eq!(result["isError"], false, "{result}");
+                let records = result["structuredContent"]["records"]
+                    .as_array().expect("real native search rows");
+                assert_eq!(records.len(), 1, "{result}");
+                assert_eq!(records[0]["identity"]["coordinate"], DECLARATION);
+                if detail == "summary" {
+                    assert!(
+                        records[0].get("signature").is_none(),
+                        "summary intentionally omits signature payloads: {result}",
+                    );
+                } else {
+                    assert_eq!(records[0]["signature"], expected);
+                }
+                assert!(expected.contains(r"\r\n"), "authored escapes remain literal");
+                assert_eq!(
+                    server.product.page_catalog.as_ref().expect("same catalog")
+                        .view().canonical_relation_bytes().expect("native preimage after display"),
+                    original,
+                    "rendering cannot rewrite captured signature/source or native row identity"
+                );
+            }
+        }
+    }
+}

@@ -171,7 +171,8 @@ impl Signature {
     }
 
     /// Builds a single-line result-list preview of at most 240 characters,
-    /// including an ellipsis when content is omitted. Spaces and authored
+    /// including an ellipsis when content is omitted. Physical CRLF uses LF
+    /// before escaping and bounding. Spaces and authored
     /// backslash escapes are preserved. Physical controls and line separators
     /// are escaped visibly, so this preview is not a source excerpt.
     /// Declaration pages retain the complete signature through
@@ -180,7 +181,11 @@ impl Signature {
     pub fn preview(text: &str, language: Language) -> Self {
         let mut characters = Vec::with_capacity(PREVIEW_CHARACTERS + 1);
         let mut ellipsis_boundary = 0;
-        'preview: for character in text.chars() {
+        let mut source = text.chars().peekable();
+        'preview: while let Some(mut character) = source.next() {
+            if character == '\r' && source.next_if_eq(&'\n').is_some() {
+                character = '\n';
+            }
             if characters.len() < PREVIEW_CHARACTERS {
                 ellipsis_boundary = characters.len();
             }
@@ -714,7 +719,7 @@ mod display_tests {
         let text = format!("const routes = [\r\n  {}\r\n];", "東京界".repeat(120));
         let full = Signature::tokenize(&text, Language::TypeScript).text();
         let preview = Signature::preview(&text, Language::TypeScript).text();
-        assert!(preview.starts_with("const routes = [\\r\\n  東京界"));
+        assert!(preview.starts_with("const routes = [\\n  東京界"));
         assert!(preview.ends_with('…'));
         assert!(preview.chars().count() <= PREVIEW_CHARACTERS);
         assert!(
@@ -765,7 +770,7 @@ mod display_tests {
             (
                 Language::Python,
                 "label = '''one  two\r\nthree'''",
-                "label = '''one  two\\r\\nthree'''",
+                "label = '''one  two\\nthree'''",
             ),
             (
                 Language::Rust,
@@ -788,6 +793,41 @@ mod display_tests {
                 expected,
                 "{language}: {text:?}"
             );
+        }
+    }
+
+    #[test]
+    fn physical_crlf_uses_the_same_preview_credit_as_lf_and_keeps_literal_escapes() {
+        for language in [
+            Language::Rust,
+            Language::TypeScript,
+            Language::Python,
+            Language::Go,
+            Language::Java,
+            Language::CSharp,
+            Language::C,
+            Language::Cxx,
+            Language::Unknown,
+        ] {
+            assert_eq!(Signature::preview("a\r\nb", language).text(), "a\\nb");
+            assert_eq!(Signature::preview("a\rb", language).text(), "a\\rb");
+            assert_eq!(Signature::preview("a\r\r\nb", language).text(), "a\\r\\nb");
+            for width in [0, 235, 236, 237, 238, 239, 240] {
+                for tail in ["", "Y", "YZ"] {
+                    let unix = format!("{}\n{tail}", "x".repeat(width));
+                    let windows = unix.replace('\n', "\r\n");
+                    let original = windows.clone();
+                    assert_eq!(
+                        Signature::preview(&windows, language),
+                        Signature::preview(&unix, language),
+                        "physical line endings cannot spend different preview credit: {language}, {width}, {tail}"
+                    );
+                    assert_eq!(windows, original, "captured input is never rewritten");
+                }
+            }
+            for authored in [r"literal\r\n", r"String.raw`\r\n`"] {
+                assert_eq!(Signature::preview(authored, language).text(), authored);
+            }
         }
     }
 
