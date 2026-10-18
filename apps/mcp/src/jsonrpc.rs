@@ -887,12 +887,11 @@ impl<P: Product> Server<P> {
             "\n\nQuick start: call backend.packages, then backend.index with the absolute project path. \
              For accepted work, copy index_poll.call and inspect its terminal receipt before backend.search. CLI support is optional: \
              source builds may have backend-cli, and index_poll.shell is absent when no runnable CLI attachment is observed. \
-             Register this stdio server in Claude Code with `claude mcp add --scope user \
-             --transport stdio nudox -- \"$(command -v backend-mcp)\" --project \
-             '${CLAUDE_PROJECT_DIR:-.}'`, then verify with \
-             `claude mcp get nudox`. Use `backend.package` for one pinned registry package and \
+             Use `backend.package` for one pinned registry package and \
              `backend.index_search` for a name-first registry lookup.",
         );
+        instructions.push_str("\n\n");
+        instructions.push_str(crate::process::STDIO_SETUP_GUIDANCE);
         instructions.push_str("\n\n");
         instructions.push_str(&self.instructions_context());
         instructions.push_str(

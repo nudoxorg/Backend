@@ -6206,15 +6206,22 @@ fn the_handshake_reports_the_stable_protocol_and_its_instructions() {
         "{instructions}"
     );
     assert!(
-        instructions.contains("claude mcp add --scope user --transport stdio nudox"),
+        instructions.contains(crate::process::STDIO_SETUP_GUIDANCE),
+        "help and initialize must share the installed CLI's local absolute setup: {instructions}"
+    );
+    assert!(instructions.contains("nudox mcp-config"), "{instructions}");
+    assert!(
+        instructions.contains("Claude Code local-scope"),
+        "{instructions}"
+    );
+    assert!(instructions.contains("client inside WSL"), "{instructions}");
+    assert!(!instructions.contains("--scope user"), "{instructions}");
+    assert!(
+        !instructions.contains("CLAUDE_PROJECT_DIR"),
         "{instructions}"
     );
     assert!(
-        instructions.contains("--project '${CLAUDE_PROJECT_DIR:-.}'"),
-        "{instructions}"
-    );
-    assert!(
-        instructions.contains("claude mcp get nudox"),
+        !instructions.contains("command -v backend-mcp"),
         "{instructions}"
     );
     assert!(instructions.contains("backend.package"), "{instructions}");
