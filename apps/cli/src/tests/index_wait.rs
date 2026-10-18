@@ -417,6 +417,8 @@ fn cli_wait_deadline_and_cancellation_report_pending_work_without_endpoint_fault
         };
         assert!(matches!(status.state, IndexOperationState::Active { .. }));
         assert!(product.fault().is_none(), "caller wait stop is not an endpoint/index failure");
+        assert!(product.cli_context().is_none(),
+            "this plan fixture does not run the executable's CLI-context attachment");
         let note = product.note().expect("reason and recovery instruction");
         assert!(note.contains(expected_reason));
         assert!(note.contains("last admitted owner status was active"));
@@ -436,15 +438,26 @@ fn cli_wait_deadline_and_cancellation_report_pending_work_without_endpoint_fault
         assert!(rendered.contains(expected_reason));
         assert!(rendered.contains(&poll));
         assert!(rendered.contains("Do not resubmit `add`"));
-        let json = render_admitted_answer(
-            &fixture.session,
-            &answer,
-            &Options::plain(options::Format::Json),
-        )
-        .expect("bounded typed response");
+        let json_options = Options::plain(options::Format::Json);
+        let json = render_admitted_answer(&fixture.session, &answer, &json_options)
+            .expect("bounded typed response");
         let json: serde_json::Value = serde_json::from_str(&json).expect("JSON answer");
         assert!(json["fault"].is_null());
-        assert_eq!(json["index_poll"]["shell"], poll);
+        assert!(
+            json["index_poll"].get("shell").is_none(),
+            "plain fixture has no observed installed-CLI context for a shell command"
+        );
+        assert_eq!(
+            json["index_poll"]["call"],
+            serde_json::json!({
+                "name": "backend.index_progress",
+                "arguments": {
+                    "operation_key": status.operation_key.to_hex(),
+                    "detail": json_options.detail().name(),
+                },
+            }),
+            "the exact saved operation remains copyable without inventing CLI authority"
+        );
         assert!(json["note"].as_str().is_some_and(|note| note.contains(expected_reason)));
     }
 }

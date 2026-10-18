@@ -698,12 +698,15 @@ mod tests {
         };
         let now = Rc::new(Cell::new(Duration::ZERO));
         let mut milestones = Vec::new();
+        let mut operation_read_times = Vec::new();
+        let mut ticket_read_times = Vec::new();
         let result = super::super::wait_operation_with_profiles(
             IndexOperationObservation::Known(status.clone()),
             &RequestContext::new(),
             |command| match command {
                 SurfaceCommand::IndexOperationStatus { operation_key } => {
                     assert_eq!(operation_key, status.operation_key);
+                    operation_read_times.push(now.get());
                     Ok(keyed(if now.get() >= Duration::from_secs(2) {
                         &terminal
                     } else {
@@ -715,6 +718,7 @@ mod tests {
                     after_sequence,
                 } => {
                     assert_eq!(ticket, started.ticket);
+                    ticket_read_times.push(now.get());
                     let current = if now.get() >= Duration::from_secs(1) {
                         &admitted
                     } else {
@@ -742,7 +746,33 @@ mod tests {
         assert!(
             matches!(result, IndexOperationWaitResult::Terminal(actual) if actual == IndexOperationObservation::Known(terminal))
         );
-        assert_eq!(now.get(), Duration::from_secs(2));
+        // The first changed milestone starts a new caller slice after the
+        // required minimum read spacing. Its fixed half-second probes first
+        // observe the two-second terminal on that shifted grid, at 2.1s.
+        let first = super::super::MIN_READ_SPACING;
+        let probe = super::super::PROBE_INTERVAL;
+        let expected_reads = [
+            Duration::ZERO,
+            first,
+            first + probe,
+            first + probe * 2,
+            first + probe * 2,
+            first + probe * 3,
+            first + probe * 4,
+        ];
+        assert_eq!(operation_read_times, expected_reads);
+        assert_eq!(
+            ticket_read_times.as_slice(),
+            &expected_reads[..expected_reads.len() - 1]
+        );
+        assert_eq!(
+            now.get(),
+            *expected_reads.last().expect("terminal read"),
+            "an admitted terminal returns without another cadence delay"
+        );
+        assert!(
+            now.get() >= Duration::from_secs(2) && now.get() < Duration::from_secs(2) + probe
+        );
     }
 
     #[test]

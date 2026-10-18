@@ -233,7 +233,17 @@ fn executable_add_wait_reobserves_same_key_across_retirements_until_original_dea
     );
     let bytes = String::from_utf8(output.stdout).expect("UTF8 output");
     assert!(bytes.contains(&format!("index_progress --operation-key {key}")));
-    assert!(bytes.contains("Waiting ended without a terminal receipt"));
+    let note = value["note"].as_str().expect("specific pending-wait guidance");
+    assert!(note.contains("The CLI wait deadline expired"));
+    assert!(note.contains("the last admitted owner status was accepted"));
+    assert!(note.contains("did not cancel owner work"));
+    assert!(note.contains("Do not resubmit `add`"));
+    assert!(value["fault"].is_null(), "caller deadline is not an endpoint failure");
+    assert_eq!(value["index_poll"]["call"]["name"], "backend.index_progress");
+    assert_eq!(
+        value["index_poll"]["call"]["arguments"]["operation_key"],
+        key.to_hex()
+    );
     let claims: Vec<_> = std::fs::read_dir(paths.data().join("client-index-operations-v1"))
         .expect("retained journal")
         .map(|entry| entry.expect("entry").path())
