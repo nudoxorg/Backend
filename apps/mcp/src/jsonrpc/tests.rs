@@ -1027,7 +1027,10 @@ impl Engine for Fake {
         if let Some(error) = self.adapter_error.take() {
             return Err(error);
         }
-        Ok(view_state_root(&[]))
+        Ok(self.page_catalog.as_ref().map_or_else(
+            || view_state_root(&[]),
+            backend_library::Library::revision_root,
+        ))
     }
 
     fn health(&mut self) -> Result<HealthReport, ClientError> {
@@ -3316,13 +3319,19 @@ fn index_first_use_returns_one_admitted_durable_poll_and_copying_it_only_observe
                 serde_json::to_value(&next_operation)
                     .expect("exact next receipt; changed active stage is immediate")
             );
-            assert_eq!(
-                server.product.surface_commands,
-                [
-                    start.clone(),
-                    SurfaceCommand::IndexOperationStatus { operation_key: key }
-                ]
-            );
+            let mut expected_commands = vec![
+                start.clone(),
+                SurfaceCommand::IndexOperationStatus { operation_key: key },
+            ];
+            if let IndexOperationObservation::Known(status) = &operation
+                && let IndexOperationState::Active { ticket, .. } = &status.state
+            {
+                expected_commands.push(SurfaceCommand::IndexProgress {
+                    ticket: ticket.clone(),
+                    after_sequence: 0,
+                });
+            }
+            assert_eq!(server.product.surface_commands, expected_commands);
             assert_eq!(
                 server.product.probe_calls, 0,
                 "copying a poll adds no other owner work"
@@ -4805,7 +4814,12 @@ fn positive_default_fake_outline_pages_retain_order_and_sequential_cursor() {
     order.validate(&page.snapshot, package_key(PROJECT), backend_library::QueryLimit::new(200).expect("limit"))
         .expect("all overridden members are exact native witnesses");
     assert!(order.symbols().contains(&override_symbol));
-    let reply = Fake::default().members_page(&document(), 200, None).expect("positive separate members family");
+    let mut members_fake = Fake::default();
+    let catalog = members_fake.fixture_catalog(PROJECT).expect("native members catalog");
+    let owner = catalog.document(backend_library::DocumentQuery::selected(
+        symbol_key(MODULE), catalog.revision_root(),
+    )).expect("document at the exact native catalog revision");
+    let reply = members_fake.members_page(&owner, 200, None).expect("positive separate members family");
     let CommandReply::ProjectionPage(members) = reply.reply else { panic!("members page"); };
     assert!(members.outline_order.is_none(), "outline metadata cannot leak into MembersPage");
 }
@@ -4813,7 +4827,10 @@ fn positive_default_fake_outline_pages_retain_order_and_sequential_cursor() {
 #[test]
 fn positive_default_fake_members_pages_preserve_credit_cursor_family_and_override() {
     let mut fake = Fake::default();
-    let owner = document();
+    let catalog = fake.fixture_catalog(PROJECT).expect("native members catalog");
+    let owner = catalog.document(backend_library::DocumentQuery::selected(
+        symbol_key(MODULE), catalog.revision_root(),
+    )).expect("document at the exact native catalog revision");
     let mut cursor = None;
     let mut rows = Vec::new();
     for start in 0..2 {
@@ -4843,6 +4860,9 @@ fn positive_default_fake_members_pages_preserve_credit_cursor_family_and_overrid
     let mut selected = document();
     selected.symbol = symbol_key("selected-override-member-owner");
     let mut overridden = Fake { document_override: Some(selected.clone()), ..Fake::default() };
+    selected.basis = overridden.fixture_catalog(PROJECT)
+        .expect("native catalog includes the overridden owner").revision_root();
+    overridden.document_override = Some(selected.clone());
     let reply = overridden.members_page(&selected, 1, None).expect("selected override owner is present");
     let CommandReply::ProjectionPage(page) = reply.reply else { panic!("members page"); };
     assert!(page.outline_order.is_none());
@@ -6082,6 +6102,8 @@ fn a_missing_resource_is_refused_rather_than_guessed() {
 fn outline_resource_templates_preserve_readable_and_absent_projects() {
     let uri = "backend://outline/%2Fabs%2Fpolyglot";
     let mut published = ready(Fake::default());
+    published.product.page_catalog = Some(published.product.fixture_catalog(PROJECT)
+        .expect("resource revision and outline share the same native catalog"));
     let readable = request(&mut published, "resources/read", &json!({"uri": uri}));
     assert!(
         readable["result"]["contents"][0]["text"]
