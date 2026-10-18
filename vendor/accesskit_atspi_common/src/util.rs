@@ -147,15 +147,26 @@ mod window_bounds_tests {
         let local = Point::new(1932.0, 1090.0);
         let screen = bounds.accesskit_point_to_atspi_point(local, None, CoordType::Screen);
         assert_eq!(screen, Point::new(1996.0, 1110.0));
-        assert_eq!(bounds.accesskit_point_to_atspi_point(local, None, CoordType::Window), local);
-        assert_eq!(bounds.atspi_point_to_accesskit_point(screen, None, CoordType::Screen), local);
+        assert_eq!(
+            bounds.accesskit_point_to_atspi_point(local, None, CoordType::Window),
+            local
+        );
+        assert_eq!(
+            bounds.atspi_point_to_accesskit_point(screen, None, CoordType::Screen),
+            local
+        );
         // Moving only the native window must not move the window-local point.
         let moved = WindowBounds::new(
             Rect::new(200.0, 100.0, 2960.0, 1860.0),
             Rect::new(200.0, 100.0, 2960.0, 1860.0),
         );
-        assert_eq!(moved.accesskit_point_to_atspi_point(local, None, CoordType::Screen),
-            Point::new(2132.0, 1190.0));
-        assert_eq!(moved.accesskit_point_to_atspi_point(local, None, CoordType::Window), local);
+        assert_eq!(
+            moved.accesskit_point_to_atspi_point(local, None, CoordType::Screen),
+            Point::new(2132.0, 1190.0)
+        );
+        assert_eq!(
+            moved.accesskit_point_to_atspi_point(local, None, CoordType::Window),
+            local
+        );
     }
 }
