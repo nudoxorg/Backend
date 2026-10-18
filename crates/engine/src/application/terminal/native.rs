@@ -686,9 +686,7 @@ mod tests {
             )?;
             let project = authority.project().ok_or("checked TSZ project missing")?;
             let session = project.checked_query_session(&checkpoint)?;
-            let index = session
-                .file_index("src/value.ts")
-                .ok_or("authored file missing")?;
+            let index = session.file_index("src/value.ts")?;
             let entered = AtomicBool::new(false);
             checkpoint.armed.store(true, Ordering::Release);
             let Err(error) = session.with_file_checker_and_types(index, |_, _, _, _| {
