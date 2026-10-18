@@ -429,7 +429,7 @@ mod index_search_tests {
     }
     fn preparing(state: QueryPreparationState) -> CommandReply {
         CommandReply::Failed(CommandFailure::QueryPreparation {
-            basis: ViewRevision::from_bytes([72; 32]),
+            basis: ViewRevision::from(backend_library::view_state_root(&[])),
             state,
         })
     }
@@ -693,7 +693,7 @@ mod index_search_tests {
         assert!(
             context_events
                 .iter()
-                .all(|event| event.basis == ViewRevision::from_bytes([72; 32])
+                .all(|event| event.basis == ViewRevision::from(backend_library::view_state_root(&[]))
                     && event.remaining <= Duration::from_secs(2))
         );
         for pair in context_events.windows(2) {
