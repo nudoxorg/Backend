@@ -479,3 +479,7 @@ fn owner_binding(
     hash.update(&instance.to_bytes());
     *hash.finalize().as_bytes()
 }
+
+#[cfg(target_os = "linux")]
+#[path = "local_peer/owner_upgrade.rs"]
+mod owner_upgrade;
