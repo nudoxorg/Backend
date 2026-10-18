@@ -42,6 +42,26 @@ pub(super) struct PreparationTiming {
     pub(super) active: Option<usize>,
 }
 
+/// Cumulative observed wall intervals for this budget, not CPU time. Slot zero
+/// encloses the four disjoint projector passes; never sum it with those passes.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct QueryTiming {
+    pub(super) durations: [Option<Duration>; 5],
+    pub(super) active: Option<usize>,
+}
+
+fn query_index(phase: backend_frontend_typescript::TszProjectExecutionPhase) -> Option<usize> {
+    use backend_frontend_typescript::TszProjectExecutionPhase as P;
+    match phase {
+        P::FileQuery => Some(0),
+        P::FileQueryAnalysis => Some(1),
+        P::FileQueryStructure => Some(2),
+        P::FileQueryOccurrences => Some(3),
+        P::FileQueryTypes => Some(4),
+        _ => None,
+    }
+}
+
 fn preparation_index(phase: backend_frontend_typescript::TszProjectExecutionPhase) -> Option<usize> {
     use backend_frontend_typescript::TszProjectExecutionPhase as P;
     match phase {
@@ -66,10 +86,21 @@ pub(super) struct StopMeasurement {
     pub(super) completed: u64,
     pub(super) merges: u64,
     pub(super) preparation: Option<PreparationTiming>,
+    pub(super) query: Option<QueryTiming>,
 }
 
 impl StopMeasurement {
     pub(super) fn cause(&self) -> Option<backend_library::interface::TypeScriptFailureCause> {
+        if let Some(query) = self.query.as_ref().filter(|_| self.preparation.is_none()) {
+            let times: Vec<_> = query.durations.iter().map(|duration|
+                duration.map_or_else(|| "-".to_owned(), |value| format!("{:.2e}", value.as_secs_f64()))
+            ).collect();
+            let active = query.active.and_then(|index| ["all", "syntax", "struct", "occur", "type"].get(index).copied()).unwrap_or("-");
+            return backend_library::interface::TypeScriptFailureCause::new(&format!(
+                "First stop; query-sum~s[all,syntax,struct,occur,type]={}; checks done/start={}/{}; merges={}; age~s={:.2e}; active={}; -=unknown",
+                times.join(","), self.completed, self.started, self.merges, self.elapsed.as_secs_f64(), active,
+            ));
+        }
         let times: Vec<_> = (0..7).map(|index| {
             self.preparation.as_ref().and_then(|timing| timing.durations[index])
                 .map_or_else(|| "-".to_owned(), |duration| format!("{:.2e}", duration.as_secs_f64()))
@@ -145,6 +176,7 @@ struct ObservedStopContext {
     phase: Option<backend_frontend_typescript::TszProjectExecutionPhase>,
     file: Option<(usize, String)>,
     preparation: Option<PreparationTiming>,
+    query: Option<QueryTiming>,
 }
 
 pub(super) struct ObservedTypeScriptBudget<'cancel> {
@@ -163,6 +195,10 @@ pub(super) struct ObservedTypeScriptBudget<'cancel> {
     completed_source_checks: AtomicU64,
     reused_source_checks: AtomicU64,
     merge_enters: AtomicU64,
+    // At most five short additions per projected file, never per symbol/type.
+    // Separate budgets cannot contaminate one another. Poison recovery affects
+    // observations only and must not introduce a new compiler refusal.
+    query_totals: std::sync::Mutex<[Option<Duration>; 5]>,
 }
 
 /// First observed stopped computation under this exact program budget.
@@ -198,6 +234,7 @@ impl<'cancel> ObservedTypeScriptBudget<'cancel> {
             completed_source_checks: AtomicU64::new(0),
             reused_source_checks: AtomicU64::new(0),
             merge_enters: AtomicU64::new(0),
+            query_totals: std::sync::Mutex::new([None; 5]),
         }
     }
 
@@ -246,8 +283,26 @@ impl<'cancel> ObservedTypeScriptBudget<'cancel> {
 
     fn active_context(&self) -> ObservedStopContext {
         let budget = std::ptr::from_ref(self) as usize;
+        let totals = *self.query_totals.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         ACTIVE_BOUNDARIES.with(|active| {
             let active = active.borrow();
+            let query = active.iter().any(|entry| entry.budget == budget
+                && entry.phase == backend_frontend_typescript::TszProjectExecutionPhase::FileQuery).then(|| {
+                let mut timing = QueryTiming { durations: totals, active: None };
+                let mut seen = [false; 5];
+                for entry in active.iter().filter(|entry| entry.budget == budget) {
+                    if let (Some(slot), Some(started)) = (query_index(entry.phase), entry.started) {
+                        // A recursive query's enclosing time is already included
+                        // in its outer interval. Add each active slot only once.
+                        if !seen[slot] {
+                            seen[slot] = true;
+                            timing.durations[slot] = Some(timing.durations[slot].unwrap_or_default().saturating_add(started.elapsed()));
+                            timing.active = Some(slot);
+                        }
+                    }
+                }
+                timing
+            });
             let preparation = active.iter().rposition(|entry| entry.budget == budget
                 && entry.phase == backend_frontend_typescript::TszProjectExecutionPhase::SourcePreparation)
                 .and_then(|parent| {
@@ -265,6 +320,7 @@ impl<'cancel> ObservedTypeScriptBudget<'cancel> {
             ObservedStopContext {
                 program: self.observed_program(),
                 preparation,
+                query,
                 phase: active
                     .iter()
                     .rev()
@@ -291,7 +347,7 @@ impl<'cancel> ObservedTypeScriptBudget<'cancel> {
                     budget,
                     phase: event.phase,
                     file: event.file.map(|file| (file.index, file.path.to_owned())),
-                    started: preparation_index(event.phase).map(|_| Instant::now()),
+                    started: (preparation_index(event.phase).is_some() || query_index(event.phase).is_some()).then(Instant::now),
                     preparation: (event.phase == Phase::SourcePreparation).then(PreparationTiming::default),
                 }),
                 Transition::Returned | Transition::Unwound => {
@@ -305,6 +361,14 @@ impl<'cancel> ObservedTypeScriptBudget<'cancel> {
                                 == event.file.map(|file| (file.index, file.path))
                     }) {
                         let returned = active.remove(index);
+                        if let (Some(slot), Some(started)) = (query_index(returned.phase), returned.started) {
+                            let nested_same_slot = active.iter().any(|entry| entry.budget == budget
+                                && query_index(entry.phase) == Some(slot));
+                            if !nested_same_slot {
+                                let mut totals = self.query_totals.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                totals[slot] = Some(totals[slot].unwrap_or_default().saturating_add(started.elapsed()));
+                            }
+                        }
                         if let (Some(slot), Some(started)) = (preparation_index(returned.phase), returned.started) {
                             if let Some(parent) = active.iter_mut().rev().find(|entry| entry.budget == budget
                                 && entry.phase == Phase::SourcePreparation) {
@@ -376,6 +440,7 @@ impl TszExecutionCheckpoint for ObservedTypeScriptBudget<'_> {
                         started, completed,
                         merges: self.merge_enters.load(Ordering::Relaxed),
                         preparation: context.preparation.clone(),
+                        query: context.query.clone(),
                     }),
                 });
                 let _ = self.stop_context.set(context.clone());
@@ -921,6 +986,7 @@ mod tests {
         let observed = StopMeasurement {
             elapsed: Duration::MAX, started: u64::MAX, completed: u64::MAX, merges: u64::MAX,
             preparation: Some(PreparationTiming { durations: [Some(Duration::MAX); 7], active: Some(6) }),
+            query: None,
         };
         let cause = observed.cause().expect("bounded fixed labels and approximate elapsed values");
         assert!(cause.as_str().len() <= backend_library::interface::TypeScriptFailureCause::MAX_BYTES);
@@ -928,8 +994,87 @@ mod tests {
             "source-check and merge counters are exact, never truncated");
         assert!(cause.as_str().contains("active=box"));
         assert!(!cause.as_str().contains("..."));
+        let nested = StopMeasurement { query: Some(QueryTiming::default()), ..observed.clone() }.cause().unwrap();
+        assert_eq!(nested, cause, "a preparation active inside a query retains its original slots");
         let unknown = StopMeasurement { preparation: None, ..observed }.cause().unwrap();
         assert!(unknown.as_str().contains("=-,-,-,-,-,-,-;"), "missing observation is not fabricated zero time");
+    }
+
+    #[test]
+    fn query_stop_keeps_cumulative_and_active_intervals_without_cross_budget_or_nested_double_count() {
+        use backend_frontend_typescript::{TszProjectExecutionFile, TszProjectExecutionPhase as P,
+            TszProjectExecutionTransition as T};
+        let cancelled = AtomicBool::new(false);
+        let budget = ObservedTypeScriptBudget::new(Instant::now() + Duration::from_secs(30), &cancelled, 100);
+        let event = |phase, transition, file| TszProjectExecutionEvent { phase, transition, file };
+        let first = Some(TszProjectExecutionFile { index: 0, path: "src/earlier.ts" });
+        let last = Some(TszProjectExecutionFile { index: 1, path: "src/current.ts" });
+        budget.observe(event(P::FileQuery, T::Entered, first));
+        budget.observe(event(P::FileQueryAnalysis, T::Entered, first));
+        budget.observe(event(P::FileQueryAnalysis, T::Returned, first));
+        budget.observe(event(P::FileQuery, T::Returned, first));
+        assert!(budget.query_totals.lock().unwrap()[0].is_some());
+        assert!(budget.query_totals.lock().unwrap()[1].is_some());
+        budget.observe(event(P::FileQuery, T::Entered, last));
+        budget.observe(event(P::FileQueryTypes, T::Entered, last));
+        let other_cancelled = AtomicBool::new(false);
+        let other = ObservedTypeScriptBudget::new(Instant::now() + Duration::from_secs(30), &other_cancelled, 100);
+        other.observe(event(P::FileQuery, T::Entered, first));
+        other.observe(event(P::FileQueryOccurrences, T::Entered, first));
+        assert_eq!(budget.budget.remaining_work_units(), 100);
+        assert_eq!(budget.budget.stop_reason(), None);
+        cancelled.store(true, Ordering::Release);
+        assert_eq!(budget.checkpoint(0), Err(TszProjectExecutionStop::Cancelled));
+        let frozen = budget.stop_site.get().unwrap().clone();
+        assert_eq!(frozen.file.as_deref(), Some("src/current.ts"));
+        let timing = frozen.measurement.as_ref().unwrap().query.as_ref().unwrap();
+        assert_eq!(timing.active, Some(4));
+        for slot in [0, 1, 4] { assert!(timing.durations[slot].is_some()); }
+        for slot in [2, 3] { assert_eq!(timing.durations[slot], None); }
+        let cause = frozen.measurement.as_ref().unwrap().cause().unwrap();
+        assert!(cause.as_str().contains("query-sum~s"));
+        assert!(!cause.as_str().contains("prep~s"));
+        assert!(cause.as_str().contains("active=type"));
+        budget.observe(event(P::FileQueryTypes, T::Unwound, last));
+        budget.observe(event(P::FileQuery, T::Unwound, last));
+        // Later workers/unwinds cannot replace the first stop's owned snapshot.
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                budget.observe(event(P::FileQuery, T::Entered, first));
+                budget.observe(event(P::FileQueryOccurrences, T::Entered, first));
+                assert_eq!(budget.checkpoint(0), Err(TszProjectExecutionStop::Cancelled));
+                budget.observe(event(P::FileQueryOccurrences, T::Unwound, first));
+                budget.observe(event(P::FileQuery, T::Unwound, first));
+            }).join().unwrap();
+        });
+        assert_eq!(budget.stop_site.get(), Some(&frozen));
+
+        let nested_cancelled = AtomicBool::new(false);
+        let nested = ObservedTypeScriptBudget::new(Instant::now() + Duration::from_secs(30), &nested_cancelled, 100);
+        nested.observe(event(P::FileQuery, T::Entered, first));
+        nested.observe(event(P::FileQuery, T::Entered, last));
+        nested.observe(event(P::FileQuery, T::Returned, last));
+        assert_eq!(nested.query_totals.lock().unwrap()[0], None,
+            "the inner interval is already enclosed by the outer query");
+        nested.observe(event(P::FileQuery, T::Returned, first));
+        assert!(nested.query_totals.lock().unwrap()[0].is_some());
+    }
+
+    #[test]
+    fn query_cause_keeps_maximum_counts_and_unknown_slots_in_existing_bound() {
+        let observed = StopMeasurement {
+            elapsed: Duration::MAX, started: u64::MAX, completed: u64::MAX, merges: u64::MAX,
+            preparation: None,
+            query: Some(QueryTiming { durations: [Some(Duration::MAX); 5], active: Some(2) }),
+        };
+        let cause = observed.cause().expect("fixed query labels fit existing cause");
+        assert!(cause.as_str().len() <= backend_library::interface::TypeScriptFailureCause::MAX_BYTES);
+        assert_eq!(cause.as_str().matches(u64::MAX.to_string().as_str()).count(), 3);
+        assert!(cause.as_str().contains("active=struct"));
+        let unknown = StopMeasurement { query: Some(QueryTiming::default()), ..observed }.cause().unwrap();
+        assert!(unknown.as_str().contains("=-,-,-,-,-;"));
+        // Saturation is explicit and never wraps an observed interval.
+        assert_eq!(Duration::MAX.saturating_add(Duration::from_secs(1)), Duration::MAX);
     }
 
 }
