@@ -177,3 +177,98 @@ fn publication_revision_reconnects_a_retired_command_stream_but_never_retries_pr
     }
     Ok(())
 }
+
+#[test]
+fn index_read_reconnects_once_with_original_context_and_preserves_correlated_owner_reply()
+-> anyhow::Result<()> {
+    let endpoint = Endpoint::new()?;
+    let listener = UnixListener::bind(&endpoint.0)?;
+    std::fs::set_permissions(&endpoint.0, std::fs::Permissions::from_mode(0o600))?;
+    listener.set_nonblocking(true)?;
+    let (command, mut command_owner) = UnixStream::pair()?;
+    let server = std::thread::spawn(move || -> anyhow::Result<UnixListener> {
+        revision(&mut command_owner)?;
+        drop(command_owner);
+        let until = Instant::now() + Duration::from_secs(2);
+        let mut fresh = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < until, "missing index read retry");
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => return Err(anyhow::anyhow!("accept index retry: {error}")),
+            }
+        };
+        fresh.set_nonblocking(false)?;
+        let request = revision(&mut fresh)?;
+        refuse(&mut fresh, request, "same owner answered index retry")?;
+        Ok(listener)
+    });
+    let view = super::super::owner::publication_tests::view();
+    let cursor = backend_library::Cursor::for_view_root_at(&view, 0);
+    let gate = super::super::owner::OwnerGate::ready(
+        VersionedRoot::from_revision(1, cursor, 0), crate::model::ServiceMode::Attached,
+    );
+    let attachment = gate.ready_epoch().expect("ready attachment");
+    let mut client = LocalEngineClient::gated(
+        &endpoint.0, LocalProjectId::from_path(endpoint.0.parent().expect("private parent"))?, gate.clone(),
+    );
+    client.attached_epoch = Some(attachment);
+    client.active_cancel = Some(CancellationToken::new());
+    client.session = Some(Session::from_transport(
+        endpoint.0.clone(), backend_client::UnixCommandTransport::from_stream(command),
+    ));
+    let context = backend_client::RequestContext::new();
+    let deadline = context.read_deadline(Duration::from_secs(1))?;
+    let mut attempts = 0;
+    let result = client.with_index_read(&context, |session| {
+        attempts += 1;
+        session.set_request_context(Some(context.clone()))?;
+        let result = session.revision();
+        session.set_request_context(None)?;
+        result
+    });
+    let listener = server.join().map_err(|_| anyhow::anyhow!("physical index owner panicked"))??;
+    assert_eq!(attempts, 2);
+    assert!(matches!(result, Err(EngineFault::Failed(error))
+        if error.code() == FaultCode::Protocol && error.message().contains("same owner answered index retry")));
+    assert_eq!(context.read_deadline(Duration::from_secs(30))?, deadline);
+    assert_eq!(gate.ready_epoch(), Some(attachment));
+    assert!(matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "the independent liveness probe and a third read are forbidden");
+    Ok(())
+}
+
+#[test]
+fn index_connection_links_desktop_cancellation_before_dial_and_removes_only_its_wake()
+-> anyhow::Result<()> {
+    let endpoint = Endpoint::new()?;
+    let listener = UnixListener::bind(&endpoint.0)?;
+    std::fs::set_permissions(&endpoint.0, std::fs::Permissions::from_mode(0o600))?;
+    listener.set_nonblocking(true)?;
+    let client = LocalEngineClient::new(
+        &endpoint.0, LocalProjectId::from_path(endpoint.0.parent().expect("private parent"))?,
+    );
+    let context = backend_client::RequestContext::new();
+    context.read_deadline(Duration::from_secs(2))?;
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    assert!(matches!(client.index_session(&context, &cancelled),
+        Err(ClientError::RequestCancelled(backend_client::RequestCancellationReason::Explicit))));
+    assert!(matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "a desktop-cancelled request cannot open the socket before its later I/O wake");
+
+    let context = backend_client::RequestContext::new();
+    context.read_deadline(Duration::from_secs(2))?;
+    let active = CancellationToken::new();
+    let session = client.index_session(&context, &active)?;
+    let (_owner, _) = listener.accept()?;
+    context.check()?;
+    // The temporary dial registration must not leak into a later request.
+    // The caller installs its own exact socket wake when doing command I/O.
+    active.cancel();
+    context.check()?;
+    drop(session);
+    Ok(())
+}
