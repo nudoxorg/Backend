@@ -82,6 +82,14 @@ impl Engine for Outline {
     fn probe(&mut self, _: Probe<'_>) -> Result<ReplyDto, ClientError> {
         unreachable!("native windows only")
     }
+    fn surface(
+        &mut self,
+        _: backend_library::SurfaceCommand,
+    ) -> Result<backend_library::SurfaceReply, ClientError> {
+        Err(ClientError::Protocol(
+            "outline catalog does not expose durable product commands".to_owned(),
+        ))
+    }
     fn prepare_query_continuation(&mut self, token: &str) -> Result<PageContinuation, ClientError> {
         assert_eq!(token, "unchanged-owner-input");
         self.imports += 1;
