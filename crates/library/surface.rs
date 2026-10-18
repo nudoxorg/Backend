@@ -2182,6 +2182,22 @@ impl PackageCompilerFailure {
         Self::MAX_ENCODED_BYTES
     }
 
+    /// Copies the already admitted wire facts without retaining the private
+    /// native diagnostic buffer in a public progress-history entry.
+    #[must_use]
+    pub fn public_summary(&self) -> Self {
+        Self {
+            relative_path: self.relative_path.clone(),
+            source_identity: self.source_identity,
+            source_byte_len: self.source_byte_len,
+            recipe_identity: self.recipe_identity,
+            cause: self.cause.clone(),
+            detail: self.detail.clone(),
+            detail_truncated: self.detail_truncated,
+            local_diagnostic: None,
+        }
+    }
+
     /// Encodes this summary as canonical bounded JSON for operation receipts.
     ///
     /// # Errors
@@ -3153,10 +3169,26 @@ pub enum IndexJobProgressKind {
         /// Number of profiles admitted for this job.
         total: u16,
     },
+    /// One compiler profile was refused; independent profiles may still run.
+    /// This is the original bounded compiler failure, not a terminal operation
+    /// outcome or a claim that selected coverage has changed.
+    ProfileRefused {
+        /// Exact profile whose compiler attempt was refused.
+        profile: SemanticLanguageProfile,
+        /// One-based profile position in this job.
+        ordinal: u16,
+        /// Number of profiles admitted for this job.
+        total: u16,
+        /// Source-bound native refusal, including its existing typed cause.
+        failure: Box<PackageCompilerFailure>,
+    },
 }
 
 impl IndexJobProgressKind {
     fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if let Self::ProfileRefused { failure, .. } = self {
+            failure.validate()?;
+        }
         match self {
             Self::StageChanged { .. } => Ok(()),
             Self::ProfileStarted {
@@ -3168,6 +3200,12 @@ impl IndexJobProgressKind {
                 profile,
                 ordinal,
                 total,
+            }
+            | Self::ProfileRefused {
+                profile,
+                ordinal,
+                total,
+                ..
             } => {
                 profile
                     .profile()
@@ -3236,7 +3274,9 @@ impl IndexProgressPage {
         }
         if prior_sequence > self.next_sequence
             || (!self.events.is_empty() && prior_sequence != self.next_sequence)
-            || (self.has_more && self.events.len() != MAX_INDEX_PROGRESS_EVENTS)
+            // A byte/token-bounded public projection may return a nonempty
+            // prefix of an owner page. The same exact-ticket cursor resumes it.
+            || (self.has_more && self.events.is_empty())
         {
             return Err(ProductAdmissionError::IndexProgressShape);
         }
@@ -6120,6 +6160,163 @@ mod tests {
         });
         PackageCompilerFailure::from_fragment_failure(path, attempt, &failure)
             .expect("a bounded package compiler failure")
+    }
+
+    #[test]
+    fn profile_refusal_progress_roundtrips_before_independent_go_start() {
+        let ticket = IndexJobTicket::new(
+            NonZeroU64::MIN,
+            [1; 16],
+            PackageReference::parse("/workspace/profile-refusal".to_owned()).expect("package"),
+        );
+        let mut failure = compiler_failure("ui/main.ts");
+        failure.local_diagnostic = Some(Box::from(b"private native diagnostic".as_slice()));
+        let summary = failure.public_summary();
+        assert_eq!(summary, failure, "all admitted wire facts are retained");
+        assert!(summary.local_diagnostic.is_none());
+        assert!(
+            failure.local_diagnostic.is_some(),
+            "original local diagnostic is unchanged"
+        );
+        let refused = IndexJobProgressKind::ProfileRefused {
+            profile: SemanticLanguageProfile([1, 0]),
+            ordinal: 1,
+            total: 2,
+            failure: Box::new(summary),
+        };
+        let mut page = IndexProgressPage {
+            ticket: ticket.clone(),
+            stage: IndexJobStage::Compiling,
+            events: vec![
+                IndexJobProgressEvent {
+                    ticket: ticket.clone(),
+                    sequence: 4,
+                    kind: refused,
+                },
+                IndexJobProgressEvent {
+                    ticket,
+                    sequence: 5,
+                    kind: IndexJobProgressKind::ProfileStarted {
+                        profile: SemanticLanguageProfile([3, 2]),
+                        ordinal: 2,
+                        total: 2,
+                    },
+                },
+            ]
+            .into_boxed_slice(),
+            next_sequence: 5,
+            truncated: false,
+            has_more: false,
+        };
+        let reply = SurfaceReply::IndexProgress(IndexJobObservation::Pending(page.clone()));
+        reply
+            .admit(CommandId::IndexProgress)
+            .expect("admitted refusal and next profile");
+        let wire = serde_json::to_value(&reply).expect("typed progress wire");
+        let decoded: SurfaceReply = serde_json::from_value(wire).expect("same protocol roundtrip");
+        assert_eq!(decoded, reply);
+        let envelope = crate::ReplyDto::new(41, crate::CommandReply::Surface(reply));
+        let encoded = serde_json::to_vec(&envelope).expect("current live DTO36 envelope");
+        assert!(encoded.len() <= crate::MAX_REPLY_BODY);
+        assert_eq!(
+            crate::decode_reply_body(&encoded).expect("strict current wire"),
+            envelope
+        );
+        assert!(
+            failure
+                .public_summary()
+                .encode_bounded_json()
+                .expect("bounded summary")
+                .len()
+                <= PackageCompilerFailure::MAX_ENCODED_BYTES
+        );
+        assert!(page.events.len() <= MAX_INDEX_PROGRESS_EVENTS);
+        assert!(!String::from_utf8_lossy(&encoded).contains("private native diagnostic"));
+        let mut full_page = page.clone();
+        full_page.events = (1..=MAX_INDEX_PROGRESS_EVENTS)
+            .map(|sequence| IndexJobProgressEvent {
+                ticket: full_page.ticket.clone(),
+                sequence: sequence as u64,
+                kind: IndexJobProgressKind::ProfileRefused {
+                    profile: SemanticLanguageProfile([1, 0]),
+                    ordinal: 1,
+                    total: 2,
+                    failure: Box::new(failure.public_summary()),
+                },
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        full_page.next_sequence = MAX_INDEX_PROGRESS_EVENTS as u64;
+        let bounded = SurfaceReply::IndexProgress(IndexJobObservation::Pending(full_page.clone()));
+        bounded
+            .admit(CommandId::IndexProgress)
+            .expect("unchanged 16-event page cap");
+        let bounded = crate::ReplyDto::new(41, crate::CommandReply::Surface(bounded));
+        let bounded_bytes = serde_json::to_vec(&bounded).expect("full progress page");
+        assert!(bounded_bytes.len() <= crate::MAX_REPLY_BODY);
+        assert_eq!(
+            crate::decode_reply_body(&bounded_bytes).expect("strict full page"),
+            bounded
+        );
+        let mut too_many = full_page.events.into_vec();
+        let mut extra = too_many[0].clone();
+        extra.sequence = (MAX_INDEX_PROGRESS_EVENTS + 1) as u64;
+        too_many.push(extra);
+        full_page.events = too_many.into_boxed_slice();
+        full_page.next_sequence += 1;
+        assert!(
+            SurfaceReply::IndexProgress(IndexJobObservation::Pending(full_page))
+                .admit(CommandId::IndexProgress)
+                .is_err()
+        );
+        let mut prefix = page.clone();
+        prefix.events = vec![prefix.events[0].clone()].into_boxed_slice();
+        prefix.next_sequence = prefix.events[0].sequence;
+        prefix.has_more = true;
+        SurfaceReply::IndexProgress(IndexJobObservation::Pending(prefix.clone()))
+            .admit(CommandId::IndexProgress)
+            .expect("nonempty lossless public window");
+        prefix.events = Box::new([]);
+        assert!(
+            SurfaceReply::IndexProgress(IndexJobObservation::Pending(prefix))
+                .admit(CommandId::IndexProgress)
+                .is_err(),
+            "empty has-more window cannot advance"
+        );
+        let mut previous: serde_json::Value = serde_json::from_slice(&encoded).expect("wire");
+        previous["version"] = serde_json::json!(35);
+        assert!(
+            crate::decode_reply_body(&serde_json::to_vec(&previous).expect("previous envelope"))
+                .expect_err("old live recording is refused at cohort boundary")
+                .contains("reply DTO version 35")
+        );
+        let IndexJobProgressKind::ProfileRefused {
+            failure: retained, ..
+        } = &page.events[0].kind
+        else {
+            panic!("refusal milestone disappeared");
+        };
+        assert_eq!(retained.as_ref(), &failure);
+        assert_eq!(retained.cause(), failure.cause());
+        assert_eq!(retained.source_identity(), failure.source_identity());
+        if let IndexJobProgressKind::ProfileRefused { ordinal, .. } = &mut page.events[0].kind {
+            *ordinal = 0;
+        }
+        assert_eq!(
+            SurfaceReply::IndexProgress(IndexJobObservation::Pending(page))
+                .admit(CommandId::IndexProgress),
+            Err(ProductAdmissionError::IndexProgressShape),
+        );
+        assert_eq!(
+            serde_json::to_value(IndexJobProgressKind::ProfileStarted {
+                profile: SemanticLanguageProfile([1, 0]),
+                ordinal: 1,
+                total: 2,
+            })
+            .expect("old milestone wire"),
+            serde_json::json!({"event":"profile-started","profile":[1,0],"ordinal":1,"total":2}),
+            "existing milestone encoding is unchanged",
+        );
     }
 
     #[test]

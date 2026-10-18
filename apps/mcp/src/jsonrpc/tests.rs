@@ -8967,6 +8967,248 @@ mod conditional_progress_tests {
         }
     }
 
+    #[test]
+    fn escaped_profile_refusals_page_losslessly_within_real_mcp_budget_and_following_read() {
+        use backend_library::interface::{
+            CompilerAttempt, CompilerFragmentFailure, SourceAuthority,
+        };
+        use backend_library::{
+            IndexJobObservation, IndexJobProgressEvent, IndexJobProgressKind,
+            IndexOperationObservation, IndexOperationState, IndexProgressPage,
+            PackageCompilerFailure, SemanticLanguageProfile,
+        };
+        use backend_semantic::ir::{BuildError, EntityId};
+        let mut active = phases().remove(1);
+        let SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status)) =
+            &mut active
+        else {
+            panic!("active status");
+        };
+        let IndexOperationState::Active { ticket, stage } = &status.state else {
+            panic!("active ticket");
+        };
+        let ticket = ticket.clone();
+        let stage = *stage;
+        let operation_key = status.operation_key;
+        let capture = status
+            .source_capture
+            .as_mut()
+            .expect("actual source capture shape");
+        let prototype = capture.profiles[0];
+        let mut profiles = SemanticLanguageProfile::names()
+            .into_iter()
+            .map(|name| backend_library::IndexOperationSourceProfile {
+                profile: SemanticLanguageProfile::from_name(name).expect("closed profile"),
+                ..prototype
+            })
+            .collect::<Vec<_>>();
+        profiles.sort_by_key(|profile| profile.profile);
+        capture.profiles = profiles.clone().into_boxed_slice();
+        active
+            .admit(backend_library::CommandId::IndexProgress)
+            .expect("all nine legitimate captured profiles");
+        let mut events = Vec::new();
+        for (position, source) in profiles.iter().take(8).enumerate() {
+            let ordinal = u16::try_from(position + 1).expect("nine-profile header");
+            // Quotes are permitted path bytes and exercise actual JSON escaping.
+            let path = format!(
+                "{}{}",
+                "\"".repeat(PackageCompilerFailure::MAX_RELATIVE_PATH_BYTES - 1),
+                position
+            );
+            let failure = PackageCompilerFailure::from_fragment_failure(
+                &path,
+                CompilerAttempt {
+                    source: SourceAuthority {
+                        identity: [1; 32].try_into().expect("source"),
+                        byte_len: 12,
+                    },
+                    recipe: [2; 32].try_into().expect("recipe"),
+                },
+                &CompilerFragmentFailure::build(BuildError::InvalidOccurrenceSpan {
+                    owner: EntityId::new(7),
+                    start: 18,
+                    end: 24,
+                }),
+            )
+            .expect("maximal escaped canonical path")
+            .public_summary();
+            let encoded = failure.encode_bounded_json().expect("bounded exact cause");
+            assert!(
+                encoded.len() > 6 * 1024
+                    && encoded.len() <= PackageCompilerFailure::MAX_ENCODED_BYTES
+            );
+            for kind in [
+                IndexJobProgressKind::ProfileStarted {
+                    profile: source.profile,
+                    ordinal,
+                    total: 9,
+                },
+                IndexJobProgressKind::ProfileRefused {
+                    profile: source.profile,
+                    ordinal,
+                    total: 9,
+                    failure: Box::new(failure),
+                },
+            ] {
+                events.push(IndexJobProgressEvent {
+                    ticket: ticket.clone(),
+                    sequence: u64::try_from(events.len() + 1).expect("bounded history"),
+                    kind,
+                });
+            }
+        }
+        let page = IndexProgressPage {
+            ticket: ticket.clone(),
+            stage,
+            events: events.clone().into_boxed_slice(),
+            next_sequence: 16,
+            truncated: false,
+            has_more: false,
+        };
+        SurfaceReply::IndexProgress(IndexJobObservation::Pending(page.clone()))
+            .admit(backend_library::CommandId::IndexProgress)
+            .expect("original exact owner page");
+        assert!(
+            serde_json::to_vec(&page).expect("full owner page").len()
+                > DEFAULT_RESPONSE_BUDGET_BYTES
+        );
+        let original = active.clone();
+        let mut server = ready(Fake {
+            surface_reply: Some(active),
+            profile_progress_reply: Some(page.clone()),
+            ..Fake::default()
+        });
+        let mut arguments = json!({"operation_key":operation_key,"detail":"full"});
+        let mut seen = Vec::new();
+        let mut windows = 0;
+        loop {
+            windows += 1;
+            assert!(windows <= events.len(), "every exact cursor must advance");
+            let response = request(
+                &mut server,
+                "tools/call",
+                &json!({"name":INDEX_PROGRESS_TOOL,"arguments":arguments}),
+            );
+            assert!(
+                response.get("error").is_none(),
+                "real stdio envelope must not replace the page with an oversized fault: {response}"
+            );
+            assert_eq!(response["result"]["isError"], false);
+            assert_context_bounded(&response);
+            let tokens =
+                cl100k_tokens(&serde_json::to_string(&response).expect("actual full response"))
+                    .expect("real token policy");
+            assert!(tokens <= MCP_CL100K_TOKEN_LIMIT);
+            let body = &response["result"]["structuredContent"];
+            if windows == 1 {
+                let SurfaceReply::IndexOperationStatus(observation) = &original else {
+                    panic!("status");
+                };
+                assert_eq!(
+                    body["surface"]["data"],
+                    serde_json::to_value(observation).expect("same durable receipt")
+                );
+            }
+            let projected: backend_present::IndexJobProjection =
+                serde_json::from_value(body["surface"]["index_job"].clone())
+                    .expect("exact typed page");
+            let backend_present::IndexJobProjection::Progress(IndexJobObservation::Pending(window)) =
+                projected
+            else {
+                panic!("pending window");
+            };
+            assert_eq!(window.ticket, ticket);
+            assert!(!window.events.is_empty());
+            let prior = seen.len();
+            assert_eq!(
+                &events[prior..prior + window.events.len()],
+                window.events.as_ref(),
+                "no cause/event may be changed, skipped or repeated"
+            );
+            seen.extend(window.events.iter().cloned());
+            assert_eq!(
+                window.next_sequence,
+                u64::try_from(seen.len()).expect("sequence")
+            );
+            if !window.has_more {
+                break;
+            }
+            let call = &body["index_poll"]["call"];
+            assert_eq!(call["name"], INDEX_PROGRESS_TOOL);
+            arguments = call["arguments"].clone();
+            assert_eq!(
+                arguments["ticket"],
+                serde_json::to_value(&ticket).expect("ticket")
+            );
+            assert_eq!(arguments["after_sequence"], window.next_sequence);
+            assert!(
+                arguments.get("wait_millis").is_none(),
+                "remaining history is immediately readable"
+            );
+            let remainder = IndexProgressPage {
+                events: events[seen.len()..].to_vec().into_boxed_slice(),
+                ..page.clone()
+            };
+            server.product.surface_reply = Some(SurfaceReply::IndexProgress(
+                IndexJobObservation::Pending(remainder),
+            ));
+        }
+        assert!(windows > 1, "the overflowing owner page must be continued");
+        assert_eq!(
+            seen, events,
+            "all eight exact typed refusals survive the full cursor chain"
+        );
+        // Even the final single maximal-path refusal must remain intact with
+        // the complete nine-profile durable status, not become an oversized
+        // fault after the window can no longer shrink.
+        let one = IndexProgressPage {
+            events: vec![events[1].clone()].into_boxed_slice(),
+            next_sequence: events[1].sequence,
+            ..page.clone()
+        };
+        server.product.surface_reply = Some(original.clone());
+        server.product.profile_progress_reply = Some(one.clone());
+        let single = request(
+            &mut server,
+            "tools/call",
+            &json!({"name":INDEX_PROGRESS_TOOL,"arguments":{"operation_key":operation_key,"detail":"full"}}),
+        );
+        assert!(
+            single.get("error").is_none(),
+            "one valid maximum-path cause must fit or remain an explicit bounded refusal"
+        );
+        assert_eq!(single["result"]["isError"], false);
+        assert_context_bounded(&single);
+        let projection: backend_present::IndexJobProjection = serde_json::from_value(
+            single["result"]["structuredContent"]["surface"]["index_job"].clone(),
+        )
+        .expect("one exact cause");
+        assert_eq!(
+            projection,
+            backend_present::IndexJobProjection::Progress(IndexJobObservation::Pending(one))
+        );
+        let status = call(&mut server, "backend.status", &json!({}));
+        assert_eq!(status["isError"], false);
+        assert_eq!(status["structuredContent"]["answer"], "status");
+        assert!(
+            text_of(&status).contains("oracles 0/"),
+            "following read remains useful in this same initialized session"
+        );
+        assert!(
+            server
+                .product
+                .surface_commands
+                .iter()
+                .all(|command| matches!(
+                    command,
+                    SurfaceCommand::IndexProgress { .. }
+                        | SurfaceCommand::IndexOperationStatus { .. }
+                )),
+            "projection must never dispatch, cancel, replace or re-admit work"
+        );
+    }
+
     fn durable_commands(product: &Fake) -> Vec<SurfaceCommand> {
         product
             .surface_commands

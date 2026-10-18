@@ -3385,8 +3385,18 @@ impl CommandAdapter {
                             }
                             Err(refusal) => {
                                 if let Some(failure) = refusal.compiler_failure.clone() {
+                                    let progress_failure = Box::new(failure.public_summary());
                                     match job.record_compiler_refusal(current_profile, failure) {
                                         Ok(()) if job.has_pending_profiles() => {
+                                            self.emit_index_progress(
+                                                &mut indexing,
+                                                backend_library::IndexJobProgressKind::ProfileRefused {
+                                                    profile: progress.0,
+                                                    ordinal: progress.1,
+                                                    total: progress.2,
+                                                    failure: progress_failure,
+                                                },
+                                            );
                                             match self.spawn_next_index_profile(
                                                 daemon,
                                                 &mut indexing,
@@ -3406,19 +3416,31 @@ impl CommandAdapter {
                                                 }
                                             }
                                         }
-                                        Ok(()) => match self.start_index_finalization(
-                                            daemon,
-                                            &mut indexing,
-                                            job,
-                                        ) {
-                                            Ok(()) => {}
-                                            Err(error) => {
-                                                terminal =
-                                                    Some(backend_library::IndexJobOutcome::Failed(
-                                                        bounded_index_detail(error),
-                                                    ))
+                                        Ok(()) => {
+                                            self.emit_index_progress(
+                                                &mut indexing,
+                                                backend_library::IndexJobProgressKind::ProfileRefused {
+                                                    profile: progress.0,
+                                                    ordinal: progress.1,
+                                                    total: progress.2,
+                                                    failure: progress_failure,
+                                                },
+                                            );
+                                            match self.start_index_finalization(
+                                                daemon,
+                                                &mut indexing,
+                                                job,
+                                            ) {
+                                                Ok(()) => {}
+                                                Err(error) => {
+                                                    terminal = Some(
+                                                        backend_library::IndexJobOutcome::Failed(
+                                                            bounded_index_detail(error),
+                                                        ),
+                                                    )
+                                                }
                                             }
-                                        },
+                                        }
                                         Err(error) => {
                                             terminal =
                                                 Some(backend_library::IndexJobOutcome::Failed(

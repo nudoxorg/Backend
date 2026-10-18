@@ -18,6 +18,8 @@
 
 //! DTO34 adds only live outline-page order metadata; persisted snapshots/events
 //! have no ProjectionPage wrapper and retain DTO33 row/root/certificate bytes.
+//! DTO36 adds only live compiler profile-refusal progress; persisted snapshot/
+//! compact-event grammar, roots and certificates are unchanged from DTO35.
 //! DTO35 adds only live health source-selection observations; persisted view
 //! snapshot/event grammar, roots and certificates remain unchanged.
 
@@ -28,7 +30,7 @@ use crate::{CommittedViewDelta, CoverageCapability, Cursor, ViewDto, ViewRoot};
 // Review snapshot/event fields and historical compatibility before moving
 // this fence, or introduce a new journal grammar for incompatible fields.
 const _: () = assert!(
-    DTO_VERSION == 35,
+    DTO_VERSION == 36,
     "review persisted view journal compatibility before accepting a new DTO version"
 );
 
@@ -67,13 +69,13 @@ impl JournalViewGrammarV3 {
         if version == DTO_VERSION
             || matches!(
                 version,
-                21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34
+                21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35
             )
         {
             Ok(())
         } else {
             Err(format!(
-                "unsupported persisted view envelope version {version}; journal grammar 3 reads current {DTO_VERSION} and historical 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33 and 34"
+                "unsupported persisted view envelope version {version}; journal grammar 3 reads current {DTO_VERSION} and historical 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34 and 35"
             ))
         }
     }

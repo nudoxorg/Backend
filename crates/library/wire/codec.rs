@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn outline_order_cutover_refuses_dto33_before_page_shape_or_verification() {
-        assert_eq!(crate::DTO_VERSION, 35);
+        assert_eq!(crate::DTO_VERSION, 36);
         let current = serde_json::to_vec(&serde_json::json!({
             "request_id": 41,
             "certificate": null,
@@ -291,8 +291,8 @@ mod tests {
         // The maintained v33 byte-entry version preflight, not a replay of an
         // old binary, rejects the new cohort before its strict page grammar.
         let old_peer = super::check_version_header_against(&current, "reply", 33)
-            .expect_err("v33 peer refuses the v35 owner");
-        assert!(old_peer.contains("reply DTO version 35"));
+            .expect_err("v33 peer refuses the v36 owner");
+        assert!(old_peer.contains("reply DTO version 36"));
         assert!(old_peer.contains("this build supports 33"));
         assert!(!old_peer.contains("unknown field"));
         let mut old: serde_json::Value = serde_json::from_slice(&current).expect("envelope");
@@ -301,25 +301,35 @@ mod tests {
         let bytes = serde_json::to_vec(&old).expect("old owner reply");
         let verifier = CountingVerifier::new();
         for error in [
-            decode_reply_body(&bytes).expect_err("v35 client refuses v33 owner"),
-            decode_reply_body_with_verifier(&bytes, &verifier).expect_err("refuse before verification"),
-            ReplyDto::decode_with_certificate(&bytes, None).expect_err("certificate path version guard"),
+            decode_reply_body(&bytes).expect_err("v36 client refuses v33 owner"),
+            decode_reply_body_with_verifier(&bytes, &verifier)
+                .expect_err("refuse before verification"),
+            ReplyDto::decode_with_certificate(&bytes, None)
+                .expect_err("certificate path version guard"),
         ] {
             assert!(error.contains("reply DTO version 33"));
-            assert!(error.contains("this build supports 35"));
+            assert!(error.contains("this build supports 36"));
             assert!(!error.contains("unknown field"));
         }
         assert_eq!(verifier.calls(), 0);
-        assert!(decode_reply_body(&current).expect_err("same-version closed grammar").contains("unknown field"));
-        let journal = crate::JournalViewGrammarV3::from_checked_container(3).expect("unchanged journal container");
-        for version in [33, 34, 35] {
-            assert!(journal.check_envelope_version(version).is_ok(), "persisted snapshots/events retain their exact grammar");
+        assert!(
+            decode_reply_body(&current)
+                .expect_err("same-version closed grammar")
+                .contains("unknown field")
+        );
+        let journal = crate::JournalViewGrammarV3::from_checked_container(3)
+            .expect("unchanged journal container");
+        for version in [33, 34, 35, 36] {
+            assert!(
+                journal.check_envelope_version(version).is_ok(),
+                "persisted snapshots/events retain their exact grammar"
+            );
         }
     }
 
     #[test]
     fn source_selection_cutover_refuses_dto34_before_health_shape_or_verification() {
-        assert_eq!(crate::DTO_VERSION, 35);
+        assert_eq!(crate::DTO_VERSION, 36);
         let current = serde_json::to_vec(&serde_json::json!({
             "request_id": 41,
             "certificate": null,
@@ -327,10 +337,11 @@ mod tests {
                 "source_selection": {"unknown_future_field": true}
             }},
             "version": crate::DTO_VERSION
-        })).expect("new health envelope");
+        }))
+        .expect("new health envelope");
         let old_peer = super::check_version_header_against(&current, "reply", 34)
-            .expect_err("v34 peer refuses the v35 owner before health shape");
-        assert!(old_peer.contains("reply DTO version 35"));
+            .expect_err("v34 peer refuses the v36 owner before health shape");
+        assert!(old_peer.contains("reply DTO version 36"));
         assert!(old_peer.contains("this build supports 34"));
         assert!(!old_peer.contains("unknown field"));
         let mut old: serde_json::Value = serde_json::from_slice(&current).expect("envelope");
@@ -339,16 +350,71 @@ mod tests {
         let bytes = serde_json::to_vec(&old).expect("old owner reply");
         let verifier = CountingVerifier::new();
         for error in [
-            decode_reply_body(&bytes).expect_err("v35 client refuses v34 owner"),
-            decode_reply_body_with_verifier(&bytes, &verifier).expect_err("refuse before verification"),
-            ReplyDto::decode_with_certificate(&bytes, None).expect_err("certificate path version guard"),
+            decode_reply_body(&bytes).expect_err("v36 client refuses v34 owner"),
+            decode_reply_body_with_verifier(&bytes, &verifier)
+                .expect_err("refuse before verification"),
+            ReplyDto::decode_with_certificate(&bytes, None)
+                .expect_err("certificate path version guard"),
         ] {
             assert!(error.contains("reply DTO version 34"));
-            assert!(error.contains("this build supports 35"));
+            assert!(error.contains("this build supports 36"));
             assert!(!error.contains("unknown field"));
         }
         assert_eq!(verifier.calls(), 0);
-        assert!(decode_reply_body(&current).is_err(), "same-version invalid health shape is refused");
+        assert!(
+            decode_reply_body(&current).is_err(),
+            "same-version invalid health shape is refused"
+        );
+    }
+
+    #[test]
+    fn profile_refusal_cutover_refuses_dto35_before_closed_event_shape() {
+        assert_eq!(crate::DTO_VERSION, 36);
+        let current = serde_json::to_vec(&serde_json::json!({
+            "version": crate::DTO_VERSION,
+            "request_id": 41,
+            "certificate": null,
+            "reply": {"kind": "surface", "data": {
+                "result": "index-progress", "data": {
+                    "event": "profile-refused", "unknown_future_field": true
+                }
+            }}
+        }))
+        .expect("version preflight adversary");
+        // This runs the real byte-entry preflight parameterized by the old
+        // supported cohort. It does not pretend to execute an old binary.
+        let old_peer = super::check_version_header_against(&current, "reply", 35)
+            .expect_err("installed DTO35 CLI/MCP/GUI refuses DTO36 owner before tag parsing");
+        assert!(old_peer.contains("reply DTO version 36"));
+        assert!(old_peer.contains("this build supports 35"));
+        assert!(old_peer.contains("same build"));
+        assert!(!old_peer.contains("unknown"));
+        for version in [35, 37] {
+            let mut other: serde_json::Value = serde_json::from_slice(&current).expect("wire");
+            other["version"] = serde_json::json!(version);
+            let bytes = serde_json::to_vec(&other).expect("other cohort");
+            let verifier = CountingVerifier::new();
+            for error in [
+                decode_reply_body(&bytes).expect_err("different live cohort"),
+                decode_reply_body_with_verifier(&bytes, &verifier).expect_err("before proof"),
+                ReplyDto::decode_with_certificate(&bytes, None).expect_err("same byte-entry guard"),
+            ] {
+                assert!(error.contains(&format!("reply DTO version {version}")));
+                assert!(error.contains("this build supports 36"));
+                assert!(error.contains("CLI/MCP/GUI"));
+                assert!(!error.contains("unknown"));
+            }
+            assert_eq!(verifier.calls(), 0);
+        }
+        assert!(
+            decode_reply_body(&current).is_err(),
+            "current closed grammar stays strict"
+        );
+        let grammar = crate::JournalViewGrammarV3::from_checked_container(3)
+            .expect("unchanged persisted container");
+        assert!(grammar.check_envelope_version(35).is_ok());
+        assert!(grammar.check_envelope_version(36).is_ok());
+        assert!(grammar.check_envelope_version(37).is_err());
     }
 
     #[test]

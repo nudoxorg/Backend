@@ -1,5 +1,5 @@
 //! Caller-side composition of existing durable status and exact-ticket progress.
-//! These values are transient; neither the owner DTO nor saved receipts change.
+//! These values are transient; saved operation and publication authority do not change.
 use super::*;
 use backend_library::IndexProgressPage;
 
@@ -58,12 +58,11 @@ impl IndexObservationFingerprint {
         if let Some(capture) = &status.source_capture {
             if page.events.iter().any(|event| match &event.kind {
                 backend_library::IndexJobProgressKind::ProfileStarted { profile, .. }
-                | backend_library::IndexJobProgressKind::ProfileAdmitted { profile, .. } => {
-                    !capture
-                        .profiles()
-                        .iter()
-                        .any(|source| source.profile == *profile)
-                }
+                | backend_library::IndexJobProgressKind::ProfileAdmitted { profile, .. }
+                | backend_library::IndexJobProgressKind::ProfileRefused { profile, .. } => !capture
+                    .profiles()
+                    .iter()
+                    .any(|source| source.profile == *profile),
                 backend_library::IndexJobProgressKind::StageChanged { .. } => false,
             }) {
                 return Err(ClientError::Protocol(
@@ -175,7 +174,16 @@ fn observe_profile_progress_from(
                         });
                     }
                 }
-                if page.has_more && pages_read < MAX_PROFILE_PROGRESS_PAGES {
+                // A refusal is useful public data, not a disposable catch-up
+                // milestone. Return it with its exact continuation instead of
+                // draining later pages and silently replacing the cause.
+                let has_refusal = page.events.iter().any(|event| {
+                    matches!(
+                        &event.kind,
+                        backend_library::IndexJobProgressKind::ProfileRefused { .. }
+                    )
+                });
+                if page.has_more && !has_refusal && pages_read < MAX_PROFILE_PROGRESS_PAGES {
                     after_sequence = page.next_sequence;
                     continue;
                 }
@@ -928,5 +936,85 @@ mod tests {
         .expect("retain admitted terminal");
         assert_eq!(result.observation, observation);
         assert!(result.profile_progress.is_none());
+    }
+    fn refused_profile_fixture() -> backend_library::PackageCompilerFailure {
+        use backend_library::interface::{
+            CompilerAttempt, CompilerFragmentFailure, SourceAuthority,
+        };
+        use backend_semantic::ir::{BuildError, EntityId};
+        backend_library::PackageCompilerFailure::from_fragment_failure(
+            "ui/main.ts",
+            CompilerAttempt {
+                source: SourceAuthority {
+                    identity: [1; 32].try_into().expect("source identity"),
+                    byte_len: 12,
+                },
+                recipe: [2; 32].try_into().expect("recipe identity"),
+            },
+            &CompilerFragmentFailure::build(BuildError::InvalidOccurrenceSpan {
+                owner: EntityId::new(7),
+                start: 18,
+                end: 24,
+            }),
+        )
+        .expect("exact bounded typed refusal fixture")
+    }
+
+    #[test]
+    fn refused_profile_changes_cursor_and_preserves_exact_failure_without_publication() {
+        let status = status();
+        let original = page(&status, 4, false);
+        let mut refused = original.clone();
+        refused.has_more = true;
+        let failure = refused_profile_fixture();
+        let profile = SemanticLanguageProfile::from_name("typescript").expect("captured profile");
+        refused.events[0].kind = IndexJobProgressKind::ProfileRefused {
+            profile,
+            ordinal: 1,
+            total: 3,
+            failure: Box::new(failure),
+        };
+        assert_ne!(
+            IndexObservationFingerprint::active_with_profile_progress(&status, Some(&original))
+                .expect("started"),
+            IndexObservationFingerprint::active_with_profile_progress(&status, Some(&refused))
+                .expect("refused"),
+            "typed refusal is a new observable fact even while the operation remains compiling",
+        );
+        let mut foreign = refused.clone();
+        foreign.ticket = backend_library::IndexJobTicket::new(
+            std::num::NonZeroU64::MIN,
+            [9; 16],
+            status.package.clone(),
+        );
+        for event in &mut foreign.events {
+            event.ticket = foreign.ticket.clone();
+        }
+        assert!(
+            IndexObservationFingerprint::active_with_profile_progress(&status, Some(&foreign))
+                .is_err()
+        );
+        let observed = observe_index_operation_progress(
+            IndexOperationObservation::Known(status.clone()),
+            &RequestContext::new(),
+            |command| match command {
+                SurfaceCommand::IndexProgress { after_sequence, .. } => {
+                    assert_eq!(
+                        after_sequence, 0,
+                        "do not drain past an undelivered refusal"
+                    );
+                    Ok(SurfaceReply::IndexProgress(IndexJobObservation::Pending(
+                        refused.clone(),
+                    )))
+                }
+                _ => panic!("refusal progress cannot dispatch, cancel or replace the operation"),
+            },
+        )
+        .expect("same admitted compiler progress");
+        assert_eq!(
+            observed.observation,
+            IndexOperationObservation::Known(status)
+        );
+        assert_eq!(observed.profile_progress, Some(refused));
     }
 }
