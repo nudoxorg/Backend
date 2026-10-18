@@ -104,11 +104,15 @@ class _LinuxProcStat:
     session: int
     flags: int
     start_ticks: str
+    num_threads: int | None = None
+    vsize: int | None = None
+    rss: int | None = None
 
 
 # Linux include/linux/sched.h: PF_KTHREAD.  This is kernel-provided stat data,
 # not a command-name or parent-process heuristic.
 _LINUX_PF_KTHREAD = 0x00200000
+_LINUX_PF_EXITING = 0x00000004
 _LINUX_TERMINAL_STATES = frozenset({"Z", "X", "x"})
 
 
@@ -133,6 +137,26 @@ def _linux_proc_display_path(pid: int, proc_path: pathlib.Path | None, filename:
     if value == str(prefix) or value.startswith(f"{prefix}/"):
         return value
     return str(prefix / pathlib.PurePosixPath(value).name)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _LinuxRetiringNoMM:
+    """Nonterminal task in exit_mm's aftermath, not an exit/reaping proof."""
+
+    stat: _LinuxProcStat
+    uids: tuple[int, ...]
+    task_members: tuple[int, ...]
+
+
+def _linux_retiring_stat(stat: _LinuxProcStat) -> bool:
+    return (
+        stat.state == "D"
+        and bool(stat.flags & _LINUX_PF_EXITING)
+        and not (stat.flags & _LINUX_PF_KTHREAD)
+        and stat.num_threads == 1
+        and stat.vsize == 0
+        and stat.rss == 0
+    )
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -314,6 +338,27 @@ class _LinuxProcDirectory:
     def stat_path(self, relative_path: str) -> os.stat_result:
         return os.stat(relative_path, dir_fd=self._directory_fd(), follow_symlinks=True)
 
+    def task_members(self) -> tuple[int, ...]:
+        """Bracket a singleton task list through the same pinned proc directory."""
+        descriptor = os.open(
+            "task", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=self._directory_fd(),
+        )
+        try:
+            first = os.fstat(descriptor)
+            names = os.listdir(descriptor)
+            last = os.fstat(descriptor)
+            named = os.stat("task", dir_fd=self._directory_fd(), follow_symlinks=False)
+            if (first.st_dev, first.st_ino) != (last.st_dev, last.st_ino) or (
+                first.st_dev, first.st_ino
+            ) != (named.st_dev, named.st_ino):
+                raise _LinuxProcRace(errno.ESTALE, "proc-task-directory-changed")
+            if len(names) != 1 or names != [str(self.pid)]:
+                raise _LinuxProcRace(errno.ESTALE, "retiring-task-not-singleton")
+            return (self.pid,)
+        finally:
+            os.close(descriptor)
+
     def read_stat(self) -> _LinuxProcStat:
         return _parse_linux_proc_stat(self.read_text("stat", 4 * 1024))
 
@@ -356,6 +401,9 @@ def _parse_linux_proc_stat(text: str) -> _LinuxProcStat:
         session=int(fields[3]),
         flags=int(fields[6]),
         start_ticks=fields[19],
+        num_threads=int(fields[17]),
+        vsize=int(fields[20]) if len(fields) > 20 else None,
+        rss=int(fields[21]) if len(fields) > 21 else None,
     )
 
 
@@ -487,7 +535,8 @@ def _capture_linux_proc_pid(
                     session=pinned.session,
                 )
                 return _LinuxProcCapture(first=first, last=pinned, value=None, terminal_row=terminal)
-            if proc.pidfd_ready() is True:
+            ready_before = proc.pidfd_ready()
+            if ready_before is True:
                 # Since pidfd_open precedes the proc path lookup, an already
                 # ready descriptor cannot be tied to this live stat row: the
                 # PID may have been recycled between those operations.
@@ -547,7 +596,17 @@ def _capture_linux_proc_pid(
                 raise prove_exit(error)
             if last.start_ticks != first.start_ticks:
                 raise _LinuxProcRace(errno.ESTALE, "pid-start-changed-during-proc-read")
-            if proc.pidfd_ready() is True:
+            ready_after = proc.pidfd_ready()
+            if isinstance(value, _LinuxRetiringNoMM) and (
+                ready_before is not False
+                or ready_after is not False
+                or first != pinned
+                or first != last
+                or value.stat != pinned
+                or not _linux_retiring_stat(first)
+            ):
+                raise _LinuxProcRace(errno.ESTALE, "retiring-no-mm-identity-not-stable")
+            if ready_after is True:
                 if last.state not in _LINUX_TERMINAL_STATES:
                     try:
                         observed = proc.read_stat()
@@ -637,6 +696,7 @@ class ProcessRecord:
     runtime_owner_candidate: bool = False
     unknown_executable_candidate: bool = False
     environment_cargo_jobs: int | None = None
+    linux_retiring_no_mm: Mapping[str, Any] | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -1417,6 +1477,27 @@ def _parse_proc_status_uids(status_text: str) -> tuple[int, ...]:
     return values
 
 
+def _retiring_status(status: str, row: _PsRow) -> tuple[int, ...]:
+    values = {}
+    for line in status.splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key in {"Pid", "Tgid", "Threads", "Uid"}:
+            if key in values:
+                raise ValueError("duplicate-retiring-status-field")
+            values[key] = value.split()
+    uids = tuple(int(value) for value in values.get("Uid", ()))
+    if (
+        values.get("Pid") != [str(row.pid)]
+        or values.get("Tgid") != [str(row.pid)]
+        or values.get("Threads") != ["1"]
+        or len(uids) != 4
+        or row.effective_uid is None
+        or any(uid != row.effective_uid for uid in uids)
+    ):
+        raise _LinuxProcRace(errno.ESTALE, "retiring-status-not-same-singleton-uid")
+    return uids
+
+
 def _linux_process_record(
     row: _PsRow,
     boot_id: str,
@@ -1428,20 +1509,40 @@ def _linux_process_record(
     if environment_budget is None:
         environment_budget = _CargoEnvironmentBudget()
 
-    def read_process(proc: _LinuxProcDirectory, stat: _LinuxProcStat) -> dict[str, Any] | None:
-        process_uids = _parse_proc_status_uids(proc.read_text("status"))
+    def read_process(proc: _LinuxProcDirectory, stat: _LinuxProcStat) -> dict[str, Any] | _LinuxRetiringNoMM | None:
+        status = proc.read_text("status")
+        process_uids = _parse_proc_status_uids(status)
         if row.effective_uid is not None and process_uids[1] != row.effective_uid:
             # PID exited/reused after ps observed it; do not trust its old ucomm row.
             return None
         try:
             executable = proc.readlink("exe")
-        except FileNotFoundError:
+        except FileNotFoundError as error:
             if stat.flags & _LINUX_PF_KTHREAD:
                 return {
                     "kernel_thread_without_executable": True,
                     "start_ticks": stat.start_ticks,
                     "stat_flags": stat.flags,
                 }
+            if (
+                error.errno == errno.ENOENT
+                and _linux_retiring_stat(stat)
+                and not _is_cargo_executable(row.ucomm)
+                and not _is_rustc_executable(row.ucomm)
+                and not _is_runtime_owner_executable(row.ucomm)
+                and proc.pidfd_ready() is False
+            ):
+                # PF_EXITING is per task: an exiting leader alone says nothing
+                # about sibling threads. Both status and exact task membership
+                # must prove this process has no other task that can do work.
+                uids = _retiring_status(status, row)
+                members = proc.task_members()
+                status_after = proc.read_text("status")
+                if members != (row.pid,) or proc.task_members() != members or (
+                    _retiring_status(status_after, row) != uids
+                ) or proc.pidfd_ready() is not False:
+                    raise _LinuxProcRace(errno.ESTALE, "retiring-singleton-proof-changed")
+                return _LinuxRetiringNoMM(stat, uids, members)
             raise
         if _is_cargo_executable(executable):
             environment_cargo_jobs = None
@@ -1509,6 +1610,22 @@ def _linux_process_record(
     if capture.value is None:
         return None
     details = capture.value
+    if isinstance(details, _LinuxRetiringNoMM):
+        return ProcessRecord(
+            pid=row.pid, ppid=capture.last.ppid, pgid=capture.last.pgid,
+            start_token=f"linux:{boot_id}:{capture.last.start_ticks}",
+            executable=None, argv=None, state="D",
+            linux_retiring_no_mm={
+                "classification": "kernel-retiring-no-mm-nonterminal",
+                "pid": row.pid, "tgid": row.pid, "state": "D", "flags": capture.last.flags,
+                "first_pinned_last_stat_equal": True, "task_membership_checks": 2,
+                "start_ticks": capture.last.start_ticks, "uids": list(details.uids),
+                "num_threads": 1, "task_members": list(details.task_members),
+                "vsize": 0, "rss": 0, "executable_errno": errno.ENOENT,
+                "pidfd_ready_before": False, "pidfd_ready_after": False,
+                "terminal": False, "exit_or_reaping_proven": False,
+            },
+        )
     if details.get("kernel_thread_without_executable"):
         if (
             details["start_ticks"] != capture.first.start_ticks
@@ -2163,7 +2280,7 @@ def main(argv: list[str] | None = None) -> int:
         "captured_argv_bytes": snapshot.captured_argv_bytes,
         "captured_argv_processes": snapshot.captured_argv_processes,
         "argv_budget_exhausted": snapshot.argv_budget_exhausted,
-        "scope_note": "Foreign Cargo, rustc, and locald/backend-locald/backend-desktop-looking rows are inspected; inaccessible candidates count as occupied unknown process groups. Same-UID process executable paths are inspected, and paths that remain unavailable count as unknown occupied process groups. Cargo argv is read through native process APIs and redacted. Other foreign rows and processes hidden by OS namespaces or permissions are not validated, so this advisory cannot guarantee whole-machine capacity.",
+        "scope_note": "Foreign Cargo, rustc, and locald/backend-locald/backend-desktop-looking rows are inspected; inaccessible candidates count as occupied unknown process groups. Same-UID process executable paths are inspected, and paths that remain unavailable count as unknown occupied process groups. Cargo argv is read through native process APIs and redacted. Other foreign rows and processes hidden by OS namespaces or permissions are not validated, so this advisory cannot guarantee whole-machine capacity. A proved singleton kernel-retiring-no-mm row remains visible and nonterminal; it is neither an exited/reaped task nor a Cargo/compiler slot.",
         "sample_started_at_utc": snapshot.started_at_utc,
         "sample_finished_at_utc": snapshot.finished_at_utc,
         "snapshot_atomic": False,
@@ -2182,6 +2299,10 @@ def main(argv: list[str] | None = None) -> int:
         "processes_signaled": [],
     }
     if sys.platform.startswith("linux"):
+        retiring = [dict(record.linux_retiring_no_mm) for record in snapshot.records.values()
+                    if record.linux_retiring_no_mm is not None]
+        output["kernel_retiring_no_mm"] = retiring[:MAX_REPORTED_PROCESS_ISSUES]
+        output["kernel_retiring_no_mm_omitted_count"] = max(0, len(retiring) - MAX_REPORTED_PROCESS_ISSUES)
         output["snapshot_issue_details"] = [dict(detail) for detail in snapshot.issue_details]
         output["snapshot_issue_details_omitted_count"] = snapshot.issue_details_omitted_count
     if args.fleet_resources:
