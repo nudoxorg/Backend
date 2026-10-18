@@ -5127,6 +5127,41 @@ fn native_tsz_import_declaration_coordinate(
     })
 }
 
+/// A namespace call to a function-valued variable names that authored
+/// binding, not the anonymous function's separate declaration. Require the
+/// terminal binder's one stable variable declaration and actual native
+/// function initializer; a scalar, class, merged symbol or unresolved alias
+/// cannot acquire callable authority merely by appearing in call syntax.
+fn native_tsz_callable_binding_coordinate(
+    binder: &TszBinderState,
+    symbol: TszSymbolId,
+    session: &backend_frontend_typescript::TszProjectQuerySession<'_>,
+) -> Option<NativeTszDeclarationCoordinate> {
+    let declaration = binder.symbols.get(symbol)?;
+    let ([node], [stable]) = (
+        declaration.declarations.as_slice(),
+        declaration.stable_declarations.as_slice(),
+    ) else {
+        return None;
+    };
+    let file = session
+        .project()
+        .program()
+        .files
+        .get(usize::try_from(stable.file_idx).ok()?)?;
+    let arena = &file.arena;
+    let variable = arena.get_variable_declaration(arena.get(*node)?)?;
+    let initializer = arena.get(variable.initializer)?;
+    if !matches!(
+        initializer.kind,
+        TszSyntaxKind::ARROW_FUNCTION | TszSyntaxKind::FUNCTION_EXPRESSION
+    ) {
+        return None;
+    }
+    arena.get_function(initializer)?;
+    native_tsz_import_declaration_coordinate(binder, symbol, session)
+}
+
 pub(crate) fn collect_with_tsz<'source, 'session>(
     profile: TypeScriptSource,
     source: &'source [u8],
@@ -6942,12 +6977,22 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             let Some(target_binder) = target_binder else {
                 continue;
             };
-            let Some(target) = native_tsz_declaration_coordinate(
-                target_binder,
-                target_symbol,
-                session,
-                true,
-            ) else {
+            // A called namespace export can be an authored const/let value,
+            // not a function declaration. Keep callable/overload selection
+            // first; only an exact project owner may supply the unique
+            // binding coordinate when that callable-only selector has none.
+            let target =
+                native_tsz_declaration_coordinate(target_binder, target_symbol, session, true)
+                    .or_else(|| {
+                        target_owner.and_then(|_| {
+                            native_tsz_callable_binding_coordinate(
+                                target_binder,
+                                target_symbol,
+                                session,
+                            )
+                        })
+                    });
+            let Some(target) = target else {
                 continue;
             };
             self.commit_native_tsz_occurrence(
@@ -13953,7 +13998,246 @@ describe('suite', () => {\n\
     }
 
     #[test]
-    fn native_tsz_type_only_imports_do_not_guess_merged_or_overloaded_targets() -> Result<(), LaneError> {
+    fn native_tsz_namespace_callable_values_keep_exact_binding_targets() -> Result<(), LaneError> {
+        let exports = concat!(
+            "export const NavBar = (value: number): number => value;\n",
+            "export let mutable = (value: number): number => value + 1;\n",
+            "export const block = (value: number): number => { return value; } /* ;, not owned */ ;\n",
+            "export const asi = (value: number): number => value\n",
+            "export const comma = (value: number): number => value, last = (value: number): number => value;\n",
+            "export const notCallable = 42;\n",
+            "export function Mixed(value: number): number { return value; }\n",
+            "export namespace Mixed { export const version = 1; }\n",
+        );
+        let other = "export const NavBar = (value: number): number => value + 2;\n";
+        let barrel = "export { NavBar as draw } from './exports';\n";
+        let caller = concat!(
+            "import * as api from './barrel';\n",
+            "import * as direct from './exports';\n",
+            "import * as second from './other';\n",
+            "import * as vendor from 'vendor';\n",
+            "export function POST() { return api.draw(1) + direct.NavBar(2) + direct.mutable(3) + second.NavBar(4) + direct.Mixed(5) + direct.block(6) + direct.asi(7) + direct.comma(8) + direct.last(9); }\n",
+            "export function shadow(api: { draw(value: number): number }) { return api.draw(6); }\n",
+            "export function foreign() { return vendor.draw(7); }\n",
+            "export const bothRoles = direct.Mixed;\n",
+            "export function invalid() { return direct.notCallable(9); }\n",
+        );
+        let another =
+            "import * as api from './barrel';\nexport function another() { return api.draw(8); }\n";
+        let resolutions = [
+            module_resolution(
+                "caller.ts",
+                "./barrel",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "barrel.ts".to_owned(),
+                },
+            ),
+            module_resolution(
+                "another.ts",
+                "./barrel",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "barrel.ts".to_owned(),
+                },
+            ),
+            module_resolution(
+                "barrel.ts",
+                "./exports",
+                TszProjectModuleRequestKind::EsmReExport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "exports.ts".to_owned(),
+                },
+            ),
+            module_resolution(
+                "caller.ts",
+                "./exports",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "exports.ts".to_owned(),
+                },
+            ),
+            module_resolution(
+                "caller.ts",
+                "./other",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "other.ts".to_owned(),
+                },
+            ),
+            module_resolution(
+                "caller.ts",
+                "vendor",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::Unresolved,
+            ),
+        ];
+        let authority = native_tsz_project_with_resolutions(
+            &[
+                ("exports.ts", exports),
+                ("other.ts", other),
+                ("barrel.ts", barrel),
+                ("caller.ts", caller),
+                ("another.ts", another),
+            ],
+            &resolutions,
+        )?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("namespace function-value project"))?;
+        assert_exact_module_resolution_metadata(project, &resolutions);
+        for (path, source, cases) in [
+            (
+                "caller.ts",
+                caller,
+                vec![
+                    ("api.", "draw", "exports.ts", "NavBar", EntityKind::Constant),
+                    (
+                        "direct.",
+                        "NavBar",
+                        "exports.ts",
+                        "NavBar",
+                        EntityKind::Constant,
+                    ),
+                    (
+                        "direct.",
+                        "mutable",
+                        "exports.ts",
+                        "mutable",
+                        EntityKind::Static,
+                    ),
+                    (
+                        "second.",
+                        "NavBar",
+                        "other.ts",
+                        "NavBar",
+                        EntityKind::Constant,
+                    ),
+                    (
+                        "direct.",
+                        "Mixed",
+                        "exports.ts",
+                        "Mixed",
+                        EntityKind::Function,
+                    ),
+                    (
+                        "direct.",
+                        "block",
+                        "exports.ts",
+                        "block",
+                        EntityKind::Constant,
+                    ),
+                    ("direct.", "asi", "exports.ts", "asi", EntityKind::Constant),
+                    (
+                        "direct.",
+                        "comma",
+                        "exports.ts",
+                        "comma",
+                        EntityKind::Constant,
+                    ),
+                    (
+                        "direct.",
+                        "last",
+                        "exports.ts",
+                        "last",
+                        EntityKind::Constant,
+                    ),
+                ],
+            ),
+            (
+                "another.ts",
+                another,
+                vec![("api.", "draw", "exports.ts", "NavBar", EntityKind::Constant)],
+            ),
+        ] {
+            let facts = collect_native_tsz_file(project, path, source)?;
+            for (receiver, name, target_path, target_name, kind) in cases {
+                let token = format!("{receiver}{name}(");
+                let start = (source.find(&token).expect("authored exact call") + receiver.len()) as u32;
+                let sites = (0..facts.occurrence_len)
+                    .filter(|&index| {
+                        let owner = facts.occurrence_owners[index] as usize;
+                        facts.provenance.source_spans()[owner].is_some_and(|span| {
+                            span.start + facts.occurrences[index].span.start == start
+                                && span.start + facts.occurrences[index].span.end
+                                    == start + name.len() as u32
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    sites.len(),
+                    1,
+                    "one call token, no external twin: {path}:{token}"
+                );
+                let site = sites[0];
+                assert_eq!(facts.occurrences[site].kind, ReferenceKind::MethodCall);
+                assert_eq!(
+                    facts.occurrences[site].confidence,
+                    OccurrenceConfidence::Oracle
+                );
+                let slot = facts.occurrence_source_coordinate_slot[site]
+                    .expect("compiler-owned binding coordinate");
+                let coordinate = TypeScriptSourceCoordinate::decode(
+                    &facts.foreign_source_coordinate_text[slot as usize],
+                )
+                .expect("typed selected source target");
+                let target_source = if target_path == "other.ts" {
+                    other
+                } else {
+                    exports
+                };
+                let targets = collect_native_tsz_file(project, target_path, target_source)?;
+                let target = (0..targets.len())
+                    .find(|&index| {
+                        targets.names[index] == target_name.as_bytes() && targets.kinds[index] == kind
+                    })
+                    .expect("actual published declaration, not a display-name guess");
+                let span = targets.provenance.source_spans()[target].expect("authored target extent");
+                assert_eq!(coordinate.path, target_path);
+                assert_eq!(
+                    coordinate.source,
+                    *ContentId::<SourceFactDomain>::from_canonical_bytes(target_source.as_bytes())
+                );
+                assert_eq!(
+                    (coordinate.declaration_start, coordinate.declaration_end),
+                    (span.start, span.end)
+                );
+                assert!(
+                    matches!(facts.occurrences[site].target, OccurrenceTarget::Foreign(key) if key.kind == Some(kind))
+                );
+            }
+            if path == "caller.ts" {
+                for token in [
+                    "api.draw(6)",
+                    "vendor.draw(7)",
+                    "direct.Mixed;",
+                    "direct.notCallable(9)",
+                ] {
+                    let name = token.split('.').nth(1).expect("member");
+                    let name = name.split(['(', ';']).next().expect("member token");
+                    let start = (source.find(token).expect("opposing call")
+                        + token.find('.').expect("receiver")
+                        + 1) as u32;
+                    assert!(
+                        !(0..facts.occurrence_len).any(|index| {
+                            let owner = facts.occurrence_owners[index] as usize;
+                            facts.provenance.source_spans()[owner].is_some_and(|span| {
+                                span.start + facts.occurrences[index].span.start == start
+                                    && span.start + facts.occurrences[index].span.end
+                                        == start + name.len() as u32
+                            }) && facts.occurrence_source_coordinate_slot[index].is_some()
+                        }),
+                        "shadow, unknown module, or mixed bare roles cannot borrow a target: {token}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_type_only_imports_do_not_guess_merged_or_overloaded_targets()
+    -> Result<(), LaneError> {
         let dependency = "export interface Workout { name: string; }\nexport interface Merged { first: number; }\nexport interface Merged { second: number; }\nexport declare function pick(value: string): string;\nexport declare function pick(value: number): number;\nexport function Mixed() {}\nexport namespace Mixed { export const version = 1; }\n";
         let caller = "import type { Workout, Merged } from '@/models';\nimport { pick, Mixed } from '@/models';\nexport function take(value: Workout, merged: Merged) { const bothRoles = Mixed; return pick; }\n";
         let resolutions = [module_resolution("caller.ts", "@/models", TszProjectModuleRequestKind::EsmImport,

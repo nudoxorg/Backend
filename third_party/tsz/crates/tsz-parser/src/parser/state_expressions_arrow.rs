@@ -887,7 +887,11 @@ impl<'work> ParserStateCore<'work> {
         // Restore context flags
         self.context_flags = saved_flags;
 
-        let end_pos = self.token_end();
+        // The body is complete and the scanner holds the first token outside
+        // this arrow. Its end would absorb a semicolon, comma or the next ASI
+        // statement into both this initializer and its variable declaration.
+        // Keep the last consumed extent, as binary/conditional expressions do.
+        let end_pos = self.token_full_start();
 
         self.arena.add_function(
             syntax_kind_ext::ARROW_FUNCTION,
