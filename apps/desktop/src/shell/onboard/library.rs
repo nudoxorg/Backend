@@ -611,7 +611,7 @@ impl PackageWords {
             }
             ProjectPackages::Refused(words) if words.as_ref() == NOT_CARGO => {
                 return plain(format!(
-                    "Only a Rust project's packages are added for now, and {label} has no Cargo.toml."
+                    "Dependency packages are currently added from Rust projects. {label} has no Cargo.toml; project indexing is reported separately."
                 ));
             }
             ProjectPackages::Refused(words) => {
@@ -1131,7 +1131,7 @@ mod tests {
         let not_cargo = PackageWords::of("site", &ProjectPackages::Refused(Arc::from(NOT_CARGO)));
         assert_eq!(
             not_cargo.headline,
-            "Only a Rust project's packages are added for now, and site has no Cargo.toml."
+            "Dependency packages are currently added from Rust projects. site has no Cargo.toml; project indexing is reported separately."
         );
     }
 
