@@ -13,9 +13,11 @@ use lib.nu *
 # manifest instead), and the CI worktree is deleted with the container, so
 # this is the only chance to show why a step failed.
 def print-captured-failures []: nothing -> nothing {
-    let captured = (glob ".local/process-failures/*/std*.txt")
+    # A step killed at its time limit never reaches process-failures; its
+    # live capture files are still in process-captures.
+    let captured = (glob ".local/process-failures/*/std*.txt") ++ (glob ".local/process-captures/*/std{out,err}")
     if ($captured | is-empty) {
-        print "no .local/process-failures/*: the failure was before the CLI, so the text above is all of it"
+        print "no .local/process-failures/* or process-captures/*: the failure was before the CLI, so the text above is all of it"
         return
     }
     for file in $captured {
