@@ -1093,6 +1093,18 @@ fn neighbourhood(
     Ok(hood)
 }
 
+fn publish_symbol_primary(
+    context: &ReadContext<'_>,
+    symbol: &SymbolRef,
+    document: &backend_library::Document,
+    page: crate::model::pages::SymbolPage,
+) -> Result<(), ReadFailure> {
+    let primary = crate::model::pages::store::PrimarySymbol::from_document(symbol, document, page)
+        .ok_or_else(|| shape("primary document coordinate/package"))?;
+    context.publish(PageValue::PrimarySymbol(primary));
+    Ok(())
+}
+
 fn compose_symbol(
     engine: &mut dyn Engine,
     symbol: &SymbolRef,
@@ -1105,21 +1117,29 @@ fn compose_symbol(
     // The authenticated document is already useful. Optional graph, use-site
     // and outline reads must not hold its source and content behind their
     // round trips; they refine this same cancellable read generation below.
-    context.publish(PageValue::Symbol(page_mapping::symbol_page(&SymbolInputs {
-        coordinate: symbol,
-        document: &document,
-        related: Err(Gap::new(GapReason::Stale, "Reading related declarations")),
-        references: Err(Gap::new(GapReason::Stale, "Reading references")),
-        outline: Err(Gap::new(GapReason::Stale, "Reading the package outline")),
-    })));
+    publish_symbol_primary(
+        context,
+        symbol,
+        &document,
+        page_mapping::symbol_page(&SymbolInputs {
+            coordinate: symbol,
+            document: &document,
+            related: Err(Gap::new(GapReason::Stale, "Reading related declarations")),
+            references: Err(Gap::new(GapReason::Stale, "Reading references")),
+            outline: Err(Gap::new(GapReason::Stale, "Reading the package outline")),
+        }),
+    )?;
     check(context.cancel)?;
     let related = neighbourhood(engine, symbol, context);
     check(context.cancel)?;
     let references = references(engine, symbol);
     check(context.cancel)?;
     let reading_outline = Err(Gap::new(GapReason::Stale, "Reading the package outline"));
-    context.publish(PageValue::Symbol(page_mapping::symbol_page(
-        &SymbolInputs {
+    publish_symbol_primary(
+        context,
+        symbol,
+        &document,
+        page_mapping::symbol_page(&SymbolInputs {
             coordinate: symbol,
             document: &document,
             related: related
@@ -1132,8 +1152,8 @@ fn compose_symbol(
                 .map_err(Clone::clone),
             references: references.as_ref().map_err(page_mapping::client_gap),
             outline: reading_outline,
-        },
-    )));
+        }),
+    )?;
     let outline = symbol.package().map_or_else(
         || {
             Err(Gap::new(

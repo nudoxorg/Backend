@@ -704,3 +704,150 @@ fn the_generic_card_rises_after_the_rest_and_is_gone_after_the_pointer_leaves(cx
     eprintln!("HOVER-CARD: gone {gone} ms after the pointer left");
     assert!(gone <= 600, "a card the pointer left goes: {gone} ms");
 }
+
+struct PrimaryPendingReader {
+    root: Arc<std::sync::Mutex<Option<backend_library::ViewStateRoot>>>,
+    release: Arc<std::sync::atomic::AtomicBool>,
+}
+impl PageReader for PrimaryPendingReader {
+    fn read(
+        &mut self,
+        request: &ReadRequest,
+        context: &ReadContext<'_>,
+    ) -> Result<PageValue, ReadFailure> {
+        if let ReadRequest::Symbol(symbol) = request {
+            let root = self
+                .root
+                .lock()
+                .expect("fixture root mutex")
+                .expect("captured slot root");
+            let mut page = from_str();
+            let document = backend_library::Document::new(
+                backend_library::symbol_key("fixture primary document"),
+                root,
+                vec![],
+            );
+            page.identity.key = Some(document.symbol.into());
+            page.members =
+                Known::Unknown(Gap::new(GapReason::Stale, "Reading related declarations"));
+            page.references = Known::Unknown(Gap::new(GapReason::Stale, "Reading references"));
+            page.outline = Known::Unknown(Gap::new(GapReason::Stale, "Reading package outline"));
+            let primary = crate::model::pages::store::PrimarySymbol::from_document(
+                symbol,
+                &document,
+                page.clone(),
+            )
+            .expect("exact document identity");
+            context.publish(PageValue::PrimarySymbol(primary));
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !self.release.load(std::sync::atomic::Ordering::Acquire)
+                && !context.cancel.is_cancelled()
+                && std::time::Instant::now() < end
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            return if self.release.load(std::sync::atomic::Ordering::Acquire) {
+                Ok(PageValue::Symbol(page))
+            } else {
+                Err(ReadFailure::Cancelled)
+            };
+        }
+        if matches!(request, ReadRequest::Package(_)) {
+            return Err(ReadFailure::Fault(crate::core::ErrorValue::new(
+                crate::core::FaultCode::Transport,
+                "optional package pane unavailable",
+            )));
+        }
+        Fixture.read(request, context)
+    }
+}
+struct ReleasePrimaryRead(Arc<std::sync::atomic::AtomicBool>);
+impl Drop for ReleasePrimaryRead {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Real read-pool delivery, store admission, Reader destination and source rail.
+/// The GPUI test platform and owner authority are fixtures, not native GUI proof.
+#[gpui::test]
+fn authenticated_primary_source_renders_before_optional_reads_finish(cx: &mut TestAppContext) {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+    let root = Arc::new(Mutex::new(None));
+    let release = Arc::new(AtomicBool::new(false));
+    let pool = ReadPool::start(2, |_| PrimaryPendingReader {
+        root: Arc::clone(&root),
+        release: Arc::clone(&release),
+    })
+    .expect("read pool");
+    let mut rig = rig_with_reads(cx, None, 1440.0, 900.0, pool);
+    let _release_on_failure = ReleasePrimaryRead(Arc::clone(&release));
+    *root.lock().expect("fixture root mutex") = Some(
+        rig.graph
+            .store
+            .read_with(rig.cx, |store, _| store.snapshot().key().root()),
+    );
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    let reader = rig
+        .shell
+        .read_with(rig.cx, |shell, _| shell.reader_entity());
+    let links = reader.read_with(rig.cx, |reader, _| reader.navigation_links());
+    rig.cx.update(|_, cx| {
+        links.dispatch(
+            crate::navigation::Intent::Navigate(route("de.rs", 2709, "from_str")),
+            cx,
+        )
+    });
+    let end = Instant::now() + Duration::from_secs(2);
+    let ledger = loop {
+        rig.draw();
+        let ledger = painted(&mut rig);
+        if ledger
+            .targets
+            .iter()
+            .any(|target| target.key == "s6-block-source")
+        {
+            break ledger;
+        }
+        assert!(
+            Instant::now() < end,
+            "primary source rail must render with optional read held"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert!(
+        !release.load(Ordering::Acquire),
+        "optional read is still held"
+    );
+    assert!(
+        !ledger
+            .texts
+            .iter()
+            .any(|text| text.content.contains("Opening page")),
+        "Reader no longer retains the departure"
+    );
+    rig.graph.store.read_with(rig.cx, |store, _| {
+        let route = store.snapshot().route();
+        let destination = crate::shell::bodies::reading_destination(store, route, None);
+        assert!(!destination.pending() && destination.displayed());
+        let selected = crate::runtime::store::route_symbol(route).expect("selected symbol");
+        let value = store.symbol(&selected);
+        assert!(
+            crate::core::admit_resource(&value, store.snapshot().key(), store.owner_serving())
+                .allows_actions()
+        );
+        assert!(
+            value
+                .loaded_value()
+                .expect("primary page")
+                .references
+                .gap()
+                .is_some(),
+            "secondary gap remains explicit"
+        );
+    });
+    release.store(true, Ordering::Release);
+    rig.settle();
+}
