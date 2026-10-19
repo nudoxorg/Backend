@@ -22,8 +22,8 @@ from smoke import isolated_env
 FAULTS = [
     ("unknown-command", ["serch", "ferris"], "json", 64, "serch", ["did you mean `search`"]),
     ("unknown-option", ["search", "ferris", "--deep"], "json", 64, "--deep", ["--limit"]),
-    ("missing-coordinate", ["show"], "json", 64, None, ["nudox show <COORDINATE>"]),
-    ("missing-alias-coordinate", ["document"], "json", 64, "document", ["nudox document <COORDINATE>"]),
+    ("missing-coordinate", ["show"], "json", 64, None, ["nudox show [COORDINATE]", "--selected-id SELECTED_ID", "supply a coordinate or --selected-id"]),
+    ("missing-alias-coordinate", ["document"], "json", 64, "document", ["nudox document [COORDINATE]", "--selected-id SELECTED_ID", "--cursor CURSOR"]),
     ("out-of-range-limit", ["search", "ferris", "--limit", "900"], "json", 64, "limit", ["900"]),
     # Errors from global option parsing deliberately use the human fallback.
     ("unpaged-packages-zero", ["packages", "--limit", "0"], "human", 64, None, ["--limit", "does not take a page bound"]),
@@ -90,7 +90,8 @@ def run_one(bin_dir: Path, name: str) -> float:
             result = invoke(["--help"] if name == "help" else ["add", "--help"])
             require(result.returncode == 0 and not result.stderr, "help did not exit cleanly")
             fragments = (["--format human|markdown|json", "--passive", "nudox add .",
-                          'nudox search "error handling"', "claude mcp add", "surface <JSON>"]
+                          'nudox search "error handling"', "nudox mcp-config", "Claude Code/Codex stdio setup",
+                          "no config writes or service start", "surface <JSON>"]
                          if name == "help" else ["current directory", "--execution-intent", "bounded remote calibration",
                                                      "--wait", "--wait-timeout SECONDS", "terminal receipt"])
             for fragment in fragments:
