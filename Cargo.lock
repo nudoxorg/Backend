@@ -1775,8 +1775,8 @@ version = "0.2.0"
 dependencies = [
  "backend-compile",
  "backend-engine",
- "backend-frontend-python",
  "backend-extension-turso",
+ "backend-frontend-python",
  "backend-platform",
  "backend-semantic",
  "backend-store",
