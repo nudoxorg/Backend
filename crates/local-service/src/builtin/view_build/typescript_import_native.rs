@@ -116,6 +116,17 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
                 "export function generateSchedule(value: number): number { return value; }\n",
                 "export const scheduleVersion = 1;\n",
                 "export const scheduleArrow = (value: number): number => value;\n",
+                // Same authored pattern as the genuine Angular app.config.ts:
+                // one property token must not become structural+compiler rows.
+                "export interface ConduitDebug {\n",
+                "  getToken: () => string | null;\n",
+                "  getAuthState: () => string;\n",
+                "  getCurrentUser: () => string | null;\n",
+                "}\n",
+                "export interface WindowState { __conduit_debug__?: ConduitDebug; }\n",
+                "export type InlineState = { commaMember: string, semicolonMember: number; };\n",
+                "export interface Left { sameMember: string; }\n",
+                "export interface Right { sameMember: number; }\n",
             ),
         ),
     ];
@@ -414,6 +425,55 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
         local_external_twins.is_empty(),
         "selected local targets add no external twin: {local_external_twins:?}"
     );
+    for (name, expected) in [
+        ("getToken", 1),
+        ("getAuthState", 1),
+        ("getCurrentUser", 1),
+        ("__conduit_debug__", 1),
+        ("commaMember", 1),
+        ("semicolonMember", 1),
+        ("sameMember", 2),
+    ] {
+        let facts = corpus
+            .facts()
+            .iter()
+            .filter(|fact| fact.presentation().name == name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            facts.len(),
+            expected,
+            "one selected row per authored property extent: {name}"
+        );
+        let ids = facts
+            .iter()
+            .map(|fact| fact.presentation().id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            ids.len(),
+            expected,
+            "distinct same-name authored owners remain distinct"
+        );
+        for id in ids {
+            let rows = projected
+                .rows
+                .iter()
+                .filter(|row| row.id.stable_key() == id)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                rows.len(),
+                1,
+                "selected row/query identity parity for {name}"
+            );
+            assert_eq!(
+                rows[0]
+                    .source
+                    .captured()
+                    .expect("authored property source")
+                    .path(),
+                "src/scheduler.ts"
+            );
+        }
+    }
     let target = corpus
         .facts()
         .iter()
@@ -493,6 +553,10 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
             "structuralOnly",
             "remote",
             "scheduleArrow",
+            "getToken",
+            "__conduit_debug__",
+            "commaMember",
+            "sameMember",
         ]
         .map(|name| search_ids(selected, name));
         // Full search can also match another import's shared statement or
@@ -502,6 +566,10 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
             (1, "scheduleVersion", 2),
             (2, "structuralOnly", 1),
             (4, "scheduleArrow", 1),
+            (5, "getToken", 1),
+            (6, "__conduit_debug__", 1),
+            (7, "commaMember", 1),
+            (8, "sameMember", 2),
         ] {
             let ids = corpus
                 .facts()
@@ -534,6 +602,10 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
         "structuralOnly",
         "remote",
         "scheduleArrow",
+        "getToken",
+        "__conduit_debug__",
+        "commaMember",
+        "sameMember",
     ]
     .map(|name| search_ids(selected, name));
     assert_eq!(
