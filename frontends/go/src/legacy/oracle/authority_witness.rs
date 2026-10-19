@@ -1758,11 +1758,11 @@ mod capture_scratch_tests {
 
     #[test]
     fn local_tree_and_selected_file_keep_independent_budgets_and_guard_reuse() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().canonicalize().unwrap();
+        let directory = tempfile::tempdir().expect("create test tempdir");
+        let root = directory.path().canonicalize().expect("canonicalize test root");
         let path = root.join("value.go");
         let content = vec![b'x'; 128 * 1024 + 7];
-        std::fs::write(&path, &content).unwrap();
+        std::fs::write(&path, &content).expect("write test fixture");
         let mut scratch = CaptureScratch::default();
         let mut budget = GoLocalTreeBudget::default();
         let tree = capture_local_tree(&root, &mut budget, &mut scratch, None);
@@ -1795,10 +1795,10 @@ mod capture_scratch_tests {
 
     #[test]
     fn local_tree_cancels_during_a_chunk_without_admitting_partial_content() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().canonicalize().unwrap();
+        let directory = tempfile::tempdir().expect("create test tempdir");
+        let root = directory.path().canonicalize().expect("canonicalize test root");
         let path = root.join("value.go");
-        std::fs::write(&path, vec![b'x'; 128 * 1024]).unwrap();
+        std::fs::write(&path, vec![b'x'; 128 * 1024]).expect("write test fixture");
         let cancelled = std::sync::Arc::new(AtomicBool::new(false));
         let mut scratch = CaptureScratch::default();
         scratch.cancel_after_bytes = Some((64 * 1024, cancelled.clone()));
@@ -1834,16 +1834,20 @@ mod capture_scratch_tests {
     #[cfg(unix)]
     #[test]
     fn local_tree_does_not_read_or_reuse_an_escaping_symlink() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().canonicalize().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        let source = outside.path().canonicalize().unwrap().join("value.go");
-        std::fs::write(&source, b"package outside\n").unwrap();
+        let directory = tempfile::tempdir().expect("create test tempdir");
+        let root = directory.path().canonicalize().expect("canonicalize test root");
+        let outside = tempfile::tempdir().expect("create test tempdir");
+        let source = outside
+            .path()
+            .canonicalize()
+            .expect("canonicalize test root")
+            .join("value.go");
+        std::fs::write(&source, b"package outside\n").expect("write test fixture");
         let mut scratch = CaptureScratch::default();
         assert!(matches!(
             scratch.capture_file(
                 &source,
-                &[source.parent().unwrap().to_path_buf()],
+                &[source.parent().expect("outside source has parent").to_path_buf()],
                 &mut 0,
                 CaptureLimits {
                     file_bytes: 1024,
@@ -1853,7 +1857,7 @@ mod capture_scratch_tests {
             ),
             CapturedFile::File { .. }
         ));
-        std::os::unix::fs::symlink(&source, root.join("value.go")).unwrap();
+        std::os::unix::fs::symlink(&source, root.join("value.go")).expect("create test symlink");
         let tree = capture_local_tree(&root, &mut GoLocalTreeBudget::default(), &mut scratch, None);
         assert!(!tree.witness.complete);
         assert_eq!(tree.witness.bytes, 0);

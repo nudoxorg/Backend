@@ -4425,7 +4425,7 @@ if [ -f '{}' ]; then printf '%s\n' changed > "$GOROOT/VERSION"; fi
             "package_batch_child",
             "compiler_lane_wait",
         ] {
-            let error = expired.check(phase).unwrap_err();
+            let error = expired.check(phase).expect_err("expired phase must fail");
             assert_eq!(GoOracleControl::deadline_phase(&error), Some(phase));
         }
     }
@@ -4496,12 +4496,12 @@ if [ -f '{}' ]; then printf '%s\n' changed > "$GOROOT/VERSION"; fi
     #[test]
     fn go_toolchain_memo_lock_wait_keeps_the_original_absolute_deadline() {
         let memo = ToolchainMemo::default();
-        let guard = memo.0.lock().unwrap();
+        let guard = memo.0.lock().expect("test mutex not poisoned");
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(20);
         let control = GoOracleControl::new(None, deadline);
         let error = memo
             .identity_controlled(Path::new("unused-go"), Path::new("unused-root"), control)
-            .unwrap_err();
+            .expect_err("deadline wait must fail");
         assert!(
             matches!(error.get_ref().and_then(|e| e.downcast_ref::<OracleError>()), Some(error) if GoOracleControl::deadline_phase(error).is_some())
         );

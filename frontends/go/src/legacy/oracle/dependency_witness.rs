@@ -447,49 +447,74 @@ mod tests {
 
     #[test]
     fn same_length_dependency_change_invalidates_content_witness() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("create test tempdir");
         let path = root.path().join("dependency.go");
-        std::fs::write(&path, b"package dep\nconst Value = 1\n").unwrap();
-        let before = capture_file(&path, &[root.path().canonicalize().unwrap()], &mut 0, None);
-        std::fs::write(&path, b"package dep\nconst Value = 2\n").unwrap();
-        let after = capture_file(&path, &[root.path().canonicalize().unwrap()], &mut 0, None);
+        std::fs::write(&path, b"package dep\nconst Value = 1\n").expect("write test fixture");
+        let before = capture_file(
+            &path,
+            &[root.path().canonicalize().expect("canonicalize test root")],
+            &mut 0,
+            None,
+        );
+        std::fs::write(&path, b"package dep\nconst Value = 2\n").expect("write test fixture");
+        let after = capture_file(
+            &path,
+            &[root.path().canonicalize().expect("canonicalize test root")],
+            &mut 0,
+            None,
+        );
         assert!(matches!(before, DependencyFileState::File { .. }));
         assert_ne!(before, after);
     }
 
     #[test]
     fn missing_dependency_and_later_setup_have_different_witnesses() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("create test tempdir");
         let path = root.path().join("dependency.go");
         assert_eq!(
-            capture_file(&path, &[root.path().canonicalize().unwrap()], &mut 0, None),
+            capture_file(
+                &path,
+                &[root.path().canonicalize().expect("canonicalize test root")],
+                &mut 0,
+                None,
+            ),
             DependencyFileState::Unavailable
         );
-        std::fs::write(&path, b"package dep\n").unwrap();
+        std::fs::write(&path, b"package dep\n").expect("write test fixture");
         assert!(matches!(
-            capture_file(&path, &[root.path().canonicalize().unwrap()], &mut 0, None),
+            capture_file(
+                &path,
+                &[root.path().canonicalize().expect("canonicalize test root")],
+                &mut 0,
+                None,
+            ),
             DependencyFileState::File { .. }
         ));
     }
 
     #[test]
     fn oversized_dependency_never_becomes_a_complete_witness() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("create test tempdir");
         let path = root.path().join("large.go");
         std::fs::File::create(&path)
-            .unwrap()
+            .expect("create oversized fixture")
             .set_len(FILE_BYTES_LIMIT + 1)
-            .unwrap();
+            .expect("set fixture size over limit");
         assert_eq!(
-            capture_file(&path, &[root.path().canonicalize().unwrap()], &mut 0, None),
+            capture_file(
+                &path,
+                &[root.path().canonicalize().expect("canonicalize test root")],
+                &mut 0,
+                None,
+            ),
             DependencyFileState::Limit
         );
-        std::fs::write(&path, b"package dep\n").unwrap();
+        std::fs::write(&path, b"package dep\n").expect("write test fixture");
         let mut total = TOTAL_BYTES_LIMIT;
         assert_eq!(
             capture_file(
                 &path,
-                &[root.path().canonicalize().unwrap()],
+                &[root.path().canonicalize().expect("canonicalize test root")],
                 &mut total,
                 None
             ),
@@ -501,11 +526,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn dependency_directory_is_refused_as_a_source_file() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("create test tempdir");
         assert_eq!(
             capture_file(
                 root.path(),
-                &[root.path().canonicalize().unwrap()],
+                &[root.path().canonicalize().expect("canonicalize test root")],
                 &mut 0,
                 None
             ),
@@ -515,11 +540,11 @@ mod tests {
 
     #[test]
     fn dependency_path_cannot_escape_the_admitted_root() {
-        let root = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("create test tempdir");
+        let outside = tempfile::tempdir().expect("create test tempdir");
         let path = outside.path().join("dependency.go");
-        std::fs::write(&path, b"package outside\n").unwrap();
-        let roots = [root.path().canonicalize().unwrap()];
+        std::fs::write(&path, b"package outside\n").expect("write test fixture");
+        let roots = [root.path().canonicalize().expect("canonicalize test root")];
         assert!(!admitted_path(&path, &roots));
         assert_eq!(
             capture_file(&path, &roots, &mut 0, None),
@@ -532,27 +557,32 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn dependency_symlink_cannot_escape_the_admitted_root() {
-        let root = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("create test tempdir");
+        let outside = tempfile::tempdir().expect("create test tempdir");
         let source = outside.path().join("dependency.go");
-        std::fs::write(&source, b"package outside\n").unwrap();
+        std::fs::write(&source, b"package outside\n").expect("write test fixture");
         let link = root.path().join("dependency.go");
-        std::os::unix::fs::symlink(&source, &link).unwrap();
+        std::os::unix::fs::symlink(&source, &link).expect("create test symlink");
         assert_eq!(
-            capture_file(&link, &[root.path().canonicalize().unwrap()], &mut 0, None),
+            capture_file(
+                &link,
+                &[root.path().canonicalize().expect("canonicalize test root")],
+                &mut 0,
+                None,
+            ),
             DependencyFileState::Unavailable
         );
     }
 
     #[test]
     fn cancelled_dependency_read_does_not_admit_content() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("create test tempdir");
         let path = root.path().join("dependency.go");
-        std::fs::write(&path, b"package dep\n").unwrap();
+        std::fs::write(&path, b"package dep\n").expect("write test fixture");
         assert_eq!(
             capture_file(
                 &path,
-                &[root.path().canonicalize().unwrap()],
+                &[root.path().canonicalize().expect("canonicalize test root")],
                 &mut 0,
                 Some(&AtomicBool::new(true))
             ),
