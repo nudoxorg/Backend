@@ -1,7 +1,6 @@
 //! Cold saved-store discovery uses the real startup/configuration and owner
 //! recovery paths. A bootstrap cwd is not an instruction to index that folder.
 #![cfg(unix)]
-#![allow(clippy::expect_used)]
 
 use backend_client::Session;
 use backend_library::{
@@ -216,7 +215,7 @@ fn cold_owner(root: &Path) -> Result<(), Box<dyn Error>> {
     let config = ProcessConfig::parse(args)?;
     assert_eq!(config.workspace, paths.data());
     bootstrap
-        .expect("real versioned automatic-start prefix")
+        .ok_or_else(|| io::Error::other("missing versioned automatic-start prefix"))?
         .initialize(
             &config.workspace,
             config.endpoint.as_path(),
@@ -239,13 +238,21 @@ fn cold_owner(root: &Path) -> Result<(), Box<dyn Error>> {
             return Err(io::Error::other("authenticated cold package shelf").into());
         };
         let packages = shelf
+            .root
             .rows()
             .iter()
             .filter(|row| matches!(row.id, RowId::Package(_)))
             .map(|row| row.label.as_str())
             .collect::<Vec<_>>();
-        assert!(packages.contains(&project.to_str().expect("fixture UTF-8")));
-        assert!(!packages.contains(&paths.data().to_str().expect("fixture UTF-8")));
+        let project_label = project
+            .to_str()
+            .ok_or_else(|| io::Error::other("selected fixture path is not UTF-8"))?;
+        let bootstrap_label = paths
+            .data()
+            .to_str()
+            .ok_or_else(|| io::Error::other("bootstrap fixture path is not UTF-8"))?;
+        assert!(packages.contains(&project_label));
+        assert!(!packages.contains(&bootstrap_label));
         let saved = backend_client::find_existing_indexed_project(&project)?;
         let selected = saved.open()?;
         saved.revalidate(&selected)?;
