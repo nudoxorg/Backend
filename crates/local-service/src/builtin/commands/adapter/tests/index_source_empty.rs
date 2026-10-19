@@ -310,8 +310,27 @@ fn reopen_journal_owner(
     )?)
 }
 
+// These callbacks inspect freshly prepared publications, before owner reopen.
+// The public manifest encoder supplies their canonical control bytes; stored
+// membership uses the exact SCM1 envelope produced by
+// PreparedTransition::with_stored_membership, rather than exporting membership.
+fn fresh_prepared_closure_bytes(
+    persisted: &backend_engine::PersistedTransition,
+) -> Result<Vec<u8>, backend_store::StoreError> {
+    let encoded = persisted.closure_manifest().encode(64 * 1024 * 1024)?;
+    if let Some(membership) = persisted.membership_id() {
+        let mut bytes = Vec::from(&b"SCM1"[..]);
+        bytes.extend_from_slice(membership.as_bytes());
+        bytes.extend_from_slice(&encoded);
+        Ok(bytes)
+    } else {
+        Ok(encoded)
+    }
+}
+
 fn prepared_summary(
     persisted: &backend_engine::PersistedTransition,
+    closure: &[u8],
 ) -> backend_engine::WorkspaceRecord {
     backend_engine::WorkspaceRecord::PreparedSummary {
         request: persisted.request(),
@@ -322,8 +341,8 @@ fn prepared_summary(
         delta_digest: *backend_engine::blake3::hash(persisted.delta_bytes()).as_bytes(),
         commit_bytes: persisted.commit_bytes().len() as u64,
         commit_digest: *backend_engine::blake3::hash(persisted.commit_bytes()).as_bytes(),
-        closure_bytes: persisted.closure_bytes().len() as u64,
-        closure_digest: *backend_engine::blake3::hash(persisted.closure_bytes()).as_bytes(),
+        closure_bytes: closure.len() as u64,
+        closure_digest: *backend_engine::blake3::hash(closure).as_bytes(),
     }
 }
 
@@ -415,16 +434,17 @@ fn rust_ingest_publication_summary_reopens_with_exact_authenticated_source_facts
         super::super::commit_builtin_intent(daemon, 0xB402, &intent)?;
         let selected = daemon.engine().daemon().owner().snapshot();
         let summary = selected.with_persisted_transition(|persisted, _store| {
+            let closure = fresh_prepared_closure_bytes(persisted)?;
             let lengths = [
                 persisted.manifest_bytes().len(),
                 persisted.delta_bytes().len(),
                 persisted.commit_bytes().len(),
-                persisted.closure_bytes().len(),
+                closure.len(),
             ];
             assert!(lengths.iter().all(|length| *length <= 64 * 1024 * 1024));
             assert!(lengths.iter().sum::<usize>() > 225);
-            prepared_summary(persisted)
-        })?;
+            Ok::<_, backend_store::StoreError>(prepared_summary(persisted, &closure))
+        })??;
         (
             expected_facts,
             summary,
@@ -512,15 +532,15 @@ fn diagnostic_grammar_quarantine_preserves_real_published_store_head()
         super::super::commit_builtin_intent(daemon, 0xB501, &BuiltinIntent::add(package, &label)?)?;
         let selected = daemon.engine().daemon().owner().snapshot();
         let legacy = selected.with_persisted_transition(|persisted, _| {
-            backend_engine::WorkspaceRecord::Prepared {
+            Ok::<_, backend_store::StoreError>(backend_engine::WorkspaceRecord::Prepared {
                 request: persisted.request(),
                 transaction: persisted.transaction(),
                 manifest: persisted.manifest_bytes().to_vec(),
                 delta: persisted.delta_bytes().to_vec(),
                 commit: persisted.commit_bytes().to_vec(),
-                closure: persisted.closure_bytes().to_vec(),
-            }
-        })?;
+                closure: fresh_prepared_closure_bytes(persisted)?,
+            })
+        })??;
         (*selected.root().as_bytes(), selected.sequence(), legacy)
     };
     close_journal_fixture(&mut fixture);
