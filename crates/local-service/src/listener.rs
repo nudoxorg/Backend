@@ -507,7 +507,12 @@ impl<O: OwnerService> UnixListenerService<O> {
                 self.accept_available()?;
                 let made_progress = self.drain_owner_once();
                 let active = self.active.load(Ordering::Acquire);
-                if made_progress || active != 0 {
+                // A submitter can disconnect while an admitted background
+                // worker is still running. Its silence is not owner idleness.
+                if made_progress
+                    || active != 0
+                    || self.service.owner().has_inflight_work()
+                {
                     last_progress = Instant::now();
                 }
                 if active == 0 && self.idle_window_elapsed(last_progress) {
@@ -2146,6 +2151,144 @@ mod tests {
         );
         drop(listener);
         assert!(!path.exists(), "a retiring listener must unlink its socket");
+    }
+
+    /// A disconnected submitter does not turn a real background worker into
+    /// an idle owner. Finished work must release the same idle window again.
+    #[test]
+    fn an_owner_with_inflight_work_retires_only_after_its_worker_finishes() {
+        struct Compiling {
+            worker: Option<thread::JoinHandle<()>>,
+            polls: Arc<AtomicUsize>,
+        }
+        impl OwnerService for Compiling {
+            fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+                Ok(body.to_vec())
+            }
+            fn engine(&mut self, _: u64, _: EngineRequest) -> Result<EngineStatus, ProtocolError> {
+                Ok(EngineStatus::Accepted)
+            }
+            fn serve_one(&mut self) -> bool {
+                self.polls.fetch_add(1, Ordering::Release);
+                false
+            }
+            fn has_inflight_work(&self) -> bool {
+                self.worker
+                    .as_ref()
+                    .is_some_and(|worker| !worker.is_finished())
+            }
+            fn close(&mut self) {
+                if let Some(worker) = self.worker.take() {
+                    worker
+                        .join()
+                        .unwrap_or_else(|_| panic!("background worker"));
+                }
+            }
+        }
+        struct RunningListener {
+            shutdown: super::ListenerShutdown,
+            release: Option<SyncSender<()>>,
+            worker: Option<thread::JoinHandle<Result<(usize, bool), super::ListenerError>>>,
+        }
+        impl Drop for RunningListener {
+            fn drop(&mut self) {
+                if let Some(release) = self.release.take() {
+                    let _ = release.send(());
+                }
+                self.shutdown.request();
+                if let Some(worker) = self.worker.take() {
+                    let _ = worker.join();
+                }
+            }
+        }
+
+        let path = socket_path("idle-inflight");
+        let polls = Arc::new(AtomicUsize::new(0));
+        let (release, gate) = mpsc::sync_channel(1);
+        let background = thread::spawn(move || {
+            let _ = gate.recv();
+        });
+        let config = ListenerConfig {
+            path: path.clone(),
+            limits: limits(),
+            io_timeout: Duration::from_millis(250),
+            request_idle_timeout: Duration::from_secs(5),
+            owner_reply_timeout: Duration::from_secs(5),
+            max_clients: 2,
+            poll_interval: Duration::from_millis(1),
+            idle_timeout: Some(Duration::from_millis(150)),
+        };
+        let service = LocaldService::new(
+            Compiling {
+                worker: Some(background),
+                polls: Arc::clone(&polls),
+            },
+            config.limits,
+        )
+        .unwrap_or_else(|error| panic!("service: {error}"));
+        let mut listener =
+            UnixListenerService::bind(service, config).unwrap_or_else(|error| panic!("bind: {error}"));
+        let shutdown = listener.shutdown_handle();
+        let worker = thread::spawn(move || {
+            let report = listener.run()?;
+            Ok((report.connections, listener.is_shutdown()))
+        });
+        let mut running = RunningListener {
+            shutdown,
+            release: Some(release),
+            worker: Some(worker),
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while polls.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert!(
+            polls.load(Ordering::Acquire) > 0,
+            "the real listener must be polling"
+        );
+        // Three idle windows with no clients and no owner-loop progress.
+        thread::sleep(Duration::from_millis(450));
+        assert!(
+            !running.shutdown.is_requested(),
+            "idle retirement must not cancel an admitted running worker"
+        );
+        assert!(path.exists(), "the running owner's endpoint remains bound");
+
+        running
+            .release
+            .take()
+            .expect("release retained")
+            .send(())
+            .unwrap_or_else(|_| panic!("release actual worker"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !running
+            .worker
+            .as_ref()
+            .is_some_and(thread::JoinHandle::is_finished)
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            running
+                .worker
+                .as_ref()
+                .is_some_and(thread::JoinHandle::is_finished),
+            "finished work must not keep an idle owner resident"
+        );
+        let (connections, retired) = running
+            .worker
+            .take()
+            .expect("listener retained")
+            .join()
+            .unwrap_or_else(|_| panic!("listener thread"))
+            .unwrap_or_else(|error| panic!("run: {error}"));
+        assert_eq!(connections, 0, "no connected client supplied the keepalive");
+        assert!(retired, "completion restores ordinary idle retirement");
+        assert!(
+            !path.exists(),
+            "retirement still removes the owned endpoint"
+        );
     }
 
     /// The owner holds locks that a replacement candidate needs. A candidate
