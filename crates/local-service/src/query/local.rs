@@ -1503,6 +1503,13 @@ impl QueryCoordinator {
         let Some(corpus) = Arc::get_mut(&mut self.corpus) else {
             return Ok(None);
         };
+        // Durable revision cannot reuse postings across workspace identities.
+        // The caller already admitted the complete current corpus; return it
+        // to the normal exact open/build path without reconstructing old rows
+        // solely for a revision that must rebuild anyway.
+        if durable_root.is_some() && corpus.workspace != prepared.workspace {
+            return Ok(None);
+        }
         let previous_state = if durable_root.is_some() {
             let previous_view_capability = corpus
                 .view
@@ -2825,6 +2832,59 @@ mod prepared_corpus_tests {
             );
             assert_eq!(candidate.maintenance(), Some(SnapshotMaintenance::Reused));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn a_durable_workspace_change_prepares_only_current_and_keeps_exact_cold_search()
+    -> TestResult {
+        let directory = Directory::new()?;
+        let (workspace, old_view) = super::super::tests::selected_view();
+        let next_view = renamed_view(&old_view)?;
+        let head = crate::builtin::genesis()?;
+        let authority = head
+            .manifest()
+            .authority_closure()
+            .ok_or_else(|| std::io::Error::other("missing checked authority"))?;
+        // Derive a different checked workspace root through the public
+        // manifest API; no raw root constructor or fabricated digest.
+        let next_workspace = backend_version::WorkspaceManifest::new_checked(
+            u32::from(backend_version::CANONICAL_VERSION),
+            Vec::new(),
+            Vec::new(),
+            authority,
+            crate::builtin::admitted_coverage()?,
+        )?
+        .root();
+        assert_ne!(workspace, next_workspace);
+        let mut owner = directory.owner(true, "workspace-change");
+        let mut fresh = directory.owner(true, "fresh-current");
+        select(&mut owner, workspace, &old_view)?;
+        let old_ids = search(&owner, "alpha")?.ranked_row_ids();
+        select(&mut fresh, next_workspace, &next_view)?;
+        let measure = Measurement::start();
+        select(&mut owner, next_workspace, &next_view)?;
+        assert_eq!(
+            measure.take(),
+            [next_view.root()],
+            "a guaranteed rebuild must not prepare the old document relation"
+        );
+        assert_eq!(owner.maintenance(), Some(SnapshotMaintenance::Rebuilt));
+        assert_eq!(owner.projection_builds(), 2);
+        assert_equivalent_searches(&fresh, &owner, &next_view)?;
+        select(&mut owner, next_workspace, &next_view)?;
+        assert!(measure.take().is_empty(), "exact warm selection stays free");
+        assert_eq!(owner.maintenance(), Some(SnapshotMaintenance::Reused));
+        let mut reopened = directory.owner(true, "workspace-change");
+        select(&mut reopened, next_workspace, &next_view)?;
+        assert_eq!(reopened.maintenance(), Some(SnapshotMaintenance::Restored));
+        assert_eq!(reopened.projection_builds(), 0);
+        assert_eq!(reopened.projection_opens(), 1);
+        assert_equivalent_searches(&fresh, &reopened, &next_view)?;
+        let mut old_reopened = directory.owner(true, "workspace-change");
+        select(&mut old_reopened, workspace, &old_view)?;
+        assert_eq!(old_reopened.maintenance(), Some(SnapshotMaintenance::Restored));
+        assert_eq!(search(&old_reopened, "alpha")?.ranked_row_ids(), old_ids);
         Ok(())
     }
 
