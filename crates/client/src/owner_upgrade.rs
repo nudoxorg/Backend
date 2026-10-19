@@ -75,7 +75,7 @@ impl Session {
         let deadline = started + initial;
         #[cfg(target_os = "linux")]
         let mut intended_image: Option<
-            backend_replication::local_peer::DefaultLocaldImage,
+            backend_replication::DefaultLocaldImage,
         > = None;
         for attempt in 0..2 {
             if let Some(context) = context {
