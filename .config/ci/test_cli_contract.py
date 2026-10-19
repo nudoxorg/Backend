@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 import unittest
 
-from cli_contract import check_fault, run_cases
+from cli_contract import FAULTS, check_fault, run_cases, run_one
 
 
 class RefusalAdmissionTests(unittest.TestCase):
@@ -20,6 +20,37 @@ class RefusalAdmissionTests(unittest.TestCase):
                 binary.chmod(0o700)
                 with self.assertRaises(RuntimeError):
                     run_cases(Path(temporary), ["unknown-command"])
+
+    def test_current_declaration_usage_requires_selected_id_alternative(self):
+        for name, verb, operand, suffix in (
+            ("missing-coordinate", "show", None, " (supply a coordinate or --selected-id)"),
+            ("missing-alias-coordinate", "document", "document", ""),
+        ):
+            fragments = next(case[5] for case in FAULTS if case[0] == name)
+            detail = f"usage: nudox {verb} [COORDINATE] [--selected-id SELECTED_ID] [--cursor CURSOR]{suffix}"
+            body = {"answer": "fault", "slug": "usage", "operand": operand, "detail": detail}
+            result = subprocess.CompletedProcess([], 64, json.dumps(body), "")
+            check_fault(result, "json", 64, operand, fragments)
+            for removed in fragments:
+                wrong = dict(body, detail=detail.replace(removed, ""))
+                with self.subTest(case=name, removed=removed), self.assertRaises(RuntimeError):
+                    check_fault(subprocess.CompletedProcess([], 64, json.dumps(wrong), ""),
+                                "json", 64, operand, fragments)
+
+    def test_help_requires_safe_installed_mcp_setup_in_actual_runner(self):
+        from unittest.mock import patch
+        help_text = ("--format human|markdown|json --passive nudox add . "
+                     'nudox search "error handling" nudox mcp-config '
+                     "Claude Code/Codex stdio setup; no config writes or service start surface <JSON>")
+        with patch("cli_contract.process_custody.run", return_value=
+                   subprocess.CompletedProcess([], 0, help_text, "")):
+            run_one(Path("/not-executed"), "help")
+        for removed in ("nudox mcp-config", "Claude Code/Codex stdio setup",
+                        "no config writes or service start"):
+            with self.subTest(removed=removed), patch("cli_contract.process_custody.run", return_value=
+                    subprocess.CompletedProcess([], 0, help_text.replace(removed, ""), "")):
+                with self.assertRaises(RuntimeError):
+                    run_one(Path("/not-executed"), "help")
 
     def test_lost_suggestion_or_operand_cannot_pass(self):
         for field in ("operand", "detail"):
