@@ -957,3 +957,109 @@ fn ask_veil_blocks_wheel_over_the_covered_shelf_but_keeps_its_editor_live(cx: &m
     assert!(offset(&mut rig) < uncovered.0 - 20.0,
         "the same native wheel point scrolls the Shelf once the veil retires");
 }
+
+struct ProjectNavigationReader;
+impl PageReader for ProjectNavigationReader {
+    fn read(
+        &mut self,
+        request: &ReadRequest,
+        context: &ReadContext<'_>,
+    ) -> Result<PageValue, ReadFailure> {
+        if matches!(request, ReadRequest::Orbit) {
+            let package =
+                PackageRef::parse("/fixture/mac-qa/first-package").expect("indexed exact package");
+            return Ok(PageValue::Orbit(crate::model::pages::OrbitModel {
+                indexed: Known::Known(Arc::from([crate::model::pages::IndexedPackage {
+                    name: Arc::from("first-package"),
+                    package,
+                    readiness: crate::model::pages::Readiness::Ready,
+                    verified_registry_release: None,
+                }])),
+                projects: Known::Known(Arc::from([])),
+                explore: Known::Known(Arc::from([])),
+                tree: Known::Known(Arc::from([])),
+            }));
+        }
+        Fixture.read(request, context)
+    }
+}
+
+#[gpui::test]
+fn sidebar_indexed_project_opens_search_package_destination_and_tree_stays_distinct(
+    cx: &mut TestAppContext,
+) {
+    let pool = ReadPool::start(1, |_| ProjectNavigationReader).expect("read pool");
+    let mut rig = rig_with_reads(cx, None, 1440.0, 900.0, pool);
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    let first =
+        crate::core::LocalProjectId::new("/fixture/mac-qa/first-package").expect("first project");
+    let previous = crate::core::LocalProjectId::new("/fixture/mac-qa/previous-project")
+        .expect("previous project");
+    rig.go(Intent::AddProject {
+        project: first.clone(),
+    });
+    rig.go(Intent::AddProject {
+        project: previous.clone(),
+    });
+    rig.go(Intent::ActivateProject(previous.clone()));
+    rig.go(Intent::Navigate(Route::World));
+    assert_eq!(
+        rig.graph
+            .root
+            .read_with(rig.cx, |root, _| root.snapshot().workspace().active.clone()),
+        Some(previous)
+    );
+    let package = PackageRef::parse(first.service_coordinate().expect("lossless coordinate"))
+        .expect("package");
+    let symbol = crate::model::pages::SymbolRef::new(package.as_str())
+        .expect("package-root search identity");
+    let search_destination =
+        super::kit::indexed_result_route(&package, &symbol, crate::navigation::View::Page)
+            .expect("package-root search route");
+    let before = rig.graph.root.read_with(rig.cx, |root, _| {
+        root.snapshot()
+            .workspace()
+            .projects
+            .iter()
+            .map(|row| (row.id.clone(), row.operation.clone(), row.request))
+            .collect::<Vec<_>>()
+    });
+    click_text(&mut rig, "first-package");
+    assert_eq!(
+        rig.route(),
+        search_destination,
+        "sidebar parent and exact package-root search use the same destination"
+    );
+    assert_eq!(
+        rig.graph
+            .root
+            .read_with(rig.cx, |root, _| root.snapshot().workspace().active.clone()),
+        Some(first.clone()),
+        "the former active project cannot redirect this click"
+    );
+    let after = rig.graph.root.read_with(rig.cx, |root, _| {
+        root.snapshot()
+            .workspace()
+            .projects
+            .iter()
+            .map(|row| (row.id.clone(), row.operation.clone(), row.request))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        after, before,
+        "navigation does not submit or replace an index operation"
+    );
+    rig.go(Intent::Navigate(Route::World));
+    let tree =
+        super::tests::native_bounds(&mut rig, "Button", "first-package dependency tree", true)
+            .expect("explicit child tree row");
+    rig.cx.simulate_click(tree.center(), Modifiers::none());
+    rig.settle();
+    assert_eq!(
+        rig.route(),
+        Route::Orbit(crate::navigation::OrbitRoute::Browse(
+            crate::navigation::BrowseRoute::Tree(first)
+        ))
+    );
+    assert_ne!(rig.route(), search_destination);
+}

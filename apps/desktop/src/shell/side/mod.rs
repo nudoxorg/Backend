@@ -978,7 +978,19 @@ impl Shelf {
             Do::Fold(id) => self.flip(id.clone(), cx),
             Do::Lens(lens) => self.set_lens(*lens, cx),
             Do::Release(at) => self.links.dispatch(Intent::SetRelease(at.clone()), cx),
-            Do::Project(id) | Do::ProjectTree(id) => {
+            Do::Project(id, package) => {
+                self.links.dispatch(Intent::ActivateProject(id.clone()), cx);
+                let route = package
+                    .as_ref()
+                    .and_then(super::kit::package_route)
+                    .unwrap_or_else(|| {
+                        Route::Orbit(crate::navigation::OrbitRoute::Browse(
+                            crate::navigation::BrowseRoute::Tree(id.clone()),
+                        ))
+                    });
+                self.links.dispatch(Intent::Navigate(route), cx);
+            }
+            Do::ProjectTree(id) => {
                 self.links.dispatch(Intent::ActivateProject(id.clone()), cx);
                 self.links.dispatch(Intent::Navigate(Route::Orbit(crate::navigation::OrbitRoute::Browse(
                     crate::navigation::BrowseRoute::Tree(id.clone()),
