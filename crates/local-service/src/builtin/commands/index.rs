@@ -1809,6 +1809,15 @@ pub(super) struct IndexScanResult {
     workspace_snapshot: Option<ingest::CompilerWorkspaceSnapshot>,
 }
 
+impl IndexScanResult {
+    /// Shares only the existing optional diagnostic handle with sibling workers.
+    pub(super) fn observation(
+        &self,
+    ) -> Option<Arc<crate::builtin::index_work_observation::IndexWorkObservation>> {
+        self.work.observation.clone()
+    }
+}
+
 /// The complete candidate product transaction. Its intent is the one durable
 /// source-plus-semantic selection marker; `selected` advances serving only
 /// after that intent commits.
