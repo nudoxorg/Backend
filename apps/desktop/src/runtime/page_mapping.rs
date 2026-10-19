@@ -1351,8 +1351,8 @@ pub struct SymbolInputs<'a> {
     pub document: &'a Document,
     /// Related neighbourhood, or why it is missing.
     pub related: Result<Neighbourhood<'a>, Gap>,
-    /// References reply.
-    pub references: Result<&'a SurfaceReply, &'a ClientError>,
+    /// References reply, or the actual pending/read-failure gap.
+    pub references: Result<&'a SurfaceReply, Gap>,
     /// Package outline, or why it is missing.
     pub outline: Result<&'a OutlineIndex, Gap>,
 }
@@ -1442,7 +1442,10 @@ pub fn symbol_page(inputs: &SymbolInputs<'_>) -> SymbolPage {
             )
         })),
     };
-    let references = references(inputs.references, outline);
+    let references = match &inputs.references {
+        Ok(reply) => references(Ok(*reply), outline),
+        Err(gap) => Known::Unknown(gap.clone()),
+    };
     SymbolPage {
         package: coordinate.package().map_or_else(
             || {
@@ -3160,7 +3163,7 @@ mod tests {
                 relations: None,
                 rich: None,
             }),
-            references: Err(&failure),
+            references: Err(client_gap(&failure)),
             outline: Ok(&outline),
         });
         assert_eq!(
@@ -3303,7 +3306,7 @@ mod tests {
                 relations: None,
                 rich: None,
             }),
-            references: Err(&failure),
+            references: Err(client_gap(&failure)),
             outline: Ok(&outline),
         });
 
@@ -4631,7 +4634,7 @@ mod tests {
                 relations: None,
                 rich: None,
             }),
-            references: Err(&failure),
+            references: Err(client_gap(&failure)),
             outline: Ok(&outline),
         });
 
