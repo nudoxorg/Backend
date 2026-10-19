@@ -444,7 +444,10 @@ fn rust_ingest_publication_summary_reopens_with_exact_authenticated_source_facts
             assert!(lengths.iter().all(|length| *length <= 64 * 1024 * 1024));
             assert!(lengths.iter().sum::<usize>() > 225);
             Ok::<_, backend_store::StoreError>(prepared_summary(persisted, &closure))
-        })??;
+        })?;
+        let summary = summary.map_err(|error| {
+            format!("encode selected closure for prepared-summary fixture: {error:?}")
+        })?;
         (
             expected_facts,
             summary,
@@ -540,7 +543,10 @@ fn diagnostic_grammar_quarantine_preserves_real_published_store_head()
                 commit: persisted.commit_bytes().to_vec(),
                 closure: fresh_prepared_closure_bytes(persisted)?,
             })
-        })??;
+        })?;
+        let legacy = legacy.map_err(|error| {
+            format!("encode selected closure for legacy-journal fixture: {error:?}")
+        })?;
         (*selected.root().as_bytes(), selected.sequence(), legacy)
     };
     close_journal_fixture(&mut fixture);
