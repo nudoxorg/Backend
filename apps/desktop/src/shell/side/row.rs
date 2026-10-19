@@ -176,10 +176,10 @@ pub(crate) enum Do {
     Lens(Lens),
     /// Reads the book at a release (`None`: the one you pin).
     Release(Option<ReleaseId>),
-    /// Activates a project and opens its typed local dependency tree.
-    /// Browsing an already-active project still moves the reader; indexing
-    /// remains a separate workspace action.
-    Project(LocalProjectId),
+    /// Activates a project and opens its exact currently indexed package.
+    /// Without a current package claim, its typed dependency tree remains
+    /// available for local recovery. Indexing is a separate workspace action.
+    Project(LocalProjectId, Option<PackageRef>),
     /// Activates a project and reads its own dependency tree.
     ProjectTree(LocalProjectId),
     /// Opens a settings page.
