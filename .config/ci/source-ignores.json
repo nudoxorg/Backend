@@ -389,6 +389,28 @@
       "expires": "2026-10-31"
     },
     {
+      "filter": "source:crates/replication/src/local_peer/owner_upgrade.rs::tests::qualified_same_dto_default_image_converges_once_and_preserves_pins",
+      "attribute": "#[ignore = \"requires Root-qualified matched CLI/locald in NUDOX_TEST_QUALIFIED_CLI and NUDOX_TEST_QUALIFIED_LOCALD; run explicitly after ordinary qualification\"]",
+      "line": 790,
+      "category": "managed-native-prerequisites",
+      "reason": "Already ignored in canonical 7259cb41b (2026-10-18). #[ignore = \"requires Root-qualified matched CLI/locald in NUDOX_TEST_QUALIFIED_CLI and NUDOX_TEST_QUALIFIED_LOCALD; run explicitly after ordinary qualification\"]; review/enroll in an explicit qualified CLI/locald run, not ordinary tool-independent tests.",
+      "owner": "NuDox Backend maintainers",
+      "review": "docs/testing/quarantine.md#managed-native-intake-2026-10-16",
+      "reviewed": "2026-10-19",
+      "expires": "2026-11-02"
+    },
+    {
+      "filter": "source:crates/replication/src/local_peer/owner_upgrade.rs::tests::qualified_deleted_default_image_requires_zero_links_and_refuses_candidate_races",
+      "attribute": "#[ignore = \"requires Root-qualified matched CLI/locald in NUDOX_TEST_QUALIFIED_CLI and NUDOX_TEST_QUALIFIED_LOCALD; run explicitly after ordinary qualification\"]",
+      "line": 864,
+      "category": "managed-native-prerequisites",
+      "reason": "Already ignored in canonical 7259cb41b (2026-10-18). #[ignore = \"requires Root-qualified matched CLI/locald in NUDOX_TEST_QUALIFIED_CLI and NUDOX_TEST_QUALIFIED_LOCALD; run explicitly after ordinary qualification\"]; review/enroll in an explicit qualified CLI/locald run, not ordinary tool-independent tests.",
+      "owner": "NuDox Backend maintainers",
+      "review": "docs/testing/quarantine.md#managed-native-intake-2026-10-16",
+      "reviewed": "2026-10-19",
+      "expires": "2026-11-02"
+    },
+    {
       "filter": "source:crates/engine/src/application/typescript_program/membership_tests.rs::actual_compiler_node_formats_follow_package_type_with_identical_source_membership",
       "attribute": "#[ignore = \"requires pinned TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API\"]",
       "line": 997,
