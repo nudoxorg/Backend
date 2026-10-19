@@ -47,6 +47,44 @@ fn class_binding_extents_include_only_grammar_owned_decorators_and_terminators()
 }
 
 #[test]
+fn property_binding_extents_include_only_grammar_owned_type_member_separators()
+-> Result<(), SyntaxError> {
+    use backend_compile::SourceBindingIdentity;
+    let source = concat!(
+        "// λ keeps all captures in exact UTF-8 byte coordinates\n",
+        "interface Debug {\n",
+        "  optional?: string /* before terminator */;\n",
+        "  comma: number,\n",
+        "  automatic: boolean\n",
+        "  next: number;\n",
+        "}\n",
+        "type RecordShape = { nested: { inner: string; }; noTerminator: number };\n",
+        "function control() {};\n",
+    );
+    let analysis = analyze(source)?;
+    for (name, expected) in [
+        ("optional", "optional?: string /* before terminator */;"),
+        ("comma", "comma: number,"),
+        ("automatic", "automatic: boolean"),
+        ("next", "next: number;"),
+        ("nested", "nested: { inner: string; };"),
+        ("inner", "inner: string;"),
+        ("noTerminator", "noTerminator: number"),
+        ("control", "function control() {}"),
+    ] {
+        let SourceBindingIdentity::Exact(capture) = declaration(&analysis, name).binding_identity()
+        else {
+            panic!("exact TypeScript binding");
+        };
+        let (start, end) = capture.owner();
+        assert_eq!(&source[start as usize..end as usize], expected, "{name}");
+        let (start, end) = capture.name();
+        assert_eq!(&source[start as usize..end as usize], name);
+    }
+    Ok(())
+}
+
+#[test]
 fn object_types_in_a_header_do_not_end_it() -> Result<(), SyntaxError> {
     let analysis = analyze(
         "export function run(x: { a: number }): { b: string } {\n  return { b: \"\" };\n}\n\n\
