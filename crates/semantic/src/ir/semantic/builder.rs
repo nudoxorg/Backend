@@ -1000,6 +1000,7 @@ impl IrBuilder {
         let link_occurrences = self.link_occurrences;
         let (indices, kind_offsets) = IrIndices::build(
             &self.items,
+            &self.sources,
             &self.items.versions,
             &self.atoms,
             &links,

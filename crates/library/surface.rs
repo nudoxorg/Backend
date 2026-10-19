@@ -1955,7 +1955,7 @@ impl PackageCompilerFailure {
         let relative_path = package_relative_source_path(relative_path)?;
         let fragment = PackageCompilerFragmentFaultFacts::new(failure.kind(), failure.facts())?;
         let cause = PackageCompilerFailureCause::Fragment(fragment);
-        let (detail, detail_truncated) = detail_for_package_cause(&cause);
+        let (detail, detail_truncated) = detail_for_fragment_failure(failure, &cause);
         let summary = Self {
             relative_path,
             source_identity: attempt.source.identity,
@@ -1991,7 +1991,13 @@ impl PackageCompilerFailure {
             _ => return Ok(None),
         };
         let relative_path = package_relative_source_path(relative_path)?;
-        let (detail, detail_truncated) = detail_for_package_cause(&cause);
+        let (detail, detail_truncated) = match terminal {
+            crate::interface::CompilerTerminal::Compile {
+                cause: crate::interface::CompilerCause::FragmentFailure(failure),
+                ..
+            } => detail_for_fragment_failure(failure, &cause),
+            _ => detail_for_package_cause(&cause),
+        };
         let local_diagnostic = match terminal {
             crate::interface::CompilerTerminal::Compile {
                 cause:
@@ -2606,6 +2612,22 @@ fn sanitize_package_compiler_detail(value: &str, source_truncated: bool) -> (Str
         retained.push(character);
     }
     (retained, truncated)
+}
+
+fn detail_for_fragment_failure(
+    failure: &CompilerFragmentFailure,
+    cause: &PackageCompilerFailureCause,
+) -> (String, bool) {
+    if matches!(
+        failure.kind(),
+        CompilerFragmentFaultKind::Build(
+            crate::interface::BuildFaultKind::DuplicateDeclarationIdentity
+        )
+    ) {
+        let detail = failure.detail();
+        return sanitize_package_compiler_detail(&detail.text, detail.truncated);
+    }
+    detail_for_package_cause(cause)
 }
 
 fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, bool) {

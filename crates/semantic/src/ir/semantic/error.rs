@@ -1,6 +1,7 @@
-use super::ids::{LinkOccurrenceId, TreeEntityId};
+use super::ids::{ItemKind, LinkOccurrenceId, TreeEntityId};
 use super::language_facts::SemanticImageAuthority;
 use super::packed_types::{CallableElementRole, TupleElementKind, TypeParameterRequirements};
+use super::relations::SourceSpan;
 use crate::ir::{
     AuthorityFactFault, CapacityError, DeclarationIdentity, EntityId, ImageProvenanceClaim,
     PreimageOverflow, ProductChildRole, SignatureCarrierBindingRole, SourceIdentity, TypeId,
@@ -94,6 +95,93 @@ pub enum LanguageExtensionViolation {
         /// Number of rows reserved in that pool for this transaction.
         count: usize,
     },
+}
+
+/// Bounded cold evidence for one side of a rejected declaration identity.
+///
+/// File coordinates are atom ordinals, never absolute paths. The name keeps at
+/// most eight bytes and is escaped when formatted; no source text is retained.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct DeclarationCollisionSite {
+    /// Exact image-local entity ordinal at collision detection.
+    pub entity: EntityId,
+    /// Declaration category of that item.
+    pub kind: ItemKind,
+    /// Exact retained file atom and half-open byte range, if supplied.
+    pub source: Option<SourceSpan>,
+    name_prefix: [u8; 8],
+    name_len: u8,
+    name_truncated: bool,
+    name_present: bool,
+}
+
+impl DeclarationCollisionSite {
+    pub(super) fn capture(
+        entity: EntityId,
+        kind: ItemKind,
+        source: Option<SourceSpan>,
+        name: Option<&[u8]>,
+    ) -> Self {
+        let name_present = name.is_some();
+        let name = name.unwrap_or(&[]);
+        let mut name_prefix = [0; 8];
+        let len = name.len().min(name_prefix.len());
+        name_prefix[..len].copy_from_slice(&name[..len]);
+        Self {
+            entity,
+            kind,
+            source,
+            name_prefix,
+            name_len: len as u8,
+            name_truncated: len < name.len(),
+            name_present,
+        }
+    }
+
+    /// Retained bounded spelling bytes; an anonymous item has no spelling bytes.
+    #[must_use]
+    pub fn name_prefix(&self) -> &[u8] {
+        &self.name_prefix[..usize::from(self.name_len)]
+    }
+
+    /// Whether the source-written name exceeded the retained prefix.
+    #[must_use]
+    pub const fn name_truncated(&self) -> bool {
+        self.name_truncated
+    }
+}
+
+impl fmt::Display for DeclarationCollisionSite {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "#{}/{:?} n=\"", self.entity.raw, self.kind)?;
+        if !self.name_present {
+            formatter.write_str("<anonymous>")?;
+        }
+        for &byte in self.name_prefix() {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$') {
+                write!(formatter, "{}", char::from(byte))?;
+            } else {
+                write!(formatter, "\\x{byte:02x}")?;
+            }
+        }
+        write!(formatter, "\" trunc={} @", u8::from(self.name_truncated))?;
+        match self.source {
+            Some(source) => write!(
+                formatter,
+                "atom#{}:{}..{}",
+                source.file().raw,
+                source.start(),
+                source.end()
+            ),
+            None => formatter.write_str("absent"),
+        }
+    }
+}
+
+impl fmt::Debug for DeclarationCollisionSite {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, formatter)
+    }
 }
 
 /// Failure while condensing or validating frontend IR.
@@ -360,6 +448,8 @@ pub enum BuildError {
     DuplicateDeclarationIdentity {
         /// Repeated declaration-instance identity.
         identity: DeclarationIdentity,
+        /// Both rejected items, captured before the builder's atoms are dropped.
+        sites: [DeclarationCollisionSite; 2],
     },
     /// A borrowed tree supplied a version row count different from its item count.
     TreeVersionCount {
@@ -585,10 +675,12 @@ impl fmt::Display for BuildError {
                 owner.raw,
                 target.as_bytes()
             ),
-            Self::DuplicateDeclarationIdentity { identity } => {
+            Self::DuplicateDeclarationIdentity { identity, sites } => {
                 write!(
                     formatter,
-                    "declaration family {:02x?} variant {:02x?} is duplicated",
+                    "duplicate declaration identity: [{}]; [{}]; family {:02x?} variant {:02x?}",
+                    sites[0],
+                    sites[1],
                     identity.family.as_bytes(),
                     identity.variant.as_bytes()
                 )
