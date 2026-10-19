@@ -712,7 +712,7 @@ impl SyntaxFrontend {
         let capture_contract: &[u8] = if language == SourceLanguage::Go {
             b"syntax-capture/exact-owner-name-source-kinds-macros-docs-go-extents-v4\0"
         } else if language == SourceLanguage::TypeScript {
-            b"syntax-capture/exact-owner-name-source-kinds-macros-docs-typescript-extents-v4\0"
+            b"syntax-capture/exact-owner-name-source-kinds-macros-docs-typescript-extents-v5\0"
         } else {
             b"syntax-capture/exact-owner-name-source-kinds-macros-docs-v3\0"
         };
@@ -1166,7 +1166,8 @@ fn captured_owner_node<'a>(
 }
 
 /// TypeScript's native declaration range includes field terminators and
-/// method decorators. The grammar owns these as class-body siblings rather
+/// method decorators, including interface/type-literal property separators.
+/// The grammar owns these as body siblings rather
 /// than children of the captured declaration. Only those grammar edges may
 /// widen identity; containment and the written excerpt retain their nodes.
 fn typescript_declaration_extent(definition: Node<'_>) -> (usize, usize) {
@@ -1197,6 +1198,26 @@ fn typescript_declaration_extent(definition: Node<'_>) -> (usize, usize) {
                     _ => break,
                 }
                 previous = node.prev_sibling();
+            }
+        }
+    }
+    if definition.kind() == "property_signature"
+        && definition
+            .parent()
+            .is_some_and(|parent| matches!(parent.kind(), "interface_body" | "object_type"))
+    {
+        // Type members use the same native end convention. A grammar-owned
+        // separator may be a semicolon or comma; never consume a neighbouring
+        // declaration or widen by text/name/line matching.
+        let mut next = definition.next_sibling();
+        while let Some(node) = next {
+            if node.kind() == "comment" {
+                next = node.next_sibling();
+            } else {
+                if matches!(node.kind(), ";" | ",") {
+                    end = node.end_byte();
+                }
+                break;
             }
         }
     }
