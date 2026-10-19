@@ -9,26 +9,26 @@
   "platforms": {
     "linux-x64": {
       "status": "diagnostic-preview",
-      "source": "9e854f75034495b5f6bbf69a37e3cabb771b6b27",
-      "tag": "checkpoint-20261018-9e854f7503-linux-x64",
+      "source": "0ff771256d3ebaee343580c586651ce66975f75d",
+      "tag": "checkpoint-20261019-0ff771256d-linux-x64",
       "known_failures": [
         "Requires Ubuntu 24.04 or newer with glibc 2.39 or newer; older glibc versions are unsupported.",
-        "Large Paperless indexing remains blocked by the 64 MiB selected-view persistence journal-record bound; the PR562 repair is not included. The same run recorded a native TSZ project-check timeout after600seconds at global-search.component.ts, not a Node failure.",
-        "Fresh AngularRealWorld publishes with 41/50 TypeScript coverage; complete 18-tool acceptance and outline uniqueness remain unverified/failing. HTML/CSS/browser runtime is outside this TypeScript tool scope.",
-        "Diagnostic preview; complete Rust native validation remains incomplete.",
-        "Installed Ubuntu validation covers a basic Python project; other language and tool coverage is not established by these installer checks.",
+        "Diagnostic default Cargo profile with mixed per-package optimization, not an optimized release build.",
+        "Fresh AngularRealWorld TypeScript coverage is 41/50 with nine tsconfig-excluded files. Eighteen useful tool routes passed on the separate same-source Nix-native cohort, but the cancel/status N27 adversarial proof remains incomplete after a harness evidence-file collision. HTML/CSS/browser runtime is outside this TypeScript tool scope.",
+        "The selected 38-test native qualification is not a complete native, language or application readiness claim. Large Paperless and other fresh application acceptance remain separate gates.",
+        "Installed Ubuntu validation covers a basic Python CLI/MCP project. Two independent CLI-first/MCP-first updates from the real public 9e DTO35 owner to DTO36 preserved the same HOME and workspace; same-DTO executable updates are not covered.",
         "The Node SDK is not bundled. Embeddings are unconfigured and vector inference is not proven.",
-        "This archive contains CLI, local daemon and MCP commands only. GUI and upgrades from older releases are not proven."
+        "This archive contains CLI, local daemon and MCP commands only. Current GUI, macOS and Homebrew acceptance are not established."
       ],
       "installer": {
-        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261018-9e854f7503-linux-x64/install-linux-x64.py",
-        "sha256": "74e7bfc966d47c115633e328727ca1c816ee1cd776a895a7a75b06ed1a6578c1",
+        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261019-0ff771256d-linux-x64/install-linux-x64.py",
+        "sha256": "d3a53b7368bd7eecf0f172ed939807c3f6c90fc04e100769f4a660c04c3c3754",
         "bytes": 62050
       },
       "archive": {
-        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261018-9e854f7503-linux-x64/nudox-linux-x86_64-9e854f7503.tar.gz",
-        "sha256": "1112ab968e18498425fc56c675ef78e3c5290920b26bbaa49c65af54cd87d0bb",
-        "bytes": 92935979
+        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261019-0ff771256d-linux-x64/nudox-linux-x86_64-0ff771256d.tar.gz",
+        "sha256": "baac7533d19d7c3117b99d0af7ee634f3f08761f31b12e67a5330e88a24042f4",
+        "bytes": 176214875
       }
     },
     "macos-arm64": {
