@@ -1980,7 +1980,7 @@ fn scan_project_with_configuration_policy_attempt(
     } else {
         None
     };
-    preflight_source_bytes(&paths, source_policy, cancellation)?;
+    preflight_source_bytes(&root, &paths, source_policy, cancellation)?;
     let mut scanned = scan_source_paths(
         &root,
         &root_capability,
@@ -2607,11 +2607,13 @@ fn compiler_configuration_language(path: &Path) -> Option<Language> {
 /// [`scan_file`].  Only the aggregate budget, which protects the process
 /// rather than describing a file, can still stop the scan.
 fn preflight_source_bytes(
+    root: &Path,
     paths: &[PathBuf],
     source_policy: SourceAdmissionPolicy,
     cancellation: Option<&AtomicBool>,
 ) -> Result<(), String> {
     let mut total = 0_usize;
+    let mut largest = Vec::new();
     for path in paths {
         check_scan_cancellation(cancellation)?;
         let Ok(metadata) = fs::metadata(path) else {
@@ -2623,13 +2625,45 @@ fn preflight_source_bytes(
         if length > source_policy.limits().max_file_source_bytes {
             continue;
         }
+        // Bounded diagnostics describe only the supported-source candidates
+        // charged below, never arbitrary tracked data or compiler resources.
+        largest.push((length, path));
+        largest.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1)));
+        largest.truncate(3);
         total = total
             .checked_add(length)
             .ok_or_else(|| "source byte count overflow".to_owned())?;
     }
     source_policy
         .admit_preflight(total, paths.len())
-        .map_err(|refusal| refusal.to_string())
+        .map_err(|refusal| {
+            let contributors = largest
+                .iter()
+                .map(|(bytes, path)| {
+                    let relative = path.strip_prefix(root).unwrap_or(path);
+                    let label = relative
+                        .to_string_lossy()
+                        .chars()
+                        .map(|character| if character.is_control() { '�' } else { character })
+                        .take(160)
+                        .collect::<String>();
+                    format!("{label} ({bytes} bytes)")
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let setting = if total > source_policy.limits().max_project_source_bytes {
+                "NUDOX_SOURCE_MAX_PROJECT_BYTES"
+            } else {
+                "NUDOX_SOURCE_MAX_PROJECT_RECORDS"
+            };
+            format!(
+                "{refusal}; selected {} supported-source candidates totaling {total} charged bytes; \
+                largest: {contributors}. Scope indexing with .nudoxignore (Git-ignore syntax), \
+                or configure {setting} for the owner before starting it. \
+                Compiler manifests and resource bindings are validated separately.",
+                paths.len()
+            )
+        })
 }
 
 /// Scans one discovered file into a row, or into a typed per-file fault.
@@ -3745,6 +3779,90 @@ mod tests {
                 ));
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_index_scope_bounds_source_without_charging_opaque_artifacts() -> Result<(), String> {
+        let project = crate::test_support::private_temp_dir("source-admission-scope")
+            .map_err(|error| error.to_string())?;
+        let root = project.path();
+        fs::create_dir(root.join("unrelated-cache")).map_err(|error| error.to_string())?;
+        fs::write(root.join("lib.rs"), [b' '; 32]).map_err(|error| error.to_string())?;
+        fs::write(root.join("unrelated-cache/bundle.ts"), [b' '; 48])
+            .map_err(|error| error.to_string())?;
+        fs::write(
+            root.join("Cargo.toml"),
+            b"[package]\nname='kept'\nversion='0.1.0'\n",
+        )
+        .map_err(|error| error.to_string())?;
+        fs::write(root.join("template.json"), b"{\"required\":true}")
+            .map_err(|error| error.to_string())?;
+        fs::write(root.join("README.md"), b"kept resource").map_err(|error| error.to_string())?;
+        let artifact = fs::File::create(root.join("opaque.bin")).map_err(|error| error.to_string())?;
+        artifact
+            .set_len(1024 * 1024)
+            .map_err(|error| error.to_string())?;
+        let mut limits = SourceAdmissionLimits::default();
+        limits.max_file_source_bytes = 64;
+        limits.max_project_source_bytes = 64;
+        limits.max_in_flight_source_bytes = 128;
+        let policy = SourceAdmissionPolicy::new(limits).map_err(|error| error.to_string())?;
+        let frontends = frontends()?;
+        let before = supported_paths(root, frontends)?;
+        assert_eq!(
+            before.len(),
+            2,
+            "opaque artifacts/manifests are not syntax source"
+        );
+        let error = preflight_source_bytes(root, &before, policy, None)
+            .err()
+            .ok_or("expected bound")?;
+        assert!(error.contains("80") && error.contains("2 supported-source candidates"));
+        assert!(
+            error.contains("unrelated-cache/bundle.ts (48 bytes)") && error.contains(".nudoxignore")
+        );
+        assert!(!error.contains("opaque.bin"));
+        fs::write(root.join(".nudoxignore"), b"/unrelated-cache/\n")
+            .map_err(|error| error.to_string())?;
+        let capability = ProjectRoot::open(root)?;
+        let paths = project_paths_with_policy(
+            root,
+            &capability,
+            Some(frontends),
+            source_selection_policy(),
+            None,
+        )?;
+        assert_eq!(paths.sources, [root.join("lib.rs")]);
+        assert!(
+            paths
+                .configurations
+                .iter()
+                .any(|(_, path)| path == &root.join("Cargo.toml"))
+        );
+        assert!(
+            paths
+                .file_revisions
+                .contains_key(&root.join(".nudoxignore"))
+        );
+        preflight_source_bytes(root, &paths.sources, policy, None)?;
+        assert_eq!(
+            capability
+                .read(Path::new("template.json"), 64)
+                .map_err(|error| format!("{error:?}"))?,
+            b"{\"required\":true}"
+        );
+        assert_eq!(
+            capability
+                .read(Path::new("README.md"), 64)
+                .map_err(|error| format!("{error:?}"))?,
+            b"kept resource"
+        );
+        fs::remove_file(root.join(".nudoxignore")).map_err(|error| error.to_string())?;
+        assert!(
+            preflight_source_bytes(root, &supported_paths(root, frontends)?, policy, None).is_err(),
+            "source re-enters the finite budget when the explicit scope is removed"
+        );
         Ok(())
     }
 
