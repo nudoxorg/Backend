@@ -3229,6 +3229,7 @@ fn materialize_compiler_sources(
     Ok(admitted)
 }
 
+#[cfg(test)]
 /// Profiles that still have compiler input in this scan.
 ///
 /// The set is taken from every fresh and reused file, before unchanged
@@ -3239,22 +3240,34 @@ pub(super) fn live_compiler_profiles(
     fresh: &[CompilerSourceHandle],
     reused: &[ReusedCompilerFile],
 ) -> BTreeSet<LanguageProfile> {
-    let mut live = BTreeSet::new();
-    for source in fresh {
-        live.insert(compilation_profile(
-            source_root,
-            &source.relative_path,
-            source.profile,
-        ));
+    compiler_profile_source_counts(source_root, fresh, reused)
+        .into_keys()
+        .collect()
+}
+
+/// Counts fresh and retained inputs under the same effective profile used by
+/// compilation. A Rust file's extension default is not its Cargo edition.
+pub(super) fn compiler_profile_source_counts(
+    source_root: &Path,
+    fresh: &[CompilerSourceHandle],
+    reused: &[ReusedCompilerFile],
+) -> BTreeMap<LanguageProfile, usize> {
+    let mut counts = BTreeMap::new();
+    for (path, profile) in fresh
+        .iter()
+        .map(|source| (source.relative_path.as_str(), source.profile))
+        .chain(
+            reused
+                .iter()
+                .map(|source| (source.relative_path.as_str(), source.profile)),
+        )
+    {
+        let count = counts
+            .entry(compilation_profile(source_root, path, profile))
+            .or_insert(0_usize);
+        *count = count.saturating_add(1);
     }
-    for source in reused {
-        live.insert(compilation_profile(
-            source_root,
-            &source.relative_path,
-            source.profile,
-        ));
-    }
-    live
+    counts
 }
 
 /// Selected profiles that this scan no longer contains.
@@ -5729,6 +5742,132 @@ mod tests {
         );
         eprintln!("edition_delta crates=2 selected_files=1 skipped_crate=2021");
         let _ = fs::remove_dir_all(&scratch);
+        Ok(())
+    }
+
+    fn write_mixed_edition_profile_count_fixture(
+        root: &Path,
+    ) -> Result<BTreeMap<LanguageProfile, usize>, String> {
+        let profiles = [
+            ("2015", RustEdition::Rust2015),
+            ("2018", RustEdition::Rust2018),
+            ("2021", RustEdition::Rust2021),
+            ("2024", RustEdition::Rust2024),
+        ];
+        for (edition, _) in profiles {
+            let directory = root.join(format!("crate_{edition}"));
+            fs::create_dir_all(directory.join("src")).map_err(|error| error.to_string())?;
+            fs::write(
+                directory.join("Cargo.toml"),
+                format!("[package]\nname = \"crate_{edition}\"\nedition = \"{edition}\"\n"),
+            )
+            .map_err(|error| error.to_string())?;
+            fs::write(directory.join("src/lib.rs"), "pub fn original() {}\n")
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(profiles
+            .into_iter()
+            .map(|(_, edition)| (LanguageProfile::Rust(edition), 1))
+            .collect::<BTreeMap<_, _>>())
+    }
+
+    #[test]
+    fn compiler_profile_counts_follow_cargo_editions_for_fresh_reused_and_new_sources()
+    -> Result<(), String> {
+        let scratch = scratch_dir("profile-source-counts")?;
+        let root = scratch.to_str().ok_or("non-UTF-8 scratch path")?;
+        let expected = write_mixed_edition_profile_count_fixture(&scratch)?;
+        let project = [73; 32];
+        let cold = scan_project(root, project, &BTreeMap::new())?;
+        assert_eq!(cold.compiler_sources.len(), 4);
+        assert!(cold.reused_compiler_files.is_empty());
+        assert!(
+            cold.compiler_sources
+                .iter()
+                .all(|source| { source.profile == LanguageProfile::Rust(RustEdition::Rust2024) }),
+            "extension discovery defaults must not be confused with Cargo edition"
+        );
+        assert_eq!(
+            compiler_profile_source_counts(
+                &scratch,
+                &cold.compiler_sources,
+                &cold.reused_compiler_files,
+            ),
+            expected,
+        );
+        let previous = cold.files.into_iter().collect::<BTreeMap<_, _>>();
+        let warm = scan_project(root, project, &previous)?;
+        assert!(warm.compiler_sources.is_empty());
+        assert_eq!(warm.reused_compiler_files.len(), 4);
+        assert_eq!(
+            compiler_profile_source_counts(
+                &scratch,
+                &warm.compiler_sources,
+                &warm.reused_compiler_files,
+            ),
+            expected,
+        );
+        fs::write(
+            scratch.join("crate_2018/src/lib.rs"),
+            "pub fn edited() {}\n",
+        )
+        .map_err(|error| error.to_string())?;
+        fs::write(
+            scratch.join("crate_2021/src/extra.rs"),
+            "pub fn added() {}\n",
+        )
+        .map_err(|error| error.to_string())?;
+        fs::write(
+            scratch.join("crate_2021/src/lib.rs"),
+            "mod extra;\npub fn original() {}\n",
+        )
+        .map_err(|error| error.to_string())?;
+        let changed = scan_project(root, project, &previous)?;
+        assert_eq!(changed.compiler_sources.len(), 3);
+        assert_eq!(changed.reused_compiler_files.len(), 2);
+        let mut expected = expected;
+        expected.insert(LanguageProfile::Rust(RustEdition::Rust2021), 2);
+        assert_eq!(
+            compiler_profile_source_counts(
+                &scratch,
+                &changed.compiler_sources,
+                &changed.reused_compiler_files,
+            ),
+            expected,
+            "fresh additions and retained files count together under their actual editions",
+        );
+        let previous = changed.files.into_iter().collect::<BTreeMap<_, _>>();
+        fs::remove_file(scratch.join("crate_2015/src/lib.rs"))
+            .map_err(|error| error.to_string())?;
+        let removed = scan_project(root, project, &previous)?;
+        let counts = compiler_profile_source_counts(
+            &scratch,
+            &removed.compiler_sources,
+            &removed.reused_compiler_files,
+        );
+        assert!(!counts.contains_key(&LanguageProfile::Rust(RustEdition::Rust2015)));
+        assert_eq!(
+            counts
+                .get(&LanguageProfile::Rust(RustEdition::Rust2015))
+                .copied()
+                .unwrap_or(0),
+            0
+        );
+        assert_eq!(
+            live_compiler_profiles(
+                &scratch,
+                &removed.compiler_sources,
+                &removed.reused_compiler_files
+            ),
+            counts.keys().copied().collect(),
+        );
+        let present =
+            present_compiler_paths(&removed.compiler_sources, &removed.reused_compiler_files);
+        assert!(
+            lost_compiler_profiles(&scratch, &previous, &present)?
+                .contains(&LanguageProfile::Rust(RustEdition::Rust2015))
+        );
+        fs::remove_dir_all(&scratch).map_err(|error| error.to_string())?;
         Ok(())
     }
 
