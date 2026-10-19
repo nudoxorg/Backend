@@ -970,9 +970,14 @@ mod tests {
             b"/coverage/\n!target/\n!node_modules/\n",
         )
         .expect("ignore");
+        // The ignore file is itself an authored project configuration file.
         assert_eq!(
             files(),
-            ["src/builtin/coverage/tests.rs", "src/coverage/report.ts"]
+            [
+                ".gitignore",
+                "src/builtin/coverage/tests.rs",
+                "src/coverage/report.ts",
+            ]
         );
         assert!(!is_hard_ignored_path(Path::new(
             "src/builtin/coverage/tests.rs"
