@@ -74,6 +74,34 @@ fn engine() -> PrimaryEngine {
     }
 }
 
+fn assert_primary_admission(primary: &crate::model::pages::store::PrimarySymbol) {
+    let key = PageKey::Symbol(symbol());
+    let root = VersionedRoot::synthetic(document().basis, 1);
+    let mut store = PageStore::default();
+    let generation = store
+        .begin(&key, root)
+        .expect("slot admission")
+        .expect("read generation");
+    assert_eq!(
+        store.stage(&key, generation, PageValue::PrimarySymbol(primary.clone())),
+        Landing::Applied
+    );
+    assert_eq!(
+        store.inflight(&key),
+        Some(generation),
+        "optional refinement still owns the read"
+    );
+    let resource = store.symbol(&symbol());
+    assert!(
+        crate::core::admit_resource(&resource, root, true).allows_actions(),
+        "the authenticated primary document is Current before optional reads finish"
+    );
+    assert!(
+        !crate::core::admit_resource(&resource, root, false).allows_actions(),
+        "primary readiness cannot bypass serving-owner admission"
+    );
+}
+
 #[test]
 fn primary_symbol_page_arrives_before_blocked_secondary_and_still_honours_cancel() {
     for cancelled in [false, true] {
@@ -105,9 +133,11 @@ fn primary_symbol_page_arrives_before_blocked_secondary_and_still_honours_cancel
         let primary = received
             .try_recv()
             .expect("primary preceded the blocked secondary");
-        let PageValue::Symbol(page) = primary else {
-            panic!("primary symbol");
+        let PageValue::PrimarySymbol(primary) = primary else {
+            panic!("authenticated primary symbol");
         };
+        assert_primary_admission(&primary);
+        let page = primary.page();
         assert_eq!(page.identity.name.as_ref(), "Item");
         assert_eq!(
             page.site
@@ -222,10 +252,123 @@ fn primary_symbol_partial_keeps_exact_generation_admission_after_owner_replaceme
         store.stage(&key, current, primary.clone()),
         Landing::Applied
     );
-    assert_eq!(store.land(&key, old, Ok(primary)), Landing::Superseded);
+    assert_eq!(
+        store.land(&key, old, Ok(primary.clone())),
+        Landing::Superseded
+    );
     assert_eq!(store.symbol(&symbol()).value_root(), Some(root(2)));
     assert!(
         matches!(&store.symbol(&symbol()).loaded_value().expect("current partial").references,
         Known::Unknown(gap) if gap.reason == GapReason::Stale)
+    );
+    let quiet_root = root(2);
+    let PageValue::PrimarySymbol(document) = primary.clone() else {
+        panic!("typed primary document");
+    };
+    let mut seeded = PageStore::default();
+    assert!(seeded.seed(
+        crate::model::pages::store::SeedEntry::Symbol(symbol(), Arc::new(document.page().clone())),
+        VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("before".into(), "publication".into())]),
+            1
+        ),
+    ));
+    let quiet = seeded
+        .begin(&key, quiet_root)
+        .expect("quiet admission")
+        .expect("quiet generation");
+    assert_eq!(
+        seeded.stage(&key, quiet, PageValue::Symbol(document.page().clone())),
+        Landing::Unchanged,
+        "generic partial cannot change a quiet launch snapshot"
+    );
+    assert_eq!(
+        seeded.stage(&key, quiet, primary.clone()),
+        Landing::Applied,
+        "exact primary authenticates the seeded document even during a quiet new-root read"
+    );
+    assert!(!seeded.is_seeded(&key));
+    assert_eq!(seeded.inflight(&key), Some(quiet));
+    assert!(
+        crate::core::admit_resource(&seeded.symbol(&symbol()), quiet_root, true).allows_actions()
+    );
+    assert!(
+        !crate::core::admit_resource(&seeded.symbol(&symbol()), quiet_root, false).allows_actions()
+    );
+    assert_eq!(
+        seeded.stage(&key, quiet, primary.clone()),
+        Landing::Unchanged,
+        "already-current primary coalesces within the running generation"
+    );
+}
+
+#[test]
+fn primary_symbol_delivery_refuses_wrong_root_coordinate_package_and_generic_partial() {
+    use crate::model::pages::store::PrimarySymbol;
+    let root = VersionedRoot::synthetic(document().basis, 1);
+    let key = PageKey::Symbol(symbol());
+    let cancel = CancellationToken::new();
+    let outlines = OutlineCache::default();
+    let values = std::cell::RefCell::new(Vec::new());
+    let publish = |value| values.borrow_mut().push(value);
+    compose_symbol(
+        &mut engine(),
+        &symbol(),
+        &ReadContext {
+            worker: 0,
+            cancel: &cancel,
+            outlines: &outlines,
+            progress: Some(&publish),
+        },
+    )
+    .expect("authenticated primary composer");
+    let PageValue::PrimarySymbol(primary) = values.borrow()[0].clone() else {
+        panic!("typed primary delivery");
+    };
+    let mut slots = PageStore::default();
+    let generation = slots
+        .begin(&key, root)
+        .expect("slot admission")
+        .expect("generation");
+    assert_eq!(
+        slots.stage(&key, generation, PageValue::Symbol(primary.page().clone())),
+        Landing::Applied
+    );
+    assert!(
+        !crate::core::admit_resource(&slots.symbol(&symbol()), root, true).allows_actions(),
+        "ordinary Partial never gains the typed primary capability"
+    );
+    let wrong_root = backend_library::view_state_root(&[("other".into(), "root".into())]);
+    let mut wrong_document = document();
+    wrong_document.basis = wrong_root;
+    let wrong = PrimarySymbol::from_document(&symbol(), &wrong_document, primary.page().clone())
+        .expect("root-bound document");
+    assert_eq!(
+        slots.stage(&key, generation, PageValue::PrimarySymbol(wrong)),
+        Landing::Superseded
+    );
+    let other = SymbolRef::new("/workspace/other::src/item.rs:7::Item").expect("other symbol");
+    assert!(PrimarySymbol::from_document(&other, &document(), primary.page().clone()).is_none());
+    let mut wrong_package = primary.page().clone();
+    wrong_package.package =
+        Known::Known(PackageRef::parse("/workspace/other").expect("other package"));
+    assert!(PrimarySymbol::from_document(&symbol(), &document(), wrong_package).is_none());
+    let mut wrong_document = document();
+    wrong_document.symbol = backend_library::symbol_key("other exact row");
+    assert!(
+        PrimarySymbol::from_document(&symbol(), &wrong_document, primary.page().clone()).is_none()
+    );
+    assert_eq!(
+        slots.stage(
+            &PageKey::Symbol(other),
+            generation,
+            PageValue::PrimarySymbol(primary.clone())
+        ),
+        Landing::Superseded
+    );
+    slots.cancel(&key).expect("cancel current generation");
+    assert_eq!(
+        slots.stage(&key, generation, PageValue::PrimarySymbol(primary)),
+        Landing::Superseded
     );
 }
