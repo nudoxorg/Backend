@@ -60,6 +60,14 @@ pub fn parse(args: &[String], default_limit: Option<&str>) -> Result<Invocation,
     {
         invocation.set("limit", limit);
     }
+    // Bare outline starts with the native maximum credit. Adding only its
+    // cursor must retain that ceiling rather than use the generic query default.
+    if grammar.name() == "outline"
+        && invocation.option("cursor").is_some()
+        && invocation.option("limit").is_none()
+    {
+        invocation.set("limit", backend_library::QueryLimit::MAX.to_string());
+    }
     if let Err(fault) = invocation.check() {
         if fault.slug().is_usage() && grammar.aliases().contains(&spelling) {
             let canonical_usage = grammar.cli_usage();

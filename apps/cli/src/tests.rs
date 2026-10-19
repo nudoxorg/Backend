@@ -1751,6 +1751,34 @@ fn bounded_outline_cli_arguments_lower_to_the_same_native_page_as_mcp() {
         lower(&invocation, "/p").expect("full outline"),
         Request::Outline(_)
     ));
+    for path in ["/p", "."] {
+        let invocation = invoke::parse(
+            &["outline", path, "--cursor", "pc4-proof"].map(str::to_owned),
+            None,
+        )
+        .expect("default outline continuation");
+        assert!(matches!(
+            lower(&invocation, "/p").expect("unchanged default credit"),
+            Request::ResumeQuery { query, cursor }
+                if matches!(query.as_ref(), Request::OutlinePage { path, limit }
+                    if path == "/p" && *limit == QueryLimit::MAX)
+                    && cursor == "pc4-proof"
+        ));
+    }
+    let invocation = invoke::parse(&words("outline /p --cursor pc4-proof"), Some("7"))
+        .expect("explicit global credit");
+    assert!(matches!(
+        lower(&invocation, "/p").expect("retain explicit global credit"),
+        Request::ResumeQuery { query, .. }
+            if matches!(*query, Request::OutlinePage { limit: 7, .. })
+    ));
+    let invocation = invoke::parse(&words("search Thing --cursor pc4-proof"), None)
+        .expect("ordinary search continuation");
+    assert!(matches!(
+        lower(&invocation, "/p").expect("retain ordinary query default"),
+        Request::ResumeQuery { query, .. }
+            if matches!(*query, Request::Search { limit: backend_present::DEFAULT_LIMIT, .. })
+    ));
     let invocation = invoke::parse(&words("outline /p --limit 0"), None).expect("option parse");
     assert!(lower(&invocation, "/p").is_err());
 }
