@@ -15110,7 +15110,7 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
             let extension = ir.typescript_extension(matching[0].id())
                 .ok_or(LaneError::Missing("native observed extension"))?;
             let observed = extension.observed.ok_or(LaneError::Missing("native observed type"))?;
-            let expected = if ordinal % 2 == 0 { BuiltinType::Number } else { BuiltinType::String };
+            let expected = if ordinal % 2 == 0 { BuiltinType::F64 } else { BuiltinType::String };
             assert_eq!(ir.ty(observed), Some(TypeExpr::Concrete(ConcreteType::Builtin(expected))),
                 "the index must not attach another declaration's native type to {name}");
         }
@@ -15125,7 +15125,7 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
             let observed = other.typescript_extension(item.id())
                 .and_then(|extension| extension.observed)
                 .ok_or(LaneError::Missing("shifted native observed type"))?;
-            let expected = if ordinal % 2 == 0 { BuiltinType::Number } else { BuiltinType::String };
+            let expected = if ordinal % 2 == 0 { BuiltinType::F64 } else { BuiltinType::String };
             assert_eq!(other.ty(observed), Some(TypeExpr::Concrete(ConcreteType::Builtin(expected))));
         }
         Ok(())
@@ -15593,7 +15593,7 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
             "declare namespace os {\n",
             "type Base = { value: number };\n",
             "interface File { first: Base; }\n",
-            "declare const gap: Base;\n",
+            "const gap: Base;\n",
             "interface File extends Base { second: Base; }\n",
             "}\n",
             "declare namespace foreign { interface File { alien: string; } }\n",
@@ -15660,7 +15660,7 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
             ir.link_occurrences_from(file.id()).all(|(_, site)| site
                 .source
                 .is_none_or(|span| span.end()
-                    <= u32::try_from(source.find("declare const gap").unwrap()).unwrap()
+                    <= u32::try_from(source.find("const gap").unwrap()).unwrap()
                     || span.start() >= u32::try_from(second_start).unwrap())),
             "no occurrence in the intervening gap is lent to File"
         );
