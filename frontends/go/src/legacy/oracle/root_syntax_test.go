@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -98,9 +101,104 @@ func TestRootSyntaxKeepsAuthorityImagesWithoutDependencyParsing(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !bytes.Equal(oldImage.Bytes(), newImage.Bytes()) {
-			t.Fatalf("complete authority image changed for %s (old=%d new=%d)", file, oldImage.Len(), newImage.Len())
+			t.Fatalf("complete authority image changed for %s (old=%d new=%d): %s", file, oldImage.Len(), newImage.Len(),
+				rootSyntaxParityDiagnostic(path, before, after, oldImage.Bytes(), newImage.Bytes()))
 		}
 	}
+}
+
+// Diagnostics never normalize, truncate, or replace the compared images. The
+// managed native case supplies an exclusive persistent directory; ordinary test
+// invocations still report the full hashes and first differences in the failure.
+func rootSyntaxParityDiagnostic(source string, before, after *Output, oldImage, newImage []byte) string {
+	firstDifference := func(a, b []byte, skipImageDigest bool) int {
+		for i := 0; i < len(a) && i < len(b); i++ {
+			if skipImageDigest && i >= 52 && i < 84 {
+				continue // Version 6's checksum is a consequence, not the changed record.
+			}
+			if a[i] != b[i] {
+				return i
+			}
+		}
+		if len(a) != len(b) {
+			return min(len(a), len(b))
+		}
+		return -1
+	}
+	window := func(data []byte, offset int) []byte {
+		if offset < 0 {
+			return nil
+		}
+		return data[max(0, offset-64):min(len(data), offset+96)]
+	}
+	rawOffset := firstDifference(oldImage, newImage, false)
+	recordOffset := firstDifference(oldImage, newImage, true)
+	summary := fmt.Sprintf("old_sha256=%x new_sha256=%x first_byte=%d first_byte_outside_digest=%d old_hex=%x new_hex=%x",
+		sha256.Sum256(oldImage), sha256.Sum256(newImage), rawOffset, recordOffset,
+		window(oldImage, recordOffset), window(newImage, recordOffset))
+	selectedBefore, err := authorityOutputForSource(before, source)
+	if err != nil {
+		return summary + "; diagnostic selection before: " + err.Error()
+	}
+	selectedAfter, err := authorityOutputForSource(after, source)
+	if err != nil {
+		return summary + "; diagnostic selection after: " + err.Error()
+	}
+	oldRecords, err := json.MarshalIndent(selectedBefore, "", "  ")
+	if err != nil {
+		return summary + "; diagnostic encoding before: " + err.Error()
+	}
+	newRecords, err := json.MarshalIndent(selectedAfter, "", "  ")
+	if err != nil {
+		return summary + "; diagnostic encoding after: " + err.Error()
+	}
+	jsonOffset := firstDifference(oldRecords, newRecords, false)
+	summary += fmt.Sprintf(" records_first_byte=%d old_records=%q new_records=%q",
+		jsonOffset, window(oldRecords, jsonOffset), window(newRecords, jsonOffset))
+	dir := os.Getenv("NUDOX_GO_ROOT_SYNTAX_DIAGNOSTICS")
+	if dir == "" {
+		return summary + "; persistent diagnostic directory was not selected"
+	}
+	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir {
+		return summary + "; diagnostic directory is not an absolute clean path"
+	}
+	if err := os.Mkdir(dir, 0700); err != nil {
+		return summary + "; exclusive diagnostic directory: " + err.Error()
+	}
+	files := []struct {
+		name string
+		data []byte
+	}{
+		{"before.ngai", oldImage}, {"after.ngai", newImage},
+		{"before.records.json", oldRecords}, {"after.records.json", newRecords},
+		{"summary.txt", []byte(filepath.Base(source) + "\n" + summary + "\n")},
+	}
+	for _, file := range files {
+		// This bounds failure evidence only. An oversized diagnostic still fails
+		// the same complete byte-parity assertion; no authority is admitted.
+		if len(file.data) > 1<<20 {
+			return summary + "; diagnostic exceeds one MiB: " + file.name
+		}
+		f, err := os.OpenFile(filepath.Join(dir, file.name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			return summary + "; exclusive diagnostic file: " + err.Error()
+		}
+		_, writeErr := f.Write(file.data)
+		syncErr := f.Sync()
+		closeErr := f.Close()
+		if writeErr != nil || syncErr != nil || closeErr != nil {
+			return summary + fmt.Sprintf("; diagnostic write/sync/close: %v / %v / %v", writeErr, syncErr, closeErr)
+		}
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return summary + "; diagnostic directory open: " + err.Error()
+	}
+	syncErr, closeErr := d.Sync(), d.Close()
+	if syncErr != nil || closeErr != nil {
+		return summary + fmt.Sprintf("; diagnostic directory sync/close: %v / %v", syncErr, closeErr)
+	}
+	return summary + "; complete diagnostic files: " + dir
 }
 
 func TestRootSyntaxStillRefusesMissingDependency(t *testing.T) {
