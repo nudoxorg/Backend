@@ -9,25 +9,25 @@
   "platforms": {
     "linux-x64": {
       "status": "diagnostic-preview",
-      "source": "da3cf5affaa80ab50e52be4c3f7f53e1518c10ea",
-      "tag": "checkpoint-20261019-da3cf5affa-linux-x64",
+      "source": "519a137628a650cac67219f23645a50d091617e2",
+      "tag": "checkpoint-20261019-519a137628-linux-x64",
       "known_failures": [
         "Requires Ubuntu 24.04 or newer with glibc 2.39 or newer; older glibc versions are unsupported.",
         "Diagnostic default Cargo profile with mixed per-package optimization, not an optimized release build.",
-        "The separate selected 15-test native qualification covers this source; it is not complete native, language or application acceptance. Fresh large Paperless, PocketBase and complete application suites remain separate gates.",
-        "Installed Ubuntu validation covers a basic Python CLI/MCP project. Two independent CLI-first/MCP-first updates from the real public 9e DTO35 owner to DTO36 preserved the same HOME and workspace. Same-DTO executable-update fixtures are not qualified by this package.",
+        "The exact source has three selected counts native tests and a matched default CLI/local daemon/MCP build. Other native and application checks have separate source bindings; fresh large Paperless, PocketBase and complete application suites remain separate gates.",
+        "Installed Ubuntu validation covers a basic Python CLI/MCP project. Two independent CLI-first/MCP-first updates from the real public DA3 DTO36 owner preserved the same HOME and workspace in the private package check. Public checkpoint saved-shell and one-line installs are separately verified; generic install.sh is verified after channel selection.",
         "The Node SDK is not bundled. Embeddings are unconfigured and vector inference is not proven.",
-        "This archive contains CLI, local daemon and MCP commands only. Current GUI, macOS and Homebrew acceptance are not established."
+        "This archive contains CLI, local daemon and MCP commands only. Current GUI, macOS and Homebrew acceptance are not established. Later ee69 and subsequent source changes are not in these binaries."
       ],
       "installer": {
-        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261019-da3cf5affa-linux-x64/install-linux-x64.py",
-        "sha256": "4c541bd287dbf4fe7a2cb8d6d0699b2393e6ed6bdb08d264ae06b7efed0be759",
+        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261019-519a137628-linux-x64/install-linux-x64.py",
+        "sha256": "f8c8eaf8ce252f43feae11ebb77cd33910d90d69635d0490e64e267d28c491a1",
         "bytes": 62050
       },
       "archive": {
-        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261019-da3cf5affa-linux-x64/nudox-linux-x86_64-da3cf5affa.tar.gz",
-        "sha256": "478401d37c074d67203f854e073dc2b9716dd4d5abffbb886dcebd7d4a2a8e39",
-        "bytes": 176226302
+        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261019-519a137628-linux-x64/nudox-linux-x86_64-519a137628.tar.gz",
+        "sha256": "cdd644e31e2bca827d8601394ad9f28cdff46767ad6c8d74e9b8d80f5a6e7dee",
+        "bytes": 176255054
       }
     },
     "macos-arm64": {
