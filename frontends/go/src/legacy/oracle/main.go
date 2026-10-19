@@ -117,6 +117,9 @@ type Output struct {
 	// Every entry of Errors with the file it names, so that an authority image is
 	// refused only for the sources a diagnostic can affect (see load_errors.go).
 	loadErrors []loadError
+	// Actual additional parser work is retained privately for native A/B checks.
+	positionRecoveryFiles    []string
+	positionRecoveryFallback bool
 }
 
 type sourceExclusion struct {
@@ -292,7 +295,9 @@ func extractWithSelection(dir, pattern string, selection *packageSelection) (*Ou
 // Selected packages need typed syntax. Their imports need exported type
 // information, not another parse/type-check of every dependency body for each
 // source directory. go/packages still obtains those imports from the compiler
-// and falls back to source when export data is unavailable.
+// and falls back to source when export data is unavailable. Emitted promoted
+// dependency methods recover exact coordinates lazily from compiler-listed
+// source; unsupported mappings retain the full compiler source-load fallback.
 func selectedPackageConfig(dir string, selection *packageSelection) *packages.Config {
 	return &packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
@@ -369,6 +374,8 @@ func extractWithConfig(cfg *packages.Config, pattern string, selection *packageS
 			out.loadErrors = append(out.loadErrors, classifyLoadError(group.directory, e, ignoredByDirectory[group.directory]))
 		}
 	}
+	positions := newDependencyPositions(pkgs, cfg)
+	defer positions.close()
 	// Gathered once across every selected package, so `implementsInterfaces`
 	// can check a concrete type against interfaces declared anywhere in the
 	// module, not only its own package. See collectInterfaceCandidates.
@@ -383,8 +390,11 @@ func extractWithConfig(cfg *packages.Config, pattern string, selection *packageS
 			variant.IgnoredFiles = append(variant.IgnoredFiles, path)
 		}
 		sort.Strings(variant.IgnoredFiles)
-		serialized, err := extractPackage(&variant, candidates, selection.context)
+		serialized, err := extractPackageWithPositions(&variant, candidates, selection.context, positions)
 		if err != nil {
+			if positions != nil && positions.err != nil {
+				return retryWithDependencySyntax(cfg, pattern, selection, positions)
+			}
 			return nil, err
 		}
 		out.Packages = append(out.Packages, serialized)
@@ -396,7 +406,30 @@ func extractWithConfig(cfg *packages.Config, pattern string, selection *packageS
 	if err := captureUnownedExclusions(out, pkgs, ignoredByDirectory, selection.context); err != nil {
 		return nil, err
 	}
+	if err := positions.finish(); err != nil {
+		return retryWithDependencySyntax(cfg, pattern, selection, positions)
+	}
+	if positions != nil {
+		out.positionRecoveryFiles = append(out.positionRecoveryFiles, positions.parsed...)
+	}
 	return out, nil
+}
+
+// The compiler owns unsupported or unavailable source mappings. Retry once with
+// its full source loader, using the original context/deadline and ParseFile hook.
+func retryWithDependencySyntax(cfg *packages.Config, pattern string, selection *packageSelection, positions *dependencyPositions) (*Output, error) {
+	positions.close()
+	if cfg.Context != nil && cfg.Context.Err() != nil {
+		return nil, cfg.Context.Err()
+	}
+	fallback := *cfg
+	fallback.Mode |= packages.NeedDeps
+	out, err := extractWithConfig(&fallback, pattern, selection)
+	if out != nil {
+		out.positionRecoveryFiles = append(append([]string(nil), positions.parsed...), out.positionRecoveryFiles...)
+		out.positionRecoveryFallback = true
+	}
+	return out, err
 }
 
 // packagesAuthorityEnvironment projects the explicit parent policy into the
@@ -546,6 +579,10 @@ func packageVariantKey(pkg *packages.Package) string {
 // to extractObject so a concrete type declared in this package can be
 // checked against interfaces declared in ANY package the module loaded.
 func extractPackage(pkg *packages.Package, candidates []interfaceCandidate, selection build.Context) (*Package, error) {
+	return extractPackageWithPositions(pkg, candidates, selection, nil)
+}
+
+func extractPackageWithPositions(pkg *packages.Package, candidates []interfaceCandidate, selection build.Context, positions *dependencyPositions) (*Package, error) {
 	docs := harvestDocs(pkg)
 
 	p := &Package{
@@ -574,7 +611,10 @@ func extractPackage(pkg *packages.Package, candidates []interfaceCandidate, sele
 		if obj == nil {
 			continue
 		}
-		decl, extra := extractObject(pkg, obj, docs, candidates)
+		decl, extra := extractObject(pkg, obj, docs, candidates, positions)
+		if positions != nil && positions.err != nil {
+			return nil, positions.err
+		}
 		if decl != nil {
 			p.Decls = append(p.Decls, decl)
 		}
@@ -1083,8 +1123,9 @@ func exportedDecls(path string, source []byte) ([]*BuildDecl, error) {
 // extractObject serializes one package-scope object into a Decl. candidates
 // is the module-wide interface list (see collectInterfaceCandidates), used
 // only for kind == "type" declarations that are not themselves interfaces.
-func extractObject(pkg *packages.Package, obj types.Object, docs *docCatalog, candidates []interfaceCandidate) (*Decl, []string) {
+func extractObject(pkg *packages.Package, obj types.Object, docs *docCatalog, candidates []interfaceCandidate, positions *dependencyPositions) (*Decl, []string) {
 	s := newSerializer(pkg)
+	s.dependencyPositions = positions
 
 	base := &Decl{
 		Name:     obj.Name(),

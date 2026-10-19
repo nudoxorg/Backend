@@ -10,6 +10,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -28,9 +29,21 @@ func (b *Box[T]) Get() T { return b.Value }
 type Reader[T any] interface { Get() T }
 func Identity[T any](value T) T { return value }
 `,
+		"dep/more.go": `package dep
+func (b Box[T]) Pair(value T, count int) (left T, right int) { return value, count }
+func (b Box[T]) Unnamed(value T) (T, int) { return value, 1 }
+func (b Box[T]) Grouped(left, right T) (first, second T) { return left, right }
+func (b Box[T]) Many(first T, rest ...T) (count int) { return len(rest) + 1 }
+type Other struct{}
+func (Other) Get() string { return "other receiver" }
+`,
+		"dep/unrelated.go": `package dep
+func Unrelated(value int) int { return value + 1 }
+`,
 		"root.go": `package rootonly
 import "example.com/rootonly/dep"
 type Local struct { dep.Box[string] }
+type Alternate struct { dep.Box[string] }
 var Current = dep.Box[int]{Value: dep.Identity(7)}
 func Read(box *dep.Box[int]) int { return box.Get() }
 `,
@@ -57,7 +70,7 @@ func TestExternal(t *testing.T) { if root.Read(&dep.Box[int]{Value: 9}) != 9 { t
 
 // Run the production config and its previous NeedDeps mode on the same physical
 // fixture. ParseFile observes actual go/packages work, not a load-mode mirror.
-func loadRootSyntaxFixture(t *testing.T, root string, allSyntax bool) (*Output, int) {
+func loadRootSyntaxFixture(t *testing.T, root string, allSyntax bool) (*Output, map[string]int) {
 	t.Helper()
 	selection := testSelection(t, "linux", "amd64", false)
 	cfg := selectedPackageConfig(root, selection)
@@ -65,11 +78,11 @@ func loadRootSyntaxFixture(t *testing.T, root string, allSyntax bool) (*Output, 
 		cfg.Mode |= packages.NeedDeps
 	}
 	var mu sync.Mutex
-	dependencyParses := 0
+	dependencyParses := map[string]int{}
 	cfg.ParseFile = func(fset *token.FileSet, filename string, source []byte) (*ast.File, error) {
 		if filepath.Dir(filename) == filepath.Join(root, "dep") {
 			mu.Lock()
-			dependencyParses++
+			dependencyParses[filepath.Base(filename)]++
 			mu.Unlock()
 		}
 		return parser.ParseFile(fset, filename, source, parser.AllErrors|parser.ParseComments)
@@ -81,16 +94,67 @@ func loadRootSyntaxFixture(t *testing.T, root string, allSyntax bool) (*Output, 
 	return output, dependencyParses
 }
 
-func TestRootSyntaxKeepsAuthorityImagesWithoutDependencyParsing(t *testing.T) {
+// Preserve every image byte while avoiding dependency-wide parsing. The actual
+// ParseFile hook observes both go/packages and the lazy source-coordinate reads.
+func TestRootSyntaxKeepsAuthorityImagesWithoutEagerDependencyParsing(t *testing.T) {
 	root := writeRootSyntaxFixture(t)
 	before, beforeParses := loadRootSyntaxFixture(t, root, true)
 	after, afterParses := loadRootSyntaxFixture(t, root, false)
 	if len(before.Errors) != 0 || len(after.Errors) != 0 {
 		t.Fatalf("genuine package errors: before=%v after=%v", before.Errors, after.Errors)
 	}
-	if beforeParses == 0 || afterParses != 0 {
-		t.Fatalf("dependency source parses: prior=%d root-only=%d", beforeParses, afterParses)
+	if beforeParses["dep.go"] != 1 || beforeParses["more.go"] != 1 || beforeParses["unrelated.go"] != 1 {
+		t.Fatalf("baseline must genuinely parse all dependency files: %v", beforeParses)
 	}
+	if after.positionRecoveryFallback || afterParses["dep.go"] != 1 || afterParses["more.go"] != 1 || afterParses["unrelated.go"] != 0 {
+		t.Fatalf("lazy source work must parse exactly two needed files once, not unrelated source: parses=%v fallback=%t", afterParses, after.positionRecoveryFallback)
+	}
+	targeted := map[string]int{}
+	for _, file := range after.positionRecoveryFiles {
+		targeted[filepath.Base(file)]++
+	}
+	if !reflect.DeepEqual(afterParses, targeted) || len(after.positionRecoveryFiles) != 2 {
+		t.Fatalf("every actual dependency parse must be accounted as targeted, eager=0: actual=%v targeted=%v", afterParses, targeted)
+	}
+	assertRootSyntaxImagesEqual(t, root, before, after)
+
+	// Unsupported source mappings must retain the compiler's genuine positions,
+	// with all fallback parser work visible through that same callback.
+	for _, extra := range []struct{ file, source string }{
+		{"dep/more.go", "func (b Box[T]) Nested(callback func(T) T) T { return callback(b.Value) }\n"},
+		{"dep/more.go", "//line virtual-coordinate.go:90\nfunc (b Box[T]) Directed() (value T) { return b.Value }\n"},
+		{"root.go", "var ImportedIdentity = dep.Identity[int]\n"},
+		{"root.go", "type ImportedReader interface { dep.Reader[int] }\n"},
+	} {
+		fallbackRoot := writeRootSyntaxFixture(t)
+		path := filepath.Join(fallbackRoot, filepath.FromSlash(extra.file))
+		file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.WriteString(extra.source); err != nil {
+			file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		old, oldParses := loadRootSyntaxFixture(t, fallbackRoot, true)
+		current, currentParses := loadRootSyntaxFixture(t, fallbackRoot, false)
+		if len(old.Errors) != 0 || len(current.Errors) != 0 || !current.positionRecoveryFallback {
+			t.Fatalf("unsupported mapping must use genuine compiler fallback: before=%v after=%v fallback=%t", old.Errors, current.Errors, current.positionRecoveryFallback)
+		}
+		for name, count := range oldParses {
+			if currentParses[name] < count {
+				t.Fatalf("compiler fallback parser work disappeared: baseline=%v current=%v", oldParses, currentParses)
+			}
+		}
+		assertRootSyntaxImagesEqual(t, fallbackRoot, old, current)
+	}
+}
+
+func assertRootSyntaxImagesEqual(t *testing.T, root string, before, after *Output) {
+	t.Helper()
 	for _, file := range []string{"root.go", "root_test.go", "external_test.go"} {
 		var oldImage, newImage bytes.Buffer
 		path := filepath.Join(root, file)

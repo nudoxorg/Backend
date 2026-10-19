@@ -334,12 +334,15 @@ type Term struct {
 // but type is incomplete`). The package still seals; these names are
 // reported instead of panicking the oracle.
 type serializer struct {
-	fset       *token.FileSet
-	unresolved map[string]struct{}
+	fset                *token.FileSet
+	owner               *types.Package
+	dependencyPositions *dependencyPositions
+	recoveringPromoted  bool
+	unresolved          map[string]struct{}
 }
 
 func newSerializer(pkg *packages.Package) *serializer {
-	return &serializer{fset: pkg.Fset}
+	return &serializer{fset: pkg.Fset, owner: pkg.Types}
 }
 
 func (s *serializer) noteUnresolved(name string) {
@@ -455,6 +458,39 @@ func (s *serializer) collectCgo(t types.Type, depth int) {
 			s.collectCgo(t.Field(i).Type(), depth+1)
 		}
 	}
+}
+
+// Positions in other imported signatures/interfaces have no promoted declaration
+// to authenticate. Let the full source loader resolve them rather than emitting
+// export-data approximations (including missing imported object positions).
+func (s *serializer) objectPosition(obj types.Object) *Pos {
+	if s.dependencyPositions != nil && !s.recoveringPromoted && s.owner != nil {
+		file := s.fset.PositionFor(obj.Pos(), false).Filename
+		needsSource := false
+		if pkg := obj.Pkg(); pkg != nil {
+			needsSource = pkg.Path() != s.owner.Path() && !s.dependencyPositions.syntax[pkg.Path()][file]
+		} else {
+			// An exported tuple can lack package/position provenance. Only an
+			// actual parsed source position can discharge that uncertainty.
+			needsSource = true
+			for _, files := range s.dependencyPositions.syntax {
+				if file != "" && files[file] {
+					needsSource = false
+				}
+			}
+		}
+		if needsSource {
+			s.dependencyPositions.err = fmt.Errorf("imported object %s needs compiler source coordinates", obj.Name())
+		}
+	}
+	return s.position(obj.Pos())
+}
+
+func (s *serializer) promotedSignature(sig *types.Signature) *Type {
+	previous := s.recoveringPromoted
+	s.recoveringPromoted = true
+	defer func() { s.recoveringPromoted = previous }()
+	return s.signatureDepth(sig, 0)
 }
 
 func (s *serializer) position(pos token.Pos) *Pos {
@@ -613,12 +649,12 @@ func (s *serializer) signatureDepth(sig *types.Signature, depth int) *Type {
 	params := sig.Params()
 	for i := 0; i < params.Len(); i++ {
 		p := params.At(i)
-		out.Params = append(out.Params, &Param{Name: p.Name(), Type: s.typDepth(p.Type(), depth+1), Pos: s.position(p.Pos())})
+		out.Params = append(out.Params, &Param{Name: p.Name(), Type: s.typDepth(p.Type(), depth+1), Pos: s.objectPosition(p)})
 	}
 	results := sig.Results()
 	for i := 0; i < results.Len(); i++ {
 		r := results.At(i)
-		out.Results = append(out.Results, &Param{Name: r.Name(), Type: s.typDepth(r.Type(), depth+1), Pos: s.position(r.Pos())})
+		out.Results = append(out.Results, &Param{Name: r.Name(), Type: s.typDepth(r.Type(), depth+1), Pos: s.objectPosition(r)})
 	}
 	return out
 }
@@ -628,7 +664,7 @@ func (s *serializer) methodSig(f *types.Func, depth int) *MethodSig {
 	ms := &MethodSig{
 		Name:     f.Name(),
 		Exported: f.Exported(),
-		Pos:      s.position(f.Pos()),
+		Pos:      s.objectPosition(f),
 	}
 	if p := f.Pkg(); p != nil {
 		ms.Pkg = p.Path()
@@ -766,8 +802,11 @@ func (s *serializer) promotedMethodsBody(named *types.Named, docs *docCatalog) [
 			Exported:  f.Exported(),
 			Pos:       s.position(f.Pos()),
 			Span:      s.methodSpan(docs, originTypeName(sig), f.Name()),
-			Signature: s.signatureDepth(sig, 0),
+			Signature: s.promotedSignature(sig),
 			Origin:    originOf(sig),
+		}
+		if s.dependencyPositions != nil && f.Pkg() != nil && s.owner != nil && f.Pkg().Path() != s.owner.Path() {
+			s.dependencyPositions.recoverMethod(s.fset, f, m)
 		}
 		if recv := sig.Recv(); recv != nil {
 			m.RecvName = recv.Name()
