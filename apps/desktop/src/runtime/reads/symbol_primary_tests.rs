@@ -109,9 +109,21 @@ fn primary_symbol_page_arrives_before_blocked_secondary_and_still_honours_cancel
             panic!("primary symbol");
         };
         assert_eq!(page.identity.name.as_ref(), "Item");
-        assert!(
-            page.site.known().is_some(),
-            "captured source is already available"
+        assert_eq!(
+            page.site
+                .location
+                .known()
+                .map(|location| (location.path.as_ref(), location.line)),
+            Some(("src/item.rs", 7)),
+            "captured source location is already available"
+        );
+        assert_eq!(
+            page.site
+                .excerpt
+                .known()
+                .map(|excerpt| (excerpt.text.as_ref(), excerpt.complete)),
+            Some(("pub struct Item {}", true)),
+            "complete captured source text is already available"
         );
         assert_eq!(
             page.references.gap().map(|gap| gap.reason),
