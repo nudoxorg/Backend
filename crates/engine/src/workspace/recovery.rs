@@ -84,7 +84,7 @@ pub fn inspect(journal: &HashChainJournal<WorkspaceLog>) -> Result<RecoveryRepor
             |report, frame| {
                 report.frames = report.frames.checked_add(1).ok_or(JournalError::Bounds)?;
                 match WorkspaceLog::decode(frame.payload)? {
-                    WorkspaceRecord::Prepared { .. } => {
+                    WorkspaceRecord::Prepared { .. } | WorkspaceRecord::PreparedSummary { .. } => {
                         report.prepared =
                             report.prepared.checked_add(1).ok_or(JournalError::Bounds)?;
                     }
@@ -131,7 +131,18 @@ pub(crate) fn open_diagnostic_journal(
     epoch: u64,
     limits: JournalLimits,
 ) -> Result<HashChainJournal<WorkspaceLog>, WorkspaceError> {
-    match HashChainJournal::<WorkspaceLog>::open_streaming(path, limits) {
+    open_diagnostic_journal_for::<WorkspaceLog>(path, directory, epoch, limits)
+}
+
+// Keep the rollback policy independent of the closed record grammar. This is
+// also exercised with the previous reader's exact tag set below.
+fn open_diagnostic_journal_for<D: JournalCodec>(
+    path: &Path,
+    directory: &Path,
+    epoch: u64,
+    limits: JournalLimits,
+) -> Result<HashChainJournal<D>, WorkspaceError> {
+    match HashChainJournal::<D>::open_streaming(path, limits) {
         Ok((journal, _scan)) => Ok(journal),
         Err(error)
             if matches!(
@@ -151,7 +162,7 @@ pub(crate) fn open_diagnostic_journal(
                 Err(rename) if rename.kind() == io::ErrorKind::NotFound => {}
                 Err(rename) => return Err(WorkspaceError::io(rename)),
             }
-            HashChainJournal::<WorkspaceLog>::open_streaming(path, limits)
+            HashChainJournal::<D>::open_streaming(path, limits)
                 .map(|(journal, _scan)| journal)
                 .map_err(WorkspaceError::Journal)
         }
@@ -255,4 +266,116 @@ pub(crate) fn recover_store_head<M: WorkspaceModel>(
         RecordId::from_payload(&[]),
         owner_epoch,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::TransactionId;
+    use crate::workspace::record::tests::LegacyWorkspaceLog;
+
+    #[test]
+    fn mixed_prepared_grammars_append_reopen_and_count_exact_control_links()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("workspace.journal");
+        let transaction = TransactionId::from_bytes([2; 32]);
+        let legacy = WorkspaceRecord::Prepared {
+            request: [1; 32],
+            transaction,
+            manifest: b"manifest".to_vec(),
+            delta: b"delta".to_vec(),
+            commit: b"commit".to_vec(),
+            closure: b"closure".to_vec(),
+        };
+        let (journal, _) = HashChainJournal::<WorkspaceLog>::open(&path)?;
+        journal.append(&legacy)?;
+        drop(journal);
+        // Historical records retain their original closed grammar and bytes.
+        let (old, history) = HashChainJournal::<LegacyWorkspaceLog>::open(&path)?;
+        assert_eq!(history.frames.len(), 1);
+        assert_eq!(
+            LegacyWorkspaceLog::decode(&history.frames[0].payload)?,
+            legacy
+        );
+        drop(old);
+        let (journal, _) = HashChainJournal::<WorkspaceLog>::open(&path)?;
+        let summary = WorkspaceRecord::PreparedSummary {
+            request: [1; 32],
+            transaction,
+            manifest_bytes: 8,
+            manifest_digest: *blake3::hash(b"manifest").as_bytes(),
+            delta_bytes: 5,
+            delta_digest: *blake3::hash(b"delta").as_bytes(),
+            commit_bytes: 6,
+            commit_digest: *blake3::hash(b"commit").as_bytes(),
+            closure_bytes: 7,
+            closure_digest: *blake3::hash(b"closure").as_bytes(),
+        };
+        let prepared = journal.append(&summary)?;
+        journal.append_encoded(|output| {
+            crate::workspace::record::encode_select(output, transaction, 7, prepared)
+        })?;
+        journal.append(&WorkspaceRecord::Published {
+            transaction,
+            sequence: 7,
+        })?;
+        drop(journal);
+        let (journal, history) = HashChainJournal::<WorkspaceLog>::open(&path)?;
+        assert_eq!(history.frames.len(), 4);
+        assert_eq!(WorkspaceLog::decode(&history.frames[1].payload)?, summary);
+        let report = inspect(&journal)?;
+        assert_eq!(
+            (
+                report.frames,
+                report.prepared,
+                report.selected,
+                report.published
+            ),
+            (4, 2, 1, 1)
+        );
+        assert!(!report.truncated_tail);
+        assert_eq!(report.last_sequence, Some(3));
+        let WorkspaceRecord::Select {
+            prepared_sequence,
+            prepared_offset,
+            prepared_chain,
+            prepared_record,
+            ..
+        } = WorkspaceLog::decode(&history.frames[2].payload)?
+        else {
+            panic!("select link expected")
+        };
+        assert_eq!(prepared_sequence, prepared.sequence);
+        assert_eq!(prepared_offset, prepared.offset);
+        assert_eq!(prepared_chain, *prepared.chain.as_bytes());
+        assert_eq!(prepared_record, *prepared.record.as_bytes());
+        drop(journal);
+
+        // Downgrades reject this closed grammar, preserve the entire original
+        // history, then resume a fresh diagnostic chain. This is the owner's
+        // real quarantine policy, not a test-local rename approximation.
+        let original = fs::read(&path)?;
+        assert!(matches!(
+            HashChainJournal::<LegacyWorkspaceLog>::open(&path),
+            Err(JournalError::Corrupt("record trailing bytes"))
+        ));
+        assert_eq!(fs::read(&path)?, original);
+        let old = open_diagnostic_journal_for::<LegacyWorkspaceLog>(
+            &path,
+            root.path(),
+            41,
+            JournalLimits::default(),
+        )?;
+        let quarantine = root.path().join(format!(
+            "workspace.diagnostic.corrupt.41-{}",
+            std::process::id()
+        ));
+        assert_eq!(fs::read(&quarantine)?, original);
+        assert_eq!(old.recover()?.frames.len(), 0);
+        drop(old);
+        let (retained, _) = HashChainJournal::<WorkspaceLog>::open(&quarantine)?;
+        assert_eq!(inspect(&retained)?.prepared, 2);
+        Ok(())
+    }
 }

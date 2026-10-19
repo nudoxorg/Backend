@@ -275,17 +275,30 @@ fn settings_icon(page: SettingsPage) -> Icon {
 
 // ---------------------------------------------------------------- the Library
 
-/// Whether an indexed package is one of your projects: a local package that
-/// stands at a project's folder or bears its name. The Library shows it
-/// once, under Yours, not again among the packages.
-fn is_a_project(
-    package_root: &str,
-    package_name: &str,
-    local: bool,
-    project_path: &str,
-    project_label: &str,
-) -> bool {
-    local && (package_root == project_path || package_name == project_label)
+/// Only an exact native project identity can suppress an indexed local row.
+/// Display labels and lossy persisted spellings are not package authority.
+fn is_a_project(package: &PackageRef, project: &crate::model::WorkspaceProject) -> bool {
+    package.is_local()
+        && crate::core::LocalProjectId::from_path(std::path::Path::new(package.as_str()))
+            .is_ok_and(|identity| identity == project.id)
+}
+
+/// Only a current indexed row can turn the local project control into a
+/// package read. Retained/offline discovery keeps its local Tree recovery.
+fn project_action(
+    project: &crate::model::WorkspaceProject,
+    orbit: &ResourceAdmission<'_, OrbitModel>,
+) -> Do {
+    let package = orbit
+        .current_value()
+        .and_then(|model| model.indexed.known())
+        .and_then(|packages| {
+            packages
+                .iter()
+                .find(|package| is_a_project(&package.package, project))
+        })
+        .map(|package| package.package.clone());
+    Do::Project(project.id.clone(), package)
 }
 
 /// In what order the library's packages are listed.
@@ -307,13 +320,7 @@ pub(crate) fn beside_your_projects<'a>(
 ) -> Vec<&'a crate::model::pages::IndexedPackage> {
     let yours = |package: &crate::model::pages::IndexedPackage| {
         workspace.projects.iter().any(|project| {
-            is_a_project(
-                package.package.as_str(),
-                &package.name,
-                package.package.is_local(),
-                &project.path,
-                &project.label,
-            )
+            is_a_project(&package.package, project)
         })
     };
     let mut list: Vec<_> = indexed.iter().filter(|package| !yours(package)).collect();
@@ -438,7 +445,7 @@ fn library(inputs: &Inputs<'_>) -> Listing {
                 0,
                 Mark::Kind(Kind::Module),
                 project.label.to_string(),
-                Do::Project(project.id.clone()),
+                project_action(project, &inputs.orbit),
             );
             item.current = workspace.active.as_ref() == Some(&project.id);
             if project.phase != crate::model::ProjectPhase::Ready {
@@ -1156,6 +1163,7 @@ fn bare_head(inputs: &Inputs<'_>) -> Head {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn fact_listing(
         dossier: Option<&crate::core::Resource<PackageDossier>>,
@@ -1448,40 +1456,79 @@ mod tests {
     }
 
     #[test]
-    fn a_local_package_at_a_projects_folder_or_with_its_name_is_the_project_and_appears_once() {
+    fn project_package_destination_requires_current_exact_owner_indexed_claim() {
+        let root = fact_root(21);
+        let mut model = empty_orbit();
+        let exact = indexed("/work/one/shared");
+        model.indexed = Known::Known(Arc::from([exact.clone()]));
+        let resource = crate::core::Resource::loaded_at(model, root);
+        let project = crate::model::WorkspaceProject::indexing_with_id(
+            crate::core::LocalProjectId::new("/work/one/shared").expect("project"),
+        );
+        assert_eq!(
+            project_action(
+                &project,
+                &crate::core::admit_resource(&resource, root, true)
+            ),
+            Do::Project(project.id.clone(), Some(exact.package))
+        );
+        for admission in [
+            crate::core::admit_resource(&resource, root, false),
+            crate::core::admit_resource(&resource, fact_root(22), true),
+        ] {
+            assert_eq!(
+                project_action(&project, &admission),
+                Do::Project(project.id.clone(), None),
+                "retained/offline rows cannot supply current package navigation"
+            );
+        }
+        let copy = crate::model::WorkspaceProject::indexing_with_id(
+            crate::core::LocalProjectId::new("/work/two/shared").expect("copy"),
+        );
+        assert_eq!(
+            project_action(&copy, &crate::core::admit_resource(&resource, root, true)),
+            Do::Project(copy.id.clone(), None),
+            "equal display names do not grant the other root"
+        );
+    }
+
+    #[test]
+    fn project_shelf_identity_never_collapses_same_name_copies_or_display_aliases() {
+        let identity =
+            crate::core::LocalProjectId::new("/work/one/shared").expect("project identity");
+        let project =
+            crate::model::WorkspaceProject::indexing_with_display(identity, "/display/alias");
+        let exact = indexed("/work/one/shared");
+        let copy = indexed("/work/two/shared");
+        let alias = indexed("/display/alias");
+        let registry = indexed("pkg:cargo/shared@1.0.0");
+        assert!(is_a_project(&exact.package, &project));
+        for other in [&copy, &alias, &registry] {
+            assert!(
+                !is_a_project(&other.package, &project),
+                "a name/display spelling cannot replace the exact native identity"
+            );
+        }
+        let current = fact_root(1);
+        let mut workspace = AppSnapshot::empty(current).workspace().clone();
+        workspace.projects = Arc::from([project]);
+        let packages = [exact, copy.clone(), alias.clone(), registry.clone()];
+        let visible = beside_your_projects(&packages, &workspace, LibraryOrder::Name);
+        assert_eq!(visible.len(), 3);
         assert!(
-            is_a_project("/work/toml_pin", "toml_pin", true, "/work/toml_pin", "pin"),
-            "the same folder"
+            visible
+                .iter()
+                .any(|package| package.package == copy.package)
         );
         assert!(
-            is_a_project(
-                "/index/copy",
-                "toml_pin",
-                true,
-                "/work/toml_pin",
-                "toml_pin"
-            ),
-            "the same name"
+            visible
+                .iter()
+                .any(|package| package.package == alias.package)
         );
         assert!(
-            !is_a_project(
-                "pkg:cargo/toml_pin@0.1.0",
-                "toml_pin",
-                false,
-                "/work/other",
-                "toml_pin"
-            ),
-            "a registry release is not your project, even with the name"
-        );
-        assert!(
-            !is_a_project(
-                "/work/present",
-                "present",
-                true,
-                "/work/toml_pin",
-                "toml_pin"
-            ),
-            "another local package stays a package"
+            visible
+                .iter()
+                .any(|package| package.package == registry.package)
         );
     }
 
