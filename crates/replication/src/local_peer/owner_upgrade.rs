@@ -938,7 +938,7 @@ mod tests {
             }
         }
         let root = std::env::temp_dir().join(format!(
-            "nudox-upgrade-{}-{}",
+            "nu-{:x}-{:x}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -955,11 +955,26 @@ mod tests {
                 .env(CHILD, &root)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
                 .spawn()
                 .expect("isolated unrelated peer"),
         );
         let until = Instant::now() + Duration::from_secs(5);
         while !root.join("ready").exists() {
+            if let Some(status) = child.0.try_wait().expect("exact fixture child status") {
+                let mut diagnostic = Vec::new();
+                if let Some(stderr) = child.0.stderr.take() {
+                    stderr
+                        .take(65537)
+                        .read_to_end(&mut diagnostic)
+                        .expect("bounded fixture child diagnostic");
+                }
+                assert!(diagnostic.len() <= 65536, "bounded fixture child stderr");
+                panic!(
+                    "unrelated fixture child exited before readiness ({status}): {}",
+                    String::from_utf8_lossy(&diagnostic)
+                );
+            }
             assert!(Instant::now() < until, "finite child startup");
             std::thread::sleep(Duration::from_millis(10));
         }
