@@ -42,7 +42,6 @@ pub const DEFAULT_IGNORED_DIRECTORIES: &[&str] = &[
     ".webpack",
     ".rollup.cache",
     ".nx",
-    "coverage",
     "storybook-static",
     ".nyc_output",
     "Library",
@@ -922,6 +921,64 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn authored_coverage_paths_survive_without_overriding_ignored_generated_reports() {
+        let scratch = Scratch::new("authored-coverage");
+        for (path, contents) in [
+            (
+                "src/builtin/coverage/tests.rs",
+                "pub fn source_coverage() {}",
+            ),
+            (
+                "src/coverage/report.ts",
+                "export function sourceCoverage() {}",
+            ),
+            ("coverage/generated.ts", "export const generated = true;"),
+            ("coverage/lcov.info", "TN:generated report"),
+            ("target/ignored.rs", "pub fn compiler_output() {}"),
+            ("node_modules/ignored.ts", "export const dependency = true;"),
+        ] {
+            let path = scratch.0.join(path);
+            fs::create_dir_all(path.parent().expect("parent")).expect("directory");
+            fs::write(path, contents).expect("file");
+        }
+        let files = || {
+            DiscoveryPolicy::default()
+                .walk(&scratch.0)
+                .map(|entry| entry.expect("discovery"))
+                .filter(|entry| entry.is_file())
+                .map(|entry| slash_path(entry.path().strip_prefix(&scratch.0).expect("relative")))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            files(),
+            [
+                "coverage/generated.ts",
+                "coverage/lcov.info",
+                "src/builtin/coverage/tests.rs",
+                "src/coverage/report.ts",
+            ]
+        );
+        // Project ignore policy chooses whether the coverage report is excluded;
+        // the directory name alone cannot distinguish authored namespaces from
+        // generated data.
+        // User negations still cannot reopen compiler output or dependencies.
+        fs::write(
+            scratch.0.join(".gitignore"),
+            b"/coverage/\n!target/\n!node_modules/\n",
+        )
+        .expect("ignore");
+        assert_eq!(
+            files(),
+            ["src/builtin/coverage/tests.rs", "src/coverage/report.ts"]
+        );
+        assert!(!is_hard_ignored_path(Path::new(
+            "src/builtin/coverage/tests.rs"
+        )));
+        assert!(is_hard_ignored_path(Path::new("target/ignored.rs")));
+        assert!(is_hard_ignored_path(Path::new("node_modules/ignored.ts")));
     }
 
     #[test]
