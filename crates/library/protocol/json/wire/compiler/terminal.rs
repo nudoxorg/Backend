@@ -2161,3 +2161,147 @@ pub(crate) fn serialize_optional_native_tool<Output: Serializer>(
         None => serializer.serialize_none(),
     }
 }
+
+#[cfg(test)]
+mod duplicate_identity_wire_tests {
+    use super::CompilerFragmentFailureRef;
+    use crate::interface::{CompilerFragmentFailure, CompilerFragmentFaultFacts};
+    use backend_semantic::ir::{
+        AtomId, BuildError, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityId,
+        EntityVersion, FactAvailability, IrBuilder, Item, ItemKind, ItemName, ParentageAuthority,
+        SourceSpan, VariantFingerprint, Visibility,
+    };
+
+    #[test]
+    fn duplicate_identity_wire_detail_retains_both_maximum_sites_and_full_identity() {
+        let mut builder = IrBuilder::new();
+        let file = builder
+            .intern_atom(b"/absolute/private/path-must-not-escape.ts")
+            .expect("file");
+        let name = builder.intern_atom(&[0xff; 20]).expect("hostile long name");
+        let members = builder.intern_members(&[]).expect("members");
+        let docs = builder.intern_docs(&[]).expect("docs");
+        let attributes = builder.intern_attributes(&[]).expect("attributes");
+        for start in [11, 31] {
+            builder
+                .add_item(
+                    EntityVersion {
+                        family: DeclarationFamilyId::from_raw([7; 16]),
+                        variant: VariantFingerprint::from_raw([8; 16]),
+                        core_payload: CorePayloadHash::from_raw([9; 16]),
+                    },
+                    Item {
+                        name: ItemName::Named(name),
+                        kind: ItemKind::Field,
+                        visibility: Visibility::Unknown,
+                        parent: None,
+                        semantic_type: None,
+                        members,
+                        docs,
+                        attributes,
+                        source: SourceSpan::new(file, start, start + 7),
+                    },
+                    None,
+                    EntityAuthorityFacts {
+                        parentage: ParentageAuthority::Root,
+                        source: FactAvailability::Captured,
+                        source_file: FactAvailability::Captured,
+                        members: FactAvailability::Captured,
+                        documentation: FactAvailability::Captured,
+                        attributes: FactAvailability::Captured,
+                        visibility: FactAvailability::Captured,
+                        ..EntityAuthorityFacts::default()
+                    },
+                )
+                .expect("item");
+        }
+        let Err(BuildError::DuplicateDeclarationIdentity {
+            identity,
+            mut sites,
+        }) = builder.finish()
+        else {
+            panic!("actual builder must reject the duplicate");
+        };
+        // The collision is genuine; now drive only the diagnostic scalar
+        // boundary to maximum widths without allocating billions of IR rows.
+        for (ordinal, site) in sites.iter_mut().enumerate() {
+            let delta = u32::try_from(ordinal).expect("two-site ordinal");
+            site.entity = EntityId::new(u32::MAX - delta);
+            site.kind = ItemKind::Implementation;
+            site.source = SourceSpan::new(
+                AtomId::new(u32::MAX),
+                u32::MAX - 3 + delta * 2,
+                u32::MAX - 2 + delta * 2,
+            );
+            assert_eq!(site.name_prefix(), &[0xff; 8]);
+            assert!(site.name_truncated());
+        }
+        let failure = CompilerFragmentFailure::build(BuildError::DuplicateDeclarationIdentity {
+            identity,
+            sites,
+        });
+        assert_eq!(failure.facts(), CompilerFragmentFaultFacts::None);
+        let wire = serde_json::to_value(CompilerFragmentFailureRef(&failure))
+            .expect("actual wire serializer");
+        assert_eq!(wire.as_object().expect("object").len(), 5);
+        assert_eq!(wire["family"], "build");
+        assert_eq!(wire["kind"], "build_duplicate_declaration_identity");
+        assert_eq!(wire["facts"], serde_json::json!({"kind":"none"}));
+        assert_eq!(wire["detail_truncated"], false);
+        let detail = wire["detail"].as_str().expect("bounded wire detail");
+        assert!(detail.len() <= crate::interface::MAX_COMPILER_FRAGMENT_DETAIL_BYTES);
+        let full_identity = format!("{}:{}", "07".repeat(16), "08".repeat(16));
+        assert!(detail.contains(full_identity.as_str()));
+        assert!(
+            detail.contains("#4294967295/Implementation")
+                && detail.contains("#4294967294/Implementation")
+        );
+        assert!(detail.contains("atom#4294967295:4294967292..4294967293"));
+        assert!(detail.contains("atom#4294967295:4294967294..4294967295"));
+        assert_eq!(detail.matches("trunc=1").count(), 2);
+        let escaped_prefix = "\\xff".repeat(8);
+        assert_eq!(detail.matches(escaped_prefix.as_str()).count(), 2);
+        assert!(
+            !detail.contains("/absolute/") && !detail.contains('\n') && !detail.contains('\u{1b}')
+        );
+        let attempt = crate::interface::CompilerAttempt {
+            source: crate::interface::SourceAuthority {
+                identity: backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(b"declare const value: number;"),
+                byte_len: 28,
+            },
+            recipe: backend_version::ContentId::<backend_version::CompileRecipeDomain>::from_canonical_bytes(b"typescript diagnostic boundary recipe"),
+        };
+        let summary =
+            crate::PackageCompilerFailure::from_fragment_failure("types.d.ts", attempt, &failure)
+                .expect("actual bounded refusal projection");
+        let encoded = summary
+            .encode_bounded_json()
+            .expect("bounded durable refusal bytes");
+        let reopened = crate::PackageCompilerFailure::decode_bounded_json(&encoded)
+            .expect("same-version refusal decoder");
+        assert_eq!(reopened, summary);
+        assert!(!reopened.detail_truncated());
+        assert!(reopened.detail().contains(full_identity.as_str()));
+        assert!(
+            reopened
+                .detail()
+                .contains("atom#4294967295:4294967292..4294967293")
+        );
+        assert!(
+            reopened
+                .detail()
+                .contains("atom#4294967295:4294967294..4294967295")
+        );
+        assert_eq!(reopened.detail().matches("trunc=1").count(), 2);
+        assert!(!reopened.detail().contains('\\') && !reopened.detail().contains('"'));
+        let terminal = crate::interface::CompilerTerminal::Compile {
+            attempted: attempt,
+            cause: crate::interface::CompilerCause::FragmentFailure(Box::new(failure)),
+        };
+        assert_eq!(
+            crate::PackageCompilerFailure::from_package_terminal("types.d.ts", &terminal)
+                .expect("terminal projection"),
+            Some(summary)
+        );
+    }
+}

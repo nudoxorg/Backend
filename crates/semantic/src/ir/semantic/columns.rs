@@ -3,7 +3,9 @@ use super::builder::{
     sort_occurrence_adjacency, validate_atom_list, validate_entity_list, validate_free_predicates,
     validate_type_list, validate_type_parameters,
 };
-use super::error::{BuildError, LanguageExtensionViolation, SemanticSpace};
+use super::error::{
+    BuildError, DeclarationCollisionSite, LanguageExtensionViolation, SemanticSpace,
+};
 use super::ids::{AtomListId, DocId, EntityListId, ItemKind, LinkId, LinkOccurrenceId};
 use super::language_facts::LanguageExtensionInput;
 use super::language_facts::{
@@ -680,6 +682,7 @@ pub(super) struct IrIndices {
 impl IrIndices {
     pub(super) fn build(
         items: &ItemColumns,
+        sources: &SourceColumns,
         versions: &[EntityVersion],
         atoms: &AtomInterner,
         links: &PackedLinks,
@@ -769,6 +772,17 @@ impl IrIndices {
             if versions[pair[0].index()].identity() == versions[pair[1].index()].identity() {
                 return Err(BuildError::DuplicateDeclarationIdentity {
                     identity: versions[pair[0].index()].identity(),
+                    sites: [pair[0], pair[1]].map(|id| {
+                        let name = items.names[id.index()]
+                            .named_atom()
+                            .and_then(|name| atoms.get(name));
+                        DeclarationCollisionSite::capture(
+                            id,
+                            items.kinds[id.index()],
+                            sources.get(id.index()),
+                            name,
+                        )
+                    }),
                 });
             }
         }
@@ -1307,5 +1321,129 @@ impl StorageColumns<'_> {
         add!(self.kind_offsets);
         add!(self.name_entities);
         total
+    }
+}
+
+#[cfg(test)]
+mod declaration_collision_tests {
+    use crate::ir::{
+        BuildError, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityVersion,
+        FactAvailability, Ir, IrBuilder, Item, ItemKind, ItemName, ParentageAuthority, SourceSpan,
+        VariantFingerprint, Visibility,
+    };
+
+    fn image(duplicate: bool, second_source: bool) -> Result<Ir, BuildError> {
+        let mut builder = IrBuilder::new();
+        let file = builder.intern_atom(b"/private/never-render-this-path.ts")?;
+        let members = builder.intern_members(&[])?;
+        let docs = builder.intern_docs(&[])?;
+        let attributes = builder.intern_attributes(&[])?;
+        for (ordinal, name) in [
+            b"first_name_more_than_sixteen".as_slice(),
+            b"second".as_slice(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let name = builder.intern_atom(name)?;
+            let source = match ordinal {
+                0 => SourceSpan::new(file, 11, 23),
+                _ if second_source => SourceSpan::new(file, 31, 47),
+                _ => None,
+            };
+            let availability = if source.is_some() {
+                FactAvailability::Captured
+            } else {
+                FactAvailability::Unavailable
+            };
+            builder.add_item(
+                EntityVersion {
+                    family: DeclarationFamilyId::from_raw([7; 16]),
+                    variant: VariantFingerprint::from_raw(
+                        [if duplicate || ordinal == 0 { 8 } else { 9 }; 16],
+                    ),
+                    core_payload: CorePayloadHash::from_raw([10; 16]),
+                },
+                Item {
+                    name: ItemName::Named(name),
+                    kind: if ordinal == 0 {
+                        ItemKind::Field
+                    } else {
+                        ItemKind::Function
+                    },
+                    visibility: Visibility::Unknown,
+                    parent: None,
+                    semantic_type: None,
+                    members,
+                    docs,
+                    attributes,
+                    source,
+                },
+                None,
+                EntityAuthorityFacts {
+                    parentage: ParentageAuthority::Root,
+                    source: availability,
+                    source_file: availability,
+                    members: FactAvailability::Captured,
+                    documentation: FactAvailability::Captured,
+                    attributes: FactAvailability::Captured,
+                    visibility: FactAvailability::Captured,
+                    ..EntityAuthorityFacts::default()
+                },
+            )?;
+        }
+        builder.finish()
+    }
+
+    #[test]
+    fn duplicate_identity_retains_both_cold_sites_after_builder_drop() {
+        let Err(BuildError::DuplicateDeclarationIdentity {
+            identity,
+            mut sites,
+        }) = image(true, true)
+        else {
+            panic!("exact duplicate identity must remain rejected");
+        };
+        sites.sort_by_key(|site| site.entity.raw);
+        assert_eq!(identity.family, DeclarationFamilyId::from_raw([7; 16]));
+        assert_eq!(sites[0].entity.raw, 0);
+        assert_eq!(sites[0].kind, ItemKind::Field);
+        assert_eq!(sites[0].name_prefix(), b"first_na");
+        assert!(sites[0].name_truncated());
+        assert_eq!(
+            sites[0].source.map(|source| (source.start(), source.end())),
+            Some((11, 23))
+        );
+        assert_eq!(sites[1].entity.raw, 1);
+        assert_eq!(sites[1].kind, ItemKind::Function);
+        assert_eq!(sites[1].name_prefix(), b"second");
+        assert!(!sites[1].name_truncated());
+        assert_eq!(
+            sites[1].source.map(|source| (source.start(), source.end())),
+            Some((31, 47))
+        );
+        assert_eq!(
+            sites[0].source.map(SourceSpan::file),
+            sites[1].source.map(SourceSpan::file)
+        );
+        let text = alloc::format!("{sites:?}");
+        assert!(!text.contains("/private/"));
+        assert!(text.contains("11..23") && text.contains("31..47"));
+        assert!(
+            image(false, true).is_ok(),
+            "distinct variants must still build"
+        );
+    }
+
+    #[test]
+    fn duplicate_identity_does_not_invent_an_absent_source() {
+        let Err(BuildError::DuplicateDeclarationIdentity { mut sites, .. }) = image(true, false)
+        else {
+            panic!("duplicate with a missing source remains rejected");
+        };
+        sites.sort_by_key(|site| site.entity.raw);
+        assert!(sites[0].source.is_some());
+        assert!(sites[1].source.is_none());
+        assert!(alloc::format!("{}", sites[1]).ends_with("@absent"));
     }
 }

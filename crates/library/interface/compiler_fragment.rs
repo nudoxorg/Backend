@@ -560,6 +560,29 @@ impl CompilerFragmentFailure {
     pub fn detail(&self) -> BoundedCompilerFragmentDetail {
         let mut detail = BoundedCompilerFragmentDetail::new();
         if !detail.truncated {
+            // These owned, bounded sites survive the failed builder. Keep the
+            // existing wire kind/facts grammar; this is secondary text only.
+            if let CompilerFragmentFault::Build(BuildError::DuplicateDeclarationIdentity {
+                identity,
+                sites,
+            }) = &self.fault
+            {
+                let formatted = (|| -> fmt::Result {
+                    detail.write_str("duplicate declaration identity ")?;
+                    for byte in identity.family.as_bytes() {
+                        write!(&mut detail, "{byte:02x}")?;
+                    }
+                    detail.write_char(':')?;
+                    for byte in identity.variant.as_bytes() {
+                        write!(&mut detail, "{byte:02x}")?;
+                    }
+                    write!(&mut detail, "; [{}]; [{}]", sites[0], sites[1])
+                })();
+                if formatted.is_err() {
+                    detail.truncated = true;
+                }
+                return detail;
+            }
             for character in self.kind().tag().chars() {
                 let character = if character == '_' { ' ' } else { character };
                 if write!(&mut detail, "{character}").is_err() {
