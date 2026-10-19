@@ -550,6 +550,9 @@ struct FactRegistry<'a, 'source> {
     decl_ends: &'a [u32],
     declaration_parts: &'a HashMap<u32, Vec<Span>>,
     name_starts: &'a [u32],
+    /// First current fact ordinal for each exact start. Built from this view's
+    /// immutable bounded slice, never a historical projector registration map.
+    name_start_index: HashMap<u32, u32>,
     name_ends: &'a [u32],
     fact_kinds: &'a [EntityKind],
     /// Exact TypeScript-symbol to same-file emitted-entity coordinate joins.
@@ -6575,6 +6578,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         // Bound declaration rows are `Copy`; the loop body mutates the lane,
         // so the iteration set is copied out of the borrowed report first.
         let declarations: Vec<_> = checker.declarations().copied().collect();
+        let fact_len = u32::try_from(self.facts.len()).map_err(|_| lane_rejection())?;
         let registry = FactRegistry {
             source: self.source,
             tsz_project: None,
@@ -6583,10 +6587,11 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             decl_ends: &self.decl_ends,
             declaration_parts: &self.merged_declaration_parts,
             name_starts: &self.name_starts,
+            name_start_index: index_name_starts(&self.name_starts, fact_len),
             name_ends: &self.name_ends,
             fact_kinds: &self.fact_kinds,
             native_tsz_entities: None,
-            fact_len: u32::try_from(self.facts.len()).map_err(|_| lane_rejection())?,
+            fact_len,
         };
         for declaration in declarations {
             if declaration.origin != Origin::Computed {
@@ -7307,6 +7312,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             decl_ends: &self.decl_ends,
             declaration_parts: &self.merged_declaration_parts,
             name_starts: &self.name_starts,
+            name_start_index: index_name_starts(&self.name_starts, fact_len),
             name_ends: &self.name_ends,
             fact_kinds: &self.fact_kinds,
             native_tsz_entities: Some(&native_tsz_entities),
@@ -7383,6 +7389,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             return Ok(());
         };
         let narrowings: Vec<_> = checker.narrowings().copied().collect();
+        let fact_len = u32::try_from(self.facts.len()).map_err(|_| lane_rejection())?;
         let registry = FactRegistry {
             source: self.source,
             tsz_project: None,
@@ -7391,10 +7398,11 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             decl_ends: &self.decl_ends,
             declaration_parts: &self.merged_declaration_parts,
             name_starts: &self.name_starts,
+            name_start_index: index_name_starts(&self.name_starts, fact_len),
             name_ends: &self.name_ends,
             fact_kinds: &self.fact_kinds,
             native_tsz_entities: None,
-            fact_len: u32::try_from(self.facts.len()).map_err(|_| lane_rejection())?,
+            fact_len,
         };
         for narrowing in narrowings {
             let Some(tree) = narrowing.r#type else {
@@ -10015,17 +10023,25 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
     }
 }
 
+/// Captures the old scan's first-ordinal rule in one bounded pass. Include
+/// UNSET exactly as before; callers decide whether that start is meaningful.
+/// A short side lane has no implicit tail entries, and facts beyond fact_len
+/// cannot enter this computed-lowering view.
+fn index_name_starts(name_starts: &[u32], fact_len: u32) -> HashMap<u32, u32> {
+    let mut index = HashMap::new();
+    let bound = usize::try_from(fact_len).unwrap_or(usize::MAX);
+    for (ordinal, &start) in name_starts.iter().take(bound).enumerate() {
+        // The take bound proves ordinal < fact_len <= u32::MAX.
+        index.entry(start).or_insert(ordinal as u32);
+    }
+    index
+}
+
 impl<'a, 'source> FactRegistry<'a, 'source> {
     /// Resolves one source position to the fact whose binding name starts
     /// exactly there.
     fn fact_at_name_start(&self, start: u32) -> Option<u32> {
-        for ordinal in 0..self.fact_len {
-            let index = usize::try_from(ordinal).ok()?;
-            if self.name_starts.get(index) == Some(&start) {
-                return Some(ordinal);
-            }
-        }
-        None
+        self.name_start_index.get(&start).copied()
     }
 
     /// Resolves the first pushed fact whose exact binding-name bytes equal
@@ -15176,6 +15192,77 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
     }
 
     #[test]
+    fn fact_name_start_index_matches_first_current_ordinal_for_every_bounded_view() {
+        let starts = [super::UNSET, 17, 5, 17, 0, super::UNSET, 91];
+        for fact_len in [0, 1, 3, 4, 7, 10] {
+            let index = super::index_name_starts(&starts, fact_len);
+            for start in [super::UNSET, 0, 5, 17, 91, 999] {
+                let previous_scan = (0..fact_len).find(|&ordinal|
+                    starts.get(ordinal as usize) == Some(&start));
+                assert_eq!(index.get(&start).copied(), previous_scan,
+                    "first ordinal for start={start}, fact_len={fact_len}");
+            }
+            assert!(index.len() <= starts.len().min(fact_len as usize));
+        }
+        let index = super::index_name_starts(&starts, 7);
+        assert_eq!(index.get(&17), Some(&1), "duplicate start keeps first fact");
+        assert_eq!(index.get(&super::UNSET), Some(&0), "UNSET is not silently reinterpreted");
+        assert!(!super::index_name_starts(&starts, 3).contains_key(&91),
+            "later side-lane data cannot enter an earlier view");
+
+        // A primary declaration adoption may replace a historical name start.
+        // Rebuild from the current immutable coordinates, not an earlier map.
+        let old = [12, 40];
+        let current = [31, 40];
+        assert_eq!(super::index_name_starts(&old, 2).get(&12), Some(&0));
+        let current_index = super::index_name_starts(&current, 2);
+        assert_eq!(current_index.get(&12), None);
+        assert_eq!(current_index.get(&31), Some(&0));
+    }
+
+    #[test]
+    fn native_tsz_indexed_name_joins_keep_each_authored_observed_type()
+    -> Result<(), LaneError> {
+        use backend_semantic::ir::{BuiltinType, ConcreteType};
+        let mut source = String::from("// exact UTF-8 name offsets: café\n");
+        for ordinal in 0..64 {
+            let declaration = if ordinal % 2 == 0 {
+                format!("export const entry_{ordinal}: number = {ordinal};\n")
+            } else {
+                format!("export const entry_{ordinal}: string = 'value';\n")
+            };
+            source.push_str(&declaration);
+        }
+        let ir = owned_tsz_ir(&source)?;
+        for ordinal in 0..64 {
+            let name = format!("entry_{ordinal}");
+            let matching: Vec<_> = ir.items().filter(|item| item.name() == name.as_bytes()).collect();
+            assert_eq!(matching.len(), 1, "one exact authored declaration for {name}");
+            let extension = ir.typescript_extension(matching[0].id())
+                .ok_or(LaneError::Missing("native observed extension"))?;
+            let observed = extension.observed.ok_or(LaneError::Missing("native observed type"))?;
+            let expected = if ordinal % 2 == 0 { BuiltinType::F64 } else { BuiltinType::String };
+            assert_eq!(ir.ty(observed), Some(TypeExpr::Concrete(ConcreteType::Builtin(expected))),
+                "the index must not attach another declaration's native type to {name}");
+        }
+        // A fresh program with shifted exact source offsets must obtain the
+        // same owner/type joins without retaining the previous index.
+        let shifted = format!("// another source revision\n{source}");
+        let other = owned_tsz_ir(&shifted)?;
+        for ordinal in 0..64 {
+            let name = format!("entry_{ordinal}");
+            let item = other.items().find(|item| item.name() == name.as_bytes())
+                .ok_or(LaneError::Missing("shifted authored declaration"))?;
+            let observed = other.typescript_extension(item.id())
+                .and_then(|extension| extension.observed)
+                .ok_or(LaneError::Missing("shifted native observed type"))?;
+            let expected = if ordinal % 2 == 0 { BuiltinType::F64 } else { BuiltinType::String };
+            assert_eq!(other.ty(observed), Some(TypeExpr::Concrete(ConcreteType::Builtin(expected))));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn native_tsz_checker_populates_existing_observed_type_lane() -> Result<(), LaneError> {
         // The multibyte prefix exercises the TSZ-to-OXC name-span join against
         // the original UTF-8 source bytes, without UTF-16 or lossy conversion.
@@ -15637,7 +15724,7 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
             "declare namespace os {\n",
             "type Base = { value: number };\n",
             "interface File { first: Base; }\n",
-            "declare const gap: Base;\n",
+            "const gap: Base;\n",
             "interface File extends Base { second: Base; }\n",
             "}\n",
             "declare namespace foreign { interface File { alien: string; } }\n",
@@ -15704,7 +15791,7 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
             ir.link_occurrences_from(file.id()).all(|(_, site)| site
                 .source
                 .is_none_or(|span| span.end()
-                    <= u32::try_from(source.find("declare const gap").unwrap()).unwrap()
+                    <= u32::try_from(source.find("const gap").unwrap()).unwrap()
                     || span.start() >= u32::try_from(second_start).unwrap())),
             "no occurrence in the intervening gap is lent to File"
         );
