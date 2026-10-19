@@ -56,6 +56,11 @@ pub enum ProjectExecutionPhase {
     FileCheck,
     FilePostprocess,
     FileQuery,
+    // Internal projection observations; public refusal phase remains FileQuery.
+    FileQueryAnalysis,
+    FileQueryStructure,
+    FileQueryOccurrences,
+    FileQueryTypes,
     SourcePreparation,
     // Internal timing boundaries; public refusal phase remains SourcePreparation.
     SourcePreparationFunctionDefs,

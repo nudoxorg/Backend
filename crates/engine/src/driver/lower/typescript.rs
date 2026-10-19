@@ -5200,7 +5200,17 @@ pub(crate) fn collect_with_tsz<'source, 'session>(
     facts.set_native_tsz_identity(program_identity, source_identity);
     macro_rules! lower_with_tsz_checker {
         ($checker:ident, $binder:ident, $bound_file:ident, $database:ident) => {{
+            let observe = |event: backend_frontend_typescript::TszProjectExecutionEvent<'_>| session.observe_projection(event);
+            // The enclosing native FileQuery already carries the exact file.
+            // Subpasses inherit that worker-local context without copying paths.
+            let analysis = backend_frontend_typescript::TszProjectExecutionSpan::with_observer(
+                &observe, backend_frontend_typescript::TszProjectExecutionPhase::FileQueryAnalysis, None,
+            );
             let build = |module: OxcModule<'_>| {
+                analysis.returned();
+                let structure = backend_frontend_typescript::TszProjectExecutionSpan::with_observer(
+                    &observe, backend_frontend_typescript::TszProjectExecutionPhase::FileQueryStructure, None,
+                );
                 let mut projector = Projector {
                     semantic: &module.semantic,
                     node_index: {
@@ -5246,6 +5256,10 @@ pub(crate) fn collect_with_tsz<'source, 'session>(
                     owner_ancestor: Vec::new(),
                 };
                 projector.run()?;
+                structure.returned();
+                let occurrences = backend_frontend_typescript::TszProjectExecutionSpan::with_observer(
+                    &observe, backend_frontend_typescript::TszProjectExecutionPhase::FileQueryOccurrences, None,
+                );
                 projector.pass_native_tsz_occurrences(
                     &mut *$checker,
                     $binder,
@@ -5254,7 +5268,13 @@ pub(crate) fn collect_with_tsz<'source, 'session>(
                     file_index,
                     program_identity,
                 )?;
-                projector.pass_native_tsz(&mut *$checker, $bound_file, $database, project)
+                occurrences.returned();
+                let types = backend_frontend_typescript::TszProjectExecutionSpan::with_observer(
+                    &observe, backend_frontend_typescript::TszProjectExecutionPhase::FileQueryTypes, None,
+                );
+                projector.pass_native_tsz(&mut *$checker, $bound_file, $database, project)?;
+                types.returned();
+                Ok::<(), TypeScriptCollectError>(())
             };
             if declaration_file {
                 with_analysis_declaration(profile, source, true, build)
@@ -13067,6 +13087,117 @@ describe('suite', () => {\n\
             rows.len(),
             "reordering keeps both instances"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_query_projection_boundaries_preserve_output_and_cancellation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use backend_frontend_typescript::{
+            TszAuthorityError, TszExecutionCheckpoint, TszProjectExecutionEvent, TszProjectExecutionPhase as P,
+            TszProjectExecutionStop, TszProjectExecutionTransition as T,
+            TszProjectAuthority, TszFileInput, TszProjectOptions, TszCheckerOptions,
+            TszProjectSemanticOptions, TszEnvironmentFingerprint, TszProjectCheckerExecution,
+            TszProjectQuerySessionError,
+        };
+        use std::sync::{atomic::{AtomicBool, Ordering}, Mutex};
+        type Boundary = (P, T, Option<(usize, String)>);
+        struct Observe {
+            cancelled: AtomicBool,
+            arm: Option<P>,
+            events: Mutex<Vec<Boundary>>,
+        }
+        impl TszExecutionCheckpoint for Observe {
+            fn checkpoint(&self, _: u64) -> Result<(), TszProjectExecutionStop> {
+                if self.cancelled.load(Ordering::Acquire) {
+                    Err(TszProjectExecutionStop::Cancelled)
+                } else { Ok(()) }
+            }
+            fn observe(&self, event: TszProjectExecutionEvent<'_>) {
+                self.events.lock().unwrap().push((event.phase, event.transition,
+                    event.file.map(|file| (file.index, file.path.to_owned()))));
+                if event.transition == T::Entered && Some(event.phase) == self.arm {
+                    self.cancelled.store(true, Ordering::Release);
+                }
+            }
+        }
+        // A small real native program exercises both authored occurrences and
+        // computed types. It is not a reproduction of Paperless's dependencies.
+        fn canonical(facts: &FactSet<'_>, source: &str) -> Result<Vec<u8>, LaneError> {
+            let identity = backend_semantic::ir::SourceIdentity {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
+                byte_len: u32::try_from(source.len())?,
+            };
+            let recipe = CompileRecipeFact::derive(
+                LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                Stage::LowerIr, NativeTool::TypeScriptCompiler, identity.identity,
+                ContentId::<ToolchainDomain>::from_canonical_bytes(b"query-timing"),
+            );
+            let ir = facts.build_ir(recipe.profile, identity, recipe,
+                crate::driver::types::DeclarationScope::fixture())?;
+            let mut bytes = vec![0; backend_semantic::ir::full_semantic_image_len(&ir)
+                .map_err(|_| LaneError::Missing("canonical image size"))?];
+            backend_semantic::ir::encode_full_semantic_image(&ir, &mut bytes)
+                .map_err(|_| LaneError::Missing("canonical image encoding"))?;
+            Ok(bytes)
+        }
+        let source = "export const value: number = 1; export function read(): number { return value; }";
+        let phases = [P::FileQueryAnalysis, P::FileQueryStructure,
+            P::FileQueryOccurrences, P::FileQueryTypes];
+        let mut expected = None;
+        for arm in [None, None, Some(phases[0]), Some(phases[1]), Some(phases[2]), Some(phases[3])] {
+            let checkpoint = Observe { cancelled: AtomicBool::new(false), arm, events: Mutex::new(Vec::new()) };
+            let mut authority = TszProjectAuthority::new();
+            authority.update_with_checker_execution(vec![TszFileInput {
+                path: "src/query.ts".into(), source: source.into(),
+            }], TszProjectOptions {
+                checker: TszCheckerOptions { no_lib: true, ..TszCheckerOptions::default() },
+                semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+                program_diagnostics: Vec::new(), module_resolutions: Vec::new(), file_formats: Vec::new(),
+                environment: TszEnvironmentFingerprint::from_sha256([0x75; 32]),
+            }, &[], TszProjectCheckerExecution {
+                checkpoint: &checkpoint, workers: std::num::NonZeroUsize::MIN,
+            })?;
+            let project = authority.project().ok_or("missing checked program")?;
+            let session = project.checked_query_session(&checkpoint)?;
+            let index = session.file_index("src/query.ts")?;
+            let mut facts = FactSet::new();
+            let result = collect_with_tsz(TypeScriptSource::TypeScript, source.as_bytes(),
+                project, "src/query.ts", &session, &mut facts);
+            if arm.is_some() {
+                assert!(matches!(result, Err(TypeScriptCollectError::TszAuthority(
+                    TszAuthorityError::ProjectCheckerSession(
+                        TszProjectQuerySessionError::ExecutionStopped(TszProjectExecutionStop::Cancelled))))));
+                assert!(session.with_file_checker_and_types(index, |_, _, _, _| ()).is_err(),
+                    "a cancelled query never becomes reusable authority");
+            } else {
+                result.map_err(LaneError::from)?;
+                let actual = canonical(&facts, source)?;
+                if let Some(expected) = &expected { assert_eq!(&actual, expected); }
+                else { expected = Some(actual.clone()); }
+                let events = checkpoint.events.lock().unwrap();
+                let query = events.iter().position(|event| event.0 == P::FileQuery && event.1 == T::Entered).unwrap();
+                assert_eq!(events[query].2.as_ref(), Some(&(index, "src/query.ts".to_owned())));
+                let observed: Vec<_> = events[query..].iter().filter(|event| phases.contains(&event.0)).collect();
+                assert_eq!(observed.len(), 8, "one entered/returned pair per real pass");
+                for (pair, phase) in observed.chunks_exact(2).zip(phases) {
+                    assert_eq!((pair[0].0, pair[0].1), (phase, T::Entered));
+                    assert_eq!((pair[1].0, pair[1].1), (phase, T::Returned));
+                    assert_eq!(pair[0].2, None, "subpasses inherit the enclosing query's file");
+                    assert_eq!(pair[1].2, None);
+                }
+                let checked = events.iter().filter(|event| event.0 == P::FileCheck && event.1 == T::Entered).count();
+                drop(events);
+                let mut repeated = FactSet::new();
+                collect_with_tsz(TypeScriptSource::TypeScript, source.as_bytes(),
+                    project, "src/query.ts", &session, &mut repeated).map_err(LaneError::from)?;
+                assert_eq!(canonical(&repeated, source)?, actual,
+                    "measurement does not change retained-session canonical output");
+                assert_eq!(checkpoint.events.lock().unwrap().iter().filter(|event|
+                    event.0 == P::FileCheck && event.1 == T::Entered).count(), checked,
+                    "observing a second query does not recheck the source");
+            }
+        }
         Ok(())
     }
 

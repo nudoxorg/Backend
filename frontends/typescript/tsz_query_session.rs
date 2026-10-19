@@ -38,6 +38,9 @@ pub type TszProjectQuerySessionError = tsz::parallel::ProjectCheckerSessionError
 pub struct TszProjectQuerySession<'project> {
     project: &'project TszProject,
     checker_session: tsz::parallel::ProjectCheckerSession<'project>,
+    /// The exact checkpoint already authenticated by this session's constructor.
+    /// Retained only to forward boundary observations; never a fresh budget.
+    checkpoint: &'project dyn ExecutionCheckpoint,
     file_indexes: HashMap<&'project str, usize>,
     native_sources: NativeSourceIdentities,
     /// The first file query that spent its per-file work allowance.
@@ -223,10 +226,19 @@ impl<'project> TszProjectQuerySession<'project> {
         Ok(Self {
             project,
             checker_session,
+            checkpoint,
             file_indexes,
             native_sources,
             file_work_exhausted: Mutex::new(None),
         })
+    }
+
+    /// Forwards a projection boundary to this session's already-admitted
+    /// checkpoint. This observes only: it never polls, charges work, enters the
+    /// compiler, or exposes semantic authority. The native query frame owns the
+    /// exact file context for projection subpasses on this same worker.
+    pub fn observe_projection(&self, event: tsz_common::ProjectExecutionEvent<'_>) {
+        self.checkpoint.observe(event);
     }
 
     /// Borrows the exact checked project backing this session.

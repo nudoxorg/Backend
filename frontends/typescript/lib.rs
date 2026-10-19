@@ -68,6 +68,7 @@ pub use tsz_common::{
     ProjectExecutionEvent as TszProjectExecutionEvent,
     ProjectExecutionFile as TszProjectExecutionFile,
     ProjectExecutionPhase as TszProjectExecutionPhase,
+    ProjectExecutionSpan as TszProjectExecutionSpan,
     ProjectExecutionStop as TszProjectExecutionStop,
     ProjectExecutionTransition as TszProjectExecutionTransition,
 };
