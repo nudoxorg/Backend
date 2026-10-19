@@ -5728,7 +5728,8 @@ fn validate_exact_live_posting_cover_controlled(
 
 
 // Readers are scoped to one immutable segment and one posting family. A
-// backwards request reopens the reader; a full cache only loses reuse.
+// backwards request reopens the reader. Retain shared-term readers ahead of
+// rarer terms so a row with many unique terms cannot flush the whole cache.
 // The byte charge covers owned key capacities and inline cursor storage.
 // Basic postings share immutable segment bytes; no positions are requested.
 const MEMBERSHIP_READER_CACHE_ENTRIES: usize = 32;
@@ -5776,18 +5777,34 @@ impl MembershipReaderCache {
         if !present || value.len() > MEMBERSHIP_READER_CACHE_BYTES {
             return Ok((present, true));
         }
-        if self.entries.len() == MEMBERSHIP_READER_CACHE_ENTRIES
+        let mut key = String::new();
+        if key.try_reserve_exact(value.len()).is_err() {
+            return Ok((present, true));
+        }
+        // Frequency only chooses which already-checked cursor to retain; it
+        // never proves membership. Deleted postings may overestimate reuse
+        // without changing the exact seek performed above or on every hit.
+        while self.entries.len() == MEMBERSHIP_READER_CACHE_ENTRIES
             || self
                 .retained_bytes()
-                .saturating_add(value.len())
+                .saturating_add(key.capacity())
                 .saturating_add(size_of::<(String, SegmentPostings)>())
                 > MEMBERSHIP_READER_CACHE_BYTES
         {
-            self.entries.clear();
+            let Some((at, (_, least_shared))) = self
+                .entries
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, (_, retained))| retained.doc_freq())
+            else {
+                return Ok((present, true));
+            };
+            if reader.doc_freq() <= least_shared.doc_freq() {
+                return Ok((present, true));
+            }
+            self.entries.swap_remove(at);
         }
-        let mut key = String::new();
-        if key.try_reserve_exact(value.len()).is_err() || self.entries.try_reserve_exact(1).is_err()
-        {
+        if self.entries.try_reserve_exact(1).is_err() {
             return Ok((present, true));
         }
         if self.entries.capacity() > MEMBERSHIP_READER_CACHE_ENTRIES
@@ -6528,6 +6545,77 @@ mod membership_reader_reuse_tests {
         );
         assert!(reused > 0);
         assert!(reopened_backwards > 0);
+    }
+
+    #[test]
+    fn posting_reader_cache_keeps_shared_terms_across_unique_term_pressure() {
+        let projection = projection_schema();
+        let index = Index::create_in_ram(projection.schema);
+        let mut writer = index
+            .writer_with_num_threads(1, WRITER_MEMORY_BYTES)
+            .expect("one real writer");
+        writer.set_merge_policy(Box::new(tantivy::merge_policy::NoMergePolicy));
+        for doc in 0..8 {
+            let mut document = TantivyDocument::default();
+            for value in ["EarlyShared", "LateShared"] {
+                document.add_text(projection.fields.raw_token, value);
+            }
+            for term in 0..64 {
+                document.add_text(projection.fields.raw_token, format!("unique-{doc}-{term}"));
+            }
+            writer.add_document(document).expect("source-bound row");
+        }
+        writer.commit().expect("one immutable segment");
+        writer.wait_merging_threads().expect("join writer");
+        let reader = index.reader().expect("reader");
+        let searcher = reader.searcher();
+        assert_eq!(searcher.segment_readers().len(), 1);
+        let inverted = searcher.segment_readers()[0]
+            .inverted_index(projection.fields.raw_token)
+            .expect("raw family");
+        let mut cache = MembershipReaderCache::new();
+        let mut shared_opens = [0; 2];
+        for doc in 0..8 {
+            let values = std::iter::once("EarlyShared".to_owned())
+                .chain((0..64).map(|term| format!("unique-{doc}-{term}")))
+                .chain(std::iter::once("LateShared".to_owned()));
+            for value in values {
+                let term = Term::from_field_text(projection.fields.raw_token, &value);
+                let expected = inverted
+                    .read_postings(&term, IndexRecordOption::Basic)
+                    .expect("independent reference")
+                    .is_some_and(|mut postings| postings.doc() <= doc && postings.seek(doc) == doc);
+                let (present, opened) = cache
+                    .contains(&value, doc, || {
+                        Ok(inverted.read_postings(&term, IndexRecordOption::Basic)?)
+                    })
+                    .expect("exact cached membership");
+                assert_eq!(present, expected);
+                assert!(present);
+                if value == "EarlyShared" {
+                    shared_opens[0] += usize::from(opened);
+                } else if value == "LateShared" {
+                    shared_opens[1] += usize::from(opened);
+                }
+                assert!(cache.entries.len() <= MEMBERSHIP_READER_CACHE_ENTRIES);
+                assert!(cache.retained_bytes() <= MEMBERSHIP_READER_CACHE_BYTES);
+            }
+            let foreign = format!("unique-{}-0", (doc + 1) % 8);
+            let term = Term::from_field_text(projection.fields.raw_token, &foreign);
+            assert!(
+                !cache
+                    .contains(&foreign, doc, || {
+                        Ok(inverted.read_postings(&term, IndexRecordOption::Basic)?)
+                    })
+                    .expect("a real term on another row is not membership")
+                    .0
+            );
+        }
+        assert_eq!(
+            shared_opens,
+            [1, 1],
+            "unique row terms must not repeatedly evict either shared cursor"
+        );
     }
 
     #[test]
