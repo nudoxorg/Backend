@@ -134,15 +134,22 @@ fn native_marker(session: &mut Session) -> Result<Vec<(RowId, String)>, Box<dyn 
 }
 
 fn cold_owner(root: &Path) -> Result<(), Box<dyn Error>> {
-    let project = root.join("original-project");
+    let owner_project = root.join("original-owner");
+    let project = owner_project.join("crates/selected-package");
     backend_platform::durable::ensure_private_directory(&project)?;
+    backend_platform::durable::ensure_private_directory(&owner_project.join(".git"))?;
+    assert_eq!(
+        backend_runtime::discover_project_from_directory(&project)?,
+        owner_project,
+        "default CLI/MCP owner is the Git parent of the selected indexed package"
+    );
     fs::write(
         project.join("tsconfig.json"),
         r#"{"compilerOptions":{"strict":true},"files":["entry.ts"]}"#,
     )?;
     let source = "export function saved_native_marker(): number { return 41; }\n";
     fs::write(project.join("entry.ts"), source)?;
-    let paths = WorkspacePaths::discover(Some(project.clone()), None, None)?;
+    let paths = WorkspacePaths::discover(Some(owner_project.clone()), None, None)?;
     paths.initialize()?;
     let credential = fs::read(paths.authority_secret())?;
     let first = EmbeddedLocalService::start(ProcessConfig::parse(owner_args(&paths))?)?;
@@ -242,7 +249,12 @@ fn cold_owner(root: &Path) -> Result<(), Box<dyn Error>> {
         let saved = backend_client::find_existing_indexed_project(&project)?;
         let selected = saved.open()?;
         saved.revalidate(&selected)?;
-        assert_eq!(selected.project(), project);
+        assert_eq!(selected.project(), owner_project);
+        assert_ne!(
+            selected.project(),
+            project,
+            "owner and indexed package stay distinct"
+        );
         assert_eq!(selected.data(), paths.data());
         assert_eq!(selected.endpoint(), paths.endpoint());
         assert_eq!(selected.authority_secret(), paths.authority_secret());

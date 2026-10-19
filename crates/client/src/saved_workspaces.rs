@@ -1,6 +1,7 @@
 //! Owner-isolated opening of an explicitly selected existing default index.
 //! Directory presence never proves publication. Project identity comes only from
-//! the authenticated owner's Packages reply and the original default-path hash.
+//! the authenticated owner's Packages reply. The owner context follows the
+//! shared default root rule and owns the unchanged default-path hash.
 
 use crate::ClientError;
 #[cfg(any(unix, windows))]
@@ -25,10 +26,12 @@ pub fn explicit_configuration() -> bool {
         .any(|name| std::env::var_os(name).is_some())
 }
 
-/// An existing private default store, with no claim of publication or a live owner.
+/// An existing owner-context store for one selected package, with no claim of
+/// publication or a live owner. Owner and indexed-package identities are distinct.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct SavedIndexWorkspace {
     project: PathBuf,
+    package: PathBuf,
     projects: PathBuf,
     data: PathBuf,
     authority_identity: [u8; 32],
@@ -44,6 +47,13 @@ impl SavedIndexWorkspace {
     }
 
     fn verify(&self) -> Result<(), ClientError> {
+        if backend_runtime::discover_project_from_directory(&self.package).map_err(refused)?
+            != self.project
+        {
+            return Err(refused(
+                "the selected folder's default owner context changed; choose it again",
+            ));
+        }
         let parent = DirectoryCapability::open(&self.projects).map_err(refused)?;
         parent.validate_private().map_err(refused)?;
         let name = self
@@ -67,7 +77,7 @@ impl SavedIndexWorkspace {
         parent.verify_path(&self.projects).map_err(refused)
     }
 
-    /// Opens this exact owner and identifies its project from an authenticated read.
+    /// Opens this exact owner and authenticates the selected indexed package.
     /// A cold owner may start through the normal bounded runtime startup path.
     /// No index/add/remove command is sent. An ambiguous or absent hash match
     /// refuses rather than selecting an arbitrary package or working directory.
@@ -123,6 +133,8 @@ impl SavedIndexWorkspace {
             return Err(refused("explicit workspace configuration is active"));
         }
         if paths.project() != self.project
+            || backend_runtime::discover_project_from_directory(&self.package).map_err(refused)?
+                != self.project
             || paths.data() != self.data
             || paths.endpoint() != backend_runtime::derive_endpoint(&self.data)
             || paths.authority_secret() != self.data.join("authority.secret")
@@ -142,25 +154,22 @@ impl SavedIndexWorkspace {
         let mut matching = candidates
             .iter()
             .filter(|project| {
-                **project == self.project
+                **project == self.package
                     && project.is_absolute()
                     && backend_runtime::normalize_surface_path(project) == **project
-                    && backend_runtime::normalize_surface_path(
-                        backend_runtime::default_project_workspace_in(project, &self.projects),
-                    ) == self.data
             })
             .cloned()
             .collect::<Vec<_>>();
         matching.sort();
         matching.dedup();
-        let [project] = matching.as_slice() else {
+        let [_selected_package] = matching.as_slice() else {
             return Err(refused(
-                "this saved index has no unique original project identity; open its original folder explicitly",
+                "this owner has no indexed package matching the selected folder; choose the indexed package folder",
             ));
         };
         self.verify()?;
         WorkspacePaths::discover(
-            Some(project.clone()),
+            Some(self.project.clone()),
             Some(self.data.clone()),
             Some(backend_runtime::derive_endpoint(&self.data)),
         )
@@ -202,11 +211,15 @@ fn find_in(project: &Path, projects: &Path) -> Result<SavedIndexWorkspace, Clien
     if !project.is_absolute() {
         return Err(refused("choose an absolute project folder"));
     }
-    let project =
+    let package =
         backend_runtime::normalize_surface_path(std::fs::canonicalize(project).map_err(refused)?);
-    if !project.is_dir() {
+    if !package.is_dir() {
         return Err(refused("the selected project is not a directory"));
     }
+    // Owner context follows the shared no-override CLI/MCP root rule. The
+    // selected indexed package can be a descendant and remains a separate
+    // identity checked against authenticated Packages; it need not be the owner.
+    let project = backend_runtime::discover_project_from_directory(&package).map_err(refused)?;
     // Keep the raw platform parent for no-follow validation. Only normalize
     // the admitted child's surface spelling after both capabilities are held.
     let parent = DirectoryCapability::open(projects).map_err(|error| {
@@ -233,6 +246,7 @@ fn find_in(project: &Path, projects: &Path) -> Result<SavedIndexWorkspace, Clien
     parent.verify_path(projects).map_err(refused)?;
     let candidate = SavedIndexWorkspace {
         project,
+        package,
         projects: projects.to_path_buf(),
         data,
         authority_identity,

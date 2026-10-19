@@ -313,6 +313,23 @@ pub fn discover_project(project: Option<PathBuf>) -> Result<PathBuf, RuntimeErro
     )
 }
 
+/// Resolves the default owner context from one selected existing folder.
+///
+/// Uses the same Git-root/nearest-manifest rule as no-override CLI/MCP
+/// discovery, without reading or changing the process working directory or
+/// selecting durable state. An explicit `PROJECT_ENV` value is not consulted.
+///
+/// # Errors
+/// Refuses a relative, absent, or non-directory starting path.
+pub fn discover_project_from_directory(start: &Path) -> Result<PathBuf, RuntimeError> {
+    if !start.is_absolute() || !start.is_dir() {
+        return Err(RuntimeError::InvalidPath(
+            "project discovery requires an absolute existing directory",
+        ));
+    }
+    Ok(normalize_identity(&project_root_from(start)))
+}
+
 fn select_project(
     project: Option<PathBuf>,
     environment: Option<PathBuf>,
@@ -2294,6 +2311,18 @@ mod tests {
         let selected =
             select_project(None, None, || Ok(nested.clone())).expect("default project selection");
         assert_eq!(selected, normalize_identity(&root));
+        let unchanged_cwd = std::env::current_dir().expect("current directory");
+        assert_eq!(
+            discover_project_from_directory(&nested).expect("picker owner from selected folder"),
+            selected,
+            "the picker owner and no-override CLI cwd use the same root resolver"
+        );
+        assert_eq!(std::env::current_dir().expect("unchanged cwd"), unchanged_cwd);
+        assert!(discover_project_from_directory(Path::new("relative-folder")).is_err());
+        assert!(discover_project_from_directory(&root.join("missing-folder")).is_err());
+        let not_directory = root.join("a-file");
+        fs::write(&not_directory, b"not a directory").expect("file fixture");
+        assert!(discover_project_from_directory(&not_directory).is_err());
         let unreadable_cwd = || Err(std::io::Error::other("current directory unavailable"));
         assert_eq!(
             select_project(None, Some(nested.clone()), unreadable_cwd)
