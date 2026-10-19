@@ -15,6 +15,7 @@ use backend_runtime::{
 use std::error::Error;
 use std::fs;
 use std::io;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -31,8 +32,18 @@ fn cold_saved_owner_recovers_original_publication_without_indexing_its_bootstrap
     }
     // Isolate HOME/state/CWD in another test process, never mutate process-wide
     // configuration underneath other native tests or an existing owner.
-    let fixture = tempfile::Builder::new().prefix("sv-").tempdir()?;
+    // tempfile defaults directories to 0777 before umask. This fixture is
+    // private state, so establish its owner-only parent at creation time.
+    let fixture = tempfile::Builder::new()
+        .prefix("sv-")
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir()?;
     let root = fixture.path().canonicalize()?;
+    assert_eq!(
+        fs::metadata(&root)?.permissions().mode() & 0o777,
+        0o700,
+        "fixture parent satisfies the unchanged private-state policy"
+    );
     for name in ["home", "state", "data"] {
         backend_platform::durable::ensure_private_directory(&root.join(name))?;
     }
@@ -135,6 +146,10 @@ fn native_marker(session: &mut Session) -> Result<Vec<(RowId, String)>, Box<dyn 
 fn cold_owner(root: &Path) -> Result<(), Box<dyn Error>> {
     let owner_project = root.join("original-owner");
     let project = owner_project.join("crates/selected-package");
+    // Private-directory admission creates one final component, never an
+    // ancestor chain. Establish every test-owned parent in order.
+    backend_platform::durable::ensure_private_directory(&owner_project)?;
+    backend_platform::durable::ensure_private_directory(&owner_project.join("crates"))?;
     backend_platform::durable::ensure_private_directory(&project)?;
     backend_platform::durable::ensure_private_directory(&owner_project.join(".git"))?;
     assert_eq!(

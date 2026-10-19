@@ -241,6 +241,8 @@ fn nested_git_package_uses_parent_owner_and_requires_exact_selected_package() {
     std::fs::write(f.first.join("Cargo.toml"), "[workspace]\nmembers = []\n")
         .expect("outer workspace marker");
     let package = f.first.join("crates/member");
+    backend_platform::durable::ensure_private_directory(&f.first.join("crates"))
+        .expect("workspace packages parent");
     backend_platform::durable::ensure_private_directory(&package).expect("nested package");
     std::fs::write(package.join("Cargo.toml"), "[package]\nname = \"member\"\n")
         .expect("nested manifest marker");
@@ -277,6 +279,11 @@ fn nearest_non_git_manifest_owner_and_changed_boundary_preserve_package_isolatio
         .expect("outer manifest");
     let member = f.first.join("crates/member");
     let package = member.join("src/domain");
+    backend_platform::durable::ensure_private_directory(&f.first.join("crates"))
+        .expect("workspace packages parent");
+    backend_platform::durable::ensure_private_directory(&member).expect("member parent");
+    backend_platform::durable::ensure_private_directory(&member.join("src"))
+        .expect("member source parent");
     backend_platform::durable::ensure_private_directory(&package).expect("selected nested folder");
     std::fs::write(member.join("Cargo.toml"), "[package]\nname = \"member\"\n")
         .expect("nearest manifest");
