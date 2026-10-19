@@ -241,7 +241,7 @@ impl PublicationWork {
         cancellation: Arc<AtomicBool>,
     ) -> Self {
         let source_observation = match &preparation {
-            Preparation::Source { scan, .. } => scan.work.observation.clone(),
+            Preparation::Source { scan, .. } => scan.observation(),
             _ => None,
         };
         let source_attempts = match &preparation {
