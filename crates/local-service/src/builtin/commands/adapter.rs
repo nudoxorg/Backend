@@ -3962,6 +3962,41 @@ impl CommandAdapter {
         self.with_browse_completions(daemon, ready)
     }
 
+    /// Keeps idle retirement from cancelling admitted worker activity after
+    /// the submitting client disconnects. Stable durable readiness waits have
+    /// no running work and retain the ordinary idle-retirement policy.
+    pub(in crate::builtin) fn has_inflight_index_work(&self) -> bool {
+        self.index_input_workers.has_inflight_work()
+            || self.indexing.as_ref().is_some_and(|indexing| {
+                match &indexing.work {
+                    IndexJobWork::Compiling { worker } => match worker {
+                        ProfileWorker::Running(handle) => !handle.is_finished(),
+                        ProfileWorker::Owned { handle, .. }
+                        | ProfileWorker::Retiring { handle, .. } => !handle.is_finished(),
+                        ProfileWorker::Returned(_) => false,
+                    },
+                    IndexJobWork::PublicationWorker {
+                        worker, blocked, ..
+                    }
+                    | IndexJobWork::PreparingSource {
+                        worker, blocked, ..
+                    } => {
+                        blocked.is_none() && worker.as_ref().is_some_and(|worker| !worker.is_finished())
+                    }
+                    IndexJobWork::SourceRetiring { worker, .. }
+                    | IndexJobWork::PublicationRetiring { worker, .. } => !worker.is_finished(),
+                    // Acquisition/scan handles live in index_input_workers.
+                    // Prepared-slot waits and thread-start refusals have no
+                    // live worker; an explicit retry remains their authority.
+                    IndexJobWork::Acquiring(_)
+                    | IndexJobWork::Scanning(_)
+                    | IndexJobWork::Publishing { .. }
+                    | IndexJobWork::RetirementPending { .. }
+                    | IndexJobWork::Transition => false,
+                }
+            })
+    }
+
     /// Releases a transport response registration only. Commands already in
     /// the writer queue remain queued and accepted index work keeps running.
     pub(in crate::builtin) fn abandon_reply(&mut self, ticket: u64) {
@@ -10100,8 +10135,7 @@ mod tests {
         let (adapter, daemon) = fixture.parts();
         install_transition_job(adapter);
         let own_key = backend_library::IndexOperationKey::from_bytes([95; 32]).expect("own key");
-        let other_key =
-            backend_library::IndexOperationKey::from_bytes([96; 32]).expect("other key");
+        let other_key = backend_library::IndexOperationKey::from_bytes([96; 32]).expect("other key");
         let package = adapter
             .indexing
             .as_ref()
@@ -10156,6 +10190,10 @@ mod tests {
             }))
         ));
         adapter.indexing = Some(indexing);
+        assert!(
+            !adapter.has_inflight_index_work(),
+            "a parked Prepared-slot retry is not worker activity"
+        );
         adapter.journal_readiness.close();
         // A saturated event counter must still permit an explicit owner
         // retry. Quiet polls below remain unable to retry the same candidate.
@@ -10177,6 +10215,10 @@ mod tests {
             adapter.index_operations.read_query_count(),
             reads,
             "busy publication does not hot retry SQL"
+        );
+        assert!(
+            !adapter.has_inflight_index_work(),
+            "quiet retries do not pin an owner"
         );
         foreign
             .failed(
@@ -12727,6 +12769,10 @@ mod tests {
             1,
             "active poll does not join live scan tail"
         );
+        assert!(
+            adapter.has_inflight_index_work(),
+            "the real held source worker and scan tail keep their owner live"
+        );
         let observer = std::thread::spawn(move || {
             let deadline = std::time::Instant::now() + Duration::from_secs(2);
             while !cancelled.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
@@ -12743,6 +12789,10 @@ mod tests {
             adapter.index_input_workers.len(),
             0,
             "real scan tail joined after cancellation"
+        );
+        assert!(
+            !adapter.has_inflight_index_work(),
+            "closed real workers no longer pin their owner"
         );
         adapter.close();
     }

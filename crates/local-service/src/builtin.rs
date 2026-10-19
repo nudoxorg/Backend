@@ -2399,6 +2399,13 @@ impl crate::DeferredCommands<BuiltinModel, BuiltinValidator, BuiltinAuthorityVer
             .collect()
     }
 
+    fn has_inflight_work(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .has_inflight_index_work()
+    }
+
     fn abandon_reply(&mut self, ticket: u64) {
         self.0
             .lock()
