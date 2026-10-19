@@ -22,6 +22,13 @@ fleet = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = fleet
 SPEC.loader.exec_module(fleet)
 
+BUILD_SCRIPT = pathlib.Path(__file__).parents[1] / ".config/scripts/build-census.py"
+BUILD_SPEC = importlib.util.spec_from_file_location("build_census_for_fleet_test", BUILD_SCRIPT)
+assert BUILD_SPEC is not None and BUILD_SPEC.loader is not None
+build_census = importlib.util.module_from_spec(BUILD_SPEC)
+sys.modules[BUILD_SPEC.name] = build_census
+BUILD_SPEC.loader.exec_module(build_census)
+
 
 def empty_samples_for_hosts(
     now: dt.datetime,
@@ -83,15 +90,19 @@ def compiler_group(
     cargo_pids = cargo_pids if cargo_pids is not None else ([pgid] if kind == "cargo" else [])
     pids = pids if pids is not None else sorted(set([pgid, *cargo_pids]))
     residual_member_pids = residual_member_pids if residual_member_pids is not None else ([] if kind == "cargo" else [pgid])
-    residual_slots = 1 if kind != "cargo" or residual_member_pids else 0
-    slot_count = len(cargo_pids) + residual_slots if kind == "cargo" else 1
+    rustc_member_pids = sorted(pids) if kind == "orphan-rustc" else []
+    rustc_count = len(rustc_member_pids)
+    residual_slots = (
+        1 if residual_member_pids else 0
+    ) if kind == "cargo" else max(1, rustc_count) + int(bool(rustc_count) and len(pids) > rustc_count)
+    slot_count = len(cargo_pids) + residual_slots if kind == "cargo" else residual_slots
     return {
         "pgid": pgid,
         "kind": kind,
         "classification": classification,
         "pids": pids,
         "cargo_pids": cargo_pids,
-        "rustc_process_count": 1,
+        "rustc_process_count": rustc_count,
         "requested_cargo_jobs": jobs,
         "job_limit_known": jobs is not None,
         "admission_slot_count": slot_count,
@@ -99,6 +110,7 @@ def compiler_group(
             "cargo_root_pids": sorted(cargo_pids),
             "residual_slot_count": residual_slots,
             "residual_member_pids": residual_member_pids,
+            "rustc_member_pids": rustc_member_pids,
             "residual_reason": (
                 "unattributed-active-members" if kind == "cargo" and residual_slots
                 else "non-cargo-process-group" if kind != "cargo"
@@ -715,6 +727,59 @@ class FleetCapacityTests(unittest.TestCase):
         self.assertEqual(full["current_fleet_compiler_admission_slot_count"], 16)
         self.assertFalse(full["advisory_allowed"])
         self.assertIn("fleet-compiler-admission-slot-limit-reached", full["reasons"])
+
+    def test_ilo_prod_counts_each_orphan_rustc_and_refuses_underreported_provenance(self) -> None:
+        hosts = host_configs(include_ilo_prod=True)
+        samples = empty_samples_for_hosts(self.now, hosts)
+        records = {}
+        for pid in range(11300, 11315):
+            records[pid] = build_census.ProcessRecord(
+                pid=pid, ppid=1, pgid=11300, start_token=f"test:{pid}",
+                executable="/toolchain/bin/rustc", argv=None,
+            )
+        for pid in range(11400, 11416):
+            records[pid] = build_census.ProcessRecord(
+                pid=pid, ppid=1, pgid=11400, start_token=None,
+                executable=None, argv=None, identity_validated=False,
+                compiler_candidate=True,
+            )
+        snapshot = build_census.ProcessSnapshot(
+            records=records,
+            started_at_utc="2026-10-06T16:59:59+00:00",
+            finished_at_utc="2026-10-06T16:59:59.1+00:00",
+            complete=True,
+            issue_counts={},
+            race_counts={},
+            effective_uid=0,
+            visible_process_count=len(records),
+            captured_argv_bytes=0,
+            captured_argv_processes=0,
+            argv_budget_exhausted=False,
+        )
+        groups = build_census.compiler_groups(snapshot, [])
+        install_groups(samples, "ilo-prod", groups)
+
+        result = self.evaluate_prod_scope(hosts=hosts, samples=samples)
+
+        self.assertEqual(result["hosts"]["ilo-prod"]["compiler_admission_slot_count"], 31)
+        self.assertEqual(result["current_fleet_compiler_admission_slot_count"], 31)
+        self.assertFalse(result["advisory_allowed"])
+        self.assertIn("ilo-prod:host-compiler-admission-slot-limit-reached", result["reasons"])
+        self.assertIn("fleet-compiler-admission-slot-limit-reached", result["reasons"])
+
+        # The wrapper must not accept the previous one-per-PGID encoding,
+        # even when the caller supplies the full rustc member list.
+        underreported_group = dict(groups[0])
+        underreported_group["admission_slot_count"] = 1
+        underreported_provenance = dict(underreported_group["admission_slot_provenance"])
+        underreported_provenance["residual_slot_count"] = 1
+        underreported_group["admission_slot_provenance"] = underreported_provenance
+        install_groups(samples, "ilo-prod", [underreported_group])
+        underreported = self.evaluate_prod_scope(hosts=hosts, samples=samples)
+        self.assertIn("ilo-prod:compiler-admission-slot-provenance-invalid", underreported["reasons"])
+        self.assertGreaterEqual(
+            underreported["hosts"]["ilo-prod"]["compiler_admission_slot_count"], 15
+        )
 
     def test_ilo_prod_sibling_and_unknown_residual_slots_count_conservatively(self) -> None:
         hosts = host_configs(include_ilo_prod=True)

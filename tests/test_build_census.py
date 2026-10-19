@@ -269,6 +269,61 @@ class CargoCensusTests(unittest.TestCase):
         self.assertEqual(group["admission_slot_provenance"]["residual_slot_count"], 0)
         self.assertEqual(group["admission_slot_provenance"]["residual_member_pids"], [])
 
+    def test_orphan_rustc_slots_count_each_known_and_unresolved_compiler(self) -> None:
+        known = [
+            process(840 + offset, None, ppid=99999, pgid=840, executable="/toolchain/bin/rustc")
+            for offset in range(15)
+        ]
+        unresolved = [
+            census.ProcessRecord(
+                pid=860 + offset,
+                ppid=99999,
+                pgid=860,
+                start_token=None,
+                executable=None,
+                argv=None,
+                identity_validated=False,
+                compiler_candidate=True,
+            )
+            for offset in range(16)
+        ]
+        snapshot = self.snapshot({record.pid: record for record in [*known, *unresolved]})
+
+        groups = census.compiler_groups(snapshot, [])
+
+        self.assertEqual([group["rustc_process_count"] for group in groups], [15, 16])
+        self.assertEqual([group["admission_slot_count"] for group in groups], [15, 16])
+        self.assertEqual([group["classification"] for group in groups], ["orphan-rustc", "unknown"])
+        for group in groups:
+            self.assertEqual(
+                group["admission_slot_provenance"]["rustc_member_pids"], group["pids"]
+            )
+
+    def test_orphan_rustc_mixed_with_unknown_runtime_keeps_a_separate_residual_slot(self) -> None:
+        rustcs = [
+            process(880 + offset, None, ppid=99999, pgid=880, executable="/toolchain/bin/rustc")
+            for offset in range(3)
+        ]
+        runtime = census.ProcessRecord(
+            pid=883,
+            ppid=1,
+            pgid=880,
+            start_token=None,
+            executable=None,
+            argv=None,
+            identity_validated=False,
+            runtime_owner_candidate=True,
+        )
+        snapshot = self.snapshot({record.pid: record for record in [*rustcs, runtime]})
+
+        group = census.compiler_groups(snapshot, [])[0]
+
+        self.assertEqual(group["kind"], "orphan-rustc")
+        self.assertEqual(group["classification"], "unknown")
+        self.assertEqual(group["rustc_process_count"], 3)
+        self.assertEqual(group["admission_slot_count"], 4)
+        self.assertEqual(group["admission_slot_provenance"]["rustc_member_pids"], [880, 881, 882])
+
     def test_unattributed_same_pgid_rustc_gets_a_residual_slot(self) -> None:
         cargo = process(830, ("cargo", "check", "--jobs=4"), ppid=800, pgid=800)
         rustc = process(831, None, ppid=99999, pgid=800, executable="/toolchain/bin/rustc")

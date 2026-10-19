@@ -300,6 +300,7 @@ def _admission_slots_for_group(
         roots = provenance.get("cargo_root_pids")
         residual_count = provenance.get("residual_slot_count")
         residual_members = provenance.get("residual_member_pids")
+        rustc_members = provenance.get("rustc_member_pids")
         residual_reason = provenance.get("residual_reason")
         kind = group.get("kind")
         valid = (
@@ -307,14 +308,31 @@ def _admission_slots_for_group(
             and all(type(pid) is int and pid > 0 for pid in roots)
             and roots == sorted(valid_cargo)
             and type(residual_count) is int
-            and residual_count in {0, 1}
+            and residual_count >= 0
             and isinstance(residual_members, list)
             and all(type(pid) is int and pid > 0 for pid in residual_members)
             and len(set(residual_members)) == len(residual_members)
             and set(residual_members).issubset(valid_group_pids)
+            and isinstance(rustc_members, list)
+            and all(type(pid) is int and pid > 0 for pid in rustc_members)
+            and len(set(rustc_members)) == len(rustc_members)
+            and set(rustc_members).issubset(valid_group_pids)
+            and type(group.get("rustc_process_count")) is int
+            and group["rustc_process_count"] == len(rustc_members)
             and (
-                (kind == "cargo" and (residual_count == 1) == bool(residual_members))
-                or (kind != "cargo" and residual_count == 1 and bool(residual_members))
+                (
+                    kind == "cargo"
+                    and residual_count in {0, 1}
+                    and (residual_count == 1) == bool(residual_members)
+                )
+                or (
+                    kind != "cargo"
+                    and residual_members == sorted(valid_group_pids)
+                    and residual_count == (
+                        max(1, len(rustc_members))
+                        + int(bool(rustc_members) and len(valid_group_pids) > len(rustc_members))
+                    )
+                )
             )
             and residual_reason == (
                 "unattributed-active-members" if kind == "cargo" and residual_count == 1
@@ -323,7 +341,7 @@ def _admission_slots_for_group(
             )
         )
     if valid:
-        expected = len(valid_cargo) + residual_count if group.get("kind") == "cargo" else 1
+        expected = len(valid_cargo) + residual_count if group.get("kind") == "cargo" else residual_count
         reported = group.get("admission_slot_count")
         valid = type(reported) is int and reported == expected
     if valid:
