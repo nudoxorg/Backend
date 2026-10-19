@@ -286,9 +286,17 @@ func extractWithSelection(dir, pattern string, selection *packageSelection) (*Ou
 	if selection == nil {
 		return nil, fmt.Errorf("missing explicit Go package selection")
 	}
-	cfg := &packages.Config{
+	return extractWithConfig(selectedPackageConfig(dir, selection), pattern, selection)
+}
+
+// Selected packages need typed syntax. Their imports need exported type
+// information, not another parse/type-check of every dependency body for each
+// source directory. go/packages still obtains those imports from the compiler
+// and falls back to source when export data is unavailable.
+func selectedPackageConfig(dir string, selection *packageSelection) *packages.Config {
+	return &packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
-			packages.NeedImports | packages.NeedDeps | packages.NeedTypes |
+			packages.NeedImports | packages.NeedTypes |
 			packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedTypesSizes |
 			packages.NeedModule,
 		Dir: dir,
@@ -301,13 +309,15 @@ func extractWithSelection(dir, pattern string, selection *packageSelection) (*Ou
 		Env:        selection.environment,
 		BuildFlags: selection.buildFlags(),
 	}
+}
 
+func extractWithConfig(cfg *packages.Config, pattern string, selection *packageSelection) (*Output, error) {
 	pkgs, err := packages.Load(cfg, pattern)
 	if err != nil {
-		return nil, fmt.Errorf("loading packages under %s: %w", dir, err)
+		return nil, fmt.Errorf("loading packages under %s: %w", cfg.Dir, err)
 	}
 	if len(pkgs) == 0 {
-		return nil, fmt.Errorf("no packages found under %s", dir)
+		return nil, fmt.Errorf("no packages found under %s", cfg.Dir)
 	}
 	out := &Output{SchemaVersion: SchemaVersion}
 	selected := make(map[string]*packages.Package)
