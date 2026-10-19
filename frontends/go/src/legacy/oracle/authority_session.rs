@@ -21,10 +21,16 @@ use super::{
     GoPackageAuthorityWitness, OracleError, UNSUPPORTED_CGO_SENTINEL, tail, transcript_prefix,
 };
 
-/// Same-directory sources loaded by one child. A smaller batch bounds the
-/// images held at once; a larger one amortizes more loads.
-const MAX_BATCH_SOURCES: usize = 16;
 const MAX_PLANNED_SOURCES: usize = 16_384;
+// Bound command arguments rather than repeatedly loading one directory every
+// sixteen sources. The unchanged transcript and per-image caps bound output;
+// oversized transcripts still split through `run` below. Windows needs room
+// for UTF-16 expansion plus the executable, mode and module arguments.
+const MAX_BATCH_ARGUMENT_BYTES: usize = if cfg!(windows) {
+    8 * 1024
+} else {
+    64 * 1024
+};
 /// Largest transcript one batch child may write.
 const BATCH_OUTPUT_LIMIT: usize = 64 * 1024 * 1024;
 /// Batch child mode: `<mode> <module> <source>...`, one frame per source.
@@ -52,6 +58,8 @@ pub struct GoPackageAuthoritySession<'run> {
     pending: Vec<Vec<PathBuf>>,
     /// Produced images and refusals not yet taken by [`Self::image`].
     ready: BTreeMap<PathBuf, SourceImage>,
+    #[cfg(test)]
+    batches_started: usize,
 }
 
 impl ConfiguredGoOracle {
@@ -127,8 +135,10 @@ impl ConfiguredGoOracle {
             witness,
             control,
             helper,
-            pending: plan_batches_controlled(sources, MAX_BATCH_SOURCES, control)?,
+            pending: plan_batches_controlled(sources, MAX_PLANNED_SOURCES, control)?,
             ready: BTreeMap::new(),
+            #[cfg(test)]
+            batches_started: 0,
         })
     }
 
@@ -236,7 +246,11 @@ impl GoPackageAuthoritySession<'_> {
         Ok(())
     }
 
-    fn spawn(&self, batch: &[PathBuf]) -> Result<Vec<SourceImage>, OracleError> {
+    fn spawn(&mut self, batch: &[PathBuf]) -> Result<Vec<SourceImage>, OracleError> {
+        #[cfg(test)]
+        {
+            self.batches_started += 1;
+        }
         let environment = self
             .oracle
             .child_environment
@@ -300,9 +314,34 @@ fn plan_batches_controlled(
     let mut batches = Vec::new();
     for (_, group) in groups {
         control.check("batch_plan")?;
-        for chunk in group.chunks(limit.max(1)) {
+        let mut batch = Vec::new();
+        let mut argument_bytes = 0usize;
+        for source in group {
             control.check("batch_plan")?;
-            batches.push(chunk.to_vec());
+            let bytes = source
+                .as_os_str()
+                .as_encoded_bytes()
+                .len()
+                .saturating_add(1);
+            if bytes > MAX_BATCH_ARGUMENT_BYTES {
+                return Err(OracleError::Decode {
+                    message: "Go authority source argument exceeds the bounded child command"
+                        .into(),
+                    transcript: String::new(),
+                });
+            }
+            if !batch.is_empty()
+                && (batch.len() >= limit.max(1)
+                    || argument_bytes.saturating_add(bytes) > MAX_BATCH_ARGUMENT_BYTES)
+            {
+                batches.push(std::mem::take(&mut batch));
+                argument_bytes = 0;
+            }
+            argument_bytes = argument_bytes.saturating_add(bytes);
+            batch.push(source);
+        }
+        if !batch.is_empty() {
+            batches.push(batch);
         }
     }
     Ok(batches)
@@ -447,6 +486,144 @@ mod tests {
             ]
         );
         assert!(plan_batches(&[], 4).is_empty());
+    }
+
+    #[test]
+    fn directory_batches_amortize_large_source_sets_and_bound_arguments() {
+        let sources = (0..65)
+            .map(|index| PathBuf::from(format!("pkg/source_{index:03}.go")))
+            .collect::<Vec<_>>();
+        let batches = plan_batches(&sources, MAX_PLANNED_SOURCES);
+        assert_eq!(batches, vec![sources.clone()]);
+        let long = (0..20)
+            .map(|index| PathBuf::from(format!("pkg/{}_{index}.go", "x".repeat(4096))))
+            .collect::<Vec<_>>();
+        let bounded = plan_batches(&long, MAX_PLANNED_SOURCES);
+        assert_eq!(bounded.concat(), long);
+        assert!(bounded.iter().all(|batch| {
+            batch
+                .iter()
+                .map(|path| path.as_os_str().as_encoded_bytes().len() + 1)
+                .sum::<usize>()
+                <= MAX_BATCH_ARGUMENT_BYTES
+        }));
+        let oversized = [PathBuf::from("x".repeat(MAX_BATCH_ARGUMENT_BYTES + 1))];
+        assert!(
+            plan_batches_controlled(&oversized, MAX_PLANNED_SOURCES, GoOracleControl::default())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn real_go_directory_session_reuses_one_loader_and_cached_helper_without_losing_reproof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::{
+            io,
+            time::{Duration, Instant},
+        };
+        let go = std::env::var_os("COMPILER_GO_COMPILER")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                io::Error::other(
+                    "COMPILER_GO_COMPILER is required for real Go session qualification",
+                )
+            })?
+            .canonicalize()?;
+        let root = tempfile::tempdir()?;
+        let discovered = std::process::Command::new(&go)
+            .args(["env", "GOROOT"])
+            .env_clear()
+            .env(
+                "PATH",
+                go.parent()
+                    .ok_or_else(|| io::Error::other("Go executable has no parent"))?,
+            )
+            .env("HOME", root.path())
+            .env("GOENV", "off")
+            .env("GOTOOLCHAIN", "local")
+            .env("GOPROXY", "off")
+            .env("GOSUMDB", "off")
+            .output()?;
+        assert!(discovered.status.success());
+        let goroot =
+            PathBuf::from(std::str::from_utf8(&discovered.stdout)?.trim()).canonicalize()?;
+        let module = root.path().join("module");
+        let modules = root.path().join("module-cache");
+        std::fs::create_dir(&module)?;
+        std::fs::create_dir(&modules)?;
+        std::fs::write(
+            module.join("go.mod"),
+            "module example.com/dirbatch\n\ngo 1.23\n",
+        )?;
+        let sources = (0..33)
+            .map(|index| module.join(format!("source_{index:03}.go")))
+            .collect::<Vec<_>>();
+        for (index, source) in sources.iter().enumerate() {
+            std::fs::write(
+                source,
+                format!("package dirbatch\nfunc Value{index:03}() int {{ return {index} }}\n"),
+            )?;
+        }
+        let environment = super::super::GoOracleChildEnvironment::new(
+            go.clone(),
+            goroot,
+            modules,
+            root.path().join("build-cache"),
+        )?;
+        let oracle = GoOracle::default()
+            .with_configuration(GoOracleConfiguration::go_toolchain(go)?)
+            .with_child_environment(environment)?;
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let control = GoOracleControl::new(None, deadline);
+        let witness = oracle.package_authority_witness_controlled(&module, control)?;
+        assert!(witness.is_complete());
+        let mut first = oracle.begin_package_authority_controlled(
+            &module,
+            Cow::Borrowed(&witness),
+            &sources,
+            control,
+        )?;
+        let mut images = Vec::new();
+        for source in &sources {
+            images.push(first.image(source)?);
+        }
+        assert_eq!(
+            first.batches_started, 1,
+            "33 same-directory files need one real loader"
+        );
+        assert!(images.iter().all(|image| !image.is_empty()));
+        let helper = first.helper.clone();
+        let helper_identity = backend_platform::FileIdentity::of_path_nofollow(&helper)?;
+        first.finish()?;
+        // A new request still gets a fresh witness and the original SDK checks;
+        // only the content-addressed helper executable is retained.
+        let witness = oracle.package_authority_witness_controlled(&module, control)?;
+        let mut second = oracle.begin_package_authority_controlled(
+            &module,
+            Cow::Borrowed(&witness),
+            &sources,
+            control,
+        )?;
+        for (source, expected) in sources.iter().zip(&images) {
+            assert_eq!(&second.image(source)?, expected);
+        }
+        assert_eq!(second.batches_started, 1);
+        assert_eq!(second.helper, helper);
+        assert_eq!(
+            backend_platform::FileIdentity::of_path_nofollow(&helper)?,
+            helper_identity
+        );
+        // Even after every image was obtained, changing an admitted input must
+        // reject the whole session instead of publishing a cached image.
+        std::fs::write(
+            module.join("go.mod"),
+            "module example.com/changed\n\ngo 1.23\n",
+        )?;
+        assert!(matches!(
+            second.finish(),
+            Err(OracleError::PackageAuthorityWitnessChanged)
+        ));
+        Ok(())
     }
 
     #[test]
