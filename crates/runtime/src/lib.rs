@@ -1958,7 +1958,7 @@ mod tests {
                     fs::set_permissions(&root, fs::Permissions::from_mode(home_mode))
                         .expect("home mode");
                     assert_eq!(
-                        fs::read_dir(&root).unwrap().count(),
+                        fs::read_dir(&root).expect("read the fixture directory entries").count(),
                         0,
                         "genuinely empty home"
                     );
@@ -1969,7 +1969,7 @@ mod tests {
                             parent.push(name);
                             fs::create_dir(&parent).expect("existing conventional parent");
                             fs::set_permissions(&parent, fs::Permissions::from_mode(0o755))
-                                .unwrap();
+                                .expect("set the fixture directory permissions");
                         }
                     }
                     // Discovery freezes canonical data identity even through macOS /var aliases.
@@ -1989,24 +1989,24 @@ mod tests {
                         .expect("first-run default state and authority");
                     paths.initialize().expect("reopen same state");
                     assert!(data.is_dir());
-                    assert_eq!(fs::metadata(paths.authority_secret()).unwrap().len(), 32);
-                    assert_eq!(fs::metadata(&root).unwrap().mode() & 0o777, home_mode);
+                    assert_eq!(fs::metadata(paths.authority_secret()).expect("read the fixture authority secret metadata").len(), 32);
+                    assert_eq!(fs::metadata(&root).expect("read the fixture directory metadata").mode() & 0o777, home_mode);
                     let mut parent = root.clone();
                     for name in suffix {
                         parent.push(name);
                         assert_eq!(
-                            fs::metadata(&parent).unwrap().mode() & 0o777,
+                            fs::metadata(&parent).expect("read the fixture directory metadata").mode() & 0o777,
                             if existing { 0o755 } else { 0o700 }
                         );
                     }
                     assert_eq!(
                         fs::metadata(state.path().join(APPLICATION_DIRECTORY))
-                            .unwrap()
+                            .expect("read the fixture directory metadata")
                             .mode()
                             & 0o777,
                         0o700
                     );
-                    fs::remove_dir_all(&root).unwrap();
+                    fs::remove_dir_all(&root).expect("remove the fixture directory");
                 }
             }
         }
@@ -2021,8 +2021,8 @@ mod tests {
             &[".local", "state"][..],
         ] {
             let home = test_directory("legacy-default-home");
-            fs::create_dir(&home).unwrap();
-            fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::create_dir(&home).expect("create the fixture directory");
+            fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
             let state = ApplicationStateRoot::new(home.clone(), suffix);
             let data = normalize_identity(&default_workspace_path(
                 &home.join("project"),
@@ -2038,39 +2038,39 @@ mod tests {
             paths
                 .initialize()
                 .expect("empty HOME creates private default state");
-            let credential = fs::read(paths.authority_secret()).unwrap();
-            let credential_inode = fs::metadata(paths.authority_secret()).unwrap().ino();
+            let credential = fs::read(paths.authority_secret()).expect("read the fixture authority secret");
+            let credential_inode = fs::metadata(paths.authority_secret()).expect("read the fixture authority secret metadata").ino();
             let endpoint = paths.endpoint().to_path_buf();
             let application = state.path().join(APPLICATION_DIRECTORY);
             let projects = application.join(PROJECTS_DIRECTORY);
-            fs::write(data.join("kept-index"), b"historical index bytes").unwrap();
+            fs::write(data.join("kept-index"), b"historical index bytes").expect("write the retained fixture file");
             let unrelated = projects.join("reader-state");
-            fs::create_dir(&unrelated).unwrap();
-            fs::set_permissions(&unrelated, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::create_dir(&unrelated).expect("create the fixture directory");
+            fs::set_permissions(&unrelated, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
             for path in [&application, &projects, &data] {
-                fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+                fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
             }
             for _ in 0..2 {
                 paths
                     .initialize()
                     .expect("cold reopen repairs only captured application state");
                 for path in [&application, &projects, &data] {
-                    assert_eq!(fs::metadata(path).unwrap().mode() & 0o777, 0o700);
+                    assert_eq!(fs::metadata(path).expect("read the fixture directory metadata").mode() & 0o777, 0o700);
                 }
-                assert_eq!(fs::read(paths.authority_secret()).unwrap(), credential);
+                assert_eq!(fs::read(paths.authority_secret()).expect("read the fixture authority secret"), credential);
                 assert_eq!(
-                    fs::metadata(paths.authority_secret()).unwrap().ino(),
+                    fs::metadata(paths.authority_secret()).expect("read the fixture authority secret metadata").ino(),
                     credential_inode
                 );
                 assert_eq!(paths.endpoint(), endpoint);
                 assert_eq!(
-                    fs::read(data.join("kept-index")).unwrap(),
+                    fs::read(data.join("kept-index")).expect("read the retained fixture file"),
                     b"historical index bytes"
                 );
-                assert_eq!(fs::metadata(&unrelated).unwrap().mode() & 0o777, 0o755);
-                assert_eq!(fs::metadata(&home).unwrap().mode() & 0o777, 0o755);
+                assert_eq!(fs::metadata(&unrelated).expect("read the fixture directory metadata").mode() & 0o777, 0o755);
+                assert_eq!(fs::metadata(&home).expect("read the fixture directory metadata").mode() & 0o777, 0o755);
             }
-            fs::remove_dir_all(home).unwrap();
+            fs::remove_dir_all(home).expect("remove the fixture directory");
         }
     }
 
@@ -2080,45 +2080,45 @@ mod tests {
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
         for component in 0..3 {
             let home = test_directory("default-owned-link");
-            fs::create_dir(&home).unwrap();
-            fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::create_dir(&home).expect("create the fixture directory");
+            fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
             let state = ApplicationStateRoot::new(home.clone(), &[]);
             let data = normalize_identity(&default_workspace_path(
                 &home.join("project"),
                 &state.path(),
             ));
-            initialize_default_state(&state, &data).unwrap();
+            initialize_default_state(&state, &data).expect("initialize the fixture default state");
             let app = home.join(APPLICATION_DIRECTORY);
             let projects = app.join(PROJECTS_DIRECTORY);
             let blocked = [&app, &projects, &data][component].to_path_buf();
             let target = home.join("outside");
-            fs::rename(&blocked, &target).unwrap();
-            fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
-            fs::write(target.join("kept"), b"outside bytes").unwrap();
-            symlink(&target, &blocked).unwrap();
+            fs::rename(&blocked, &target).expect("move the fixture directory aside");
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
+            fs::write(target.join("kept"), b"outside bytes").expect("write the retained fixture file");
+            symlink(&target, &blocked).expect("create the fixture symlink");
             assert!(initialize_default_state(&state, &data).is_err());
-            assert_eq!(fs::metadata(&target).unwrap().mode() & 0o777, 0o755);
-            assert_eq!(fs::read(target.join("kept")).unwrap(), b"outside bytes");
-            fs::remove_dir_all(home).unwrap();
+            assert_eq!(fs::metadata(&target).expect("read the fixture directory metadata").mode() & 0o777, 0o755);
+            assert_eq!(fs::read(target.join("kept")).expect("read the retained fixture file"), b"outside bytes");
+            fs::remove_dir_all(home).expect("remove the fixture directory");
         }
         if rustix::process::geteuid().is_root() {
             let home = test_directory("default-owned-foreign");
-            fs::create_dir(&home).unwrap();
-            fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::create_dir(&home).expect("create the fixture directory");
+            fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
             let state = ApplicationStateRoot::new(home.clone(), &[]);
             let data = normalize_identity(&default_workspace_path(
                 &home.join("project"),
                 &state.path(),
             ));
             let app = home.join(APPLICATION_DIRECTORY);
-            fs::create_dir(&app).unwrap();
-            fs::set_permissions(&app, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::create_dir(&app).expect("create the fixture directory");
+            fs::set_permissions(&app, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
             rustix::fs::chown(&app, Some(rustix::fs::Uid::from_raw(1)), None)
                 .expect("foreign-owner fixture");
             assert!(initialize_default_state(&state, &data).is_err());
-            assert_eq!(fs::metadata(&app).unwrap().mode() & 0o777, 0o755);
+            assert_eq!(fs::metadata(&app).expect("read the fixture directory metadata").mode() & 0o777, 0o755);
             assert!(!data.exists());
-            fs::remove_dir_all(home).unwrap();
+            fs::remove_dir_all(home).expect("remove the fixture directory");
         }
     }
 
@@ -2129,59 +2129,59 @@ mod tests {
         for blocker in ["file", "link", "writable"] {
             for component in [0, 1] {
                 let root = test_directory(&format!("default-state-blocker-{blocker}-{component}"));
-                fs::create_dir(&root).unwrap();
-                fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+                fs::create_dir(&root).expect("create the fixture directory");
+                fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
                 let state =
                     ApplicationStateRoot::new(root.clone(), &["Library", "Application Support"]);
                 let blocked = if component == 0 {
                     root.join("Library")
                 } else {
                     let parent = root.join("Library");
-                    fs::create_dir(&parent).unwrap();
-                    fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+                    fs::create_dir(&parent).expect("create the fixture directory");
+                    fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
                     parent.join("Application Support")
                 };
                 let outside = root.join("outside");
                 match blocker {
-                    "file" => fs::write(&blocked, "retained blocker").unwrap(),
+                    "file" => fs::write(&blocked, "retained blocker").expect("write the retained fixture file"),
                     "link" => {
-                        fs::create_dir(&outside).unwrap();
-                        symlink(&outside, &blocked).unwrap();
+                        fs::create_dir(&outside).expect("create the fixture directory");
+                        symlink(&outside, &blocked).expect("create the fixture symlink");
                     }
                     _ => {
-                        fs::create_dir(&blocked).unwrap();
-                        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o775)).unwrap();
+                        fs::create_dir(&blocked).expect("create the fixture directory");
+                        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o775)).expect("set the fixture directory permissions");
                     }
                 }
                 let data = default_workspace_path(&root.join("project"), &state.path());
                 assert!(initialize_default_state(&state, &data).is_err());
                 assert!(!data.exists());
-                assert_eq!(fs::metadata(&root).unwrap().mode() & 0o777, 0o755);
+                assert_eq!(fs::metadata(&root).expect("read the fixture directory metadata").mode() & 0o777, 0o755);
                 match blocker {
-                    "file" => assert_eq!(fs::read_to_string(&blocked).unwrap(), "retained blocker"),
+                    "file" => assert_eq!(fs::read_to_string(&blocked).expect("read the retained fixture blocker"), "retained blocker"),
                     "link" => {
                         assert!(
                             fs::symlink_metadata(&blocked)
-                                .unwrap()
+                                .expect("inspect the refused fixture symlink")
                                 .file_type()
                                 .is_symlink()
                         );
-                        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+                        assert_eq!(fs::read_dir(&outside).expect("read the fixture directory entries").count(), 0);
                     }
-                    _ => assert_eq!(fs::metadata(&blocked).unwrap().mode() & 0o777, 0o775),
+                    _ => assert_eq!(fs::metadata(&blocked).expect("read the fixture directory metadata").mode() & 0o777, 0o775),
                 }
-                fs::remove_dir_all(&root).unwrap();
+                fs::remove_dir_all(&root).expect("remove the fixture directory");
             }
         }
         let root = test_directory("default-state-public-anchor-writable");
-        fs::create_dir(&root).unwrap();
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o775)).unwrap();
+        fs::create_dir(&root).expect("create the fixture directory");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o775)).expect("set the fixture directory permissions");
         let state = ApplicationStateRoot::new(root.clone(), &[".local", "state"]);
         let data = default_workspace_path(&root.join("project"), &state.path());
         assert!(initialize_default_state(&state, &data).is_err());
-        assert_eq!(fs::metadata(&root).unwrap().mode() & 0o777, 0o775);
-        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
-        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(fs::metadata(&root).expect("read the fixture directory metadata").mode() & 0o777, 0o775);
+        assert_eq!(fs::read_dir(&root).expect("read the fixture directory entries").count(), 0);
+        fs::remove_dir_all(&root).expect("remove the fixture directory");
     }
 
     #[test]
