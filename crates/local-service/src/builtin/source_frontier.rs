@@ -25,15 +25,16 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 
 const SOURCE_FRONTIER_VERSION: u8 = 3;
-const SOURCE_FRONTIER_POLICY_IDENTITY: &str = "backend.local-source-frontier.v1;selection=source-selection-policy.v2;python-initialized-subpackages.v1;declared-captured-python-source-roots.v1;git-clean-paths.v1";
+const SOURCE_FRONTIER_POLICY_IDENTITY: &str = "backend.local-source-frontier.v1;selection=source-selection-policy.v3-index-ignore;python-initialized-subpackages.v1;declared-captured-python-source-roots.v1;git-clean-paths.v1";
 const MAX_SOURCE_FRONTIERS: usize = 8 * 1024;
 const MAX_SOURCE_FRONTIER_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SOURCE_FRONTIER_CACHE_BYTES: usize = 32 * 1024 * 1024;
 const SOURCE_FRONTIER_CACHE_ENTRY_OVERHEAD_BYTES: usize = 256;
 const MAX_GIT_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_GIT_POLICY_FILE_BYTES: u64 = 8 * 1024 * 1024;
-const SOURCE_POLICY_FILE_NAMES: [&str; 4] =
-    [".gitignore", ".ignore", ".rgignore", ".gitattributes"];
+const SOURCE_POLICY_FILE_NAMES: [&str; 5] = [
+    ".gitignore", ".ignore", ".rgignore", ".gitattributes", ".nudoxignore",
+];
 
 pub(super) struct SourcePath {
     pub(super) absolute: PathBuf,
@@ -633,7 +634,7 @@ pub(super) fn is_policy_file_name(name: &str) -> bool {
 
 /// Finds local selection-policy files in directories discovery already
 /// visited, including files hidden by a higher-priority ignore rule. This is
-/// only four metadata probes per discovered directory, not another walk.
+/// only five metadata probes per discovered directory, not another walk.
 pub(super) fn source_policy_candidates(
     root: &Path,
     directories: &[(PathBuf, Option<FileSystemRevision>)],
@@ -972,6 +973,29 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn index_scope_policy_creation_and_changes_invalidate_the_source_witness() -> Result<(), String> {
+        let root = crate::test_support::private_temp_dir("index-scope-policy")
+            .map_err(|error| error.to_string())?;
+        let policy = root.path().join(".nudoxignore");
+        assert!(super::is_policy_file_name(".nudoxignore"));
+        let hash = || -> Result<[u8; 32], String> {
+            let mut hasher = blake3::Hasher::new();
+            hash_policy_file(&mut hasher, &policy).ok_or("bounded policy capture")?;
+            Ok(*hasher.finalize().as_bytes())
+        };
+        let absent = hash()?;
+        fs::write(&policy, b"/unrelated-cache/\n").map_err(|error| error.to_string())?;
+        let scoped = hash()?;
+        assert_ne!(absent, scoped);
+        fs::write(&policy, b"/other-cache/\n").map_err(|error| error.to_string())?;
+        assert_ne!(scoped, hash()?);
+        let candidates = super::source_policy_candidates(root.path(), &[(PathBuf::new(), None)])
+            .ok_or("policy candidates")?;
+        assert_eq!(candidates, [policy]);
+        Ok(())
     }
 
     #[test]

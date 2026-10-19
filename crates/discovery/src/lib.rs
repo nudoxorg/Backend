@@ -567,8 +567,9 @@ impl DiscoveryPolicy {
     /// escaped pattern characters, `.git/info/exclude`, and configured global
     /// Git excludes are interpreted by `ignore`. `require_git` is disabled
     /// because a forge export or an uninitialised local project can still
-    /// contain a useful `.gitignore`. No `git` subprocess is spawned. Symlinks
-    /// are never followed, and hard generated directories are filtered before
+    /// contain a useful `.gitignore`. `.nudoxignore` provides the same rules
+    /// for indexing scope without changing Git tracking. No `git` subprocess
+    /// is spawned. Symlinks are never followed, and hard generated directories are filtered before
     /// the matcher can descend into them. Explicit include patterns may
     /// reopen a generated default when the caller asks for that path.
     #[must_use]
@@ -619,6 +620,9 @@ impl DiscoveryPolicy {
             builder.overrides(overrides);
         }
         let include_overrides = include_overrides.ok().flatten();
+        if self.respect_gitignore {
+            builder.add_custom_ignore_filename(".nudoxignore");
+        }
         let root_for_filter = root.clone();
         builder
             .hidden(false)
@@ -1471,6 +1475,69 @@ mod tests {
                 "src/live.rs"
             ]
         );
+    }
+
+    #[test]
+    fn indexing_scope_excludes_only_explicit_paths_and_keeps_manifests_and_resources() {
+        let scratch = Scratch::new("indexing-scope");
+        for name in [
+            "src/lib.rs",
+            "src/main.go",
+            "src/main.ts",
+            "src/main.py",
+            "Cargo.toml",
+            "go.mod",
+            "tsconfig.json",
+            "pyproject.toml",
+            "src/template.json",
+            "src/README.md",
+            "src/resource.bin",
+            "generated-data/bundle.js",
+            "generated-data/catalog.json",
+        ] {
+            let path = scratch.0.join(name);
+            fs::create_dir_all(path.parent().expect("parent")).expect("directory");
+            fs::write(path, b"fixture").expect("file");
+        }
+        let files = || {
+            DiscoveryPolicy::default()
+                .walk(&scratch.0)
+                .map(|entry| entry.expect("discovery"))
+                .filter(|entry| entry.is_file())
+                .map(|entry| slash_path(entry.path().strip_prefix(&scratch.0).expect("relative")))
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            files().contains(&"generated-data/bundle.js".to_owned()),
+            "a name alone must not imply generated or irrelevant source"
+        );
+        fs::write(scratch.0.join(".nudoxignore"), b"/generated-data/\n").expect("index scope");
+        let scoped = files();
+        assert!(
+            !scoped
+                .iter()
+                .any(|name| name.starts_with("generated-data/"))
+        );
+        for name in [
+            "src/lib.rs",
+            "src/main.go",
+            "src/main.ts",
+            "src/main.py",
+            "Cargo.toml",
+            "go.mod",
+            "tsconfig.json",
+            "pyproject.toml",
+            "src/template.json",
+            "src/README.md",
+            "src/resource.bin",
+        ] {
+            assert!(
+                scoped.iter().any(|path| path == name),
+                "required input {name}"
+            );
+        }
+        fs::remove_file(scratch.0.join(".nudoxignore")).expect("remove index scope");
+        assert!(files().contains(&"generated-data/bundle.js".to_owned()));
     }
 
     #[test]
