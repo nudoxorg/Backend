@@ -4764,3 +4764,111 @@ fn cold_membership_reader_reuse_preserves_exact_results_and_complete_posting_cov
     drop(cold);
     std::fs::remove_dir_all(directory).expect("cleanup");
 }
+
+#[test]
+fn durable_publication_admits_once_and_keeps_direct_build_and_cold_exact_checks() {
+    let state = state_for_canonical_fields(
+        vec![
+            (
+                document(911),
+                vec![("name".into(), "Alpha alpha HTTPServer42".into())],
+            ),
+            (
+                document(912),
+                vec![
+                    ("name".into(), "Beta alpha".into()),
+                    ("documentation".into(), "path::É".into()),
+                ],
+            ),
+        ],
+        [0xb1; 32],
+    );
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-private-stage-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let fields = state.iter().map(|(_, fields)| fields.len()).sum::<usize>();
+    let measurement = engine::test_support::TokenizationMeasurement::start();
+    let (published, action) =
+        TantivySource::open_or_build_in_dir_with_action(&state, Limits::default(), &root)
+            .expect("publish and fully admit");
+    assert_eq!(action, DurableProjectionAction::Built);
+    assert_eq!(
+        measurement.passes(),
+        2 * fields,
+        "one writer pass and one full final source admission, with no discarded resident admission"
+    );
+    drop(measurement);
+    assert_eq!(engine::test_support::binding_work(&published).0, 2);
+    assert!(engine::test_support::posting_cover_edges_scanned(&published) > 0);
+    let expected = term_hits(&published, "alpha");
+    assert_eq!(expected.len(), 2);
+    let measurement = engine::test_support::TokenizationMeasurement::start();
+    let (cold, action) =
+        TantivySource::open_or_build_in_dir_with_action(&state, Limits::default(), &root)
+            .expect("cold exact admission");
+    assert_eq!(action, DurableProjectionAction::Opened);
+    assert_eq!(measurement.passes(), fields);
+    drop(measurement);
+    assert_eq!(term_hits(&cold, "alpha"), expected);
+    let direct = root.join("direct");
+    std::fs::create_dir(&direct).expect("direct directory");
+    let measurement = engine::test_support::TokenizationMeasurement::start();
+    let direct_source = TantivySource::build_in_dir(&state, Limits::default(), &direct)
+        .expect("public direct build remains admitted");
+    assert_eq!(
+        measurement.passes(),
+        3 * fields,
+        "direct public build still validates rank and posting membership before returning"
+    );
+    drop(measurement);
+    assert_eq!(engine::test_support::binding_work(&direct_source).0, 2);
+    assert_eq!(term_hits(&direct_source, "alpha"), expected);
+    drop((published, cold, direct_source));
+    std::fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn private_stage_forged_ordinal_never_returns_a_reader_and_rebuilds_authoritatively() {
+    let state = state_for(
+        vec![(
+            document(913),
+            vec![("name".into(), "authoritative-token".into())],
+        )],
+        [0xb2; 32],
+    );
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-private-stage-forged-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let forged = state.clone();
+    let reached = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = reached.clone();
+    let hook = engine::test_support::after_private_stage_built(move |stage| {
+        engine::test_support::forge_ordinal_posting_count(&forged, stage, u32::MAX)
+            .expect("forge validly witnessed ordinal in private stage");
+        observed.store(true, std::sync::atomic::Ordering::Release);
+    });
+    assert!(
+        TantivySource::open_or_build_in_dir_with_action(&state, Limits::default(), &root).is_err(),
+        "publication cannot return a reader before exact source/rank/posting admission"
+    );
+    assert!(reached.load(std::sync::atomic::Ordering::Acquire));
+    drop(hook);
+    let (rebuilt, action) =
+        TantivySource::open_or_build_in_dir_with_action(&state, Limits::default(), &root)
+            .expect("corrupt root replaced from exact source");
+    assert_eq!(action, DurableProjectionAction::Built);
+    assert_eq!(term_hits(&rebuilt, "authoritative"), vec![document(913)]);
+    assert!(engine::test_support::posting_cover_edges_scanned(&rebuilt) > 0);
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).expect("cleanup");
+}

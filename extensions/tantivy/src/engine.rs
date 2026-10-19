@@ -73,6 +73,7 @@ std::thread_local! {
     static TEST_CANCEL_AFTER_PUBLICATION: std::cell::RefCell<Option<std::sync::Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) };
     static TEST_CANCEL_AFTER_COMMIT: std::cell::RefCell<Option<std::sync::Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) };
     static TEST_ADMISSION_CANCEL: std::cell::RefCell<Option<(&'static str, usize, std::sync::Arc<AtomicBool>)>> = const { std::cell::RefCell::new(None) };
+    static TEST_PRIVATE_STAGE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> = const { std::cell::RefCell::new(None) };
     static TEST_TOKENIZATION_PASSES: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     static TEST_CANCEL_BEFORE_COMMIT: std::cell::RefCell<Option<std::sync::Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) };
     static TEST_NO_MERGE_POLICY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -975,6 +976,42 @@ impl TantivySource {
     /// Builds one complete projection in a unique active stage. The active
     /// marker lets the durable-cache sweeper distinguish this build from an
     /// abandoned stage while no namespace fence is held.
+    fn write_unadmitted_durable_stage(
+        state: &DocumentState,
+        limits: Limits,
+        directory: &Path,
+        budget: DurableCacheBudget,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<(), TantivySourceError> {
+        check_projection_cancelled(cancelled)?;
+        let limits = limits.validate()?;
+        if !matches!(state.coverage(), CoverageWitness::Complete(_)) {
+            return Err(Error::IncompleteCoverage.into());
+        }
+        preflight_ordinal_map_capacity(state.iter().count())?;
+        let projected = projection_schema();
+        let deferred = DeferredSyncDirectory::open(directory)?;
+        let index = Index::create(deferred.clone(), projected.schema, IndexSettings::default())?;
+        let documents =
+            Self::populate_documents(state, limits, &index, &projected.fields, cancelled)?;
+        write_ordinal_map_with(
+            directory,
+            projection_fingerprint(state.binding()),
+            &documents,
+            false,
+        )?;
+        write_binding_stamp_with(directory, projection_fingerprint(state.binding()), false)?;
+        write_projection_manifest_with(
+            directory,
+            projection_fingerprint(state.binding()),
+            budget,
+            false,
+        )?;
+        deferred.flush_all()?;
+        check_projection_cancelled(cancelled)?;
+        Ok(())
+    }
+
     fn build_durable_stage(
         state: &DocumentState,
         limits: Limits,
@@ -1003,13 +1040,17 @@ impl TantivySource {
                     TantivySourceError::Io(error),
                 ));
             }
-            let built =
-                match Self::build_in_dir_controlled(state, limits, stage.path(), budget, cancelled)
-                {
-                    Ok(source) => source,
-                    Err(error) => return Err(failed_stage_preparation(stage, error)),
-                };
-            drop(built);
+            if let Err(error) =
+                Self::write_unadmitted_durable_stage(state, limits, stage.path(), budget, cancelled)
+            {
+                return Err(failed_stage_preparation(stage, error));
+            }
+            #[cfg(test)]
+            TEST_PRIVATE_STAGE_HOOK.with(|hook| {
+                if let Some(hook) = hook.borrow_mut().take() {
+                    hook(stage.path());
+                }
+            });
             if let Err(error) = stage.verify_path() {
                 return Err(failed_stage_preparation(
                     stage,
@@ -1377,13 +1418,16 @@ impl TantivySource {
         })
     }
 
-    fn populate(
+    // A private publication stage needs canonical bytes and ordinal metadata,
+    // not a resident reader. Every published winner is fully admitted by
+    // open_selected_root under its namespace fence before it can be returned.
+    fn populate_documents(
         state: &DocumentState,
         limits: Limits,
-        index: Index,
-        fields: ProjectionFields,
+        index: &Index,
+        fields: &ProjectionFields,
         cancelled: Option<&AtomicBool>,
-    ) -> Result<Self, TantivySourceError> {
+    ) -> Result<DocumentTable, TantivySourceError> {
         if state.iter().count() > MAX_ORDINAL_SLOTS {
             return Err(Error::SizeLimit.into());
         }
@@ -1394,7 +1438,7 @@ impl TantivySource {
             let document_ordinal = u64::try_from(live.len()).map_err(|_| Error::SizeLimit)?;
             let postings = write_document(
                 &writer,
-                &fields,
+                fields,
                 document_ordinal,
                 document,
                 document_fields,
@@ -1411,7 +1455,7 @@ impl TantivySource {
                 segment_id: None,
             });
         }
-        let mut documents = DocumentTable::from_live(
+        let documents = DocumentTable::from_live(
             u32::try_from(live.len()).map_err(|_| Error::SizeLimit)?,
             live,
         )?;
@@ -1422,6 +1466,17 @@ impl TantivySource {
         // directory once the source is handed out.
         writer.wait_merging_threads()?;
         check_projection_cancelled(cancelled)?;
+        Ok(documents)
+    }
+
+    fn populate(
+        state: &DocumentState,
+        limits: Limits,
+        index: Index,
+        fields: ProjectionFields,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<Self, TantivySourceError> {
+        let mut documents = Self::populate_documents(state, limits, &index, &fields, cancelled)?;
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
@@ -4149,6 +4204,19 @@ fn sync_directory(path: &Path) -> Result<(), io::Error> {
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::mem;
+
+    pub(crate) struct PrivateStageHook;
+    impl Drop for PrivateStageHook {
+        fn drop(&mut self) {
+            super::TEST_PRIVATE_STAGE_HOOK.with(|hook| *hook.borrow_mut() = None);
+        }
+    }
+    pub(crate) fn after_private_stage_built(
+        hook: impl FnOnce(&std::path::Path) + 'static,
+    ) -> PrivateStageHook {
+        super::TEST_PRIVATE_STAGE_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+        PrivateStageHook
+    }
 
     pub(crate) struct TokenizationMeasurement;
     impl TokenizationMeasurement {
