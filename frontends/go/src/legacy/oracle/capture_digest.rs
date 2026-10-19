@@ -249,9 +249,9 @@ mod tests {
 
     #[test]
     fn witness_hash_stops_between_real_chunks_at_the_same_deadline() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("create test tempdir");
         let path = root.path().join("large.go");
-        std::fs::write(&path, vec![b'x'; 256 * 1024]).unwrap();
+        std::fs::write(&path, vec![b'x'; 256 * 1024]).expect("write test fixture");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut scratch = CaptureScratch::with_deadline(Some(deadline));
         scratch.after_chunk = Some(Box::new(move || {
@@ -273,11 +273,11 @@ mod tests {
 
     #[test]
     fn same_capture_requires_a_change_witness_and_charges_each_consumer() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let dir = tempfile::tempdir().expect("create test tempdir");
+        let root = dir.path().canonicalize().expect("canonicalize test root");
         let path = root.join("selected.go");
         let bytes = vec![b'a'; 128 * 1024 + 17];
-        std::fs::write(&path, &bytes).unwrap();
+        std::fs::write(&path, &bytes).expect("write test fixture");
         let mut scratch = CaptureScratch::default();
         let mut local_total = 0;
         let local = capture(&mut scratch, &path, &root, &mut local_total, None);
@@ -296,20 +296,23 @@ mod tests {
 
     #[test]
     fn every_new_capture_hashes_same_length_drift_even_with_restored_mtime() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let dir = tempfile::tempdir().expect("create test tempdir");
+        let root = dir.path().canonicalize().expect("canonicalize test root");
         let path = root.join("selected.go");
-        std::fs::write(&path, b"package dep\nconst Value = 1\n").unwrap();
-        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::fs::write(&path, b"package dep\nconst Value = 1\n").expect("write test fixture");
+        let modified = std::fs::metadata(&path)
+            .expect("read test metadata")
+            .modified()
+            .expect("read modification time");
         let mut first = CaptureScratch::default();
         let before = capture(&mut first, &path, &root, &mut 0, None);
-        std::fs::write(&path, b"package dep\nconst Value = 2\n").unwrap();
+        std::fs::write(&path, b"package dep\nconst Value = 2\n").expect("write test fixture");
         std::fs::File::options()
             .write(true)
             .open(&path)
-            .unwrap()
+            .expect("update fixture timestamp")
             .set_modified(modified)
-            .unwrap();
+            .expect("restore fixture timestamp");
         let mut second = CaptureScratch::default();
         let after = capture(&mut second, &path, &root, &mut 0, None);
         assert_ne!(before, after);
@@ -321,21 +324,23 @@ mod tests {
 
     #[test]
     fn same_scratch_hashes_same_length_drift_with_restored_mtime() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let dir = tempfile::tempdir().expect("create test tempdir");
+        let root = dir.path().canonicalize().expect("canonicalize test root");
         let path = root.join("selected.go");
-        std::fs::write(&path, b"package dep\nconst Value = 1\n").unwrap();
-        let before_stamp = file_stamp(&std::fs::File::open(&path).unwrap()).unwrap();
+        std::fs::write(&path, b"package dep\nconst Value = 1\n").expect("write test fixture");
+        let before_stamp = file_stamp(&std::fs::File::open(&path).expect("open test file"))
+            .expect("read file stamp");
         let mut scratch = CaptureScratch::default();
         let before = capture(&mut scratch, &path, &root, &mut 0, None);
-        std::fs::write(&path, b"package dep\nconst Value = 2\n").unwrap();
+        std::fs::write(&path, b"package dep\nconst Value = 2\n").expect("write test fixture");
         std::fs::File::options()
             .write(true)
             .open(&path)
-            .unwrap()
+            .expect("update fixture timestamp")
             .set_modified(before_stamp.modified)
-            .unwrap();
-        let after_stamp = file_stamp(&std::fs::File::open(&path).unwrap()).unwrap();
+            .expect("restore fixture timestamp");
+        let after_stamp = file_stamp(&std::fs::File::open(&path).expect("open test file"))
+            .expect("read file stamp");
         assert_eq!(before_stamp.identity, after_stamp.identity);
         assert_eq!(before_stamp.bytes, after_stamp.bytes);
         assert_eq!(before_stamp.modified, after_stamp.modified);
@@ -351,24 +356,27 @@ mod tests {
 
     #[test]
     fn no_change_witness_path_rehashes_even_an_unchanged_cached_stamp() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let dir = tempfile::tempdir().expect("create test tempdir");
+        let root = dir.path().canonicalize().expect("canonicalize test root");
         let path = root.join("selected.go");
-        std::fs::write(&path, b"package dep\nconst Value = 1\n").unwrap();
-        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::fs::write(&path, b"package dep\nconst Value = 1\n").expect("write test fixture");
+        let modified = std::fs::metadata(&path)
+            .expect("read test metadata")
+            .modified()
+            .expect("read modification time");
         let mut scratch = CaptureScratch::default();
         let before = capture(&mut scratch, &path, &root, &mut 0, None);
         scratch.force_no_change_witness = true;
         assert_eq!(before, capture(&mut scratch, &path, &root, &mut 0, None));
         assert_eq!(scratch.hash_files, 2);
         assert_eq!(scratch.hash_bytes, 56);
-        std::fs::write(&path, b"package dep\nconst Value = 2\n").unwrap();
+        std::fs::write(&path, b"package dep\nconst Value = 2\n").expect("write test fixture");
         std::fs::File::options()
             .write(true)
             .open(&path)
-            .unwrap()
+            .expect("update fixture timestamp")
             .set_modified(modified)
-            .unwrap();
+            .expect("restore fixture timestamp");
         let after = capture(&mut scratch, &path, &root, &mut 0, None);
         assert_ne!(before, after);
         assert!(matches!(after, CapturedFile::File { digest, .. }
@@ -379,10 +387,10 @@ mod tests {
 
     #[test]
     fn a_cache_hit_does_not_bypass_an_independent_byte_limit_or_cancellation() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let dir = tempfile::tempdir().expect("create test tempdir");
+        let root = dir.path().canonicalize().expect("canonicalize test root");
         let path = root.join("selected.go");
-        std::fs::write(&path, b"1234").unwrap();
+        std::fs::write(&path, b"1234").expect("write test fixture");
         let mut scratch = CaptureScratch::default();
         assert!(matches!(
             capture(&mut scratch, &path, &root, &mut 0, None),
@@ -423,10 +431,10 @@ mod tests {
 
     #[test]
     fn cancellation_after_a_chunk_never_inserts_a_partial_digest() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let dir = tempfile::tempdir().expect("create test tempdir");
+        let root = dir.path().canonicalize().expect("canonicalize test root");
         let path = root.join("selected.go");
-        std::fs::write(&path, vec![b'x'; 128 * 1024]).unwrap();
+        std::fs::write(&path, vec![b'x'; 128 * 1024]).expect("write test fixture");
         let token = std::sync::Arc::new(AtomicBool::new(false));
         let mut scratch = CaptureScratch {
             cancel_after_bytes: Some((64 * 1024, token.clone())),
@@ -452,16 +460,17 @@ mod tests {
 
     #[test]
     fn same_inode_same_length_mutation_during_stream_is_not_admitted() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let dir = tempfile::tempdir().expect("create test tempdir");
+        let root = dir.path().canonicalize().expect("canonicalize test root");
         let path = root.join("selected.go");
-        std::fs::write(&path, vec![b'a'; 128 * 1024]).unwrap();
-        let identity = backend_platform::FileIdentity::of_path_nofollow(&path).unwrap();
+        std::fs::write(&path, vec![b'a'; 128 * 1024]).expect("write test fixture");
+        let identity = backend_platform::FileIdentity::of_path_nofollow(&path)
+            .expect("get test file identity");
         let mut mutate = Some(path.clone());
         let mut scratch = CaptureScratch {
             after_chunk: Some(Box::new(move || {
                 if let Some(path) = mutate.take() {
-                    std::fs::write(path, vec![b'b'; 128 * 1024]).unwrap();
+                    std::fs::write(path, vec![b'b'; 128 * 1024]).expect("write test fixture");
                 }
             })),
             ..Default::default()
@@ -473,7 +482,7 @@ mod tests {
         );
         assert_eq!(
             identity,
-            backend_platform::FileIdentity::of_path_nofollow(&path).unwrap()
+            backend_platform::FileIdentity::of_path_nofollow(&path).expect("get test file identity")
         );
         assert_eq!(total, 0);
         assert!(scratch.files.is_empty());
@@ -489,31 +498,31 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn independent_root_admission_and_retargeted_symlinks_cannot_hit() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        let other = tempfile::tempdir().unwrap();
-        let outside = other.path().canonicalize().unwrap();
+        let dir = tempfile::tempdir().expect("create test tempdir");
+        let root = dir.path().canonicalize().expect("canonicalize test root");
+        let other = tempfile::tempdir().expect("create test tempdir");
+        let outside = other.path().canonicalize().expect("canonicalize test root");
         let first = root.join("first.go");
         let second = root.join("second.go");
-        std::fs::write(&first, b"1111").unwrap();
-        std::fs::write(&second, b"2222").unwrap();
-        std::fs::write(outside.join("outside.go"), b"3333").unwrap();
+        std::fs::write(&first, b"1111").expect("write test fixture");
+        std::fs::write(&second, b"2222").expect("write test fixture");
+        std::fs::write(outside.join("outside.go"), b"3333").expect("write test fixture");
         let link = root.join("selected.go");
-        std::os::unix::fs::symlink(&first, &link).unwrap();
+        std::os::unix::fs::symlink(&first, &link).expect("create test symlink");
         let mut scratch = CaptureScratch::default();
         let before = capture(&mut scratch, &link, &root, &mut 0, None);
         assert_eq!(
             capture(&mut scratch, &first, &outside, &mut 0, None),
             CapturedFile::Unavailable
         );
-        std::fs::remove_file(&link).unwrap();
-        std::os::unix::fs::symlink(&second, &link).unwrap();
+        std::fs::remove_file(&link).expect("remove test symlink");
+        std::os::unix::fs::symlink(&second, &link).expect("create test symlink");
         let after = capture(&mut scratch, &link, &root, &mut 0, None);
         assert_ne!(before, after);
         assert_eq!(scratch.hash_files, 2);
         assert_eq!(scratch.hash_bytes, 8);
-        std::fs::remove_file(&link).unwrap();
-        std::os::unix::fs::symlink(outside.join("outside.go"), &link).unwrap();
+        std::fs::remove_file(&link).expect("remove test symlink");
+        std::os::unix::fs::symlink(outside.join("outside.go"), &link).expect("create test symlink");
         assert_eq!(
             capture(&mut scratch, &link, &root, &mut 0, None),
             CapturedFile::Unavailable
