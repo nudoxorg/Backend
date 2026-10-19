@@ -113,6 +113,7 @@ impl SavedIndexWorkspace {
             ));
         };
         let candidates = view
+            .root
             .rows()
             .iter()
             .filter_map(|row| match row.id {
