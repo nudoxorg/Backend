@@ -147,11 +147,12 @@ pub(super) fn prepare_scan_source(
         scan.python_environment.as_ref(),
         cancellation.as_ref(),
     )?;
-    let live = ingest::live_compiler_profiles(
+    let source_counts = ingest::compiler_profile_source_counts(
         source_root,
         &scan.compiler_sources,
         &scan.reused_compiler_files,
     );
+    let live = source_counts.keys().copied().collect::<BTreeSet<_>>();
     let present =
         ingest::present_compiler_paths(&scan.compiler_sources, &scan.reused_compiler_files);
     let lost = ingest::lost_compiler_profiles(source_root, &reusable, &present)
@@ -201,17 +202,7 @@ pub(super) fn prepare_scan_source(
         )
         .map_err(|error| BuiltinModelError(error.to_owned()))?;
         let input_digest = semantic_input_digest(&scan, profile);
-        let count = scan
-            .compiler_sources
-            .iter()
-            .filter(|source| source.profile == profile)
-            .count()
-            .saturating_add(
-                scan.reused_compiler_files
-                    .iter()
-                    .filter(|source| source.profile == profile)
-                    .count(),
-            );
+        let count = source_counts.get(&profile).copied().unwrap_or(0);
         let count = u64::try_from(count)
             .map_err(|_| BuiltinModelError("semantic source count exceeds u64".to_owned()))?;
         observations.insert(
