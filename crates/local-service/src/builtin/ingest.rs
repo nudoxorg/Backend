@@ -1343,6 +1343,7 @@ fn scan_source_paths(
     delta: Option<&source_frontier::SourceDelta>,
     source_policy: SourceAdmissionPolicy,
     cancellation: Option<&AtomicBool>,
+    observation: Option<&crate::builtin::index_work_observation::IndexWorkObservation>,
 ) -> Result<Vec<ScannedFile>, String> {
     let workers = source_policy.worker_count(
         thread::available_parallelism().map_or(1, usize::from),
@@ -1377,6 +1378,13 @@ fn scan_source_paths(
                     if stop.load(Ordering::Acquire) {
                         break;
                     }
+                    if let Some(observed) = observation {
+                        observed.source_started(
+                            worker_index,
+                            path_index,
+                            path.strip_prefix(root).unwrap_or(path),
+                        );
+                    }
                     let result = catch_unwind(AssertUnwindSafe(|| {
                         scan_source_path(
                             root,
@@ -1393,11 +1401,18 @@ fn scan_source_paths(
                         )
                     }))
                     .unwrap_or_else(|_| Err("source analysis worker panicked".to_owned()));
+                    if let Some(observed) = observation {
+                        observed.source_finished(worker_index);
+                    }
                     let failed = result.is_err();
                     if sender.send((path_index, worker_index, result)).is_err() {
                         break;
                     }
-                    if !acknowledged.recv().unwrap_or(false) || failed {
+                    let proceed = acknowledged.recv().unwrap_or(false);
+                    if let Some(observed) = observation {
+                        observed.source_released(worker_index);
+                    }
+                    if !proceed || failed {
                         break;
                     }
                 }
@@ -1410,7 +1425,26 @@ fn scan_source_paths(
         let mut pending = BTreeMap::<usize, (usize, Result<Option<ScannedFile>, String>)>::new();
         let mut next_path_index = 0_usize;
         let mut budget = SourceAdmissionLedger::default();
-        for (path_index, worker_index, result) in receiver {
+        loop {
+            let (path_index, worker_index, result) = match if observation.is_some() {
+                receiver.recv_timeout(std::time::Duration::from_millis(250))
+            } else {
+                receiver
+                    .recv()
+                    .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+            } {
+                Ok(result) => result,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if let Some(observed) = observation {
+                        observed.flush(false);
+                    }
+                    continue;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            };
+            if let Some(observed) = observation {
+                observed.flush(false);
+            }
             if failure.is_some() {
                 let _ = acknowledgements[worker_index].send(false);
                 continue;
@@ -1469,6 +1503,9 @@ fn scan_source_paths(
                     }
                     break;
                 }
+                if let Some(observed) = observation {
+                    observed.source_acknowledged();
+                }
                 next_path_index = next_path_index
                     .checked_add(1)
                     .ok_or_else(|| "source path index overflow".to_owned())?;
@@ -1478,6 +1515,9 @@ fn scan_source_paths(
             if handle.join().is_err() && failure.is_none() {
                 failure = Some("source analysis worker panicked".to_owned());
             }
+        }
+        if let Some(observed) = observation {
+            observed.flush(true);
         }
         if failure.is_none() && next_path_index != paths.len() {
             failure = Some("source analysis workers did not account for every path".to_owned());
@@ -1677,6 +1717,24 @@ pub(super) fn scan_project_for_unproven_authorities_cancellable_with_interpreter
     cancellation: &AtomicBool,
     interpreter: Option<&backend_engine::application::PythonInterpreterHostAdmission>,
 ) -> Result<IndexSnapshot, String> {
+    scan_project_for_unproven_authorities_cancellable_with_observation(
+        coordinate,
+        project,
+        reusable,
+        cancellation,
+        interpreter,
+        None,
+    )
+}
+
+pub(super) fn scan_project_for_unproven_authorities_cancellable_with_observation(
+    coordinate: &str,
+    project: [u8; 32],
+    reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
+    cancellation: &AtomicBool,
+    interpreter: Option<&backend_engine::application::PythonInterpreterHostAdmission>,
+    observation: Option<&crate::builtin::index_work_observation::IndexWorkObservation>,
+) -> Result<IndexSnapshot, String> {
     let source_policy = SourceAdmissionPolicy::from_environment()?;
     check_scan_cancellation(Some(cancellation))?;
     scan_project_with_configuration_policy_attempt(
@@ -1690,6 +1748,7 @@ pub(super) fn scan_project_for_unproven_authorities_cancellable_with_interpreter
         source_policy,
         interpreter,
         None,
+        observation,
     )
 }
 
@@ -1726,6 +1785,7 @@ fn scan_project_with_configuration_policy(
         source_policy,
         None,
         None,
+        None,
     )
 }
 
@@ -1740,6 +1800,7 @@ fn scan_project_with_configuration_policy_attempt(
     source_policy: SourceAdmissionPolicy,
     interpreter: Option<&backend_engine::application::PythonInterpreterHostAdmission>,
     captured_python: Option<PythonEnvironmentCapture>,
+    observation: Option<&crate::builtin::index_work_observation::IndexWorkObservation>,
 ) -> Result<IndexSnapshot, String> {
     check_scan_cancellation(cancellation)?;
     let requested_root = absolute_path_spelling(Path::new(coordinate))?;
@@ -1752,6 +1813,9 @@ fn scan_project_with_configuration_policy_attempt(
     let root_capability = ProjectRoot::open(&root)?;
     let frontends = frontends()?;
     let frontier_policy_allowed = discovery == source_selection_policy();
+    if let Some(observed) = observation {
+        observed.begin_source_attempt();
+    }
     let mut project_paths = project_paths_with_policy(
         &root,
         &root_capability,
@@ -1872,6 +1936,9 @@ fn scan_project_with_configuration_policy_attempt(
         .map(LanguageProfile::language)
         .collect::<BTreeSet<_>>();
     let has_go = relevant_languages.contains(&Language::Go);
+    if let Some(observed) = observation {
+        observed.phase("source-configuration-capture");
+    }
     let mut compiler_configuration = if capture_configuration_contents || has_go {
         read_compiler_configuration_snapshot(
             &root,
@@ -1980,7 +2047,14 @@ fn scan_project_with_configuration_policy_attempt(
     } else {
         None
     };
+    if let Some(observed) = observation {
+        observed.phase("source-budget-preflight");
+    }
     preflight_source_bytes(&root, &paths, source_policy, cancellation)?;
+    if let Some(observed) = observation {
+        observed.sources(paths.len());
+        observed.phase("structural-source-analysis");
+    }
     let mut scanned = scan_source_paths(
         &root,
         &root_capability,
@@ -1993,6 +2067,7 @@ fn scan_project_with_configuration_policy_attempt(
         source_delta.as_ref(),
         source_policy,
         cancellation,
+        observation,
     )?;
     let source_bytes_read = scanned
         .iter()
@@ -2025,10 +2100,14 @@ fn scan_project_with_configuration_policy_attempt(
                 source_policy,
                 interpreter,
                 python_environment.clone(),
+                observation,
             )?;
             full.source_bytes_read = full.source_bytes_read.saturating_add(source_bytes_read);
             return Ok(full);
         }
+    }
+    if let Some(observed) = observation {
+        observed.phase("source-facts-assembly-and-final-fence");
     }
     scanned.sort_by(|left, right| left.relative.cmp(&right.relative));
 
@@ -4741,6 +4820,7 @@ mod tests {
             source_policy,
             None,
             None,
+            None,
         )
     }
 
@@ -7240,3 +7320,121 @@ mod compiler_workspace_snapshot_tests {
 #[cfg(all(test, unix))]
 #[path = "ingest/path_identity_tests.rs"]
 mod path_identity_tests;
+
+#[cfg(all(test, unix))]
+mod work_observation_tests {
+    use super::*;
+    use crate::builtin::index_work_observation::IndexWorkObservation;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    fn ticket(id: u64) -> backend_library::IndexJobTicket {
+        backend_library::IndexJobTicket::new(
+            std::num::NonZeroU64::new(id).expect("nonzero"),
+            [7; 16],
+            backend_library::PackageReference::parse("/observed-project".to_owned())
+                .expect("package"),
+        )
+    }
+
+    #[test]
+    fn held_source_is_observed_before_cancelled_scan_joins_and_exact_retry_finishes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let project = crate::test_support::private_temp_dir("observed-real-source")?;
+        let workspace = crate::test_support::private_temp_dir("observed-real-owner")?;
+        fs::write(
+            project.path().join("lib.rs"),
+            b"pub fn ready() -> u8 { 7 }\n",
+        )?;
+        let root = project.path().to_path_buf();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let observed =
+            IndexWorkObservation::for_test(workspace.path(), ticket(1), Arc::clone(&cancelled));
+        let (entered, entering) = mpsc::sync_channel(1);
+        let (release, held) = mpsc::sync_channel(1);
+        let held = Mutex::new(held);
+        observed.hold_source_for_test(Arc::new(move || {
+            entered.send(()).expect("announce source entry");
+            held.lock()
+                .expect("held source")
+                .recv()
+                .expect("release source");
+        }));
+        let worker_observed = Arc::clone(&observed);
+        let worker_cancelled = Arc::clone(&cancelled);
+        let first = thread::spawn(move || {
+            scan_project_for_unproven_authorities_cancellable_with_observation(
+                root.to_str().expect("UTF-8 test root"),
+                [8; 32],
+                &BTreeMap::new(),
+                &worker_cancelled,
+                None,
+                Some(&worker_observed),
+            )
+        });
+        entering.recv_timeout(Duration::from_secs(3))?;
+        let path = workspace.path().join("index-work-observation-v1.json");
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            let value = fs::read(&path)
+                .ok()
+                .and_then(|raw| serde_json::from_slice::<serde_json::Value>(&raw).ok());
+            if value.as_ref().is_some_and(|v| {
+                v["phase"] == "structural-source-analysis" && v["workers"][0]["source_ordinal"] == 1
+            }) {
+                let value = value.expect("observed");
+                assert_eq!(value["source_results_finished"], 0);
+                assert_eq!(value["source_results_acknowledged"], 0);
+                assert_eq!(value["terminal_receipt"], false);
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "existing scan worker must publish while one parser entry is held"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        cancelled.store(true, Ordering::Release);
+        assert!(
+            !first.is_finished(),
+            "cancel terminal cannot precede this held source worker"
+        );
+        release.send(())?;
+        let first = first
+            .join()
+            .map_err(|_| std::io::Error::other("scan panicked"))?;
+        match first {
+            Err(error) => assert!(error.contains("cancel")),
+            Ok(_) => panic!("cancelled source was admitted"),
+        }
+        let second_cancelled = Arc::new(AtomicBool::new(false));
+        let second_observed = IndexWorkObservation::for_test(
+            workspace.path(),
+            ticket(2),
+            Arc::clone(&second_cancelled),
+        );
+        let second = scan_project_for_unproven_authorities_cancellable_with_observation(
+            project.path().to_str().expect("UTF-8 test root"),
+            [8; 32],
+            &BTreeMap::new(),
+            &second_cancelled,
+            None,
+            Some(&second_observed),
+        )
+        .map_err(std::io::Error::other)?;
+        assert_eq!(second.files.len(), 1);
+        assert_eq!(
+            second.files[0].1.file_fields().expect("source file").path,
+            "lib.rs"
+        );
+        assert_eq!(
+            second.source_bytes_read,
+            b"pub fn ready() -> u8 { 7 }\n".len()
+        );
+        let value: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+        assert_eq!(value["ticket"], serde_json::to_value(ticket(2))?);
+        assert_eq!(value["source_results_acknowledged"], 1);
+        assert_eq!(value["cancelled"], false);
+        Ok(())
+    }
+}

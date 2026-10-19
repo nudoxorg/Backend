@@ -43,6 +43,7 @@ pub(super) struct PublicationWork {
     requested_reference: backend_library::PackageReference,
     operation_key: Option<backend_library::IndexOperationKey>,
     cancellation: Arc<AtomicBool>,
+    source_observation: Option<Arc<crate::builtin::index_work_observation::IndexWorkObservation>>,
     staged: Option<PreparedBuiltinIntent>,
     candidate: Option<PreparedWorkspaceCandidate>,
     candidate_snapshot: Option<WorkspaceSnapshot>,
@@ -239,6 +240,10 @@ impl PublicationWork {
         operation_key: Option<backend_library::IndexOperationKey>,
         cancellation: Arc<AtomicBool>,
     ) -> Self {
+        let source_observation = match &preparation {
+            Preparation::Source { scan, .. } => scan.work.observation.clone(),
+            _ => None,
+        };
         let source_attempts = match &preparation {
             Preparation::Finalize(job) => job.pending_attempts(),
             _ => Vec::new(),
@@ -266,6 +271,7 @@ impl PublicationWork {
             requested_reference,
             operation_key,
             cancellation,
+            source_observation,
             staged: None,
             candidate: None,
             candidate_snapshot: None,
@@ -404,6 +410,9 @@ impl PublicationWork {
                     return Ok(());
                 }
                 Preparation::Source { scan, route } => {
+                    if let Some(progress) = &self.source_observation {
+                        progress.phase("source-records-and-profile-admission");
+                    }
                     #[cfg(test)]
                     let source_hook = &mut self.test_hook;
                     match super::super::index::prepare_source_scan(
@@ -536,6 +545,9 @@ impl PublicationWork {
                 ));
             }
         }
+        if let Some(progress) = &self.source_observation {
+            progress.phase("stage-intent");
+        }
         #[cfg(test)]
         self.observed.phase("stage-intent");
         let staged = prepare_builtin_intent_at_snapshot(
@@ -547,6 +559,9 @@ impl PublicationWork {
                 .map(|f| f.canonical_root()),
             Arc::clone(&self.cancellation),
         )?;
+        if let Some(progress) = &self.source_observation {
+            progress.phase("prepare-workspace");
+        }
         #[cfg(test)]
         self.observed.phase("prepare-workspace");
         let candidate = {
@@ -567,6 +582,9 @@ impl PublicationWork {
         let Head::Writer(writer) = &mut self.head else {
             unreachable!("prepared original writer")
         };
+        if let Some(progress) = &self.source_observation {
+            progress.phase("open-candidate");
+        }
         #[cfg(test)]
         self.observed.phase("open-candidate");
         let snapshot = writer
@@ -604,6 +622,9 @@ impl PublicationWork {
             .authority()
             .capture_image_loader()?;
         self.generations.install_selected_loader(loader);
+        if let Some(progress) = &self.source_observation {
+            progress.phase("prepare-view");
+        }
         #[cfg(test)]
         self.observed.phase("prepare-view");
         #[cfg(test)]
@@ -633,6 +654,9 @@ impl PublicationWork {
             workspace_root: snapshot.root(),
             source_root: view.view.basis().root,
         };
+        if let Some(progress) = &self.source_observation {
+            progress.phase("prepare-read-head");
+        }
         #[cfg(test)]
         self.observed.phase("prepare-read-head");
         writer
@@ -671,6 +695,7 @@ impl PublicationWork {
             let test_hook = &mut self.test_hook;
             #[cfg(test)]
             let observed = &self.observed;
+            let source_observation = self.source_observation.clone();
             let journal = self
                 .journal
                 .as_mut()
@@ -719,7 +744,7 @@ impl PublicationWork {
                         }
                     }
                     select_head(head, candidate, events, grant_accepted,
-                        #[cfg(test)] test_hook, cancellation, #[cfg(test)] observed)
+                        #[cfg(test)] test_hook, cancellation, source_observation.as_deref(), #[cfg(test)] observed)
                 }).map_err(|e| if busy { FinishAddError::PublicationBusy } else { e.into() })?;
             self.semantic_committed = true;
             #[cfg(test)]
@@ -731,6 +756,9 @@ impl PublicationWork {
             .expect("exact candidate snapshot");
         let view = self.view.as_ref().expect("exact prepared view");
         if !self.projected {
+            if let Some(progress) = &self.source_observation {
+                progress.phase("project-sql");
+            }
             #[cfg(test)]
             self.observed.phase("project-sql");
             let projection = self
@@ -824,6 +852,9 @@ impl PublicationWork {
             self.roots = Some(view.outcome.roots.clone());
             self.outcome = Some(outcome.clone());
             return Ok(());
+        }
+        if let Some(progress) = &self.source_observation {
+            progress.phase("publish-receipt");
         }
         #[cfg(test)]
         self.observed.phase("publish-receipt");
@@ -1360,6 +1391,7 @@ fn select_head(
     grant_accepted: &mut bool,
     #[cfg(test)] test_hook: &mut Option<TestHook>,
     cancellation: &Arc<AtomicBool>,
+    source_observation: Option<&crate::builtin::index_work_observation::IndexWorkObservation>,
     #[cfg(test)] observed: &TestObservation,
 ) -> Result<(), BuiltinModelError> {
     if matches!(head, Head::Published(_)) {
@@ -1372,6 +1404,9 @@ fn select_head(
             })?;
             let claim = private.claim();
             let (reply, receive) = std::sync::mpsc::sync_channel(1);
+            if let Some(progress) = source_observation {
+                progress.phase("await-owner-grant");
+            }
             #[cfg(test)]
             observed.phase("await-owner-grant");
             events
@@ -1409,6 +1444,9 @@ fn select_head(
             let Head::Writer(writer) = std::mem::replace(head, Head::Moving) else {
                 unreachable!()
             };
+            if let Some(progress) = source_observation {
+                progress.phase("physical-publish");
+            }
             #[cfg(test)]
             observed.phase("physical-publish");
             writer.publish(private, grant)
@@ -1473,6 +1511,9 @@ impl PublicationWorker {
                 };
                 loop {
                     let disposition = work.step(&events);
+                    if let Some(progress) = &work.source_observation {
+                        progress.phase("await-owner-settlement-or-explicit-retry");
+                    }
                     if events
                         .send(Event::Complete(Completion { work, disposition }))
                         .is_err()
@@ -1482,6 +1523,9 @@ impl PublicationWorker {
                     match settlements.recv() {
                         Ok(Settlement::Retry(returned)) => work = returned,
                         Ok(Settlement::Retire(returned, retired)) => {
+                            if let Some(progress) = &returned.source_observation {
+                                progress.phase("retire-original-payloads");
+                            }
                             #[cfg(test)]
                             returned.observed.phase("retire-original-payloads");
                             drop((returned, retired));
