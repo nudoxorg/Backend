@@ -10135,7 +10135,8 @@ mod tests {
         let (adapter, daemon) = fixture.parts();
         install_transition_job(adapter);
         let own_key = backend_library::IndexOperationKey::from_bytes([95; 32]).expect("own key");
-        let other_key = backend_library::IndexOperationKey::from_bytes([96; 32]).expect("other key");
+        let other_key =
+            backend_library::IndexOperationKey::from_bytes([96; 32]).expect("other key");
         let package = adapter
             .indexing
             .as_ref()
@@ -10156,6 +10157,9 @@ mod tests {
             .workspace_path()
             .expect("workspace")
             .join("index-operations-v1.turso");
+        // The worker's real Pending completion is the only progress below;
+        // background readiness notifications cannot authorize an implicit retry.
+        adapter.journal_readiness.close();
         let mut foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
         foreign
             .accept(other_key, package, CompileExecutionIntent::Interactive)
@@ -10172,13 +10176,71 @@ mod tests {
             profile_refusals: Box::new([]),
             partial_plan: None,
         };
+        let captured = owner_cursor(daemon);
         let mut legacy = None;
         assert!(
             adapter
                 .finish_prepared_index_selection(daemon, &mut indexing, candidate, &mut legacy)
                 .is_none()
         );
-        assert!(matches!(indexing.work, IndexJobWork::Publishing { .. }));
+        assert!(matches!(
+            indexing.work,
+            IndexJobWork::PublicationWorker {
+                worker: Some(_),
+                ..
+            }
+        ));
+        adapter.indexing = Some(indexing);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !adapter.indexing.as_ref().is_some_and(|job| {
+            matches!(
+                &job.work,
+                IndexJobWork::PublicationWorker {
+                    completion: Some(index_publication_worker::Completion {
+                        disposition: index_publication_worker::Disposition::Pending(_),
+                        ..
+                    }),
+                    blocked: Some(_),
+                    ..
+                }
+            )
+        }) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "actual worker must park behind foreign Prepared"
+            );
+            assert!(adapter.poll_deferred(daemon).is_empty());
+            std::thread::yield_now();
+        }
+        let parked_candidate = |adapter: &CommandAdapter| {
+            let IndexJobWork::PublicationWorker {
+                worker: Some(worker),
+                completion: Some(done),
+                blocked: Some(_),
+            } = &adapter.indexing.as_ref().expect("retained job").work
+            else {
+                panic!("retain the original blocked worker and completion");
+            };
+            assert!(matches!(
+                done.disposition,
+                index_publication_worker::Disposition::Pending(_)
+            ));
+            assert!(
+                matches!(done.work.head, index_publication_worker::Head::Refresh(_)),
+                "keep the actual prepared read-head candidate"
+            );
+            assert!(
+                !worker.is_finished(),
+                "original worker waits for explicit settlement"
+            );
+            std::ptr::from_ref(&*done.work)
+        };
+        let retained = parked_candidate(adapter);
+        assert_eq!(
+            owner_cursor(daemon),
+            captured,
+            "foreign Prepared cannot select the candidate"
+        );
         assert!(matches!(
             adapter
                 .index_operations
@@ -10189,27 +10251,28 @@ mod tests {
                 ..
             }))
         ));
-        adapter.indexing = Some(indexing);
         assert!(
             !adapter.has_inflight_index_work(),
             "a parked Prepared-slot retry is not worker activity"
         );
-        adapter.journal_readiness.close();
         // A saturated event counter must still permit an explicit owner
         // retry. Quiet polls below remain unable to retry the same candidate.
         adapter.journal_readiness.exhaust_notifications();
         if let Some(IndexJob {
-            work: IndexJobWork::Publishing {
-                blocked_sequence, ..
-            },
+            work: IndexJobWork::PublicationWorker { blocked, .. },
             ..
         }) = adapter.indexing.as_mut()
         {
-            *blocked_sequence = adapter.journal_readiness.retry_token();
+            *blocked = Some(adapter.journal_readiness.retry_token());
         }
         let reads = adapter.index_operations.read_query_count();
         for _ in 0..1000 {
             assert!(adapter.poll_deferred(daemon).is_empty());
+            assert_eq!(
+                parked_candidate(adapter),
+                retained,
+                "no quiet retry or candidate replacement"
+            );
         }
         assert_eq!(
             adapter.index_operations.read_query_count(),
@@ -10227,11 +10290,32 @@ mod tests {
                 backend_library::ProductText::from_static("foreign retired"),
             )
             .expect("release prepared slot");
+        // Releasing the foreign marker alone must not resume the parked work.
+        assert!(adapter.poll_deferred(daemon).is_empty());
+        assert_eq!(parked_candidate(adapter), retained);
+        assert_eq!(adapter.index_operations.read_query_count(), reads);
+        assert!(matches!(
+            foreign
+                .entry(own_key)
+                .expect("still accepted before explicit retry"),
+            Some(JournalEntry::Retained(StoredOperation {
+                state: StoredOperationState::Accepted,
+                ..
+            }))
+        ));
+        assert_eq!(owner_cursor(daemon), captured);
         adapter.journal_readiness.refresh();
-        adapter.poll_deferred(daemon);
+        while adapter.indexing.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "same candidate must settle and retire after explicit retry"
+            );
+            assert!(adapter.poll_deferred(daemon).is_empty());
+            std::thread::yield_now();
+        }
         assert!(
-            adapter.indexing.is_none(),
-            "same candidate resumes after explicit change"
+            !adapter.has_inflight_index_work(),
+            "original publication worker joined"
         );
         assert!(matches!(
             adapter.index_operations.entry(own_key).expect("own result"),
@@ -10288,6 +10372,7 @@ mod tests {
             .expect("independent transaction acquired");
         let mut indexing = adapter.indexing.take().expect("job");
         indexing.operation_key = Some(operation);
+        let captured = owner_cursor(daemon);
         let started = std::time::Instant::now();
         let outcome = adapter.finish_prepared_index_selection(
             daemon,
@@ -10301,19 +10386,74 @@ mod tests {
             },
             &mut None,
         );
-        // Keep the competing Immediate transaction until the bounded driver
-        // timeout has returned, rather than racing a short sleep against it.
-        release.send(()).expect("release writer");
-        holder.join().expect("writer retired");
-        assert!(
-            started.elapsed() >= std::time::Duration::from_millis(200),
-            "exercise the bounded database busy timeout"
-        );
         assert!(
             outcome.is_none(),
             "retryable SQL contention must retain the candidate"
         );
-        assert!(matches!(indexing.work, IndexJobWork::Publishing { .. }));
+        assert!(matches!(
+            indexing.work,
+            IndexJobWork::PublicationWorker {
+                worker: Some(_),
+                ..
+            }
+        ));
+        adapter.indexing = Some(indexing);
+        let deadline = started + Duration::from_secs(10);
+        // Hold the real Immediate transaction until the actual worker has
+        // returned its bounded busy result, not merely until it was spawned.
+        while !adapter.indexing.as_ref().is_some_and(|job| {
+            matches!(
+                &job.work,
+                IndexJobWork::PublicationWorker {
+                    completion: Some(index_publication_worker::Completion {
+                        disposition: index_publication_worker::Disposition::Pending(_),
+                        ..
+                    }),
+                    blocked: Some(_),
+                    ..
+                }
+            )
+        }) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "actual worker must observe held SQL contention"
+            );
+            assert!(adapter.poll_deferred(daemon).is_empty());
+            std::thread::yield_now();
+        }
+        assert!(
+            started.elapsed() >= Duration::from_millis(200),
+            "the actual publication worker exercised the bounded database busy timeout"
+        );
+        let parked_candidate = |adapter: &CommandAdapter| {
+            let IndexJobWork::PublicationWorker {
+                worker: Some(worker),
+                completion: Some(done),
+                blocked: Some(_),
+            } = &adapter.indexing.as_ref().expect("retained job").work
+            else {
+                panic!("retain original SQL-busy worker and completion");
+            };
+            assert!(matches!(
+                done.disposition,
+                index_publication_worker::Disposition::Pending(_)
+            ));
+            assert!(
+                matches!(done.work.head, index_publication_worker::Head::Refresh(_)),
+                "retain the actual prepared read-head candidate"
+            );
+            assert!(
+                !worker.is_finished(),
+                "original worker waits for explicit retry"
+            );
+            std::ptr::from_ref(&*done.work)
+        };
+        let retained = parked_candidate(adapter);
+        assert!(
+            !adapter.has_inflight_index_work(),
+            "parked SQL busy is not active work"
+        );
+        assert_eq!(owner_cursor(daemon), captured);
         assert!(matches!(
             adapter
                 .index_operations
@@ -10324,22 +10464,50 @@ mod tests {
                 ..
             }))
         ));
-        adapter.indexing = Some(indexing);
-        adapter.journal_readiness.close();
         let reads = adapter.index_operations.read_query_count();
         for _ in 0..1000 {
             assert!(adapter.poll_deferred(daemon).is_empty());
+            assert_eq!(
+                parked_candidate(adapter),
+                retained,
+                "no quiet worker retry or candidate replacement"
+            );
         }
         assert_eq!(
             adapter.index_operations.read_query_count(),
             reads,
             "database busy does not hot retry"
         );
+        release
+            .send(())
+            .expect("release writer after actual bounded busy result");
+        holder.join().expect("independent writer retired");
+        // Lock release alone cannot authorize an implicit retry.
+        assert!(adapter.poll_deferred(daemon).is_empty());
+        assert_eq!(parked_candidate(adapter), retained);
+        assert_eq!(adapter.index_operations.read_query_count(), reads);
+        assert_eq!(owner_cursor(daemon), captured);
+        assert!(matches!(
+            foreign
+                .entry(operation)
+                .expect("accepted until explicit retry"),
+            Some(JournalEntry::Retained(StoredOperation {
+                state: StoredOperationState::Accepted,
+                ..
+            }))
+        ));
         adapter.journal_readiness.refresh();
-        adapter.poll_deferred(daemon);
+        while adapter.indexing.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "same retained candidate must settle and retire after explicit retry"
+            );
+            assert!(adapter.poll_deferred(daemon).is_empty());
+            std::thread::yield_now();
+        }
         assert!(
-            adapter.indexing.is_none(),
-            "same retained candidate resumes after release and explicit retry"
+            !adapter.has_inflight_index_work(),
+            "publication worker joined"
         );
         assert!(matches!(
             adapter
