@@ -7097,3 +7097,7 @@ mod compiler_workspace_snapshot_tests {
         Ok(())
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "ingest/path_identity_tests.rs"]
+mod path_identity_tests;
