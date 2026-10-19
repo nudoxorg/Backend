@@ -39,6 +39,7 @@ pub(super) fn body(
         .current_value()
         .and_then(|model| model.indexed.known());
     let mut leaves = crate::shell::onboard::library::notes(snapshot, ctx, cx);
+    leaves.extend(crate::shell::onboard::library::saved_workspaces(ctx, cx));
     if let Some(leaf) = resume(snapshot, owner_serving, ctx, cx) {
         leaves.push(leaf);
     }

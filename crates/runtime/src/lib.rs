@@ -731,11 +731,23 @@ fn normalize_identity(path: &Path) -> PathBuf {
     }
 }
 
-/// Returns a stable per-project data path beneath the supplied application
-/// state root. The project path is hashed after normalization so the directory
-/// name does not disclose checkout paths and distinct projects do not share
-/// indexes or authority databases.
-fn default_workspace_path(project: &Path, state_root: &Path) -> PathBuf {
+/// Returns the existing default project-workspace parent without creating state.
+/// This captures the same platform state location used by CLI and MCP discovery.
+/// Explicit workspace and endpoint overrides are not consulted.
+///
+/// # Errors
+/// Returns the platform profile discovery error when no user state root exists.
+pub fn default_project_workspaces_directory() -> Result<PathBuf, RuntimeError> {
+    Ok(application_state_root()?
+        .path()
+        .join(APPLICATION_DIRECTORY)
+        .join(PROJECTS_DIRECTORY))
+}
+
+/// Derives one project's default workspace beneath an already selected parent.
+/// This is a path identity calculation, not authority or publication evidence.
+#[must_use]
+pub fn default_project_workspace_in(project: &Path, projects: &Path) -> PathBuf {
     let project = normalize_identity(project);
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"backend.runtime.project-state.v1\0");
@@ -746,10 +758,14 @@ fn default_workspace_path(project: &Path, state_root: &Path) -> PathBuf {
         use std::fmt::Write as _;
         let _ = write!(key, "{byte:02x}");
     }
-    state_root
-        .join(APPLICATION_DIRECTORY)
-        .join(PROJECTS_DIRECTORY)
-        .join(key)
+    projects.join(key)
+}
+
+fn default_workspace_path(project: &Path, state_root: &Path) -> PathBuf {
+    default_project_workspace_in(
+        project,
+        &state_root.join(APPLICATION_DIRECTORY).join(PROJECTS_DIRECTORY),
+    )
 }
 
 /// Selects the operating system's per-user durable state directory without
@@ -1869,6 +1885,22 @@ mod tests {
             "creating the workspace must not move its endpoint"
         );
         fs::remove_dir_all(root).expect("remove runtime fixture");
+    }
+
+    #[test]
+    fn saved_workspace_parent_uses_the_same_platform_state_and_project_hash() {
+        let state = application_state_root().expect("platform state");
+        let parent = default_project_workspaces_directory().expect("saved workspace parent");
+        assert_eq!(
+            parent,
+            state.path().join(APPLICATION_DIRECTORY).join(PROJECTS_DIRECTORY)
+        );
+        let project = test_directory("saved-workspace-hash-only");
+        assert_eq!(
+            default_project_workspace_in(&project, &parent),
+            default_workspace_path(&project, &state.path()),
+            "GUI candidates must use the CLI/MCP state root and unchanged default hash"
+        );
     }
 
     #[test]

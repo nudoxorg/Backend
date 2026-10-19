@@ -1146,3 +1146,51 @@ mod tests {
         assert_eq!(ago(secs(3_600 + 5 * 60)), "1 h 5 min ago");
     }
 }
+
+/// Opens an existing CLI/MCP default project index without adding/reindexing it.
+pub(crate) fn saved_workspaces(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Vec<Leaf> {
+    use crate::host::saved_workspaces as saved;
+    use crate::runtime::offload::Answer;
+    if saved::explicitly_configured() {
+        return Vec::new();
+    }
+    let measure = ctx.measure;
+    let palette = ctx.palette;
+    let act: Act = Rc::new(move |_, cx| saved::choose(cx));
+    let action = ctx.target_local_action(act, cx);
+    let click = action.callback();
+    let id: SharedString = "open-indexed-project".into();
+    let label: SharedString = "Open indexed project…".into();
+    ctx.targets.push(Target {
+        id: id.clone(),
+        label: label.clone(),
+        action,
+        peek: None,
+        source: None,
+    });
+    let mut control = button(id.clone(), label, &measure)
+        .ghost()
+        .on_click(move |window, cx| click(window, cx));
+    if let Some(focus) = ctx.native_handle(&id, cx) {
+        control = control.focus_handle(focus);
+    }
+    let mut body = div().flex().flex_col().gap(measure.space(Space::Roomy))
+        .child(text(ty::SMALL, &measure, palette.ink2).child("Already indexed a project with the CLI or MCP?"))
+        .child(text(ty::SMALL, &measure, palette.ink3).child("Choose its folder to open the existing index in another window. This does not add or reindex it."))
+        .child(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control)));
+    if let Some(message) = saved::picker_status(cx) {
+        body = body.child(text(ty::SMALL, &measure, palette.ink3).child(ctx.say(message)));
+    }
+    if let Some(opening) = saved::opening(cx) {
+        let message = match opening {
+            Answer::Reading | Answer::Deferred => "Checking the existing project index…".to_owned(),
+            Answer::Ready(result) => match result.as_ref() {
+                Ok(_) => "Requested another window for the indexed project.".to_owned(),
+                Err(error) => format!("The existing index was not opened: {error}"),
+            },
+            Answer::Failed(error) => format!("The existing index was not opened: {error}"),
+        };
+        body = body.child(text(ty::SMALL, &measure, palette.ink3).child(ctx.say(message)));
+    }
+    vec![Leaf::new(body)]
+}

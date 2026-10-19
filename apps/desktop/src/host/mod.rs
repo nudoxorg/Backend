@@ -17,6 +17,7 @@ pub(crate) mod owner;
 mod observation;
 pub(crate) mod paths;
 pub(crate) mod registry;
+pub(crate) mod saved_workspaces;
 pub(crate) mod toolchain;
 #[cfg(test)]
 mod window_first_tests;
