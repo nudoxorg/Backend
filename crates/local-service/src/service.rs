@@ -48,6 +48,12 @@ where
     /// returns the reply bodies by ticket.
     fn poll(&mut self, daemon: &mut crate::Locald<M, V, A>) -> Vec<(u64, Result<Vec<u8>, String>)>;
 
+    /// Reports admitted background work for the listener's idle policy.
+    /// Parked durable retries without running work do not keep an owner live.
+    fn has_inflight_work(&self) -> bool {
+        false
+    }
+
     /// Releases one response registration without cancelling the accepted
     /// owner operation that produced it.
     fn abandon_reply(&mut self, _ticket: u64) {}
@@ -367,6 +373,12 @@ where
             .into_iter()
             .map(|(ticket, reply)| (ticket, reply.map_err(ProtocolError::CommandExecution)))
             .collect()
+    }
+
+    fn has_inflight_work(&self) -> bool {
+        self.deferred
+            .as_ref()
+            .is_some_and(|deferred| deferred.has_inflight_work())
     }
 
     fn abandon_deferred_reply(&mut self, ticket: u64) {
