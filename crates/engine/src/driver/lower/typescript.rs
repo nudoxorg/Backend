@@ -550,6 +550,9 @@ struct FactRegistry<'a, 'source> {
     decl_ends: &'a [u32],
     declaration_parts: &'a HashMap<u32, Vec<Span>>,
     name_starts: &'a [u32],
+    /// First current fact ordinal for each exact start. Built from this view's
+    /// immutable bounded slice, never a historical projector registration map.
+    name_start_index: HashMap<u32, u32>,
     name_ends: &'a [u32],
     fact_kinds: &'a [EntityKind],
     /// Exact TypeScript-symbol to same-file emitted-entity coordinate joins.
@@ -5200,7 +5203,17 @@ pub(crate) fn collect_with_tsz<'source, 'session>(
     facts.set_native_tsz_identity(program_identity, source_identity);
     macro_rules! lower_with_tsz_checker {
         ($checker:ident, $binder:ident, $bound_file:ident, $database:ident) => {{
+            let observe = |event: backend_frontend_typescript::TszProjectExecutionEvent<'_>| session.observe_projection(event);
+            // The enclosing native FileQuery already carries the exact file.
+            // Subpasses inherit that worker-local context without copying paths.
+            let analysis = backend_frontend_typescript::TszProjectExecutionSpan::with_observer(
+                &observe, backend_frontend_typescript::TszProjectExecutionPhase::FileQueryAnalysis, None,
+            );
             let build = |module: OxcModule<'_>| {
+                analysis.returned();
+                let structure = backend_frontend_typescript::TszProjectExecutionSpan::with_observer(
+                    &observe, backend_frontend_typescript::TszProjectExecutionPhase::FileQueryStructure, None,
+                );
                 let mut projector = Projector {
                     semantic: &module.semantic,
                     node_index: {
@@ -5246,6 +5259,10 @@ pub(crate) fn collect_with_tsz<'source, 'session>(
                     owner_ancestor: Vec::new(),
                 };
                 projector.run()?;
+                structure.returned();
+                let occurrences = backend_frontend_typescript::TszProjectExecutionSpan::with_observer(
+                    &observe, backend_frontend_typescript::TszProjectExecutionPhase::FileQueryOccurrences, None,
+                );
                 projector.pass_native_tsz_occurrences(
                     &mut *$checker,
                     $binder,
@@ -5254,7 +5271,13 @@ pub(crate) fn collect_with_tsz<'source, 'session>(
                     file_index,
                     program_identity,
                 )?;
-                projector.pass_native_tsz(&mut *$checker, $bound_file, $database, project)
+                occurrences.returned();
+                let types = backend_frontend_typescript::TszProjectExecutionSpan::with_observer(
+                    &observe, backend_frontend_typescript::TszProjectExecutionPhase::FileQueryTypes, None,
+                );
+                projector.pass_native_tsz(&mut *$checker, $bound_file, $database, project)?;
+                types.returned();
+                Ok::<(), TypeScriptCollectError>(())
             };
             if declaration_file {
                 with_analysis_declaration(profile, source, true, build)
@@ -6555,6 +6578,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         // Bound declaration rows are `Copy`; the loop body mutates the lane,
         // so the iteration set is copied out of the borrowed report first.
         let declarations: Vec<_> = checker.declarations().copied().collect();
+        let fact_len = u32::try_from(self.facts.len()).map_err(|_| lane_rejection())?;
         let registry = FactRegistry {
             source: self.source,
             tsz_project: None,
@@ -6563,10 +6587,11 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             decl_ends: &self.decl_ends,
             declaration_parts: &self.merged_declaration_parts,
             name_starts: &self.name_starts,
+            name_start_index: index_name_starts(&self.name_starts, fact_len),
             name_ends: &self.name_ends,
             fact_kinds: &self.fact_kinds,
             native_tsz_entities: None,
-            fact_len: u32::try_from(self.facts.len()).map_err(|_| lane_rejection())?,
+            fact_len,
         };
         for declaration in declarations {
             if declaration.origin != Origin::Computed {
@@ -7287,6 +7312,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             decl_ends: &self.decl_ends,
             declaration_parts: &self.merged_declaration_parts,
             name_starts: &self.name_starts,
+            name_start_index: index_name_starts(&self.name_starts, fact_len),
             name_ends: &self.name_ends,
             fact_kinds: &self.fact_kinds,
             native_tsz_entities: Some(&native_tsz_entities),
@@ -7363,6 +7389,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             return Ok(());
         };
         let narrowings: Vec<_> = checker.narrowings().copied().collect();
+        let fact_len = u32::try_from(self.facts.len()).map_err(|_| lane_rejection())?;
         let registry = FactRegistry {
             source: self.source,
             tsz_project: None,
@@ -7371,10 +7398,11 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             decl_ends: &self.decl_ends,
             declaration_parts: &self.merged_declaration_parts,
             name_starts: &self.name_starts,
+            name_start_index: index_name_starts(&self.name_starts, fact_len),
             name_ends: &self.name_ends,
             fact_kinds: &self.fact_kinds,
             native_tsz_entities: None,
-            fact_len: u32::try_from(self.facts.len()).map_err(|_| lane_rejection())?,
+            fact_len,
         };
         for narrowing in narrowings {
             let Some(tree) = narrowing.r#type else {
@@ -9995,17 +10023,25 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
     }
 }
 
+/// Captures the old scan's first-ordinal rule in one bounded pass. Include
+/// UNSET exactly as before; callers decide whether that start is meaningful.
+/// A short side lane has no implicit tail entries, and facts beyond fact_len
+/// cannot enter this computed-lowering view.
+fn index_name_starts(name_starts: &[u32], fact_len: u32) -> HashMap<u32, u32> {
+    let mut index = HashMap::new();
+    let bound = usize::try_from(fact_len).unwrap_or(usize::MAX);
+    for (ordinal, &start) in name_starts.iter().take(bound).enumerate() {
+        // The take bound proves ordinal < fact_len <= u32::MAX.
+        index.entry(start).or_insert(ordinal as u32);
+    }
+    index
+}
+
 impl<'a, 'source> FactRegistry<'a, 'source> {
     /// Resolves one source position to the fact whose binding name starts
     /// exactly there.
     fn fact_at_name_start(&self, start: u32) -> Option<u32> {
-        for ordinal in 0..self.fact_len {
-            let index = usize::try_from(ordinal).ok()?;
-            if self.name_starts.get(index) == Some(&start) {
-                return Some(ordinal);
-            }
-        }
-        None
+        self.name_start_index.get(&start).copied()
     }
 
     /// Resolves the first pushed fact whose exact binding-name bytes equal
@@ -13071,6 +13107,117 @@ describe('suite', () => {\n\
     }
 
     #[test]
+    fn native_tsz_query_projection_boundaries_preserve_output_and_cancellation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use backend_frontend_typescript::{
+            TszAuthorityError, TszExecutionCheckpoint, TszProjectExecutionEvent, TszProjectExecutionPhase as P,
+            TszProjectExecutionStop, TszProjectExecutionTransition as T,
+            TszProjectAuthority, TszFileInput, TszProjectOptions, TszCheckerOptions,
+            TszProjectSemanticOptions, TszEnvironmentFingerprint, TszProjectCheckerExecution,
+            TszProjectQuerySessionError,
+        };
+        use std::sync::{atomic::{AtomicBool, Ordering}, Mutex};
+        type Boundary = (P, T, Option<(usize, String)>);
+        struct Observe {
+            cancelled: AtomicBool,
+            arm: Option<P>,
+            events: Mutex<Vec<Boundary>>,
+        }
+        impl TszExecutionCheckpoint for Observe {
+            fn checkpoint(&self, _: u64) -> Result<(), TszProjectExecutionStop> {
+                if self.cancelled.load(Ordering::Acquire) {
+                    Err(TszProjectExecutionStop::Cancelled)
+                } else { Ok(()) }
+            }
+            fn observe(&self, event: TszProjectExecutionEvent<'_>) {
+                self.events.lock().unwrap().push((event.phase, event.transition,
+                    event.file.map(|file| (file.index, file.path.to_owned()))));
+                if event.transition == T::Entered && Some(event.phase) == self.arm {
+                    self.cancelled.store(true, Ordering::Release);
+                }
+            }
+        }
+        // A small real native program exercises both authored occurrences and
+        // computed types. It is not a reproduction of Paperless's dependencies.
+        fn canonical(facts: &FactSet<'_>, source: &str) -> Result<Vec<u8>, LaneError> {
+            let identity = backend_semantic::ir::SourceIdentity {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
+                byte_len: u32::try_from(source.len())?,
+            };
+            let recipe = CompileRecipeFact::derive(
+                LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                Stage::LowerIr, NativeTool::TypeScriptCompiler, identity.identity,
+                ContentId::<ToolchainDomain>::from_canonical_bytes(b"query-timing"),
+            );
+            let ir = facts.build_ir(recipe.profile, identity, recipe,
+                crate::driver::types::DeclarationScope::fixture())?;
+            let mut bytes = vec![0; backend_semantic::ir::full_semantic_image_len(&ir)
+                .map_err(|_| LaneError::Missing("canonical image size"))?];
+            backend_semantic::ir::encode_full_semantic_image(&ir, &mut bytes)
+                .map_err(|_| LaneError::Missing("canonical image encoding"))?;
+            Ok(bytes)
+        }
+        let source = "export const value: number = 1; export function read(): number { return value; }";
+        let phases = [P::FileQueryAnalysis, P::FileQueryStructure,
+            P::FileQueryOccurrences, P::FileQueryTypes];
+        let mut expected = None;
+        for arm in [None, None, Some(phases[0]), Some(phases[1]), Some(phases[2]), Some(phases[3])] {
+            let checkpoint = Observe { cancelled: AtomicBool::new(false), arm, events: Mutex::new(Vec::new()) };
+            let mut authority = TszProjectAuthority::new();
+            authority.update_with_checker_execution(vec![TszFileInput {
+                path: "src/query.ts".into(), source: source.into(),
+            }], TszProjectOptions {
+                checker: TszCheckerOptions { no_lib: true, ..TszCheckerOptions::default() },
+                semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+                program_diagnostics: Vec::new(), module_resolutions: Vec::new(), file_formats: Vec::new(),
+                environment: TszEnvironmentFingerprint::from_sha256([0x75; 32]),
+            }, &[], TszProjectCheckerExecution {
+                checkpoint: &checkpoint, workers: std::num::NonZeroUsize::MIN,
+            })?;
+            let project = authority.project().ok_or("missing checked program")?;
+            let session = project.checked_query_session(&checkpoint)?;
+            let index = session.file_index("src/query.ts")?;
+            let mut facts = FactSet::new();
+            let result = collect_with_tsz(TypeScriptSource::TypeScript, source.as_bytes(),
+                project, "src/query.ts", &session, &mut facts);
+            if arm.is_some() {
+                assert!(matches!(result, Err(TypeScriptCollectError::TszAuthority(
+                    TszAuthorityError::ProjectCheckerSession(
+                        TszProjectQuerySessionError::ExecutionStopped(TszProjectExecutionStop::Cancelled))))));
+                assert!(session.with_file_checker_and_types(index, |_, _, _, _| ()).is_err(),
+                    "a cancelled query never becomes reusable authority");
+            } else {
+                result.map_err(LaneError::from)?;
+                let actual = canonical(&facts, source)?;
+                if let Some(expected) = &expected { assert_eq!(&actual, expected); }
+                else { expected = Some(actual.clone()); }
+                let events = checkpoint.events.lock().unwrap();
+                let query = events.iter().position(|event| event.0 == P::FileQuery && event.1 == T::Entered).unwrap();
+                assert_eq!(events[query].2.as_ref(), Some(&(index, "src/query.ts".to_owned())));
+                let observed: Vec<_> = events[query..].iter().filter(|event| phases.contains(&event.0)).collect();
+                assert_eq!(observed.len(), 8, "one entered/returned pair per real pass");
+                for (pair, phase) in observed.chunks_exact(2).zip(phases) {
+                    assert_eq!((pair[0].0, pair[0].1), (phase, T::Entered));
+                    assert_eq!((pair[1].0, pair[1].1), (phase, T::Returned));
+                    assert_eq!(pair[0].2, None, "subpasses inherit the enclosing query's file");
+                    assert_eq!(pair[1].2, None);
+                }
+                let checked = events.iter().filter(|event| event.0 == P::FileCheck && event.1 == T::Entered).count();
+                drop(events);
+                let mut repeated = FactSet::new();
+                collect_with_tsz(TypeScriptSource::TypeScript, source.as_bytes(),
+                    project, "src/query.ts", &session, &mut repeated).map_err(LaneError::from)?;
+                assert_eq!(canonical(&repeated, source)?, actual,
+                    "measurement does not change retained-session canonical output");
+                assert_eq!(checkpoint.events.lock().unwrap().iter().filter(|event|
+                    event.0 == P::FileCheck && event.1 == T::Entered).count(), checked,
+                    "observing a second query does not recheck the source");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn native_tsz_preserves_reexport_owner_and_overload_implementation() -> Result<(), LaneError> {
         let implementation = "export class Service {\n  getHello(value: string): string;\n  getHello(value: number): string;\n  getHello(value: string | number): string { return ''; }\n}\n";
         let reexport = "export { Service as RenamedService } from './impl.js';\n";
@@ -15040,6 +15187,77 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
                 2,
                 "both real anonymous class fields survive: {name:?}"
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fact_name_start_index_matches_first_current_ordinal_for_every_bounded_view() {
+        let starts = [super::UNSET, 17, 5, 17, 0, super::UNSET, 91];
+        for fact_len in [0, 1, 3, 4, 7, 10] {
+            let index = super::index_name_starts(&starts, fact_len);
+            for start in [super::UNSET, 0, 5, 17, 91, 999] {
+                let previous_scan = (0..fact_len).find(|&ordinal|
+                    starts.get(ordinal as usize) == Some(&start));
+                assert_eq!(index.get(&start).copied(), previous_scan,
+                    "first ordinal for start={start}, fact_len={fact_len}");
+            }
+            assert!(index.len() <= starts.len().min(fact_len as usize));
+        }
+        let index = super::index_name_starts(&starts, 7);
+        assert_eq!(index.get(&17), Some(&1), "duplicate start keeps first fact");
+        assert_eq!(index.get(&super::UNSET), Some(&0), "UNSET is not silently reinterpreted");
+        assert!(!super::index_name_starts(&starts, 3).contains_key(&91),
+            "later side-lane data cannot enter an earlier view");
+
+        // A primary declaration adoption may replace a historical name start.
+        // Rebuild from the current immutable coordinates, not an earlier map.
+        let old = [12, 40];
+        let current = [31, 40];
+        assert_eq!(super::index_name_starts(&old, 2).get(&12), Some(&0));
+        let current_index = super::index_name_starts(&current, 2);
+        assert_eq!(current_index.get(&12), None);
+        assert_eq!(current_index.get(&31), Some(&0));
+    }
+
+    #[test]
+    fn native_tsz_indexed_name_joins_keep_each_authored_observed_type()
+    -> Result<(), LaneError> {
+        use backend_semantic::ir::{BuiltinType, ConcreteType};
+        let mut source = String::from("// exact UTF-8 name offsets: café\n");
+        for ordinal in 0..64 {
+            let declaration = if ordinal % 2 == 0 {
+                format!("export const entry_{ordinal}: number = {ordinal};\n")
+            } else {
+                format!("export const entry_{ordinal}: string = 'value';\n")
+            };
+            source.push_str(&declaration);
+        }
+        let ir = owned_tsz_ir(&source)?;
+        for ordinal in 0..64 {
+            let name = format!("entry_{ordinal}");
+            let matching: Vec<_> = ir.items().filter(|item| item.name() == name.as_bytes()).collect();
+            assert_eq!(matching.len(), 1, "one exact authored declaration for {name}");
+            let extension = ir.typescript_extension(matching[0].id())
+                .ok_or(LaneError::Missing("native observed extension"))?;
+            let observed = extension.observed.ok_or(LaneError::Missing("native observed type"))?;
+            let expected = if ordinal % 2 == 0 { BuiltinType::Number } else { BuiltinType::String };
+            assert_eq!(ir.ty(observed), Some(TypeExpr::Concrete(ConcreteType::Builtin(expected))),
+                "the index must not attach another declaration's native type to {name}");
+        }
+        // A fresh program with shifted exact source offsets must obtain the
+        // same owner/type joins without retaining the previous index.
+        let shifted = format!("// another source revision\n{source}");
+        let other = owned_tsz_ir(&shifted)?;
+        for ordinal in 0..64 {
+            let name = format!("entry_{ordinal}");
+            let item = other.items().find(|item| item.name() == name.as_bytes())
+                .ok_or(LaneError::Missing("shifted authored declaration"))?;
+            let observed = other.typescript_extension(item.id())
+                .and_then(|extension| extension.observed)
+                .ok_or(LaneError::Missing("shifted native observed type"))?;
+            let expected = if ordinal % 2 == 0 { BuiltinType::Number } else { BuiltinType::String };
+            assert_eq!(other.ty(observed), Some(TypeExpr::Concrete(ConcreteType::Builtin(expected))));
         }
         Ok(())
     }

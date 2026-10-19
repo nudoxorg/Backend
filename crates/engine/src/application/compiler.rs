@@ -5731,7 +5731,11 @@ const fn typescript_stop_phase(
         P::FileReset => S::FileReset,
         P::FileCheck => S::FileCheck,
         P::FilePostprocess => S::FilePostprocess,
-        P::FileQuery => S::FileQuery,
+        P::FileQuery
+        | P::FileQueryAnalysis
+        | P::FileQueryStructure
+        | P::FileQueryOccurrences
+        | P::FileQueryTypes => S::FileQuery,
         P::SourcePreparation
         | P::SourcePreparationFunctionDefs
         | P::SourcePreparationWarmDefinitions
@@ -8173,6 +8177,9 @@ mod typescript_work_gap_tests {
             P::SourcePreparationBoxedTypes] {
             assert_eq!(typescript_stop_phase(phase), TypeScriptStopPhase::SourcePreparation);
         }
+        for phase in [P::FileQueryAnalysis, P::FileQueryStructure, P::FileQueryOccurrences, P::FileQueryTypes] {
+            assert_eq!(typescript_stop_phase(phase), TypeScriptStopPhase::FileQuery);
+        }
         let terminal = |kind| CompilerTerminal::Compile {
             attempted: CompilerAttempt {
                 source: SourceAuthority { identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"x"), byte_len: 1 },
@@ -8191,6 +8198,7 @@ mod typescript_work_gap_tests {
             measurement: Some(StopMeasurement { elapsed: std::time::Duration::from_secs(6),
                 started: 3, completed: 2, merges: 1,
                 preparation: Some(PreparationTiming { durations: [Some(std::time::Duration::from_millis(1)); 7], active: Some(4) }),
+                query: None,
             }),
         };
         for (kind, expected) in [(TypeScriptAuthorityFailureKind::NativeProjectCheckDeadline, true),

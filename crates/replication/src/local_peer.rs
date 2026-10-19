@@ -483,3 +483,6 @@ fn owner_binding(
 #[cfg(target_os = "linux")]
 #[path = "local_peer/owner_upgrade.rs"]
 mod owner_upgrade;
+
+#[cfg(target_os = "linux")]
+pub use owner_upgrade::DefaultLocaldImage;
