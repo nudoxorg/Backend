@@ -1008,15 +1008,26 @@ def _admission_slots(
     unattributed = sorted(set(unattributed))
 
     # Every live Cargo PID consumes one slot, even if nested under another
-    # Cargo process. Non-Cargo compiler/runtime PGIDs always consume at least
-    # one residual slot; Cargo PGIDs need one only for unproved members.
-    residual_slots = 1 if (unattributed or not cargo) else 0
+    # Cargo process. A non-Cargo PGID containing rustc processes has no
+    # verified Cargo job limit or ancestry owner, so count each rustc
+    # independently. If other active members share that PGID, retain one
+    # additional residual slot for that unclassified work. Runtime-only and
+    # other non-rustc groups continue to consume one residual slot per PGID.
+    rustc_members = [
+        member for member in members
+        if member.compiler_candidate
+        or (member.executable is not None and _is_rustc_executable(member.executable))
+    ]
+    residual_slots = (
+        1 if unattributed else 0
+    ) if cargo else max(1, len(rustc_members)) + int(bool(rustc_members) and len(members) > len(rustc_members))
     return {
-        "admission_slot_count": len(cargo) + residual_slots if cargo else 1,
+        "admission_slot_count": len(cargo) + residual_slots if cargo else residual_slots,
         "admission_slot_provenance": {
             "cargo_root_pids": root_pids,
             "residual_slot_count": residual_slots,
             "residual_member_pids": unattributed if cargo else sorted({member.pid for member in members}),
+            "rustc_member_pids": sorted(member.pid for member in rustc_members),
             "residual_reason": (
                 "unattributed-active-members" if cargo and unattributed
                 else "non-cargo-process-group" if not cargo
