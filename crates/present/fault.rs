@@ -1264,7 +1264,11 @@ impl Fault {
             ),
             ClientError::OwnerUpdate { found, supported, detail } => (
                 FaultSlug::Protocol, CauseSlug::Unproven,
-                format!("NuDox owner update (version {found} → {supported}): {detail}"), Affordance::Retry,
+                if found == supported {
+                    format!("NuDox owner build update: {detail}")
+                } else {
+                    format!("NuDox owner update (version {found} → {supported}): {detail}")
+                }, Affordance::Retry,
             ),
             ClientError::Protocol(detail) => (
                 FaultSlug::Protocol,
@@ -1402,4 +1406,31 @@ fn lane_sentence(lane: Lane, reason: Reason) -> String {
 
 fn revision_tag(revision: ViewRevision) -> KeyTag {
     KeyTag::from_key(revision.as_bytes())
+}
+
+#[cfg(test)]
+mod owner_image_update_tests {
+    use super::*;
+    #[test]
+    fn owner_image_mismatch_keeps_actionable_fault_without_wire_version_fiction() {
+        let build = Fault::from_client_error(
+            &ClientError::OwnerUpdate {
+                found: 36,
+                supported: 36,
+                detail: "installed default owner image changed; no command was submitted".into(),
+            },
+            Operand::Whole,
+        );
+        assert!(build.cause().sentence().contains("owner build update"));
+        assert!(!build.cause().sentence().contains("version 36 → 36"));
+        let wire = Fault::from_client_error(
+            &ClientError::OwnerUpdate {
+                found: 35,
+                supported: 36,
+                detail: "old wire owner".into(),
+            },
+            Operand::Whole,
+        );
+        assert!(wire.cause().sentence().contains("version 35 → 36"));
+    }
 }

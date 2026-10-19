@@ -348,7 +348,20 @@ impl fmt::Display for ClientError {
                 formatter.write_str("remote index exceeded the bounded client request deadline")
             }
             Self::RequestCancelled(reason) => write!(formatter, "{reason}"),
-            Self::OwnerUpdate { found, supported, detail } => write!(formatter, "NuDox owner update (version {found} → {supported}): {detail}"),
+            Self::OwnerUpdate {
+                found,
+                supported,
+                detail,
+            } => {
+                if found == supported {
+                    write!(formatter, "NuDox owner build update: {detail}")
+                } else {
+                    write!(
+                        formatter,
+                        "NuDox owner update (version {found} → {supported}): {detail}"
+                    )
+                }
+            }
             Self::Protocol(message) => write!(formatter, "protocol: {message}"),
             Self::Transport(error) => write!(formatter, "transport: {error}"),
             Self::ResponseTooLarge { .. } => {

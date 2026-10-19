@@ -136,12 +136,135 @@ fn initializer_lease(parent: &Path) -> io::Result<File> {
     }
     Ok(file)
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ImageStat {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    nlink: u64,
+    mtime: i64,
+    mtime_nsec: i64,
+    ctime: i64,
+    ctime_nsec: i64,
+}
+impl ImageStat {
+    fn of(meta: &std::fs::Metadata) -> Self {
+        Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            len: meta.len(),
+            mode: meta.mode(),
+            uid: meta.uid(),
+            gid: meta.gid(),
+            nlink: meta.nlink(),
+            mtime: meta.mtime(),
+            mtime_nsec: meta.mtime_nsec(),
+            ctime: meta.ctime(),
+            ctime_nsec: meta.ctime_nsec(),
+        }
+    }
+}
+fn locald_image_name(path: &Path, nlink: u64) -> bool {
+    let path = if nlink == 0 {
+        let Some(bytes) = path.as_os_str().as_bytes().strip_suffix(b" (deleted)") else {
+            return false;
+        };
+        Path::new(std::ffi::OsStr::from_bytes(bytes))
+    } else {
+        path
+    };
+    path.is_absolute()
+        && path
+            .file_name()
+            .is_some_and(|name| name == "backend-locald")
+}
+fn executable_metadata(meta: &std::fs::Metadata, uid: u32) -> bool {
+    meta.is_file()
+        && [0, uid].contains(&meta.uid())
+        && meta.mode() & 0o022 == 0
+        && meta.mode() & 0o111 != 0
+        && meta.mode() & 0o6000 == 0
+}
+
+/// Held, named default ELF observation for one bounded owner-image handoff.
+/// This is not authority to signal a peer; the complete automatic-owner proof is separate.
+#[derive(Debug)]
+pub struct DefaultLocaldImage {
+    selected_path: PathBuf,
+    path: PathBuf,
+    file: File,
+    identity: ImageStat,
+}
+impl DefaultLocaldImage {
+    /// Rechecks the held and named complete image identities without image-sized reads.
+    #[must_use]
+    pub fn is_current(&self) -> bool {
+        std::fs::canonicalize(&self.selected_path).ok().as_ref() == Some(&self.path)
+            && self
+                .file
+                .metadata()
+                .ok()
+                .zip(std::fs::symlink_metadata(&self.path).ok())
+                .is_some_and(|(held, named)| {
+                    named.is_file()
+                        && ImageStat::of(&held) == self.identity
+                        && ImageStat::of(&named) == self.identity
+                })
+    }
+
+    /// Compares the authenticated kernel peer's actual ELF with this held default image.
+    /// Only bounded metadata and the ELF magic are read; equality grants no retirement right.
+    ///
+    /// # Errors
+    /// Refuses changed candidates, peer credentials, image names, modes or racing observations.
+    pub fn matches_peer(
+        &self,
+        peer: &AuthenticatedLocalPeer,
+        stream: &LocalStream,
+    ) -> io::Result<bool> {
+        if !self.is_current()
+            || AuthenticatedLocalPeer::authenticate(stream, &peer.endpoint)
+                .as_ref()
+                .ok()
+                != Some(peer)
+        {
+            return Err(refused());
+        }
+        let credentials = rustix::net::sockopt::socket_peercred(stream.as_fd())?;
+        if credentials.uid.as_raw() != peer.effective_uid {
+            return Err(refused());
+        }
+        let proc = PathBuf::from(format!("/proc/{}", credentials.pid.as_raw_nonzero()));
+        let link = std::fs::read_link(proc.join("exe"))?;
+        let mut file = File::open(proc.join("exe"))?;
+        let meta = file.metadata()?;
+        let before = ImageStat::of(&meta);
+        let mut magic = [0; 4];
+        file.read_exact(&mut magic)?;
+        if !executable_metadata(&meta, peer.effective_uid)
+            || !locald_image_name(&link, meta.nlink())
+            || magic != *b"\x7fELF"
+            || before != ImageStat::of(&file.metadata()?)
+            || link != std::fs::read_link(proc.join("exe"))?
+            || credentials.pid != rustix::net::sockopt::socket_peercred(stream.as_fd())?.pid
+            || credentials.uid != rustix::net::sockopt::socket_peercred(stream.as_fd())?.uid
+            || !self.is_current()
+        {
+            return Err(refused());
+        }
+        Ok(before == self.identity)
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct Identity {
     birth: u64,
     boot: String,
     executable: PathBuf,
-    executable_stat: (u64, u64, u64, u32, u32, u64, i64, i64, i64, i64),
+    executable_stat: ImageStat,
     arguments: Vec<u8>,
     lock: (u64, u64),
     lock_fd: std::ffi::OsString,
@@ -156,9 +279,49 @@ impl AuthenticatedLocalPeer {
                 c.uid.as_raw() == self.effective_uid
                     && std::fs::read_link(format!("/proc/{}/exe", c.pid.as_raw_nonzero()))
                         .ok()
-                        .is_some_and(|p| p.file_name().is_some_and(|name| name == "backend-locald"))
+                        .zip(
+                            std::fs::metadata(format!("/proc/{}/exe", c.pid.as_raw_nonzero())).ok(),
+                        )
+                        .is_some_and(|(path, meta)| locald_image_name(&path, meta.nlink()))
             })
     }
+    /// Holds the explicitly selected default sibling's stable regular ELF identity.
+    /// No PATH search, process launch or full-image hash occurs.
+    ///
+    /// # Errors
+    /// Refuses nonabsolute, writable, setid, missing, changed or non-ELF candidates.
+    pub fn observe_default_locald_image(&self, path: &Path) -> io::Result<DefaultLocaldImage> {
+        if !path.is_absolute() {
+            return Err(refused());
+        }
+        let selected_path = path.to_path_buf();
+        let path = std::fs::canonicalize(path)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits().cast_signed())
+            .open(&path)?;
+        let meta = file.metadata()?;
+        let mut magic = [0; 4];
+        file.read_exact(&mut magic)?;
+        if !executable_metadata(&meta, self.effective_uid)
+            || meta.nlink() == 0
+            || !locald_image_name(&path, meta.nlink())
+            || magic != *b"\x7fELF"
+        {
+            return Err(refused());
+        }
+        let observation = DefaultLocaldImage {
+            selected_path,
+            path,
+            file,
+            identity: ImageStat::of(&meta),
+        };
+        if !observation.is_current() {
+            return Err(refused());
+        }
+        Ok(observation)
+    }
+
     fn owner_identity(
         &self,
         stream: &LocalStream,
@@ -203,8 +366,7 @@ impl AuthenticatedLocalPeer {
         let meta = image.metadata()?;
         let mut magic = [0; 4];
         image.read_exact(&mut magic)?;
-        if !executable.is_absolute()
-            || executable.file_name().is_none_or(|n| n != "backend-locald")
+        if !locald_image_name(&executable, meta.nlink())
             || !meta.is_file()
             || ![0, self.effective_uid].contains(&meta.uid())
             || meta.mode() & 0o022 != 0
@@ -266,18 +428,7 @@ impl AuthenticatedLocalPeer {
                 birth,
                 boot,
                 executable,
-                executable_stat: (
-                    meta.dev(),
-                    meta.ino(),
-                    meta.len(),
-                    meta.mode(),
-                    meta.uid(),
-                    meta.nlink(),
-                    meta.mtime(),
-                    meta.mtime_nsec(),
-                    meta.ctime(),
-                    meta.ctime_nsec(),
-                ),
+                executable_stat: ImageStat::of(&meta),
                 arguments,
                 lock: (lock.dev(), lock.ino()),
                 lock_fd,
@@ -294,8 +445,48 @@ impl AuthenticatedLocalPeer {
         workspace: &Path,
         authority: &Path,
         deadline: Instant,
+        keep_waiting: impl FnMut() -> bool,
+    ) -> io::Result<()> {
+        self.retire_owner(
+            stream,
+            (project, workspace, authority),
+            None,
+            deadline,
+            keep_waiting,
+        )
+    }
+
+    /// Retires only an automatic peer still different from the held intended image.
+    /// The extra witness is checked immediately before intent and TERM; a racing
+    /// process which already execed the intended image must not be retired.
+    ///
+    /// # Errors
+    /// Preserves every original custody refusal and rejects changed/matching images.
+    pub fn retire_automatic_owner_for_image(
+        &self,
+        stream: &LocalStream,
+        paths: (&Path, &Path, &Path),
+        image: &DefaultLocaldImage,
+        deadline: Instant,
+        keep_waiting: impl FnMut() -> bool,
+    ) -> io::Result<()> {
+        self.retire_owner(stream, paths, Some(image), deadline, keep_waiting)
+    }
+
+    fn retire_owner(
+        &self,
+        stream: &LocalStream,
+        paths: (&Path, &Path, &Path),
+        image: Option<&DefaultLocaldImage>,
+        deadline: Instant,
         mut keep_waiting: impl FnMut() -> bool,
     ) -> io::Result<()> {
+        let (project, workspace, authority) = paths;
+        let image_still_differs = || match image {
+            None => Ok(()),
+            Some(image) if image.matches_peer(self, stream)? => Err(refused()),
+            Some(_) => Ok(()),
+        };
         let (pid, before) = self.owner_identity(
             stream,
             project,
@@ -304,6 +495,7 @@ impl AuthenticatedLocalPeer {
             deadline,
             &mut keep_waiting,
         )?;
+        image_still_differs()?;
         let handle = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty())?;
         // This existing private initializer lease also serializes handoff
         // callers. Its bounded intent is durable BEFORE TERM, so cancellation,
@@ -336,6 +528,7 @@ impl AuthenticatedLocalPeer {
                 before.birth,
                 &before.boot,
             )? {
+                image_still_differs()?;
                 let intent = next_intent(
                     &bytes,
                     pid.as_raw_nonzero().get().cast_unsigned(),
@@ -368,6 +561,7 @@ impl AuthenticatedLocalPeer {
                 {
                     return Err(refused());
                 }
+                image_still_differs()?;
                 rustix::process::pidfd_send_signal(&handle, rustix::process::Signal::TERM)?;
             }
         }
@@ -401,6 +595,317 @@ impl AuthenticatedLocalPeer {
 mod tests {
     use super::*;
     #[test]
+    fn deleted_locald_name_requires_kernel_zero_links_and_exact_original_basename() {
+        assert!(locald_image_name(Path::new("/install/backend-locald"), 1));
+        assert!(locald_image_name(
+            Path::new("/old/backend-locald (deleted)"),
+            0
+        ));
+        assert!(!locald_image_name(
+            Path::new("/old/backend-locald (deleted)"),
+            1
+        ));
+        assert!(!locald_image_name(Path::new("/old/foreign (deleted)"), 0));
+        assert!(!locald_image_name(Path::new("/old/backend-locald"), 0));
+        assert!(!locald_image_name(Path::new("backend-locald (deleted)"), 0));
+    }
+
+    struct QualifiedOwner {
+        root: PathBuf,
+        cli: PathBuf,
+        qualified_locald: PathBuf,
+        child: std::process::Child,
+    }
+    impl QualifiedOwner {
+        fn start(copy_owner: bool) -> Self {
+            use std::os::unix::fs::PermissionsExt as _;
+            let cli = std::fs::canonicalize(
+                std::env::var_os("NUDOX_TEST_QUALIFIED_CLI")
+                    .expect("Root-qualified same-source CLI required"),
+            )
+            .expect("qualified CLI");
+            let qualified_locald = std::fs::canonicalize(
+                std::env::var_os("NUDOX_TEST_QUALIFIED_LOCALD")
+                    .expect("Root-qualified same-source locald required"),
+            )
+            .expect("qualified locald");
+            assert_eq!(cli.file_name().unwrap(), "backend-cli");
+            assert_eq!(qualified_locald.file_name().unwrap(), "backend-locald");
+            assert_eq!(
+                cli.parent(),
+                qualified_locald.parent(),
+                "actual matched immutable cohort"
+            );
+            let root = std::env::temp_dir().join(format!(
+                "owner-img-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir(&root).unwrap();
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let root = root.canonicalize().unwrap();
+            std::fs::create_dir(root.join("p")).unwrap();
+            std::fs::create_dir(root.join("home")).unwrap();
+            let executable = if copy_owner {
+                std::fs::create_dir(root.join("old")).unwrap();
+                let copy = root.join("old/backend-locald");
+                std::fs::copy(&qualified_locald, &copy).unwrap();
+                std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o500)).unwrap();
+                copy
+            } else {
+                qualified_locald.clone()
+            };
+            let child = std::process::Command::new(executable)
+                .arg("--runtime-startup-v1")
+                .arg("direct")
+                .arg(&root)
+                .arg(root.join("p"))
+                .arg(root.join("w"))
+                .arg(root.join("s"))
+                .arg(root.join("w/authority.secret"))
+                .arg("--endpoint")
+                .arg(root.join("s"))
+                .arg("--workspace")
+                .arg(root.join("w"))
+                .arg("--authority-secret-file")
+                .arg(root.join("w/authority.secret"))
+                .current_dir(root.join("p"))
+                .env("HOME", root.join("home"))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("actual product automatic owner");
+            let mut fixture = Self {
+                root,
+                cli,
+                qualified_locald,
+                child,
+            };
+            let until = Instant::now() + Duration::from_secs(15);
+            loop {
+                if fixture.connection().is_ok() {
+                    break;
+                }
+                assert!(
+                    fixture.child.try_wait().unwrap().is_none(),
+                    "actual owner startup failed"
+                );
+                assert!(Instant::now() < until, "bounded actual owner startup");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            fixture
+        }
+        fn connection(
+            &self,
+        ) -> io::Result<(std::os::unix::net::UnixStream, AuthenticatedLocalPeer)> {
+            let stream = std::os::unix::net::UnixStream::connect(self.root.join("s"))?;
+            let peer = AuthenticatedLocalPeer::authenticate(&stream, &self.root.join("s"))
+                .map_err(|_| refused())?;
+            Ok((stream, peer))
+        }
+        fn pid(&self) -> u32 {
+            let (stream, _) = self.connection().unwrap();
+            rustix::net::sockopt::socket_peercred(stream.as_fd())
+                .unwrap()
+                .pid
+                .as_raw_nonzero()
+                .get()
+                .cast_unsigned()
+        }
+        fn command(&self, pinned: bool, passive: bool) -> std::process::Output {
+            let mut command = std::process::Command::new(&self.cli);
+            command
+                .arg("--project")
+                .arg(self.root.join("p"))
+                .arg("--workspace")
+                .arg(self.root.join("w"))
+                .arg("--endpoint")
+                .arg(self.root.join("s"))
+                .args(["--format", "json"]);
+            if passive {
+                command.arg("--passive");
+            }
+            command
+                .arg("health")
+                .current_dir(self.root.join("p"))
+                .env("HOME", self.root.join("home"))
+                .env_remove("BACKEND_LOCALD_BIN")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            if pinned {
+                command.env("BACKEND_LOCALD_BIN", &self.qualified_locald);
+            }
+            let mut child = command.spawn().unwrap();
+            let until = Instant::now() + Duration::from_secs(20);
+            while child.try_wait().unwrap().is_none() {
+                if Instant::now() >= until {
+                    child.kill().unwrap();
+                    let _ = child.wait();
+                    panic!("bounded actual CLI command");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.stdout.len() + output.stderr.len() <= 65536,
+                "bounded real health output"
+            );
+            output
+        }
+        fn retire(&self, deadline: Instant, keep: impl FnMut() -> bool) -> io::Result<()> {
+            let (stream, peer) = self.connection()?;
+            peer.retire_automatic_owner(
+                &stream,
+                &self.root.join("p"),
+                &self.root.join("w"),
+                &self.root.join("w/authority.secret"),
+                deadline,
+                keep,
+            )
+        }
+    }
+    impl Drop for QualifiedOwner {
+        fn drop(&mut self) {
+            // This fixture owns the exact automatic workspace. Retire only a
+            // peer proven by the same production pidfd/role/lock/handler path.
+            let retired = self
+                .retire(Instant::now() + Duration::from_secs(5), || true)
+                .is_ok();
+            if self.child.try_wait().ok().flatten().is_none() {
+                let _ = self.child.kill();
+            }
+            let _ = self.child.wait();
+            if retired {
+                let _ = std::fs::remove_dir_all(&self.root);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires Root-qualified matched CLI/locald in NUDOX_TEST_QUALIFIED_CLI and NUDOX_TEST_QUALIFIED_LOCALD; run explicitly after ordinary qualification"]
+    fn qualified_same_dto_default_image_converges_once_and_preserves_pins() {
+        let same = QualifiedOwner::start(false);
+        let same_pid = same.pid();
+        assert!(same.command(false, false).status.success());
+        assert_eq!(same.pid(), same_pid);
+        drop(same);
+        let mut changed = QualifiedOwner::start(true);
+        let old_pid = changed.pid();
+        let (stream, peer) = changed.connection().unwrap();
+        let intended = peer
+            .observe_default_locald_image(&changed.qualified_locald)
+            .unwrap();
+        assert!(!intended.matches_peer(&peer, &stream).unwrap());
+        assert!(changed.command(true, false).status.success());
+        assert_eq!(changed.pid(), old_pid, "explicit helper pin never retires");
+        let passive = changed.command(false, true);
+        assert!(!passive.status.success());
+        assert_eq!(changed.pid(), old_pid);
+        assert!(String::from_utf8_lossy(&passive.stdout).contains("owner build update"));
+        assert!(
+            changed
+                .retire(Instant::now() - Duration::from_secs(1), || true)
+                .is_err()
+        );
+        assert!(
+            changed
+                .retire(Instant::now() + Duration::from_secs(2), || false)
+                .is_err()
+        );
+        assert_eq!(
+            changed.pid(),
+            old_pid,
+            "expired/cancelled admission cannot signal"
+        );
+        let lock = changed.root.join("w/OWNER.lock");
+        let saved = changed.root.join("old-owner-lock");
+        std::fs::rename(&lock, &saved).unwrap();
+        let lock_result = changed.retire(Instant::now() + Duration::from_secs(2), || true);
+        std::fs::rename(&saved, &lock).unwrap();
+        assert!(lock_result.is_err());
+        assert_eq!(changed.pid(), old_pid, "missing exact lock cannot signal");
+        assert!(
+            changed.command(false, false).status.success(),
+            "actual same-DTO image update"
+        );
+        assert_ne!(
+            changed.pid(),
+            old_pid,
+            "default image changed before command admission"
+        );
+        assert!(
+            changed.child.wait().unwrap().success(),
+            "real old owner graceful terminal"
+        );
+        let intent = std::fs::read(changed.root.join("w/authority-initialize.lock")).unwrap();
+        assert_eq!(
+            intent
+                .split(|&b| b == b'\n')
+                .filter(|line| !line.is_empty())
+                .count(),
+            1,
+            "one durable TERM intent"
+        );
+        let new_pid = changed.pid();
+        assert!(changed.command(false, false).status.success());
+        assert_eq!(changed.pid(), new_pid);
+        assert_eq!(
+            std::fs::read(changed.root.join("w/authority-initialize.lock")).unwrap(),
+            intent
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Root-qualified matched CLI/locald in NUDOX_TEST_QUALIFIED_CLI and NUDOX_TEST_QUALIFIED_LOCALD; run explicitly after ordinary qualification"]
+    fn qualified_deleted_default_image_requires_zero_links_and_refuses_candidate_races() {
+        let mut old = QualifiedOwner::start(true);
+        let old_pid = old.pid();
+        let (stream, peer) = old.connection().unwrap();
+        let candidate = old.root.join("backend-locald");
+        std::fs::copy(&old.qualified_locald, &candidate).unwrap();
+        let observed = peer.observe_default_locald_image(&candidate).unwrap();
+        assert!(observed.is_current());
+        std::fs::rename(&candidate, old.root.join("replaced-locald")).unwrap();
+        std::fs::copy(&old.qualified_locald, &candidate).unwrap();
+        assert!(!observed.is_current());
+        assert!(
+            old.retire(Instant::now() + Duration::from_secs(2), || observed
+                .is_current())
+                .is_err()
+        );
+        assert_eq!(old.pid(), old_pid, "changed named candidate cannot signal");
+        std::fs::remove_file(old.root.join("old/backend-locald")).unwrap();
+        let proc = PathBuf::from(format!("/proc/{old_pid}/exe"));
+        let image = File::open(&proc).unwrap();
+        assert_eq!(
+            image.metadata().unwrap().nlink(),
+            0,
+            "actual unlink, not basename spoof"
+        );
+        assert!(
+            std::fs::read_link(&proc)
+                .unwrap()
+                .as_os_str()
+                .as_bytes()
+                .ends_with(b" (deleted)")
+        );
+        let intended = peer
+            .observe_default_locald_image(&old.qualified_locald)
+            .unwrap();
+        assert!(!intended.matches_peer(&peer, &stream).unwrap());
+        assert!(peer.is_locald_process(&stream));
+        assert!(old.command(false, false).status.success());
+        assert_ne!(old.pid(), old_pid);
+        assert!(old.child.wait().unwrap().success());
+        assert_eq!(image.metadata().unwrap().nlink(), 0);
+    }
+
+    #[test]
     fn authenticated_unrelated_live_child_is_not_signalled_or_unlinked() {
         use std::io::Write as _;
         use std::os::unix::fs::PermissionsExt as _;
@@ -433,7 +938,7 @@ mod tests {
             }
         }
         let root = std::env::temp_dir().join(format!(
-            "nudox-upgrade-{}-{}",
+            "nu-{:x}-{:x}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -450,11 +955,26 @@ mod tests {
                 .env(CHILD, &root)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
                 .spawn()
                 .expect("isolated unrelated peer"),
         );
         let until = Instant::now() + Duration::from_secs(5);
         while !root.join("ready").exists() {
+            if let Some(status) = child.0.try_wait().expect("exact fixture child status") {
+                let mut diagnostic = Vec::new();
+                if let Some(stderr) = child.0.stderr.take() {
+                    stderr
+                        .take(65537)
+                        .read_to_end(&mut diagnostic)
+                        .expect("bounded fixture child diagnostic");
+                }
+                assert!(diagnostic.len() <= 65536, "bounded fixture child stderr");
+                panic!(
+                    "unrelated fixture child exited before readiness ({status}): {}",
+                    String::from_utf8_lossy(&diagnostic)
+                );
+            }
             assert!(Instant::now() < until, "finite child startup");
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -462,6 +982,16 @@ mod tests {
             UnixStream::connect(root.join("owner.sock")).expect("authenticated endpoint");
         let peer = AuthenticatedLocalPeer::authenticate(&stream, &root.join("owner.sock"))
             .expect("same-user private socket");
+        assert!(
+            !catches_term(
+                &bounded(
+                    &PathBuf::from(format!("/proc/{}/status", child.0.id())),
+                    65536
+                )
+                .expect("actual unrelated child status")
+            ),
+            "unrelated child has no TERM handler"
+        );
         let refusal =
             peer.retire_automatic_owner(&stream, &root, &root, &root.join("secret"), until, || {
                 true
