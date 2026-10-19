@@ -1372,9 +1372,17 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         let member_base = self.staged_members.len();
         let cells = self.owner_cells(annotation.start, annotation.end, 0)?;
         let extension = self.extension(type_parameter_start)?;
+        // A result may share its callable's name and type with an authored
+        // input (`stmt(stmt: Stmt): Stmt`). Both are Parameter facts under
+        // that callable, but their signature roles are distinct authority.
+        // Frame that role, never a source coordinate or invented binding.
+        let role = Sha256::digest(b"compiler.typescript.signature-result-carrier.v1\0");
+        let mut discriminator = [0_u8; 16];
+        discriminator.copy_from_slice(&role[..16]);
         let fact = with_cells(
             SemanticFact::new(EntityKind::Parameter, name_bytes, LEAF_PRODUCT)
-                .with_extension(extension),
+                .with_extension(extension)
+                .with_identity_discriminator(discriminator),
             cells,
         );
         let ordinal = self.push(fact)?;
@@ -15868,6 +15876,141 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
                 ) && ir.link(site.link).is_some_and(|link| matches!(link.target,
             backend_semantic::ir::LinkTarget::Local(id) if id == gap.id()))),
             "the family envelope cannot turn a foreign variant into E's member"
+        );
+        Ok(())
+    }
+
+    /// The real PocketBase declaration has a callable, input, and result
+    /// carrier all named `stmt`, with the input and result typed as Stmt.
+    /// Signature role, rather than a fabricated source site, separates them.
+    #[test]
+    fn native_tsz_same_named_input_and_result_keep_distinct_signature_roles()
+    -> Result<(), LaneError> {
+        use backend_semantic::ir::{
+            SignatureCarrierBindingRole as Role, SignatureCarrierBindingsObservation,
+        };
+        for source in [
+            "interface Stmt { value: string } interface Tx { stmt(stmt: Stmt): (Stmt) }",
+            "declare function stmt(stmt: string): string;",
+        ] {
+            let ir = owned_tsz_ir_at_path(source, "same-name.d.ts")?;
+            let owner = ir
+                .items()
+                .find(|item| item.kind() == EntityKind::Function && item.name() == b"stmt")
+                .ok_or(LaneError::Missing("same-named callable"))?;
+            let Some(SignatureCarrierBindingsObservation::Captured(bindings)) =
+                ir.signature_carrier_bindings(owner.id())
+            else {
+                return Err(LaneError::Missing("same-named signature bindings"));
+            };
+            let bindings = bindings.collect::<Vec<_>>();
+            assert_eq!(bindings.len(), 2);
+            assert_eq!(bindings[0].role, Role::Parameter);
+            assert_eq!(bindings[1].role, Role::Result);
+            for binding in &bindings {
+                assert_eq!(binding.owner, owner.id());
+                assert_eq!(binding.position, 0);
+            }
+            let input = ir
+                .item(bindings[0].carrier)
+                .ok_or(LaneError::Missing("same-named authored input"))?;
+            let result = ir
+                .item(bindings[1].carrier)
+                .ok_or(LaneError::Missing("same-named result carrier"))?;
+            assert_ne!(input.id(), result.id());
+            assert_ne!(input.version(), result.version());
+            for item in [input, result] {
+                assert_eq!(item.kind(), EntityKind::Parameter);
+                assert_eq!(item.name(), b"stmt");
+                assert_eq!(item.parent(), Some(owner.id()));
+            }
+            let ty = input
+                .semantic_type()
+                .ok_or(LaneError::Missing("input type"))?;
+            assert_eq!(Some(ty), result.semantic_type());
+            let expected = if let Some(stmt) = ir
+                .items()
+                .find(|item| item.kind() == EntityKind::Trait && item.name() == b"Stmt")
+            {
+                backend_semantic::ir::ConcreteType::Nominal(stmt.id())
+            } else {
+                backend_semantic::ir::ConcreteType::Builtin(
+                    backend_semantic::ir::BuiltinType::String,
+                )
+            };
+            assert_eq!(ir.ty(ty), Some(TypeExpr::Concrete(expected)));
+            let owner_type = owner
+                .semantic_type()
+                .ok_or(LaneError::Missing("callable type"))?;
+            let Some(TypeExpr::Concrete(backend_semantic::ir::ConcreteType::Function {
+                parameters,
+                results,
+                ..
+            })) = ir.ty(owner_type)
+            else {
+                return Err(LaneError::Missing("callable parameter/result type lanes"));
+            };
+            let parameters = ir
+                .tuple_elements(parameters)
+                .ok_or(LaneError::Missing("input tuple"))?;
+            let results = ir
+                .tuple_elements(results)
+                .ok_or(LaneError::Missing("result tuple"))?;
+            assert_eq!(parameters.len(), 1);
+            assert_eq!(results.len(), 1);
+            assert_eq!(parameters[0].ty, ty);
+            assert_eq!(results[0].ty, ty);
+            let start = source.find("stmt:").expect("written input") as u32;
+            let span = input
+                .source()
+                .ok_or(LaneError::Missing("authored input span"))?;
+            assert_eq!((span.start(), span.end()), (start, start + 4));
+            assert!(result.source().is_none(), "result has no authored binding");
+            assert_eq!(
+                ir.items()
+                    .filter(|item| item.kind() == EntityKind::Parameter
+                        && item.parent() == Some(owner.id()))
+                    .count(),
+                2,
+                "neither role is dropped or duplicated"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_result_role_identity_survives_unrelated_source_edits() -> Result<(), LaneError> {
+        use backend_semantic::ir::SignatureCarrierBindingsObservation;
+        let source = "interface Stmt { value: string } interface Tx { stmt(stmt: Stmt): (Stmt) }";
+        let before = owned_tsz_ir_at_path(source, "same-name.d.ts")?;
+        let edited = format!(
+            "// shifted source\n{source}\ndeclare function unrelated(value: number): void;\n"
+        );
+        let after = owned_tsz_ir_at_path(&edited, "same-name.d.ts")?;
+        let rows = |ir: &backend_semantic::ir::Ir| {
+            let owner = ir
+                .items()
+                .find(|item| item.kind() == EntityKind::Function && item.name() == b"stmt")
+                .ok_or(LaneError::Missing("stable same-named callable"))?;
+            let Some(SignatureCarrierBindingsObservation::Captured(bindings)) =
+                ir.signature_carrier_bindings(owner.id())
+            else {
+                return Err(LaneError::Missing("stable signature bindings"));
+            };
+            bindings
+                .map(|binding| {
+                    ir.item(binding.carrier)
+                        .map(|item| (binding.role, binding.position, item.version()))
+                        .ok_or(LaneError::Missing("stable signature carrier"))
+                })
+                .collect::<Result<Vec<_>, LaneError>>()
+        };
+        let original = rows(&before)?;
+        assert_eq!(original.len(), 2);
+        assert_eq!(
+            original,
+            rows(&after)?,
+            "role identity excludes coordinates and insertion order"
         );
         Ok(())
     }
