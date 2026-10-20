@@ -3,6 +3,7 @@
 //! closure membership and ownership controls, not runtime acceptance claims.
 use super::*;
 use crate::application::typescript_host::TypeScriptProjectHost;
+use backend_semantic::ir::SemanticReader;
 use std::{
     fs,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -519,8 +520,8 @@ fn assert_native_cross_project_alias_ownership() {
     let extent = target.source.unwrap();
     let caller = SemanticImageView::reopen(&encoded["supplemental.ts"]).unwrap();
     let coordinates = caller
-        .external_targets()
-        .filter_map(|target| {
+        .canonical_externals()
+        .filter_map(|(_external_id, target)| {
             let ExternalTarget::Foreign(target) = target else {
                 return None;
             };
