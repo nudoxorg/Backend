@@ -11,6 +11,7 @@ package main
 
 import (
 	"fmt"
+	"go/ast"
 	"go/token"
 	"go/types"
 	"strings"
@@ -301,6 +302,11 @@ type StructField struct {
 	Embedded bool `json:"embedded,omitempty"`
 	// Exported reports whether the field name is exported.
 	Exported bool `json:"exported"`
+	// Producer-only typed AST witnesses. JSON roundtrips intentionally lose
+	// these; an unproven field stays source-less in the authority image.
+	sourceSpan *Span
+	nameSpan   *Span
+	sourcePos  *Pos
 }
 
 // MethodSig is an interface method: name + func signature + provenance.
@@ -339,10 +345,53 @@ type serializer struct {
 	dependencyPositions *dependencyPositions
 	recoveringPromoted  bool
 	unresolved          map[string]struct{}
+	fieldSpans          map[*types.Var]fieldSourceWitness
+}
+
+type fieldSourceWitness struct {
+	start, end         token.Pos
+	nameStart, nameEnd token.Pos
 }
 
 func newSerializer(pkg *packages.Package) *serializer {
-	return &serializer{fset: pkg.Fset, owner: pkg.Types}
+	s := &serializer{fset: pkg.Fset, owner: pkg.Types,
+		fieldSpans: make(map[*types.Var]fieldSourceWitness)}
+	if pkg.TypesInfo == nil {
+		return s
+	}
+	// Bind by the exact go/types object, never a field spelling or source line.
+	// Only directly declared, named fields of a named struct contribute proof.
+	for _, file := range pkg.Syntax {
+		for _, declaration := range file.Decls {
+			group, ok := declaration.(*ast.GenDecl)
+			if !ok || group.Tok != token.TYPE {
+				continue
+			}
+			for _, specification := range group.Specs {
+				spec, ok := specification.(*ast.TypeSpec)
+				if !ok || spec.Assign.IsValid() {
+					continue
+				}
+				structure, ok := spec.Type.(*ast.StructType)
+				if !ok {
+					continue
+				}
+				for _, field := range structure.Fields.List {
+					for _, name := range field.Names {
+						object, ok := pkg.TypesInfo.Defs[name].(*types.Var)
+						if !ok || !object.IsField() || name.Name == "_" {
+							continue
+						}
+						s.fieldSpans[object] = fieldSourceWitness{
+							start: field.Pos(), end: field.End(),
+							nameStart: name.Pos(), nameEnd: name.End(),
+						}
+					}
+				}
+			}
+		}
+	}
+	return s
 }
 
 func (s *serializer) noteUnresolved(name string) {
@@ -592,7 +641,15 @@ func (s *serializer) typDepth(t types.Type, depth int) *Type {
 		out := &Type{Kind: "struct"}
 		for i := 0; i < t.NumFields(); i++ {
 			f := t.Field(i)
+			var sourceSpan, nameSpan *Span
+			var sourcePos *Pos
+			if witness, ok := s.fieldSpans[f]; ok {
+				sourceSpan = s.span(witness.start, witness.end)
+				nameSpan = s.span(witness.nameStart, witness.nameEnd)
+				sourcePos = s.position(witness.nameStart)
+			}
 			out.Fields = append(out.Fields, &StructField{
+				sourceSpan: sourceSpan, nameSpan: nameSpan, sourcePos: sourcePos,
 				Name:     f.Name(),
 				Type:     s.typDepth(f.Type(), depth+1),
 				Tag:      t.Tag(i),

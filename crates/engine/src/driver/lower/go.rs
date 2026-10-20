@@ -396,6 +396,9 @@ fn portable_image_fault(error: ImageError) -> Result<GoImageFault, (GoProjection
         ImageError::MemberReserved { index } => GoImageFault::MemberReserved {
             index: go_u32(index, GoProjectionIndexPhase::Member)?,
         },
+        ImageError::MemberSourceWitness { index } => GoImageFault::MemberSourceWitness {
+            index: go_u32(index, GoProjectionIndexPhase::Member)?,
+        },
         ImageError::DocReserved { index } => GoImageFault::DocReserved {
             index: go_u32(index, GoProjectionIndexPhase::Documentation)?,
         },
@@ -1073,7 +1076,7 @@ pub(crate) fn collect<'source>(
         .intern_entity_list(&[])
         .map_err(|fault| lane_terminal(facts.len(), 0, fault))?;
 
-    let mut go = Projector::new(image, facts);
+    let mut go = Projector::new(image, facts, source);
     // Pass one: named types, then aliases — the backward anchors every
     // later type reference resolves against.
     for index in 0..go.image.declaration_count() {
@@ -1388,8 +1391,49 @@ struct MemberKey<'source> {
 }
 
 /// The two-pass Go projector over one validated authority image.
+/// Admits only the v7 producer's exact typed-AST field witness in this
+/// digest-bound source and its selected declaring owner. No source/name search.
+fn admitted_field_source_span(
+    source: &[u8],
+    index: usize,
+    member: backend_frontend_go::legacy::MemberRow<'_>,
+    owner_span: Option<(u32, u32)>,
+    owner_file: &[u8],
+    cross_file: bool,
+) -> Result<Option<(u32, u32)>, GoCollectError> {
+    if !member.bound || owner_span.is_none() {
+        return Ok(None);
+    }
+    let invalid = || GoCollectError::Image(ImageError::MemberSourceWitness { index });
+    let (Some((start, end)), Some((name_start, name_end)), Some((owner_start, owner_end))) =
+        (member.span, member.name_span, owner_span)
+    else {
+        return Err(invalid());
+    };
+    if cross_file
+        || member.file != owner_file
+        || member.name == b"_"
+        || member.embedded
+        || member.kind != MemberKind::Field
+        || !(owner_start < start
+            && start <= name_start
+            && name_start < name_end
+            && name_end <= end
+            && end < owner_end)
+        || source
+            .get(owner_start as usize..owner_end as usize)
+            .is_none()
+        || source.get(start as usize..end as usize).is_none()
+        || source.get(name_start as usize..name_end as usize) != Some(member.name)
+    {
+        return Err(invalid());
+    }
+    Ok(Some((start, end)))
+}
+
 struct Projector<'x, 'source> {
     image: GoImage<'source>,
+    source: &'source [u8],
     facts: &'x mut FactSet<'source>,
     /// Lane ordinal per image declaration index.
     declaration_ordinals: Vec<Option<u32>>,
@@ -1418,7 +1462,7 @@ struct Projector<'x, 'source> {
 }
 
 impl<'x, 'source> Projector<'x, 'source> {
-    fn new(image: GoImage<'source>, facts: &'x mut FactSet<'source>) -> Self {
+    fn new(image: GoImage<'source>, facts: &'x mut FactSet<'source>, source: &'source [u8]) -> Self {
         let declarations = image.declaration_count();
         Self {
             declaration_ordinals: vec![None; image.declaration_count()],
@@ -1426,6 +1470,7 @@ impl<'x, 'source> Projector<'x, 'source> {
             member_ordinals: vec![None; image.member_count()],
             anonymous: vec![None; image.type_count()],
             image,
+            source,
             facts,
             names: Vec::new(),
             declaration_spans: vec![None; declarations],
@@ -1435,13 +1480,13 @@ impl<'x, 'source> Projector<'x, 'source> {
         }
     }
 
-    /// Ownership comes only from the v6 producer's digest-bound flags, with
+    /// Ownership comes only from the v6+ producer's digest-bound flags, with
     /// lexical fields/carriers inheriting their exact canonical owner's role.
     /// Supporting receiver roots remain in the IR even when a method they own
     /// is primary. Promoted/effective method copies never own a declaration.
     fn publication_roles(&mut self) -> Result<(), GoCollectError> {
         use backend_semantic::ir::DeclarationPublicationRole as Role;
-        if self.image.version() != 6 {
+        if self.image.version() < 6 {
             return Ok(());
         }
         let count = self.facts.len();
@@ -1663,7 +1708,7 @@ impl<'x, 'source> Projector<'x, 'source> {
         image_version: u16,
         method: backend_frontend_go::legacy::MethodRow<'source>,
     ) -> bool {
-        image_version == 6 && !method.bound
+        image_version >= 6 && !method.bound
     }
 
     /// Reports whether one unqualified identifier already names a declaration
@@ -2101,6 +2146,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                     declaration.name,
                     Self::cross_file_type(declaration),
                     declaration.file,
+                    declaration.span.filter(|_| declaration.bound),
                 )?,
                 TypeRowKind::Interface => self.interface_methods(
                     &row,
@@ -2297,6 +2343,7 @@ impl<'x, 'source> Projector<'x, 'source> {
         type_name: &'source [u8],
         cross_file: bool,
         file: &'source [u8],
+        owner_span: Option<(u32, u32)>,
     ) -> Result<(), GoCollectError> {
         let mut field_index = 0usize;
         for member_index in member_run(row) {
@@ -2321,6 +2368,15 @@ impl<'x, 'source> Projector<'x, 'source> {
             self.facts
                 .attach_parent(ordinal, owner)
                 .map_err(|fault| lane_terminal_ordinal(ordinal, member.name.len(), fault))?;
+            if let Some((start, end)) = admitted_field_source_span(
+                self.source, member_index, member, owner_span, file, cross_file,
+            )? {
+                let span = StagedSourceSpan::new(start, end).ok_or_else(|| {
+                    GoCollectError::Image(ImageError::MemberSourceWitness { index: member_index })
+                })?;
+                self.facts.attach_source_span(ordinal, span)
+                    .map_err(|fault| lane_terminal_ordinal(ordinal, member.name.len(), fault))?;
+            }
             self.members.push(MemberKey {
                 package,
                 type_name,
@@ -8849,5 +8905,119 @@ mod tests {
         let bytes = lower(&fix, b"package demo\n")?;
         let view = FragmentView::validate(&bytes)?;
         assert_cross_file_method_resolution(&view, bound_method_ordinal, use_main, use_sibling)
+    }
+}
+
+#[cfg(test)]
+mod field_source_tests {
+    use super::*;
+
+    #[test]
+    fn field_witness_requires_selected_bytes_file_and_exact_declaring_owner() {
+        let source =
+            "// λ\npackage demo\ntype Group struct { wg int }\ntype Other struct { wg int }\n";
+        let field_start = source.find("wg int").expect("first field") as u32;
+        let owner_start = source.find("type Group").expect("first owner") as u32;
+        let owner_end = source.find("}\n").expect("first owner end") as u32 + 1;
+        let member = backend_frontend_go::legacy::MemberRow {
+            owner: 0,
+            kind: MemberKind::Field,
+            embedded: false,
+            exported: false,
+            name: b"wg",
+            type_root: None,
+            tag: b"",
+            package: b"",
+            span: Some((field_start, field_start + 6)),
+            name_span: Some((field_start, field_start + 2)),
+            file: b"main.go",
+            bound: true,
+        };
+        let admit = |member, owner, cross| {
+            admitted_field_source_span(source.as_bytes(), 3, member, owner, b"main.go", cross)
+        };
+        let owner = Some((owner_start, owner_end));
+        assert!(matches!(admit(member, owner, false), Ok(Some(span)) if Some(span) == member.span));
+        assert!(matches!(admit(member, None, false), Ok(None)));
+        assert!(matches!(
+            admit(
+                backend_frontend_go::legacy::MemberRow {
+                    bound: false,
+                    ..member
+                },
+                owner,
+                true
+            ),
+            Ok(None)
+        ));
+        let other_start = source.rfind("wg int").expect("other field") as u32;
+        for opponent in [
+            backend_frontend_go::legacy::MemberRow {
+                span: Some((other_start, other_start + 6)),
+                name_span: Some((other_start, other_start + 2)),
+                ..member
+            },
+            backend_frontend_go::legacy::MemberRow {
+                name: b"xx",
+                ..member
+            },
+            backend_frontend_go::legacy::MemberRow {
+                file: b"sibling.go",
+                ..member
+            },
+            backend_frontend_go::legacy::MemberRow {
+                span: Some((field_start, u32::MAX)),
+                ..member
+            },
+            backend_frontend_go::legacy::MemberRow {
+                name_span: Some((field_start, u32::MAX)),
+                ..member
+            },
+            backend_frontend_go::legacy::MemberRow {
+                span: None,
+                ..member
+            },
+            backend_frontend_go::legacy::MemberRow {
+                embedded: true,
+                ..member
+            },
+            backend_frontend_go::legacy::MemberRow {
+                name: b"_",
+                ..member
+            },
+            backend_frontend_go::legacy::MemberRow {
+                kind: MemberKind::Method,
+                ..member
+            },
+        ] {
+            assert!(matches!(
+                admit(opponent, owner, false),
+                Err(GoCollectError::Image(ImageError::MemberSourceWitness {
+                    index: 3
+                }))
+            ));
+        }
+        assert!(admit(member, owner, true).is_err());
+
+        let unicode = "package demo\ntype Café struct { µ int }\n";
+        let owner_start = unicode.find("type Café").expect("UTF-8 owner") as u32;
+        let start = unicode.find("µ int").expect("UTF-8 field") as u32;
+        let witness = backend_frontend_go::legacy::MemberRow {
+            name: "µ".as_bytes(),
+            span: Some((start, start + "µ int".len() as u32)),
+            name_span: Some((start, start + "µ".len() as u32)),
+            ..member
+        };
+        assert!(matches!(
+            admitted_field_source_span(
+                unicode.as_bytes(),
+                0,
+                witness,
+                Some((owner_start, unicode.len() as u32 - 1)),
+                b"main.go",
+                false
+            ),
+            Ok(Some(_))
+        ));
     }
 }

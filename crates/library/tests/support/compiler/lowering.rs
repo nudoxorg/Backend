@@ -748,6 +748,9 @@ pub(crate) enum GoldenGoImageFault {
     MemberReserved {
         index: u32,
     },
+    MemberSourceWitness {
+        index: u32,
+    },
     DocReserved {
         index: u32,
     },
@@ -2007,6 +2010,7 @@ impl From<backend_semantic::vocabulary::GoImageFault> for GoldenGoImageFault {
             GoImageFault::TypeReserved { index } => Self::TypeReserved { index },
             GoImageFault::MethodReserved { index } => Self::MethodReserved { index },
             GoImageFault::MemberReserved { index } => Self::MemberReserved { index },
+            GoImageFault::MemberSourceWitness { index } => Self::MemberSourceWitness { index },
             GoImageFault::DocReserved { index } => Self::DocReserved { index },
             GoImageFault::ReferenceReserved { index } => Self::ReferenceReserved { index },
             GoImageFault::DeclarationTypeRoot {
