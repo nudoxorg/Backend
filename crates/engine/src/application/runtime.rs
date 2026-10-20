@@ -2530,6 +2530,7 @@ mod global_typescript_probe_tests {
         assert_eq!(observed.tool, NativeTool::TypeScriptCompiler);
         let admitted = observed
             .result
+            .expect("toolchain version observation, not an authority refresh")
             .expect("version through the admitted interpreter");
         let expected = ResolvedToolchain::from_version(
             NativeTool::TypeScriptCompiler,
@@ -7504,7 +7505,13 @@ mod deferred_native_python_tests {
         let observed = received.try_recv().unwrap();
         assert_eq!(observed.tool, NativeTool::Python);
         assert_eq!(
-            observed.result.unwrap().facts.identity.unwrap(),
+            observed
+                .result
+                .expect("native Python producer observation")
+                .unwrap()
+                .facts
+                .identity
+                .unwrap(),
             ContentId::<ToolchainDomain>::from_digest(authority.producer_identity().as_bytes())
         );
         assert!(received.try_recv().is_err());

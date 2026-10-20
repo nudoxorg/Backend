@@ -105,6 +105,7 @@ pub use self::runtime::{
     LocalRuntimeRustAuthorityFailure, LocalRuntimeRustToolchainSelection, LocalRuntimeToolchain,
     LocalRuntimeToolchainFacts, LocalRuntimeToolchainState, OwnedPackageSource,
     OwnedPackageSourceSet, PackageSemanticRuntimeError, PyreflyToolchainIdentity,
+    TypeScriptSnapshotReuse,
 };
 pub use self::terminal::{LocalCompilerOpenError, LocalCompilerPath};
 #[cfg(test)]
