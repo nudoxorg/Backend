@@ -112,6 +112,29 @@ impl ProjectCallableIndex {
         programs: &[&super::source_availability::CurrentNativeProgram],
         legacy_image_program: bool,
     ) -> Result<Self, BuiltinModelError> {
+        let program_sources = programs
+            .iter()
+            .map(|program| {
+                (
+                    program.sources(),
+                    program.images().map(|image| image.as_ref()).collect(),
+                )
+            })
+            .collect::<Vec<_>>();
+        Self::build_from_views_with_program_sources(
+            images,
+            scopes,
+            &program_sources,
+            legacy_image_program,
+        )
+    }
+
+    fn build_from_views_with_program_sources(
+        images: &[&SemanticImageView<'_>],
+        scopes: &BTreeMap<backend_semantic::vocabulary::Language, RetargetingScope>,
+        programs: &[(&backend_semantic::ir::NativeProgramSources, Vec<&[u8]>)],
+        legacy_image_program: bool,
+    ) -> Result<Self, BuiltinModelError> {
         // A legacy or mixed Go image leaves a hole in the declaration inventory.
         // A unique name in the other images cannot close that hole. Preserve
         // exact-coordinate indexes while withholding scope-wide name joins.
@@ -128,14 +151,13 @@ impl ProjectCallableIndex {
         let mut proven_tsz_coordinates = BTreeMap::<_, Vec<DeclarationIdentity>>::new();
         let mut program_members = BTreeMap::<_, Vec<_>>::new();
         let mut forest_image_owners = BTreeMap::new();
-        for program in programs {
-            let sources = program.sources();
+        for (sources, owned_images) in programs {
             let mappings = sources
                 .sources()
                 .filter_map(|row| row.package_path.map(|path| (path, row)))
                 .collect::<BTreeMap<_, _>>();
-            for image in program.images() {
-                let view = image.reopen().map_err(|error| {
+            for image in owned_images {
+                let view = SemanticImageView::reopen(image).map_err(|error| {
                     BuiltinModelError(format!("reopen owning native program image: {error}"))
                 })?;
                 let ImageProvenance::Captured {
@@ -189,13 +211,26 @@ impl ProjectCallableIndex {
                         ));
                     }
                 }
-                owner.push((
-                    row.program,
-                    row.program_path,
-                    path.to_owned(),
-                    source.identity,
-                    recipe.toolchain,
-                ));
+                // A separate admitted project can read this exact source as a
+                // dependency without becoming its package owner. Its native
+                // coordinates carry that project's manifest identity, so retain
+                // every authenticated same-source spelling of the owning image.
+                // The publication owner above remains the actual owning leaf.
+                for member in sources.sources().filter(|member| {
+                    member.program_path == row.program_path
+                        && member.source == source
+                        && member
+                            .package_path
+                            .is_none_or(|member_path| member_path == path)
+                }) {
+                    owner.push((
+                        member.program,
+                        member.program_path,
+                        path.to_owned(),
+                        source.identity,
+                        recipe.toolchain,
+                    ));
+                }
             }
         }
         let mut by_path_name = BTreeMap::<(String, String), Vec<DeclarationIdentity>>::new();
@@ -841,13 +876,19 @@ pub(crate) fn join_native_typescript_target(
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
-    let ForeignTargetOrigin::Universe { ecosystem } = foreign.origin else { return Ok(None); };
+    let ForeignTargetOrigin::Universe { ecosystem } = foreign.origin else {
+        return Ok(None);
+    };
     if image.atom(ecosystem) != Some(TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM.as_bytes()) {
         return Ok(None);
     }
-    let Some(kind) = foreign.kind else { return Ok(None); };
-    Ok(foreign_native_source_retarget(image, external, kind, index)?
-        .filter(|identity| published.contains(identity)))
+    let Some(kind) = foreign.kind else {
+        return Ok(None);
+    };
+    Ok(
+        foreign_native_source_retarget(image, external, kind, index)?
+            .filter(|identity| published.contains(identity)),
+    )
 }
 
 pub(crate) fn foreign_package_call_retarget(
@@ -1665,7 +1706,11 @@ mod tsz_source_coordinate_tests {
             byte_len: u32::try_from(source.len()).map_err(|error| error.to_string())?,
         };
         let recipe = CompileRecipeFact::derive(
-            LanguageProfile::TypeScript(if path.ends_with(".tsx") { TypeScriptSource::Tsx } else { TypeScriptSource::TypeScript }),
+            LanguageProfile::TypeScript(if path.ends_with(".tsx") {
+                TypeScriptSource::Tsx
+            } else {
+                TypeScriptSource::TypeScript
+            }),
             Stage::LowerIr,
             NativeTool::TypeScriptCompiler,
             source_facts.identity,
@@ -2080,74 +2125,460 @@ mod tsz_source_coordinate_tests {
     }
 
     #[test]
-    fn native_tsz_endpoint_projection_shares_exact_declaration_keys_and_preserves_unknowns() -> Result<(), String> {
-        use super::super::{identity, native_target_aliases::NativeTargetAliases, semantic::project_image_rows};
+    fn native_tsz_endpoint_projection_shares_exact_declaration_keys_and_preserves_unknowns()
+    -> Result<(), String> {
         use super::super::super::IndexedProject;
+        use super::super::{
+            identity, native_target_aliases::NativeTargetAliases, semantic::project_image_rows,
+        };
         use backend_engine::{Fragment, RowId};
         use std::sync::Arc;
-        for (package_label, target_path) in [("fixture-ts", "src/app.service.ts"), ("fixture-tsx", "src/app.service.tsx")] {
-        let service = "export class AppService { getHello(): string { return ''; } }\n";
-        let caller = "import { AppService } from '@/service';\nconst service = new AppService();\nservice.getHello();\n";
-        let start = service.find("getHello():").expect("target") as u32;
-        let end = start + "getHello(): string { return ''; }".len() as u32;
-        let at = caller.find("service.getHello()").expect("use") as u32 + 8;
-        let source_id = *ContentId::<SourceFactDomain>::from_canonical_bytes(service.as_bytes());
-        let program = typescript_program_identity(&[
-            ("src/app.controller.ts".to_owned(), *ContentId::<SourceFactDomain>::from_canonical_bytes(caller.as_bytes())),
-            (target_path.to_owned(), source_id),
-        ]).expect("complete fixture program");
-        let (target_bytes, target) = source_image(target_path, service, 3, None)?;
-        let package = backend_engine::package_key(package_label);
-        let project = IndexedProject { package, label: package_label.to_owned(), files: Arc::from([]) };
-        let (initial, _) = super::super::super::initial_view().map_err(|error| error.to_string())?;
-        for (admitted_source, selected, target_present) in [
-            (source_id, true, true), ([99; 32], true, true),
-            (source_id, false, true), (source_id, true, false),
+        for (package_label, target_path) in [
+            ("fixture-ts", "src/app.service.ts"),
+            ("fixture-tsx", "src/app.service.tsx"),
         ] {
-            let (caller_bytes, owner) = source_image("src/app.controller.ts", caller, 9,
-                Some((target_path.to_owned(), start, end, start, program, admitted_source, at, at + 8)))?;
-            let target_image = SemanticImageView::reopen(&target_bytes).map_err(|error| error.to_string())?;
-            let caller_image = SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
-            let index = ProjectCallableIndex::build_from_views(&[&target_image, &caller_image]).map_err(|error| error.to_string())?;
-            let published = if selected { BTreeSet::from([target, owner]) } else { BTreeSet::from([owner]) };
-            let external = caller_image.canonical_links().find_map(|(_, link)| match link.target {
-                backend_semantic::ir::LinkTarget::External(external) => Some(external), _ => None,
-            }).expect("native endpoint");
-            let joined = super::join_native_typescript_target(&caller_image, external, &index, &published).map_err(|error| error.to_string())?;
-            let succeeds = admitted_source == source_id && selected;
-            assert_eq!(joined, succeeds.then_some(target));
-            let digest = *blake3::hash(&caller_bytes).as_bytes();
-            let endpoint = identity::external_semantic_symbol(package, digest,
-                backend_semantic::ir::ExternalTargetIdentity::capture(&caller_image, external).map_err(|error| error.to_string())?);
-            let owned = identity::semantic_symbol(package, target);
-            let mut rows = Vec::new();
-            for (image, bytes, path, profile) in [
-                (&target_image, &target_bytes, target_path, if target_path.ends_with(".tsx") { TypeScriptSource::Tsx } else { TypeScriptSource::TypeScript }),
-                (&caller_image, &caller_bytes, "src/app.controller.ts", TypeScriptSource::TypeScript),
+            let service = "export class AppService { getHello(): string { return ''; } }\n";
+            let caller = "import { AppService } from '@/service';\nconst service = new AppService();\nservice.getHello();\n";
+            let start = service.find("getHello():").expect("target") as u32;
+            let end = start + "getHello(): string { return ''; }".len() as u32;
+            let at = caller.find("service.getHello()").expect("use") as u32 + 8;
+            let source_id =
+                *ContentId::<SourceFactDomain>::from_canonical_bytes(service.as_bytes());
+            let program = typescript_program_identity(&[
+                (
+                    "src/app.controller.ts".to_owned(),
+                    *ContentId::<SourceFactDomain>::from_canonical_bytes(caller.as_bytes()),
+                ),
+                (target_path.to_owned(), source_id),
+            ])
+            .expect("complete fixture program");
+            let (target_bytes, target) = source_image(target_path, service, 3, None)?;
+            let package = backend_engine::package_key(package_label);
+            let project = IndexedProject {
+                package,
+                label: package_label.to_owned(),
+                files: Arc::from([]),
+            };
+            let (initial, _) =
+                super::super::super::initial_view().map_err(|error| error.to_string())?;
+            for (admitted_source, selected, target_present) in [
+                (source_id, true, true),
+                ([99; 32], true, true),
+                (source_id, false, true),
+                (source_id, true, false),
             ] {
-                rows.extend(project_image_rows(image, *blake3::hash(bytes).as_bytes(), &project,
-                    LanguageProfile::TypeScript(profile), initial.basis(), false, path, &[])
-                    .map_err(|error| error.to_string())?.rows.into_iter().map(|row| row.row));
+                let (caller_bytes, owner) = source_image(
+                    "src/app.controller.ts",
+                    caller,
+                    9,
+                    Some((
+                        target_path.to_owned(),
+                        start,
+                        end,
+                        start,
+                        program,
+                        admitted_source,
+                        at,
+                        at + 8,
+                    )),
+                )?;
+                let target_image =
+                    SemanticImageView::reopen(&target_bytes).map_err(|error| error.to_string())?;
+                let caller_image =
+                    SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+                let index = ProjectCallableIndex::build_from_views(&[&target_image, &caller_image])
+                    .map_err(|error| error.to_string())?;
+                let published = if selected {
+                    BTreeSet::from([target, owner])
+                } else {
+                    BTreeSet::from([owner])
+                };
+                let external = caller_image
+                    .canonical_links()
+                    .find_map(|(_, link)| match link.target {
+                        backend_semantic::ir::LinkTarget::External(external) => Some(external),
+                        _ => None,
+                    })
+                    .expect("native endpoint");
+                let joined = super::join_native_typescript_target(
+                    &caller_image,
+                    external,
+                    &index,
+                    &published,
+                )
+                .map_err(|error| error.to_string())?;
+                let succeeds = admitted_source == source_id && selected;
+                assert_eq!(joined, succeeds.then_some(target));
+                let digest = *blake3::hash(&caller_bytes).as_bytes();
+                let endpoint = identity::external_semantic_symbol(
+                    package,
+                    digest,
+                    backend_semantic::ir::ExternalTargetIdentity::capture(&caller_image, external)
+                        .map_err(|error| error.to_string())?,
+                );
+                let owned = identity::semantic_symbol(package, target);
+                let mut rows = Vec::new();
+                for (image, bytes, path, profile) in [
+                    (
+                        &target_image,
+                        &target_bytes,
+                        target_path,
+                        if target_path.ends_with(".tsx") {
+                            TypeScriptSource::Tsx
+                        } else {
+                            TypeScriptSource::TypeScript
+                        },
+                    ),
+                    (
+                        &caller_image,
+                        &caller_bytes,
+                        "src/app.controller.ts",
+                        TypeScriptSource::TypeScript,
+                    ),
+                ] {
+                    rows.extend(
+                        project_image_rows(
+                            image,
+                            *blake3::hash(bytes).as_bytes(),
+                            &project,
+                            LanguageProfile::TypeScript(profile),
+                            initial.basis(),
+                            false,
+                            path,
+                            &[],
+                        )
+                        .map_err(|error| error.to_string())?
+                        .rows
+                        .into_iter()
+                        .map(|row| row.row),
+                    );
+                }
+                let caller_key = RowId::Symbol(identity::semantic_symbol(package, owner));
+                rows.iter_mut()
+                    .find(|row| row.id == caller_key)
+                    .expect("actual caller row")
+                    .document = vec![Fragment::Link {
+                    label: "authored use".to_owned(),
+                    target: endpoint,
+                }]
+                .into_boxed_slice();
+                let mut aliases = NativeTargetAliases::default();
+                aliases
+                    .record_image(package, digest, &caller_image, &index, &published)
+                    .map_err(|error| error.to_string())?;
+                // Defensive projection boundary: even a correctly recorded
+                // selected alias cannot remove an endpoint if no real target row
+                // survived admission. Record first, then remove only that row.
+                if !target_present {
+                    rows.retain(|row| row.id != RowId::Symbol(owned));
+                }
+                aliases.apply(&mut rows);
+                let admitted = succeeds && target_present;
+                assert_eq!(
+                    rows.iter().any(|row| row.id == RowId::Symbol(endpoint)),
+                    !admitted,
+                    "only an exact selected endpoint becomes the existing declaration row"
+                );
+                assert_eq!(
+                    rows.iter().any(|row| row.id == RowId::Symbol(owned)),
+                    target_present,
+                    "the arrangement never filters an authored target"
+                );
+                let document = &rows
+                    .iter()
+                    .find(|row| row.id == caller_key)
+                    .expect("retained actual caller")
+                    .document;
+                assert!(
+                    matches!(document[0], Fragment::Link { target, .. }
+                if target == if admitted { owned } else { endpoint }),
+                    "document links share the exact same key arrangement"
+                );
             }
-            let caller_key = RowId::Symbol(identity::semantic_symbol(package, owner));
-            rows.iter_mut().find(|row| row.id == caller_key).expect("actual caller row").document =
-                vec![Fragment::Link { label: "authored use".to_owned(), target: endpoint }].into_boxed_slice();
-            let mut aliases = NativeTargetAliases::default();
-            aliases.record_image(package, digest, &caller_image, &index, &published).map_err(|error| error.to_string())?;
-            // Defensive projection boundary: even a correctly recorded
-            // selected alias cannot remove an endpoint if no real target row
-            // survived admission. Record first, then remove only that row.
-            if !target_present { rows.retain(|row| row.id != RowId::Symbol(owned)); }
-            aliases.apply(&mut rows);
-            let admitted = succeeds && target_present;
-            assert_eq!(rows.iter().any(|row| row.id == RowId::Symbol(endpoint)), !admitted,
-                "only an exact selected endpoint becomes the existing declaration row");
-            assert_eq!(rows.iter().any(|row| row.id == RowId::Symbol(owned)), target_present,
-                "the arrangement never filters an authored target");
-            let document = &rows.iter().find(|row| row.id == caller_key).expect("retained actual caller").document;
-            assert!(matches!(document[0], Fragment::Link { target, .. }
-                if target == if admitted { owned } else { endpoint }), "document links share the exact same key arrangement");
         }
+        Ok(())
+    }
+
+    fn assert_project_set_aliases_join_only_authenticated_primary_images() -> Result<(), String> {
+        use backend_semantic::ir::{
+            NativeProgramNode, NativeProgramSource, NativeProgramSourceManifest,
+            NativeProgramSources, SemanticImageIdentity,
+        };
+        let service = "export class AppService { getHello(): string { return ''; } }\n";
+        let caller = "import { AppService as ServiceAlias } from './app.service';\nconst service = new ServiceAlias();\nservice.getHello();\n";
+        let service_source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(service.as_bytes()),
+            byte_len: service.len() as u32,
+        };
+        let caller_source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(caller.as_bytes()),
+            byte_len: caller.len() as u32,
+        };
+        let toolchain =
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"tsz-source-join-fixture");
+        let primary = NativeProgramSourceManifest::from_sources(
+            toolchain,
+            vec![NativeProgramSource {
+                program_path: "src/app.service.ts".into(),
+                package_path: Some("src/app.service.ts".into()),
+                source: service_source,
+            }],
+        )
+        .map_err(|error| error.to_string())?;
+        let supplemental = NativeProgramSourceManifest::from_sources(
+            toolchain,
+            vec![
+                NativeProgramSource {
+                    program_path: "src/app.service.ts".into(),
+                    package_path: None,
+                    source: service_source,
+                },
+                NativeProgramSource {
+                    program_path: "src/app.controller.ts".into(),
+                    package_path: Some("src/app.controller.ts".into()),
+                    source: caller_source,
+                },
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        assert_ne!(primary.program(), supplemental.program());
+        let sources = NativeProgramSources::from_project_set(
+            toolchain,
+            0,
+            vec![
+                NativeProgramNode {
+                    config_path: "tsconfig.app.json".into(),
+                    config: ContentId::from_canonical_bytes(b"actual app config"),
+                    environment: [1; 32],
+                    references: vec![],
+                    program: Some(primary.clone()),
+                },
+                NativeProgramNode {
+                    config_path: "tsconfig.json".into(),
+                    config: ContentId::from_canonical_bytes(b"actual independent config"),
+                    environment: [2; 32],
+                    references: vec![],
+                    program: Some(supplemental.clone()),
+                },
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        let start = service.find("getHello(): string").ok_or("service method")? as u32;
+        let end = start + "getHello(): string { return ''; }".len() as u32;
+        let site =
+            (caller.find("service.getHello()").ok_or("caller site")? + "service.".len()) as u32;
+        let (service_bytes, service_identity) =
+            source_image("src/app.service.ts", service, 31, None)?;
+        let service_view =
+            SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
+        let scopes = BTreeMap::from([(
+            backend_semantic::vocabulary::Language::TypeScript,
+            super::RetargetingScope::SelectedArtifacts,
+        )]);
+        let paths = BTreeSet::from([
+            "src/app.service.ts".to_owned(),
+            "src/app.controller.ts".to_owned(),
+        ]);
+        for (program, source, path, declaration_end, succeeds) in [
+            (
+                supplemental.program(),
+                *service_source.identity,
+                "src/app.service.ts",
+                end,
+                true,
+            ),
+            (
+                [7; 32],
+                *service_source.identity,
+                "src/app.service.ts",
+                end,
+                false,
+            ),
+            (
+                supplemental.program(),
+                [9; 32],
+                "src/app.service.ts",
+                end,
+                false,
+            ),
+            (
+                supplemental.program(),
+                *service_source.identity,
+                "src/foreign.service.ts",
+                end,
+                false,
+            ),
+            (
+                supplemental.program(),
+                *service_source.identity,
+                "src/app.service.ts",
+                end - 1,
+                false,
+            ),
+        ] {
+            let (caller_bytes, caller_identity) = source_image(
+                "src/app.controller.ts",
+                caller,
+                35,
+                Some((
+                    path.to_owned(),
+                    start,
+                    declaration_end,
+                    start,
+                    program,
+                    source,
+                    site,
+                    site + "getHello".len() as u32,
+                )),
+            )?;
+            let bound = sources
+                .clone()
+                .with_image_bindings([
+                    (
+                        "src/app.service.ts".to_owned(),
+                        *SemanticImageIdentity::from_encoded_bytes(&service_bytes).as_ref(),
+                    ),
+                    (
+                        "src/app.controller.ts".to_owned(),
+                        *SemanticImageIdentity::from_encoded_bytes(&caller_bytes).as_ref(),
+                    ),
+                ])
+                .map_err(|error| error.to_string())?;
+            let cold = NativeProgramSources::decode(bound.as_bytes())
+                .map_err(|error| error.to_string())?;
+            let primary_owner = cold
+                .sources()
+                .find(|row| row.package_path == Some("src/app.service.ts"))
+                .ok_or("primary package owner")?;
+            let dependency = cold
+                .sources()
+                .find(|row| {
+                    row.program == supplemental.program()
+                        && row.program_path == "src/app.service.ts"
+                })
+                .ok_or("actual supplemental dependency")?;
+            assert_eq!(primary_owner.program, primary.program());
+            assert_eq!(dependency.package_path, None);
+            assert_eq!(dependency.source, primary_owner.source);
+            assert_ne!(primary_owner.node, dependency.node);
+            assert!(
+                cold.nodes()
+                    .unwrap()
+                    .1
+                    .iter()
+                    .all(|node| node.references.is_empty())
+            );
+            let caller_view =
+                SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+            let index = ProjectCallableIndex::build_from_views_with_program_sources(
+                &[&service_view, &caller_view],
+                &scopes,
+                &[(
+                    &cold,
+                    vec![service_bytes.as_slice(), caller_bytes.as_slice()],
+                )],
+                false,
+            )
+            .map_err(|error| error.to_string())?;
+            assert!(
+                index.tsz_program_identity.is_none(),
+                "legacy whole-image identity cannot authorize the alias"
+            );
+            let published = BTreeSet::from([service_identity, caller_identity]);
+            for kind in [LinkKind::MethodCall, LinkKind::Reads] {
+                let external = caller_view
+                    .links_from(backend_semantic::ir::EntityId::new(0))
+                    .find_map(|(_, link)| match link.target {
+                        backend_semantic::ir::LinkTarget::External(external)
+                            if link.kind == kind =>
+                        {
+                            Some(external)
+                        }
+                        _ => None,
+                    })
+                    .ok_or("actual typed external endpoint")?;
+                let joined = if kind == LinkKind::MethodCall {
+                    join_project_call(
+                        &caller_view,
+                        kind,
+                        external,
+                        "src/app.controller.ts",
+                        &paths,
+                        &index,
+                        &published,
+                    )
+                } else {
+                    join_project_field(
+                        &caller_view,
+                        kind,
+                        external,
+                        "src/app.controller.ts",
+                        &paths,
+                        &index,
+                        &published,
+                    )
+                }
+                .map_err(|error| error.to_string())?;
+                assert_eq!(
+                    joined,
+                    succeeds.then_some(service_identity),
+                    "only the exact actual supplemental member may alias the primary declaration"
+                );
+            }
+            assert_eq!(
+                index.resolve(
+                    &BTreeSet::from(["src/app.service.ts".to_owned()]),
+                    "getHello"
+                ),
+                None,
+                "the positive alias never enables selected-scope name guessing"
+            );
+            assert!(
+                ProjectCallableIndex::build_from_views_with_program_sources(
+                    &[&service_view, &caller_view],
+                    &scopes,
+                    &[(
+                        &sources,
+                        vec![service_bytes.as_slice(), caller_bytes.as_slice()]
+                    )],
+                    false,
+                )
+                .is_err(),
+                "unsealed images cannot authorize project aliases"
+            );
+            let (rebound_bytes, _) = source_image("src/app.service.ts", service, 41, None)?;
+            let rebound_view =
+                SemanticImageView::reopen(&rebound_bytes).map_err(|error| error.to_string())?;
+            assert!(
+                ProjectCallableIndex::build_from_views_with_program_sources(
+                    &[&rebound_view, &caller_view],
+                    &scopes,
+                    &[(
+                        &cold,
+                        vec![rebound_bytes.as_slice(), caller_bytes.as_slice()]
+                    )],
+                    false,
+                )
+                .is_err(),
+                "same source with different image bytes cannot borrow a sealed owner"
+            );
+            let edited_service = service.replace("return ''", "return 'edited'");
+            let (edited_bytes, _) = source_image("src/app.service.ts", &edited_service, 31, None)?;
+            let edited_view =
+                SemanticImageView::reopen(&edited_bytes).map_err(|error| error.to_string())?;
+            assert!(
+                ProjectCallableIndex::build_from_views_with_program_sources(
+                    &[&edited_view, &caller_view],
+                    &scopes,
+                    &[(
+                        &cold,
+                        vec![edited_bytes.as_slice(), caller_bytes.as_slice()]
+                    )],
+                    false,
+                )
+                .is_err(),
+                "stale source identity refuses before coordinate joins"
+            );
         }
         Ok(())
     }
@@ -2376,6 +2807,7 @@ mod tsz_source_coordinate_tests {
             Some(edited_identity),
             "a fresh source coordinate joins to the current edited declaration"
         );
+        assert_project_set_aliases_join_only_authenticated_primary_images()?;
         Ok(())
     }
 }
@@ -2429,7 +2861,8 @@ mod python_native_call_tests {
     }
 
     #[test]
-    fn native_python_record_call_joins_class_without_retargeting_constructor() -> Result<(), String> {
+    fn native_python_record_call_joins_class_without_retargeting_constructor() -> Result<(), String>
+    {
         use crate::test_support::TestValue as _;
         let root = tempfile::tempdir().expect("isolated native producer fixture");
         let package_root = root.path().join("project");
@@ -2469,14 +2902,15 @@ mod python_native_call_tests {
             .map(|(path, source)| OwnedPackageSource::new(path, source).expect("captured source"))
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        let environment = backend_frontend_python::legacy::checker::PythonEnvironmentCapture::capture(
-            &package_root,
-            backend_frontend_python::legacy::checker::PythonProjectControl {
-                cancelled: &std::sync::atomic::AtomicBool::new(false),
-                deadline: std::time::Instant::now() + std::time::Duration::from_secs(180),
-            },
-        )
-        .expect("explicit absent installed environment witness");
+        let environment =
+            backend_frontend_python::legacy::checker::PythonEnvironmentCapture::capture(
+                &package_root,
+                backend_frontend_python::legacy::checker::PythonProjectControl {
+                    cancelled: &std::sync::atomic::AtomicBool::new(false),
+                    deadline: std::time::Instant::now() + std::time::Duration::from_secs(180),
+                },
+            )
+            .expect("explicit absent installed environment witness");
         let staged = client
             .compile_package_sources_staged(
                 OwnedPackageSourceSet::new(request, package_root, sources)
@@ -2497,8 +2931,8 @@ mod python_native_call_tests {
             })
             .collect::<Vec<_>>();
         let views = images.iter().collect::<Vec<_>>();
-        let index = ProjectCallableIndex::build_from_views(&views)
-            .map_err(|error| error.to_string())?;
+        let index =
+            ProjectCallableIndex::build_from_views(&views).map_err(|error| error.to_string())?;
         let paths = modules.iter().map(|(path, _)| path.to_string()).collect();
         let model_paths = BTreeSet::from(["src/requests/models.py".to_owned()]);
         let class = index
