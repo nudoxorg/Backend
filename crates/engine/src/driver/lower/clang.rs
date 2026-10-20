@@ -2768,7 +2768,13 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                                 ReferenceKind::Member => Some(EntityKind::Field),
                                 _ => unreachable!(),
                             };
-                            if let Ok(name) = core::str::from_utf8(name_bytes) {
+                            // A native implicit call can have an exact zero-width
+                            // use span and no written callee. Such a site cannot
+                            // name a package-path ForeignKey. Preserve its proven
+                            // file/USR target in the stable branch below instead.
+                            if let Ok(name) = core::str::from_utf8(name_bytes)
+                                && !name.is_empty()
+                            {
                                 self.facts
                                     .push_owned_package_occurrence(
                                         owner,
@@ -4508,6 +4514,131 @@ mod tests {
         }
         if stable.declaration == other_stable.declaration {
             return Err(TestError::Missing("distinct usr declarations"));
+        }
+        Ok(())
+    }
+
+    /// An implicit project-header reference may carry a valid zero-width
+    /// authority span without a written name. Its file/USR identity is still
+    /// exact; the nameless site must remain an Oracle stable occurrence,
+    /// while a named sibling keeps the normal package-path projection.
+    #[test]
+    fn nameless_project_references_keep_stable_targets_and_named_siblings() -> Result<(), TestError>
+    {
+        use backend_frontend_clang::legacy::{
+            ClangFacts, DeclarationKind, ReferenceFact, ReferenceKind, ReferenceTarget,
+        };
+        let source = b"void use() { named(); }";
+        let owner = SymbolIdentity { bytes: [1; 16] };
+        let target = SymbolIdentity { bytes: [2; 16] };
+        let file = SymbolIdentity { bytes: [3; 16] };
+        let mut declaration = super::empty_declaration();
+        declaration.kind = DeclarationKind::Function;
+        declaration.identity = Some(owner);
+        declaration.name = Some(SourceSpan { start: 5, end: 8 });
+        declaration.span = SourceSpan {
+            start: 0,
+            end: u32::try_from(source.len()).map_err(|_| TestError::Tail)?,
+        };
+        let declarations = [declaration];
+        let foreign = ReferenceTarget::Foreign {
+            identity: target,
+            file: Some(file),
+            path: Some(0),
+        };
+        let references = [
+            ReferenceFact {
+                kind: ReferenceKind::Call,
+                span: SourceSpan { start: 12, end: 12 },
+                owner: Some(owner),
+                target: foreign,
+            },
+            ReferenceFact {
+                kind: ReferenceKind::Type,
+                span: SourceSpan { start: 12, end: 12 },
+                owner: Some(owner),
+                target: foreign,
+            },
+            ReferenceFact {
+                kind: ReferenceKind::Template,
+                span: SourceSpan { start: 12, end: 12 },
+                owner: Some(owner),
+                target: foreign,
+            },
+            ReferenceFact {
+                kind: ReferenceKind::Call,
+                span: SourceSpan { start: 13, end: 18 },
+                owner: Some(owner),
+                target: foreign,
+            },
+        ];
+        let authority = ClangFacts {
+            declarations: &declarations,
+            types: &[],
+            type_edges: &[],
+            references: &references,
+            diagnostics: &[],
+            includes: &[],
+            overrides: &[],
+            project_paths: vec!["include/decl.hpp".into()],
+        };
+        let mut facts = FactSet::new();
+        let mut projector = super::Projector::new(source, authority, &mut facts);
+        projector.select_representatives()?;
+        projector.push_type_anchors()?;
+        projector.push_members()?;
+        projector.attach_topology()?;
+        projector.push_occurrences()?;
+        drop(projector);
+        if facts.len() != 1
+            || facts.occurrence_len != references.len()
+            || facts.foreign_text.len() != 1
+        {
+            return Err(TestError::Missing(
+                "all declaration and reference facts retained",
+            ));
+        }
+        for (index, reference) in references[..3].iter().enumerate() {
+            let occurrence = &facts.occurrences[index];
+            if occurrence.target != super::stable_foreign_target(target, file)
+                || occurrence.kind != super::lane_reference_kind(reference.kind)
+                || occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle
+                || occurrence.span.start != 12
+                || occurrence.span.end != 12
+                || facts.occurrence_owners[index] != 0
+                || facts.occurrence_package_slot[index].is_some()
+            {
+                return Err(TestError::Missing(
+                    "exact nameless stable reference preserved",
+                ));
+            }
+        }
+        let named = &facts.occurrences[3];
+        let OccurrenceTarget::Foreign(key) = named.target else {
+            return Err(TestError::Missing("named sibling package path"));
+        };
+        let ForeignOrigin::Package(lineage) = key.origin else {
+            return Err(TestError::Missing("named sibling package origin"));
+        };
+        // Name-keyed package paths are owned staging text until admission.
+        // The retained slot must still name the original header, never an
+        // invented spelling for one of the nameless stable references.
+        let named_package: Option<&str> = facts.occurrence_package_slot[3]
+            .and_then(|slot| usize::try_from(slot).ok())
+            .and_then(|slot| facts.foreign_text.get(slot))
+            .map(|path| path.as_ref());
+        if lineage.ecosystem != "c"
+            || named_package != Some("include/decl.hpp")
+            || key.path != "named"
+            || key.display != "named"
+            || key.kind != Some(EntityKind::Function)
+            || named.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle
+            || named.span.start != 13
+            || named.span.end != 18
+        {
+            return Err(TestError::Missing(
+                "named sibling identity and span unchanged",
+            ));
         }
         Ok(())
     }
