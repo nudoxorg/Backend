@@ -76,7 +76,8 @@ fn engine() -> PrimaryEngine {
 
 fn assert_primary_admission(primary: &crate::model::pages::store::PrimarySymbol) {
     let key = PageKey::Symbol(symbol());
-    let root = VersionedRoot::synthetic(document().basis, 1);
+    let root = VersionedRoot::synthetic(document().basis, 1).with_generation(1);
+    assert!(!root.is_unserved(), "the fixture owner has answered");
     let mut store = PageStore::default();
     let generation = store
         .begin(&key, root)
