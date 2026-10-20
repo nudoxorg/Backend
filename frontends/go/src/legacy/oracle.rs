@@ -1180,6 +1180,24 @@ impl GoOracleChildEnvironment {
         module_cache: PathBuf,
         build_cache: PathBuf,
     ) -> Result<Self, GoOracleConfigurationError> {
+        Self::new_controlled(
+            go_executable,
+            goroot,
+            module_cache,
+            build_cache,
+            GoOracleControl::default(),
+        )
+    }
+
+    /// Admits the same complete executable/GOROOT closure under the request's original control.
+    /// Cancellation or expiry never publishes a partial toolchain identity.
+    pub fn new_controlled(
+        go_executable: PathBuf,
+        goroot: PathBuf,
+        module_cache: PathBuf,
+        build_cache: PathBuf,
+        control: GoOracleControl<'_>,
+    ) -> Result<Self, GoOracleConfigurationError> {
         if !go_executable.is_absolute() {
             return Err(GoOracleConfigurationError::RelativeAuthorityPath {
                 role: "executable",
@@ -1223,12 +1241,11 @@ impl GoOracleChildEnvironment {
             .to_string_lossy()
             .into_owned();
         let toolchain_memo = ToolchainMemo::default();
-        let toolchain_identity =
-            toolchain_memo.identity(&go_executable, &goroot).map_err(|source| {
-                GoOracleConfigurationError::ToolchainIdentity {
-                    path: goroot.clone(),
-                    source,
-                }
+        let toolchain_identity = toolchain_memo
+            .identity_controlled(&go_executable, &goroot, control)
+            .map_err(|source| GoOracleConfigurationError::ToolchainIdentity {
+                path: goroot.clone(),
+                source,
             })?;
         Ok(Self {
             go_executable,
@@ -2160,6 +2177,19 @@ impl ConfiguredGoOracle {
         )
     }
 
+    /// Revalidates the complete selected executable/GOROOT before a caller's direct Go operation.
+    /// This performs no helper, package, or compiler child invocation.
+    pub fn revalidate_toolchain_controlled(
+        &self,
+        control: GoOracleControl<'_>,
+    ) -> Result<(), OracleError> {
+        control.check("toolchain_reproof")?;
+        self.child_environment
+            .as_ref()
+            .ok_or(OracleError::MissingChildEnvironment)?
+            .revalidate_toolchain_controlled(control)
+    }
+
     /// Returns a host-local fingerprint of the explicit oracle command,
     /// bundled Go producer closure, and process bounds. Path bytes make this
     /// a drift detector rather than a cross-host closure identity.
@@ -2944,6 +2974,7 @@ impl Eq for ToolchainMemo {}
 const TOOLCHAIN_STAMP_SETTLE_SECONDS: i64 = 2;
 
 impl ToolchainMemo {
+    #[cfg(test)]
     fn identity(&self, executable: &Path, goroot: &Path) -> std::io::Result<[u8; 32]> {
         self.identity_controlled(executable, goroot, GoOracleControl::default())
     }
@@ -3965,6 +3996,84 @@ mod read_tests {
             std::os::unix::fs::symlink(&target, &manifest)?;
             assert!(!cache_entry_is_valid(&root_cap, "entry", "oracle", &prefix));
         }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn controlled_toolchain_admission_reads_full_sdk_and_rejects_later_content_change()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir()?;
+        let executable = root.path().join("go");
+        let goroot = root.path().join("sdk");
+        let modules = root.path().join("modules");
+        std::fs::write(&executable, b"selected Go executable")?;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::create_dir_all(goroot.join("src"))?;
+        std::fs::create_dir(&modules)?;
+        let source = goroot.join("src/actual.go");
+        std::fs::write(&source, b"package actual\nconst Value = 1\n")?;
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let control = GoOracleControl::new(
+            Some(&cancelled),
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
+        );
+        let environment = GoOracleChildEnvironment::new_controlled(
+            executable.clone(),
+            goroot.clone(),
+            modules.clone(),
+            root.path().join("build"),
+            control,
+        )?;
+        assert_eq!(
+            environment.toolchain_identity(),
+            hash_toolchain_identity(&executable, &goroot)?
+        );
+        environment.revalidate_toolchain_controlled(control)?;
+        std::fs::write(&source, b"package actual\nconst Value = 2\n")?;
+        assert!(matches!(
+            environment.revalidate_toolchain_controlled(control),
+            Err(OracleError::GoToolchainIdentityChanged)
+        ));
+        let project = root.path().join("project");
+        std::fs::create_dir(&project)?;
+        std::fs::write(
+            project.join("go.mod"),
+            "module example.com/proof\n\ngo 1.25\n",
+        )?;
+        let selected = project.join("actual.go");
+        std::fs::write(&selected, "package proof\nconst Value = 1\n")?;
+        let witness = GoPackageAuthorityWitness::capture(&project)?;
+        let oracle = GoOracle::default()
+            .with_configuration(GoOracleConfiguration::go_toolchain(executable.clone())?)
+            .with_child_environment(environment)?;
+        assert!(matches!(
+            oracle.revalidate_toolchain_controlled(control),
+            Err(OracleError::GoToolchainIdentityChanged)
+        ));
+        assert!(
+            matches!(
+                oracle.authority_image_for_package_with_authority_witness_controlled(
+                    &selected, &project, &witness, control
+                ),
+                Err(OracleError::GoToolchainIdentityChanged)
+            ),
+            "the real selected-image entry must reject changed SDK content before any child"
+        );
+        // The rejected SDK cannot authorize helper preparation or a package child.
+        cancelled.store(true, std::sync::atomic::Ordering::Release);
+        let refused = GoOracleChildEnvironment::new_controlled(
+            executable,
+            goroot,
+            modules,
+            root.path().join("other-build"),
+            control,
+        );
+        assert!(matches!(
+            refused,
+            Err(GoOracleConfigurationError::ToolchainIdentity { .. })
+        ));
         Ok(())
     }
 

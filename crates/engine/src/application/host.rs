@@ -42,6 +42,7 @@ use crate::application::{
     LocalRuntimeGoAuthorityFailure, ToolchainProbeLimits,
 };
 
+pub(crate) use authority::go_authority_failure;
 pub use capture::CapturedLocalHostEnvironment;
 pub use error::LocalCompilerHostError;
 pub(crate) use paths::{
@@ -1289,6 +1290,91 @@ mod tests {
             Err(CheckerError::PythonInterpreterSelectionUnavailable { major: 3, minor: 14 })
         ));
         drop(absent);
+        drop(client);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unrelated_owner_defers_go_sdk_walk_and_first_go_request_keeps_typed_refusal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use backend_library::interface::{CompilerCapability, CompilerRequest};
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = PrivateTestDirectory::create("deferred-go-owner")?;
+        let sdk = fixture.path().join("sdk");
+        let modules = fixture.path().join("modules");
+        fs::create_dir(&sdk)?;
+        fs::create_dir(&modules)?;
+        // Any full SDK identity walk must reject this entry. Host path selection itself
+        // is valid; unrelated owner startup must neither traverse nor bless the SDK.
+        std::os::unix::fs::symlink("/outside/sdk", sdk.join("forbidden-link"))?;
+        let go = fixture.path().join("go");
+        fs::write(
+            &go,
+            format!(
+                "#!/bin/sh\ncase \"$1\" in env) printf '%s\\n' '{}' ;; version) printf 'go version go1.25.0 linux/amd64\\n' ;; *) touch '{}'; exit 99 ;; esac\n",
+                sdk.display(),
+                fixture.path().join("unexpected-go-child").display()
+            ),
+        )?;
+        fs::set_permissions(&go, fs::Permissions::from_mode(0o700))?;
+        let host = LocalCompilerHost::new(
+            StartupEnvironment(vec![
+                (
+                    LocalHostVariable::NudoxDataRoot,
+                    fixture.path().join("owner").into_os_string(),
+                ),
+                (LocalHostVariable::NudoxGo, go.into_os_string()),
+                (LocalHostVariable::NudoxGoRoot, modules.into_os_string()),
+            ]),
+            LocalHostDiscovery::ExplicitOnly,
+        );
+        let mut client = host.open()?;
+        let profile = LanguageProfile::Go(GoVersion::Go125);
+        let before = client.capabilities().for_profile(profile);
+        assert!(matches!(
+            before.state(),
+            crate::application::LocalCompilerCapabilityState::Probing
+                | crate::application::LocalCompilerCapabilityState::Deferred
+        ));
+        assert!(before.local_authority_fingerprint().is_none());
+        client
+            .generate(CompilerRequest {
+                profile: LanguageProfile::Python(PythonVersion::Python314),
+                stage: Stage::LowerIr,
+                source: "answer = 42\n",
+            })
+            .expect("actual compiled native Python remains usable before Go SDK admission");
+        assert_ne!(
+            client.capabilities().for_profile(profile).state(),
+            crate::application::LocalCompilerCapabilityState::ProbeFailed,
+            "an unrelated compile cannot have traversed the forbidden SDK entry"
+        );
+        assert!(
+            client
+                .generate(CompilerRequest {
+                    profile,
+                    stage: Stage::LowerIr,
+                    source: "package main\nfunc main() {}\n",
+                })
+                .is_err(),
+            "the first actual Go request must attempt and refuse the SDK proof"
+        );
+        assert_eq!(
+            client.capabilities().for_profile(profile).state(),
+            crate::application::LocalCompilerCapabilityState::ProbeFailed
+        );
+        assert!(
+            !fixture.path().join("unexpected-go-child").exists(),
+            "an SDK refusal must prevent the generic native Go compiler child"
+        );
+        client
+            .generate(CompilerRequest {
+                profile: LanguageProfile::Python(PythonVersion::Python314),
+                stage: Stage::LowerIr,
+                source: "answer = 43\n",
+            })
+            .expect("the Go-only refusal leaves the actual native Python producer usable");
         drop(client);
         Ok(())
     }
