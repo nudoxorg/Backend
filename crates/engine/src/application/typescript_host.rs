@@ -393,10 +393,14 @@ impl TypeScriptResolverWitness {
         // Admission tracks path/directory payload bytes, but not every duplicate
         // map key or tree node. Charge duplicate payload plus generous per-node
         // and per-directory-entry storage as well as all owned source bytes.
-        self.observations.retained_metadata_bytes.saturating_mul(2)
+        self.observations
+            .retained_metadata_bytes
+            .saturating_mul(2)
             .saturating_add(self.observations.observation_count().saturating_mul(1024))
             .saturating_add(self.observations.directory_entries.saturating_mul(256))
-            .saturating_add(usize::try_from(self.observations.loaded_source_bytes).unwrap_or(usize::MAX))
+            .saturating_add(
+                usize::try_from(self.observations.loaded_source_bytes).unwrap_or(usize::MAX),
+            )
     }
 
     pub(crate) const fn digest(&self) -> &[u8; 32] {
@@ -429,7 +433,12 @@ impl TypeScriptResolverWitness {
                 path: witness.project_root.clone(),
             });
         }
-        validate_resolver_observations_with_host_controlled(witness, &self.observations, Some(host), control)
+        validate_resolver_observations_with_host_controlled(
+            witness,
+            &self.observations,
+            Some(host),
+            control,
+        )
     }
 }
 
@@ -1657,15 +1666,19 @@ impl TypeScriptProjectWitness {
     /// Native hosts retain no Compiler API invocation or resource-bundle payload.
     pub(crate) fn retained_native_bytes(&self) -> Option<usize> {
         if !matches!(self.authority, TypeScriptWitnessAuthority::Native)
-            || self.resource_proof.is_some() || !self.typescript_files.is_empty()
+            || self.resource_proof.is_some()
+            || !self.typescript_files.is_empty()
         {
             return None;
         }
         let path_bytes = |path: &Path| path.as_os_str().as_encoded_bytes().len();
-        let snapshots = |files: &[FileSnapshot]| files.iter().fold(0usize, |bytes, file| {
-            bytes.saturating_add(std::mem::size_of::<FileSnapshot>())
-                .saturating_add(path_bytes(&file.path))
-        });
+        let snapshots = |files: &[FileSnapshot]| {
+            files.iter().fold(0usize, |bytes, file| {
+                bytes
+                    .saturating_add(std::mem::size_of::<FileSnapshot>())
+                    .saturating_add(path_bytes(&file.path))
+            })
+        };
         let mut bytes = std::mem::size_of::<Self>()
             .saturating_add(path_bytes(&self.project_root))
             .saturating_add(self.home_root.as_deref().map_or(0, path_bytes))
@@ -1673,24 +1686,35 @@ impl TypeScriptProjectWitness {
             .saturating_add(path_bytes(&self.workspace_root))
             .saturating_add(snapshots(&self.files));
         if let Some(workspace) = &self.workspace {
-            bytes = bytes.saturating_add(path_bytes(&workspace.root))
+            bytes = bytes
+                .saturating_add(path_bytes(&workspace.root))
                 .saturating_add(snapshots(&workspace.files));
         }
         for config in &self.config_candidates {
-            bytes = bytes.saturating_add(std::mem::size_of::<TypeScriptConfigInput>())
-                .saturating_add(config.bytes.len()).saturating_add(path_bytes(&config.path));
+            bytes = bytes
+                .saturating_add(std::mem::size_of::<TypeScriptConfigInput>())
+                .saturating_add(config.bytes.len())
+                .saturating_add(path_bytes(&config.path));
             for path in config.extends.iter().chain(&config.references) {
-                bytes = bytes.saturating_add(std::mem::size_of::<Box<Path>>())
+                bytes = bytes
+                    .saturating_add(std::mem::size_of::<Box<Path>>())
                     .saturating_add(path_bytes(path));
             }
         }
-        for path in self.config_paths.iter().chain(&self.selected_build_config_paths) {
-            bytes = bytes.saturating_add(std::mem::size_of::<Box<Path>>())
+        for path in self
+            .config_paths
+            .iter()
+            .chain(&self.selected_build_config_paths)
+        {
+            bytes = bytes
+                .saturating_add(std::mem::size_of::<Box<Path>>())
                 .saturating_add(path_bytes(path));
         }
         for (path, file) in self.loaded_source_files.lock().ok()?.iter() {
             // Charge both paths plus a conservative per-entry tree allocation.
-            bytes = bytes.saturating_add(1024).saturating_add(path.capacity())
+            bytes = bytes
+                .saturating_add(1024)
+                .saturating_add(path.capacity())
                 .saturating_add(path_bytes(&file.path));
         }
         Some(bytes)
@@ -2505,7 +2529,8 @@ fn capture_directory_snapshot_controlled<F>(
     witness: &TypeScriptProjectWitness,
     control: &mut F,
 ) -> Result<DirectorySnapshot, TypeScriptProjectHostError>
-where F: FnMut() -> Result<(), TypeScriptProjectHostError> + ?Sized,
+where
+    F: FnMut() -> Result<(), TypeScriptProjectHostError> + ?Sized,
 {
     control()?;
     #[cfg(all(test, unix))]
@@ -3350,6 +3375,41 @@ fn config_rank(config: &TypeScriptConfigInput) -> u8 {
         Some("tsconfig.base.json") => 5,
         _ => 4,
     }
+}
+
+/// A producer-selected build project may leave authored package sources in the
+/// conventional editor project. Admit that real independent config separately;
+/// never expand the build program's roots or inherit its references. Reference
+/// solutions still follow the existing, explicitly captured config DAG.
+pub(super) fn supplemental_conventional_config<'a>(
+    selected: &TypeScriptConfigInput,
+    configs: &'a [TypeScriptConfigInput],
+) -> Result<Option<&'a TypeScriptConfigInput>, TypeScriptProjectHostError> {
+    if !selected.selected_build_config || !selected.references.is_empty() {
+        return Ok(None);
+    }
+    let Some(config) = configs.iter().find(|config| {
+        config.project_candidate
+            && config.path != selected.path
+            && config.path.parent() == selected.path.parent()
+            && config
+                .path
+                .file_name()
+                .is_some_and(|name| name == "tsconfig.json")
+    }) else {
+        return Ok(None);
+    };
+    let value = parse_typescript_config(&config.path, &config.bytes)?;
+    // A nonempty or malformed reference list cannot be admitted as an
+    // independent leaf from an inheritance-only candidate observation.
+    if value.get("references").is_some_and(|references| {
+        references
+            .as_array()
+            .is_none_or(|references| !references.is_empty())
+    }) {
+        return Ok(None);
+    }
+    Ok(Some(config))
 }
 
 /// Select by the admitted build target or the nearest containing config, using

@@ -501,7 +501,8 @@ mod tests {
     }
 
     #[test]
-    fn native_admission_keeps_conditional_dependencies_and_automatic_types_among_unrelated_packages() {
+    fn native_admission_keeps_conditional_dependencies_and_automatic_types_among_unrelated_packages()
+     {
         let fixture = Fixture::new();
         fixture.write("tsconfig.json", r#"{"compilerOptions":{"noLib":true,"module":"ESNext","moduleResolution":"Bundler"},"include":["src/**/*"]}"#);
         const SOURCE: &str =
@@ -566,7 +567,8 @@ mod tests {
             !native
                 .sources
                 .iter()
-                .any(|source| source.path.contains("unrelated-") || source.path.ends_with("wrong.js")),
+                .any(|source| source.path.contains("unrelated-")
+                    || source.path.ends_with("wrong.js")),
             "unrelated siblings and the non-selected export arm are not source members"
         );
         assert!(native.options.module_resolutions.iter().any(|request|
@@ -1303,3 +1305,7 @@ mod native_import_kind_controls {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "direct/tests/independent_projects.rs"]
+mod independent_project_tests;
