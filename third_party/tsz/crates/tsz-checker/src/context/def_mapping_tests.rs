@@ -1511,3 +1511,100 @@ fn delegated_library_local_alias_keeps_exact_retained_target_and_shared_stop() {
         "the shared checkpoint remains latched after the one stop"
     );
 }
+
+#[test]
+fn unresolved_root_registers_only_the_selected_binder_owner() {
+    fn bind(
+        file: &str,
+        source: &str,
+        file_idx: u32,
+    ) -> (
+        Arc<tsz_parser::parser::node::NodeArena>,
+        Arc<BinderState>,
+        tsz_binder::SymbolId,
+    ) {
+        let mut parser = ParserState::new(file.to_owned(), source.to_owned());
+        let root = parser.parse_source_file();
+        assert!(parser.get_diagnostics().is_empty());
+        let mut binder = BinderState::new();
+        binder.set_file_idx(file_idx);
+        binder.bind_source_file(parser.get_arena(), root);
+        let symbol = *binder
+            .get_symbols()
+            .find_all_by_name("Root")
+            .first()
+            .expect("real bound Root symbol");
+        (
+            Arc::new(parser.get_arena().clone()),
+            Arc::new(binder),
+            symbol,
+        )
+    }
+
+    for (indexed, first_is_alias, expected_file) in
+        [(true, false, 1), (false, false, 0), (false, true, 1)]
+    {
+        let first_source = if first_is_alias {
+            "import type { Root } from 'dep';"
+        } else {
+            "export interface Root { first: string }"
+        };
+        let (first_arena, first, first_id) = bind("first.ts", first_source, 0);
+        let (second_arena, second, second_id) =
+            bind("second.ts", "export interface Root { second: number }", 1);
+        assert_eq!(
+            first_id, second_id,
+            "genuinely colliding independent binders"
+        );
+        let types = TypeInterner::new();
+        let mut ctx = CheckerContext::new(
+            first_arena.as_ref(),
+            first.as_ref(),
+            &types,
+            "first.ts".to_owned(),
+            CheckerOptions::default(),
+        );
+        ctx.all_binders = Some(Arc::new(vec![Arc::clone(&first), Arc::clone(&second)]));
+        ctx.all_arenas = Some(Arc::new(vec![
+            Arc::clone(&first_arena),
+            Arc::clone(&second_arena),
+        ]));
+        if indexed {
+            ctx.global_file_locals_index = Some(Arc::new(
+                [("Root".to_owned(), vec![(1, second_id)])]
+                    .into_iter()
+                    .collect(),
+            ));
+        }
+
+        let def = TypeResolver::resolve_unresolved_type_name(&ctx, "Root")
+            .expect("selected declaration resolves");
+        assert_eq!(ctx.resolve_symbol_file_index(first_id), Some(expected_file));
+        assert_eq!(
+            ctx.local_symbol_file_target_override(first_id),
+            Some(expected_file),
+            "only the selected root may register its file authority"
+        );
+        assert_eq!(
+            ctx.definition_store
+                .get(def)
+                .expect("retained definition")
+                .file_id,
+            Some(expected_file as u32),
+            "the resulting DefId belongs to the selected file"
+        );
+        let expected = if expected_file == 0 { &first } else { &second };
+        assert!(std::ptr::eq(
+            ctx.project_resolved_symbol(first_id)
+                .expect("selected owner symbol"),
+            expected
+                .get_symbol(first_id)
+                .expect("exact bound declaration")
+        ));
+        assert_eq!(
+            TypeResolver::resolve_unresolved_type_name(&ctx, "Root"),
+            Some(def)
+        );
+        assert_eq!(ctx.resolve_symbol_file_index(first_id), Some(expected_file));
+    }
+}
