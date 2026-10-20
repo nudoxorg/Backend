@@ -1,0 +1,17 @@
+{
+  "schema": "nudox.authentic-source-fixture.v1",
+  "package": "itoa",
+  "version": "1.0.14",
+  "upstream_repository": "https://github.com/dtolnay/itoa",
+  "upstream_path": "benches/bench.rs",
+  "fixture": "itoa-1.0.14-bench.rs",
+  "byte_len": 1344,
+  "sha256": "636f3093bd461210ad3063289d455f90669c4a1be3273bcd30898de39f02c641",
+  "license_expression": "MIT OR Apache-2.0",
+  "selected_fixture_license": "MIT",
+  "license_file": "itoa-1.0.14-bench.LICENSE-MIT",
+  "license_sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+  "provenance": "Exact bytes copied from existing local Cargo registry source itoa-1.0.14; no download or archive verification performed for this packet.",
+  "observed_ci_source_identity": "content:0ef559a3d8b0e2cf5ad986b1050cf1f0a09252265c13b8c42fa5eacaca26c8ac",
+  "ci_identity_fixture_join": "Native SourceFactDomain assertion added; UNRUN."
+}

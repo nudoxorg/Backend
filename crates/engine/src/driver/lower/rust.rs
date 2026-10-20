@@ -1445,6 +1445,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         .with_visibility(self.declaration_visibility(declaration))
         .typed(record)
         .with_extension(EmissionExtension::Rust(extension));
+        if let Some(discriminator) = self.expanded_function_scope_discriminator(declaration) {
+            fact = fact.with_identity_discriminator(discriminator);
+        }
         for ordinal in &parameter_ordinals {
             fact = fact.child(ProductChildRole::FunctionParameter, *ordinal);
         }
@@ -1463,6 +1466,45 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 .map_err(|fault| parentage_fault(carrier, name_len, fault))?;
         }
         self.register(ordinal, index, declaration, extension)
+    }
+
+    /// Preserves the semantic module route of a macro-expanded function.
+    /// Several modules emitted by one invocation can contain the same name,
+    /// signature and projected call-site range. Their literal module names
+    /// need not have exact invocation-spelled coordinates, so no module row
+    /// or parentage is invented. Only this compiler-owned scope commitment
+    /// enters identity; ordinary written functions remain byte-identical.
+    fn expanded_function_scope_discriminator(
+        &self,
+        declaration: &Decl<'source>,
+    ) -> Option<[u8; 16]> {
+        if !declaration.expanded {
+            return None;
+        }
+        let RustDefinition::Function(function) = &declaration.definition else {
+            return None;
+        };
+        let route = function.module(self.database).path_to_root(self.database);
+        let root = route.last()?;
+        if !root.is_crate_root(self.database) || root.name(self.database).is_some() {
+            return None;
+        }
+        let mut hash = Sha256::new();
+        hash.update(b"compiler.rust.expanded-function-module-scope.v1\0");
+        hash.update(u64::try_from(route.len()).ok()?.to_le_bytes());
+        hash.update([0]); // Explicit crate-root marker.
+        for module in route.iter().rev().skip(1) {
+            // Unnamed block modules do not supply a stable named route.
+            // Keep the existing identity/collision refusal rather than use
+            // an internal HIR ID, debug text or an invocation ordinal.
+            let name = module.name(self.database)?;
+            hash.update([1]);
+            hash.update(u64::try_from(name.as_str().len()).ok()?.to_le_bytes());
+            hash.update(name.as_str().as_bytes());
+        }
+        let mut discriminator = [0_u8; 16];
+        discriminator.copy_from_slice(&hash.finalize()[..16]);
+        Some(discriminator)
     }
 
     /// Pushes one signature carrier fact (receiver or parameter) with its
@@ -5520,6 +5562,160 @@ mod tests {
                 "no imprecisely projected expansion field",
             ));
         }
+        Ok(())
+    }
+
+    /// The exact itoa 1.0.14 benchmark macro emits each benchmark name in
+    /// two distinct generated modules. Both must remain canonical entities,
+    /// even though every pair shares name, signature and projected source.
+    #[test]
+    fn expanded_bench_functions_keep_module_identity_and_own_carriers() -> Result<(), TestError> {
+        use backend_semantic::ir::{
+            ItemKind, SignatureCarrierBindingRole, SignatureCarrierBindingsObservation,
+        };
+        let source = include_str!("rust/fixtures/itoa-1.0.14-bench.rs");
+        // Exact SourceFactDomain identity retained by both authentic CI faults.
+        assert_eq!(
+            *ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
+            [
+                0x0e, 0xf5, 0x59, 0xa3, 0xd8, 0xb0, 0xe2, 0xcf, 0x5a, 0xd9, 0x86, 0xb1, 0x05, 0x0c,
+                0xf1, 0xf0, 0xa0, 0x92, 0x52, 0x26, 0x5c, 0x13, 0xb8, 0xc4, 0x2f, 0xa5, 0xea, 0xca,
+                0xca, 0x26, 0xc8, 0xac
+            ],
+            "the fixture must remain the exact CI benchmark source"
+        );
+        let ir = owned_ir(source)?;
+        let names: &[&[u8]] = &[
+            b"bench_u64_0",
+            b"bench_u64_half",
+            b"bench_u64_max",
+            b"bench_i16_0",
+            b"bench_i16_min",
+            b"bench_u128_0",
+            b"bench_u128_max",
+        ];
+        let mut identities = std::collections::HashSet::new();
+        let mut carriers = std::collections::HashSet::new();
+        for name in names {
+            let pair = ir
+                .items()
+                .filter(|item| item.kind() == ItemKind::Function && item.name() == *name)
+                .collect::<Vec<_>>();
+            assert_eq!(pair.len(), 2, "both generated module functions survive");
+            assert_ne!(pair[0].version().identity(), pair[1].version().identity());
+            assert_eq!(
+                pair[0].source(),
+                pair[1].source(),
+                "identity is not invented from different source spans"
+            );
+            for function in pair {
+                assert!(identities.insert(function.version().identity()));
+                let Some(SignatureCarrierBindingsObservation::Captured(bindings)) =
+                    ir.signature_carrier_bindings(function.id())
+                else {
+                    return Err(TestError::Missing("expanded function signature carriers"));
+                };
+                let bindings = bindings.collect::<Vec<_>>();
+                assert_eq!(bindings.len(), 2, "one Bencher input and one unit result");
+                assert_eq!(bindings[0].role, SignatureCarrierBindingRole::Parameter);
+                assert_eq!(bindings[1].role, SignatureCarrierBindingRole::Result);
+                for binding in bindings {
+                    assert_eq!(binding.owner, function.id());
+                    assert_eq!(binding.position, 0);
+                    assert!(
+                        carriers.insert(binding.carrier),
+                        "each function owns distinct carriers"
+                    );
+                    let carrier = ir
+                        .item(binding.carrier)
+                        .ok_or(TestError::Missing("expanded carrier"))?;
+                    assert_eq!(carrier.kind(), ItemKind::Parameter);
+                    assert_eq!(carrier.parent(), Some(function.id()));
+                }
+            }
+        }
+        assert_eq!(identities.len(), 14);
+        assert_eq!(carriers.len(), 28);
+        let repeated = owned_ir(source)?;
+        let repeated = repeated
+            .items()
+            .filter(|item| item.kind() == ItemKind::Function)
+            .map(|item| item.version().identity())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            identities, repeated,
+            "semantic module identity is repeatable"
+        );
+        Ok(())
+    }
+
+    /// Collapsing two actual semantic routes must still hit the ordinary
+    /// duplicate guard. No invocation ordinal legalizes a same-scope twin.
+    #[test]
+    fn expanded_function_scope_collision_still_rejects_same_route() -> Result<(), TestError> {
+        let source = include_str!("rust/fixtures/itoa-1.0.14-bench.rs");
+        let (mut facts, identity, recipe) = collected(source)?;
+        let pair = (0..facts.len())
+            .filter(|index| {
+                facts.kinds[*index] == EntityKind::Function
+                    && facts.names[*index] == b"bench_u128_max"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(pair.len(), 2);
+        assert_ne!(
+            facts.identity_discriminators[pair[0]],
+            facts.identity_discriminators[pair[1]]
+        );
+        let same_route = facts.identity_discriminators[pair[0]];
+        facts.identity_discriminators[pair[1]] = same_route;
+        assert!(
+            matches!(
+                facts.build_ir(
+                    LanguageProfile::Rust(RustEdition::Rust2024),
+                    identity,
+                    recipe,
+                    crate::driver::types::DeclarationScope::fixture()
+                ),
+                Err(backend_semantic::ir::BuildError::DuplicateDeclarationIdentity { .. })
+            ),
+            "identical semantic routes are not blanket deduplicated or salted by row order"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn expanded_function_scope_respects_cfg_and_leaves_written_identity_unsalted()
+    -> Result<(), TestError> {
+        let source = "macro_rules! scoped { ($name:ident, $ghost:ident) => { mod live { pub fn $name(value: u8) -> u8 { value } } #[cfg(any())] mod hidden { pub fn $ghost(value: u8) -> u8 { value } } }; }\nscoped!(visible, ghost);\npub fn written(value: u8) -> u8 { value }\n";
+        let (facts, identity, recipe) = collected(source)?;
+        let written = (0..facts.len())
+            .filter(|index| {
+                facts.kinds[*index] == EntityKind::Function && facts.names[*index] == b"written"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(written.len(), 1);
+        assert_eq!(
+            facts.identity_discriminators[written[0]], None,
+            "written identity preimage is unchanged"
+        );
+        let ir = facts
+            .build_ir(
+                LanguageProfile::Rust(RustEdition::Rust2024),
+                identity,
+                recipe,
+                crate::driver::types::DeclarationScope::fixture(),
+            )
+            .map_err(TestError::Build)?;
+        assert_eq!(
+            ir.items()
+                .filter(
+                    |item| item.kind() == backend_semantic::ir::ItemKind::Function
+                        && item.name() == b"visible"
+                )
+                .count(),
+            1
+        );
+        assert!(!ir.items().any(|item| item.name() == b"ghost"));
         Ok(())
     }
 
