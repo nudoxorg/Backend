@@ -8,7 +8,7 @@ use backend_engine::driver::{
 };
 use backend_semantic::ir::{
     EntityKind, FragmentView, LanguageExtensionWireFact, NominalRef, PrimitiveShape,
-    SemanticTypeTag,
+    ReopenedTypeParameterList, SemanticTypeTag,
 };
 use backend_semantic::vocabulary::{CStandard, CxxStandard, LanguageProfile, NativeTool, Stage};
 use backend_version::{ContentId, ToolchainDomain};
@@ -789,6 +789,148 @@ fn template_parameter_is_pooled_and_field_is_typevar() -> Result<(), TestError> 
             .ok_or(TestError::Check("value row"))?;
         if row.record.tag != SemanticTypeTag::TypeVar || row.record.text != Some(b"T") {
             return Err(TestError::Check("value TypeVar"));
+        }
+        Ok(())
+    })
+}
+
+fn template_names<'a>(
+    view: &'a FragmentView<'a>,
+    ordinal: usize,
+) -> Result<Vec<&'a [u8]>, TestError> {
+    let facts = extension(view, ordinal)?;
+    let pools = view
+        .discover()
+        .extension_pools()
+        .map_err(|_| TestError::Check("template extension pool"))?
+        .ok_or(TestError::Check("missing template extension pool"))?;
+    let list = pools
+        .type_parameter_list(facts.templates)
+        .map_err(|_| TestError::Check("template list decode"))?;
+    let ReopenedTypeParameterList::Exact(list) = list else {
+        return Err(TestError::Check("template list is not exact"));
+    };
+    let cursor = list
+        .cursor()
+        .map_err(|_| TestError::Check("template list cursor"))?;
+    cursor
+        .map(|parameter| {
+            parameter
+                .map(|parameter| parameter.name)
+                .map_err(|_| TestError::Check("template parameter decode"))
+        })
+        .collect()
+}
+
+#[test]
+fn deferred_function_templates_keep_exact_parameter_ranges_and_variadic_shape()
+-> Result<(), TestError> {
+    let source = b"\
+template<typename T> static void first_template(T value) {}
+template<typename C> struct Interleaved {};
+void ordinary(int value) {}
+template<typename U> static int second_template(U second_value) { return 0; }
+template<typename V> static void variadic_template(V value, ...) {}
+";
+    inspect_cxx(source, |view| {
+        let facts = entities(view);
+        let ordinal = |name: &[u8], kind: EntityKind| {
+            facts
+                .iter()
+                .position(|(candidate, candidate_kind)| {
+                    *candidate == name && *candidate_kind == kind
+                })
+                .ok_or(TestError::Check("template entity"))
+        };
+        let first = ordinal(b"first_template", EntityKind::Function)?;
+        let class = ordinal(b"Interleaved", EntityKind::Record)?;
+        let ordinary = ordinal(b"ordinary", EntityKind::Function)?;
+        let second = ordinal(b"second_template", EntityKind::Function)?;
+        let variadic = ordinal(b"variadic_template", EntityKind::Function)?;
+        let parameter = ordinal(b"second_value", EntityKind::Parameter)?;
+        let result = ordinal(b"second_template", EntityKind::Parameter)?;
+        if template_names(view, first)? != [b"T".as_slice()]
+            || template_names(view, class)? != [b"C".as_slice()]
+            || !template_names(view, ordinary)?.is_empty()
+            || template_names(view, second)? != [b"U".as_slice()]
+            || template_names(view, variadic)? != [b"V".as_slice()]
+            || template_names(view, result)? != [b"U".as_slice()]
+        {
+            return Err(TestError::Check(
+                "template parameter range leaked across declarations",
+            ));
+        }
+        let rows = rows(view)?;
+        let type_row = |owner: usize| {
+            rows.iter()
+                .find(|row| usize::try_from(row.owner.raw).ok() == Some(owner))
+                .ok_or(TestError::Check("function type row"))
+        };
+        let plain_record = type_row(first)?.record;
+        let variadic_record = type_row(variadic)?.record;
+        if plain_record.tag != SemanticTypeTag::FunctionPointer
+            || plain_record.payload0 != 0
+            || variadic_record.tag != SemanticTypeTag::FunctionPointer
+            || variadic_record.payload0
+                != backend_semantic::ir::SemanticTypeRecord::FUNCTION_C_VARIADIC_FLAG
+        {
+            return Err(TestError::Check("function-template variadic metadata"));
+        }
+
+        let function_type = rows
+            .iter()
+            .find(|row| {
+                usize::try_from(row.owner.raw).ok() == Some(second)
+                    && row.record.tag == SemanticTypeTag::FunctionPointer
+            })
+            .ok_or(TestError::Check("non-void function-template type"))?;
+        let signature_children = children(view, function_type)?;
+        if signature_children.len() != 2
+            || signature_children[0].0 != 0
+            || usize::try_from(signature_children[0].1).ok() != Some(parameter)
+            || signature_children[1].0 != 0
+            || usize::try_from(signature_children[1].1).ok() != Some(result)
+        {
+            return Err(TestError::Check("function-template type carrier join"));
+        }
+
+        let data = view
+            .semantic_data()
+            .ok_or(TestError::Check("missing semantic products"))?;
+        let product_root = |entity: usize| {
+            let entity = backend_semantic::ir::EntityId::try_from_index(entity)
+                .map_err(|_| TestError::Check("entity ordinal overflow"))?;
+            match data.entity_root(entity) {
+                Some(backend_semantic::ir::SemanticDataEntityRoot::Captured(product)) => {
+                    Ok(product)
+                }
+                _ => Err(TestError::Check("missing captured product root")),
+            }
+        };
+        let function_product = product_root(second)?;
+        let product = data
+            .product(function_product)
+            .ok_or(TestError::Check("function product"))?;
+        let span = data
+            .list(product.children)
+            .ok_or(TestError::Check("function product children"))?;
+        if span.length != 2 {
+            return Err(TestError::Check("function product child count"));
+        }
+        let parameter_product = product_root(parameter)?;
+        let result_product = product_root(result)?;
+        let first = data
+            .child(span.start)
+            .ok_or(TestError::Check("parameter product child"))?;
+        let second_child = data
+            .child(span.start + 1)
+            .ok_or(TestError::Check("result product child"))?;
+        if first.role != backend_semantic::ir::ProductChildRole::FunctionParameter
+            || first.target != backend_semantic::ir::ProductRef::Local(parameter_product)
+            || second_child.role != backend_semantic::ir::ProductChildRole::FunctionResult
+            || second_child.target != backend_semantic::ir::ProductRef::Local(result_product)
+        {
+            return Err(TestError::Check("function product carrier join"));
         }
         Ok(())
     })

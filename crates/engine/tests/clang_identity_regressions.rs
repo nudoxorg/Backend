@@ -155,8 +155,9 @@ bool adjust(double value) { return value != 0.0; }
 #[test]
 fn function_template_overloads_are_structurally_distinct() {
     // Two function templates that differ only in a concrete parameter type.
-    // Before the fix each anchor carried a nominal self-record, so the two
-    // signatures minted one family.
+    // Their bool result carriers have the same name and type, so retaining the
+    // exact function parent is necessary to keep both overload families
+    // distinct after the full signature carriers are bound.
     let source = b"\
 template <typename T>
 bool convert(T value, float scale) { return value != T(); }
@@ -167,6 +168,26 @@ bool convert(T value, double scale) { return value != T(); }
     assert!(
         result.is_ok(),
         "distinct function templates must lower: {result:?}"
+    );
+}
+
+#[test]
+fn function_template_signatures_bind_parameter_and_result_carriers() {
+    // This mirrors the first function-template shape in pugixml 1.14's
+    // tests/helpers.hpp: one named parameter and a void result. The second
+    // template ensures a non-void return gets its own result carrier too.
+    // Lowering validates that each function product and FunctionPointer row
+    // bind the same parameter/result facts.
+    let source = b"\
+template <typename T>
+static void generic_bool_ops_test(const T& obj) {}
+template <typename T>
+static int generic_result_test(T value) { return 0; }
+";
+    let result = compile_fixture(source);
+    assert!(
+        result.is_ok(),
+        "function-template signature carriers must lower: {result:?}"
     );
 }
 

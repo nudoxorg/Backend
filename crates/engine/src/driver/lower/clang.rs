@@ -82,7 +82,7 @@ use backend_semantic::vocabulary::{LanguageProfile, LoweringUnsupported};
 
 use crate::driver::lower::{
     AdmissionFault, EmissionExtension, FactSet, LEAF_PRODUCT, MAX_FACT_CHILDREN, MAX_TYPE_CHILDREN,
-    SemanticFact, StagedSourceSpan, push_fact,
+    SemanticFact, StagedSourceSpan, StagedTypeParameterRange, push_fact,
 };
 use crate::driver::types::{ClangProjectionFault, FactFault, FactRejection};
 
@@ -678,6 +678,9 @@ struct Projector<'authority, 'scratch, 'source> {
     /// Template parameter identity to its borrowed spelling, for `TypeVar`
     /// rows at use sites.
     template_parameters: Vec<(SymbolIdentity, &'source [u8])>,
+    /// Function templates are emitted after pass-two parameter facts so the
+    /// executable product and type graph can bind the exact same carriers.
+    function_templates: Vec<(usize, u32, StagedTypeParameterRange)>,
     /// The pooled atom list naming every include spelling, interned once.
     includes: Option<backend_semantic::ir::AtomListId>,
     /// Type-edge adjacency: edges grouped by source row, preserving
@@ -711,6 +714,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             identities: Vec::new(),
             anonymous: Vec::new(),
             template_parameters: Vec::new(),
+            function_templates: Vec::new(),
             includes: None,
             edge_order: Vec::new(),
             edge_starts: Vec::new(),
@@ -884,8 +888,9 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     /// declarations also intern their template parameters into the pooled
     /// lane so their extension row names exactly them.
     fn push_type_anchors(&mut self) -> Result<(), ClangCollectError> {
-        // Function-template anchors project their signature in this pass, so
-        // the authority type-edge adjacency must be live before the first push.
+        // The authority type-edge adjacency is live before any signature
+        // projection. Function-template anchors are deferred until their
+        // parameter facts exist in pass two.
         self.index_edges().map_err(terminal)?;
         let declarations = self.authority.declarations;
         for index in 0..declarations.len() {
@@ -922,16 +927,20 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             // Template parameters first so the pooled start coordinate the
             // extension row carries is final before the fact is pushed.
             let template_start = self.push_template_parameters(index)?;
+            if kind == EntityKind::Function && declaration.kind == DeclarationKind::Template {
+                let template_range = self
+                    .facts
+                    .type_parameter_range(template_start)
+                    .map_err(|fault| lane_terminal(self.facts, name.len(), fault))?;
+                self.function_templates
+                    .push((index, template_start, template_range));
+                continue;
+            }
             let own_ordinal = u32::try_from(self.facts.len())
                 .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
             let extension = self.extension(declaration, template_start)?;
-            // A function template is an executable anchor, not a nominal
-            // type: two same-named overloads that differ only in a parameter
-            // type (for example `float` versus `double`) must still mint
-            // distinct coordinate-free families. Carrying the projected
-            // function signature makes the overloads structurally distinct and
-            // lets every contained parameter inherit that distinction. Every
-            // other anchor keeps its recursive nominal self-record.
+            // Other function-shaped anchors retain their projected signature;
+            // function-template anchors use the full carrier frame below.
             let fact = if kind == EntityKind::Function {
                 match declaration.type_root {
                     Some(root) => {
@@ -1090,8 +1099,8 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                     // by that function's own signature framing; what remains
                     // here is owner-less storage (a function-pointer
                     // typedef's parameter) with file-scope parentage, and a
-                    // function template's parameters (the template anchor is
-                    // pushed in pass one without signature framing). Both
+                    // function template's parameters (its anchor is emitted
+                    // after these rows so it can frame their exact ordinals). Both
                     // keep the executable framing's twin discrimination, or
                     // macro-generated template operators whose parameters
                     // share the invocation-text name and a dependent frame
@@ -1101,6 +1110,10 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 DeclarationKind::Parameter => {}
                 DeclarationKind::TemplateParameter | DeclarationKind::Unknown => {}
             }
+        }
+        for (index, template_start, template_range) in std::mem::take(&mut self.function_templates)
+        {
+            self.push_function_template(index, template_start, template_range)?;
         }
         Ok(())
     }
@@ -1325,9 +1338,8 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     }
 
     /// Pushes one parameter that no executable's signature framing consumed:
-    /// owner-less function-pointer typedef storage, or the parameters of a
-    /// function template, whose anchor is pushed in pass one without framing
-    /// its own carriers.
+    /// owner-less function-pointer typedef storage, or a function-template
+    /// parameter whose anchor is framed over these rows after pass two.
     ///
     /// The executable framing separates two same-named parameters whose whole
     /// flattened frame is byte-identical (one macro invocation can expand a
@@ -1441,6 +1453,170 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         };
         let ordinal = push(self.facts, fact)?;
         self.record_pushed(index, ordinal, declaration);
+        Ok(())
+    }
+
+    /// Pushes a function-template anchor over the parameter facts that pass
+    /// two already emitted through `push_orphan_parameter`. The product and
+    /// `FunctionPointer` row share those exact carrier ordinals; a non-void
+    /// result receives the same synthetic carrier and twin identity treatment
+    /// as an ordinary executable.
+    fn push_function_template(
+        &mut self,
+        index: usize,
+        template_start: u32,
+        template_range: StagedTypeParameterRange,
+    ) -> Result<(), ClangCollectError> {
+        let declarations = self.authority.declarations;
+        let Some(declaration) = declarations.get(index) else {
+            return Ok(());
+        };
+        let name = self.name_of(declaration).unwrap_or(&[]);
+        if name.is_empty() {
+            return Ok(());
+        }
+
+        let mut parameters: Vec<usize> = Vec::new();
+        for candidate in 0..declarations.len() {
+            if self.representative.get(candidate).copied().flatten() != Some(candidate) {
+                continue;
+            }
+            let Some(parameter) = declarations.get(candidate) else {
+                continue;
+            };
+            if parameter.kind != DeclarationKind::Parameter
+                || parameter.owner != declaration.identity
+                || parameter.owner.is_none()
+                || !span_contains(declaration.span, parameter.span)
+                || parameter.name.is_none()
+            {
+                continue;
+            }
+            parameters.push(candidate);
+        }
+        parameters.sort_by_key(|candidate| {
+            declarations
+                .get(*candidate)
+                .map(|parameter| parameter.span.start)
+                .unwrap_or(u32::MAX)
+        });
+
+        let mut signature_children = Vec::with_capacity(parameters.len().saturating_add(1));
+        for candidate in parameters {
+            let Some(ordinal) = self.ordinals.get(candidate).copied().flatten() else {
+                return Err(terminal(ProjectionFault::IndexCapacity));
+            };
+            signature_children.push(ordinal);
+        }
+
+        let mut result_ordinal = None;
+        if let Some(root) = declaration.type_root
+            && let Some(result) = self.edge_of(root, TypeRelation::Result)
+            && let Some(result_row) = self.type_row(result)
+            && !result_row.is_void()
+        {
+            let projected = self.project_root(result)?;
+            let extension = self.extension(declaration, template_start)?;
+            let twin_frame = (
+                projected.record,
+                projected.children,
+                projected.child_names,
+                projected.child_count,
+            );
+            let fact =
+                projected.attach(SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT));
+            let twins = self.identical_carrier_twins(&signature_children, &twin_frame, name);
+            let fact = match (twins, declaration.identity) {
+                (0, _) => fact,
+                (_, Some(identity)) => fact.with_identity_discriminator(identity.bytes),
+                (_, None) => {
+                    let mut hash = Sha256::new();
+                    hash.update(b"compiler.clang.signature-twin.v1\0");
+                    hash.update(twins.to_le_bytes());
+                    let mut discriminator = [0_u8; 16];
+                    discriminator.copy_from_slice(&hash.finalize()[..16]);
+                    fact.with_identity_discriminator(discriminator)
+                }
+            };
+            let ordinal = push(self.facts, fact)?;
+            let ordinal_index =
+                usize::try_from(ordinal).map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+            self.facts
+                .attach_extension_with_type_parameters(
+                    ordinal_index,
+                    EmissionExtension::Clang(extension),
+                    template_range,
+                )
+                .map_err(|fault| lane_terminal(self.facts, name.len(), fault))?;
+            signature_children.push(ordinal);
+            result_ordinal = Some(ordinal);
+        }
+
+        if signature_children.len() > MAX_FACT_CHILDREN {
+            return Err(lane_terminal(
+                self.facts,
+                name.len(),
+                FactFault::ChildCapacity,
+            ));
+        }
+        let result_count = usize::from(result_ordinal.is_some());
+        let parameter_count = signature_children.len().saturating_sub(result_count);
+        let mut fact = SemanticFact::new(
+            EntityKind::Function,
+            name,
+            SemanticProductConstructor::function(
+                u32::try_from(parameter_count)
+                    .map_err(|_| terminal(ProjectionFault::IndexCapacity))?,
+                u32::try_from(result_count)
+                    .map_err(|_| terminal(ProjectionFault::IndexCapacity))?,
+            ),
+        );
+        for (position, ordinal) in signature_children.iter().enumerate() {
+            let role =
+                if Some(*ordinal) == result_ordinal && position + 1 == signature_children.len() {
+                    ProductChildRole::FunctionResult
+                } else {
+                    ProductChildRole::FunctionParameter
+                };
+            fact = fact.child(role, *ordinal);
+        }
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
+        if declaration
+            .type_root
+            .and_then(|root| self.type_row(root))
+            .is_some_and(|row| row.is_variadic)
+        {
+            record.payload0 = SemanticTypeRecord::FUNCTION_C_VARIADIC_FLAG;
+        }
+        if result_ordinal.is_some() {
+            record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
+        }
+        let mut projected = Projected::leaf(record);
+        for ordinal in &signature_children {
+            let _ = projected.child(*ordinal, None);
+        }
+        let extension = self.extension(declaration, template_start)?;
+        let fact = projected.attach(fact);
+        let fact = match declaration.identity {
+            Some(identity) => fact.with_identity_discriminator(identity.bytes),
+            None => fact,
+        };
+        let ordinal = push(self.facts, fact)?;
+        self.record_pushed(index, ordinal, declaration);
+        let ordinal_index =
+            usize::try_from(ordinal).map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+        self.facts
+            .attach_extension_with_type_parameters(
+                ordinal_index,
+                EmissionExtension::Clang(extension),
+                template_range,
+            )
+            .map_err(|fault| lane_terminal(self.facts, name.len(), fault))?;
+        if let Some(carrier) = result_ordinal {
+            self.facts
+                .attach_parent(carrier, ordinal)
+                .map_err(|fault| lane_terminal(self.facts, name.len(), fault))?;
+        }
         Ok(())
     }
 
@@ -2396,6 +2572,16 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         template_start: u32,
     ) -> Result<WireClangFacts, ClangCollectError> {
         let includes = self.includes_list()?;
+        // Only a template declaration owns a template-parameter range. A
+        // non-template declaration emitted after the template pool was filled
+        // must name the empty range at the current end, not inherit every
+        // earlier template's parameters from start zero.
+        let template_start = if declaration.kind == DeclarationKind::Template {
+            template_start
+        } else {
+            u32::try_from(self.facts.type_parameter_len)
+                .map_err(|_| terminal(ProjectionFault::IndexCapacity))?
+        };
         let (qualifiers, size_bits, align_bits) = declaration
             .type_root
             .and_then(|root| self.type_row(root))
