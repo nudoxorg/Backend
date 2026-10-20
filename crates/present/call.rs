@@ -332,6 +332,13 @@ pub enum Request {
         /// Which selected declaration capability to read.
         read: DeclarationRead,
     },
+    /// A certified page of one declaration's outgoing graph neighbourhood.
+    GraphPage {
+        /// Exact declaration selector; an optional coordinate asserts a selected row.
+        selector: DeclarationSelector,
+        /// Original owner query credit, preserved by every continuation.
+        limit: u16,
+    },
     /// A bounded search page.
     Search {
         /// Query text.
@@ -408,11 +415,30 @@ pub fn declaration_selector(invocation: &Invocation) -> Result<DeclarationSelect
 
 fn declaration_request(invocation: &Invocation, read: DeclarationRead) -> Result<Request, Fault> {
     let selector = declaration_selector(invocation)?;
-    if read == DeclarationRead::Document && let Some(cursor) = invocation.option("cursor") {
+    if read == DeclarationRead::Graph
+        && (invocation.option("limit").is_some() || invocation.option("cursor").is_some())
+    {
+        return query_cursor(
+            invocation,
+            Request::GraphPage {
+                selector,
+                limit: limit(invocation)?,
+            },
+        );
+    }
+    if read == DeclarationRead::Document
+        && let Some(cursor) = invocation.option("cursor")
+    {
         if cursor.is_empty() || selector.selected_id().is_none() {
-            return Err(Fault::usage("cursor", "copy the full document continuation including selected_symbol / --selected-id; a coordinate alone cannot resume a selected row"));
+            return Err(Fault::usage(
+                "cursor",
+                "copy the full document continuation including selected_symbol / --selected-id; a coordinate alone cannot resume a selected row",
+            ));
         }
-        return Ok(Request::ResumePage { selector, cursor: cursor.to_owned() });
+        return Ok(Request::ResumePage {
+            selector,
+            cursor: cursor.to_owned(),
+        });
     }
     if let DeclarationSelector::Coordinate(coordinate) = selector {
         return Ok(match read {
@@ -980,10 +1006,20 @@ fn surface(
         CommandId::SelectSemanticVersion => select_semantic_version(invocation)?,
         CommandId::PackageProfile => SurfaceCommand::PackageProfile {
             package: package(invocation, 0)?,
-            compiler_outcome: invocation.option("compiler-outcome").map(|encoded| {
-                serde_json::from_str::<backend_library::PackageCompilerOutcomeRead>(encoded)
-                    .map_err(|error| Fault::usage("compiler-outcome", format!("copy the exact retained compiler outcome selector: {error}")))
-            }).transpose()?,
+            compiler_outcome: invocation
+                .option("compiler-outcome")
+                .map(|encoded| {
+                    serde_json::from_str::<backend_library::PackageCompilerOutcomeRead>(encoded)
+                        .map_err(|error| {
+                            Fault::usage(
+                                "compiler-outcome",
+                                format!(
+                                    "copy the exact retained compiler outcome selector: {error}"
+                                ),
+                            )
+                        })
+                })
+                .transpose()?,
         },
         _ => return home_or_session(invocation, id, opener),
     };
