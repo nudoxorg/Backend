@@ -165,6 +165,7 @@ export def warm-registry-cache []: nothing -> nothing {
 
 def main [
     --skip-flake-check # run only the test step (the flake check is already cached on the host store)
+    --only-flake-check # run only the flake check, so a scheduler can run it beside the test step
 ]: nothing -> nothing {
 
     # The flake closes over ~1,100 pinned corpus archives; the default 1,024
@@ -181,6 +182,10 @@ def main [
         ci-step "linux" "root flake check" {||
             with-plain-tmp {|| run-bounded 45min "python3" $flake_runner }
         }
+    }
+    if $only_flake_check {
+        finish-lane "linux" [$flake]
+        return
     }
 
     # "private-debug" makes the CLI write the child's stdout/stderr beside its
@@ -231,10 +236,16 @@ def main [
     # the two fixture projects pin, plus the releases tests name directly.
     ci-step "linux" "warm the Cargo cache for registry tests" {|| warm-registry-cache } | ignore
     stop-if-superseded "linux"
+    let tests_started = date now
     let tests = ci-step "linux" "backend test pr" {||
         with-env $test_env { run-bounded 75min "sh" "-c" "umask 077 && exec backend test pr" }
     }
     if not $tests { print-captured-failures }
+    let step_seconds = ((date now) - $tests_started) / 1sec
+    let junit = glob ".local/nextest/runs/*/**/junit.xml"
+    try {
+        ^python3 ($env.FILE_PWD | path join "junit_timing.py") --lane linux --step-seconds $step_seconds ...$junit
+    } catch { print "ci: nextest timing summary unavailable" }
 
     report-build-size
     reclaim-build-output
