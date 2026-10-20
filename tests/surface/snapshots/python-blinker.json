@@ -8,13 +8,14 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytes": 41715,
+          "bytesExcludingCursor": 10229,
           "bytesPerToken": 4,
-          "estimatedTokens": 10429
+          "estimatedTokensExcludingCursor": 2558
         },
-        "declarations": 200,
+        "declarations": 25,
         "detail": "summary",
         "extent": "truncated",
+        "nextCursor": "pc4-<live-validated>",
         "package": {
           "coordinate": "/tmp/nudox-surface/python-blinker/project",
           "key": "23951a25",
@@ -24,44 +25,603 @@
           "shape": "package",
           "trail": "project"
         },
+        "page": {
+          "branch": "4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f",
+          "coverage": [
+            {
+              "lane": "exact",
+              "state": "complete"
+            },
+            {
+              "lane": "names",
+              "state": "complete"
+            },
+            {
+              "lane": "graph",
+              "state": "complete"
+            },
+            {
+              "lane": "semantic",
+              "state": "complete"
+            }
+          ],
+          "limit": 200,
+          "log": "12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760",
+          "more": true,
+          "schema": 3,
+          "sequence": 2,
+          "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
+          "source_root": "0c09a046f298f4b9fb9d07ee64472bb806c588e7ea63c26f6be3411ea3a1153c"
+        },
         "roots": [
           {
             "children": [
               {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::809719ac05e00f3424117e1d6886ddd76d275b3451490f0c234c9c5b0ce8066b::name",
+                    "key": "4454599e",
+                    "kind": "variable",
+                    "name": "name",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        68,
+                        84,
+                        89,
+                        158,
+                        195,
+                        151,
+                        108,
+                        213,
+                        132,
+                        28,
+                        86,
+                        246,
+                        93,
+                        196,
+                        19,
+                        223,
+                        253,
+                        99,
+                        28,
+                        133,
+                        198,
+                        146,
+                        235,
+                        101,
+                        15,
+                        124,
+                        121,
+                        196,
+                        7,
+                        139,
+                        55,
+                        149
+                      ]
+                    }
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::8367bcb5c2e920c322ce5056ffb7c0cab644bae667f01332266b7ec1b1db428e::__init__",
+                    "key": "b305ff90",
+                    "kind": "variable",
+                    "name": "__init__",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        179,
+                        5,
+                        255,
+                        144,
+                        111,
+                        200,
+                        226,
+                        244,
+                        189,
+                        230,
+                        33,
+                        69,
+                        93,
+                        175,
+                        69,
+                        32,
+                        127,
+                        204,
+                        87,
+                        157,
+                        228,
+                        102,
+                        41,
+                        123,
+                        244,
+                        80,
+                        205,
+                        41,
+                        117,
+                        131,
+                        230,
+                        147
+                      ]
+                    }
+                  }
+                ],
                 "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::1c8120282fb11a8b7f52d9dfb89102ba7323ea3d7fa52b5c28449c26b3df0451::__init__",
                 "key": "24624f48",
-                "kind": "function",
-                "name": "__init__"
+                "kind": "method",
+                "name": "__init__",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    36,
+                    98,
+                    79,
+                    72,
+                    119,
+                    114,
+                    96,
+                    242,
+                    96,
+                    210,
+                    49,
+                    244,
+                    107,
+                    87,
+                    186,
+                    154,
+                    254,
+                    52,
+                    216,
+                    12,
+                    50,
+                    127,
+                    71,
+                    128,
+                    155,
+                    1,
+                    222,
+                    198,
+                    29,
+                    201,
+                    77,
+                    167
+                  ]
+                }
               },
               {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::36239cac3917aa3e0f05f4805efb0de3358970a34779a19da5b10d64cff4173c::__repr__",
+                    "key": "9224fec3",
+                    "kind": "variable",
+                    "name": "__repr__",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        146,
+                        36,
+                        254,
+                        195,
+                        106,
+                        11,
+                        242,
+                        76,
+                        67,
+                        147,
+                        22,
+                        222,
+                        197,
+                        108,
+                        146,
+                        119,
+                        160,
+                        42,
+                        36,
+                        144,
+                        148,
+                        207,
+                        225,
+                        109,
+                        80,
+                        12,
+                        117,
+                        147,
+                        241,
+                        195,
+                        77,
+                        43
+                      ]
+                    }
+                  }
+                ],
                 "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::1e564752fec0284107c51999cbc9e587f5d5285c3f9328f7f59d02d39db9860b::__repr__",
                 "key": "47c8e9e9",
-                "kind": "function",
-                "name": "__repr__"
+                "kind": "method",
+                "name": "__repr__",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    71,
+                    200,
+                    233,
+                    233,
+                    100,
+                    45,
+                    38,
+                    122,
+                    42,
+                    89,
+                    7,
+                    144,
+                    21,
+                    73,
+                    175,
+                    227,
+                    79,
+                    181,
+                    201,
+                    216,
+                    253,
+                    34,
+                    11,
+                    204,
+                    120,
+                    179,
+                    245,
+                    188,
+                    246,
+                    215,
+                    128,
+                    33
+                  ]
+                }
               },
               {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::8b166bc639522101398ce4f5f3d4e3e1cbba85cee37402c821c7b6a62db8c6f4::__getnewargs__",
+                    "key": "7edd0fc4",
+                    "kind": "variable",
+                    "name": "__getnewargs__",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        126,
+                        221,
+                        15,
+                        196,
+                        191,
+                        171,
+                        8,
+                        237,
+                        89,
+                        8,
+                        122,
+                        153,
+                        23,
+                        220,
+                        18,
+                        40,
+                        53,
+                        196,
+                        41,
+                        41,
+                        181,
+                        40,
+                        192,
+                        192,
+                        140,
+                        3,
+                        82,
+                        85,
+                        1,
+                        212,
+                        40,
+                        95
+                      ]
+                    }
+                  }
+                ],
                 "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::26cc396e8a5da06668bc98256df3ee7f9b5cf258019f8487a5cc98323d97352a::__getnewargs__",
                 "key": "bbb87478",
-                "kind": "function",
-                "name": "__getnewargs__"
+                "kind": "method",
+                "name": "__getnewargs__",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    187,
+                    184,
+                    116,
+                    120,
+                    2,
+                    210,
+                    240,
+                    111,
+                    165,
+                    105,
+                    203,
+                    243,
+                    207,
+                    43,
+                    156,
+                    65,
+                    214,
+                    12,
+                    80,
+                    143,
+                    95,
+                    36,
+                    128,
+                    194,
+                    64,
+                    76,
+                    104,
+                    143,
+                    23,
+                    54,
+                    139,
+                    112
+                  ]
+                }
               },
               {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::f163b3ef09e84c2fad97ecf2e9f0a8786d275b3451490f0c234c9c5b0ce8066b::name",
+                    "key": "4b749e3a",
+                    "kind": "variable",
+                    "name": "name",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        75,
+                        116,
+                        158,
+                        58,
+                        143,
+                        5,
+                        169,
+                        238,
+                        240,
+                        112,
+                        195,
+                        23,
+                        20,
+                        82,
+                        189,
+                        44,
+                        254,
+                        109,
+                        88,
+                        161,
+                        86,
+                        246,
+                        135,
+                        231,
+                        243,
+                        121,
+                        165,
+                        235,
+                        15,
+                        140,
+                        128,
+                        124
+                      ]
+                    }
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::16c977bc9a3d1a3f782043fe3cf153b9113b1eb3bcf7ff22b749b5eb894314fc::cls",
+                    "key": "4e79cf1f",
+                    "kind": "variable",
+                    "name": "cls",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        78,
+                        121,
+                        207,
+                        31,
+                        159,
+                        114,
+                        26,
+                        35,
+                        112,
+                        118,
+                        182,
+                        68,
+                        211,
+                        153,
+                        185,
+                        41,
+                        204,
+                        74,
+                        43,
+                        101,
+                        122,
+                        34,
+                        234,
+                        35,
+                        168,
+                        91,
+                        201,
+                        58,
+                        38,
+                        129,
+                        220,
+                        231
+                      ]
+                    }
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::0fde769bf2b63313ef060a4e24e9fdc0c0673d52db886656a314690c57d9592f::__new__",
+                    "key": "58152b7f",
+                    "kind": "variable",
+                    "name": "__new__",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        88,
+                        21,
+                        43,
+                        127,
+                        246,
+                        152,
+                        106,
+                        2,
+                        221,
+                        195,
+                        45,
+                        145,
+                        31,
+                        111,
+                        160,
+                        27,
+                        240,
+                        165,
+                        115,
+                        124,
+                        239,
+                        238,
+                        90,
+                        72,
+                        223,
+                        131,
+                        144,
+                        180,
+                        168,
+                        89,
+                        207,
+                        218
+                      ]
+                    }
+                  }
+                ],
                 "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::321079cf5d6625ef2f1b70b055cf062ab483db2ec5bbd6868a8fc6c8a22c585c::__new__",
                 "key": "c4203ec6",
-                "kind": "function",
-                "name": "__new__"
+                "kind": "method",
+                "name": "__new__",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    196,
+                    32,
+                    62,
+                    198,
+                    190,
+                    29,
+                    28,
+                    120,
+                    50,
+                    109,
+                    121,
+                    195,
+                    78,
+                    105,
+                    169,
+                    207,
+                    8,
+                    69,
+                    10,
+                    2,
+                    149,
+                    90,
+                    193,
+                    102,
+                    1,
+                    232,
+                    130,
+                    89,
+                    16,
+                    97,
+                    25,
+                    99
+                  ]
+                }
               },
               {
                 "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::3dd953fe58edcd4121421e4a91fa92265290c93b74632ae2dcf288987f80f65d::symbols",
                 "key": "9943f163",
                 "kind": "field",
-                "name": "symbols"
+                "name": "symbols",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    153,
+                    67,
+                    241,
+                    99,
+                    206,
+                    58,
+                    186,
+                    66,
+                    111,
+                    232,
+                    29,
+                    35,
+                    162,
+                    200,
+                    158,
+                    224,
+                    232,
+                    30,
+                    112,
+                    195,
+                    193,
+                    240,
+                    253,
+                    249,
+                    16,
+                    215,
+                    187,
+                    108,
+                    72,
+                    140,
+                    153,
+                    164
+                  ]
+                }
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::c04b699b80333c0f6c5cc758e98b21d3ea28c7f318e6d1b7511b397c3a280800::Symbol",
             "key": "3fe4ee92",
-            "kind": "struct",
-            "name": "Symbol"
+            "kind": "class",
+            "name": "Symbol",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                63,
+                228,
+                238,
+                146,
+                109,
+                228,
+                182,
+                176,
+                96,
+                127,
+                144,
+                31,
+                92,
+                208,
+                173,
+                196,
+                236,
+                210,
+                202,
+                158,
+                185,
+                213,
+                254,
+                216,
+                227,
+                19,
+                144,
+                197,
+                92,
+                29,
+                201,
+                146
+              ]
+            }
           },
           {
             "children": [
@@ -71,19 +631,216 @@
                     "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::740e5f57d308527a4b10e319e821e15ad2003a5e9b97126a213e49cec08d740c::doc",
                     "key": "08e79829",
                     "kind": "variable",
-                    "name": "doc"
+                    "name": "doc",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        8,
+                        231,
+                        152,
+                        41,
+                        123,
+                        77,
+                        117,
+                        37,
+                        211,
+                        201,
+                        207,
+                        136,
+                        15,
+                        12,
+                        212,
+                        67,
+                        244,
+                        11,
+                        152,
+                        221,
+                        0,
+                        137,
+                        193,
+                        205,
+                        210,
+                        27,
+                        71,
+                        198,
+                        65,
+                        219,
+                        128,
+                        104
+                      ]
+                    }
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::45318fb18e1d2bd1a7580e5dd47df9c76d275b3451490f0c234c9c5b0ce8066b::name",
+                    "key": "95e3fb94",
+                    "kind": "variable",
+                    "name": "name",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        149,
+                        227,
+                        251,
+                        148,
+                        236,
+                        4,
+                        133,
+                        188,
+                        175,
+                        102,
+                        19,
+                        26,
+                        220,
+                        178,
+                        246,
+                        135,
+                        38,
+                        171,
+                        124,
+                        235,
+                        152,
+                        135,
+                        16,
+                        193,
+                        213,
+                        109,
+                        12,
+                        219,
+                        33,
+                        85,
+                        67,
+                        153
+                      ]
+                    }
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::391204c9477d10110f0d71efa991588c494321645d82d9b728264476fb014b6e::signal",
+                    "key": "c745961b",
+                    "kind": "variable",
+                    "name": "signal",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        199,
+                        69,
+                        150,
+                        27,
+                        221,
+                        58,
+                        139,
+                        255,
+                        141,
+                        98,
+                        12,
+                        46,
+                        211,
+                        194,
+                        168,
+                        214,
+                        95,
+                        111,
+                        222,
+                        171,
+                        208,
+                        14,
+                        155,
+                        126,
+                        245,
+                        156,
+                        233,
+                        61,
+                        142,
+                        131,
+                        91,
+                        33
+                      ]
+                    }
                   }
                 ],
                 "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::9320ca91c42d53a8a9cab987c6e397236708afb256095758e9c11686280d9839::signal",
                 "key": "e7d8e127",
-                "kind": "function",
-                "name": "signal"
+                "kind": "method",
+                "name": "signal",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    231,
+                    216,
+                    225,
+                    39,
+                    79,
+                    255,
+                    192,
+                    145,
+                    102,
+                    128,
+                    144,
+                    249,
+                    68,
+                    184,
+                    98,
+                    12,
+                    213,
+                    74,
+                    39,
+                    230,
+                    38,
+                    243,
+                    60,
+                    112,
+                    24,
+                    3,
+                    150,
+                    104,
+                    229,
+                    204,
+                    133,
+                    40
+                  ]
+                }
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::9f141184b41652aba933c0329aa03360c6d0f6ecca1d5abd3ccafa04f8501b74::Namespace",
             "key": "27a86620",
-            "kind": "struct",
-            "name": "Namespace"
+            "kind": "class",
+            "name": "Namespace",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                39,
+                168,
+                102,
+                32,
+                68,
+                141,
+                199,
+                1,
+                236,
+                171,
+                206,
+                37,
+                107,
+                134,
+                233,
+                180,
+                140,
+                82,
+                246,
+                3,
+                9,
+                149,
+                111,
+                102,
+                157,
+                158,
+                86,
+                17,
+                107,
+                226,
+                64,
+                59
+              ]
+            }
           },
           {
             "children": [
@@ -93,13 +850,87 @@
                     "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::d67004bcb0bf56adabe64d2eac0173f00a5a214ad20afc8012274b5bae36af49::_clear_state",
                     "key": "3507d91c",
                     "kind": "variable",
-                    "name": "_clear_state"
+                    "name": "_clear_state",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        53,
+                        7,
+                        217,
+                        28,
+                        202,
+                        199,
+                        129,
+                        154,
+                        139,
+                        134,
+                        18,
+                        148,
+                        105,
+                        69,
+                        119,
+                        230,
+                        186,
+                        0,
+                        94,
+                        155,
+                        65,
+                        74,
+                        156,
+                        126,
+                        25,
+                        95,
+                        231,
+                        105,
+                        214,
+                        164,
+                        91,
+                        129
+                      ]
+                    }
                   }
                 ],
                 "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::816bddab4c7fa29845820e88f05f7ede096fa45e5ded9502028a60775f63d455::_clear_state",
                 "key": "0635cc40",
-                "kind": "function",
-                "name": "_clear_state"
+                "kind": "method",
+                "name": "_clear_state",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    6,
+                    53,
+                    204,
+                    64,
+                    212,
+                    124,
+                    67,
+                    242,
+                    149,
+                    217,
+                    174,
+                    186,
+                    186,
+                    108,
+                    96,
+                    194,
+                    55,
+                    43,
+                    54,
+                    119,
+                    28,
+                    183,
+                    248,
+                    19,
+                    76,
+                    21,
+                    65,
+                    247,
+                    88,
+                    26,
+                    145,
+                    1
+                  ]
+                }
               },
               {
                 "children": [
@@ -107,1233 +938,216 @@
                     "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::093bcf322c97c07cd8bbdde13e13a4e0f2c01c5662255f20136bf2833912e3f9::has_receivers_for",
                     "key": "290b8c5f",
                     "kind": "variable",
-                    "name": "has_receivers_for"
+                    "name": "has_receivers_for",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        41,
+                        11,
+                        140,
+                        95,
+                        240,
+                        177,
+                        65,
+                        129,
+                        85,
+                        6,
+                        88,
+                        114,
+                        42,
+                        82,
+                        158,
+                        90,
+                        57,
+                        148,
+                        158,
+                        148,
+                        43,
+                        30,
+                        166,
+                        190,
+                        23,
+                        22,
+                        235,
+                        8,
+                        208,
+                        141,
+                        37,
+                        12
+                      ]
+                    }
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::86e51aa87d0d5ccc4d646e6ef148a8aa904f8fdbc7590130658b4981e3f6cf47::sender",
+                    "key": "7836da03",
+                    "kind": "variable",
+                    "name": "sender",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        120,
+                        54,
+                        218,
+                        3,
+                        73,
+                        127,
+                        217,
+                        195,
+                        94,
+                        9,
+                        220,
+                        21,
+                        28,
+                        155,
+                        56,
+                        195,
+                        200,
+                        97,
+                        139,
+                        174,
+                        184,
+                        247,
+                        81,
+                        52,
+                        50,
+                        117,
+                        219,
+                        9,
+                        209,
+                        134,
+                        195,
+                        188
+                      ]
+                    }
                   }
                 ],
                 "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::978a0d3c0c603ad0d95246fb09489583cca01458f2a754e894f17330613faa16::has_receivers_for",
                 "key": "0e4232b5",
-                "kind": "function",
-                "name": "has_receivers_for"
+                "kind": "method",
+                "name": "has_receivers_for",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    14,
+                    66,
+                    50,
+                    181,
+                    220,
+                    167,
+                    242,
+                    230,
+                    185,
+                    249,
+                    215,
+                    202,
+                    155,
+                    40,
+                    217,
+                    89,
+                    3,
+                    230,
+                    218,
+                    72,
+                    168,
+                    201,
+                    60,
+                    253,
+                    254,
+                    128,
+                    51,
+                    158,
+                    50,
+                    50,
+                    153,
+                    80
+                  ]
+                }
               },
               {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::a9d2b401ec41dd4fba30165e81ff1e9d0d7333e459f2fbde0957dd5edb201624::sender",
-                    "key": "246ddccf",
-                    "kind": "variable",
-                    "name": "sender"
-                  }
-                ],
                 "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::95f5e070749d74e2629219ee19e8f400827451cc45c16c6957338e92081dfe26::send",
                 "key": "28546a41",
-                "kind": "function",
-                "name": "send"
-              },
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::eea40013316bc4df82dedefc990d71c49583a2eacf81fa0cdbfc14fb0e17e03a::cleanup",
-                    "key": "98be2f36",
-                    "kind": "function",
-                    "name": "cleanup"
-                  },
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::d87bb3b044bf86c568043fc1dcaf0aebb5770a68bba05e8cf09ed7d1f79a0117::_make_cleanup_receiver",
-                    "key": "1fcc442c",
-                    "kind": "variable",
-                    "name": "_make_cleanup_receiver"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::a30d066285ab7fc8d34b2bda9f80d7e1bc9c894cf3fea325d8c1c499a5c48928::_make_cleanup_receiver",
-                "key": "31a15424",
-                "kind": "function",
-                "name": "_make_cleanup_receiver"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::49a00b7be8e03699eb1ecbfa206152cb1b9a9b4ca25ad906955fb9db1fb9f235::send_async",
-                "key": "3ab8945b",
-                "kind": "function",
-                "name": "send_async"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::78bb0a74c426807137cb3701d015c9d4d0b54549f724e397319bbff6924e9f97::_cleanup_bookkeeping",
-                "key": "45cf6534",
-                "kind": "function",
-                "name": "_cleanup_bookkeeping"
-              },
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::fc96ad60ba6049ea7b10b9f85bc4d0ec8d79ddf1ad9a1dfad77cfd500409caae::_disconnect",
-                    "key": "0e538272",
-                    "kind": "variable",
-                    "name": "_disconnect"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::360262e5c2415da8a134ee1afe25931f5c4368d4ad462891147af27b31ab1717::_disconnect",
-                "key": "5995ec04",
-                "kind": "function",
-                "name": "_disconnect"
-              },
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::9feb7e6f4705b6a2d74bd67c845970dd904f8fdbc7590130658b4981e3f6cf47::sender",
-                    "key": "0ca09497",
-                    "kind": "variable",
-                    "name": "sender"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::b44d0d03d8c1863c56adcd4cf443ce0ff66bfd2d054506342870423d3d5d5527::disconnect",
-                "key": "6790ea56",
-                "kind": "function",
-                "name": "disconnect"
-              },
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::d53e8db2c77a1fcf593b3d5fd464ba552b60b116de8743169affc2b8f7465735::receivers_for",
-                    "key": "1b89e326",
-                    "kind": "variable",
-                    "name": "receivers_for"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::c7448a240f9f55b3c58da79824df030cc479c686c72235a65ed14d94c9b0c4e4::receivers_for",
-                "key": "9f597c75",
-                "kind": "function",
-                "name": "receivers_for"
-              },
-              {
-                "children": [
-                  {
-                    "children": [
-                      {
-                        "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::1110ce20bd8219fd0075ff114922c358f23ffeadfa1d02b8c03762613ced585e::decorator",
-                        "key": "1ce1eb1c",
-                        "kind": "variable",
-                        "name": "decorator"
-                      }
-                    ],
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::58493dd3caa783a28c49010438195d529435a7cd6784e18a38314360604d4b59::decorator",
-                    "key": "d1fe13c1",
-                    "kind": "function",
-                    "name": "decorator"
-                  },
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::aaa2156f42d0bc3d9ba0b48902357e1c8a7729b22a1468e789ec4997dc525740::weak",
-                    "key": "1d58f54c",
-                    "kind": "variable",
-                    "name": "weak"
-                  },
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::601ebb922e4a8d4364c1c8e70bdfad41900ba9bde2a7451aa286ab39f694de64::connect_via",
-                    "key": "222db213",
-                    "kind": "variable",
-                    "name": "connect_via"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::f46593f1b2f53fc3f67a66710107fd3217c32dafcf1485cacde237fe459fefb6::connect_via",
-                "key": "ad4aab94",
-                "kind": "function",
-                "name": "connect_via"
-              },
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::69c207701da0ecca0f794d453d8c4f1762e24777010a44871414eee12c36d2d2::receiver_connected",
-                    "key": "28facd29",
-                    "kind": "variable",
-                    "name": "receiver_connected"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::39f8f28fd076fbaaf73379158b21d7c52548ef3d72465055635b685481968f1f::receiver_connected",
-                "key": "aed6c193",
-                "kind": "function",
-                "name": "receiver_connected"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::773d0ba9c7f6918f3af7decb70a98ff137f8ad7c8434bfa64323f684a4ab1fd4::connect",
-                "key": "b63518df",
-                "kind": "function",
-                "name": "connect"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::bc1f991107fc25cb096fed4484a64b93e9a8c5d6bcba4091130da8f8958497f1::connected_to",
-                "key": "b786c398",
-                "kind": "function",
-                "name": "connected_to"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::7fa15b5604c5ab761d6d189fcd587f55054ad33eead2b71de9f90aeea95e5b3a::muted",
-                "key": "bcbc375b",
-                "kind": "function",
-                "name": "muted"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::d8d8b8489ff94bb65491db07dbe270a8458ce6562d0ee63262f7f45841beb986::receiver_disconnected",
-                "key": "c7760639",
-                "kind": "function",
-                "name": "receiver_disconnected"
-              },
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::81da6c839b252a2d78cffe930abc4c36d2003a5e9b97126a213e49cec08d740c::doc",
-                    "key": "2a3b8315",
-                    "kind": "variable",
-                    "name": "doc"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::5ef38a714a7cc58afa73d1ab1432a6708e203d84f6e325cc5ea0f3bbd5276e1e::__init__",
-                "key": "d9009bd1",
-                "kind": "function",
-                "name": "__init__"
-              },
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::63e5870200786f56fb39b98a4f949eee3625f07e6bcb63d9864b6702ca7f4f71::cleanup",
-                    "key": "12c6cd15",
-                    "kind": "function",
-                    "name": "cleanup"
-                  },
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::9306ed080068497f66243ebe11e410ab7488bd5a630084eb61ddf32005d2aa21::_make_cleanup_sender",
-                    "key": "07059592",
-                    "kind": "variable",
-                    "name": "_make_cleanup_sender"
-                  },
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::76213bbf9761ac505e037ffb9e04af6819666673c678fbc7ac0bb69e13229ec8::sender_id",
-                    "key": "0d76b3b9",
-                    "kind": "variable",
-                    "name": "sender_id"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::0494d5bcb31087d8d69bc8ba6933d7da1d0fdb2368f64506d8e6c3c4189ba384::_make_cleanup_sender",
-                "key": "f5de5fde",
-                "kind": "function",
-                "name": "_make_cleanup_sender"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::ef87e1fd7f50d7429522c57766adc9338846ec6684497a687029d336d96ceef1::ANY",
-                "key": "0dbc6214",
-                "kind": "field",
-                "name": "ANY"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::5901f2a6c7af15f6ec6c5de2d4291aad8fce49cbf3134b24493eef98ee7afc68::set_class",
-                "key": "69e34075",
-                "kind": "field",
-                "name": "set_class"
+                "kind": "method",
+                "name": "send",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    40,
+                    84,
+                    106,
+                    65,
+                    131,
+                    209,
+                    76,
+                    160,
+                    247,
+                    246,
+                    17,
+                    192,
+                    139,
+                    249,
+                    226,
+                    85,
+                    229,
+                    181,
+                    108,
+                    88,
+                    57,
+                    74,
+                    74,
+                    157,
+                    75,
+                    232,
+                    8,
+                    176,
+                    164,
+                    36,
+                    96,
+                    118
+                  ]
+                }
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::abf481e4378cef8a2615a9fc6f0dad7e5f09c42d11252a4f63d8f5cbdc6f6734::Signal",
             "key": "b69b3cf8",
-            "kind": "struct",
-            "name": "Signal"
-          },
-          {
-            "children": [
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::19e95de4a5c007eb490580036900d66fb644bae667f01332266b7ec1b1db428e::__init__",
-                    "key": "0e7c1f47",
-                    "kind": "variable",
-                    "name": "__init__"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::37f75d7dabde44e9936e04768aecf82cadc0c44d81e9b7725ebee760a03b76b8::__init__",
-                "key": "3a67c03b",
-                "kind": "function",
-                "name": "__init__"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::1de33d6c388d754eeaeb565581438c4e4e16c095ea1b92321e3ef60647dec868::__repr__",
-                "key": "72ef8259",
-                "kind": "function",
-                "name": "__repr__"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::e3dea55e31bba8ba597837935bcbb1d1f843e74cd511b98bc019959af843ee6d::NamedSignal",
-            "key": "c6e060d9",
-            "kind": "struct",
-            "name": "NamedSignal"
-          },
-          {
-            "children": [
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::0c67503bf7bb760f9ee430f1f6fc341b6d275b3451490f0c234c9c5b0ce8066b::name",
-                    "key": "3a6bfbfd",
-                    "kind": "variable",
-                    "name": "name"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::289541b8f8b616d32584403f9b3d707e7818938772bdf529d453251f98caf113::__call__",
-                "key": "4d052958",
-                "kind": "function",
-                "name": "__call__"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::242ff403305f62881ed0dce86647d5af096d564cb9b6ac6898bec78c27ff38dc::_PNamespaceSignal",
-            "key": "e5f6a1b9",
-            "kind": "struct",
-            "name": "_PNamespaceSignal"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::d013de3e159c7aa2a160032bb2173357c272644ef4119a49b0ec0ea448cfbb5e::obj",
-                "key": "1644f6de",
-                "kind": "variable",
-                "name": "obj"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::ec2d2394fc8e2a531a4b3c8132649afdae1a54726dda5bc882f569dba2885a81::make_id",
-            "key": "0fe586a4",
-            "kind": "function",
-            "name": "make_id"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::d6bf8906988b071036a7febaff6aa74ce02229431b9da57461004b17ce496058::make_ref",
-            "key": "5b02b510",
-            "kind": "function",
-            "name": "make_ref"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::68db11e574db50044a56a5bacfd5cc41346d8463f1d811c6740202f3ec74d04c::extlinks",
-            "key": "0c1f19f5",
-            "kind": "variable",
-            "name": "extlinks"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::299b54c5b32ff92bf047b54785261b6b56e1ad72e3970d28605b9fd84bfd0f9e::project",
-            "key": "117d887a",
-            "kind": "variable",
-            "name": "project"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::aff24d7d59805d4177be355627f3764a6a88203c7e1b76221a3471a07074c17f::autodoc_typehints",
-            "key": "182c34ed",
-            "kind": "variable",
-            "name": "autodoc_typehints"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::9370b3c6a2517e9263ab8f5719191baf039244a1fc8bcbabefa59b87f3235a32::copyright",
-            "key": "23e40f3d",
-            "kind": "variable",
-            "name": "copyright"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::2fbb6233b71c22ee4ce68c9f257aa4b02d28fd4b2e6d76fff1804ee28a2d3a62::html_theme_options",
-            "key": "2938323d",
-            "kind": "variable",
-            "name": "html_theme_options"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::f1b9e712cce72dff17d78f23b21abcabfebab3f3998a5661ede136b499c36cd7::html_title",
-            "key": "31d413dd",
-            "kind": "variable",
-            "name": "html_title"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::82a8eff40cadaeac4c0e6564529de845efbb278cb4f5a3f7c35b9e1ef04e7db5::extensions",
-            "key": "3504ab86",
-            "kind": "variable",
-            "name": "extensions"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::112800ffe86767f55d34dcb6e194def5efa6cb0a58745c4a829878143a0ebcc3::html_sidebars",
-            "key": "5aef11f3",
-            "kind": "variable",
-            "name": "html_sidebars"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::1ec486da1e00c5a38bc0c9b4a26ab2578f99025739b53478e949e7352af56fda::html_context",
-            "key": "72ec3c22",
-            "kind": "variable",
-            "name": "html_context"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::441f30c68a8208744c1f4af0a3d56515a36a7b6484972c99e71fcb8e080927d2::autodoc_member_order",
-            "key": "7b21bdf1",
-            "kind": "variable",
-            "name": "autodoc_member_order"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::b5bc36d9b7ed1a25b81d2ffd337a8d14afdaecba6c51098a8b2c4b7dbb78920e::autodoc_preserve_defaults",
-            "key": "7c83d330",
-            "kind": "variable",
-            "name": "autodoc_preserve_defaults"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::2f28f8d16cad469c77b922f16bb454aceab574e26c0c50685c490d0f3ef0b7f4::default_role",
-            "key": "996f7bc4",
-            "kind": "variable",
-            "name": "default_role"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::a7898a618223293c27e6b90f7821029d23bf2853d4ec0cdb23e36c12d1625b79::html_theme",
-            "key": "af71e683",
-            "kind": "variable",
-            "name": "html_theme"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::e7fd70e644061ae936615562697bb1e518ea3149a81f067644da001106a1581b::singlehtml_sidebars",
-            "key": "b1d25393",
-            "kind": "variable",
-            "name": "singlehtml_sidebars"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::9bb2cc576c5028b1dbd6ef264db0e0aa320133b84441882a5d730d1d5e71e201::html_static_path",
-            "key": "d0359b58",
-            "kind": "variable",
-            "name": "html_static_path"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::3b6ccc824293e3891cd2b4959eaaa308bd30a7d52a5ef14a009017d8feb75243::html_logo",
-            "key": "d402cd5d",
-            "kind": "variable",
-            "name": "html_logo"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::5fe9320751d189c6e85d3fced12d12ededd36b6eadfa95a8d9ea2120281ba3b5::html_show_sourcelink",
-            "key": "f54d48ae",
-            "kind": "variable",
-            "name": "html_show_sourcelink"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::451f0ee906792958559fc044b5ef517527b22e65e5b91577d5bb23a44389600c::__all__",
-            "key": "b35a3ed9",
-            "kind": "variable",
-            "name": "__all__"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::c80ae047ce3bbd52c6822517f6d98908a81875c36a673197b03fa5dd0c270f43::T",
-            "key": "6bf04b5b",
-            "kind": "variable",
-            "name": "T"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::4db86960defe862f3a06d285732a4d1ddfe5d7ea244bf82274da150ed880ef9d::ANY_ID",
-            "key": "12625f78",
-            "kind": "variable",
-            "name": "ANY_ID"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::8390b975f37824d641d271594951adf3f0d5ff00d21c17293e0a592b27e82027::F",
-            "key": "17520bf5",
-            "kind": "variable",
-            "name": "F"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::16ba9ab30e4a42ddaedb016021abf7445fa2caf253526587454f50ee91051156::ANY",
-            "key": "41d18e55",
-            "kind": "variable",
-            "name": "ANY"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::34abc51ae82bde2b733e3a6d5328ca39906e424c49c1cb67d7894423da5f2f0e::default_namespace",
-            "key": "7d38bc7c",
-            "kind": "variable",
-            "name": "default_namespace"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::c32721b268dc0a769c1ae4c0174a10c760c926363af0715530d78ca319a482ea::signal",
-            "key": "da1e927c",
-            "kind": "variable",
-            "name": "signal"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::6761f84bcb2d957ea86df2d474569b6433ef92e0383fc52da21f066412d9dee7::Failure",
-            "key": "bfcf2228",
-            "kind": "struct",
-            "name": "Failure"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::ed635e7f50a150c2e311ea717a4a5e216675bb99b82228759b7a2918602eff8a::BaseFailure",
-            "key": "ce08c685",
-            "kind": "struct",
-            "name": "BaseFailure"
-          },
-          {
-            "children": [
-              {
-                "children": [
-                  {
-                    "children": [
-                      {
-                        "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::0903a2d9e914f5d348befcdddc5db39804b5f698f6dcbdcd8a64c3442f1bdf42::sentby",
-                        "key": "3aa934a1",
-                        "kind": "variable",
-                        "name": "sentby"
-                      }
-                    ],
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::45c59f5f48718b7984f5722ce488a26790d15d37c52d2a5982395361b3be4b0c::receiver",
-                    "key": "c4667ddc",
-                    "kind": "function",
-                    "name": "receiver"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::3d2d9bc2405cef24b99238d0fb1e62d7603ccd113204adecff094d94517e0482::make_receiver",
-                "key": "39d35b2a",
-                "kind": "function",
-                "name": "make_receiver"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::ef6571efa1d013e891030963af05b3b0503d13833b743b8ffccc3d4e42098d9e::Sentinel",
-            "key": "dd2cea3d",
-            "kind": "struct",
-            "name": "Sentinel"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::1086f8f41b5b0f71b3854cd954fc767a1fc2a4e5a0069e4942cf35fb1a3b039b::receiver",
-                "key": "77f9ed70",
-                "kind": "function",
-                "name": "receiver"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::368f6751a7c623afd6d464a4bff0ffb95fa5a62bb03798e6b838a117a42fdb7c::test_temp_connection_for_sender",
-                "key": "35ab4bad",
-                "kind": "variable",
-                "name": "test_temp_connection_for_sender"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::83fcb13678aecc812b94c7223716f699b7a136efb5457e84b4467a15da04dd19::test_temp_connection_for_sender",
-            "key": "232e0515",
-            "kind": "function",
-            "name": "test_temp_connection_for_sender"
-          },
-          {
-            "children": [
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::4989190778ca0ddfada006b01f1247d1d3627f1f8c7b3cfef82030c835ac9d32::receiver",
-                    "key": "0caad503",
-                    "kind": "variable",
-                    "name": "receiver"
-                  },
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::b4cfb63ff6819d2014b521cd67d097d2904f8fdbc7590130658b4981e3f6cf47::sender",
-                    "key": "2c2f74c5",
-                    "kind": "variable",
-                    "name": "sender"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::22276bd3ce2e77cb1fdef4678a01634432c858425156424f68be4b367b1ef52f::receiver",
-                "key": "743d0acc",
-                "kind": "function",
-                "name": "receiver"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::b6d7b57ed79ff6c19ffabca82928092f0984aab07f80c9018a7815023a8ca048::test_temp_connection_failure",
-            "key": "2a8ab639",
-            "kind": "function",
-            "name": "test_temp_connection_failure"
-          },
-          {
-            "children": [
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::23cb094d491aa17bd0bffe1f6dd1cc9cd3627f1f8c7b3cfef82030c835ac9d32::receiver",
-                    "key": "3b6f122c",
-                    "kind": "variable",
-                    "name": "receiver"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::bed3acdfb0bce8f22ae3acdd31b3e25977e7b1df42bb974506b1b774ea8690fd::receiver",
-                "key": "e75d3e57",
-                "kind": "function",
-                "name": "receiver"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::60a24305425b378194ed0abe32f61f1fd98f0bacb1597f69dca43521c1e2783a::test_temp_connection",
-            "key": "bd0d1ed3",
-            "kind": "function",
-            "name": "test_temp_connection"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::6df517372329a16dc34cf5314bba1bf2978a61d8b1a48f13c142ea9ee9c3f603::Sender",
-                "key": "0b6079b8",
-                "kind": "struct",
-                "name": "Sender"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::0e22307a55a07941d5d3a20f6911df60d92e61374337d49f37b01dcc779dd0c9::test_signal_signals_weak_sender",
-            "key": "04d6b64f",
-            "kind": "function",
-            "name": "test_signal_signals_weak_sender"
-          },
-          {
-            "children": [
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::4de60f4b02d7e29180525fd5375ee8140a23f1fb1bc30e912f0d309a99a1fac6::received",
-                    "key": "020d98df",
-                    "kind": "variable",
-                    "name": "received"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::0a0a4f08accb449af7a24472eb0ffe52860358092c0435107c4a33d25d08c8ec::received",
-                "key": "1da173b9",
-                "kind": "function",
-                "name": "received"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::140fc7837ec877d31fc029498c2fb4e4e235bae9bcbcf60f3d6a20c8aea6c65f::test_weak_receiver",
-            "key": "0ef9b1d9",
-            "kind": "function",
-            "name": "test_weak_receiver"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::ac28c7df324318f5821fa6f4f56ac890736510bf008a0893515cf09b2cb84e5c::test_signal_signals_strong_sender",
-            "key": "0f57076f",
-            "kind": "function",
-            "name": "test_signal_signals_strong_sender"
-          },
-          {
-            "children": [
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::3e135ddb68c6cf77427ca9aa60cb01540a23f1fb1bc30e912f0d309a99a1fac6::received",
-                    "key": "3529c2fd",
-                    "kind": "variable",
-                    "name": "received"
-                  },
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::d1665e583c445bd892fe04f398993690904f8fdbc7590130658b4981e3f6cf47::sender",
-                    "key": "38a60a63",
-                    "kind": "variable",
-                    "name": "sender"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::417a5c6bd153322330a98af9626e8ad1dfa6a0553a782eeccb8ab591dc9f18cf::received",
-                "key": "e7d34a4f",
-                "kind": "function",
-                "name": "received"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::e4c5b8abfcbbc66836c06fb9c8af3f2fed49181d106131e8bfb8de11a5a087a0::test_no_double_send",
-                "key": "0d04d6d5",
-                "kind": "variable",
-                "name": "test_no_double_send"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::65b0f6cb650c9f7f509dfd5f49f6c9fd1551a1de26c5452d46b037072abea649::test_no_double_send",
-            "key": "1954be2e",
-            "kind": "function",
-            "name": "test_no_double_send"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::b3dd75c8b7819dcea44ac05de4223e5780d8d4d9f28addc8fd25f66c32848508::Sender",
-                "key": "642523b6",
-                "kind": "struct",
-                "name": "Sender"
-              },
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::bb15b91e616c89b5e0e643a4cc9eb28bf54903237050e824693a6be4ca7c7148::receivers",
-                    "key": "1b71f561",
-                    "kind": "variable",
-                    "name": "receivers"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::6e4637ca5a729eaf156334d66ec691898e8a58b054cbbe4469aa487f0ca7a49b::receivers",
-                "key": "36f634a9",
-                "kind": "function",
-                "name": "receivers"
-              },
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::8ad1965e966b98c6fee1b5f8215c5b312cc601d13d12abf35bedffa8de888e4c::senders",
-                    "key": "1393127b",
-                    "kind": "variable",
-                    "name": "senders"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::7a0c34dad70e876512d110dac80150869cd7ed7a510bc04fd072250f6a762a14::senders",
-                "key": "63dcae2c",
-                "kind": "function",
-                "name": "senders"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::e88939e711a9032f818126268898ed1a0bccf932e7a31da80e9428f247a92202::test_empty_bucket_growth",
-            "key": "1b2169ae",
-            "kind": "function",
-            "name": "test_empty_bucket_growth"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::d441a6052798ae1705f53cbfc722a000c83ad6998d702a9384772409261ba44f::received",
-                "key": "6f9f5161",
-                "kind": "function",
-                "name": "received"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::003b86c2a2e098d339ee3990c3302eab45882a63837dd274b2cd3f2e2aa80229::test_strong_receiver",
-            "key": "2b0ad94b",
-            "kind": "function",
-            "name": "test_strong_receiver"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::e4a0cf412bce53a2ba43d5e8be8db0032d14f63d74b05aa3a0eee66c33ef0da3::received",
-                "key": "08a97f50",
-                "kind": "function",
-                "name": "received"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::8e496727d36aa583fb56c8ae95f2f594b1dfe501f3182b57cd8a78640273b080::test_mute_signal",
-            "key": "4d20dd37",
-            "kind": "function",
-            "name": "test_mute_signal"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::5eaf1653befe907d2d506b65992a6952945b3f2d356559b02f62a329f659731f::Object",
-                "key": "160457ed",
-                "kind": "struct",
-                "name": "Object"
-              },
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::000d44d45fbb83016bfac4662522db49904f8fdbc7590130658b4981e3f6cf47::sender",
-                    "key": "18cfa411",
-                    "kind": "variable",
-                    "name": "sender"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::0f4ec63a4e67556be37ab8378b8d430cdf5794046112329749212ba4335f71f2::received",
-                "key": "8bde0d6e",
-                "kind": "function",
-                "name": "received"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::42d27b659d1e1facc0c2692703aa815601b6865941368a5ef6ca563aae482fa1::test_filtered_receiver_weakref",
-            "key": "51682d6c",
-            "kind": "function",
-            "name": "test_filtered_receiver_weakref"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::8b0452962a3b029c57386b9058f0ffe07af02bcad98ead0269b53cee0123b9ab::test_signal_weak_receiver_vanishes",
-            "key": "567fbddc",
-            "kind": "function",
-            "name": "test_signal_weak_receiver_vanishes"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::888b238c3e1a99bc6de8b4c1da4b937337437aa2666583d0c33e0ff106f4581d::test_namespace",
-            "key": "607df909",
-            "kind": "function",
-            "name": "test_namespace"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::79979fee114c2c19d7b8138c914b3308904f8fdbc7590130658b4981e3f6cf47::sender",
-                "key": "2b530103",
-                "kind": "variable",
-                "name": "sender"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::2fbd62395b063432a52570efa3434bd5c227792468b47507092e735708bb42d8::_test_signal_signals",
-            "key": "6312e484",
-            "kind": "function",
-            "name": "_test_signal_signals"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::06a94a82672abc62cfca4b6cb6d0036dc8a13645d220bdf4945ae982bbeaa29a::test_signal_signals_any_sender",
-            "key": "6caf3e14",
-            "kind": "function",
-            "name": "test_signal_signals_any_sender"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::ca91cbea67f103188f3759bb02c1fafa1c2735c55a2f912ce41f1fd77972807d::received_async",
-                "key": "073f54b1",
-                "kind": "function",
-                "name": "received_async"
-              },
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::31e2c755355074442891a2889b68727d904f8fdbc7590130658b4981e3f6cf47::sender",
-                    "key": "04bd3538",
-                    "kind": "variable",
-                    "name": "sender"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::6c0e36a43f56a25a7c567400af037f52014692176c9fe14ede3e50f49ec2d231::received",
-                "key": "7474346a",
-                "kind": "function",
-                "name": "received"
-              },
-              {
-                "children": [
-                  {
-                    "children": [
-                      {
-                        "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::1cd30c5b00270538843556e348d2320673e481bec61177d57c60517b5b88cc95::inner",
-                        "key": "2b2dc714",
-                        "kind": "variable",
-                        "name": "inner"
-                      }
-                    ],
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::7ad79a70183fcd2a97cc6da5b71dc1206b550eaefe9e04954a3bec7e14c6552e::inner",
-                    "key": "28352291",
-                    "kind": "function",
-                    "name": "inner"
-                  },
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::c52dd944b782d7fe946d8aea500cec0e310785ce3948bf2e4bd484933a7107b2::wrapper",
-                    "key": "14e62e09",
-                    "kind": "variable",
-                    "name": "wrapper"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::d354d54ac687eca0064567ec695b6591d14c91a5d8e3160673bbae734042f746::wrapper",
-                "key": "bc45306f",
-                "kind": "function",
-                "name": "wrapper"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::a6d250acd6c1254f007a3f5576576249502f576b86d1d8af606990053e007828::test_async_receiver",
-            "key": "77cd45e4",
-            "kind": "function",
-            "name": "test_async_receiver"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::84e1a32762c66f8e88b2aaf62d2be59bdcf84fbe74be96ced7d3f8389fb8d0e1::Object",
-                "key": "2b531adf",
-                "kind": "struct",
-                "name": "Object"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::33d8b545d7e50729262a3d1ea57613a6ab6384408ed6f399f474608b21951105::receiver",
-                "key": "888c7dff",
-                "kind": "function",
-                "name": "receiver"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::8939ba2f81df1aaf6eafca069a1c2c72281042a217742f2359ab7a348015a204::test_decorated_receiver",
-            "key": "7aad6860",
-            "kind": "function",
-            "name": "test_decorated_receiver"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::062d2b265be164141f71acfc8950c096e44d1bc05a72d71285e6a5bc82c0886e::test_instance_doc",
-            "key": "8484a476",
-            "kind": "function",
-            "name": "test_instance_doc"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::59775f12bd22cc295a2f0d8d74731d0e9ab4982464b6e71a5e09f46c99d2e765::test_named_blinker",
-            "key": "a2a2cbec",
-            "kind": "function",
-            "name": "test_named_blinker"
-          },
-          {
-            "children": [
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::6618a6b430f60029eb015b621d083decb87702752a0aea75f03210300aa8fcec::__init__",
-                    "key": "3c277dbe",
-                    "kind": "function",
-                    "name": "__init__"
-                  },
-                  {
-                    "children": [
-                      {
-                        "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::e4e5ed77bc5e457b5589d79a243d2dea0a23f1fb1bc30e912f0d309a99a1fac6::received",
-                        "key": "076c7471",
-                        "kind": "variable",
-                        "name": "received"
-                      }
-                    ],
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::4dea98651c15a6d7e8435360825c62b5543c419b7890588b9ca65fda8740041b::received",
-                    "key": "64f8f746",
-                    "kind": "function",
-                    "name": "received"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::3839f4c9545652b20bd021abb822628a56edacd95481e7c78d61f55af2fcf7ea::Receiver",
-                "key": "5598ca9d",
-                "kind": "struct",
-                "name": "Receiver"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::522fa511a4643f831745383811856f382d7c147858d602dced4a139facce2f18::test_instancemethod_receiver",
-            "key": "a50b846f",
-            "kind": "function",
-            "name": "test_instancemethod_receiver"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::6c21ad60cce54182f3fd8182d83d62dde60b5945562cec0140cca47863c94e27::collect_acyclic_refs",
-            "key": "ae780d2c",
-            "kind": "function",
-            "name": "collect_acyclic_refs"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::d76e73a0e05aa6e3157a091a09111a9976bb2b5b63ecf9d0a09d342348f13029::received",
-                "key": "0e5fb3b6",
-                "kind": "function",
-                "name": "received"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::87db60cebf799b52c919f5643a0614f6a9681e3b334f01c39323609ac30c4d48::test_filtered_receiver",
-                "key": "16f4376b",
-                "kind": "variable",
-                "name": "test_filtered_receiver"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::ae39cea5d8bcba9dd3473741091bbe8a22b331af6a77974c5b91aa198fa9bab0::test_filtered_receiver",
-            "key": "c199319f",
-            "kind": "function",
-            "name": "test_filtered_receiver"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::18574d602811bc3d6c7f3e6933d07651445cb0ab41a650048bdc611a3c7c822a::dictionary",
-                "key": "04e093e4",
-                "kind": "variable",
-                "name": "dictionary"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::50e4dc127ec87d8bbe7f87053a9a098ca73a3f65fa9545c00ac4004095f09ed5::values_are_empty_sets_",
-                "key": "25f7b755",
-                "kind": "variable",
-                "name": "values_are_empty_sets_"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::0d3564363445fe25c950128a20f518e078aaa87a524f993e4addc106717702e4::values_are_empty_sets_",
-            "key": "c2b21411",
-            "kind": "function",
-            "name": "values_are_empty_sets_"
-          },
-          {
-            "children": [
-              {
-                "children": [
-                  {
-                    "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::378e1a478cf08b8011ac5e31835a85200a23f1fb1bc30e912f0d309a99a1fac6::received",
-                    "key": "3ddf4af2",
-                    "kind": "variable",
-                    "name": "received"
-                  }
-                ],
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::29d04291ae3a0dae45ce8190b08c0308dd5dbb12464e7b5c0031c593a9c6f65d::received",
-                "key": "d7b3f909",
-                "kind": "function",
-                "name": "received"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::1ff4190acb5807edd1e53a738dc41e495f141ec4953906a75a3dc7708fcee5b6::test_int_sender",
-            "key": "c62b0f6d",
-            "kind": "function",
-            "name": "test_int_sender"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::695198747011a37b36b77e00b907d8380662e09da526afcdf7bc35dbd51d7b72::Object",
-                "key": "2386902b",
-                "kind": "struct",
-                "name": "Object"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::03912d5f24821b832636f7a406a473235a78f9c798f6dd30bcf5005059d5a861::received",
-                "key": "55c4b382",
-                "kind": "function",
-                "name": "received"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::e03824d01346246ef303ce845216fdba1e335d9c394423f83c874996948c1d3c::test_has_receivers",
-            "key": "f0fe4cce",
-            "kind": "function",
-            "name": "test_has_receivers"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::65fcdf236bdacccc5787731fa0f39a2f89cecd2880bb453d69f14acce4832132::test_pickled_symbols",
-            "key": "4154b2a1",
-            "kind": "function",
-            "name": "test_pickled_symbols"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::2207eb8466a676945c5a1eb6a3f3c81aa8ae3d7689e741af3d2aac2a694c6ae0::test_symbols",
-            "key": "47e246dd",
-            "kind": "function",
-            "name": "test_symbols"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::6a077fa0f9f7c1c9c4f2e6aff1483256383edba70bd21e63b3ff26e44cc79ac0::cached_property",
-            "key": "05600a03",
-            "kind": "type",
-            "name": "cached_property"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::2d91c79df07a905de30c7c40daa1e7fdc762abd2a2f00d802e95d64f331b6cbb::ProjectLink",
-            "key": "090fd67f",
-            "kind": "type",
-            "name": "ProjectLink"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::ab8acebdcd53ceb47db3803e063bce407f271b38b1dab46d872edcfad4bc5164::Signal",
-            "key": "093fb8cd",
-            "kind": "type",
-            "name": "Signal"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::460a49ccb7320e0157d34c1b83372c27e8066e05d46aa53093d41970f63e8d92::get_version",
-            "key": "0b9e7332",
-            "kind": "type",
-            "name": "get_version"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::f47a1b71e051157ae2f8aefd37291fb35d064923d23242f1172e7a2f27450ece::signal",
-            "key": "0c9fb32d",
-            "kind": "type",
-            "name": "signal"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::a1732d8ecf2990cdeaee0a741083f86a359210df0a49023f3fc026b15dec9705::blinker",
-            "key": "1c816eec",
-            "kind": "type",
-            "name": "blinker"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::06a252e5601b0a87eda5bf42a3b1307872d53aa73d0ec119cffb45a7e0f4cc3f::defaultdict",
-            "key": "1f100c5d",
-            "kind": "type",
-            "name": "defaultdict"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::89465e9537fb95dce51ac96c83e35ab5170cbc978f74dbc19262528c9dae85da::pickle",
-            "key": "211f89bd",
-            "kind": "type",
-            "name": "pickle"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::d9b4e7f55d4e9c20a190dcb15bc8a8e4366a8a77a903145d5841e710731341b7::pytest",
-            "key": "24ffc966",
-            "kind": "type",
-            "name": "pytest"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::37d0928cd99bbb086978473823ed4181d1f58ea44c016045604687ad2e41c128::annotations",
-            "key": "2a5421a7",
-            "kind": "type",
-            "name": "annotations"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::df169b6d8b2b7b8205d687d163bb5ab26013447e1e97f17c159a469596dff089::WeakMethod",
-            "key": "2c07d108",
-            "kind": "type",
-            "name": "WeakMethod"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::e6561e877a8bfa819110b8b5e75b7a6198ff161397ff19cbc08532f4afa32a14::Namespace",
-            "key": "39151bbe",
-            "kind": "type",
-            "name": "Namespace"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::8823b5081de76fbe5c522d33d8e3d7b3ccf5b59428a983f76a4c61c1d98bb15d::Symbol",
-            "key": "3916b71f",
-            "kind": "type",
-            "name": "Symbol"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::62c9b510931ed4f09dba0cfbde0f5c24aa3238f912db320db2122aa9b93645fc::inspect",
-            "key": "39e3883a",
-            "kind": "type",
-            "name": "inspect"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::cf8925122022604bee171391393ff5d1366a8a77a903145d5841e710731341b7::pytest",
-            "key": "3a05fb65",
-            "kind": "type",
-            "name": "pytest"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::142d7eed2ce8222692be41dbddbea8eaf49560174351a619f3eeae44a30bd417::c",
-            "key": "3b169af9",
-            "kind": "type",
-            "name": "c"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::e01e42216295ef701263beecb36700f5178f812ce3bb64896d5beae20afcf632::sys",
-            "key": "425a956b",
-            "kind": "type",
-            "name": "sys"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::e7464773431fcf0080fbc5423f1c3529f49560174351a619f3eeae44a30bd417::c",
-            "key": "4606b9d2",
-            "kind": "type",
-            "name": "c"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::63125f67d47efd21bd0df751213383a96739772e3c0626054eb5eab15e0f369e::t",
-            "key": "57b11234",
-            "kind": "type",
-            "name": "t"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::dda80bd809c255f019d03ee3cdadf159d1f58ea44c016045604687ad2e41c128::annotations",
-            "key": "661b9acf",
-            "kind": "type",
-            "name": "annotations"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::a30a7e00f283699dad3dc586c963c1b63658393c6bc020b9ec57cd6d5c481ca6::default_namespace",
-            "key": "74aa1331",
-            "kind": "type",
-            "name": "default_namespace"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::1850de031fed0ee66cc7417b452b6502057653ee73dd122179a7f3042420b9ed::ref",
-            "key": "8d55f69a",
-            "kind": "type",
-            "name": "ref"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::3d2235133f11de3745adffcb87ac0cf26739772e3c0626054eb5eab15e0f369e::t",
-            "key": "91eb560f",
-            "kind": "type",
-            "name": "t"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::82a4827735e48bbb02958b33fad9328e2178852e0fd3b0339b0047d56ca56c4d::make_ref",
-            "key": "94a127c4",
-            "kind": "type",
-            "name": "make_ref"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::489d5002c91d2de2a191d365534d49aaa7d6a956bb77ed1fcf244ba083a6c0d7::contextmanager",
-            "key": "94e1422b",
-            "kind": "type",
-            "name": "contextmanager"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::fd5d8977c60984185603614de620248c84157b8b7ae9d972f78c6eb23c60e790::make_id",
-            "key": "9788788d",
-            "kind": "type",
-            "name": "make_id"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::06ecf74034d1a03b47b9595b30a619d96739772e3c0626054eb5eab15e0f369e::t",
-            "key": "a504f1af",
-            "kind": "type",
-            "name": "t"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::60594296e9498cf953541a88264f19ac7f271b38b1dab46d872edcfad4bc5164::Signal",
-            "key": "a57a320b",
-            "kind": "type",
-            "name": "Signal"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::d025f5d5638c2dac48f50216030d17dbd1f58ea44c016045604687ad2e41c128::annotations",
-            "key": "ae08b2ec",
-            "kind": "type",
-            "name": "annotations"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::2aefb9009958d99d690f96ae3515481accf5b59428a983f76a4c61c1d98bb15d::Symbol",
-            "key": "b449044c",
-            "kind": "type",
-            "name": "Symbol"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::bcd2edce4c4d5267425cbdc42b022ff3be345e46dad8c0e8e228ec648e0b1a65::NamedSignal",
-            "key": "b4656552",
-            "kind": "type",
-            "name": "NamedSignal"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::caeba64ab31174d789ff7a4bccfe94436739772e3c0626054eb5eab15e0f369e::t",
-            "key": "b6a421bb",
-            "kind": "type",
-            "name": "t"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::a53996ab0de41b39f826943c9f1c17e9ca1d31dfbc112abd6330a8f5a80ca8b6::iscoroutinefunction",
-            "key": "ba44a4cb",
-            "kind": "type",
-            "name": "iscoroutinefunction"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::83af04b98259808619d6feae702465c72df447ddeb21856b71652bdfaf409bf3::weakref",
-            "key": "c0ce1cb1",
-            "kind": "type",
-            "name": "weakref"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::5f396130e60561524224eed4eff4c325d1f58ea44c016045604687ad2e41c128::annotations",
-            "key": "c97bbece",
-            "kind": "type",
-            "name": "annotations"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::30c6538a0bd84ad8a51c978d07a8ad31961702e8da65aebd45cbc433ae11023a::gc",
-            "key": "d618cd51",
-            "kind": "type",
-            "name": "gc"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::52a8265dc1c51570a50a3e58ee3e2154178f812ce3bb64896d5beae20afcf632::sys",
-            "key": "eca79fd1",
-            "kind": "type",
-            "name": "sys"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::f4cf9fca24d16c028861d6177c3e9a60da82e10a49694adf15eaff7fe200c037::ANY",
-            "key": "f053e3ce",
-            "kind": "type",
-            "name": "ANY"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::23da90ad706ad248baeeefe8eb6e6642f49560174351a619f3eeae44a30bd417::c",
-            "key": "f0a58f20",
-            "kind": "type",
-            "name": "c"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::56f847fdcd7b21c7a9e00eff33b3a8fcd1f58ea44c016045604687ad2e41c128::annotations",
-            "key": "fee1a308",
-            "kind": "type",
-            "name": "annotations"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::b0b8bca581acab83b16b593a588507cad1f58ea44c016045604687ad2e41c128::annotations",
-            "key": "fff34072",
-            "kind": "type",
-            "name": "annotations"
+            "kind": "class",
+            "name": "Signal",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                182,
+                155,
+                60,
+                248,
+                93,
+                31,
+                156,
+                222,
+                151,
+                134,
+                14,
+                58,
+                26,
+                244,
+                97,
+                106,
+                133,
+                6,
+                15,
+                214,
+                84,
+                203,
+                32,
+                95,
+                5,
+                124,
+                215,
+                238,
+                122,
+                180,
+                237,
+                239
+              ]
+            }
           }
         ],
         "unnamed": 0
@@ -2288,8 +2102,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 7197,
-                "normalizedFrameBytesExcludingCounters": 28787,
+                "normalizedEstimatedTokensExcludingCounters": 2995,
+                "normalizedFrameBytesExcludingCounters": 11979,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -2298,7 +2112,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/python-blinker/project`\n\nƒ test_signal_signals_weak_sender  `tests/test_signals.py:123 › test_signal_signals_weak_sender`\n  ▣ Sender  `tests/test_signals.py:132 › Sender`\nƒ received_async  `tests/test_signals.py:263 › received_async`\n▫ extlinks  `docs/conf.py:18 › extlinks`\nƒ received  `tests/test_signals.py:314 › received`\nƒ test_weak_receiver  `tests/test_signals.py:219 › test_weak_receiver`\n  ƒ received  `tests/test_signals.py:222 › received`\nƒ test_signal_signals_strong_sender  `tests/test_signals.py:82 › test_signal_signals_strong_sender`\nƒ make_id  `src/blinker/_utilities.py:42 › make_id`\n▫ project  `docs/conf.py:4 › project`\n▫ ANY_ID  `src/blinker/base.py:21 › ANY_ID`\n▫ F  `src/blinker/base.py:16 › F`\n▫ autodoc_typehints  `docs/conf.py:16 › autodoc_typehints`\nƒ test_no_double_send  `tests/test_signals.py:397 › test_no_double_send`\nƒ test_empty_bucket_growth  `tests/test_signals.py:161 › test_empty_bucket_growth`\n  ƒ receivers  `tests/test_signals.py:168 › receivers`\n  ƒ senders  `tests/test_signals.py:162 › senders`\n  ▣ Sender  `tests/test_signals.py:179 › Sender`\nƒ test_temp_connection_for_sender  `tests/test_context.py:27 › test_temp_connection_for_sender`\n  ƒ receiver  `tests/test_context.py:32 › receiver`\n▣ Object  `tests/test_signals.py:430 › Object`\n▫ copyright  `docs/conf.py:5 › copyright`\n▣ Namespace  `src/blinker/base.py:483 › Namespace`\n  ƒ signal  `src/blinker/base.py:486 › signal`\nƒ inner  `tests/test_signals.py:270 › inner`\n▫ html_theme_options  `docs/conf.py:24 › html_theme_options`\nƒ test_temp_connection_failure  `tests/test_context.py:52 › test_temp_connection_failure`\n  ƒ receiver  `tests/test_context.py:57 › receiver`\nƒ test_strong_receiver  `tests/test_signals.py:240 › test_strong_receiver`\n▣ Object  `tests/test_signals.py:373 › Object`\n▫ html_title  `docs/conf.py:39 › html_title`\n▫ extensions  `docs/conf.py:9 › extensions`\n▣ Symbol  `src/blinker/_utilities.py:12 › Symbol`\n  ƒ __init__  `src/blinker/_utilities.py:32 › __init__`\n  ƒ __repr__  `src/blinker/_utilities.py:35 › __repr__`\n  · symbols  `src/blinker/_utilities.py:22 › symbols`\n  ƒ __getnewargs__  `src/blinker/_utilities.py:38 › __getnewargs__`\n  ƒ __new__  `src/blinker/_utilities.py:24 › __new__`\n▫ ANY  `src/blinker/base.py:18 › ANY`\nƒ test_mute_signal  `tests/test_signals.py:466 › test_mute_signal`\n  ƒ received  `tests/test_signals.py:469 › received`\nƒ test_filtered_receiver_weakref  `tests/test_signals.py:342 › test_filtered_receiver_weakref`\n  ▣ Object  `tests/test_signals.py:348 › Object`\n▣ Receiver  `tests/test_signals.py:289 › Receiver`\n  ƒ __init__  `tests/test_signals.py:290 › __init__`\n  ƒ received  `tests/test_signals.py:293 › received`\nƒ received  `tests/test_signals.py:418 › received`\nƒ test_signal_weak_receiver_vanishes  `tests/test_signals.py:86 › test_signal_weak_receiver_vanishes`\n▫ html_sidebars  `docs/conf.py:32 › html_sidebars`\nƒ make_ref  `src/blinker/_utilities.py:60 › make_ref`\nƒ test_namespace  `tests/test_signals.py:204 › test_namespace`\nƒ _test_signal_signals  `tests/test_signals.py:35 › _test_signal_signals`\n▫ T  `src/blinker/_utilities.py:9 › T`\nƒ test_signal_signals_any_sender  `tests/test_signals.py:78 › test_signal_signals_any_sender`\n▫ html_context  `docs/conf.py:25 › html_context`\n▫ autodoc_member_order  `docs/conf.py:15 › autodoc_member_order`\n▫ autodoc_preserve_defaults  `docs/conf.py:17 › autodoc_preserve_defaults`\n▫ default_namespace  `src/blinker/base.py:503 › default_namespace`\n▫ default_role  `docs/conf.py:8 › default_role`\n▫ html_theme  `docs/conf.py:23 › html_theme`\n▫ singlehtml_sidebars  `docs/conf.py:36 › singlehtml_sidebars`\n▫ __all__  `src/blinker/__init__.py:10 › __all__`\n▣ Signal  `src/blinker/base.py:24 › Signal`\n  ƒ _clear_state  `src/blinker/base.py:456 › _clear_state`\n  · ANY  `src/blinker/base.py:30 › ANY`\n  ƒ has_receivers_for  `src/blinker/base.py:305 › has_receivers_for`\n  ƒ send  `src/blinker/base.py:204 › send`\n  ƒ _make_cleanup_receiver  `src/blinker/base.py:399 › _make_cleanup_receiver`\n    ƒ cleanup  `src/blinker/base.py:406 › cleanup`\n  ƒ send_async  `src/blinker/base.py:255 › send_async`\n  ƒ _cleanup_bookkeeping  `src/blinker/base.py:430 › _cleanup_bookkeeping`\n  ƒ _disconnect  `src/blinker/base.py:388 › _disconnect`\n  ƒ disconnect  `src/blinker/base.py:364 › disconnect`\n  · set_class  `src/blinker/base.py:33 › set_class`\n  ƒ receivers_for  `src/blinker/base.py:326 › receivers_for`\n  ƒ connect_via  `src/blinker/base.py:141 › connect_via`\n    ƒ decorator  `src/blinker/base.py:161 › decorator`\n  ƒ receiver_connected  `src/blinker/base.py:42 › receiver_connected`\n  ƒ connect  `src/blinker/base.py:91 › connect`\n  ƒ connected_to  `src/blinker/base.py:168 › connected_to`\n  ƒ muted  `src/blinker/base.py:192 › muted`\n  ƒ receiver_disconnected  `src/blinker/base.py:53 › receiver_disconnected`\n  ƒ __init__  `src/blinker/base.py:73 › __init__`\n  ƒ _make_cleanup_sender  `src/blinker/base.py:414 › _make_cleanup_sender`\n    ƒ cleanup  `src/blinker/base.py:422 › cleanup`\nƒ test_temp_connection  `tests/test_context.py:10 › test_temp_connection`\n  ƒ receiver  `tests/test_context.py:15 › receiver`\n▣ Failure  `tests/test_context.py:43 › Failure`\n▣ NamedSignal  `src/blinker/base.py:464 › NamedSignal`\n  ƒ __init__  `src/blinker/base.py:472 › __init__`\n  ƒ __repr__  `src/blinker/base.py:478 › __repr__`\n▣ BaseFailure  `tests/test_context.py:47 › BaseFailure`\n▫ html_static_path  `docs/conf.py:37 › html_static_path`\n▫ html_logo  `docs/conf.py:38 › html_logo`\n▫ signal  `src/blinker/base.py:508 › signal`\n▣ Sentinel  `tests/test_signals.py:19 › Sentinel`\n  ƒ make_receiver  `tests/test_signals.py:22 › make_receiver`\n▣ _PNamespaceSignal  `src/blinker/base.py:499 › _PNamespaceSignal`\n  ƒ __call__  `src/blinker/base.py:500 › __call__`\n▫ html_show_sourcelink  `docs/conf.py:40 › html_show_sourcelink`\n100 declaration(s) · truncated\n\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-blinker/project\",\"limit\":100,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/python-blinker/project`\n\n◆ Symbol  `src/blinker/_utilities.py:12 › Symbol`\n  ƒ __init__  `src/blinker/_utilities.py:32 › __init__`\n    ▫ name  `name`\n    ▫ __init__  `__init__`\n  ƒ __repr__  `src/blinker/_utilities.py:35 › __repr__`\n    ▫ __repr__  `__repr__`\n  ƒ __getnewargs__  `src/blinker/_utilities.py:38 › __getnewargs__`\n    ▫ __getnewargs__  `__getnewargs__`\n  ƒ __new__  `src/blinker/_utilities.py:24 › __new__`\n    ▫ name  `name`\n    ▫ cls  `cls`\n    ▫ __new__  `__new__`\n  · symbols  `src/blinker/_utilities.py:22 › symbols`\n◆ Namespace  `src/blinker/base.py:483 › Namespace`\n  ƒ signal  `src/blinker/base.py:486 › signal`\n    ▫ doc  `doc`\n    ▫ name  `name`\n    ▫ signal  `signal`\n◆ Signal  `src/blinker/base.py:24 › Signal`\n  ƒ _clear_state  `src/blinker/base.py:456 › _clear_state`\n    ▫ _clear_state  `_clear_state`\n  ƒ has_receivers_for  `src/blinker/base.py:305 › has_receivers_for`\n    ▫ has_receivers_for  `has_receivers_for`\n    ▫ sender  `sender`\n  \n\n… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor; when present, copy structuredContent.continuation_call unchanged.",
                 "type": "text"
               }
             ],
@@ -2306,11 +2120,11 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 21788,
+                "bytesExcludingCursor": 10228,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 5447
+                "estimatedTokensExcludingCursor": 2557
               },
-              "declarations": 100,
+              "declarations": 25,
               "detail": "summary",
               "extent": "truncated",
               "nextCursor": "mcp2-<live-validated>",
@@ -2340,654 +2154,1112 @@
                   },
                   {
                     "lane": "semantic",
-                    "reason": "unconfigured",
-                    "state": "unavailable"
+                    "state": "complete"
                   }
                 ],
-                "limit": 100,
+                "limit": 25,
                 "log": "12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760",
                 "more": true,
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "5bea55967717ca50bfd80ef865c01f16e481259a72c470d57126a8b916ad6979"
+                "source_root": "0c09a046f298f4b9fb9d07ee64472bb806c588e7ea63c26f6be3411ea3a1153c"
               },
               "roots": [
                 {
                   "children": [
                     {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::6df517372329a16dc34cf5314bba1bf2978a61d8b1a48f13c142ea9ee9c3f603::Sender",
-                      "key": "0b6079b8",
-                      "kind": "struct",
-                      "name": "Sender"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::0e22307a55a07941d5d3a20f6911df60d92e61374337d49f37b01dcc779dd0c9::test_signal_signals_weak_sender",
-                  "key": "04d6b64f",
-                  "kind": "function",
-                  "name": "test_signal_signals_weak_sender"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::ca91cbea67f103188f3759bb02c1fafa1c2735c55a2f912ce41f1fd77972807d::received_async",
-                  "key": "073f54b1",
-                  "kind": "function",
-                  "name": "received_async"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::68db11e574db50044a56a5bacfd5cc41346d8463f1d811c6740202f3ec74d04c::extlinks",
-                  "key": "0c1f19f5",
-                  "kind": "variable",
-                  "name": "extlinks"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::d76e73a0e05aa6e3157a091a09111a9976bb2b5b63ecf9d0a09d342348f13029::received",
-                  "key": "0e5fb3b6",
-                  "kind": "function",
-                  "name": "received"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::0a0a4f08accb449af7a24472eb0ffe52860358092c0435107c4a33d25d08c8ec::received",
-                      "key": "1da173b9",
-                      "kind": "function",
-                      "name": "received"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::140fc7837ec877d31fc029498c2fb4e4e235bae9bcbcf60f3d6a20c8aea6c65f::test_weak_receiver",
-                  "key": "0ef9b1d9",
-                  "kind": "function",
-                  "name": "test_weak_receiver"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::ac28c7df324318f5821fa6f4f56ac890736510bf008a0893515cf09b2cb84e5c::test_signal_signals_strong_sender",
-                  "key": "0f57076f",
-                  "kind": "function",
-                  "name": "test_signal_signals_strong_sender"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::ec2d2394fc8e2a531a4b3c8132649afdae1a54726dda5bc882f569dba2885a81::make_id",
-                  "key": "0fe586a4",
-                  "kind": "function",
-                  "name": "make_id"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::299b54c5b32ff92bf047b54785261b6b56e1ad72e3970d28605b9fd84bfd0f9e::project",
-                  "key": "117d887a",
-                  "kind": "variable",
-                  "name": "project"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::4db86960defe862f3a06d285732a4d1ddfe5d7ea244bf82274da150ed880ef9d::ANY_ID",
-                  "key": "12625f78",
-                  "kind": "variable",
-                  "name": "ANY_ID"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::8390b975f37824d641d271594951adf3f0d5ff00d21c17293e0a592b27e82027::F",
-                  "key": "17520bf5",
-                  "kind": "variable",
-                  "name": "F"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::aff24d7d59805d4177be355627f3764a6a88203c7e1b76221a3471a07074c17f::autodoc_typehints",
-                  "key": "182c34ed",
-                  "kind": "variable",
-                  "name": "autodoc_typehints"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::65b0f6cb650c9f7f509dfd5f49f6c9fd1551a1de26c5452d46b037072abea649::test_no_double_send",
-                  "key": "1954be2e",
-                  "kind": "function",
-                  "name": "test_no_double_send"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::6e4637ca5a729eaf156334d66ec691898e8a58b054cbbe4469aa487f0ca7a49b::receivers",
-                      "key": "36f634a9",
-                      "kind": "function",
-                      "name": "receivers"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::7a0c34dad70e876512d110dac80150869cd7ed7a510bc04fd072250f6a762a14::senders",
-                      "key": "63dcae2c",
-                      "kind": "function",
-                      "name": "senders"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::b3dd75c8b7819dcea44ac05de4223e5780d8d4d9f28addc8fd25f66c32848508::Sender",
-                      "key": "642523b6",
-                      "kind": "struct",
-                      "name": "Sender"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::e88939e711a9032f818126268898ed1a0bccf932e7a31da80e9428f247a92202::test_empty_bucket_growth",
-                  "key": "1b2169ae",
-                  "kind": "function",
-                  "name": "test_empty_bucket_growth"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::1086f8f41b5b0f71b3854cd954fc767a1fc2a4e5a0069e4942cf35fb1a3b039b::receiver",
-                      "key": "77f9ed70",
-                      "kind": "function",
-                      "name": "receiver"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::83fcb13678aecc812b94c7223716f699b7a136efb5457e84b4467a15da04dd19::test_temp_connection_for_sender",
-                  "key": "232e0515",
-                  "kind": "function",
-                  "name": "test_temp_connection_for_sender"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::695198747011a37b36b77e00b907d8380662e09da526afcdf7bc35dbd51d7b72::Object",
-                  "key": "2386902b",
-                  "kind": "struct",
-                  "name": "Object"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::9370b3c6a2517e9263ab8f5719191baf039244a1fc8bcbabefa59b87f3235a32::copyright",
-                  "key": "23e40f3d",
-                  "kind": "variable",
-                  "name": "copyright"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::9320ca91c42d53a8a9cab987c6e397236708afb256095758e9c11686280d9839::signal",
-                      "key": "e7d8e127",
-                      "kind": "function",
-                      "name": "signal"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::9f141184b41652aba933c0329aa03360c6d0f6ecca1d5abd3ccafa04f8501b74::Namespace",
-                  "key": "27a86620",
-                  "kind": "struct",
-                  "name": "Namespace"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::7ad79a70183fcd2a97cc6da5b71dc1206b550eaefe9e04954a3bec7e14c6552e::inner",
-                  "key": "28352291",
-                  "kind": "function",
-                  "name": "inner"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::2fbb6233b71c22ee4ce68c9f257aa4b02d28fd4b2e6d76fff1804ee28a2d3a62::html_theme_options",
-                  "key": "2938323d",
-                  "kind": "variable",
-                  "name": "html_theme_options"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::22276bd3ce2e77cb1fdef4678a01634432c858425156424f68be4b367b1ef52f::receiver",
-                      "key": "743d0acc",
-                      "kind": "function",
-                      "name": "receiver"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::b6d7b57ed79ff6c19ffabca82928092f0984aab07f80c9018a7815023a8ca048::test_temp_connection_failure",
-                  "key": "2a8ab639",
-                  "kind": "function",
-                  "name": "test_temp_connection_failure"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::003b86c2a2e098d339ee3990c3302eab45882a63837dd274b2cd3f2e2aa80229::test_strong_receiver",
-                  "key": "2b0ad94b",
-                  "kind": "function",
-                  "name": "test_strong_receiver"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::84e1a32762c66f8e88b2aaf62d2be59bdcf84fbe74be96ced7d3f8389fb8d0e1::Object",
-                  "key": "2b531adf",
-                  "kind": "struct",
-                  "name": "Object"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::f1b9e712cce72dff17d78f23b21abcabfebab3f3998a5661ede136b499c36cd7::html_title",
-                  "key": "31d413dd",
-                  "kind": "variable",
-                  "name": "html_title"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::82a8eff40cadaeac4c0e6564529de845efbb278cb4f5a3f7c35b9e1ef04e7db5::extensions",
-                  "key": "3504ab86",
-                  "kind": "variable",
-                  "name": "extensions"
-                },
-                {
-                  "children": [
-                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::809719ac05e00f3424117e1d6886ddd76d275b3451490f0c234c9c5b0ce8066b::name",
+                          "key": "4454599e",
+                          "kind": "variable",
+                          "name": "name",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              68,
+                              84,
+                              89,
+                              158,
+                              195,
+                              151,
+                              108,
+                              213,
+                              132,
+                              28,
+                              86,
+                              246,
+                              93,
+                              196,
+                              19,
+                              223,
+                              253,
+                              99,
+                              28,
+                              133,
+                              198,
+                              146,
+                              235,
+                              101,
+                              15,
+                              124,
+                              121,
+                              196,
+                              7,
+                              139,
+                              55,
+                              149
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::8367bcb5c2e920c322ce5056ffb7c0cab644bae667f01332266b7ec1b1db428e::__init__",
+                          "key": "b305ff90",
+                          "kind": "variable",
+                          "name": "__init__",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              179,
+                              5,
+                              255,
+                              144,
+                              111,
+                              200,
+                              226,
+                              244,
+                              189,
+                              230,
+                              33,
+                              69,
+                              93,
+                              175,
+                              69,
+                              32,
+                              127,
+                              204,
+                              87,
+                              157,
+                              228,
+                              102,
+                              41,
+                              123,
+                              244,
+                              80,
+                              205,
+                              41,
+                              117,
+                              131,
+                              230,
+                              147
+                            ]
+                          }
+                        }
+                      ],
                       "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::1c8120282fb11a8b7f52d9dfb89102ba7323ea3d7fa52b5c28449c26b3df0451::__init__",
                       "key": "24624f48",
-                      "kind": "function",
-                      "name": "__init__"
+                      "kind": "method",
+                      "name": "__init__",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          36,
+                          98,
+                          79,
+                          72,
+                          119,
+                          114,
+                          96,
+                          242,
+                          96,
+                          210,
+                          49,
+                          244,
+                          107,
+                          87,
+                          186,
+                          154,
+                          254,
+                          52,
+                          216,
+                          12,
+                          50,
+                          127,
+                          71,
+                          128,
+                          155,
+                          1,
+                          222,
+                          198,
+                          29,
+                          201,
+                          77,
+                          167
+                        ]
+                      }
                     },
                     {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::36239cac3917aa3e0f05f4805efb0de3358970a34779a19da5b10d64cff4173c::__repr__",
+                          "key": "9224fec3",
+                          "kind": "variable",
+                          "name": "__repr__",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              146,
+                              36,
+                              254,
+                              195,
+                              106,
+                              11,
+                              242,
+                              76,
+                              67,
+                              147,
+                              22,
+                              222,
+                              197,
+                              108,
+                              146,
+                              119,
+                              160,
+                              42,
+                              36,
+                              144,
+                              148,
+                              207,
+                              225,
+                              109,
+                              80,
+                              12,
+                              117,
+                              147,
+                              241,
+                              195,
+                              77,
+                              43
+                            ]
+                          }
+                        }
+                      ],
                       "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::1e564752fec0284107c51999cbc9e587f5d5285c3f9328f7f59d02d39db9860b::__repr__",
                       "key": "47c8e9e9",
-                      "kind": "function",
-                      "name": "__repr__"
+                      "kind": "method",
+                      "name": "__repr__",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          71,
+                          200,
+                          233,
+                          233,
+                          100,
+                          45,
+                          38,
+                          122,
+                          42,
+                          89,
+                          7,
+                          144,
+                          21,
+                          73,
+                          175,
+                          227,
+                          79,
+                          181,
+                          201,
+                          216,
+                          253,
+                          34,
+                          11,
+                          204,
+                          120,
+                          179,
+                          245,
+                          188,
+                          246,
+                          215,
+                          128,
+                          33
+                        ]
+                      }
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::8b166bc639522101398ce4f5f3d4e3e1cbba85cee37402c821c7b6a62db8c6f4::__getnewargs__",
+                          "key": "7edd0fc4",
+                          "kind": "variable",
+                          "name": "__getnewargs__",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              126,
+                              221,
+                              15,
+                              196,
+                              191,
+                              171,
+                              8,
+                              237,
+                              89,
+                              8,
+                              122,
+                              153,
+                              23,
+                              220,
+                              18,
+                              40,
+                              53,
+                              196,
+                              41,
+                              41,
+                              181,
+                              40,
+                              192,
+                              192,
+                              140,
+                              3,
+                              82,
+                              85,
+                              1,
+                              212,
+                              40,
+                              95
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::26cc396e8a5da06668bc98256df3ee7f9b5cf258019f8487a5cc98323d97352a::__getnewargs__",
+                      "key": "bbb87478",
+                      "kind": "method",
+                      "name": "__getnewargs__",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          187,
+                          184,
+                          116,
+                          120,
+                          2,
+                          210,
+                          240,
+                          111,
+                          165,
+                          105,
+                          203,
+                          243,
+                          207,
+                          43,
+                          156,
+                          65,
+                          214,
+                          12,
+                          80,
+                          143,
+                          95,
+                          36,
+                          128,
+                          194,
+                          64,
+                          76,
+                          104,
+                          143,
+                          23,
+                          54,
+                          139,
+                          112
+                        ]
+                      }
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::f163b3ef09e84c2fad97ecf2e9f0a8786d275b3451490f0c234c9c5b0ce8066b::name",
+                          "key": "4b749e3a",
+                          "kind": "variable",
+                          "name": "name",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              75,
+                              116,
+                              158,
+                              58,
+                              143,
+                              5,
+                              169,
+                              238,
+                              240,
+                              112,
+                              195,
+                              23,
+                              20,
+                              82,
+                              189,
+                              44,
+                              254,
+                              109,
+                              88,
+                              161,
+                              86,
+                              246,
+                              135,
+                              231,
+                              243,
+                              121,
+                              165,
+                              235,
+                              15,
+                              140,
+                              128,
+                              124
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::16c977bc9a3d1a3f782043fe3cf153b9113b1eb3bcf7ff22b749b5eb894314fc::cls",
+                          "key": "4e79cf1f",
+                          "kind": "variable",
+                          "name": "cls",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              78,
+                              121,
+                              207,
+                              31,
+                              159,
+                              114,
+                              26,
+                              35,
+                              112,
+                              118,
+                              182,
+                              68,
+                              211,
+                              153,
+                              185,
+                              41,
+                              204,
+                              74,
+                              43,
+                              101,
+                              122,
+                              34,
+                              234,
+                              35,
+                              168,
+                              91,
+                              201,
+                              58,
+                              38,
+                              129,
+                              220,
+                              231
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::0fde769bf2b63313ef060a4e24e9fdc0c0673d52db886656a314690c57d9592f::__new__",
+                          "key": "58152b7f",
+                          "kind": "variable",
+                          "name": "__new__",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              88,
+                              21,
+                              43,
+                              127,
+                              246,
+                              152,
+                              106,
+                              2,
+                              221,
+                              195,
+                              45,
+                              145,
+                              31,
+                              111,
+                              160,
+                              27,
+                              240,
+                              165,
+                              115,
+                              124,
+                              239,
+                              238,
+                              90,
+                              72,
+                              223,
+                              131,
+                              144,
+                              180,
+                              168,
+                              89,
+                              207,
+                              218
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::321079cf5d6625ef2f1b70b055cf062ab483db2ec5bbd6868a8fc6c8a22c585c::__new__",
+                      "key": "c4203ec6",
+                      "kind": "method",
+                      "name": "__new__",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          196,
+                          32,
+                          62,
+                          198,
+                          190,
+                          29,
+                          28,
+                          120,
+                          50,
+                          109,
+                          121,
+                          195,
+                          78,
+                          105,
+                          169,
+                          207,
+                          8,
+                          69,
+                          10,
+                          2,
+                          149,
+                          90,
+                          193,
+                          102,
+                          1,
+                          232,
+                          130,
+                          89,
+                          16,
+                          97,
+                          25,
+                          99
+                        ]
+                      }
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::3dd953fe58edcd4121421e4a91fa92265290c93b74632ae2dcf288987f80f65d::symbols",
                       "key": "9943f163",
                       "kind": "field",
-                      "name": "symbols"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::26cc396e8a5da06668bc98256df3ee7f9b5cf258019f8487a5cc98323d97352a::__getnewargs__",
-                      "key": "bbb87478",
-                      "kind": "function",
-                      "name": "__getnewargs__"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::321079cf5d6625ef2f1b70b055cf062ab483db2ec5bbd6868a8fc6c8a22c585c::__new__",
-                      "key": "c4203ec6",
-                      "kind": "function",
-                      "name": "__new__"
+                      "name": "symbols",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          153,
+                          67,
+                          241,
+                          99,
+                          206,
+                          58,
+                          186,
+                          66,
+                          111,
+                          232,
+                          29,
+                          35,
+                          162,
+                          200,
+                          158,
+                          224,
+                          232,
+                          30,
+                          112,
+                          195,
+                          193,
+                          240,
+                          253,
+                          249,
+                          16,
+                          215,
+                          187,
+                          108,
+                          72,
+                          140,
+                          153,
+                          164
+                        ]
+                      }
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::c04b699b80333c0f6c5cc758e98b21d3ea28c7f318e6d1b7511b397c3a280800::Symbol",
                   "key": "3fe4ee92",
-                  "kind": "struct",
-                  "name": "Symbol"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::16ba9ab30e4a42ddaedb016021abf7445fa2caf253526587454f50ee91051156::ANY",
-                  "key": "41d18e55",
-                  "kind": "variable",
-                  "name": "ANY"
+                  "kind": "class",
+                  "name": "Symbol",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      63,
+                      228,
+                      238,
+                      146,
+                      109,
+                      228,
+                      182,
+                      176,
+                      96,
+                      127,
+                      144,
+                      31,
+                      92,
+                      208,
+                      173,
+                      196,
+                      236,
+                      210,
+                      202,
+                      158,
+                      185,
+                      213,
+                      254,
+                      216,
+                      227,
+                      19,
+                      144,
+                      197,
+                      92,
+                      29,
+                      201,
+                      146
+                    ]
+                  }
                 },
                 {
                   "children": [
                     {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::e4a0cf412bce53a2ba43d5e8be8db0032d14f63d74b05aa3a0eee66c33ef0da3::received",
-                      "key": "08a97f50",
-                      "kind": "function",
-                      "name": "received"
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::740e5f57d308527a4b10e319e821e15ad2003a5e9b97126a213e49cec08d740c::doc",
+                          "key": "08e79829",
+                          "kind": "variable",
+                          "name": "doc",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              8,
+                              231,
+                              152,
+                              41,
+                              123,
+                              77,
+                              117,
+                              37,
+                              211,
+                              201,
+                              207,
+                              136,
+                              15,
+                              12,
+                              212,
+                              67,
+                              244,
+                              11,
+                              152,
+                              221,
+                              0,
+                              137,
+                              193,
+                              205,
+                              210,
+                              27,
+                              71,
+                              198,
+                              65,
+                              219,
+                              128,
+                              104
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::45318fb18e1d2bd1a7580e5dd47df9c76d275b3451490f0c234c9c5b0ce8066b::name",
+                          "key": "95e3fb94",
+                          "kind": "variable",
+                          "name": "name",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              149,
+                              227,
+                              251,
+                              148,
+                              236,
+                              4,
+                              133,
+                              188,
+                              175,
+                              102,
+                              19,
+                              26,
+                              220,
+                              178,
+                              246,
+                              135,
+                              38,
+                              171,
+                              124,
+                              235,
+                              152,
+                              135,
+                              16,
+                              193,
+                              213,
+                              109,
+                              12,
+                              219,
+                              33,
+                              85,
+                              67,
+                              153
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::391204c9477d10110f0d71efa991588c494321645d82d9b728264476fb014b6e::signal",
+                          "key": "c745961b",
+                          "kind": "variable",
+                          "name": "signal",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              199,
+                              69,
+                              150,
+                              27,
+                              221,
+                              58,
+                              139,
+                              255,
+                              141,
+                              98,
+                              12,
+                              46,
+                              211,
+                              194,
+                              168,
+                              214,
+                              95,
+                              111,
+                              222,
+                              171,
+                              208,
+                              14,
+                              155,
+                              126,
+                              245,
+                              156,
+                              233,
+                              61,
+                              142,
+                              131,
+                              91,
+                              33
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::9320ca91c42d53a8a9cab987c6e397236708afb256095758e9c11686280d9839::signal",
+                      "key": "e7d8e127",
+                      "kind": "method",
+                      "name": "signal",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          231,
+                          216,
+                          225,
+                          39,
+                          79,
+                          255,
+                          192,
+                          145,
+                          102,
+                          128,
+                          144,
+                          249,
+                          68,
+                          184,
+                          98,
+                          12,
+                          213,
+                          74,
+                          39,
+                          230,
+                          38,
+                          243,
+                          60,
+                          112,
+                          24,
+                          3,
+                          150,
+                          104,
+                          229,
+                          204,
+                          133,
+                          40
+                        ]
+                      }
                     }
                   ],
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::8e496727d36aa583fb56c8ae95f2f594b1dfe501f3182b57cd8a78640273b080::test_mute_signal",
-                  "key": "4d20dd37",
-                  "kind": "function",
-                  "name": "test_mute_signal"
+                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::9f141184b41652aba933c0329aa03360c6d0f6ecca1d5abd3ccafa04f8501b74::Namespace",
+                  "key": "27a86620",
+                  "kind": "class",
+                  "name": "Namespace",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      39,
+                      168,
+                      102,
+                      32,
+                      68,
+                      141,
+                      199,
+                      1,
+                      236,
+                      171,
+                      206,
+                      37,
+                      107,
+                      134,
+                      233,
+                      180,
+                      140,
+                      82,
+                      246,
+                      3,
+                      9,
+                      149,
+                      111,
+                      102,
+                      157,
+                      158,
+                      86,
+                      17,
+                      107,
+                      226,
+                      64,
+                      59
+                    ]
+                  }
                 },
                 {
                   "children": [
                     {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::5eaf1653befe907d2d506b65992a6952945b3f2d356559b02f62a329f659731f::Object",
-                      "key": "160457ed",
-                      "kind": "struct",
-                      "name": "Object"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::42d27b659d1e1facc0c2692703aa815601b6865941368a5ef6ca563aae482fa1::test_filtered_receiver_weakref",
-                  "key": "51682d6c",
-                  "kind": "function",
-                  "name": "test_filtered_receiver_weakref"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::6618a6b430f60029eb015b621d083decb87702752a0aea75f03210300aa8fcec::__init__",
-                      "key": "3c277dbe",
-                      "kind": "function",
-                      "name": "__init__"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::4dea98651c15a6d7e8435360825c62b5543c419b7890588b9ca65fda8740041b::received",
-                      "key": "64f8f746",
-                      "kind": "function",
-                      "name": "received"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::3839f4c9545652b20bd021abb822628a56edacd95481e7c78d61f55af2fcf7ea::Receiver",
-                  "key": "5598ca9d",
-                  "kind": "struct",
-                  "name": "Receiver"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::03912d5f24821b832636f7a406a473235a78f9c798f6dd30bcf5005059d5a861::received",
-                  "key": "55c4b382",
-                  "kind": "function",
-                  "name": "received"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::8b0452962a3b029c57386b9058f0ffe07af02bcad98ead0269b53cee0123b9ab::test_signal_weak_receiver_vanishes",
-                  "key": "567fbddc",
-                  "kind": "function",
-                  "name": "test_signal_weak_receiver_vanishes"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::112800ffe86767f55d34dcb6e194def5efa6cb0a58745c4a829878143a0ebcc3::html_sidebars",
-                  "key": "5aef11f3",
-                  "kind": "variable",
-                  "name": "html_sidebars"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::d6bf8906988b071036a7febaff6aa74ce02229431b9da57461004b17ce496058::make_ref",
-                  "key": "5b02b510",
-                  "kind": "function",
-                  "name": "make_ref"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::888b238c3e1a99bc6de8b4c1da4b937337437aa2666583d0c33e0ff106f4581d::test_namespace",
-                  "key": "607df909",
-                  "kind": "function",
-                  "name": "test_namespace"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::2fbd62395b063432a52570efa3434bd5c227792468b47507092e735708bb42d8::_test_signal_signals",
-                  "key": "6312e484",
-                  "kind": "function",
-                  "name": "_test_signal_signals"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::c80ae047ce3bbd52c6822517f6d98908a81875c36a673197b03fa5dd0c270f43::T",
-                  "key": "6bf04b5b",
-                  "kind": "variable",
-                  "name": "T"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::06a94a82672abc62cfca4b6cb6d0036dc8a13645d220bdf4945ae982bbeaa29a::test_signal_signals_any_sender",
-                  "key": "6caf3e14",
-                  "kind": "function",
-                  "name": "test_signal_signals_any_sender"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::1ec486da1e00c5a38bc0c9b4a26ab2578f99025739b53478e949e7352af56fda::html_context",
-                  "key": "72ec3c22",
-                  "kind": "variable",
-                  "name": "html_context"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::441f30c68a8208744c1f4af0a3d56515a36a7b6484972c99e71fcb8e080927d2::autodoc_member_order",
-                  "key": "7b21bdf1",
-                  "kind": "variable",
-                  "name": "autodoc_member_order"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::b5bc36d9b7ed1a25b81d2ffd337a8d14afdaecba6c51098a8b2c4b7dbb78920e::autodoc_preserve_defaults",
-                  "key": "7c83d330",
-                  "kind": "variable",
-                  "name": "autodoc_preserve_defaults"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::34abc51ae82bde2b733e3a6d5328ca39906e424c49c1cb67d7894423da5f2f0e::default_namespace",
-                  "key": "7d38bc7c",
-                  "kind": "variable",
-                  "name": "default_namespace"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::2f28f8d16cad469c77b922f16bb454aceab574e26c0c50685c490d0f3ef0b7f4::default_role",
-                  "key": "996f7bc4",
-                  "kind": "variable",
-                  "name": "default_role"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::a7898a618223293c27e6b90f7821029d23bf2853d4ec0cdb23e36c12d1625b79::html_theme",
-                  "key": "af71e683",
-                  "kind": "variable",
-                  "name": "html_theme"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::e7fd70e644061ae936615562697bb1e518ea3149a81f067644da001106a1581b::singlehtml_sidebars",
-                  "key": "b1d25393",
-                  "kind": "variable",
-                  "name": "singlehtml_sidebars"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::451f0ee906792958559fc044b5ef517527b22e65e5b91577d5bb23a44389600c::__all__",
-                  "key": "b35a3ed9",
-                  "kind": "variable",
-                  "name": "__all__"
-                },
-                {
-                  "children": [
-                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::d67004bcb0bf56adabe64d2eac0173f00a5a214ad20afc8012274b5bae36af49::_clear_state",
+                          "key": "3507d91c",
+                          "kind": "variable",
+                          "name": "_clear_state",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              53,
+                              7,
+                              217,
+                              28,
+                              202,
+                              199,
+                              129,
+                              154,
+                              139,
+                              134,
+                              18,
+                              148,
+                              105,
+                              69,
+                              119,
+                              230,
+                              186,
+                              0,
+                              94,
+                              155,
+                              65,
+                              74,
+                              156,
+                              126,
+                              25,
+                              95,
+                              231,
+                              105,
+                              214,
+                              164,
+                              91,
+                              129
+                            ]
+                          }
+                        }
+                      ],
                       "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::816bddab4c7fa29845820e88f05f7ede096fa45e5ded9502028a60775f63d455::_clear_state",
                       "key": "0635cc40",
-                      "kind": "function",
-                      "name": "_clear_state"
+                      "kind": "method",
+                      "name": "_clear_state",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          6,
+                          53,
+                          204,
+                          64,
+                          212,
+                          124,
+                          67,
+                          242,
+                          149,
+                          217,
+                          174,
+                          186,
+                          186,
+                          108,
+                          96,
+                          194,
+                          55,
+                          43,
+                          54,
+                          119,
+                          28,
+                          183,
+                          248,
+                          19,
+                          76,
+                          21,
+                          65,
+                          247,
+                          88,
+                          26,
+                          145,
+                          1
+                        ]
+                      }
                     },
                     {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::ef87e1fd7f50d7429522c57766adc9338846ec6684497a687029d336d96ceef1::ANY",
-                      "key": "0dbc6214",
-                      "kind": "field",
-                      "name": "ANY"
-                    },
-                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::093bcf322c97c07cd8bbdde13e13a4e0f2c01c5662255f20136bf2833912e3f9::has_receivers_for",
+                          "key": "290b8c5f",
+                          "kind": "variable",
+                          "name": "has_receivers_for",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              41,
+                              11,
+                              140,
+                              95,
+                              240,
+                              177,
+                              65,
+                              129,
+                              85,
+                              6,
+                              88,
+                              114,
+                              42,
+                              82,
+                              158,
+                              90,
+                              57,
+                              148,
+                              158,
+                              148,
+                              43,
+                              30,
+                              166,
+                              190,
+                              23,
+                              22,
+                              235,
+                              8,
+                              208,
+                              141,
+                              37,
+                              12
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::86e51aa87d0d5ccc4d646e6ef148a8aa904f8fdbc7590130658b4981e3f6cf47::sender",
+                          "key": "7836da03",
+                          "kind": "variable",
+                          "name": "sender",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              120,
+                              54,
+                              218,
+                              3,
+                              73,
+                              127,
+                              217,
+                              195,
+                              94,
+                              9,
+                              220,
+                              21,
+                              28,
+                              155,
+                              56,
+                              195,
+                              200,
+                              97,
+                              139,
+                              174,
+                              184,
+                              247,
+                              81,
+                              52,
+                              50,
+                              117,
+                              219,
+                              9,
+                              209,
+                              134,
+                              195,
+                              188
+                            ]
+                          }
+                        }
+                      ],
                       "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::978a0d3c0c603ad0d95246fb09489583cca01458f2a754e894f17330613faa16::has_receivers_for",
                       "key": "0e4232b5",
-                      "kind": "function",
-                      "name": "has_receivers_for"
+                      "kind": "method",
+                      "name": "has_receivers_for",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          14,
+                          66,
+                          50,
+                          181,
+                          220,
+                          167,
+                          242,
+                          230,
+                          185,
+                          249,
+                          215,
+                          202,
+                          155,
+                          40,
+                          217,
+                          89,
+                          3,
+                          230,
+                          218,
+                          72,
+                          168,
+                          201,
+                          60,
+                          253,
+                          254,
+                          128,
+                          51,
+                          158,
+                          50,
+                          50,
+                          153,
+                          80
+                        ]
+                      }
                     },
                     {
                       "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::95f5e070749d74e2629219ee19e8f400827451cc45c16c6957338e92081dfe26::send",
                       "key": "28546a41",
-                      "kind": "function",
-                      "name": "send"
-                    },
-                    {
-                      "children": [
-                        {
-                          "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::eea40013316bc4df82dedefc990d71c49583a2eacf81fa0cdbfc14fb0e17e03a::cleanup",
-                          "key": "98be2f36",
-                          "kind": "function",
-                          "name": "cleanup"
-                        }
-                      ],
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::a30d066285ab7fc8d34b2bda9f80d7e1bc9c894cf3fea325d8c1c499a5c48928::_make_cleanup_receiver",
-                      "key": "31a15424",
-                      "kind": "function",
-                      "name": "_make_cleanup_receiver"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::49a00b7be8e03699eb1ecbfa206152cb1b9a9b4ca25ad906955fb9db1fb9f235::send_async",
-                      "key": "3ab8945b",
-                      "kind": "function",
-                      "name": "send_async"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::78bb0a74c426807137cb3701d015c9d4d0b54549f724e397319bbff6924e9f97::_cleanup_bookkeeping",
-                      "key": "45cf6534",
-                      "kind": "function",
-                      "name": "_cleanup_bookkeeping"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::360262e5c2415da8a134ee1afe25931f5c4368d4ad462891147af27b31ab1717::_disconnect",
-                      "key": "5995ec04",
-                      "kind": "function",
-                      "name": "_disconnect"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::b44d0d03d8c1863c56adcd4cf443ce0ff66bfd2d054506342870423d3d5d5527::disconnect",
-                      "key": "6790ea56",
-                      "kind": "function",
-                      "name": "disconnect"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::5901f2a6c7af15f6ec6c5de2d4291aad8fce49cbf3134b24493eef98ee7afc68::set_class",
-                      "key": "69e34075",
-                      "kind": "field",
-                      "name": "set_class"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::c7448a240f9f55b3c58da79824df030cc479c686c72235a65ed14d94c9b0c4e4::receivers_for",
-                      "key": "9f597c75",
-                      "kind": "function",
-                      "name": "receivers_for"
-                    },
-                    {
-                      "children": [
-                        {
-                          "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::58493dd3caa783a28c49010438195d529435a7cd6784e18a38314360604d4b59::decorator",
-                          "key": "d1fe13c1",
-                          "kind": "function",
-                          "name": "decorator"
-                        }
-                      ],
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::f46593f1b2f53fc3f67a66710107fd3217c32dafcf1485cacde237fe459fefb6::connect_via",
-                      "key": "ad4aab94",
-                      "kind": "function",
-                      "name": "connect_via"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::39f8f28fd076fbaaf73379158b21d7c52548ef3d72465055635b685481968f1f::receiver_connected",
-                      "key": "aed6c193",
-                      "kind": "function",
-                      "name": "receiver_connected"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::773d0ba9c7f6918f3af7decb70a98ff137f8ad7c8434bfa64323f684a4ab1fd4::connect",
-                      "key": "b63518df",
-                      "kind": "function",
-                      "name": "connect"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::bc1f991107fc25cb096fed4484a64b93e9a8c5d6bcba4091130da8f8958497f1::connected_to",
-                      "key": "b786c398",
-                      "kind": "function",
-                      "name": "connected_to"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::7fa15b5604c5ab761d6d189fcd587f55054ad33eead2b71de9f90aeea95e5b3a::muted",
-                      "key": "bcbc375b",
-                      "kind": "function",
-                      "name": "muted"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::d8d8b8489ff94bb65491db07dbe270a8458ce6562d0ee63262f7f45841beb986::receiver_disconnected",
-                      "key": "c7760639",
-                      "kind": "function",
-                      "name": "receiver_disconnected"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::5ef38a714a7cc58afa73d1ab1432a6708e203d84f6e325cc5ea0f3bbd5276e1e::__init__",
-                      "key": "d9009bd1",
-                      "kind": "function",
-                      "name": "__init__"
-                    },
-                    {
-                      "children": [
-                        {
-                          "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::63e5870200786f56fb39b98a4f949eee3625f07e6bcb63d9864b6702ca7f4f71::cleanup",
-                          "key": "12c6cd15",
-                          "kind": "function",
-                          "name": "cleanup"
-                        }
-                      ],
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::0494d5bcb31087d8d69bc8ba6933d7da1d0fdb2368f64506d8e6c3c4189ba384::_make_cleanup_sender",
-                      "key": "f5de5fde",
-                      "kind": "function",
-                      "name": "_make_cleanup_sender"
+                      "kind": "method",
+                      "name": "send",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          40,
+                          84,
+                          106,
+                          65,
+                          131,
+                          209,
+                          76,
+                          160,
+                          247,
+                          246,
+                          17,
+                          192,
+                          139,
+                          249,
+                          226,
+                          85,
+                          229,
+                          181,
+                          108,
+                          88,
+                          57,
+                          74,
+                          74,
+                          157,
+                          75,
+                          232,
+                          8,
+                          176,
+                          164,
+                          36,
+                          96,
+                          118
+                        ]
+                      }
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::abf481e4378cef8a2615a9fc6f0dad7e5f09c42d11252a4f63d8f5cbdc6f6734::Signal",
                   "key": "b69b3cf8",
-                  "kind": "struct",
-                  "name": "Signal"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::bed3acdfb0bce8f22ae3acdd31b3e25977e7b1df42bb974506b1b774ea8690fd::receiver",
-                      "key": "e75d3e57",
-                      "kind": "function",
-                      "name": "receiver"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::60a24305425b378194ed0abe32f61f1fd98f0bacb1597f69dca43521c1e2783a::test_temp_connection",
-                  "key": "bd0d1ed3",
-                  "kind": "function",
-                  "name": "test_temp_connection"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::6761f84bcb2d957ea86df2d474569b6433ef92e0383fc52da21f066412d9dee7::Failure",
-                  "key": "bfcf2228",
-                  "kind": "struct",
-                  "name": "Failure"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::37f75d7dabde44e9936e04768aecf82cadc0c44d81e9b7725ebee760a03b76b8::__init__",
-                      "key": "3a67c03b",
-                      "kind": "function",
-                      "name": "__init__"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::1de33d6c388d754eeaeb565581438c4e4e16c095ea1b92321e3ef60647dec868::__repr__",
-                      "key": "72ef8259",
-                      "kind": "function",
-                      "name": "__repr__"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::e3dea55e31bba8ba597837935bcbb1d1f843e74cd511b98bc019959af843ee6d::NamedSignal",
-                  "key": "c6e060d9",
-                  "kind": "struct",
-                  "name": "NamedSignal"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::ed635e7f50a150c2e311ea717a4a5e216675bb99b82228759b7a2918602eff8a::BaseFailure",
-                  "key": "ce08c685",
-                  "kind": "struct",
-                  "name": "BaseFailure"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::9bb2cc576c5028b1dbd6ef264db0e0aa320133b84441882a5d730d1d5e71e201::html_static_path",
-                  "key": "d0359b58",
-                  "kind": "variable",
-                  "name": "html_static_path"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::3b6ccc824293e3891cd2b4959eaaa308bd30a7d52a5ef14a009017d8feb75243::html_logo",
-                  "key": "d402cd5d",
-                  "kind": "variable",
-                  "name": "html_logo"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::c32721b268dc0a769c1ae4c0174a10c760c926363af0715530d78ca319a482ea::signal",
-                  "key": "da1e927c",
-                  "kind": "variable",
-                  "name": "signal"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::3d2d9bc2405cef24b99238d0fb1e62d7603ccd113204adecff094d94517e0482::make_receiver",
-                      "key": "39d35b2a",
-                      "kind": "function",
-                      "name": "make_receiver"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::ef6571efa1d013e891030963af05b3b0503d13833b743b8ffccc3d4e42098d9e::Sentinel",
-                  "key": "dd2cea3d",
-                  "kind": "struct",
-                  "name": "Sentinel"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::289541b8f8b616d32584403f9b3d707e7818938772bdf529d453251f98caf113::__call__",
-                      "key": "4d052958",
-                      "kind": "function",
-                      "name": "__call__"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::242ff403305f62881ed0dce86647d5af096d564cb9b6ac6898bec78c27ff38dc::_PNamespaceSignal",
-                  "key": "e5f6a1b9",
-                  "kind": "struct",
-                  "name": "_PNamespaceSignal"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-blinker/project::semantic::5fe9320751d189c6e85d3fced12d12ededd36b6eadfa95a8d9ea2120281ba3b5::html_show_sourcelink",
-                  "key": "f54d48ae",
-                  "kind": "variable",
-                  "name": "html_show_sourcelink"
+                  "kind": "class",
+                  "name": "Signal",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      182,
+                      155,
+                      60,
+                      248,
+                      93,
+                      31,
+                      156,
+                      222,
+                      151,
+                      134,
+                      14,
+                      58,
+                      26,
+                      244,
+                      97,
+                      106,
+                      133,
+                      6,
+                      15,
+                      214,
+                      84,
+                      203,
+                      32,
+                      95,
+                      5,
+                      124,
+                      215,
+                      238,
+                      122,
+                      180,
+                      237,
+                      239
+                    ]
+                  }
                 }
               ],
               "unnamed": 0
