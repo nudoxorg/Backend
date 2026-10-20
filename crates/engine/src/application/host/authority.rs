@@ -384,7 +384,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     }
 }
 
-pub(super) fn go_authority_failure(
+pub(crate) fn go_authority_failure(
     error: &LocalCompilerHostError,
 ) -> LocalRuntimeGoAuthorityFailure {
     match error {
