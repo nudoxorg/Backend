@@ -98,9 +98,16 @@ pub(crate) struct TypeScriptProgramClosureWitness {
 
 impl TypeScriptProgramClosureWitness {
     fn retained_bytes(&self) -> usize {
-        self.resolver.retained_bytes()
-            .saturating_add(retained_slice_bytes(&self.compiler_accesses, ProgramAccess::retained_bytes))
-            .saturating_add(retained_slice_bytes(&self.directory_views, ProgramDirectoryView::retained_bytes))
+        self.resolver
+            .retained_bytes()
+            .saturating_add(retained_slice_bytes(
+                &self.compiler_accesses,
+                ProgramAccess::retained_bytes,
+            ))
+            .saturating_add(retained_slice_bytes(
+                &self.directory_views,
+                ProgramDirectoryView::retained_bytes,
+            ))
     }
 
     pub(crate) fn validate_current(
@@ -246,7 +253,11 @@ struct ProgramAccess {
 const RETAINED_ALLOCATION_OVERHEAD: usize = 32;
 
 fn retained_allocation_bytes(bytes: usize) -> usize {
-    bytes.saturating_add(if bytes == 0 { 0 } else { RETAINED_ALLOCATION_OVERHEAD })
+    bytes.saturating_add(if bytes == 0 {
+        0
+    } else {
+        RETAINED_ALLOCATION_OVERHEAD
+    })
 }
 
 fn retained_string_bytes(value: &String) -> usize {
@@ -277,7 +288,9 @@ fn retained_json_bytes(value: &serde_json::Value) -> usize {
         serde_json::Value::Object(values) => values.iter().fold(0usize, |bytes, (key, value)| {
             // serde_json hides its map allocation layout. A conservative charge
             // per entry covers tree/hash nodes, inline keys/values and slack.
-            bytes.saturating_add(1024).saturating_add(retained_string_bytes(key))
+            bytes
+                .saturating_add(1024)
+                .saturating_add(retained_string_bytes(key))
                 .saturating_add(retained_json_bytes(value))
         }),
     }
@@ -286,21 +299,45 @@ fn retained_json_bytes(value: &serde_json::Value) -> usize {
 impl ProgramAccess {
     fn retained_bytes(&self) -> usize {
         let mut bytes = retained_string_bytes(&self.path);
-        for text in [&self.sha256, &self.realpath, &self.current_directory].into_iter().flatten() {
+        for text in [&self.sha256, &self.realpath, &self.current_directory]
+            .into_iter()
+            .flatten()
+        {
             bytes = bytes.saturating_add(retained_string_bytes(text));
         }
-        for values in [&self.extensions, &self.excludes, &self.includes, &self.entries].into_iter().flatten() {
+        for values in [
+            &self.extensions,
+            &self.excludes,
+            &self.includes,
+            &self.entries,
+        ]
+        .into_iter()
+        .flatten()
+        {
             bytes = bytes.saturating_add(retained_vec_bytes(values, retained_string_bytes));
         }
-        bytes = bytes.saturating_add(retained_vec_bytes(&self.directory_view_paths, retained_string_bytes));
-        bytes = bytes.saturating_add(retained_vec_bytes(&self.directory_realpaths, |resolution| {
-            retained_string_bytes(&resolution.path).saturating_add(retained_string_bytes(&resolution.target))
+        bytes = bytes.saturating_add(retained_vec_bytes(
+            &self.directory_view_paths,
+            retained_string_bytes,
+        ));
+        bytes = bytes.saturating_add(retained_vec_bytes(
+            &self.directory_realpaths,
+            |resolution| {
+                retained_string_bytes(&resolution.path)
+                    .saturating_add(retained_string_bytes(&resolution.target))
+            },
+        ));
+        bytes = bytes.saturating_add(retained_vec_bytes(&self.matcher_arguments, |argument| {
+            match argument {
+                ProgramMatcherArgument::Value(value) => retained_json_bytes(value),
+                ProgramMatcherArgument::Undefined | ProgramMatcherArgument::Null => 0,
+            }
         }));
-        bytes = bytes.saturating_add(retained_vec_bytes(&self.matcher_arguments, |argument| match argument {
-            ProgramMatcherArgument::Value(value) => retained_json_bytes(value),
-            ProgramMatcherArgument::Undefined | ProgramMatcherArgument::Null => 0,
-        }));
-        bytes.saturating_add(self.matcher_replay_sha256.as_ref().map_or(0, |text| retained_allocation_bytes(text.len())))
+        bytes.saturating_add(
+            self.matcher_replay_sha256
+                .as_ref()
+                .map_or(0, |text| retained_allocation_bytes(text.len())),
+        )
     }
 }
 
@@ -1056,6 +1093,8 @@ try {
 pub(crate) struct NativeTypeScriptForestInputs {
     pub(crate) root: u32,
     pub(crate) configured_forest: bool,
+    /// Independently captured configured leaves, with no invented reference edges.
+    pub(crate) project_set: bool,
     pub(crate) nodes: Vec<NativeTypeScriptProgramNode>,
     pub(crate) package_membership: BTreeMap<Box<str>, TypeScriptForestSourceMembership>,
     pub(crate) work_units: u64,
@@ -1077,9 +1116,10 @@ pub(crate) enum TypeScriptForestSourceMembership {
 pub(crate) struct TypeScriptForestClosureWitness(pub(crate) Vec<TypeScriptProgramClosureWitness>);
 impl TypeScriptForestClosureWitness {
     pub(crate) fn retained_bytes(&self) -> usize {
-        std::mem::size_of::<Self>().saturating_add(
-            retained_vec_bytes(&self.0, TypeScriptProgramClosureWitness::retained_bytes),
-        )
+        std::mem::size_of::<Self>().saturating_add(retained_vec_bytes(
+            &self.0,
+            TypeScriptProgramClosureWitness::retained_bytes,
+        ))
     }
 
     pub(crate) fn validate_current(
@@ -1305,6 +1345,104 @@ pub(crate) fn build_native_forest_inputs(
             native,
         });
     }
+    // Keep the producer-selected build environment and ownership. If it does
+    // not select every captured source, a real conventional editor config may
+    // admit the remainder under its own options and native filesystem closure.
+    // This is a set of actual programs, not a source-root union injected into
+    // either checker. Only the direct linked TSZ path has this admission policy.
+    let has_unowned = package_sources.iter().any(|source| {
+        nodes.iter().all(|node| {
+            node.native.package_membership[source.relative_path()]
+                .selected_program_path()
+                .is_none()
+        })
+    });
+    let mut supplemental_path = None;
+    if has_unowned
+        && matches!(
+            inputs.authority,
+            super::typescript_host::TypeScriptProjectInputAuthority::Native
+        )
+        && let Some(selected) = selected
+        && let Some(config) = super::typescript_host::supplemental_conventional_config(
+            selected,
+            inputs.config_candidates,
+        )?
+    {
+        check_admission_control(deadline, cancelled)?;
+        let mut resolver = inputs.resolver();
+        let native = build_native_inputs_for_config(
+            inputs,
+            &mut resolver,
+            package_sources,
+            Some(config),
+            false,
+            &mut budget,
+            Some(&host),
+            deadline,
+            cancelled,
+        )?;
+        let adds_members = package_sources.iter().any(|source| {
+            native.package_membership[source.relative_path()]
+                .selected_program_path()
+                .is_some()
+                && nodes.iter().all(|node| {
+                    node.native.package_membership[source.relative_path()]
+                        .selected_program_path()
+                        .is_none()
+                })
+        });
+        if adds_members {
+            let path = config
+                .path
+                .strip_prefix(inputs.workspace_root)
+                .ok()
+                .and_then(Path::to_str)
+                .ok_or_else(|| {
+                    closure_mismatch("independent config has no canonical workspace path")
+                })?
+                .replace('\\', "/");
+            supplemental_path = Some(path.clone());
+            nodes.push(NativeTypeScriptProgramNode {
+                config: Some((path, config.content_id)),
+                references: Vec::new(),
+                native,
+            });
+        }
+    }
+    let project_set = supplemental_path.is_some();
+    // Node indices are durable identities. Preserve canonical config ordering
+    // and remap the real reference edges when adding an independent leaf.
+    let mut root = root;
+    if project_set {
+        let mut ordered = nodes.into_iter().enumerate().collect::<Vec<_>>();
+        ordered.sort_by(|(_, left), (_, right)| {
+            left.config
+                .as_ref()
+                .unwrap()
+                .0
+                .cmp(&right.config.as_ref().unwrap().0)
+        });
+        let mut remap = vec![0u32; ordered.len()];
+        for (new, (old, _)) in ordered.iter().enumerate() {
+            remap[*old] = new as u32;
+        }
+        root = remap[root as usize];
+        nodes = ordered
+            .into_iter()
+            .map(|(_, mut node)| {
+                for reference in &mut node.references {
+                    *reference = remap[*reference as usize];
+                }
+                node
+            })
+            .collect();
+    }
+    let supplemental_index = supplemental_path.as_ref().and_then(|path| {
+        nodes
+            .iter()
+            .position(|node| node.config.as_ref().is_some_and(|config| &config.0 == path))
+    });
     let mut membership = package_sources
         .iter()
         .map(|source| {
@@ -1315,7 +1453,11 @@ pub(crate) fn build_native_forest_inputs(
         })
         .collect::<BTreeMap<_, _>>();
     let mut work_units = 0u64;
-    for (index, node) in nodes.iter().enumerate() {
+    let ownership_order = (0..nodes.len())
+        .filter(|index| Some(*index) != supplemental_index)
+        .chain(supplemental_index);
+    for index in ownership_order {
+        let node = &nodes[index];
         // The forest shares one counter. Its sum is clamped to the project cap
         // rather than refused: a large project must degrade, not fail admission.
         work_units = work_units
@@ -1327,6 +1469,11 @@ pub(crate) fn build_native_forest_inputs(
                     closure_mismatch("program member has no captured package source")
                 })?;
                 if matches!(owner, TypeScriptForestSourceMembership::Selected { .. }) {
+                    if Some(index) == supplemental_index {
+                        // An imported build source retains its producer-selected
+                        // owner. It remains a dependency of this actual program.
+                        continue;
+                    }
                     return Err(closure_mismatch(
                         "captured package source belongs to multiple actual TypeScript programs",
                     ));
@@ -1341,6 +1488,7 @@ pub(crate) fn build_native_forest_inputs(
     Ok(NativeTypeScriptForestInputs {
         root,
         configured_forest,
+        project_set,
         nodes,
         package_membership: membership,
         work_units,
@@ -2852,40 +3000,66 @@ mod tests {
     fn retained_transcript_charges_duplicate_paths_capacity_and_nested_allocations() {
         let mut access: ProgramAccess = serde_json::from_value(json!({
             "kind": "file", "path": "/same/path.ts"
-        })).unwrap();
-        let before = super::retained_slice_bytes(std::slice::from_ref(&access), ProgramAccess::retained_bytes);
+        }))
+        .unwrap();
+        let before = super::retained_slice_bytes(
+            std::slice::from_ref(&access),
+            ProgramAccess::retained_bytes,
+        );
         let path_capacity = access.path.capacity();
         access.path.reserve(4096);
-        let after = super::retained_slice_bytes(std::slice::from_ref(&access), ProgramAccess::retained_bytes);
-        assert_eq!(after - before, access.path.capacity() - path_capacity,
-            "String spare capacity is owned even when its path value is unchanged");
+        let after = super::retained_slice_bytes(
+            std::slice::from_ref(&access),
+            ProgramAccess::retained_bytes,
+        );
+        assert_eq!(
+            after - before,
+            access.path.capacity() - path_capacity,
+            "String spare capacity is owned even when its path value is unchanged"
+        );
 
         access.matcher_arguments = vec![ProgramMatcherArgument::Value(json!({
             "nested": ["**/*.ts", {"exclude": "node_modules/**"}]
         }))];
         access.directory_realpaths = vec![ProgramPathResolution {
-            path: "/lexical".into(), target: "/canonical".into(), succeeded: true,
+            path: "/lexical".into(),
+            target: "/canonical".into(),
+            succeeded: true,
         }];
         access.entries = Some(vec!["/same/path.ts".into()]);
         access.matcher_replay_sha256 = Some("a".repeat(64).into_boxed_str());
-        let one = super::retained_slice_bytes(std::slice::from_ref(&access), ProgramAccess::retained_bytes);
+        let one = super::retained_slice_bytes(
+            std::slice::from_ref(&access),
+            ProgramAccess::retained_bytes,
+        );
         let duplicate = access.clone();
         let duplicate_payload = duplicate.retained_bytes();
         let accesses = [access, duplicate];
         let two = super::retained_slice_bytes(&accesses, ProgramAccess::retained_bytes);
-        assert_eq!(two - one, std::mem::size_of::<ProgramAccess>() + duplicate_payload,
-            "deduplicating the resolver path cannot remove a separate retained access object");
-        assert!(one > after + 64, "matcher JSON and nested transcript values add owned bytes");
+        assert_eq!(
+            two - one,
+            std::mem::size_of::<ProgramAccess>() + duplicate_payload,
+            "deduplicating the resolver path cannot remove a separate retained access object"
+        );
+        assert!(
+            one > after + 64,
+            "matcher JSON and nested transcript values add owned bytes"
+        );
 
         let mut view = ProgramDirectoryView {
-            path: "/same".into(), files: vec![], directories: vec![], read_succeeded: true,
+            path: "/same".into(),
+            files: vec![],
+            directories: vec![],
+            read_succeeded: true,
         };
         let empty = view.retained_bytes();
         view.files.reserve(8);
         view.directories.push("child".into());
         assert!(view.retained_bytes() >= empty + 8 * std::mem::size_of::<String>() + "child".len());
-        assert!(super::retained_slice_bytes(&[view], ProgramDirectoryView::retained_bytes)
-            >= std::mem::size_of::<ProgramDirectoryView>());
+        assert!(
+            super::retained_slice_bytes(&[view], ProgramDirectoryView::retained_bytes)
+                >= std::mem::size_of::<ProgramDirectoryView>()
+        );
     }
 
     #[test]

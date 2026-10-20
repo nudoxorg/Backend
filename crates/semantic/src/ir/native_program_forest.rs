@@ -11,10 +11,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 const MAGIC: &[u8; 8] = b"BKNPSF01";
+const PROJECT_SET_MAGIC: &[u8; 8] = b"BKNPSU01";
 /// Same bounded number of configuration nodes as project-host admission.
 pub const MAX_NATIVE_PROGRAM_NODES: usize = 256;
 
-/// Forest CAS schema; legacy single-program objects retain their original schema.
+/// Opaque forest/project-set CAS payload; magic distinguishes the two envelopes.
+/// Legacy single-program objects retain their original schema.
 pub struct NativeProgramForestSchema;
 impl Schema for NativeProgramForestSchema {
     const DOMAIN: u8 = 0x7a;
@@ -56,6 +58,7 @@ pub struct NativeProgramOwnedSourceRef<'a> {
 enum Programs {
     Single(NativeProgramSourceManifest),
     Forest {
+        project_set: bool,
         root: u32,
         nodes: Vec<NativeProgramNode>,
         node_ids: Vec<[u8; 32]>,
@@ -64,7 +67,7 @@ enum Programs {
     },
 }
 
-/// Versioned single/forest envelope. There deliberately is no `program()` API.
+/// Versioned single/forest/project-set envelope with no synthetic `program()` API.
 /// `membership_identity` authenticates a container; positive coordinates use leaf IDs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeProgramSources {
@@ -106,9 +109,42 @@ impl NativeProgramSources {
         root: u32,
         nodes: Vec<NativeProgramNode>,
     ) -> Result<Self, NativeProgramSourceManifestError> {
-        validate_graph(toolchain, root, &nodes)?;
+        Self::from_graph(toolchain, root, nodes, false)
+    }
+
+    /// Builds an explicit set of independently admitted projects for one toolchain.
+    ///
+    /// `primary` identifies the producer-selected config. Each node preserves its
+    /// actual references, effective options, read closure, and source membership.
+    /// Disconnected components are allowed, but all must be acyclic. A shared
+    /// source may be a dependency in one project and uniquely owned by another
+    /// only when its content identity agrees in every project.
+    ///
+    /// # Errors
+    ///
+    /// Returns an encoding or limit error for invalid topology, contradictory
+    /// source identities, duplicate package owners, or exceeded size bounds.
+    pub fn from_project_set(
+        toolchain: ContentId<ToolchainDomain>,
+        primary: u32,
+        nodes: Vec<NativeProgramNode>,
+    ) -> Result<Self, NativeProgramSourceManifestError> {
+        Self::from_graph(toolchain, primary, nodes, true)
+    }
+
+    fn from_graph(
+        toolchain: ContentId<ToolchainDomain>,
+        root: u32,
+        nodes: Vec<NativeProgramNode>,
+        project_set: bool,
+    ) -> Result<Self, NativeProgramSourceManifestError> {
+        validate_graph(toolchain, root, &nodes, project_set)?;
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(if project_set {
+            PROJECT_SET_MAGIC
+        } else {
+            MAGIC
+        });
         bytes.extend_from_slice(toolchain.as_ref());
         bytes.extend_from_slice(&root.to_le_bytes());
         bytes.extend_from_slice(&(nodes.len() as u32).to_le_bytes());
@@ -141,6 +177,7 @@ impl NativeProgramSources {
         let identity = *blake3::hash(&bytes).as_bytes();
         Ok(Self {
             programs: Programs::Forest {
+                project_set,
                 root,
                 nodes,
                 node_ids,
@@ -152,7 +189,7 @@ impl NativeProgramSources {
         })
     }
 
-    /// Decodes a legacy single-program manifest or the versioned forest envelope.
+    /// Decodes a legacy manifest, strict forest, or independent project set.
     ///
     /// Forest decoding revalidates graph topology, member identities, image
     /// bindings, and canonical byte encoding before returning an owner.
@@ -162,7 +199,8 @@ impl NativeProgramSources {
     /// Returns an encoding, identity, or size error for malformed or
     /// noncanonical bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, NativeProgramSourceManifestError> {
-        if !bytes.starts_with(MAGIC) {
+        let project_set = bytes.starts_with(PROJECT_SET_MAGIC);
+        if !project_set && !bytes.starts_with(MAGIC) {
             return NativeProgramSourceManifest::decode(bytes).map(Into::into);
         }
         if bytes.len() > MAX_NATIVE_PROGRAM_MANIFEST_BYTES {
@@ -237,7 +275,8 @@ impl NativeProgramSources {
         if !input.0.is_empty() {
             return Err(NativeProgramSourceManifestError::Encoding);
         }
-        let result = Self::from_forest(toolchain, root, nodes)?.with_image_bindings(images)?;
+        let result =
+            Self::from_graph(toolchain, root, nodes, project_set)?.with_image_bindings(images)?;
         if result.as_bytes() != bytes {
             return Err(NativeProgramSourceManifestError::Encoding);
         }
@@ -259,6 +298,7 @@ impl NativeProgramSources {
             })
             .collect::<BTreeMap<_, _>>();
         let Programs::Forest {
+            project_set,
             root,
             nodes,
             toolchain,
@@ -267,7 +307,7 @@ impl NativeProgramSources {
         else {
             return Err(NativeProgramSourceManifestError::Encoding);
         };
-        let mut result = Self::from_forest(toolchain, root, nodes)?;
+        let mut result = Self::from_graph(toolchain, root, nodes, project_set)?;
         let mut bindings = BTreeMap::new();
         for (path, image) in images {
             let image = SemanticImageIdentity::try_from(image)
@@ -312,7 +352,7 @@ impl NativeProgramSources {
         }
     }
 
-    /// Returns whether this uses the forest envelope rather than the legacy format.
+    /// Returns whether this uses a config-node envelope (forest or project set).
     pub fn is_forest(&self) -> bool {
         matches!(self.programs, Programs::Forest { .. })
     }
@@ -348,7 +388,8 @@ impl NativeProgramSources {
         }
     }
 
-    /// Returns the root index and borrowed nodes for a forest; legacy owners have none.
+    /// Returns the root (or project-set primary) index and borrowed config nodes.
+    /// Legacy owners have none; a primary does not imply reference reachability.
     pub fn nodes(&self) -> Option<(u32, &[NativeProgramNode])> {
         match &self.programs {
             Programs::Single(_) => None,
@@ -421,13 +462,14 @@ fn validate_graph(
     toolchain: ContentId<ToolchainDomain>,
     root: u32,
     nodes: &[NativeProgramNode],
+    project_set: bool,
 ) -> Result<(), NativeProgramSourceManifestError> {
     use NativeProgramSourceManifestError::{Encoding, Limit};
     if nodes.is_empty() || nodes.len() > MAX_NATIVE_PROGRAM_NODES || root as usize >= nodes.len() {
         return Err(Limit);
     }
     let mut package_owners = BTreeSet::new();
-    let mut members = BTreeMap::new();
+    let mut members: BTreeMap<&str, (super::SourceIdentity, Option<&str>)> = BTreeMap::new();
     let mut sources = 0usize;
     let mut encoded = 52usize;
     for (index, node) in nodes.iter().enumerate() {
@@ -456,11 +498,21 @@ fn validate_graph(
             encoded = encoded.saturating_add(program.as_bytes().len());
             for row in program.sources() {
                 sources = sources.saturating_add(1);
-                if members
-                    .insert(row.program_path, (row.source, row.package_path))
-                    .is_some_and(|prior| prior != (row.source, row.package_path))
-                {
-                    return Err(Encoding);
+                if let Some((source, package)) = members.get_mut(row.program_path) {
+                    if *source != row.source
+                        || (!project_set && *package != row.package_path)
+                        || (package.is_some()
+                            && row.package_path.is_some()
+                            && *package != row.package_path)
+                    {
+                        return Err(Encoding);
+                    }
+                    // Retain the actual owner across intervening dependency rows.
+                    if package.is_none() {
+                        *package = row.package_path;
+                    }
+                } else {
+                    members.insert(row.program_path, (row.source, row.package_path));
                 }
                 if row
                     .package_path
@@ -493,6 +545,11 @@ fn validate_graph(
     }
     let mut state = vec![0; nodes.len()];
     visit(root as usize, nodes, &mut state)?;
+    if project_set {
+        for index in 0..nodes.len() {
+            visit(index, nodes, &mut state)?;
+        }
+    }
     if state.iter().any(|state| *state != 2) {
         return Err(Encoding);
     }
@@ -575,6 +632,128 @@ mod tests {
                 program: Some(leaf("vite.config.ts")),
             },
         ]
+    }
+
+    fn independent_nodes() -> Vec<NativeProgramNode> {
+        let mut projects = nodes();
+        projects.remove(1);
+        projects
+    }
+
+    fn shared_leaf(package_path: Option<&str>, bytes: &[u8]) -> NativeProgramSourceManifest {
+        NativeProgramSourceManifest::from_sources(
+            ContentId::from_canonical_bytes(b"compiler"),
+            vec![NativeProgramSource {
+                program_path: "src/app.ts".into(),
+                package_path: package_path.map(str::to_owned),
+                source: SourceIdentity::from_bytes(bytes).expect("valid fixture source"),
+            }],
+        )
+        .expect("valid shared fixture manifest")
+    }
+
+    #[test]
+    fn project_set_retains_independent_primary_leaf_owners_and_image_bindings() {
+        let toolchain = ContentId::from_canonical_bytes(b"compiler");
+        let projects = independent_nodes();
+        assert!(NativeProgramSources::from_forest(toolchain, 0, projects.clone()).is_err());
+        let set = NativeProgramSources::from_project_set(toolchain, 0, projects.clone())
+            .expect("independent projects are explicitly admitted");
+        assert!(set.as_bytes().starts_with(PROJECT_SET_MAGIC));
+        let (primary, actual) = set.nodes().expect("project set config nodes");
+        assert_eq!(primary, 0);
+        assert_eq!(actual, projects);
+        assert!(actual.iter().all(|node| node.references.is_empty()));
+        let rows = set.sources().collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].program,
+            projects[0].program.as_ref().unwrap().program()
+        );
+        assert_eq!(
+            rows[1].program,
+            projects[1].program.as_ref().unwrap().program()
+        );
+        assert_ne!(rows[0].node, rows[1].node);
+        assert_ne!(rows[0].program, set.membership_identity());
+        let primary_identity = set.membership_identity();
+        let image = *SemanticImageIdentity::from_encoded_bytes(b"independent image").as_ref();
+        let bound = set
+            .with_image_bindings([("vite.config.ts".into(), image)])
+            .expect("independent owner can seal its image");
+        assert!(bound.as_bytes().starts_with(PROJECT_SET_MAGIC));
+        let cold = NativeProgramSources::decode(bound.as_bytes()).expect("project set cold decode");
+        assert_eq!(cold, bound);
+        assert!(cold.image_matches("vite.config.ts", &image));
+        assert!(!cold.image_matches("src/app.ts", &image));
+        let mut disguised = bound.as_bytes().to_vec();
+        disguised[..8].copy_from_slice(MAGIC);
+        assert!(NativeProgramSources::decode(&disguised).is_err());
+
+        let forest = NativeProgramSources::from_forest(toolchain, 1, nodes()).unwrap();
+        let connected_set = NativeProgramSources::from_project_set(toolchain, 1, nodes()).unwrap();
+        assert_ne!(
+            forest.membership_identity(),
+            connected_set.membership_identity()
+        );
+        assert_eq!(&forest.as_bytes()[8..], &connected_set.as_bytes()[8..]);
+        let changed_primary =
+            NativeProgramSources::from_project_set(toolchain, 1, projects).unwrap();
+        assert_ne!(changed_primary.membership_identity(), primary_identity);
+    }
+
+    #[test]
+    fn project_set_only_relaxes_equal_content_dependency_representation() {
+        let toolchain = ContentId::from_canonical_bytes(b"compiler");
+        let mut projects = independent_nodes();
+        projects[1].program = Some(shared_leaf(None, b"export {};"));
+        let set = NativeProgramSources::from_project_set(toolchain, 0, projects.clone())
+            .expect("same bytes can be owned in one project and read in another");
+        let rows = set.sources().collect::<Vec<_>>();
+        assert_eq!(rows[0].package_path, Some("src/app.ts"));
+        assert_eq!(rows[1].package_path, None);
+        assert_eq!(rows[0].source, rows[1].source);
+        assert_eq!(NativeProgramSources::decode(set.as_bytes()).unwrap(), set);
+        let mut dependency_first = projects.clone();
+        dependency_first[0].program = Some(shared_leaf(None, b"export {};"));
+        dependency_first[1].program = Some(shared_leaf(Some("src/app.ts"), b"export {};"));
+        assert!(NativeProgramSources::from_project_set(toolchain, 0, dependency_first).is_ok());
+        projects[0].references.push(1);
+        assert!(NativeProgramSources::from_forest(toolchain, 0, projects.clone()).is_err());
+        projects[1].program = Some(shared_leaf(None, b"export const changed = true;"));
+        assert!(NativeProgramSources::from_project_set(toolchain, 0, projects.clone()).is_err());
+        projects[1].program = Some(shared_leaf(Some("src/app.ts"), b"export {};"));
+        assert!(NativeProgramSources::from_project_set(toolchain, 0, projects.clone()).is_err());
+        projects[1].program = Some(shared_leaf(Some("different.ts"), b"export {};"));
+        assert!(NativeProgramSources::from_project_set(toolchain, 0, projects).is_err());
+    }
+
+    #[test]
+    fn project_set_validates_every_component_and_preserves_bounds() {
+        let toolchain = ContentId::from_canonical_bytes(b"compiler");
+        let mut projects = independent_nodes();
+        projects[1].references.push(1);
+        assert!(NativeProgramSources::from_project_set(toolchain, 0, projects.clone()).is_err());
+        projects[1].references = vec![2];
+        assert!(NativeProgramSources::from_project_set(toolchain, 0, projects.clone()).is_err());
+        projects[1].references = vec![0, 0];
+        assert!(NativeProgramSources::from_project_set(toolchain, 0, projects.clone()).is_err());
+        projects[1].references.clear();
+        projects[1].program = None;
+        assert!(NativeProgramSources::from_project_set(toolchain, 0, projects).is_err());
+        assert!(NativeProgramSources::from_project_set(toolchain, 2, independent_nodes()).is_err());
+        assert!(NativeProgramSources::from_project_set(toolchain, 0, vec![]).is_err());
+        let mut projects = independent_nodes();
+        projects.reverse();
+        assert!(NativeProgramSources::from_project_set(toolchain, 0, projects).is_err());
+        assert!(
+            NativeProgramSources::from_project_set(
+                ContentId::from_canonical_bytes(b"other compiler"),
+                0,
+                independent_nodes()
+            )
+            .is_err()
+        );
     }
     #[test]
     fn forest_round_trip_retains_leaf_ownership_and_legacy_bytes() {

@@ -42,11 +42,10 @@ const TSZ_CHECKER_WORKERS_PER_COMPILER_LANE: std::num::NonZeroUsize =
 
 use backend_library::interface::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerFragmentFailure, CompilerReadiness,
-    CompilerRequest as ApplicationCompilerRequest, CompilerTerminal,
-    GeneratedArtifact, PackageCompilePhase, PackageCompileRequest, PackageDeclarationScopeCause,
-    PackageSourceCause, PublicationAuthority, PublicationCause, PublicationPhase,
-    PythonAuthorityFailureKind, SemanticImageAccessError, SemanticImageAuthority,
-    SemanticImageSnapshot, SourceAuthority,
+    CompilerRequest as ApplicationCompilerRequest, CompilerTerminal, GeneratedArtifact,
+    PackageCompilePhase, PackageCompileRequest, PackageDeclarationScopeCause, PackageSourceCause,
+    PublicationAuthority, PublicationCause, PublicationPhase, PythonAuthorityFailureKind,
+    SemanticImageAccessError, SemanticImageAuthority, SemanticImageSnapshot, SourceAuthority,
 };
 use backend_semantic::ir::{
     EmbeddingPlaneIdentity, JumboRopeLimits, MAX_SEMANTIC_SEGMENT_BYTES, SemanticBuildIdentity,
@@ -484,7 +483,10 @@ impl TypeScriptWorkGaps {
     }
 
     fn insert(&mut self, program: usize, path: impl Into<String>) {
-        self.programs.entry(program).or_default().insert(path.into());
+        self.programs
+            .entry(program)
+            .or_default()
+            .insert(path.into());
     }
 
     fn program_paths(&self, program: usize) -> BTreeSet<String> {
@@ -1214,18 +1216,30 @@ pub enum StagedIdentityFacet {
 impl std::fmt::Display for StagedIdentityFacet {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         fn short(bytes: &[u8; 32]) -> String {
-            bytes.iter().take(6).map(|byte| format!("{byte:02x}")).collect()
+            bytes
+                .iter()
+                .take(6)
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
         }
         match self {
             Self::InputWitness => formatter.write_str("host-local plane input witness differs"),
-            Self::Target => formatter.write_str("runtime identity names another compilation target"),
+            Self::Target => {
+                formatter.write_str("runtime identity names another compilation target")
+            }
             Self::Profile => formatter.write_str("runtime identity names another language profile"),
             Self::Stage => formatter.write_str("runtime identity names another semantic stage"),
             Self::ArtifactProfile { artifact } => {
-                write!(formatter, "artifact {artifact} was compiled under another language profile")
+                write!(
+                    formatter,
+                    "artifact {artifact} was compiled under another language profile"
+                )
             }
             Self::ArtifactStage { artifact } => {
-                write!(formatter, "artifact {artifact} was compiled at another semantic stage")
+                write!(
+                    formatter,
+                    "artifact {artifact} was compiled at another semantic stage"
+                )
             }
             Self::ArtifactTool {
                 artifact,
@@ -1246,10 +1260,16 @@ impl std::fmt::Display for StagedIdentityFacet {
                 short(expected)
             ),
             Self::ArtifactImage { artifact } => {
-                write!(formatter, "artifact {artifact} has no staged semantic image")
+                write!(
+                    formatter,
+                    "artifact {artifact} has no staged semantic image"
+                )
             }
             Self::EmbeddingArtifact { artifact } => {
-                write!(formatter, "artifact {artifact} has no staged embedding vector")
+                write!(
+                    formatter,
+                    "artifact {artifact} has no staged embedding vector"
+                )
             }
         }
     }
@@ -1268,7 +1288,11 @@ struct AdmittedStagedRuntime {
 }
 
 impl AdmittedStagedRuntime {
-    fn admit_recipe(&self, artifact: usize, recipe: backend_semantic::vocabulary::CompileRecipeFact) -> Result<(), StagedIdentityFacet> {
+    fn admit_recipe(
+        &self,
+        artifact: usize,
+        recipe: backend_semantic::vocabulary::CompileRecipeFact,
+    ) -> Result<(), StagedIdentityFacet> {
         if recipe.profile != self.profile {
             return Err(StagedIdentityFacet::ArtifactProfile { artifact });
         }
@@ -1276,10 +1300,18 @@ impl AdmittedStagedRuntime {
             return Err(StagedIdentityFacet::ArtifactStage { artifact });
         }
         if recipe.tool != self.tool {
-            return Err(StagedIdentityFacet::ArtifactTool { artifact, expected: self.tool, actual: recipe.tool });
+            return Err(StagedIdentityFacet::ArtifactTool {
+                artifact,
+                expected: self.tool,
+                actual: recipe.tool,
+            });
         }
         if recipe.toolchain.as_ref() != &self.toolchain {
-            return Err(StagedIdentityFacet::ArtifactToolchain { artifact, expected: self.toolchain, actual: *recipe.toolchain.as_ref() });
+            return Err(StagedIdentityFacet::ArtifactToolchain {
+                artifact,
+                expected: self.toolchain,
+                actual: *recipe.toolchain.as_ref(),
+            });
         }
         Ok(())
     }
@@ -1492,7 +1524,9 @@ impl StagedSemanticPackage {
         std::sync::Arc<crate::application::typescript_program::TypeScriptForestClosureWitness>,
     )> {
         if !typescript_snapshot_outcome_reusable(
-            self.coverage_gaps().iter().map(PackageSourceCoverageGap::cause),
+            self.coverage_gaps()
+                .iter()
+                .map(PackageSourceCoverageGap::cause),
             self.embedding_status(),
         ) {
             return None;
@@ -1501,9 +1535,10 @@ impl StagedSemanticPackage {
         if !host.is_native_for_root(root) {
             return None;
         }
-        Some((std::sync::Arc::clone(host), std::sync::Arc::clone(
-            self.staged.typescript_closure_witness.as_ref()?,
-        )))
+        Some((
+            std::sync::Arc::clone(host),
+            std::sync::Arc::clone(self.staged.typescript_closure_witness.as_ref()?),
+        ))
     }
 
     /// Retains the local captured-program fence for bounded snapshot reuse.
@@ -2324,7 +2359,12 @@ impl DegradedSources {
         source: SourceAuthority,
         gaps: &mut Vec<PackageSourceCoverageGap>,
     ) {
-        self.push_gap(path, source, PackageSourceCoverageGapCause::CompileDeadlineExceeded, gaps);
+        self.push_gap(
+            path,
+            source,
+            PackageSourceCoverageGapCause::CompileDeadlineExceeded,
+            gaps,
+        );
     }
 
     fn push_gap(
@@ -2345,17 +2385,15 @@ impl DegradedSources {
 
     /// The first degraded source's terminal, when no source of the package
     /// compiled: such a package has nothing to publish and refuses with it.
-    fn into_refusal_when_nothing_compiled(
-        self,
-        compiled: usize,
-    ) -> Option<PackageSemanticError> {
+    fn into_refusal_when_nothing_compiled(self, compiled: usize) -> Option<PackageSemanticError> {
         if compiled != 0 {
             return None;
         }
-        self.first.map(|(path, terminal)| PackageSemanticError::Compile {
-            path,
-            terminal: Box::new(terminal),
-        })
+        self.first
+            .map(|(path, terminal)| PackageSemanticError::Compile {
+                path,
+                terminal: Box::new(terminal),
+            })
     }
 }
 
@@ -2366,13 +2404,17 @@ fn source_gap_cause(terminal: &CompilerTerminal) -> Option<PackageSourceCoverage
         return None;
     };
     match cause {
-        CompilerCause::Authority { .. } => Some(PackageSourceCoverageGapCause::SourceAuthorityRefused),
+        CompilerCause::Authority { .. } => {
+            Some(PackageSourceCoverageGapCause::SourceAuthorityRefused)
+        }
         CompilerCause::NativeRejected { .. } | CompilerCause::DiagnosticLimit { .. } => {
             Some(PackageSourceCoverageGapCause::SourceRejectedByNativeCompiler)
         }
         CompilerCause::Lowering(_)
         | CompilerCause::Fragment(_)
-        | CompilerCause::FragmentFailure(_) => Some(PackageSourceCoverageGapCause::SourceNotRepresentable),
+        | CompilerCause::FragmentFailure(_) => {
+            Some(PackageSourceCoverageGapCause::SourceNotRepresentable)
+        }
         CompilerCause::DeadlineExceeded { .. } => {
             Some(PackageSourceCoverageGapCause::CompileDeadlineExceeded)
         }
@@ -2416,11 +2458,16 @@ mod source_degradation_tests {
                 Gap::SourceAuthorityRefused,
             ),
             (
-                compile(CompilerCause::NativeRejected { code: Some(1), diagnostic: None }),
+                compile(CompilerCause::NativeRejected {
+                    code: Some(1),
+                    diagnostic: None,
+                }),
                 Gap::SourceRejectedByNativeCompiler,
             ),
             (
-                compile(CompilerCause::Fragment(backend_library::interface::FragmentCause::Validate)),
+                compile(CompilerCause::Fragment(
+                    backend_library::interface::FragmentCause::Validate,
+                )),
                 Gap::SourceNotRepresentable,
             ),
             (
@@ -2431,9 +2478,13 @@ mod source_degradation_tests {
         for (terminal, expected) in own {
             assert_eq!(source_gap_cause(&terminal), Some(expected));
         }
-        let target = ContentId::<backend_version::CompilationTargetDomain>::from_canonical_bytes(b"t");
+        let target =
+            ContentId::<backend_version::CompilationTargetDomain>::from_canonical_bytes(b"t");
         for shared in [
-            CompilerTerminal::PackageCancelled { target, phase: PackageCompilePhase::Authority },
+            CompilerTerminal::PackageCancelled {
+                target,
+                phase: PackageCompilePhase::Authority,
+            },
             CompilerTerminal::Toolchain {
                 source: source(),
                 language: backend_semantic::vocabulary::Language::Go,
@@ -2458,15 +2509,27 @@ mod source_degradation_tests {
         let mut gaps = Vec::new();
         let mut degraded = DegradedSources::default();
         degraded
-            .degrade(compile(CompilerCause::NativeRejected { code: None, diagnostic: None }), "a_test.go", source(), &mut gaps)
+            .degrade(
+                compile(CompilerCause::NativeRejected {
+                    code: None,
+                    diagnostic: None,
+                }),
+                "a_test.go",
+                source(),
+                &mut gaps,
+            )
             .expect("a source-local failure degrades");
         assert_eq!(gaps.len(), 1);
         assert_eq!(gaps[0].relative_path(), "a_test.go");
         assert!(!degraded.deadline_passed);
         // A shared failure is the package's refusal and records no gap.
-        let target = ContentId::<backend_version::CompilationTargetDomain>::from_canonical_bytes(b"t");
+        let target =
+            ContentId::<backend_version::CompilationTargetDomain>::from_canonical_bytes(b"t");
         let refusal = degraded.degrade(
-            CompilerTerminal::PackageCancelled { target, phase: PackageCompilePhase::Authority },
+            CompilerTerminal::PackageCancelled {
+                target,
+                phase: PackageCompilePhase::Authority,
+            },
             "b.go",
             source(),
             &mut gaps,
@@ -2476,11 +2539,22 @@ mod source_degradation_tests {
         // Sources that compiled keep the package publishable; none compiled refuses with the first.
         assert!(degraded.into_refusal_when_nothing_compiled(3).is_none());
         let mut only = DegradedSources::default();
-        only.degrade(compile(CompilerCause::DeadlineExceeded { diagnostic: None }), "c.go", source(), &mut gaps)
-            .expect("deadline degrades");
+        only.degrade(
+            compile(CompilerCause::DeadlineExceeded { diagnostic: None }),
+            "c.go",
+            source(),
+            &mut gaps,
+        )
+        .expect("deadline degrades");
         assert!(only.deadline_passed);
-        let refusal = only.into_refusal_when_nothing_compiled(0).expect("nothing compiled");
-        assert!(refusal.to_string().contains("package semantic compilation failed for c.go: the compile deadline passed"));
+        let refusal = only
+            .into_refusal_when_nothing_compiled(0)
+            .expect("nothing compiled");
+        assert!(
+            refusal.to_string().contains(
+                "package semantic compilation failed for c.go: the compile deadline passed"
+            )
+        );
         assert!(!refusal.to_string().contains("DeadlineExceeded"));
     }
 }
@@ -2538,18 +2612,34 @@ pub(crate) enum PackageExecutionAuthority {
 }
 
 impl PackageExecutionAuthority {
-    pub(super) fn identities(self) -> (Option<LocalCompilerExecutionIdentity>, Option<LocalCompilerPlaneExecutionSeed>) {
+    pub(super) fn identities(
+        self,
+    ) -> (
+        Option<LocalCompilerExecutionIdentity>,
+        Option<LocalCompilerPlaneExecutionSeed>,
+    ) {
         match self {
-            Self::Fixed { execution, plane } | Self::RuntimeStartup { execution, plane } => (execution, plane),
+            Self::Fixed { execution, plane } | Self::RuntimeStartup { execution, plane } => {
+                (execution, plane)
+            }
         }
     }
 
     /// Only the runtime's startup candidate can transition to project-local
     /// authority. A fixed portable or local identity remains a strict constraint.
-    pub(super) fn with_admitted_typescript_project(self, project: LocalCompilerPlaneExecutionSeed) -> Self {
+    pub(super) fn with_admitted_typescript_project(
+        self,
+        project: LocalCompilerPlaneExecutionSeed,
+    ) -> Self {
         match self {
-            Self::RuntimeStartup { .. } => Self::Fixed { execution: None, plane: Some(project) },
-            Self::Fixed { execution, plane } => Self::Fixed { execution, plane: plane.or(Some(project)) },
+            Self::RuntimeStartup { .. } => Self::Fixed {
+                execution: None,
+                plane: Some(project),
+            },
+            Self::Fixed { execution, plane } => Self::Fixed {
+                execution,
+                plane: plane.or(Some(project)),
+            },
         }
     }
 }
@@ -2579,8 +2669,9 @@ pub(crate) struct StagedPackageCompilation {
     cargo_workspace_facts: Option<std::sync::Arc<RustCargoWorkspaceFactsV1>>,
     typescript_witness:
         Option<std::sync::Arc<crate::application::typescript_host::TypeScriptProjectWitness>>,
-    typescript_closure_witness:
-        Option<std::sync::Arc<crate::application::typescript_program::TypeScriptForestClosureWitness>>,
+    typescript_closure_witness: Option<
+        std::sync::Arc<crate::application::typescript_program::TypeScriptForestClosureWitness>,
+    >,
     native_program_sources: Option<backend_semantic::ir::NativeProgramSources>,
     source_coverage: Option<backend_semantic::ir::SourceCoverageObservation>,
     python_witness: Option<StagedPythonProjectWitness>,
@@ -2772,46 +2863,49 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         // preserving potentially incomplete mutable solver state.
         let mut typescript_lane = std::mem::take(&mut scratch.typescript_program_lane);
         let result = (|| {
-        // A TypeScript source whose own lowering spends its work allowance can have
-        // written partial state into the program-wide tables that every later
-        // source reads. The attempt is then discarded whole and rerun from fresh
-        // native state with that source skipped, so every published fact comes from
-        // a state that no interrupted query touched. The final attempt degrades to
-        // a coverage gap for the interrupted source and everything after it instead.
-        let mut work_gaps = TypeScriptWorkGaps::default();
-        let mut restarts_left = MAX_TYPESCRIPT_WORK_RESTARTS;
-        loop {
-            // Where this attempt's native program stopped, kept outside the attempt so
-            // the refusal can name the file and phase even after early returns.
-            let stop_site = std::sync::Arc::new(std::sync::OnceLock::new());
-            match self.stage_package_sources_attempt(
-                package.clone(),
-                authority,
-                embedding_runtime,
-                embedding_cache_session,
-                embedding_requirement,
-                scratch,
-                cancelled,
-                progress,
-                &mut work_gaps,
-                restarts_left > 0,
-                &stop_site,
-                &mut typescript_lane,
-            ) {
-                Err(PackageSemanticError::TypeScriptWorkRestart) if restarts_left > 0 => {
-                    restarts_left -= 1;
-                    tracing::warn!(target: "compiler.typescript_project", restarts_left,
+            // A TypeScript source whose own lowering spends its work allowance can have
+            // written partial state into the program-wide tables that every later
+            // source reads. The attempt is then discarded whole and rerun from fresh
+            // native state with that source skipped, so every published fact comes from
+            // a state that no interrupted query touched. The final attempt degrades to
+            // a coverage gap for the interrupted source and everything after it instead.
+            let mut work_gaps = TypeScriptWorkGaps::default();
+            let mut restarts_left = MAX_TYPESCRIPT_WORK_RESTARTS;
+            loop {
+                // Where this attempt's native program stopped, kept outside the attempt so
+                // the refusal can name the file and phase even after early returns.
+                let stop_site = std::sync::Arc::new(std::sync::OnceLock::new());
+                match self.stage_package_sources_attempt(
+                    package.clone(),
+                    authority,
+                    embedding_runtime,
+                    embedding_cache_session,
+                    embedding_requirement,
+                    scratch,
+                    cancelled,
+                    progress,
+                    &mut work_gaps,
+                    restarts_left > 0,
+                    &stop_site,
+                    &mut typescript_lane,
+                ) {
+                    Err(PackageSemanticError::TypeScriptWorkRestart) if restarts_left > 0 => {
+                        restarts_left -= 1;
+                        tracing::warn!(target: "compiler.typescript_project", restarts_left,
                         "TypeScript source spent its own work allowance; restarting the package compilation without it");
+                    }
+                    Err(PackageSemanticError::Compile { path, terminal }) => {
+                        return Err(PackageSemanticError::Compile {
+                            path,
+                            terminal: Box::new(with_typescript_stop_site(
+                                *terminal,
+                                stop_site.get(),
+                            )),
+                        });
+                    }
+                    result => return result,
                 }
-                Err(PackageSemanticError::Compile { path, terminal }) => {
-                    return Err(PackageSemanticError::Compile {
-                        path,
-                        terminal: Box::new(with_typescript_stop_site(*terminal, stop_site.get())),
-                    });
-                }
-                result => return result,
             }
-        }
         })();
         scratch.typescript_program_lane = typescript_lane;
         result
@@ -2829,7 +2923,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         progress: &mut impl FnMut(PackageCompilePhase),
         typescript_work_gaps: &mut TypeScriptWorkGaps,
         may_restart: bool,
-        stop_site: &std::sync::Arc<std::sync::OnceLock<super::compiler_typescript_observation::ObservedStopSite>>,
+        stop_site: &std::sync::Arc<
+            std::sync::OnceLock<super::compiler_typescript_observation::ObservedStopSite>,
+        >,
         typescript_lane: &mut super::typescript_program_lane::TypeScriptProgramAuthorityLane,
     ) -> Result<StagedPackageCompilation, PackageSemanticError> {
         let (mut execution_identity, plane_execution_seed) = authority.identities();
@@ -2997,6 +3093,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut tsz_file_work_units = Vec::new();
         let mut forest_root = 0;
         let mut persist_configured_programs = false;
+        let mut independent_project_set = false;
         if let Some(project) = typescript_project.as_ref() {
             let inputs = project.inputs();
             let package_sources = package.compilation_sources().collect::<Vec<_>>();
@@ -3021,29 +3118,40 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         toolchain,
                         PackageAuthorityError::TypeScriptProjectHost(
                             super::compiler_typescript_failure::describe_program_admission_error(
-                                cause,
-                                &inputs,
+                                cause, &inputs,
                             ),
                         ),
                     )),
                 }
             })?;
             forest_root = forest.root;
+            independent_project_set = forest.project_set;
             // Even one configured program retains its exact config/environment
             // node. The leaf's native program identity and semantic image bytes
             // are unchanged; only its durable ownership envelope gains context.
-            persist_configured_programs = forest.configured_forest || forest.nodes.iter().any(|node| node.config.is_some());
+            persist_configured_programs =
+                forest.configured_forest || forest.nodes.iter().any(|node| node.config.is_some());
             tsz_package_membership = forest.package_membership;
-            tsz_budget = Some(super::compiler_typescript_observation::ObservedTypeScriptBudget::new(
-                control.deadline,
-                cancelled,
-                forest.work_units,
-            ).with_stop_sink(std::sync::Arc::clone(stop_site)));
+            tsz_budget = Some(
+                super::compiler_typescript_observation::ObservedTypeScriptBudget::new(
+                    control.deadline,
+                    cancelled,
+                    forest.work_units,
+                )
+                .with_stop_sink(std::sync::Arc::clone(stop_site)),
+            );
             let budget = tsz_budget.as_ref().expect("shared forest budget");
-            let active_programs = forest.nodes.iter().filter(|node| node.native.requires_retained_authority())
-                .map(|node| node.config.as_ref().map(|(path, _)| path.clone())).collect::<Vec<_>>();
-            typescript_lane.prepare(package.package_root, &active_programs)
-                .map_err(|_| PackageSemanticError::Capacity { lane: "distinct admitted TypeScript program authorities" })?;
+            let active_programs = forest
+                .nodes
+                .iter()
+                .filter(|node| node.native.requires_retained_authority())
+                .map(|node| node.config.as_ref().map(|(path, _)| path.clone()))
+                .collect::<Vec<_>>();
+            typescript_lane
+                .prepare(package.package_root, &active_programs)
+                .map_err(|_| PackageSemanticError::Capacity {
+                    lane: "distinct admitted TypeScript program authorities",
+                })?;
             let mut witnesses = Vec::with_capacity(forest.nodes.len());
             for (program_index, node) in forest.nodes.into_iter().enumerate() {
                 let program_key = node.config.as_ref().map(|(path, _)| path.clone());
@@ -3061,7 +3169,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     continue;
                 }
                 let program_sources = native.sources.len();
-                budget.admit_program(program_sources, native.libraries.len(), native.options.module_resolutions.len());
+                budget.admit_program(
+                    program_sources,
+                    native.libraries.len(),
+                    native.options.module_resolutions.len(),
+                );
                 let _program_observation = budget.observe_program(program_index);
                 tracing::info!(target: "compiler.typescript_project",
                     phase = "admitted_program", program_environment = ?native.options.environment,
@@ -3131,7 +3243,10 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     budget.reused_program(program_sources);
                 }
                 typescript_lane.record(report);
-                if let Some(project) = typescript_lane.project(&program_key).filter(|project| !project.file_work_skipped().is_empty()) {
+                if let Some(project) = typescript_lane
+                    .project(&program_key)
+                    .filter(|project| !project.file_work_skipped().is_empty())
+                {
                     tracing::warn!(target: "compiler.typescript_project", program = program_index,
                         skipped = ?project.file_work_skipped(),
                         "TypeScript files spent their own work allowance and are not semantically covered");
@@ -3144,14 +3259,25 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         }
         // Every retained native image is available to the forest consumer,
         // including the program_diagnostics() of source-free solutions.
-        let tsz_images = tsz_authorities.iter().map(|(key, _)| {
-            key.as_ref().map(|key| typescript_lane.project(key).ok_or(PackageSemanticError::Capacity {
-                lane: "complete admitted TypeScript checked authority",
-            })).transpose()
-        }).collect::<Result<Vec<_>, PackageSemanticError>>()?;
+        let tsz_images = tsz_authorities
+            .iter()
+            .map(|(key, _)| {
+                key.as_ref()
+                    .map(|key| {
+                        typescript_lane
+                            .project(key)
+                            .ok_or(PackageSemanticError::Capacity {
+                                lane: "complete admitted TypeScript checked authority",
+                            })
+                    })
+                    .transpose()
+            })
+            .collect::<Result<Vec<_>, PackageSemanticError>>()?;
         // A solution diagnostic owner contributes no semantic forest leaf or
         // per-source query session. Its checked image remains separately held.
-        let tsz_projects = tsz_images.iter().zip(&tsz_authorities)
+        let tsz_projects = tsz_images
+            .iter()
+            .zip(&tsz_authorities)
             .map(|(image, (_, solution))| if *solution { None } else { *image })
             .collect::<Vec<_>>();
         if let (Some(budget), Some(toolchain)) = (tsz_budget.as_ref(), typescript_toolchain) {
@@ -3202,12 +3328,20 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         })
                     })
                     .collect::<Result<Vec<_>, PackageSemanticError>>()?;
-                backend_semantic::ir::NativeProgramSources::from_forest(
-                    toolchain.identity,
-                    forest_root,
-                    nodes,
-                )
-                .map_err(PackageSemanticError::NativeProgramSources)?
+                let source_owner = if independent_project_set {
+                    backend_semantic::ir::NativeProgramSources::from_project_set(
+                        toolchain.identity,
+                        forest_root,
+                        nodes,
+                    )
+                } else {
+                    backend_semantic::ir::NativeProgramSources::from_forest(
+                        toolchain.identity,
+                        forest_root,
+                        nodes,
+                    )
+                };
+                source_owner.map_err(PackageSemanticError::NativeProgramSources)?
             } else {
                 leaves
                     .into_iter()
@@ -3580,13 +3714,22 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         });
                     }
                 };
-                let external = resolved.external().map_err(|source| PackageSemanticError::Compile {
-                    path: first_source.relative_path.into(),
-                    terminal: Box::new(package_authority_terminal(
-                        package.package_target.target(), first_application_request, first_authority,
-                        toolchain, PackageAuthorityError::ExternalToolchainRequired { profile: target.profile, source },
-                    )),
-                })?;
+                let external =
+                    resolved
+                        .external()
+                        .map_err(|source| PackageSemanticError::Compile {
+                            path: first_source.relative_path.into(),
+                            terminal: Box::new(package_authority_terminal(
+                                package.package_target.target(),
+                                first_application_request,
+                                first_authority,
+                                toolchain,
+                                PackageAuthorityError::ExternalToolchainRequired {
+                                    profile: target.profile,
+                                    source,
+                                },
+                            )),
+                        })?;
                 if authority_configuration.toolchain.selected_rustc() != external.executable() {
                     return Err(PackageSemanticError::Compile {
                         path: first_source.relative_path.into(),
@@ -3841,37 +3984,39 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     terminal: Box::new(terminal),
                 })?;
             if degraded.deadline_passed {
-                degraded.skip_after_deadline(source.relative_path, source_authority, &mut coverage_gaps);
+                degraded.skip_after_deadline(
+                    source.relative_path,
+                    source_authority,
+                    &mut coverage_gaps,
+                );
                 continue;
             }
             if let Some(budget) = tsz_budget.as_ref().filter(|_| !typescript_work_degraded) {
                 match backend_frontend_typescript::TszExecutionCheckpoint::checkpoint(budget, 1) {
                     // True program-wide exhaustion: keep what is already complete.
-                    Err(backend_frontend_typescript::TszProjectExecutionStop::WorkBudgetExhausted)
-                        if !artifacts.is_empty() =>
-                    {
+                    Err(
+                        backend_frontend_typescript::TszProjectExecutionStop::WorkBudgetExhausted,
+                    ) if !artifacts.is_empty() => {
                         typescript_work_degraded = true;
                         Ok(())
                     }
                     result => result,
                 }
-                    .map_err(|cause| PackageSemanticError::Compile {
-                        path: source.relative_path.into(),
-                        terminal: Box::new(package_authority_terminal(
-                            package.package_target.target(),
-                            application_request,
-                            source_authority,
-                            self.toolchain_for_package(application_request, typescript_toolchain)
-                                .unwrap_or(ToolchainSelection::ExplicitlyUnavailable {
-                                    tool: NativeTool::TypeScriptCompiler,
-                                }),
-                            PackageAuthorityError::TypeScriptTsz(
-                                backend_frontend_typescript::TszAuthorityError::ExecutionStopped(
-                                    cause,
-                                ),
-                            ),
-                        )),
-                    })?;
+                .map_err(|cause| PackageSemanticError::Compile {
+                    path: source.relative_path.into(),
+                    terminal: Box::new(package_authority_terminal(
+                        package.package_target.target(),
+                        application_request,
+                        source_authority,
+                        self.toolchain_for_package(application_request, typescript_toolchain)
+                            .unwrap_or(ToolchainSelection::ExplicitlyUnavailable {
+                                tool: NativeTool::TypeScriptCompiler,
+                            }),
+                        PackageAuthorityError::TypeScriptTsz(
+                            backend_frontend_typescript::TszAuthorityError::ExecutionStopped(cause),
+                        ),
+                    )),
+                })?;
             }
             let mut typescript_owner: Option<(usize, &str)> = None;
             if typescript_project.is_some() {
@@ -4099,7 +4244,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     if file_exhausted && may_restart {
                         typescript_work_gaps.insert(program, program_path);
                         for (index, project) in tsz_projects.iter().enumerate() {
-                            for path in project.map_or_else(Default::default, |project| project.file_work_skipped().clone()) {
+                            for path in project.map_or_else(Default::default, |project| {
+                                project.file_work_skipped().clone()
+                            }) {
                                 typescript_work_gaps.insert(index, path);
                             }
                         }
@@ -4112,7 +4259,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         coverage_gaps.push(PackageSourceCoverageGap {
                             source: source_authority,
                             relative_path: source.relative_path.into(),
-                            cause: PackageSourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted,
+                            cause:
+                                PackageSourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted,
                             python_source_status: None,
                             native_python_diagnostics: Box::new([]),
                         });
@@ -4169,7 +4317,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 Err(terminal) => {
                     if target.profile.language() != backend_semantic::vocabulary::Language::Go {
                         return Err(PackageSemanticError::Compile {
-                            path: source.relative_path.into(), terminal: Box::new(terminal),
+                            path: source.relative_path.into(),
+                            terminal: Box::new(terminal),
                         });
                     }
                     degraded.degrade(
@@ -4222,13 +4371,26 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             return Err(refusal);
         }
         if artifacts.is_empty()
-            && let Some(gap) = coverage_gaps.iter().find(|gap| gap.cause == PackageSourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted)
+            && let Some(gap) = coverage_gaps.iter().find(|gap| {
+                gap.cause == PackageSourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted
+            })
         {
-            let source = package.compilation_sources().find(|source| source.relative_path == gap.relative_path.as_ref())
-                .ok_or(PackageSemanticError::Capacity { lane: "TypeScript work-gap source authority" })?;
-            let request = ApplicationCompilerRequest { profile: target.profile, stage: target.stage, source: source.source };
-            let toolchain = self.toolchain_for_package(request, typescript_toolchain)
-                .unwrap_or(ToolchainSelection::ExplicitlyUnavailable { tool: NativeTool::TypeScriptCompiler });
+            let source = package
+                .compilation_sources()
+                .find(|source| source.relative_path == gap.relative_path.as_ref())
+                .ok_or(PackageSemanticError::Capacity {
+                    lane: "TypeScript work-gap source authority",
+                })?;
+            let request = ApplicationCompilerRequest {
+                profile: target.profile,
+                stage: target.stage,
+                source: source.source,
+            };
+            let toolchain = self
+                .toolchain_for_package(request, typescript_toolchain)
+                .unwrap_or(ToolchainSelection::ExplicitlyUnavailable {
+                    tool: NativeTool::TypeScriptCompiler,
+                });
             return Err(PackageSemanticError::Compile {
                 path: gap.relative_path.clone(),
                 terminal: Box::new(package_authority_terminal(
@@ -4395,7 +4557,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             .as_ref()
             .is_some_and(|sources| sources.is_forest())
         {
-            use backend_semantic::ir::{ImageProvenance, SemanticCoreReader, SemanticImageIdentity};
+            use backend_semantic::ir::{
+                ImageProvenance, SemanticCoreReader, SemanticImageIdentity,
+            };
             let owners = native_program_sources.as_ref().expect("forest present");
             let toolchain = owners.toolchain();
             let mappings = owners
@@ -4465,7 +4629,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             let project = project_plane_seed.ok_or(PackageSemanticError::Capacity {
                 lane: "admitted TypeScript project runtime identity",
             })?;
-            authority.with_admitted_typescript_project(project).identities()
+            authority
+                .with_admitted_typescript_project(project)
+                .identities()
         } else {
             (execution_identity, plane_execution_seed)
         };
@@ -4495,32 +4661,116 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             }
         }
         let source_coverage = if typescript_project.is_some() {
-            use backend_semantic::ir::{SourceCoverageManifest,SourceCoverageObservation,SourceCoverageRow,SourceIdentity};
-            let mut remaining=package.compilation_sources().map(|source|SourceIdentity::from_bytes(source.source.as_bytes()).map(|identity|(source.relative_path,identity)).ok_or(PackageSemanticError::Capacity{lane:"coverage source extent"})).collect::<Result<BTreeMap<_,_>,_>>()?;
-            let source_count=remaining.len();let mut gaps=coverage_gaps.iter().collect::<Vec<_>>();gaps.sort_by(|a,b|a.relative_path().cmp(b.relative_path()));
+            use backend_semantic::ir::{
+                SourceCoverageManifest, SourceCoverageObservation, SourceCoverageRow,
+                SourceIdentity,
+            };
+            let mut remaining = package
+                .compilation_sources()
+                .map(|source| {
+                    SourceIdentity::from_bytes(source.source.as_bytes())
+                        .map(|identity| (source.relative_path, identity))
+                        .ok_or(PackageSemanticError::Capacity {
+                            lane: "coverage source extent",
+                        })
+                })
+                .collect::<Result<BTreeMap<_, _>, _>>()?;
+            let source_count = remaining.len();
+            let mut gaps = coverage_gaps.iter().collect::<Vec<_>>();
+            gaps.sort_by(|a, b| a.relative_path().cmp(b.relative_path()));
             for gap in &gaps {
-                let identity=remaining.remove(gap.relative_path()).ok_or(PackageSemanticError::Capacity{lane:"coverage gap source partition"})?;
-                if identity.identity!=gap.source().identity || identity.byte_len!=gap.source().byte_len || !gap.cause().is_typescript(){return Err(PackageSemanticError::Capacity{lane:"coverage gap source identity or cause"});}
+                let identity = remaining.remove(gap.relative_path()).ok_or(
+                    PackageSemanticError::Capacity {
+                        lane: "coverage gap source partition",
+                    },
+                )?;
+                if identity.identity != gap.source().identity
+                    || identity.byte_len != gap.source().byte_len
+                    || !gap.cause().is_typescript()
+                {
+                    return Err(PackageSemanticError::Capacity {
+                        lane: "coverage gap source identity or cause",
+                    });
+                }
             }
-            let source_key=|source:SourceIdentity|(*source.identity.as_ref(),source.byte_len);
-            let mut expected=remaining.into_values().map(source_key).collect::<Vec<_>>();let mut observed=artifacts.iter().map(|artifact|source_key(artifact.source)).collect::<Vec<_>>();expected.sort();observed.sort();
-            if expected!=observed{return Err(PackageSemanticError::Capacity{lane:"coverage artifact source partition"});}
-            let program=native_program_sources.as_ref().ok_or(PackageSemanticError::Capacity{lane:"coverage native program identity"})?;
-            let configs=program.nodes().map_or(&[][..],|(_,nodes)|nodes);
-            let source_count=u32::try_from(source_count).map_err(|_|PackageSemanticError::Capacity{lane:"coverage source count"})?;
-            let completed=u32::try_from(artifacts.len()).map_err(|_|PackageSemanticError::Capacity{lane:"coverage artifact count"})?;
+            let source_key = |source: SourceIdentity| (*source.identity.as_ref(), source.byte_len);
+            let mut expected = remaining.into_values().map(source_key).collect::<Vec<_>>();
+            let mut observed = artifacts
+                .iter()
+                .map(|artifact| source_key(artifact.source))
+                .collect::<Vec<_>>();
+            expected.sort();
+            observed.sort();
+            if expected != observed {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "coverage artifact source partition",
+                });
+            }
+            let program =
+                native_program_sources
+                    .as_ref()
+                    .ok_or(PackageSemanticError::Capacity {
+                        lane: "coverage native program identity",
+                    })?;
+            let configs = program.nodes().map_or(&[][..], |(_, nodes)| nodes);
+            let source_count =
+                u32::try_from(source_count).map_err(|_| PackageSemanticError::Capacity {
+                    lane: "coverage source count",
+                })?;
+            let completed =
+                u32::try_from(artifacts.len()).map_err(|_| PackageSemanticError::Capacity {
+                    lane: "coverage artifact count",
+                })?;
             // Forecast the entire explanation before copying any path. A volume
             // refusal is an authenticated availability fact, never a new semantic failure.
-            let capacity=SourceCoverageObservation::forecast(configs.iter().map(|node|node.config_path.as_str()),gaps.iter().map(|gap|gap.relative_path())).map_err(|_|PackageSemanticError::Capacity{lane:"coverage path consistency"})?;
-            let recording=if let Some(reason)=capacity {
-                SourceCoverageObservation::not_recorded_capacity(*input.input_root(),<[u8;2]>::from(target.profile),program.membership_identity(),source_count,completed,reason)
-            }else{
-                let mut rows=configs.iter().map(|node|SourceCoverageRow::Configuration{path:node.config_path.clone(),source:*node.config.as_ref(),environment:node.environment}).collect::<Vec<_>>();
-                rows.extend(gaps.into_iter().map(|gap|SourceCoverageRow::Gap{path:gap.relative_path().to_owned(),source:*gap.source().identity.as_ref(),byte_len:gap.source().byte_len,cause:gap.cause()}));
-                SourceCoverageManifest::new(*input.input_root(),<[u8;2]>::from(target.profile),program.membership_identity(),source_count,completed,rows).and_then(SourceCoverageObservation::from_catalog)
-            }.map_err(|_|PackageSemanticError::Capacity{lane:"coverage recording admission"})?;
+            let capacity = SourceCoverageObservation::forecast(
+                configs.iter().map(|node| node.config_path.as_str()),
+                gaps.iter().map(|gap| gap.relative_path()),
+            )
+            .map_err(|_| PackageSemanticError::Capacity {
+                lane: "coverage path consistency",
+            })?;
+            let recording = if let Some(reason) = capacity {
+                SourceCoverageObservation::not_recorded_capacity(
+                    *input.input_root(),
+                    <[u8; 2]>::from(target.profile),
+                    program.membership_identity(),
+                    source_count,
+                    completed,
+                    reason,
+                )
+            } else {
+                let mut rows = configs
+                    .iter()
+                    .map(|node| SourceCoverageRow::Configuration {
+                        path: node.config_path.clone(),
+                        source: *node.config.as_ref(),
+                        environment: node.environment,
+                    })
+                    .collect::<Vec<_>>();
+                rows.extend(gaps.into_iter().map(|gap| SourceCoverageRow::Gap {
+                    path: gap.relative_path().to_owned(),
+                    source: *gap.source().identity.as_ref(),
+                    byte_len: gap.source().byte_len,
+                    cause: gap.cause(),
+                }));
+                SourceCoverageManifest::new(
+                    *input.input_root(),
+                    <[u8; 2]>::from(target.profile),
+                    program.membership_identity(),
+                    source_count,
+                    completed,
+                    rows,
+                )
+                .and_then(SourceCoverageObservation::from_catalog)
+            }
+            .map_err(|_| PackageSemanticError::Capacity {
+                lane: "coverage recording admission",
+            })?;
             Some(recording)
-        }else{None};
+        } else {
+            None
+        };
 
         let staged = StagedPackageCompilation {
             compilation_attempt_id,
@@ -4534,10 +4784,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             stage: target.stage,
             input,
             execution_identity,
-            plane_execution_identity: rust_plane_execution_identity.or_else(|| {
-                plane_execution_seed
-                    .map(|seed| seed.bind_input(input))
-            }),
+            plane_execution_identity: rust_plane_execution_identity
+                .or_else(|| plane_execution_seed.map(|seed| seed.bind_input(input))),
             cargo_workspace_facts: rust_workspace_lease.as_ref().and_then(|lease| {
                 lease
                     .workspace()
@@ -5338,7 +5586,10 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         let cancelled = self.config.control.cancelled;
         let staged = execution.stage_package_sources(
             package,
-            PackageExecutionAuthority::Fixed { execution: None, plane: None },
+            PackageExecutionAuthority::Fixed {
+                execution: None,
+                plane: None,
+            },
             None,
             None,
             EmbeddingRequirement::Optional,
@@ -5350,7 +5601,9 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
     }
 
     #[cfg(test)]
-    pub(super) fn typescript_program_work_for_test(&self) -> super::typescript_program_lane::TypeScriptProgramWork {
+    pub(super) fn typescript_program_work_for_test(
+        &self,
+    ) -> super::typescript_program_lane::TypeScriptProgramWork {
         self.scratch.typescript_program_lane.work()
     }
 
@@ -5378,7 +5631,10 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         let cancelled = self.config.control.cancelled;
         let staged = execution.stage_package_sources(
             package,
-            PackageExecutionAuthority::Fixed { execution: None, plane: None },
+            PackageExecutionAuthority::Fixed {
+                execution: None,
+                plane: None,
+            },
             None,
             None,
             EmbeddingRequirement::Optional,
@@ -5790,8 +6046,14 @@ fn with_typescript_stop_site(
                     // Retain the existing closed cause and public coarse phase.
                     // Measurements are advisory fixed labels/numbers in the
                     // already bounded optional cause slot, never new wire facts.
-                    if diagnostic.typescript_stop_site.is_some() && diagnostic.typescript_cause.is_none() {
-                        match site.measurement.as_ref().and_then(|measurement| measurement.cause()) {
+                    if diagnostic.typescript_stop_site.is_some()
+                        && diagnostic.typescript_cause.is_none()
+                    {
+                        match site
+                            .measurement
+                            .as_ref()
+                            .and_then(|measurement| measurement.cause())
+                        {
                             Some(cause) => diagnostic.with_typescript_cause(cause),
                             None => diagnostic,
                         }
@@ -7139,7 +7401,8 @@ mod tests {
         assert_eq!(failure.kind_tag(), "typescript_host_compiler_api_bridge");
         assert_eq!(
             failure.detail(),
-            backend_library::interface::TypeScriptAuthorityFailureKind::HostCompilerApiBridge.detail(),
+            backend_library::interface::TypeScriptAuthorityFailureKind::HostCompilerApiBridge
+                .detail(),
             "an undescribed bridge error keeps the closed sentence and no native text"
         );
         assert!(
@@ -8047,7 +8310,6 @@ fn python_project_deadline_projection(
     (phase, AuthorityDiagnosticClass::Authority)
 }
 
-
 #[cfg(test)]
 mod python_project_phase_tests {
     use super::*;
@@ -8145,7 +8407,10 @@ mod typescript_work_gap_tests {
         gaps.insert(1, "src/hot.ts");
         gaps.insert(1, "src/hot.ts");
         assert!(gaps.contains(1, "src/hot.ts"));
-        assert!(!gaps.contains(0, "src/hot.ts"), "another program's file is not this one");
+        assert!(
+            !gaps.contains(0, "src/hot.ts"),
+            "another program's file is not this one"
+        );
         assert!(!gaps.contains(1, "src/Hot.ts"), "paths compare exactly");
         assert_eq!(gaps.program_paths(1).len(), 1);
         assert!(gaps.program_paths(0).is_empty());
@@ -8154,76 +8419,165 @@ mod typescript_work_gap_tests {
     #[test]
     fn every_native_phase_has_a_distinct_public_phase() {
         let phases = [
-            P::SourceFrontier, P::ParseBind, P::Merge, P::FileFormats, P::ModuleOutcomes,
-            P::CheckerPlan, P::LibraryViews, P::BinderViews, P::OwnershipIndex,
-            P::SharedCheckerIndexes, P::AffectedLibraries, P::AugmentationPrime, P::FileReset,
-            P::FileCheck, P::FilePostprocess, P::FileQuery, P::SourcePreparation, P::SourceStatements,
-            P::SourcePostchecks, P::LibraryBaseline, P::LibraryCheck, P::Aggregate,
+            P::SourceFrontier,
+            P::ParseBind,
+            P::Merge,
+            P::FileFormats,
+            P::ModuleOutcomes,
+            P::CheckerPlan,
+            P::LibraryViews,
+            P::BinderViews,
+            P::OwnershipIndex,
+            P::SharedCheckerIndexes,
+            P::AffectedLibraries,
+            P::AugmentationPrime,
+            P::FileReset,
+            P::FileCheck,
+            P::FilePostprocess,
+            P::FileQuery,
+            P::SourcePreparation,
+            P::SourceStatements,
+            P::SourcePostchecks,
+            P::LibraryBaseline,
+            P::LibraryCheck,
+            P::Aggregate,
         ];
         let tags = phases
             .into_iter()
             .map(|phase| typescript_stop_phase(phase).tag())
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(tags.len(), phases.len());
-        assert_eq!(typescript_stop_phase(P::FileCheck), TypeScriptStopPhase::FileCheck);
+        assert_eq!(
+            typescript_stop_phase(P::FileCheck),
+            TypeScriptStopPhase::FileCheck
+        );
     }
 
     #[test]
     fn preparation_measurements_keep_closed_public_phase_and_failure_authority() {
         use super::super::compiler_typescript_observation::{PreparationTiming, StopMeasurement};
-        for phase in [P::SourcePreparationFunctionDefs, P::SourcePreparationWarmDefinitions,
-            P::SourcePreparationHeritage, P::SourcePreparationWellKnownSymbols,
-            P::SourcePreparationTypeEnvironment, P::SourcePreparationReconciliation,
-            P::SourcePreparationBoxedTypes] {
-            assert_eq!(typescript_stop_phase(phase), TypeScriptStopPhase::SourcePreparation);
+        for phase in [
+            P::SourcePreparationFunctionDefs,
+            P::SourcePreparationWarmDefinitions,
+            P::SourcePreparationHeritage,
+            P::SourcePreparationWellKnownSymbols,
+            P::SourcePreparationTypeEnvironment,
+            P::SourcePreparationReconciliation,
+            P::SourcePreparationBoxedTypes,
+        ] {
+            assert_eq!(
+                typescript_stop_phase(phase),
+                TypeScriptStopPhase::SourcePreparation
+            );
         }
-        for phase in [P::FileQueryAnalysis, P::FileQueryStructure, P::FileQueryOccurrences, P::FileQueryTypes] {
+        for phase in [
+            P::FileQueryAnalysis,
+            P::FileQueryStructure,
+            P::FileQueryOccurrences,
+            P::FileQueryTypes,
+        ] {
             assert_eq!(typescript_stop_phase(phase), TypeScriptStopPhase::FileQuery);
         }
         let terminal = |kind| CompilerTerminal::Compile {
             attempted: CompilerAttempt {
-                source: SourceAuthority { identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"x"), byte_len: 1 },
+                source: SourceAuthority {
+                    identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"x"),
+                    byte_len: 1,
+                },
                 recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"measurement"),
             },
             cause: CompilerCause::Authority {
-                phase: AuthorityPhase::TypeCheck, class: AuthorityDiagnosticClass::Authority,
+                phase: AuthorityPhase::TypeCheck,
+                class: AuthorityDiagnosticClass::Authority,
                 diagnostic: CompilerDiagnostic::from_native(b"native", 6, false)
                     .map(|diagnostic| diagnostic.with_typescript_failure(kind)),
             },
         };
         let site = ObservedStopSite {
             reason: TszProjectExecutionStop::Deadline,
-            phase: Some(P::SourcePreparationTypeEnvironment), file: Some("src/value.ts".into()),
-            work_charged: 4, work_allowance: 10,
-            measurement: Some(StopMeasurement { elapsed: std::time::Duration::from_secs(6),
-                started: 3, completed: 2, merges: 1,
-                preparation: Some(PreparationTiming { durations: [Some(std::time::Duration::from_millis(1)); 7], active: Some(4) }),
+            phase: Some(P::SourcePreparationTypeEnvironment),
+            file: Some("src/value.ts".into()),
+            work_charged: 4,
+            work_allowance: 10,
+            measurement: Some(StopMeasurement {
+                elapsed: std::time::Duration::from_secs(6),
+                started: 3,
+                completed: 2,
+                merges: 1,
+                preparation: Some(PreparationTiming {
+                    durations: [Some(std::time::Duration::from_millis(1)); 7],
+                    active: Some(4),
+                }),
                 query: None,
             }),
         };
-        for (kind, expected) in [(TypeScriptAuthorityFailureKind::NativeProjectCheckDeadline, true),
-            (TypeScriptAuthorityFailureKind::CheckerExit, false)] {
-            let CompilerTerminal::Compile { cause: CompilerCause::Authority { diagnostic: Some(facts), .. }, .. }
-                = with_typescript_stop_site(terminal(kind), Some(&site)) else { panic!("same typed refusal"); };
+        for (kind, expected) in [
+            (
+                TypeScriptAuthorityFailureKind::NativeProjectCheckDeadline,
+                true,
+            ),
+            (TypeScriptAuthorityFailureKind::CheckerExit, false),
+        ] {
+            let CompilerTerminal::Compile {
+                cause:
+                    CompilerCause::Authority {
+                        diagnostic: Some(facts),
+                        ..
+                    },
+                ..
+            } = with_typescript_stop_site(terminal(kind), Some(&site))
+            else {
+                panic!("same typed refusal");
+            };
             assert_eq!(facts.typescript_failure, Some(kind));
             assert_eq!(facts.typescript_cause.is_some(), expected);
             assert_eq!(facts.typescript_stop_site.is_some(), expected);
             if expected {
-                assert_eq!(facts.typescript_stop_site.as_ref().unwrap().phase, Some(TypeScriptStopPhase::SourcePreparation));
+                assert_eq!(
+                    facts.typescript_stop_site.as_ref().unwrap().phase,
+                    Some(TypeScriptStopPhase::SourcePreparation)
+                );
                 let cause = facts.typescript_cause.as_ref().unwrap();
                 assert!(cause.as_str().contains("active=type"));
-                assert!(!cause.as_str().contains("src/value.ts"), "only the existing typed stop site carries the exact source path");
-                assert!(backend_library::interface::TypeScriptFailureCause::new(cause.as_str()).is_some());
+                assert!(
+                    !cause.as_str().contains("src/value.ts"),
+                    "only the existing typed stop site carries the exact source path"
+                );
+                assert!(
+                    backend_library::interface::TypeScriptFailureCause::new(cause.as_str())
+                        .is_some()
+                );
             }
         }
-        let prior = backend_library::interface::TypeScriptFailureCause::new("previous retained cause").unwrap();
+        let prior =
+            backend_library::interface::TypeScriptFailureCause::new("previous retained cause")
+                .unwrap();
         let mut previous = terminal(TypeScriptAuthorityFailureKind::NativeProjectCheckDeadline);
-        if let CompilerTerminal::Compile { cause: CompilerCause::Authority { diagnostic, .. }, .. } = &mut previous {
-            *diagnostic = diagnostic.take().map(|diagnostic| diagnostic.with_typescript_cause(prior.clone()));
+        if let CompilerTerminal::Compile {
+            cause: CompilerCause::Authority { diagnostic, .. },
+            ..
+        } = &mut previous
+        {
+            *diagnostic = diagnostic
+                .take()
+                .map(|diagnostic| diagnostic.with_typescript_cause(prior.clone()));
         }
-        let CompilerTerminal::Compile { cause: CompilerCause::Authority { diagnostic: Some(retained), .. }, .. }
-            = with_typescript_stop_site(previous, Some(&site)) else { panic!("same existing cause"); };
-        assert_eq!(retained.typescript_cause.as_ref(), Some(&prior), "advisory timings never replace an existing cause");
+        let CompilerTerminal::Compile {
+            cause:
+                CompilerCause::Authority {
+                    diagnostic: Some(retained),
+                    ..
+                },
+            ..
+        } = with_typescript_stop_site(previous, Some(&site))
+        else {
+            panic!("same existing cause");
+        };
+        assert_eq!(
+            retained.typescript_cause.as_ref(),
+            Some(&prior),
+            "advisory timings never replace an existing cause"
+        );
     }
 
     #[test]
@@ -8252,12 +8606,17 @@ mod typescript_work_gap_tests {
             measurement: None,
         };
         let CompilerTerminal::Compile {
-            cause: CompilerCause::Authority { diagnostic: Some(named), .. },
+            cause:
+                CompilerCause::Authority {
+                    diagnostic: Some(named),
+                    ..
+                },
             ..
         } = with_typescript_stop_site(
             terminal(TypeScriptAuthorityFailureKind::NativeProjectCheckWorkBudgetExhausted),
             Some(&site),
-        ) else {
+        )
+        else {
             panic!("authority refusal keeps its shape");
         };
         let facts = named.typescript_stop_site.as_ref().expect("site attached");
@@ -8270,10 +8629,17 @@ mod typescript_work_gap_tests {
                 terminal(TypeScriptAuthorityFailureKind::NativeProjectCheckWorkBudgetExhausted),
                 None,
             ),
-            with_typescript_stop_site(terminal(TypeScriptAuthorityFailureKind::CheckerExit), Some(&site)),
+            with_typescript_stop_site(
+                terminal(TypeScriptAuthorityFailureKind::CheckerExit),
+                Some(&site),
+            ),
         ] {
             let CompilerTerminal::Compile {
-                cause: CompilerCause::Authority { diagnostic: Some(plain), .. },
+                cause:
+                    CompilerCause::Authority {
+                        diagnostic: Some(plain),
+                        ..
+                    },
                 ..
             } = unchanged
             else {
@@ -8287,32 +8653,60 @@ mod typescript_work_gap_tests {
 #[cfg(test)]
 mod staged_identity_recipe_tests {
     use super::*;
-    use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, Stage, TypeScriptSource};
+    use backend_semantic::vocabulary::{
+        CompileRecipeFact, LanguageProfile, Stage, TypeScriptSource,
+    };
 
     #[test]
     fn project_recipe_admission_is_exact_and_foreign_toolchains_still_refuse() {
         let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
         let runtime = AdmittedStagedRuntime {
             target: ContentId::from_canonical_bytes(b"exact target"),
-            profile, stage: Stage::LowerIr, tool: NativeTool::TypeScriptCompiler,
-            toolchain: [41; 32], environment: [42; 32], target_platform: [43; 32],
+            profile,
+            stage: Stage::LowerIr,
+            tool: NativeTool::TypeScriptCompiler,
+            toolchain: [41; 32],
+            environment: [42; 32],
+            target_platform: [43; 32],
         };
         let recipe = CompileRecipeFact::derive(
-            profile, Stage::LowerIr, NativeTool::TypeScriptCompiler,
-            ContentId::from_canonical_bytes(b"exact source bytes"), ContentId::from_digest([41; 32]),
+            profile,
+            Stage::LowerIr,
+            NativeTool::TypeScriptCompiler,
+            ContentId::from_canonical_bytes(b"exact source bytes"),
+            ContentId::from_digest([41; 32]),
         );
         assert_eq!(runtime.admit_recipe(0, recipe), Ok(()));
         let build = runtime.build_identity([44; 32], recipe);
-        assert_eq!(build.recipe(), recipe.identity.as_ref(), "per-image source-bound recipe is preserved");
-        assert_eq!(build.environment(), &runtime.environment);
-        let foreign = AdmittedStagedRuntime { toolchain: [91; 32], ..runtime };
-        assert_eq!(foreign.admit_recipe(7, recipe), Err(StagedIdentityFacet::ArtifactToolchain {
-            artifact: 7, expected: [91; 32], actual: [41; 32],
-        }), "portable and local constraints use this same strict recipe admission");
-        let changed_source = CompileRecipeFact::derive(
-            profile, Stage::LowerIr, NativeTool::TypeScriptCompiler,
-            ContentId::from_canonical_bytes(b"different source bytes"), recipe.toolchain,
+        assert_eq!(
+            build.recipe(),
+            recipe.identity.as_ref(),
+            "per-image source-bound recipe is preserved"
         );
-        assert_ne!(runtime.build_identity([44; 32], changed_source).recipe(), build.recipe());
+        assert_eq!(build.environment(), &runtime.environment);
+        let foreign = AdmittedStagedRuntime {
+            toolchain: [91; 32],
+            ..runtime
+        };
+        assert_eq!(
+            foreign.admit_recipe(7, recipe),
+            Err(StagedIdentityFacet::ArtifactToolchain {
+                artifact: 7,
+                expected: [91; 32],
+                actual: [41; 32],
+            }),
+            "portable and local constraints use this same strict recipe admission"
+        );
+        let changed_source = CompileRecipeFact::derive(
+            profile,
+            Stage::LowerIr,
+            NativeTool::TypeScriptCompiler,
+            ContentId::from_canonical_bytes(b"different source bytes"),
+            recipe.toolchain,
+        );
+        assert_ne!(
+            runtime.build_identity([44; 32], changed_source).recipe(),
+            build.recipe()
+        );
     }
 }
