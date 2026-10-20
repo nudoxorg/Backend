@@ -56,6 +56,112 @@ FLOOR = {"seconds": 2.0, "peak_rss_kib": 64 * 1024, "cpu_seconds": 2.0}
 VOLATILE_KEYS = {"elapsed_ms", "duration_ms", "timestamp", "started_at", "finished_at", "generated_at", "pid"}
 
 
+LOCALD_ENDPOINT_START_TIMEOUT_SECONDS = 30
+LOCALD_ENDPOINT_START_POLL_SECONDS = 0.05
+LOCALD_STARTUP_CHECKPOINT_NAME = "owner-startup-active-v1.json"
+LOCALD_STARTUP_CHECKPOINT_MAX_BYTES = 4096
+
+
+def _startup_checkpoint(workspace, pid):
+    """Return a bounded summary of this owner's last composition phase."""
+    path = Path(workspace) / LOCALD_STARTUP_CHECKPOINT_NAME
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(path, flags)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                return "unavailable:not-regular"
+            if info.st_size > LOCALD_STARTUP_CHECKPOINT_MAX_BYTES:
+                return "unavailable:oversized"
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                raw = stream.read(LOCALD_STARTUP_CHECKPOINT_MAX_BYTES + 1)
+        finally:
+            os.close(descriptor)
+    except FileNotFoundError:
+        return "unavailable:absent"
+    except OSError:
+        return "unavailable:unreadable"
+    if len(raw) > LOCALD_STARTUP_CHECKPOINT_MAX_BYTES:
+        return "unavailable:oversized"
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return "unavailable:malformed"
+    if not isinstance(value, dict) or value.get("version") != 1 or value.get("kind") != "owner-composition-checkpoint":
+        return "unavailable:unsupported"
+    if value.get("process_id") != pid:
+        return "unavailable:pid-mismatch"
+    state = value.get("state")
+    phase = value.get("phase")
+    known_phases = {
+        "configuration", "workspace-open", "directory-admission", "embedding-provision",
+        "compiler-selection", "compiler-owner", "semantic-authority-open",
+        "semantic-reconcile", "view-recovery", "view-restore", "view-publication",
+        "sql-projection", "projection-watermarks", "cluster-owner", "command-owner",
+        "query-warmup",
+    }
+    if state not in {"opening", "completed", "refused"} or phase not in known_phases:
+        return "unavailable:invalid-fields"
+    phase_elapsed = value.get("phase_elapsed_micros")
+    elapsed = value.get("elapsed_micros")
+    completed = value.get("completed_phases")
+    if not isinstance(phase_elapsed, int) or isinstance(phase_elapsed, bool) or phase_elapsed < 0:
+        phase_elapsed = "unknown"
+    if not isinstance(elapsed, int) or isinstance(elapsed, bool) or elapsed < 0:
+        elapsed = "unknown"
+    if isinstance(completed, list) and len(completed) <= 16:
+        completed_rows = []
+        for row in completed:
+            if not isinstance(row, dict):
+                completed_rows.append("invalid")
+                continue
+            completed_phase = row.get("phase")
+            outcome = row.get("outcome")
+            if completed_phase not in known_phases or outcome not in {"completed", "refused", "unmeasured"}:
+                completed_rows.append("invalid")
+            else:
+                completed_rows.append(f"{completed_phase}:{outcome}")
+        completed_summary = ",".join(completed_rows)
+    else:
+        completed_summary = "unknown"
+    return (
+        f"state={state},phase={phase},phase_elapsed_us={phase_elapsed},"
+        f"elapsed_us={elapsed},completed_phases={completed_summary}"
+    )
+
+
+def _endpoint_start_error(pid, return_code, waited, endpoint_present, checkpoint, tail):
+    state = "running" if return_code is None else "exited"
+    exit_code = "none" if return_code is None else str(return_code)
+    endpoint = "present" if endpoint_present else "missing"
+    return RuntimeError(
+        "backend-locald did not open its endpoint "
+        f"(pid={pid}, state={state}, exit_code={exit_code}, "
+        f"waited={waited:.3f}s, endpoint={endpoint}, startup_checkpoint={checkpoint}):\n{tail}"
+    )
+
+
+def _wait_for_endpoint(endpoint, process, workspace, tail, *, monotonic=time.monotonic, sleep=time.sleep):
+    started = monotonic()
+    deadline = started + LOCALD_ENDPOINT_START_TIMEOUT_SECONDS
+    while not endpoint.exists():
+        return_code = process.poll()
+        if return_code is not None:
+            now = monotonic()
+            raise _endpoint_start_error(
+                process.pid, return_code, now - started, endpoint.exists(),
+                _startup_checkpoint(workspace, process.pid), tail()
+            )
+        now = monotonic()
+        if now > deadline:
+            raise _endpoint_start_error(
+                process.pid, None, now - started, endpoint.exists(),
+                _startup_checkpoint(workspace, process.pid), tail()
+            )
+        sleep(LOCALD_ENDPOINT_START_POLL_SECONDS)
+
+
 OUTPUT_LOCK = threading.Lock()
 CI_SIGTERM = threading.Event()
 CI_SIGTERM_AT = None
@@ -213,11 +319,7 @@ class Owner:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-            deadline = time.monotonic() + 30
-            while not self.endpoint.exists():
-                if self.process.poll() is not None or time.monotonic() > deadline:
-                    raise RuntimeError(f"backend-locald did not open its endpoint:\n{self.tail()}")
-                time.sleep(0.05)
+            _wait_for_endpoint(self.endpoint, self.process, self.workspace, self.tail)
         except BaseException as error:
             # A constructor failure never reaches run_case's finally block.
             # Reap this owner before removing its state or starting a peer.
