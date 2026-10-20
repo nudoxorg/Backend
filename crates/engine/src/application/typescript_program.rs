@@ -69,6 +69,25 @@ impl NativeTypeScriptInputs {
     }
 }
 
+/// Runtime identity includes every actual TSZ program environment, including
+/// inherited configuration and source/module closure read after host admission.
+pub(crate) fn native_program_execution_fingerprint(
+    project: [u8; 32],
+    environments: impl IntoIterator<Item = TszEnvironmentFingerprint>,
+) -> [u8; 32] {
+    let mut digest = blake3::Hasher::new();
+    digest.update(b"compiler.typescript.native-program-execution.v1\0");
+    digest.update(&project);
+    let mut count = 0_u64;
+    for environment in environments {
+        digest.update(&count.to_le_bytes());
+        digest.update(environment.as_bytes());
+        count += 1;
+    }
+    digest.update(&count.to_le_bytes());
+    *digest.finalize().as_bytes()
+}
+
 /// A captured source can retain provenance without being a Compiler API program member.
 /// Exclusion never admits that source to TSZ or supplies semantic authority for it.
 #[derive(Clone, Debug, Eq, PartialEq)]
