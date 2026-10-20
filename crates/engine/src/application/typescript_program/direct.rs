@@ -618,6 +618,8 @@ mod tests {
         let first = fixture.admit();
         let native = inputs(&first);
         let environment = *native.options.environment.as_bytes();
+        let execution =
+            native_program_execution_fingerprint(first.fingerprint(), [native.options.environment]);
         fixture.write("base.json", r#"{"compilerOptions":{"target":"ES2022","module":"CommonJS","strict":true,"baseUrl":".","paths":{"@local/*":["src/*"]},"experimentalDecorators":true}}"#);
         assert!(
             native
@@ -628,7 +630,32 @@ mod tests {
         let second = fixture.admit();
         let next = inputs(&second);
         assert_ne!(environment, *next.options.environment.as_bytes());
-        assert_ne!(first.fingerprint(), second.fingerprint());
+        let next_execution =
+            native_program_execution_fingerprint(second.fingerprint(), [next.options.environment]);
+        assert_ne!(execution, next_execution);
+        assert_eq!(
+            first.fingerprint(),
+            second.fingerprint(),
+            "host selection is unchanged; native TSZ owns inherited config semantics"
+        );
+        assert_eq!(
+            next_execution,
+            native_program_execution_fingerprint(second.fingerprint(), [next.options.environment]),
+            "the exact captured environment has stable runtime identity"
+        );
+        assert_ne!(
+            next_execution,
+            native_program_execution_fingerprint(second.fingerprint(), []),
+            "omitting the admitted native program cannot retain runtime identity"
+        );
+        assert_ne!(
+            next_execution,
+            native_program_execution_fingerprint(
+                second.fingerprint(),
+                [next.options.environment, native.options.environment],
+            ),
+            "every configured leaf contributes to the runtime identity"
+        );
     }
 
     #[test]
