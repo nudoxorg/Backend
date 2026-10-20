@@ -44,6 +44,22 @@ impl Engine for SessionEngine<'_> {
         self.session.members_page(document, limit, continuation)
     }
 
+    fn declaration_graph_window(
+        &mut self,
+        selector: &backend_library::DeclarationSelector,
+        window: backend_library::QueryWindow,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        match selector {
+            backend_library::DeclarationSelector::Coordinate(coordinate) => self
+                .session
+                .graph_page_window(coordinate, window, continuation),
+            selected => self
+                .session
+                .graph_page_declaration(selected, window, continuation),
+        }
+    }
+
     fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
         self.session.revision().map(|revision| revision.root)
     }
@@ -297,6 +313,73 @@ pub(crate) fn execute_with_output_admission(
         paths,
         recovery,
     };
+    let graph = match request {
+        Request::GraphPage { selector, limit } => Some((selector, *limit, None)),
+        Request::ResumeQuery { query, cursor } => match query.as_ref() {
+            Request::GraphPage { selector, limit } => {
+                Some((selector, *limit, Some(cursor.as_str())))
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some((selector, issued, cursor)) = graph {
+        let original = engine.session.request_context().cloned();
+        let lifetime = original.clone().unwrap_or_default();
+        lifetime
+            .read_deadline(backend_client::CLIENT_REQUEST_TIMEOUT)
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole))?;
+        engine
+            .session
+            .set_request_context(Some(lifetime.clone()))
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole))?;
+        let result = (|| {
+            let selector = match selector {
+                backend_library::DeclarationSelector::Coordinate(value) => {
+                    backend_library::DeclarationSelector::Coordinate(
+                        backend_present::resolve_declaration(&mut engine, value, "graph")?,
+                    )
+                }
+                selected => selected.clone(),
+            };
+            graph_with_output_admission(
+                &mut engine,
+                &selector,
+                issued,
+                cursor,
+                || {
+                    lifetime.check().map_err(|error| {
+                        Fault::from_client_error(&error, backend_present::Operand::Whole)
+                    })
+                },
+                |engine, answer| {
+                    let exported = answer
+                        .continuation()
+                        .map(|continuation| {
+                            if !engine.session.has_portable_query_continuation(continuation) {
+                                return Err(ClientError::Protocol(
+                                    "graph successor lacks its portable owner proof".to_owned(),
+                                ));
+                            }
+                            engine.session.encode_query_continuation(continuation)
+                        })
+                        .transpose()
+                        .map_err(|error| {
+                            Fault::from_client_error(
+                                &error,
+                                backend_present::Operand::Argument("cursor".to_owned()),
+                            )
+                        })?;
+                    admit(answer, exported.as_deref())
+                },
+            )
+        })();
+        let restored = engine
+            .session
+            .set_request_context(original)
+            .map_err(|error| Fault::from_client_error(&error, backend_present::Operand::Whole));
+        return result.and_then(|answer| restored.map(|()| answer));
+    }
     let outline = match request {
         Request::Outline(path) => Some((path.as_str(), backend_library::QueryLimit::MAX, None)),
         Request::OutlinePage { path, limit } => Some((path.as_str(), *limit, None)),
@@ -577,6 +660,116 @@ fn outline_with_output_admission<E: Engine>(
         let basis = tree
             .page_basis()
             .ok_or_else(|| Fault::usage("outline", "native outline omitted its source basis"))?;
+        let revision = basis.0.root.into();
+        if pinned_revision.is_some_and(|previous| previous != revision)
+            || pinned_basis.is_some_and(|previous| previous != basis)
+        {
+            return Err(moved());
+        }
+        pinned_revision = Some(revision);
+        pinned_basis = Some(basis);
+        let result = admit(engine, &answer);
+        check()?;
+        match result {
+            Ok(()) => return Ok(answer),
+            Err(fault)
+                if delivery > 1
+                    && fault.cause().slug() == backend_present::CauseSlug::Oversized =>
+            {
+                delivery = delivery.div_ceil(2);
+            }
+            Err(fault) => return Err(fault),
+        }
+    }
+}
+
+/// Preserves native graph credit, input frontier and source through full output admission.
+fn graph_with_output_admission<E: Engine>(
+    engine: &mut E,
+    selector: &backend_library::DeclarationSelector,
+    issued: u16,
+    cursor: Option<&str>,
+    mut check: impl FnMut() -> Result<(), Fault>,
+    mut admit: impl FnMut(&mut E, &Answer) -> Result<(), Fault>,
+) -> Result<Answer, Fault> {
+    let limit = backend_library::QueryLimit::new(issued)
+        .ok_or_else(|| Fault::usage("limit", "invalid graph query credit"))?;
+    let moved = || {
+        Fault::new(
+            backend_present::FaultSlug::Freshness,
+            Probe::Declaration {
+                selector,
+                read: backend_library::DeclarationRead::Graph,
+            }
+            .operand(),
+            backend_present::Cause::new(
+                backend_present::CauseSlug::Moved,
+                "graph source changed during bounded delivery; restart explicitly",
+            ),
+            backend_present::Affordance::None,
+        )
+    };
+    let mut delivery = issued;
+    let mut pinned_revision = None;
+    let mut pinned_basis = None;
+    let mut pinned_input = None;
+    let request = Request::GraphPage {
+        selector: selector.clone(),
+        limit: issued,
+    };
+    let probe = Probe::Declaration {
+        selector,
+        read: backend_library::DeclarationRead::Graph,
+    };
+    loop {
+        check()?;
+        let continuation = cursor
+            .map(|token| engine.prepare_query_continuation(token))
+            .transpose()
+            .map_err(|error| {
+                Fault::from_client_error(
+                    &error,
+                    backend_present::Operand::Argument("cursor".to_owned()),
+                )
+            })?;
+        if pinned_input.is_some_and(|previous| previous != continuation) {
+            return Err(Fault::usage(
+                "cursor",
+                "graph retry changed its authenticated input frontier",
+            ));
+        }
+        pinned_input = Some(continuation);
+        let span = backend_library::QueryLimit::new(delivery)
+            .ok_or_else(|| Fault::usage("limit", "invalid graph delivery span"))?;
+        let window = backend_library::QueryWindow::new(limit, span)
+            .ok_or_else(|| Fault::usage("limit", "graph delivery exceeds original credit"))?;
+        let reply = engine.declaration_graph_window(selector, window, continuation);
+        check()?;
+        let reply = match reply {
+            Err(ClientError::ResponseTooLarge { basis: Some(basis) }) => {
+                if pinned_revision.is_some_and(|previous| previous != basis) {
+                    return Err(moved());
+                }
+                pinned_revision = Some(basis);
+                if delivery > 1 {
+                    delivery = delivery.div_ceil(2);
+                    continue;
+                }
+                return Err(backend_present::probe_fault(
+                    &ClientError::ResponseTooLarge { basis: Some(basis) },
+                    probe,
+                ));
+            }
+            Err(error) => return Err(backend_present::probe_fault(&error, probe)),
+            Ok(reply) => reply,
+        };
+        let answer = backend_present::catalog_page_answer(&request, reply)?;
+        let Answer::Records(records) = &answer else {
+            return Err(Fault::usage("graph", "native graph page changed shape"));
+        };
+        let basis = records
+            .page_basis()
+            .ok_or_else(|| Fault::usage("graph", "native graph omitted its source basis"))?;
         let revision = basis.0.root.into();
         if pinned_revision.is_some_and(|previous| previous != revision)
             || pinned_basis.is_some_and(|previous| previous != basis)

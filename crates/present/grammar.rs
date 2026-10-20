@@ -883,7 +883,7 @@ pub const GRAMMARS: [CommandGrammar; 54] = [
             ArgumentKind::Coordinate,
             "Exact declaration coordinate to traverse from.",
         )],
-        options: &[SELECTED_SYMBOL],
+        options: &[SELECTED_SYMBOL, LIMIT, CURSOR],
         when: "Use to follow one declaration outward along calls and references in its package.",
     },
     CommandGrammar {
