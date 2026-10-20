@@ -8,13 +8,14 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytes": 42138,
+          "bytesExcludingCursor": 10384,
           "bytesPerToken": 4,
-          "estimatedTokens": 10535
+          "estimatedTokensExcludingCursor": 2596
         },
-        "declarations": 200,
+        "declarations": 25,
         "detail": "summary",
         "extent": "truncated",
+        "nextCursor": "pc4-<live-validated>",
         "package": {
           "coordinate": "/tmp/nudox-surface/python-itsdangerous/project",
           "key": "fad6ed32",
@@ -24,68 +25,1041 @@
           "shape": "package",
           "trail": "project"
         },
+        "page": {
+          "branch": "4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f",
+          "coverage": [
+            {
+              "lane": "exact",
+              "state": "complete"
+            },
+            {
+              "lane": "names",
+              "state": "complete"
+            },
+            {
+              "lane": "graph",
+              "state": "complete"
+            },
+            {
+              "lane": "semantic",
+              "state": "complete"
+            }
+          ],
+          "limit": 200,
+          "log": "12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760",
+          "more": true,
+          "schema": 3,
+          "sequence": 2,
+          "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
+          "source_root": "a9706589cad21981d43fdd8c785264d628f448f3ca146f7687a6d15103792420"
+        },
         "roots": [
           {
             "children": [
               {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::461550ccbb3d3552094dde82ba8f207159de746c743f789bc1edb6e80d21734b::payload",
+                    "key": "0cb0b70a",
+                    "kind": "variable",
+                    "name": "payload",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        12,
+                        176,
+                        183,
+                        10,
+                        93,
+                        107,
+                        174,
+                        41,
+                        33,
+                        116,
+                        226,
+                        27,
+                        66,
+                        211,
+                        93,
+                        149,
+                        243,
+                        147,
+                        79,
+                        233,
+                        141,
+                        116,
+                        148,
+                        234,
+                        159,
+                        183,
+                        112,
+                        149,
+                        188,
+                        73,
+                        23,
+                        209
+                      ]
+                    }
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::e9fefb58c8d4a44b4ea36b60a21495d2d86c7ee108db0598b7672c76df6df0d7::loads",
+                    "key": "f0a2df42",
+                    "kind": "variable",
+                    "name": "loads",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        240,
+                        162,
+                        223,
+                        66,
+                        205,
+                        231,
+                        173,
+                        243,
+                        217,
+                        100,
+                        171,
+                        94,
+                        247,
+                        202,
+                        133,
+                        127,
+                        114,
+                        226,
+                        199,
+                        138,
+                        246,
+                        204,
+                        26,
+                        70,
+                        155,
+                        109,
+                        144,
+                        194,
+                        13,
+                        45,
+                        43,
+                        139
+                      ]
+                    }
+                  }
+                ],
                 "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::e493655f8fe04cf0484456d53c4c773fc8fc06d2d37d99f0f650f6f97818ea90::loads",
                 "key": "2bfc17a5",
                 "kind": "method",
-                "name": "loads"
+                "name": "loads",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    43,
+                    252,
+                    23,
+                    165,
+                    154,
+                    170,
+                    248,
+                    69,
+                    23,
+                    6,
+                    46,
+                    251,
+                    124,
+                    239,
+                    153,
+                    244,
+                    77,
+                    29,
+                    190,
+                    31,
+                    229,
+                    141,
+                    17,
+                    72,
+                    184,
+                    83,
+                    101,
+                    161,
+                    148,
+                    177,
+                    148,
+                    74
+                  ]
+                }
               },
               {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::759fcfad0027af8169791f04ff5b5342464442e70e0f41a25e4c7ee058b80710::kwargs",
+                    "key": "09e83f33",
+                    "kind": "variable",
+                    "name": "kwargs",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        9,
+                        232,
+                        63,
+                        51,
+                        192,
+                        19,
+                        120,
+                        18,
+                        47,
+                        244,
+                        163,
+                        114,
+                        230,
+                        183,
+                        113,
+                        145,
+                        202,
+                        152,
+                        154,
+                        113,
+                        201,
+                        195,
+                        126,
+                        84,
+                        81,
+                        243,
+                        202,
+                        244,
+                        38,
+                        206,
+                        63,
+                        98
+                      ]
+                    }
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6254e35a7116584e425bfc9237a137dbb35b2a32af8b2b94dbe6b97d201c39d1::obj",
+                    "key": "b1c5addb",
+                    "kind": "variable",
+                    "name": "obj",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        177,
+                        197,
+                        173,
+                        219,
+                        135,
+                        52,
+                        54,
+                        28,
+                        203,
+                        141,
+                        165,
+                        220,
+                        72,
+                        144,
+                        98,
+                        231,
+                        209,
+                        117,
+                        166,
+                        218,
+                        176,
+                        76,
+                        122,
+                        173,
+                        172,
+                        120,
+                        117,
+                        191,
+                        216,
+                        17,
+                        21,
+                        47
+                      ]
+                    }
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::a598e30d61cf10f1c3ae91af738be4723da4375939c5e358e75a212826bbb595::dumps",
+                    "key": "d9a3af4e",
+                    "kind": "variable",
+                    "name": "dumps",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        217,
+                        163,
+                        175,
+                        78,
+                        170,
+                        30,
+                        37,
+                        246,
+                        233,
+                        76,
+                        133,
+                        39,
+                        154,
+                        137,
+                        48,
+                        151,
+                        94,
+                        45,
+                        74,
+                        54,
+                        12,
+                        165,
+                        253,
+                        63,
+                        116,
+                        50,
+                        173,
+                        227,
+                        161,
+                        128,
+                        90,
+                        115
+                      ]
+                    }
+                  }
+                ],
                 "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8d7fa1620e7c400e286e1695d96594f6b9a42654a7962cb89cff389c7faf3d99::dumps",
                 "key": "c6f64123",
                 "kind": "method",
-                "name": "dumps"
+                "name": "dumps",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    198,
+                    246,
+                    65,
+                    35,
+                    137,
+                    23,
+                    222,
+                    194,
+                    45,
+                    172,
+                    47,
+                    152,
+                    152,
+                    19,
+                    13,
+                    49,
+                    241,
+                    210,
+                    141,
+                    12,
+                    230,
+                    249,
+                    236,
+                    124,
+                    221,
+                    104,
+                    140,
+                    34,
+                    253,
+                    155,
+                    46,
+                    40
+                  ]
+                }
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::3f1d5b139652ff00a234cced3dfd4d2e870a57c56ecd3aaa60b80a2a144df574::_CompactJSON",
             "key": "66160adb",
             "kind": "class",
-            "name": "_CompactJSON"
+            "name": "_CompactJSON",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                102,
+                22,
+                10,
+                219,
+                50,
+                207,
+                222,
+                216,
+                232,
+                184,
+                99,
+                60,
+                54,
+                92,
+                166,
+                6,
+                52,
+                78,
+                115,
+                164,
+                44,
+                186,
+                175,
+                54,
+                242,
+                211,
+                193,
+                77,
+                163,
+                19,
+                116,
+                127
+              ]
+            }
           },
           {
             "children": [
               {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::aa6efddd8b9940153090c2cd9c36fd01192c49087e82c0306a21e7fb8651e30d::header",
+                    "key": "48a94b22",
+                    "kind": "variable",
+                    "name": "header",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        72,
+                        169,
+                        75,
+                        34,
+                        254,
+                        155,
+                        31,
+                        165,
+                        21,
+                        72,
+                        104,
+                        46,
+                        111,
+                        20,
+                        109,
+                        179,
+                        203,
+                        22,
+                        117,
+                        137,
+                        56,
+                        207,
+                        23,
+                        119,
+                        86,
+                        220,
+                        1,
+                        119,
+                        86,
+                        137,
+                        225,
+                        156
+                      ]
+                    }
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8d1fab8390fa64c097c3f1a5afa90e6b07390e2e8396c839ee660b238fbf4e6b::payload",
+                    "key": "c1af52ea",
+                    "kind": "variable",
+                    "name": "payload",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        193,
+                        175,
+                        82,
+                        234,
+                        202,
+                        88,
+                        125,
+                        242,
+                        118,
+                        33,
+                        212,
+                        98,
+                        39,
+                        159,
+                        38,
+                        132,
+                        229,
+                        72,
+                        67,
+                        60,
+                        46,
+                        73,
+                        66,
+                        127,
+                        243,
+                        164,
+                        194,
+                        86,
+                        246,
+                        22,
+                        189,
+                        94
+                      ]
+                    }
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::2705fe52f87bdd3fcda940299a61736133fc04973843c06f09902128a45b8fd8::original_error",
+                    "key": "f7b196a6",
+                    "kind": "variable",
+                    "name": "original_error",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        247,
+                        177,
+                        150,
+                        166,
+                        129,
+                        76,
+                        42,
+                        180,
+                        192,
+                        173,
+                        47,
+                        184,
+                        251,
+                        31,
+                        239,
+                        214,
+                        109,
+                        78,
+                        59,
+                        116,
+                        72,
+                        146,
+                        98,
+                        187,
+                        200,
+                        248,
+                        246,
+                        182,
+                        246,
+                        171,
+                        9,
+                        210
+                      ]
+                    }
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::93ba151d104d0b02977c6420e5d0798a5ffe3532b59db9889b8390f347dc3a95::message",
+                    "key": "ffb646b6",
+                    "kind": "variable",
+                    "name": "message",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        255,
+                        182,
+                        70,
+                        182,
+                        83,
+                        173,
+                        209,
+                        93,
+                        234,
+                        195,
+                        216,
+                        139,
+                        170,
+                        229,
+                        160,
+                        238,
+                        63,
+                        64,
+                        128,
+                        44,
+                        170,
+                        78,
+                        85,
+                        6,
+                        100,
+                        149,
+                        53,
+                        31,
+                        155,
+                        211,
+                        144,
+                        100
+                      ]
+                    }
+                  }
+                ],
                 "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::b2596db827cc81f017a0e7620594b46986cf905429ac81ec372db86ed8818419::__init__",
                 "key": "cd411187",
                 "kind": "method",
-                "name": "__init__"
+                "name": "__init__",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    205,
+                    65,
+                    17,
+                    135,
+                    46,
+                    119,
+                    95,
+                    122,
+                    27,
+                    195,
+                    214,
+                    248,
+                    94,
+                    115,
+                    86,
+                    183,
+                    214,
+                    175,
+                    119,
+                    127,
+                    35,
+                    125,
+                    1,
+                    16,
+                    100,
+                    88,
+                    246,
+                    102,
+                    8,
+                    211,
+                    20,
+                    245
+                  ]
+                }
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::184790be04eb9cfa723244de11fd6ddab78bb4ae7661ecbca3a172153ce9bba1::BadHeader",
             "key": "4c8785f5",
             "kind": "class",
-            "name": "BadHeader"
+            "name": "BadHeader",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                76,
+                135,
+                133,
+                245,
+                130,
+                227,
+                40,
+                111,
+                81,
+                204,
+                115,
+                205,
+                81,
+                180,
+                154,
+                216,
+                210,
+                186,
+                254,
+                202,
+                182,
+                34,
+                53,
+                21,
+                115,
+                151,
+                55,
+                160,
+                54,
+                213,
+                247,
+                196
+              ]
+            }
           },
           {
             "children": [
               {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8b277d445777c4d1abcb5578791b0ed307390e2e8396c839ee660b238fbf4e6b::payload",
+                    "key": "15e717da",
+                    "kind": "variable",
+                    "name": "payload",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        21,
+                        231,
+                        23,
+                        218,
+                        159,
+                        253,
+                        229,
+                        186,
+                        94,
+                        27,
+                        21,
+                        50,
+                        38,
+                        147,
+                        140,
+                        228,
+                        171,
+                        196,
+                        15,
+                        208,
+                        25,
+                        53,
+                        122,
+                        154,
+                        255,
+                        17,
+                        80,
+                        16,
+                        103,
+                        153,
+                        193,
+                        124
+                      ]
+                    }
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::e130df14f6d751c0b8a879d4d249bf6f5ffe3532b59db9889b8390f347dc3a95::message",
+                    "key": "1ca5e4c6",
+                    "kind": "variable",
+                    "name": "message",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        28,
+                        165,
+                        228,
+                        198,
+                        4,
+                        80,
+                        5,
+                        251,
+                        142,
+                        219,
+                        235,
+                        155,
+                        15,
+                        195,
+                        97,
+                        51,
+                        123,
+                        172,
+                        50,
+                        21,
+                        196,
+                        228,
+                        253,
+                        83,
+                        146,
+                        238,
+                        126,
+                        158,
+                        85,
+                        162,
+                        28,
+                        171
+                      ]
+                    }
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::2c84258fc6fb45246491afd9e3cec31b02b819dcfa795d49a860b75f4652969c::date_signed",
+                    "key": "9016de83",
+                    "kind": "variable",
+                    "name": "date_signed",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        144,
+                        22,
+                        222,
+                        131,
+                        2,
+                        217,
+                        166,
+                        102,
+                        107,
+                        167,
+                        26,
+                        47,
+                        130,
+                        38,
+                        106,
+                        225,
+                        83,
+                        17,
+                        37,
+                        94,
+                        214,
+                        230,
+                        36,
+                        8,
+                        223,
+                        159,
+                        236,
+                        177,
+                        253,
+                        5,
+                        199,
+                        115
+                      ]
+                    }
+                  }
+                ],
                 "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::de30d7741fcd3a1b21b2f525c3d27e29483e0f9966f20e76c11f760cd9094336::__init__",
                 "key": "fd9c31ce",
                 "kind": "method",
-                "name": "__init__"
+                "name": "__init__",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    253,
+                    156,
+                    49,
+                    206,
+                    192,
+                    248,
+                    239,
+                    188,
+                    197,
+                    12,
+                    200,
+                    59,
+                    144,
+                    153,
+                    220,
+                    227,
+                    201,
+                    30,
+                    24,
+                    173,
+                    223,
+                    194,
+                    106,
+                    202,
+                    72,
+                    35,
+                    201,
+                    216,
+                    153,
+                    160,
+                    142,
+                    145
+                  ]
+                }
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::1fc52cd491a56f4145d60c1dfc7b430b26cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
             "key": "931491cf",
             "kind": "class",
-            "name": "BadTimeSignature"
+            "name": "BadTimeSignature",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                147,
+                20,
+                145,
+                207,
+                22,
+                24,
+                112,
+                63,
+                123,
+                209,
+                255,
+                238,
+                232,
+                48,
+                228,
+                154,
+                95,
+                196,
+                184,
+                202,
+                86,
+                33,
+                92,
+                139,
+                61,
+                107,
+                236,
+                73,
+                160,
+                95,
+                48,
+                203
+              ]
+            }
           },
           {
             "children": [
               {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::7afb13ac34d6ce333d4c763c434537365ffe3532b59db9889b8390f347dc3a95::message",
+                    "key": "3b2dae1b",
+                    "kind": "variable",
+                    "name": "message",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        59,
+                        45,
+                        174,
+                        27,
+                        69,
+                        113,
+                        243,
+                        60,
+                        9,
+                        76,
+                        225,
+                        5,
+                        9,
+                        167,
+                        123,
+                        166,
+                        141,
+                        188,
+                        78,
+                        115,
+                        102,
+                        101,
+                        68,
+                        226,
+                        49,
+                        156,
+                        4,
+                        187,
+                        238,
+                        6,
+                        21,
+                        81
+                      ]
+                    }
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::f56386d120897abe79e20c8aa54c2a8907390e2e8396c839ee660b238fbf4e6b::payload",
+                    "key": "5df35264",
+                    "kind": "variable",
+                    "name": "payload",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        93,
+                        243,
+                        82,
+                        100,
+                        20,
+                        6,
+                        86,
+                        250,
+                        186,
+                        209,
+                        108,
+                        32,
+                        108,
+                        255,
+                        110,
+                        121,
+                        88,
+                        110,
+                        5,
+                        106,
+                        144,
+                        44,
+                        188,
+                        160,
+                        239,
+                        10,
+                        25,
+                        49,
+                        160,
+                        127,
+                        3,
+                        193
+                      ]
+                    }
+                  }
+                ],
                 "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::b9a02b89ef511fb42c3d25361ca77c745cc2e02917908a942ab885efa4d965f7::__init__",
                 "key": "4b774272",
                 "kind": "method",
-                "name": "__init__"
+                "name": "__init__",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    75,
+                    119,
+                    66,
+                    114,
+                    36,
+                    48,
+                    16,
+                    193,
+                    155,
+                    213,
+                    36,
+                    72,
+                    201,
+                    9,
+                    130,
+                    33,
+                    75,
+                    22,
+                    227,
+                    12,
+                    117,
+                    22,
+                    12,
+                    59,
+                    107,
+                    246,
+                    32,
+                    61,
+                    174,
+                    179,
+                    22,
+                    82
+                  ]
+                }
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::93e83dc6b976d1981bbc160876e899e1002ba33339f81fc723e5a74f0348de59::BadSignature",
             "key": "96a6efe2",
             "kind": "class",
-            "name": "BadSignature"
+            "name": "BadSignature",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                150,
+                166,
+                239,
+                226,
+                226,
+                51,
+                219,
+                62,
+                195,
+                249,
+                4,
+                194,
+                183,
+                247,
+                141,
+                193,
+                237,
+                176,
+                123,
+                96,
+                119,
+                131,
+                148,
+                197,
+                117,
+                69,
+                162,
+                248,
+                79,
+                224,
+                193,
+                211
+              ]
+            }
           },
           {
             "children": [
@@ -93,1169 +1067,87 @@
                 "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8de921be457decbbeec9ceaad4dbb4016ec22fd0738377b311a1eb23465e4e51::__init__",
                 "key": "2fdcaa66",
                 "kind": "method",
-                "name": "__init__"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::f44cdadecb76e17cc3be73f9ae6e2fb8045458715ef47b1cef86052ad6b5ce48::__str__",
-                "key": "5f52f6d0",
-                "kind": "method",
-                "name": "__str__"
+                "name": "__init__",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    47,
+                    220,
+                    170,
+                    102,
+                    181,
+                    87,
+                    185,
+                    145,
+                    193,
+                    202,
+                    154,
+                    237,
+                    124,
+                    7,
+                    68,
+                    176,
+                    1,
+                    128,
+                    186,
+                    95,
+                    129,
+                    88,
+                    199,
+                    205,
+                    93,
+                    102,
+                    176,
+                    70,
+                    199,
+                    105,
+                    92,
+                    17
+                  ]
+                }
               }
             ],
             "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::be743218682ae09b8c1cf9dd390d4a873abaed7e5f08832cdf71f6c41e7faf0e::BadData",
             "key": "bf69dfc5",
             "kind": "class",
-            "name": "BadData"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c18188baa1fc43f9f6eda1918a52dfad7505a922c93f33ba6b53352ca09c1283::SignatureExpired",
-            "key": "c35ee3e0",
-            "kind": "class",
-            "name": "SignatureExpired"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8d8920ad0c9478168473d1cbad473a630833c56c5e6e542cd92d1e95cd2d1c07::__init__",
-                "key": "ddb26bfb",
-                "kind": "method",
-                "name": "__init__"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::05bd9d017cf38fbee5a99f65fafa42190af045fdb2a399919d8d00930b9be29b::BadPayload",
-            "key": "c9d73e2d",
-            "kind": "class",
-            "name": "BadPayload"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::940ece6742305325213043fa35838ee053070ce8a8f4b79ff20af9a7e955414b::dumps",
-                "key": "c53856c6",
-                "kind": "method",
-                "name": "dumps"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::a03c703e0138983af08c1ab004cf1605113800aaf1bf05acad977f5dc7d9ca8f::loads",
-                "key": "cb54e1fc",
-                "kind": "method",
-                "name": "loads"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::a54661288c7791afdd1b7c8b66d125a2889ecf45865725b1cda4b872f141958b::_PDataSerializer",
-            "key": "7881a72b",
-            "kind": "class",
-            "name": "_PDataSerializer"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c5ecbbd46d81274766cf4382302daecd99bf112e54245a481f6bf216576d9c68::__init__",
-                "key": "21659bd4",
-                "kind": "method",
-                "name": "__init__"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c5ecbbd46d81274766cf4382302daecd9eeaa5f406dcc99d8e13f94918963375::__init__",
-                "key": "2a02a07b",
-                "kind": "method",
-                "name": "__init__"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::a6075851a815aaa17c1740fe4cd2f870c4c2b801d72943c985e962c7086c76ad::dumps",
-                "key": "355a40cd",
-                "kind": "method",
-                "name": "dumps"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::9a6743f11c3579c571cd556ae0ac5922bf9080e6bc356872123dd9dbcb53c172::load_unsafe",
-                "key": "3d89724d",
-                "kind": "method",
-                "name": "load_unsafe"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c5aa5329834d064cb078ea1ce7f07d0a8a88b1277fd921be1aad83829c3bb91b::_loads_unsafe_impl",
-                "key": "44a6af13",
-                "kind": "method",
-                "name": "_loads_unsafe_impl"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c5ecbbd46d81274766cf4382302daecdf642f55a0e291ccb3e127287fa0716c3::__init__",
-                "key": "5082591d",
-                "kind": "method",
-                "name": "__init__"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::1ce96683448405b25428200620536953f5990701064e521d275faf99811f7794::loads",
-                "key": "628ceda4",
-                "kind": "method",
-                "name": "loads"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::bd377416d0e123a5432763d9a664b7d550be3394e77916e3abc48a90483a0bad::load",
-                "key": "6b1b05b9",
-                "kind": "method",
-                "name": "load"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c5ecbbd46d81274766cf4382302daecdffab5c549cf88f77f17929ebddbea16e::__init__",
-                "key": "7aba75e2",
-                "kind": "method",
-                "name": "__init__"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c5ecbbd46d81274766cf4382302daecd306a76240155670c3cd11bdd9fb87745::__init__",
-                "key": "85e83962",
-                "kind": "method",
-                "name": "__init__"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::b9b78debcc4c0ab67279bdb993cd91f18ec5d5644b28da7b2ab8c0837e9b3ea5::dump_payload",
-                "key": "93f33622",
-                "kind": "method",
-                "name": "dump_payload"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6f836168efcd6111ceb64977664e44e99526bb63f47966eefbbe1133b960e262::load_payload",
-                "key": "a312c2ac",
-                "kind": "method",
-                "name": "load_payload"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::411e70443d2f9c28b075283ea3e628a305eaba34e29d4a79bfa6d3e3573a6db8::make_signer",
-                "key": "b6153f16",
-                "kind": "method",
-                "name": "make_signer"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::77a1c96accff85c08b6befd5ef603058076a322d24267dbb159505cdf32f4c33::dump",
-                "key": "b6618e2a",
-                "kind": "method",
-                "name": "dump"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d6a83d296681b1510b79c6904e56dab1a89752ffa615cd52a816d28f18fa3470::loads_unsafe",
-                "key": "bf96671f",
-                "kind": "method",
-                "name": "loads_unsafe"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c5ecbbd46d81274766cf4382302daecdec332db6ac9ba3c80729536bbd3d0ca3::__init__",
-                "key": "f1e54f69",
-                "kind": "method",
-                "name": "__init__"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::73dcbea83e533772a2f6e9d884130a4f571fe0c66281df632e7c98594eebcc0f::iter_unsigners",
-                "key": "f1f80146",
-                "kind": "method",
-                "name": "iter_unsigners"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::15a382e17a595696634f0568ffacd1771d2babb7b8829a46df5b680c9b2ab668::default_serializer",
-                "key": "5a559756",
-                "kind": "field",
-                "name": "default_serializer"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::10fc9003712104c6112d67c1152f2485279661f080c8d37ee63cb676dab311ed::default_signer",
-                "key": "7e88e7b2",
-                "kind": "field",
-                "name": "default_signer"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::1849c8bf617f86ba8ac0a2901c924e7baa3ee1953b93060caf1e7e754e6dbc4a::default_fallback_signers",
-                "key": "ad943b59",
-                "kind": "field",
-                "name": "default_fallback_signers"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::b6257ffa2481d7fab62c8befd8c72b1cfd1524aacdcf00755ad2742f5bb59f39::secret_key",
-                "key": "b7b69cd7",
-                "kind": "property",
-                "name": "secret_key"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::29a3488dc188d74a1573057101a16b7e6b8f4c7c38dd6aa24b64a431d3055bd5::Serializer",
-            "key": "7d0ce579",
-            "kind": "class",
-            "name": "Serializer"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::88a58ae7fbf2f2b2ad61468d5ee418b7e8e6af90a6e7cadb715c7d2bb32a7cda::get_signature",
-                "key": "72c8c027",
-                "kind": "method",
-                "name": "get_signature"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::ac6d28f81c7e8891fb60cb6576f0f5d3f869fd12d20d747b5a5c507f0b9fdf63::NoneAlgorithm",
-            "key": "181c9788",
-            "kind": "class",
-            "name": "NoneAlgorithm"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6435e43da70debd757b77b2cc04538666f70e1ad7a184ffd5b2980f01b12b3c9::__init__",
-                "key": "02ea9e4a",
-                "kind": "method",
-                "name": "__init__"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8201eab0ecbbcdede7f37a510c7294af821ab8d1dbad12b571825d9bfe2e285b::unsign",
-                "key": "6da5ebab",
-                "kind": "method",
-                "name": "unsign"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::3e4d5cc0b6714e5872e60eb095b9cb55f5de6cbbda76e4ec15ee5a8e5b438cf7::validate",
-                "key": "765a0cf3",
-                "kind": "method",
-                "name": "validate"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::69c4b0dda11f720a904fdb49bac2455050da58fb2a28c42ad54c3d6b9a2da588::derive_key",
-                "key": "7ea7a20b",
-                "kind": "method",
-                "name": "derive_key"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::114dafccf015985aebc6bce995cc3485811e6a928a26fe1529a97aff4802b2eb::get_signature",
-                "key": "8fc95b43",
-                "kind": "method",
-                "name": "get_signature"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::827fe5cd86ef84b68488f5af5383eaf0b1a0004983e843b52e575bcc0d34da7e::verify_signature",
-                "key": "ebc75997",
-                "kind": "method",
-                "name": "verify_signature"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::18ba9f56ce43ae3a2b5db041acd3c21966c7d77a75663acc28213e31d8db5ade::sign",
-                "key": "f1b8b9f8",
-                "kind": "method",
-                "name": "sign"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::10d4e615222fb5ef61f45dbd02f6de727558fb643e2cd0976d57e5725f3f457a::default_digest_method",
-                "key": "3c421d6b",
-                "kind": "field",
-                "name": "default_digest_method"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::bfe052fd3a4c9426b2585ac5870d5355d51527141f17be43e290177730e3acf7::default_key_derivation",
-                "key": "78b95f99",
-                "kind": "field",
-                "name": "default_key_derivation"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::aed3119896ded6a3301202905d0b8c1cfce00a18ba17d1b6321725426d1120cb::secret_key",
-                "key": "f58ccede",
-                "kind": "property",
-                "name": "secret_key"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::f21f9c0794aacc3a3c55db3486897c9e429dfbd59d20f7171c84b756159aa1ad::Signer",
-            "key": "743cd838",
-            "kind": "class",
-            "name": "Signer"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6b0c141c0b0bd97962a7b346c38aa588944ec898bd3e2c9a63ab4fb9927061f4::get_signature",
-                "key": "098446aa",
-                "kind": "method",
-                "name": "get_signature"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::ea9fe7dcdca347866d6aea18eb78df02f8421bdea0b6e6b2e84e8fe98b8a2005::__init__",
-                "key": "3d5d8f73",
-                "kind": "method",
-                "name": "__init__"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::58505ac06d33dc2a3eabe5770abf98197558fb643e2cd0976d57e5725f3f457a::default_digest_method",
-                "key": "c303bd22",
-                "kind": "field",
-                "name": "default_digest_method"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::3c43f5a84ccf40d5bb5a177cffc240f14ef8e99c723d98de088a17985d988792::HMACAlgorithm",
-            "key": "76eedf2d",
-            "kind": "class",
-            "name": "HMACAlgorithm"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6eb605b4de4ed37c7da6b416706693a83f4fc364d9a85248b62eed9ff4b81645::verify_signature",
-                "key": "0d359b9b",
-                "kind": "method",
-                "name": "verify_signature"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::3240b66f481b29c258d5ee1f9347114ba25c9af800447156df3841caf7656674::get_signature",
-                "key": "fe807141",
-                "kind": "method",
-                "name": "get_signature"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::7e4b414b6dbab85ac33acbc6f1a4ce735228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
-            "key": "f88c66a7",
-            "kind": "class",
-            "name": "SigningAlgorithm"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::589416cefc329d9bf499e0bd0e70d7110ca8e5be2d736ea3ccadf3a4dafb9747::loads",
-                "key": "2668cb3e",
-                "kind": "method",
-                "name": "loads"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::ff6d560ed0ca06e6315da93b2d6cf2b29bb77f15594e7d5af15e0a7dac35f094::iter_unsigners",
-                "key": "bc28f79f",
-                "kind": "method",
-                "name": "iter_unsigners"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d6c29dd7523fee058c9e4267c1055b94f306b1e802f577bb9070bd7713ec7025::loads_unsafe",
-                "key": "da4d8bee",
-                "kind": "method",
-                "name": "loads_unsafe"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::931d77a4d2992275fe562c766feb42334dbe9d30ccac68431f9380ad0a527f9c::default_signer",
-                "key": "d2fc49c6",
-                "kind": "field",
-                "name": "default_signer"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::06045b6090ad493bb41c726e9ef00f22eb86f1172a9b0f83dfe3160332670fc0::TimedSerializer",
-            "key": "4685f41f",
-            "kind": "class",
-            "name": "TimedSerializer"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::9043a428fedea33a51d8dbd64e755357d2507a179eeffb631094de52dc988ce7::unsign",
-                "key": "00fde7f9",
-                "kind": "method",
-                "name": "unsign"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::1b5138dbdbf9753725cd9285087697c45c6022fbecf69a0bbcccbbb31000561e::get_timestamp",
-                "key": "1b19d468",
-                "kind": "method",
-                "name": "get_timestamp"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::9043a428fedea33a51d8dbd64e7553579d73ed57c37a0233fb742d2d293f42bf::unsign",
-                "key": "2cf9ac6f",
-                "kind": "method",
-                "name": "unsign"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::740ff182628e5b0bb6253b36cf7bb81f7b53a82129c3d986aa7d8c686c6d5891::sign",
-                "key": "6fa43587",
-                "kind": "method",
-                "name": "sign"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::7d66abfc016114aa8537637c22d5f843e1645b910abdc04338799044e66243e2::timestamp_to_datetime",
-                "key": "91e0fc6c",
-                "kind": "method",
-                "name": "timestamp_to_datetime"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::971409cba1856cdb1fc4f1f8d04e5e9fe1d4bbdb30ca7a4bc5abc1a1ee939cab::validate",
-                "key": "aebc9518",
-                "kind": "method",
-                "name": "validate"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::9043a428fedea33a51d8dbd64e755357ddb72bbeba1c403e71a3fa2b416c4e9b::unsign",
-                "key": "c96abb41",
-                "kind": "method",
-                "name": "unsign"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6bc41046486efc38ccfcc59c16a1a49f77c387a5ac0be449c2380d8fff65b6bb::TimestampSigner",
-            "key": "f2694175",
-            "kind": "class",
-            "name": "TimestampSigner"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::66d216efc50c5884f6331026b9bd86df8331487c3a7461a38014e631f955459b::URLSafeSerializer",
-            "key": "31667f88",
-            "kind": "class",
-            "name": "URLSafeSerializer"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::39b4ca2cd2216c12a76ed9e1f9448839ce9a79e9f808aa4e2824d6af6c5784bb::dump_payload",
-                "key": "1ee274af",
-                "kind": "method",
-                "name": "dump_payload"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::47a9a300bfaf816a2bfd273577567ac421ab514329769ac5be6fb774da5bb175::load_payload",
-                "key": "f9b2f4ea",
-                "kind": "method",
-                "name": "load_payload"
-              },
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::e27dd14ae2daa1b4a361240bf8c5ee5fe128f893933773b39743658c1caadd4a::default_serializer",
-                "key": "ac3dd04a",
-                "kind": "field",
-                "name": "default_serializer"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6c0be5f95fcf9153edcf40956398433f3eeba3e098337dae3a1e1ec198f95cdd::URLSafeSerializerMixin",
-            "key": "3eb35fa3",
-            "kind": "class",
-            "name": "URLSafeSerializerMixin"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::4e1508c531f3ff80be7af3fdded5cbdcf3e5c3e6ccd92f16f361d7e86183ef3f::URLSafeTimedSerializer",
-            "key": "5fbe28e6",
-            "kind": "class",
-            "name": "URLSafeTimedSerializer"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::3aed89a1d5b858a8a1733d3b3cda9ecd58eee04de1530057ad6df0674046b850::__getattr__",
-            "key": "ba2b32bb",
-            "kind": "function",
-            "name": "__getattr__"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::4595277fadbb5746e858c718ede8cc6a22591b2aaca3a11b04a26e28bf1ee3bc::want_bytes",
-            "key": "a3cf288d",
-            "kind": "function",
-            "name": "want_bytes"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::98d6eadc450c56b6d8ae9fa2e4bfe1f32edd954db50f321cf942746037fda81e::int_to_bytes",
-            "key": "a590012c",
-            "kind": "function",
-            "name": "int_to_bytes"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d24dde9832b4dc59816c49eab1a0574c612cb2747ef4a4a94158ebe87866efeb::base64_encode",
-            "key": "b04e86d3",
-            "kind": "function",
-            "name": "base64_encode"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::4143bf6d98d51d57e33199865f65a6f83436902cf1407464ffdb34464565759b::bytes_to_int",
-            "key": "d3efa928",
-            "kind": "function",
-            "name": "bytes_to_int"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::fbb4ccc59b338b85347ef144245dddfd2d1660ce33da5887459662bee1240124::base64_decode",
-            "key": "f1ef7814",
-            "kind": "function",
-            "name": "base64_decode"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::64e1cc94b35ff2ece1e0cd9b1f340724e5cd70e4fbe66218906cca186ed90e8c::is_text_serializer",
-            "key": "567f6c62",
-            "kind": "function",
-            "name": "is_text_serializer"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::24d8412fe6e9606140782b150e686b84f11898697cbd731936e5f4a1d82ec3ca::_make_keys_list",
-            "key": "b7b4a24c",
-            "kind": "function",
-            "name": "_make_keys_list"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::b82eb89b8d1808b49f6ac1b32d5ca59a8584056b0edf644ab6f6ee3952b994c5::_lazy_sha1",
-            "key": "d878188c",
-            "kind": "function",
-            "name": "_lazy_sha1"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c1b87797a627c8754c5d87b06a894716afdaecba6c51098a8b2c4b7dbb78920e::autodoc_preserve_defaults",
-            "key": "03a0ea26",
-            "kind": "variable",
-            "name": "autodoc_preserve_defaults"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d68b520b72e103cb60f7f64feb33223f8f99025739b53478e949e7352af56fda::html_context",
-            "key": "1205f0f1",
-            "kind": "variable",
-            "name": "html_context"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::b1031502c5b0dc27a477a24ae4537763e424ecb82fd0134aa4744f303ce2d064::html_favicon",
-            "key": "18549382",
-            "kind": "variable",
-            "name": "html_favicon"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d05702fd05aba9134dd01e9db9ae498523bf2853d4ec0cdb23e36c12d1625b79::html_theme",
-            "key": "2dd19096",
-            "kind": "variable",
-            "name": "html_theme"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d94c134bc85f88fa7d46d544b944044b5bde4c277b4a5ab3a395edc64c9151fd::autoclass_content",
-            "key": "30963e5e",
-            "kind": "variable",
-            "name": "autoclass_content"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::087f11060504f83b3fa26ee2d3932140febab3f3998a5661ede136b499c36cd7::html_title",
-            "key": "33726a7a",
-            "kind": "variable",
-            "name": "html_title"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::758dc66030f2671b7b8ba5fdb02fa4a1edd36b6eadfa95a8d9ea2120281ba3b5::html_show_sourcelink",
-            "key": "4ca7a89a",
-            "kind": "variable",
-            "name": "html_show_sourcelink"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::0a9d3075acd2b5d0fc003abdf7ba17a82d28fd4b2e6d76fff1804ee28a2d3a62::html_theme_options",
-            "key": "4cd5c83f",
-            "kind": "variable",
-            "name": "html_theme_options"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::e6ac37dfd860652b7300ee534d01734fa17e388b8a2cae0a1ee4a8bd5a763cc5::intersphinx_mapping",
-            "key": "6253e4ac",
-            "kind": "variable",
-            "name": "intersphinx_mapping"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::2cd6c55d7dc22119265a7f51febc7fdf56e1ad72e3970d28605b9fd84bfd0f9e::project",
-            "key": "69d1cb0d",
-            "kind": "variable",
-            "name": "project"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::74457e2e9c4fae01fb4a44c8a886aea918ea3149a81f067644da001106a1581b::singlehtml_sidebars",
-            "key": "6f8b6268",
-            "kind": "variable",
-            "name": "singlehtml_sidebars"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::9df2b43e199b2e879e0162b63e54423bbd30a7d52a5ef14a009017d8feb75243::html_logo",
-            "key": "7336e272",
-            "kind": "variable",
-            "name": "html_logo"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::1c8b647bf469c6c81f4bda85c9dea98f6a88203c7e1b76221a3471a07074c17f::autodoc_typehints",
-            "key": "77b6c716",
-            "kind": "variable",
-            "name": "autodoc_typehints"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d3f5a20f6b0e49e22bd1642f040dad7cefa6cb0a58745c4a829878143a0ebcc3::html_sidebars",
-            "key": "992072e9",
-            "kind": "variable",
-            "name": "html_sidebars"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::bb991fecd6b907731281080c83f0c32ca36a7b6484972c99e71fcb8e080927d2::autodoc_member_order",
-            "key": "a05d3366",
-            "kind": "variable",
-            "name": "autodoc_member_order"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::01c5adf7f1d31a356f1bfabf09a2ecb4039244a1fc8bcbabefa59b87f3235a32::copyright",
-            "key": "cf1f2e9f",
-            "kind": "variable",
-            "name": "copyright"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::976553fca5d68e772dd1aa4b7be545c8346d8463f1d811c6740202f3ec74d04c::extlinks",
-            "key": "d5df6b4f",
-            "kind": "variable",
-            "name": "extlinks"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::4acf2613c68072a45ff6b9e5cc75ecb6efbb278cb4f5a3f7c35b9e1ef04e7db5::extensions",
-            "key": "df724b84",
-            "kind": "variable",
-            "name": "extensions"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::a669d587c88aa87c1b8983cafd29aacdeab574e26c0c50685c490d0f3ef0b7f4::default_role",
-            "key": "ee065caf",
-            "kind": "variable",
-            "name": "default_role"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::05bb7029ab6a6f9301c6b76b5ca6737eeff859f3c48320323ef88fd1d212c088::author",
-            "key": "f6ca8a58",
-            "kind": "variable",
-            "name": "author"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::7945c4981515c15d1d8abf1d9521d3a3320133b84441882a5d730d1d5e71e201::html_static_path",
-            "key": "f95a57e8",
-            "kind": "variable",
-            "name": "html_static_path"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6eaf82ade8c9d4cbdb17eb054e184e68ad60b1dc30568f61a376aa0b0c742d67::_int_to_bytes",
-            "key": "074fee49",
-            "kind": "variable",
-            "name": "_int_to_bytes"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::0354ce58cf2a888b8319fc6669841c0fe8838d544b615b4c193382d2b328528d::_int64_struct",
-            "key": "b60a39c4",
-            "kind": "variable",
-            "name": "_int64_struct"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d31a55b1fe774040997acc689045a3f7644e74ba63beee6ce6382d135440f88f::_base64_alphabet",
-            "key": "c3ac1c4b",
-            "kind": "variable",
-            "name": "_base64_alphabet"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::24ddafc7166778531add46a6d1b72a2ef240a9864b29403a4744386246eaa268::_bytes_to_int",
-            "key": "c8fc8fdb",
-            "kind": "variable",
-            "name": "_bytes_to_int"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c98389b9a5f8cc6d87fe01bf5caf9bfac762abd2a2f00d802e95d64f331b6cbb::ProjectLink",
-            "key": "80bfb9df",
-            "kind": "import",
-            "name": "ProjectLink"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::2c2d30dd369d55df504a8b7358993c4de8066e05d46aa53093d41970f63e8d92::get_version",
-            "key": "ec1de2ee",
-            "kind": "import",
-            "name": "get_version"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::28e04f6b84e48474a94c6558cba1c2ea56fd5c23e0ebc60f44208cf4a0928eaa::TimedSerializer",
-            "key": "05a39b66",
-            "kind": "import",
-            "name": "TimedSerializer"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::f78802f91841887db251e1346749f3d9a37053490b062b1add8696ca5fa1828e::URLSafeSerializer",
-            "key": "1d73ca65",
-            "kind": "import",
-            "name": "URLSafeSerializer"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::efc3561986e55ca7a2b52fa9926e81363d5428ff41bd239c4bf2c3fd2170d356::Serializer",
-            "key": "25e6d390",
-            "kind": "import",
-            "name": "Serializer"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8329bf1ece0b1b933aff33c496121100209d935993e8135f9754a34d91ed3189::BadHeader",
-            "key": "350951e3",
-            "kind": "import",
-            "name": "BadHeader"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::69eba364c02389ddc59f9bae68e51e041b3668591c1cfd585200116c852cf926::TimestampSigner",
-            "key": "4fd5724e",
-            "kind": "import",
-            "name": "TimestampSigner"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::4d02d0e86b5702f7354cfaebe2f0ddd0d5c5651e77f26de85bc0e89b9b2ae89c::Signer",
-            "key": "519fbac9",
-            "kind": "import",
-            "name": "Signer"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::95cf4f24966736d59b6f35c183e43ba73a5eaaf752793fae9dcc1ec0ab6ee928::BadData",
-            "key": "6d80038d",
-            "kind": "import",
-            "name": "BadData"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::28bd5e5102ee6e7e70f469cbf529234a6316dfe93126960c9a777111116e30c2::BadTimeSignature",
-            "key": "6f023c29",
-            "kind": "import",
-            "name": "BadTimeSignature"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::30582f5667ab16ca88ede4071c430f2323cbd231985034ebb44920f028435d21::BadSignature",
-            "key": "718d230e",
-            "kind": "import",
-            "name": "BadSignature"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::998cb1415ccedc12af1d9d6a35ee852d4740c50ab668b44efc2cbeb8e97254c1::BadPayload",
-            "key": "883033ad",
-            "kind": "import",
-            "name": "BadPayload"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::492feb0ba1ad4c1ca69ea410ec474b7a6739772e3c0626054eb5eab15e0f369e::t",
-            "key": "8fe536f1",
-            "kind": "import",
-            "name": "t"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::3c879babc70313fd73bc36372ca5f72bf9740dec625f719901c0673da165bf99::NoneAlgorithm",
-            "key": "93808563",
-            "kind": "import",
-            "name": "NoneAlgorithm"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::727ed5a1b2e9cdf76fe4c577b4722d16a455a3e5c8421ffa3788b196df2d987a::base64_decode",
-            "key": "9c49ad2a",
-            "kind": "import",
-            "name": "base64_decode"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::e283fac0b8cde72e42813452f0dc3e52594a6d945654868e7a2a478d89c131c2::SignatureExpired",
-            "key": "a47be99b",
-            "kind": "import",
-            "name": "SignatureExpired"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::e8655d0121de5108d539ff2d9e1b7603614b26af0e4b3f8b2ebbed2ba6a11af1::base64_encode",
-            "key": "b84d7a61",
-            "kind": "import",
-            "name": "base64_encode"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6a280f42026d6dcd7ca62c8f727d6d8056f9d2d3fe0d74a1e2680289f0457388::want_bytes",
-            "key": "bfeaf530",
-            "kind": "import",
-            "name": "want_bytes"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c3530f451d688e353e31615383adf683c69e33a7db12fa11ba9be73db54f8fa5::HMACAlgorithm",
-            "key": "d9e98a2d",
-            "kind": "import",
-            "name": "HMACAlgorithm"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::31cbcd7c4ec17d47e8468204048a88762b1b16c5ad0fd623b5d4b3da4aea2869::URLSafeTimedSerializer",
-            "key": "dd44a6be",
-            "kind": "import",
-            "name": "URLSafeTimedSerializer"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::e194679ac311877b1f47d162672b18ed6739772e3c0626054eb5eab15e0f369e::t",
-            "key": "0c10739f",
-            "kind": "import",
-            "name": "t"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::80282f1b4440697e23119b491954073cddf28f4f403eafc205e85b584e40050b::_json",
-            "key": "fdccf673",
-            "kind": "import",
-            "name": "_json"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c0b65e9b43cd26d424c5a91ec7fad87d6739772e3c0626054eb5eab15e0f369e::t",
-            "key": "4d115726",
-            "kind": "import",
-            "name": "t"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::cd8429500dfa1f95c007f3856c9a35313a5eaaf752793fae9dcc1ec0ab6ee928::BadData",
-            "key": "5bd5e613",
-            "kind": "import",
-            "name": "BadData"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::669ee0dd00b972a1898e6b024ba5d1e4b18de46d91c45358afa235d2e304950c::struct",
-            "key": "8697d513",
-            "kind": "import",
-            "name": "struct"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::0096ac95a3451f9c5054b7db6084ccdfc5349a777abd20add6decb8fd9bba9e5::base64",
-            "key": "e50e3cfa",
-            "kind": "import",
-            "name": "base64"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::be77d6aca17ef42f0fcbc8373a4bda555f3bed675bcfb80176b2d27e179c007c::string",
-            "key": "ec94d8f1",
-            "kind": "import",
-            "name": "string"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d8376fc613307a275c35a7581ea1eda36739772e3c0626054eb5eab15e0f369e::t",
-            "key": "35d14f50",
-            "kind": "import",
-            "name": "t"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::fb63ae7af597d05f00df1c361862dd38d5c5651e77f26de85bc0e89b9b2ae89c::Signer",
-            "key": "16dfdca0",
-            "kind": "import",
-            "name": "Signer"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::fb546e6cc342c1a374b74bcc8152428c56f9d2d3fe0d74a1e2680289f0457388::want_bytes",
-            "key": "30dec3d6",
-            "kind": "import",
-            "name": "want_bytes"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::3301a5275f7bf2a85951c77466ae6f464740c50ab668b44efc2cbeb8e97254c1::BadPayload",
-            "key": "33d82013",
-            "kind": "import",
-            "name": "BadPayload"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::804feb8e24ef1801c1bc669b3786e5a3bc26842539e4df6993531e1f644d99f2::json",
-            "key": "497fab41",
-            "kind": "import",
-            "name": "json"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::2284e1f5dfdb56d2d183839f522d04e779bf58a27d0f51a8d9f630df12b5c717::_make_keys_list",
-            "key": "69337941",
-            "kind": "import",
-            "name": "_make_keys_list"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::2d0e20d95b8b782b1a609e58ab8343a7af7bf8ce965f3d63fae21d0596a06361::cabc",
-            "key": "79bef5b1",
-            "kind": "import",
-            "name": "cabc"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::a6b02c36af3dfe8ee7fefd167ad744af23cbd231985034ebb44920f028435d21::BadSignature",
-            "key": "b1faee1c",
-            "kind": "import",
-            "name": "BadSignature"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::896d698afd2277ea0b2796c6d59b8fc66739772e3c0626054eb5eab15e0f369e::t",
-            "key": "c2a78312",
-            "kind": "import",
-            "name": "t"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::818b8b8265f7a4fc46536058bfd022faaef59915d4cb800f57282ceedc82fda2::te",
-            "key": "d7c06b24",
-            "kind": "import",
-            "name": "te"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::90e66214c28da32d2c6a79a1ef104d7c56f9d2d3fe0d74a1e2680289f0457388::want_bytes",
-            "key": "1c709c4a",
-            "kind": "import",
-            "name": "want_bytes"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::4677a137b9222470a4099bcaaec9ad46a455a3e5c8421ffa3788b196df2d987a::base64_decode",
-            "key": "289fca6a",
-            "kind": "import",
-            "name": "base64_decode"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6726e09155196012fc6d6eaa3020e633b9f68c3f48a3c48c1dc7f06b6f0df111::hmac",
-            "key": "35744f58",
-            "kind": "import",
-            "name": "hmac"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::91afd229560179477d39d9ec4a54b86123cbd231985034ebb44920f028435d21::BadSignature",
-            "key": "5468ed36",
-            "kind": "import",
-            "name": "BadSignature"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::ca93adcbb66591999eff89cbd6759a386739772e3c0626054eb5eab15e0f369e::t",
-            "key": "74ce135c",
-            "kind": "import",
-            "name": "t"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::9245036a3a33158815e9dee1e1f03f13af7bf8ce965f3d63fae21d0596a06361::cabc",
-            "key": "7985f29f",
-            "kind": "import",
-            "name": "cabc"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::1be25e48e48c4c8246b71389bf74f66dd71c0c8c0ac16212d0721fef42d71b9a::hashlib",
-            "key": "a126cbdb",
-            "kind": "import",
-            "name": "hashlib"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::ddef85bbeb0b6ae37f456ce3402c27db614b26af0e4b3f8b2ebbed2ba6a11af1::base64_encode",
-            "key": "b6202024",
-            "kind": "import",
-            "name": "base64_encode"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6a2a264e9668e7e6225f612e0e00580f3b5814059f47824f10b6ee63bf01b5b8::_base64_alphabet",
-            "key": "c0ffed2f",
-            "kind": "import",
-            "name": "_base64_alphabet"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::1ef79a8d1a58e7ac4d68881684ae3d0f56f9d2d3fe0d74a1e2680289f0457388::want_bytes",
-            "key": "236ef822",
-            "kind": "import",
-            "name": "want_bytes"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::65e327a205fa6003dccbbc85d1c6f3163d5428ff41bd239c4bf2c3fd2170d356::Serializer",
-            "key": "285985ce",
-            "kind": "import",
-            "name": "Serializer"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::26bd5bbfb215c8dc7282c08ff79ec454e8e461ac2ce755515b65d4926e595fe4::_TSerialized",
-            "key": "3b39555d",
-            "kind": "import",
-            "name": "_TSerialized"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::a9fadb81862bd4a47b037b66a7807dd521713ee85d6a306361f8e729f22bb9b4::timezone",
-            "key": "3edb4cdf",
-            "kind": "import",
-            "name": "timezone"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::56810d27cc620ace716743648836b598a455a3e5c8421ffa3788b196df2d987a::base64_decode",
-            "key": "4383bdff",
-            "kind": "import",
-            "name": "base64_decode"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::3ffd3e476e6397b81ed6bf4e9de08c1b6316dfe93126960c9a777111116e30c2::BadTimeSignature",
-            "key": "54ee5d3f",
-            "kind": "import",
-            "name": "BadTimeSignature"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::39212bf22075e54eccbc7d0b12ad15b6614b26af0e4b3f8b2ebbed2ba6a11af1::base64_encode",
-            "key": "5bbdc3fa",
-            "kind": "import",
-            "name": "base64_encode"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::ab33b9d196d3b3ac7eac055766c9eac6594a6d945654868e7a2a478d89c131c2::SignatureExpired",
-            "key": "6139fd14",
-            "kind": "import",
-            "name": "SignatureExpired"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::9e2defa77cf4def012dc119f12e50971913a3570eeb6c0b785f8a40ad7a1824c::time",
-            "key": "afbac889",
-            "kind": "import",
-            "name": "time"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::0ef73de6381926e777c80b8070529060af7bf8ce965f3d63fae21d0596a06361::cabc",
-            "key": "afe39b9b",
-            "kind": "import",
-            "name": "cabc"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::b36902202be8d674a864dfa3853f575123cbd231985034ebb44920f028435d21::BadSignature",
-            "key": "ce518b35",
-            "kind": "import",
-            "name": "BadSignature"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::cc93af2e73dba2aabbe66ded2f679c45d5c5651e77f26de85bc0e89b9b2ae89c::Signer",
-            "key": "ced4a44b",
-            "kind": "import",
-            "name": "Signer"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::7fc88bfa6b2581b0fa67af4b77f76f0c6739772e3c0626054eb5eab15e0f369e::t",
-            "key": "daf01866",
-            "kind": "import",
-            "name": "t"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::5c6b456dc7f07b569e203bbbd56467b2247a11bd783c305926ff66119f34ff7f::bytes_to_int",
-            "key": "e3955f21",
-            "kind": "import",
-            "name": "bytes_to_int"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::b731fbbacdfea3de80fdb001fb95dab30bf968156e251a4d8f1b05c59dea45cd::int_to_bytes",
-            "key": "ed18be9c",
-            "kind": "import",
-            "name": "int_to_bytes"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::e6d6e29acf2b4ad4fa0d73975d363be156fd5c23e0ebc60f44208cf4a0928eaa::TimedSerializer",
-            "key": "1da71ab7",
-            "kind": "import",
-            "name": "TimedSerializer"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::7113ee9c42b0f2b127f6abe2e7aa93d6e4502f31a5a9eb92b7ca88c50b0188de::_PDataSerializer",
-            "key": "25508e6c",
-            "kind": "import",
-            "name": "_PDataSerializer"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::0f36ebaf16d6c27fc4761f4c18f387384740c50ab668b44efc2cbeb8e97254c1::BadPayload",
-            "key": "504f74df",
-            "kind": "import",
-            "name": "BadPayload"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::5f9f6853a01982b3d30ed092ebbc50b16739772e3c0626054eb5eab15e0f369e::t",
-            "key": "a94d2883",
-            "kind": "import",
-            "name": "t"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::7758ae22d8b38d4048383d5041b3327fa455a3e5c8421ffa3788b196df2d987a::base64_decode",
-            "key": "b049b5ce",
-            "kind": "import",
-            "name": "base64_decode"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::643d1cd160cd3da72cbc76e077feed0daa92e644753c994b729f910159b6b718::zlib",
-            "key": "c5124f90",
-            "kind": "import",
-            "name": "zlib"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::170082ff0f13488fd0c417477c55a0f615595fb367b70d96ad2c95db217ebf7e::_CompactJSON",
-            "key": "d4e42bb8",
-            "kind": "import",
-            "name": "_CompactJSON"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::ec39dcd9bd422bfc90ebdb28eac961383d5428ff41bd239c4bf2c3fd2170d356::Serializer",
-            "key": "e1fe7978",
-            "kind": "import",
-            "name": "Serializer"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::cc3ff63440f98b84325adc4fa4598131614b26af0e4b3f8b2ebbed2ba6a11af1::base64_encode",
-            "key": "eaa3938c",
-            "kind": "import",
-            "name": "base64_encode"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::4288cd8a9d30c0625cfac3f8f171dae8c9ca4f416f14b7224e8b7cbbd2a6671a::Signer256",
-            "key": "3ddf9633",
-            "kind": "class",
-            "name": "Signer256"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6183f1c941f555b4646bff93415c3f069b22f2c87f4c32e257bf40d2ab0a7440::Other",
-            "key": "4222fb64",
-            "kind": "class",
-            "name": "Other"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::20b5f9aa9c278281bf1b28688485c3900a109e0017e1558a67b6f0d07639d332::BadUnsign",
-            "key": "b7689f17",
-            "kind": "class",
-            "name": "BadUnsign"
-          },
-          {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::86bce50d15cac78c201d8479a334a9c28efc29cd05c09eb386defb8bb1489606::test_signer_kwargs",
-                "key": "18ef98cd",
-                "kind": "method",
-                "name": "test_signer_kwargs"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::7bd4b449d07edbf2291830a28a8223ec4984825e4b6cffdebcce57da054b0580::TestSerializer",
-            "key": "fd757618",
-            "kind": "class",
-            "name": "TestSerializer"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d6bc64f2f75f9dd2ff6e3fd1b52f24ac60c1f1b923c8ecd4b809591c955aeb5e::_ReverseAlgorithm",
-            "key": "29c29c73",
-            "kind": "class",
-            "name": "_ReverseAlgorithm"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::1b9cd9d18f4030f13aff932ff0835aa2bb1d1c667a15f4b68dba7f7c2a92c4be::TestSigner",
-            "key": "c3322899",
-            "kind": "class",
-            "name": "TestSigner"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::35b7063feb254ec92b66b6d65a6ad50d8c9881bab694d979a3a16f3d8bd06cff::FreezeMixin",
-            "key": "4a54e312",
-            "kind": "class",
-            "name": "FreezeMixin"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c33434dfa0e3dd0c466848cea142ca3d7645b5074fc20b3e1d1297392cd4f22c::TestTimedSerializer",
-            "key": "ed714455",
-            "kind": "class",
-            "name": "TestTimedSerializer"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d1792c6882df63bcf1e3853fc438b8266c9221969896189cbb9c964226e9fd9a::TestTimestampSigner",
-            "key": "f91fbae2",
-            "kind": "class",
-            "name": "TestTimestampSigner"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8ae0afc28f892591fb1520bf2ef61c17e11f93f92e70367068527dc526ff5452::TestURLSafeSerializer",
-            "key": "504a0c6e",
-            "kind": "class",
-            "name": "TestURLSafeSerializer"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::3aa4dbb61497856a3b2f3f24c32d64febf6068c040a30327feb42366ba2c5fce::TestURLSafeTimedSerializer",
-            "key": "ac5c1d91",
-            "kind": "class",
-            "name": "TestURLSafeTimedSerializer"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::3c2f413077a67aae8d7255b6bfa52524d56b123b7e5e0e05d2f4aacbc6664833::test_base64_bad",
-            "key": "167a5200",
-            "kind": "function",
-            "name": "test_base64_bad"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::66b096d437a2717a4af4c03a51b293edc88159a3f3887e137ca2db074f32a17f::test_base64",
-            "key": "26e5a028",
-            "kind": "function",
-            "name": "test_base64"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6afe077b48ad9c6614a5099ac71f96727e5a347788c9a8c7d7cb232d96f6f814::test_int_bytes",
-            "key": "80bca6ca",
-            "kind": "function",
-            "name": "test_int_bytes"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::e89b48d7c97f34321a65c7a68c121fd80308ab09b5048dd2457ee4f286576dc0::test_want_bytes",
-            "key": "e103a475",
-            "kind": "function",
-            "name": "test_want_bytes"
-          },
-          {
-            "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::23ad754e45a85117a41d2df4b177cceb1b6b3137abba7904d627c8b494acc850::coerce_str",
-            "key": "1269699b",
-            "kind": "function",
-            "name": "coerce_str"
+            "name": "BadData",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                191,
+                105,
+                223,
+                197,
+                243,
+                22,
+                130,
+                249,
+                171,
+                66,
+                63,
+                31,
+                155,
+                247,
+                199,
+                216,
+                255,
+                41,
+                145,
+                208,
+                166,
+                18,
+                84,
+                232,
+                146,
+                211,
+                130,
+                200,
+                70,
+                125,
+                121,
+                140
+              ]
+            }
           }
         ],
         "unnamed": 0
@@ -3445,8 +3337,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 7348,
-                "normalizedFrameBytesExcludingCounters": 29391,
+                "normalizedEstimatedTokensExcludingCounters": 3124,
+                "normalizedFrameBytesExcludingCounters": 12496,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3455,7 +3347,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/python-itsdangerous/project`\n\n\u25ab autodoc_preserve_defaults  `docs/conf.py:24 \u203a autodoc_preserve_defaults`\n\u25ab _int_to_bytes  `src/itsdangerous/encoding.py:45 \u203a _int_to_bytes`\n\u25ab html_context  `docs/conf.py:37 \u203a html_context`\n\u25c6 NoneAlgorithm  `src/itsdangerous/signer.py:31 \u203a NoneAlgorithm`\n  \u0192 get_signature  `src/itsdangerous/signer.py:36 \u203a get_signature`\n\u25ab html_favicon  `docs/conf.py:52 \u203a html_favicon`\n\u25ab html_theme  `docs/conf.py:35 \u203a html_theme`\n\u25ab autoclass_content  `docs/conf.py:21 \u203a autoclass_content`\n\u25c6 URLSafeSerializer  `src/itsdangerous/url_safe.py:72 \u203a URLSafeSerializer`\n\u25ab html_title  `docs/conf.py:54 \u203a html_title`\n\u25c6 URLSafeSerializerMixin  `src/itsdangerous/url_safe.py:15 \u203a URLSafeSerializerMixin`\n  \u0192 dump_payload  `src/itsdangerous/url_safe.py:55 \u203a dump_payload`\n  \u0192 load_payload  `src/itsdangerous/url_safe.py:23 \u203a load_payload`\n\u25c6 TimedSerializer  `src/itsdangerous/timed.py:170 \u203a TimedSerializer`\n  \u0192 loads  `src/itsdangerous/timed.py:185 \u203a loads`\n  \u0192 iter_unsigners  `src/itsdangerous/timed.py:177 \u203a iter_unsigners`\n  \u0192 loads_unsafe  `src/itsdangerous/timed.py:222 \u203a loads_unsafe`\n\u25c6 BadHeader  `src/itsdangerous/exc.py:66 \u203a BadHeader`\n  \u0192 __init__  `src/itsdangerous/exc.py:74 \u203a __init__`\n\u25ab html_show_sourcelink  `docs/conf.py:55 \u203a html_show_sourcelink`\n\u25ab html_theme_options  `docs/conf.py:36 \u203a html_theme_options`\n\u0192 is_text_serializer  `src/itsdangerous/serializer.py:35 \u203a is_text_serializer`\n\u25c6 URLSafeTimedSerializer  `src/itsdangerous/url_safe.py:79 \u203a URLSafeTimedSerializer`\n\u25ab intersphinx_mapping  `docs/conf.py:29 \u203a intersphinx_mapping`\n\u25c6 _CompactJSON  `src/itsdangerous/_json.py:7 \u203a _CompactJSON`\n  \u0192 loads  `src/itsdangerous/_json.py:11 \u203a loads`\n  \u0192 dumps  `src/itsdangerous/_json.py:15 \u203a dumps`\n\u25ab project  `docs/conf.py:6 \u203a project`\n\u25ab singlehtml_sidebars  `docs/conf.py:50 \u203a singlehtml_sidebars`\n\u25ab html_logo  `docs/conf.py:53 \u203a html_logo`\n\u25c6 Signer  `src/itsdangerous/signer.py:76 \u203a Signer`\n  \u0192 __init__  `src/itsdangerous/signer.py:129 \u203a __init__`\n  \u0192 unsign  `src/itsdangerous/signer.py:244 \u203a unsign`\n  \u0192 validate  `src/itsdangerous/signer.py:258 \u203a validate`\n  \u0192 derive_key  `src/itsdangerous/signer.py:182 \u203a derive_key`\n  \u0192 get_signature  `src/itsdangerous/signer.py:215 \u203a get_signature`\n  \u0192 verify_signature  `src/itsdangerous/signer.py:227 \u203a verify_signature`\n  \u0192 sign  `src/itsdangerous/signer.py:222 \u203a sign`\n\u25c6 HMACAlgorithm  `src/itsdangerous/signer.py:48 \u203a HMACAlgorithm`\n  \u0192 get_signature  `src/itsdangerous/signer.py:62 \u203a get_signature`\n  \u0192 __init__  `src/itsdangerous/signer.py:56 \u203a __init__`\n\u25ab autodoc_typehints  `docs/conf.py:23 \u203a autodoc_typehints`\n\u25c6 _PDataSerializer  `src/itsdangerous/serializer.py:26 \u203a _PDataSerializer`\n  \u0192 dumps  `src/itsdangerous/serializer.py:31 \u203a dumps`\n  \u0192 loads  `src/itsdangerous/serializer.py:27 \u203a loads`\n\u25c6 Serializer  `src/itsdangerous/serializer.py:42 \u203a Serializer`\n  \u0192 __init__  `src/itsdangerous/serializer.py:110 \u203a __init__`\n  \u0192 __init__  `src/itsdangerous/serializer.py:177 \u203a __init__`\n  \u0192 dumps  `src/itsdangerous/serializer.py:311 \u203a dumps`\n  \u0192 load_unsafe  `src/itsdangerous/serializer.py:399 \u203a load_unsafe`\n  \u0192 _loads_unsafe_impl  `src/itsdangerous/serializer.py:369 \u203a _loads_unsafe_impl`\n  \u0192 __init__  `src/itsdangerous/serializer.py:142 \u203a __init__`\n  \u0192 loads  `src/itsdangerous/serializer.py:330 \u203a loads`\n  \u0192 load  `src/itsdangerous/serializer.py:347 \u203a load`\n  \u0192 __init__  `src/itsdangerous/serializer.py:126 \u203a __init__`\n  \u0192 __init__  `src/itsdangerous/serializer.py:161 \u203a __init__`\n  \u0192 dump_payload  `src/itsdangerous/serializer.py:273 \u203a dump_payload`\n  \u0192 load_payload  `src/itsdangerous/serializer.py:245 \u203a load_payload`\n  \u0192 make_signer  `src/itsdangerous/serializer.py:280 \u203a make_signer`\n  \u0192 dump  `src/itsdangerous/serializer.py:324 \u203a dump`\n  \u0192 loads_unsafe  `src/itsdangerous/serializer.py:351 \u203a loads_unsafe`\n  \u0192 __init__  `src/itsdangerous/serializer.py:192 \u203a __init__`\n  \u0192 iter_unsigners  `src/itsdangerous/serializer.py:289 \u203a iter_unsigners`\n\u25c6 BadTimeSignature  `src/itsdangerous/exc.py:36 \u203a BadTimeSignature`\n  \u0192 __init__  `src/itsdangerous/exc.py:41 \u203a __init__`\n\u25c6 BadSignature  `src/itsdangerous/exc.py:22 \u203a BadSignature`\n  \u0192 __init__  `src/itsdangerous/exc.py:25 \u203a __init__`\n\u25ab html_sidebars  `docs/conf.py:46 \u203a html_sidebars`\n\u25ab autodoc_member_order  `docs/conf.py:22 \u203a autodoc_member_order`\n\u0192 want_bytes  `src/itsdangerous/encoding.py:11 \u203a want_bytes`\n\u0192 int_to_bytes  `src/itsdangerous/encoding.py:49 \u203a int_to_bytes`\n\u0192 base64_encode  `src/itsdangerous/encoding.py:20 \u203a base64_encode`\n\u0192 _make_keys_list  `src/itsdangerous/signer.py:67 \u203a _make_keys_list`\n\u0192 __getattr__  `src/itsdangerous/__init__.py:24 \u203a __getattr__`\n\u25c6 BadData  `src/itsdangerous/exc.py:7 \u203a BadData`\n  \u0192 __init__  `src/itsdangerous/exc.py:14 \u203a __init__`\n  \u0192 __str__  `src/itsdangerous/exc.py:18 \u203a __str__`\n\u25c6 SignatureExpired  `src/itsdangerous/exc.py:60 \u203a SignatureExpired`\n\u25c6 BadPayload  `src/itsdangerous/exc.py:92 \u203a BadPayload`\n  \u0192 __init__  `src/itsdangerous/exc.py:101 \u203a __init__`\n\u25ab copyright  `docs/conf.py:7 \u203a copyright`\n\u0192 bytes_to_int  `src/itsdangerous/encoding.py:53 \u203a bytes_to_int`\n\u25ab extlinks  `docs/conf.py:25 \u203a extlinks`\n\u0192 _lazy_sha1  `src/itsdangerous/signer.py:40 \u203a _lazy_sha1`\n\u25ab extensions  `docs/conf.py:14 \u203a extensions`\n\u25ab default_role  `docs/conf.py:13 \u203a default_role`\n\u0192 base64_decode  `src/itsdangerous/encoding.py:28 \u203a base64_decode`\n\u25c6 TimestampSigner  `src/itsdangerous/timed.py:22 \u203a TimestampSigner`\n  \u0192 unsign  `src/itsdangerous/timed.py:57 \u203a unsign`\n  \u0192 get_timestamp  `src/itsdangerous/timed.py:29 \u203a get_timestamp`\n  \u0192 unsign  `src/itsdangerous/timed.py:72 \u203a unsign`\n  \u0192 sign  `src/itsdangerous/timed.py:45 \u203a sign`\n  \u0192 timestamp_to_datetime  `src/itsdangerous/timed.py:35 \u203a timestamp_to_datetime`\n  \u0192 validate  `src/itsdangerous/timed.py:160 \u203a validate`\n  \u0192 unsign  `src/itsdangerous/timed.py:65 \u203a unsign`\n\u25ab author  `docs/conf.py:8 \u203a author`\n\u25c6 SigningAlgorithm  `src/itsdangerous/signer.py:15 \u203a SigningAlgorithm`\n  \u0192 verify_signature  `src/itsdangerous/signer.py:24 \u203a verify_signature`\n  \u0192 get_signature  `src/itsdangerous/signer.py:20 \u203a get_signature`\n\u25ab html_static_path  `docs/conf.py:51 \u203a html_static_path`\n100 declaration(s) \u00b7 truncated\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-itsdangerous/project\",\"limit\":100,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/python-itsdangerous/project`\n\n◆ _CompactJSON  `src/itsdangerous/_json.py:7 › _CompactJSON`\n  ƒ loads  `src/itsdangerous/_json.py:11 › loads`\n    ▫ payload  `payload`\n    ▫ loads  `loads`\n  ƒ dumps  `src/itsdangerous/_json.py:15 › dumps`\n    ▫ kwargs  `kwargs`\n    ▫ obj  `obj`\n    ▫ dumps  `dumps`\n◆ BadHeader  `src/itsdangerous/exc.py:66 › BadHeader`\n  ƒ __init__  `src/itsdangerous/exc.py:74 › __init__`\n    ▫ header  `header`\n    ▫ payload  `payload`\n    ▫ original_error  `original_error`\n    ▫ message  `message`\n◆ BadTimeSignature  `src/itsdangerous/exc.py:36 › BadTimeSignature`\n  ƒ __init__  `src/itsdangerous/exc.py:41 › __init__`\n    ▫ payload  `payload`\n    ▫ message  `message`\n    ▫ date_signed  `date_signed`\n◆ BadSignature  `src/itsdangerous/exc.py:22 › BadSignature`\n  ƒ __init__  `src/itsdangerous/exc.py:25 › __init__`\n    ▫ message  `message`\n    ▫ payload  `payload`\n◆ BadData  `src/itsdangerous/exc.py:7 › BadData`\n  ƒ __init__  `src/itsdangerous/exc.py:14 › __init__`\n25 declaration(s) · truncated\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 25 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-itsdangerous/project\",\"limit\":25,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
                 "type": "text"
               }
             ],
@@ -3463,11 +3355,11 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 21935,
+                "bytesExcludingCursor": 10383,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 5484
+                "estimatedTokensExcludingCursor": 2596
               },
-              "declarations": 100,
+              "declarations": 25,
               "detail": "summary",
               "extent": "truncated",
               "nextCursor": "mcp2-<live-validated>",
@@ -3500,480 +3392,1021 @@
                     "state": "complete"
                   }
                 ],
-                "limit": 100,
+                "limit": 25,
                 "log": "12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760",
                 "more": true,
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "b15bc1485af1941a272f0db9f8df4c5880c5358d0ce90335f968d0f1b46e86a9"
+                "source_root": "a9706589cad21981d43fdd8c785264d628f448f3ca146f7687a6d15103792420"
               },
               "roots": [
                 {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c1b87797a627c8754c5d87b06a894716afdaecba6c51098a8b2c4b7dbb78920e::autodoc_preserve_defaults",
-                  "key": "03a0ea26",
-                  "kind": "variable",
-                  "name": "autodoc_preserve_defaults"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6eaf82ade8c9d4cbdb17eb054e184e68ad60b1dc30568f61a376aa0b0c742d67::_int_to_bytes",
-                  "key": "074fee49",
-                  "kind": "variable",
-                  "name": "_int_to_bytes"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d68b520b72e103cb60f7f64feb33223f8f99025739b53478e949e7352af56fda::html_context",
-                  "key": "1205f0f1",
-                  "kind": "variable",
-                  "name": "html_context"
-                },
-                {
                   "children": [
                     {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::88a58ae7fbf2f2b2ad61468d5ee418b7e8e6af90a6e7cadb715c7d2bb32a7cda::get_signature",
-                      "key": "72c8c027",
-                      "kind": "method",
-                      "name": "get_signature"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::ac6d28f81c7e8891fb60cb6576f0f5d3f869fd12d20d747b5a5c507f0b9fdf63::NoneAlgorithm",
-                  "key": "181c9788",
-                  "kind": "class",
-                  "name": "NoneAlgorithm"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::b1031502c5b0dc27a477a24ae4537763e424ecb82fd0134aa4744f303ce2d064::html_favicon",
-                  "key": "18549382",
-                  "kind": "variable",
-                  "name": "html_favicon"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d05702fd05aba9134dd01e9db9ae498523bf2853d4ec0cdb23e36c12d1625b79::html_theme",
-                  "key": "2dd19096",
-                  "kind": "variable",
-                  "name": "html_theme"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d94c134bc85f88fa7d46d544b944044b5bde4c277b4a5ab3a395edc64c9151fd::autoclass_content",
-                  "key": "30963e5e",
-                  "kind": "variable",
-                  "name": "autoclass_content"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::66d216efc50c5884f6331026b9bd86df8331487c3a7461a38014e631f955459b::URLSafeSerializer",
-                  "key": "31667f88",
-                  "kind": "class",
-                  "name": "URLSafeSerializer"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::087f11060504f83b3fa26ee2d3932140febab3f3998a5661ede136b499c36cd7::html_title",
-                  "key": "33726a7a",
-                  "kind": "variable",
-                  "name": "html_title"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::39b4ca2cd2216c12a76ed9e1f9448839ce9a79e9f808aa4e2824d6af6c5784bb::dump_payload",
-                      "key": "1ee274af",
-                      "kind": "method",
-                      "name": "dump_payload"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::47a9a300bfaf816a2bfd273577567ac421ab514329769ac5be6fb774da5bb175::load_payload",
-                      "key": "f9b2f4ea",
-                      "kind": "method",
-                      "name": "load_payload"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6c0be5f95fcf9153edcf40956398433f3eeba3e098337dae3a1e1ec198f95cdd::URLSafeSerializerMixin",
-                  "key": "3eb35fa3",
-                  "kind": "class",
-                  "name": "URLSafeSerializerMixin"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::589416cefc329d9bf499e0bd0e70d7110ca8e5be2d736ea3ccadf3a4dafb9747::loads",
-                      "key": "2668cb3e",
-                      "kind": "method",
-                      "name": "loads"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::ff6d560ed0ca06e6315da93b2d6cf2b29bb77f15594e7d5af15e0a7dac35f094::iter_unsigners",
-                      "key": "bc28f79f",
-                      "kind": "method",
-                      "name": "iter_unsigners"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d6c29dd7523fee058c9e4267c1055b94f306b1e802f577bb9070bd7713ec7025::loads_unsafe",
-                      "key": "da4d8bee",
-                      "kind": "method",
-                      "name": "loads_unsafe"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::06045b6090ad493bb41c726e9ef00f22eb86f1172a9b0f83dfe3160332670fc0::TimedSerializer",
-                  "key": "4685f41f",
-                  "kind": "class",
-                  "name": "TimedSerializer"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::b2596db827cc81f017a0e7620594b46986cf905429ac81ec372db86ed8818419::__init__",
-                      "key": "cd411187",
-                      "kind": "method",
-                      "name": "__init__"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::184790be04eb9cfa723244de11fd6ddab78bb4ae7661ecbca3a172153ce9bba1::BadHeader",
-                  "key": "4c8785f5",
-                  "kind": "class",
-                  "name": "BadHeader"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::758dc66030f2671b7b8ba5fdb02fa4a1edd36b6eadfa95a8d9ea2120281ba3b5::html_show_sourcelink",
-                  "key": "4ca7a89a",
-                  "kind": "variable",
-                  "name": "html_show_sourcelink"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::0a9d3075acd2b5d0fc003abdf7ba17a82d28fd4b2e6d76fff1804ee28a2d3a62::html_theme_options",
-                  "key": "4cd5c83f",
-                  "kind": "variable",
-                  "name": "html_theme_options"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::64e1cc94b35ff2ece1e0cd9b1f340724e5cd70e4fbe66218906cca186ed90e8c::is_text_serializer",
-                  "key": "567f6c62",
-                  "kind": "function",
-                  "name": "is_text_serializer"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::4e1508c531f3ff80be7af3fdded5cbdcf3e5c3e6ccd92f16f361d7e86183ef3f::URLSafeTimedSerializer",
-                  "key": "5fbe28e6",
-                  "kind": "class",
-                  "name": "URLSafeTimedSerializer"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::e6ac37dfd860652b7300ee534d01734fa17e388b8a2cae0a1ee4a8bd5a763cc5::intersphinx_mapping",
-                  "key": "6253e4ac",
-                  "kind": "variable",
-                  "name": "intersphinx_mapping"
-                },
-                {
-                  "children": [
-                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::461550ccbb3d3552094dde82ba8f207159de746c743f789bc1edb6e80d21734b::payload",
+                          "key": "0cb0b70a",
+                          "kind": "variable",
+                          "name": "payload",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              12,
+                              176,
+                              183,
+                              10,
+                              93,
+                              107,
+                              174,
+                              41,
+                              33,
+                              116,
+                              226,
+                              27,
+                              66,
+                              211,
+                              93,
+                              149,
+                              243,
+                              147,
+                              79,
+                              233,
+                              141,
+                              116,
+                              148,
+                              234,
+                              159,
+                              183,
+                              112,
+                              149,
+                              188,
+                              73,
+                              23,
+                              209
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::e9fefb58c8d4a44b4ea36b60a21495d2d86c7ee108db0598b7672c76df6df0d7::loads",
+                          "key": "f0a2df42",
+                          "kind": "variable",
+                          "name": "loads",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              240,
+                              162,
+                              223,
+                              66,
+                              205,
+                              231,
+                              173,
+                              243,
+                              217,
+                              100,
+                              171,
+                              94,
+                              247,
+                              202,
+                              133,
+                              127,
+                              114,
+                              226,
+                              199,
+                              138,
+                              246,
+                              204,
+                              26,
+                              70,
+                              155,
+                              109,
+                              144,
+                              194,
+                              13,
+                              45,
+                              43,
+                              139
+                            ]
+                          }
+                        }
+                      ],
                       "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::e493655f8fe04cf0484456d53c4c773fc8fc06d2d37d99f0f650f6f97818ea90::loads",
                       "key": "2bfc17a5",
                       "kind": "method",
-                      "name": "loads"
+                      "name": "loads",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          43,
+                          252,
+                          23,
+                          165,
+                          154,
+                          170,
+                          248,
+                          69,
+                          23,
+                          6,
+                          46,
+                          251,
+                          124,
+                          239,
+                          153,
+                          244,
+                          77,
+                          29,
+                          190,
+                          31,
+                          229,
+                          141,
+                          17,
+                          72,
+                          184,
+                          83,
+                          101,
+                          161,
+                          148,
+                          177,
+                          148,
+                          74
+                        ]
+                      }
                     },
                     {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::759fcfad0027af8169791f04ff5b5342464442e70e0f41a25e4c7ee058b80710::kwargs",
+                          "key": "09e83f33",
+                          "kind": "variable",
+                          "name": "kwargs",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              9,
+                              232,
+                              63,
+                              51,
+                              192,
+                              19,
+                              120,
+                              18,
+                              47,
+                              244,
+                              163,
+                              114,
+                              230,
+                              183,
+                              113,
+                              145,
+                              202,
+                              152,
+                              154,
+                              113,
+                              201,
+                              195,
+                              126,
+                              84,
+                              81,
+                              243,
+                              202,
+                              244,
+                              38,
+                              206,
+                              63,
+                              98
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6254e35a7116584e425bfc9237a137dbb35b2a32af8b2b94dbe6b97d201c39d1::obj",
+                          "key": "b1c5addb",
+                          "kind": "variable",
+                          "name": "obj",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              177,
+                              197,
+                              173,
+                              219,
+                              135,
+                              52,
+                              54,
+                              28,
+                              203,
+                              141,
+                              165,
+                              220,
+                              72,
+                              144,
+                              98,
+                              231,
+                              209,
+                              117,
+                              166,
+                              218,
+                              176,
+                              76,
+                              122,
+                              173,
+                              172,
+                              120,
+                              117,
+                              191,
+                              216,
+                              17,
+                              21,
+                              47
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::a598e30d61cf10f1c3ae91af738be4723da4375939c5e358e75a212826bbb595::dumps",
+                          "key": "d9a3af4e",
+                          "kind": "variable",
+                          "name": "dumps",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              217,
+                              163,
+                              175,
+                              78,
+                              170,
+                              30,
+                              37,
+                              246,
+                              233,
+                              76,
+                              133,
+                              39,
+                              154,
+                              137,
+                              48,
+                              151,
+                              94,
+                              45,
+                              74,
+                              54,
+                              12,
+                              165,
+                              253,
+                              63,
+                              116,
+                              50,
+                              173,
+                              227,
+                              161,
+                              128,
+                              90,
+                              115
+                            ]
+                          }
+                        }
+                      ],
                       "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8d7fa1620e7c400e286e1695d96594f6b9a42654a7962cb89cff389c7faf3d99::dumps",
                       "key": "c6f64123",
                       "kind": "method",
-                      "name": "dumps"
+                      "name": "dumps",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          198,
+                          246,
+                          65,
+                          35,
+                          137,
+                          23,
+                          222,
+                          194,
+                          45,
+                          172,
+                          47,
+                          152,
+                          152,
+                          19,
+                          13,
+                          49,
+                          241,
+                          210,
+                          141,
+                          12,
+                          230,
+                          249,
+                          236,
+                          124,
+                          221,
+                          104,
+                          140,
+                          34,
+                          253,
+                          155,
+                          46,
+                          40
+                        ]
+                      }
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::3f1d5b139652ff00a234cced3dfd4d2e870a57c56ecd3aaa60b80a2a144df574::_CompactJSON",
                   "key": "66160adb",
                   "kind": "class",
-                  "name": "_CompactJSON"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::2cd6c55d7dc22119265a7f51febc7fdf56e1ad72e3970d28605b9fd84bfd0f9e::project",
-                  "key": "69d1cb0d",
-                  "kind": "variable",
-                  "name": "project"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::74457e2e9c4fae01fb4a44c8a886aea918ea3149a81f067644da001106a1581b::singlehtml_sidebars",
-                  "key": "6f8b6268",
-                  "kind": "variable",
-                  "name": "singlehtml_sidebars"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::9df2b43e199b2e879e0162b63e54423bbd30a7d52a5ef14a009017d8feb75243::html_logo",
-                  "key": "7336e272",
-                  "kind": "variable",
-                  "name": "html_logo"
+                  "name": "_CompactJSON",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      102,
+                      22,
+                      10,
+                      219,
+                      50,
+                      207,
+                      222,
+                      216,
+                      232,
+                      184,
+                      99,
+                      60,
+                      54,
+                      92,
+                      166,
+                      6,
+                      52,
+                      78,
+                      115,
+                      164,
+                      44,
+                      186,
+                      175,
+                      54,
+                      242,
+                      211,
+                      193,
+                      77,
+                      163,
+                      19,
+                      116,
+                      127
+                    ]
+                  }
                 },
                 {
                   "children": [
                     {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6435e43da70debd757b77b2cc04538666f70e1ad7a184ffd5b2980f01b12b3c9::__init__",
-                      "key": "02ea9e4a",
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::aa6efddd8b9940153090c2cd9c36fd01192c49087e82c0306a21e7fb8651e30d::header",
+                          "key": "48a94b22",
+                          "kind": "variable",
+                          "name": "header",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              72,
+                              169,
+                              75,
+                              34,
+                              254,
+                              155,
+                              31,
+                              165,
+                              21,
+                              72,
+                              104,
+                              46,
+                              111,
+                              20,
+                              109,
+                              179,
+                              203,
+                              22,
+                              117,
+                              137,
+                              56,
+                              207,
+                              23,
+                              119,
+                              86,
+                              220,
+                              1,
+                              119,
+                              86,
+                              137,
+                              225,
+                              156
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8d1fab8390fa64c097c3f1a5afa90e6b07390e2e8396c839ee660b238fbf4e6b::payload",
+                          "key": "c1af52ea",
+                          "kind": "variable",
+                          "name": "payload",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              193,
+                              175,
+                              82,
+                              234,
+                              202,
+                              88,
+                              125,
+                              242,
+                              118,
+                              33,
+                              212,
+                              98,
+                              39,
+                              159,
+                              38,
+                              132,
+                              229,
+                              72,
+                              67,
+                              60,
+                              46,
+                              73,
+                              66,
+                              127,
+                              243,
+                              164,
+                              194,
+                              86,
+                              246,
+                              22,
+                              189,
+                              94
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::2705fe52f87bdd3fcda940299a61736133fc04973843c06f09902128a45b8fd8::original_error",
+                          "key": "f7b196a6",
+                          "kind": "variable",
+                          "name": "original_error",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              247,
+                              177,
+                              150,
+                              166,
+                              129,
+                              76,
+                              42,
+                              180,
+                              192,
+                              173,
+                              47,
+                              184,
+                              251,
+                              31,
+                              239,
+                              214,
+                              109,
+                              78,
+                              59,
+                              116,
+                              72,
+                              146,
+                              98,
+                              187,
+                              200,
+                              248,
+                              246,
+                              182,
+                              246,
+                              171,
+                              9,
+                              210
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::93ba151d104d0b02977c6420e5d0798a5ffe3532b59db9889b8390f347dc3a95::message",
+                          "key": "ffb646b6",
+                          "kind": "variable",
+                          "name": "message",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              255,
+                              182,
+                              70,
+                              182,
+                              83,
+                              173,
+                              209,
+                              93,
+                              234,
+                              195,
+                              216,
+                              139,
+                              170,
+                              229,
+                              160,
+                              238,
+                              63,
+                              64,
+                              128,
+                              44,
+                              170,
+                              78,
+                              85,
+                              6,
+                              100,
+                              149,
+                              53,
+                              31,
+                              155,
+                              211,
+                              144,
+                              100
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::b2596db827cc81f017a0e7620594b46986cf905429ac81ec372db86ed8818419::__init__",
+                      "key": "cd411187",
                       "kind": "method",
-                      "name": "__init__"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8201eab0ecbbcdede7f37a510c7294af821ab8d1dbad12b571825d9bfe2e285b::unsign",
-                      "key": "6da5ebab",
-                      "kind": "method",
-                      "name": "unsign"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::3e4d5cc0b6714e5872e60eb095b9cb55f5de6cbbda76e4ec15ee5a8e5b438cf7::validate",
-                      "key": "765a0cf3",
-                      "kind": "method",
-                      "name": "validate"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::69c4b0dda11f720a904fdb49bac2455050da58fb2a28c42ad54c3d6b9a2da588::derive_key",
-                      "key": "7ea7a20b",
-                      "kind": "method",
-                      "name": "derive_key"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::114dafccf015985aebc6bce995cc3485811e6a928a26fe1529a97aff4802b2eb::get_signature",
-                      "key": "8fc95b43",
-                      "kind": "method",
-                      "name": "get_signature"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::827fe5cd86ef84b68488f5af5383eaf0b1a0004983e843b52e575bcc0d34da7e::verify_signature",
-                      "key": "ebc75997",
-                      "kind": "method",
-                      "name": "verify_signature"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::18ba9f56ce43ae3a2b5db041acd3c21966c7d77a75663acc28213e31d8db5ade::sign",
-                      "key": "f1b8b9f8",
-                      "kind": "method",
-                      "name": "sign"
+                      "name": "__init__",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          205,
+                          65,
+                          17,
+                          135,
+                          46,
+                          119,
+                          95,
+                          122,
+                          27,
+                          195,
+                          214,
+                          248,
+                          94,
+                          115,
+                          86,
+                          183,
+                          214,
+                          175,
+                          119,
+                          127,
+                          35,
+                          125,
+                          1,
+                          16,
+                          100,
+                          88,
+                          246,
+                          102,
+                          8,
+                          211,
+                          20,
+                          245
+                        ]
+                      }
                     }
                   ],
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::f21f9c0794aacc3a3c55db3486897c9e429dfbd59d20f7171c84b756159aa1ad::Signer",
-                  "key": "743cd838",
+                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::184790be04eb9cfa723244de11fd6ddab78bb4ae7661ecbca3a172153ce9bba1::BadHeader",
+                  "key": "4c8785f5",
                   "kind": "class",
-                  "name": "Signer"
+                  "name": "BadHeader",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      76,
+                      135,
+                      133,
+                      245,
+                      130,
+                      227,
+                      40,
+                      111,
+                      81,
+                      204,
+                      115,
+                      205,
+                      81,
+                      180,
+                      154,
+                      216,
+                      210,
+                      186,
+                      254,
+                      202,
+                      182,
+                      34,
+                      53,
+                      21,
+                      115,
+                      151,
+                      55,
+                      160,
+                      54,
+                      213,
+                      247,
+                      196
+                    ]
+                  }
                 },
                 {
                   "children": [
                     {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6b0c141c0b0bd97962a7b346c38aa588944ec898bd3e2c9a63ab4fb9927061f4::get_signature",
-                      "key": "098446aa",
-                      "kind": "method",
-                      "name": "get_signature"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::ea9fe7dcdca347866d6aea18eb78df02f8421bdea0b6e6b2e84e8fe98b8a2005::__init__",
-                      "key": "3d5d8f73",
-                      "kind": "method",
-                      "name": "__init__"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::3c43f5a84ccf40d5bb5a177cffc240f14ef8e99c723d98de088a17985d988792::HMACAlgorithm",
-                  "key": "76eedf2d",
-                  "kind": "class",
-                  "name": "HMACAlgorithm"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::1c8b647bf469c6c81f4bda85c9dea98f6a88203c7e1b76221a3471a07074c17f::autodoc_typehints",
-                  "key": "77b6c716",
-                  "kind": "variable",
-                  "name": "autodoc_typehints"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::940ece6742305325213043fa35838ee053070ce8a8f4b79ff20af9a7e955414b::dumps",
-                      "key": "c53856c6",
-                      "kind": "method",
-                      "name": "dumps"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::a03c703e0138983af08c1ab004cf1605113800aaf1bf05acad977f5dc7d9ca8f::loads",
-                      "key": "cb54e1fc",
-                      "kind": "method",
-                      "name": "loads"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::a54661288c7791afdd1b7c8b66d125a2889ecf45865725b1cda4b872f141958b::_PDataSerializer",
-                  "key": "7881a72b",
-                  "kind": "class",
-                  "name": "_PDataSerializer"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c5ecbbd46d81274766cf4382302daecd99bf112e54245a481f6bf216576d9c68::__init__",
-                      "key": "21659bd4",
-                      "kind": "method",
-                      "name": "__init__"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c5ecbbd46d81274766cf4382302daecd9eeaa5f406dcc99d8e13f94918963375::__init__",
-                      "key": "2a02a07b",
-                      "kind": "method",
-                      "name": "__init__"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::a6075851a815aaa17c1740fe4cd2f870c4c2b801d72943c985e962c7086c76ad::dumps",
-                      "key": "355a40cd",
-                      "kind": "method",
-                      "name": "dumps"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::9a6743f11c3579c571cd556ae0ac5922bf9080e6bc356872123dd9dbcb53c172::load_unsafe",
-                      "key": "3d89724d",
-                      "kind": "method",
-                      "name": "load_unsafe"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c5aa5329834d064cb078ea1ce7f07d0a8a88b1277fd921be1aad83829c3bb91b::_loads_unsafe_impl",
-                      "key": "44a6af13",
-                      "kind": "method",
-                      "name": "_loads_unsafe_impl"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c5ecbbd46d81274766cf4382302daecdf642f55a0e291ccb3e127287fa0716c3::__init__",
-                      "key": "5082591d",
-                      "kind": "method",
-                      "name": "__init__"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::1ce96683448405b25428200620536953f5990701064e521d275faf99811f7794::loads",
-                      "key": "628ceda4",
-                      "kind": "method",
-                      "name": "loads"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::bd377416d0e123a5432763d9a664b7d550be3394e77916e3abc48a90483a0bad::load",
-                      "key": "6b1b05b9",
-                      "kind": "method",
-                      "name": "load"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c5ecbbd46d81274766cf4382302daecdffab5c549cf88f77f17929ebddbea16e::__init__",
-                      "key": "7aba75e2",
-                      "kind": "method",
-                      "name": "__init__"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c5ecbbd46d81274766cf4382302daecd306a76240155670c3cd11bdd9fb87745::__init__",
-                      "key": "85e83962",
-                      "kind": "method",
-                      "name": "__init__"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::b9b78debcc4c0ab67279bdb993cd91f18ec5d5644b28da7b2ab8c0837e9b3ea5::dump_payload",
-                      "key": "93f33622",
-                      "kind": "method",
-                      "name": "dump_payload"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6f836168efcd6111ceb64977664e44e99526bb63f47966eefbbe1133b960e262::load_payload",
-                      "key": "a312c2ac",
-                      "kind": "method",
-                      "name": "load_payload"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::411e70443d2f9c28b075283ea3e628a305eaba34e29d4a79bfa6d3e3573a6db8::make_signer",
-                      "key": "b6153f16",
-                      "kind": "method",
-                      "name": "make_signer"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::77a1c96accff85c08b6befd5ef603058076a322d24267dbb159505cdf32f4c33::dump",
-                      "key": "b6618e2a",
-                      "kind": "method",
-                      "name": "dump"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d6a83d296681b1510b79c6904e56dab1a89752ffa615cd52a816d28f18fa3470::loads_unsafe",
-                      "key": "bf96671f",
-                      "kind": "method",
-                      "name": "loads_unsafe"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c5ecbbd46d81274766cf4382302daecdec332db6ac9ba3c80729536bbd3d0ca3::__init__",
-                      "key": "f1e54f69",
-                      "kind": "method",
-                      "name": "__init__"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::73dcbea83e533772a2f6e9d884130a4f571fe0c66281df632e7c98594eebcc0f::iter_unsigners",
-                      "key": "f1f80146",
-                      "kind": "method",
-                      "name": "iter_unsigners"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::29a3488dc188d74a1573057101a16b7e6b8f4c7c38dd6aa24b64a431d3055bd5::Serializer",
-                  "key": "7d0ce579",
-                  "kind": "class",
-                  "name": "Serializer"
-                },
-                {
-                  "children": [
-                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8b277d445777c4d1abcb5578791b0ed307390e2e8396c839ee660b238fbf4e6b::payload",
+                          "key": "15e717da",
+                          "kind": "variable",
+                          "name": "payload",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              21,
+                              231,
+                              23,
+                              218,
+                              159,
+                              253,
+                              229,
+                              186,
+                              94,
+                              27,
+                              21,
+                              50,
+                              38,
+                              147,
+                              140,
+                              228,
+                              171,
+                              196,
+                              15,
+                              208,
+                              25,
+                              53,
+                              122,
+                              154,
+                              255,
+                              17,
+                              80,
+                              16,
+                              103,
+                              153,
+                              193,
+                              124
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::e130df14f6d751c0b8a879d4d249bf6f5ffe3532b59db9889b8390f347dc3a95::message",
+                          "key": "1ca5e4c6",
+                          "kind": "variable",
+                          "name": "message",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              28,
+                              165,
+                              228,
+                              198,
+                              4,
+                              80,
+                              5,
+                              251,
+                              142,
+                              219,
+                              235,
+                              155,
+                              15,
+                              195,
+                              97,
+                              51,
+                              123,
+                              172,
+                              50,
+                              21,
+                              196,
+                              228,
+                              253,
+                              83,
+                              146,
+                              238,
+                              126,
+                              158,
+                              85,
+                              162,
+                              28,
+                              171
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::2c84258fc6fb45246491afd9e3cec31b02b819dcfa795d49a860b75f4652969c::date_signed",
+                          "key": "9016de83",
+                          "kind": "variable",
+                          "name": "date_signed",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              144,
+                              22,
+                              222,
+                              131,
+                              2,
+                              217,
+                              166,
+                              102,
+                              107,
+                              167,
+                              26,
+                              47,
+                              130,
+                              38,
+                              106,
+                              225,
+                              83,
+                              17,
+                              37,
+                              94,
+                              214,
+                              230,
+                              36,
+                              8,
+                              223,
+                              159,
+                              236,
+                              177,
+                              253,
+                              5,
+                              199,
+                              115
+                            ]
+                          }
+                        }
+                      ],
                       "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::de30d7741fcd3a1b21b2f525c3d27e29483e0f9966f20e76c11f760cd9094336::__init__",
                       "key": "fd9c31ce",
                       "kind": "method",
-                      "name": "__init__"
+                      "name": "__init__",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          253,
+                          156,
+                          49,
+                          206,
+                          192,
+                          248,
+                          239,
+                          188,
+                          197,
+                          12,
+                          200,
+                          59,
+                          144,
+                          153,
+                          220,
+                          227,
+                          201,
+                          30,
+                          24,
+                          173,
+                          223,
+                          194,
+                          106,
+                          202,
+                          72,
+                          35,
+                          201,
+                          216,
+                          153,
+                          160,
+                          142,
+                          145
+                        ]
+                      }
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::1fc52cd491a56f4145d60c1dfc7b430b26cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
                   "key": "931491cf",
                   "kind": "class",
-                  "name": "BadTimeSignature"
+                  "name": "BadTimeSignature",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      147,
+                      20,
+                      145,
+                      207,
+                      22,
+                      24,
+                      112,
+                      63,
+                      123,
+                      209,
+                      255,
+                      238,
+                      232,
+                      48,
+                      228,
+                      154,
+                      95,
+                      196,
+                      184,
+                      202,
+                      86,
+                      33,
+                      92,
+                      139,
+                      61,
+                      107,
+                      236,
+                      73,
+                      160,
+                      95,
+                      48,
+                      203
+                    ]
+                  }
                 },
                 {
                   "children": [
                     {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::7afb13ac34d6ce333d4c763c434537365ffe3532b59db9889b8390f347dc3a95::message",
+                          "key": "3b2dae1b",
+                          "kind": "variable",
+                          "name": "message",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              59,
+                              45,
+                              174,
+                              27,
+                              69,
+                              113,
+                              243,
+                              60,
+                              9,
+                              76,
+                              225,
+                              5,
+                              9,
+                              167,
+                              123,
+                              166,
+                              141,
+                              188,
+                              78,
+                              115,
+                              102,
+                              101,
+                              68,
+                              226,
+                              49,
+                              156,
+                              4,
+                              187,
+                              238,
+                              6,
+                              21,
+                              81
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::f56386d120897abe79e20c8aa54c2a8907390e2e8396c839ee660b238fbf4e6b::payload",
+                          "key": "5df35264",
+                          "kind": "variable",
+                          "name": "payload",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              93,
+                              243,
+                              82,
+                              100,
+                              20,
+                              6,
+                              86,
+                              250,
+                              186,
+                              209,
+                              108,
+                              32,
+                              108,
+                              255,
+                              110,
+                              121,
+                              88,
+                              110,
+                              5,
+                              106,
+                              144,
+                              44,
+                              188,
+                              160,
+                              239,
+                              10,
+                              25,
+                              49,
+                              160,
+                              127,
+                              3,
+                              193
+                            ]
+                          }
+                        }
+                      ],
                       "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::b9a02b89ef511fb42c3d25361ca77c745cc2e02917908a942ab885efa4d965f7::__init__",
                       "key": "4b774272",
                       "kind": "method",
-                      "name": "__init__"
+                      "name": "__init__",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          75,
+                          119,
+                          66,
+                          114,
+                          36,
+                          48,
+                          16,
+                          193,
+                          155,
+                          213,
+                          36,
+                          72,
+                          201,
+                          9,
+                          130,
+                          33,
+                          75,
+                          22,
+                          227,
+                          12,
+                          117,
+                          22,
+                          12,
+                          59,
+                          107,
+                          246,
+                          32,
+                          61,
+                          174,
+                          179,
+                          22,
+                          82
+                        ]
+                      }
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::93e83dc6b976d1981bbc160876e899e1002ba33339f81fc723e5a74f0348de59::BadSignature",
                   "key": "96a6efe2",
                   "kind": "class",
-                  "name": "BadSignature"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d3f5a20f6b0e49e22bd1642f040dad7cefa6cb0a58745c4a829878143a0ebcc3::html_sidebars",
-                  "key": "992072e9",
-                  "kind": "variable",
-                  "name": "html_sidebars"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::bb991fecd6b907731281080c83f0c32ca36a7b6484972c99e71fcb8e080927d2::autodoc_member_order",
-                  "key": "a05d3366",
-                  "kind": "variable",
-                  "name": "autodoc_member_order"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::4595277fadbb5746e858c718ede8cc6a22591b2aaca3a11b04a26e28bf1ee3bc::want_bytes",
-                  "key": "a3cf288d",
-                  "kind": "function",
-                  "name": "want_bytes"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::98d6eadc450c56b6d8ae9fa2e4bfe1f32edd954db50f321cf942746037fda81e::int_to_bytes",
-                  "key": "a590012c",
-                  "kind": "function",
-                  "name": "int_to_bytes"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d24dde9832b4dc59816c49eab1a0574c612cb2747ef4a4a94158ebe87866efeb::base64_encode",
-                  "key": "b04e86d3",
-                  "kind": "function",
-                  "name": "base64_encode"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::24d8412fe6e9606140782b150e686b84f11898697cbd731936e5f4a1d82ec3ca::_make_keys_list",
-                  "key": "b7b4a24c",
-                  "kind": "function",
-                  "name": "_make_keys_list"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::3aed89a1d5b858a8a1733d3b3cda9ecd58eee04de1530057ad6df0674046b850::__getattr__",
-                  "key": "ba2b32bb",
-                  "kind": "function",
-                  "name": "__getattr__"
+                  "name": "BadSignature",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      150,
+                      166,
+                      239,
+                      226,
+                      226,
+                      51,
+                      219,
+                      62,
+                      195,
+                      249,
+                      4,
+                      194,
+                      183,
+                      247,
+                      141,
+                      193,
+                      237,
+                      176,
+                      123,
+                      96,
+                      119,
+                      131,
+                      148,
+                      197,
+                      117,
+                      69,
+                      162,
+                      248,
+                      79,
+                      224,
+                      193,
+                      211
+                    ]
+                  }
                 },
                 {
                   "children": [
@@ -3981,163 +4414,87 @@
                       "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8de921be457decbbeec9ceaad4dbb4016ec22fd0738377b311a1eb23465e4e51::__init__",
                       "key": "2fdcaa66",
                       "kind": "method",
-                      "name": "__init__"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::f44cdadecb76e17cc3be73f9ae6e2fb8045458715ef47b1cef86052ad6b5ce48::__str__",
-                      "key": "5f52f6d0",
-                      "kind": "method",
-                      "name": "__str__"
+                      "name": "__init__",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          47,
+                          220,
+                          170,
+                          102,
+                          181,
+                          87,
+                          185,
+                          145,
+                          193,
+                          202,
+                          154,
+                          237,
+                          124,
+                          7,
+                          68,
+                          176,
+                          1,
+                          128,
+                          186,
+                          95,
+                          129,
+                          88,
+                          199,
+                          205,
+                          93,
+                          102,
+                          176,
+                          70,
+                          199,
+                          105,
+                          92,
+                          17
+                        ]
+                      }
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::be743218682ae09b8c1cf9dd390d4a873abaed7e5f08832cdf71f6c41e7faf0e::BadData",
                   "key": "bf69dfc5",
                   "kind": "class",
-                  "name": "BadData"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c18188baa1fc43f9f6eda1918a52dfad7505a922c93f33ba6b53352ca09c1283::SignatureExpired",
-                  "key": "c35ee3e0",
-                  "kind": "class",
-                  "name": "SignatureExpired"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8d8920ad0c9478168473d1cbad473a630833c56c5e6e542cd92d1e95cd2d1c07::__init__",
-                      "key": "ddb26bfb",
-                      "kind": "method",
-                      "name": "__init__"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::05bd9d017cf38fbee5a99f65fafa42190af045fdb2a399919d8d00930b9be29b::BadPayload",
-                  "key": "c9d73e2d",
-                  "kind": "class",
-                  "name": "BadPayload"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::01c5adf7f1d31a356f1bfabf09a2ecb4039244a1fc8bcbabefa59b87f3235a32::copyright",
-                  "key": "cf1f2e9f",
-                  "kind": "variable",
-                  "name": "copyright"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::4143bf6d98d51d57e33199865f65a6f83436902cf1407464ffdb34464565759b::bytes_to_int",
-                  "key": "d3efa928",
-                  "kind": "function",
-                  "name": "bytes_to_int"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::976553fca5d68e772dd1aa4b7be545c8346d8463f1d811c6740202f3ec74d04c::extlinks",
-                  "key": "d5df6b4f",
-                  "kind": "variable",
-                  "name": "extlinks"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::b82eb89b8d1808b49f6ac1b32d5ca59a8584056b0edf644ab6f6ee3952b994c5::_lazy_sha1",
-                  "key": "d878188c",
-                  "kind": "function",
-                  "name": "_lazy_sha1"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::4acf2613c68072a45ff6b9e5cc75ecb6efbb278cb4f5a3f7c35b9e1ef04e7db5::extensions",
-                  "key": "df724b84",
-                  "kind": "variable",
-                  "name": "extensions"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::a669d587c88aa87c1b8983cafd29aacdeab574e26c0c50685c490d0f3ef0b7f4::default_role",
-                  "key": "ee065caf",
-                  "kind": "variable",
-                  "name": "default_role"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::fbb4ccc59b338b85347ef144245dddfd2d1660ce33da5887459662bee1240124::base64_decode",
-                  "key": "f1ef7814",
-                  "kind": "function",
-                  "name": "base64_decode"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::9043a428fedea33a51d8dbd64e755357d2507a179eeffb631094de52dc988ce7::unsign",
-                      "key": "00fde7f9",
-                      "kind": "method",
-                      "name": "unsign"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::1b5138dbdbf9753725cd9285087697c45c6022fbecf69a0bbcccbbb31000561e::get_timestamp",
-                      "key": "1b19d468",
-                      "kind": "method",
-                      "name": "get_timestamp"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::9043a428fedea33a51d8dbd64e7553579d73ed57c37a0233fb742d2d293f42bf::unsign",
-                      "key": "2cf9ac6f",
-                      "kind": "method",
-                      "name": "unsign"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::740ff182628e5b0bb6253b36cf7bb81f7b53a82129c3d986aa7d8c686c6d5891::sign",
-                      "key": "6fa43587",
-                      "kind": "method",
-                      "name": "sign"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::7d66abfc016114aa8537637c22d5f843e1645b910abdc04338799044e66243e2::timestamp_to_datetime",
-                      "key": "91e0fc6c",
-                      "kind": "method",
-                      "name": "timestamp_to_datetime"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::971409cba1856cdb1fc4f1f8d04e5e9fe1d4bbdb30ca7a4bc5abc1a1ee939cab::validate",
-                      "key": "aebc9518",
-                      "kind": "method",
-                      "name": "validate"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::9043a428fedea33a51d8dbd64e755357ddb72bbeba1c403e71a3fa2b416c4e9b::unsign",
-                      "key": "c96abb41",
-                      "kind": "method",
-                      "name": "unsign"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6bc41046486efc38ccfcc59c16a1a49f77c387a5ac0be449c2380d8fff65b6bb::TimestampSigner",
-                  "key": "f2694175",
-                  "kind": "class",
-                  "name": "TimestampSigner"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::05bb7029ab6a6f9301c6b76b5ca6737eeff859f3c48320323ef88fd1d212c088::author",
-                  "key": "f6ca8a58",
-                  "kind": "variable",
-                  "name": "author"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6eb605b4de4ed37c7da6b416706693a83f4fc364d9a85248b62eed9ff4b81645::verify_signature",
-                      "key": "0d359b9b",
-                      "kind": "method",
-                      "name": "verify_signature"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::3240b66f481b29c258d5ee1f9347114ba25c9af800447156df3841caf7656674::get_signature",
-                      "key": "fe807141",
-                      "kind": "method",
-                      "name": "get_signature"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::7e4b414b6dbab85ac33acbc6f1a4ce735228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
-                  "key": "f88c66a7",
-                  "kind": "class",
-                  "name": "SigningAlgorithm"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::7945c4981515c15d1d8abf1d9521d3a3320133b84441882a5d730d1d5e71e201::html_static_path",
-                  "key": "f95a57e8",
-                  "kind": "variable",
-                  "name": "html_static_path"
+                  "name": "BadData",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      191,
+                      105,
+                      223,
+                      197,
+                      243,
+                      22,
+                      130,
+                      249,
+                      171,
+                      66,
+                      63,
+                      31,
+                      155,
+                      247,
+                      199,
+                      216,
+                      255,
+                      41,
+                      145,
+                      208,
+                      166,
+                      18,
+                      84,
+                      232,
+                      146,
+                      211,
+                      130,
+                      200,
+                      70,
+                      125,
+                      121,
+                      140
+                    ]
+                  }
                 }
               ],
               "unnamed": 0
