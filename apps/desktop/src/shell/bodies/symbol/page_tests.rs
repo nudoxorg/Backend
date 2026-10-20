@@ -829,7 +829,8 @@ fn authenticated_primary_source_renders_before_optional_reads_finish(cx: &mut Te
         "Reader no longer retains the departure"
     );
     rig.graph.store.read_with(rig.cx, |store, _| {
-        let route = store.snapshot().route();
+        let snapshot = store.snapshot();
+        let route = snapshot.route();
         let destination = crate::shell::bodies::reading_destination(store, route, None);
         assert!(!destination.pending() && destination.displayed());
         let selected = crate::runtime::store::route_symbol(route).expect("selected symbol");
