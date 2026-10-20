@@ -83,16 +83,22 @@
 //!     type-name atom at [48..56) — empty for every class but method and
 //!     field, whose same-package targets the lowerer keys through it.
 
+//!
+//! Version7 widens member rows40 ->72 bytes: full field extent [40..48),
+//! name-token extent [48..56), file atom [56..64), bound flag [64], and
+//! zero reserved bytes [65..72). Missing witnesses remain explicitly absent;
+//! all v5/v6 members remain readable and source-less. Source-byte and exact
+//! declaring-owner containment are checked by the selected-source lowerer.
+
 use core::str;
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const MAGIC: [u8; 4] = *b"NGAI";
-/// The image versions this reader admits: version 5, the complete
-/// zero-copy layout, and version 6, which widens three rows additively
-/// (declaration name extents and bound flags; typed reference rows).
-const SUPPORTED_VERSIONS: [u16; 2] = [5, 6];
+/// Accepted additive layouts: v5; v6 declaration/method/reference witnesses;
+/// and v7 optional struct-field source witnesses.
+const SUPPORTED_VERSIONS: [u16; 3] = [5, 6, 7];
 const HEADER_BYTES: usize = 136;
 const MODULE_BYTES: usize = 32;
 const PACKAGE_BYTES: usize = 28;
@@ -109,6 +115,7 @@ const METHOD_BYTES_V5: usize = 64;
 const METHOD_BYTES_V6: usize = 72;
 const TYPE_PARAMETER_BYTES: usize = 16;
 const MEMBER_BYTES: usize = 40;
+const MEMBER_BYTES_V7: usize = 72;
 const METHOD_SET_BYTES: usize = 24;
 const DOC_BYTES: usize = 16;
 /// Reference row width by image version: version 6 reuses the reserved tail
@@ -122,6 +129,7 @@ const CHILD_BYTES: usize = 8;
 /// The domain-separated checksum input by image version.
 const DIGEST_DOMAIN_V5: &[u8] = b"nudox.go.authority.image.sha256.v5\0";
 const DIGEST_DOMAIN_V6: &[u8] = b"nudox.go.authority.image.sha256.v6\0";
+const DIGEST_DOMAIN_V7: &[u8] = b"nudox.go.authority.image.sha256.v7\0";
 
 /// The `u32::MAX` sentinel shared by every optional coordinate cell.
 pub const NONE: u32 = u32::MAX;
@@ -411,6 +419,14 @@ pub struct MemberRow<'image> {
     pub tag: &'image [u8],
     /// Declaring package import path (interface methods; empty otherwise).
     pub package: &'image [u8],
+    /// Full directly declared field extent, absent on v5/v6 or unproven rows.
+    pub span: Option<(u32, u32)>,
+    /// Exact field identifier extent, contained in the full field extent.
+    pub name_span: Option<(u32, u32)>,
+    /// Source file belonging to the member witness; empty when unproven.
+    pub file: &'image [u8],
+    /// The producer proved the field declares in the digest-bound source.
+    pub bound: bool,
 }
 
 /// One borrowed interface method-set row: one method of an interface type
@@ -598,6 +614,7 @@ pub struct GoImage<'image> {
     version: u16,
     declaration_bytes: usize,
     method_bytes: usize,
+    member_bytes: usize,
     reference_bytes: usize,
     digest_domain: &'static [u8],
     module_count: usize,
@@ -654,12 +671,13 @@ impl<'image> GoImage<'image> {
         if !SUPPORTED_VERSIONS.contains(&version) {
             return Err(ImageError::Header(HeaderError::Version { found: version }));
         }
-        let (declaration_bytes, method_bytes, reference_bytes, digest_domain) = if version == 6 {
+        let member_bytes = if version == 7 { MEMBER_BYTES_V7 } else { MEMBER_BYTES };
+        let (declaration_bytes, method_bytes, reference_bytes, digest_domain) = if version >= 6 {
             (
                 DECLARATION_BYTES_V6,
                 METHOD_BYTES_V6,
                 REFERENCE_BYTES_V6,
-                DIGEST_DOMAIN_V6,
+                if version == 7 { DIGEST_DOMAIN_V7 } else { DIGEST_DOMAIN_V6 },
             )
         } else {
             (
@@ -710,7 +728,7 @@ impl<'image> GoImage<'image> {
         let methods_offset = types_offset + type_count * TYPE_ROW_BYTES;
         let type_parameters_offset = methods_offset + method_count * method_bytes;
         let members_offset = type_parameters_offset + type_parameter_count * TYPE_PARAMETER_BYTES;
-        let docs_offset = members_offset + member_count * MEMBER_BYTES;
+        let docs_offset = members_offset + member_count * member_bytes;
         let references_offset = docs_offset + doc_count * DOC_BYTES;
         let constraints_offset = references_offset + reference_count * reference_bytes;
         let satisfactions_offset = constraints_offset + constraint_count * CONSTRAINT_BYTES;
@@ -789,6 +807,7 @@ impl<'image> GoImage<'image> {
             version,
             declaration_bytes,
             method_bytes,
+            member_bytes,
             reference_bytes,
             digest_domain,
             module_count,
@@ -975,7 +994,7 @@ impl<'image> GoImage<'image> {
         ]);
         // Version 6 tail: the declared identifier's byte extent and the
         // authority-bound flag. Version 5 rows carry neither fact.
-        let (name_span, bound) = if self.version == 6 {
+        let (name_span, bound) = if self.version >= 6 {
             let name_span = span_at(row, 56, 60, index)?;
             if let (Some((span_start, span_end)), Some((name_start, name_end))) = (span, name_span)
                 && (name_start < span_start || name_end > span_end)
@@ -1156,7 +1175,7 @@ impl<'image> GoImage<'image> {
         let file = self.atom("method", index, u32_at(row, 56), u32_at(row, 60))?;
         // Version 6 tail: the authority-bound flag. Version 5 rows carry no
         // such fact.
-        let bound = if self.version == 6 {
+        let bound = if self.version >= 6 {
             let bound = flag_at(row, 64).ok_or(ImageError::MethodReserved { index })?;
             if row[65..72] != [0; 7] {
                 return Err(ImageError::MethodReserved { index });
@@ -1236,7 +1255,7 @@ impl<'image> GoImage<'image> {
                 count: self.member_count,
             });
         }
-        let row = self.plane_row(self.members_offset, index, MEMBER_BYTES);
+        let row = self.plane_row(self.members_offset, index, self.member_bytes);
         let kind = match row[4] {
             0 => MemberKind::Field,
             1 => MemberKind::Method,
@@ -1283,6 +1302,25 @@ impl<'image> GoImage<'image> {
         }
         let tag = self.atom("member", index, u32_at(row, 20), u32_at(row, 24))?;
         let package = self.atom("member", index, u32_at(row, 28), u32_at(row, 32))?;
+        let (span, name_span, file, bound) = if self.version == 7 {
+            if row[65..72] != [0; 7] {
+                return Err(ImageError::MemberReserved { index });
+            }
+            let span = span_at(row, 40, 44, index)?;
+            let name_span = span_at(row, 48, 52, index)?;
+            let file = self.atom("member", index, u32_at(row, 56), u32_at(row, 60))?;
+            let bound = flag_at(row, 64).ok_or(ImageError::MemberSourceWitness { index })?;
+            match (span, name_span) {
+                (Some((start, end)), Some((name_start, name_end)))
+                    if kind == MemberKind::Field && !file.is_empty()
+                        && start <= name_start && name_start < name_end && name_end <= end => {}
+                (None, None) if file.is_empty() && !bound => {}
+                _ => return Err(ImageError::MemberSourceWitness { index }),
+            }
+            (span, name_span, file, bound)
+        } else {
+            (None, None, &b""[..], false)
+        };
         Ok(MemberRow {
             owner,
             kind,
@@ -1292,6 +1330,10 @@ impl<'image> GoImage<'image> {
             type_root,
             tag,
             package,
+            span,
+            name_span,
+            file,
+            bound,
         })
     }
 
@@ -1384,7 +1426,7 @@ impl<'image> GoImage<'image> {
         // Version 6: the closed use kind, the used object's closed class,
         // and the target receiver type-name atom. Version 5 rows carry a
         // four-byte reserved tail and only ever record free-function calls.
-        let (use_kind, target_class, recv_type) = if self.version == 6 {
+        let (use_kind, target_class, recv_type) = if self.version >= 6 {
             let use_kind =
                 ReferenceUseKind::decode(row[44]).ok_or(ImageError::ReferenceReserved { index })?;
             let target_class = ReferenceTargetClass::decode(row[45])
@@ -2291,6 +2333,10 @@ pub enum ImageError {
     /// A member row claims non-zero reserved bits.
     #[error("Go authority member {index} has non-zero reserved bits")]
     MemberReserved { index: usize },
+
+    /// Optional v7 field witness was partial, uncontained or not a field.
+    #[error("Go authority member {index} has an invalid source witness")]
+    MemberSourceWitness { index: usize },
     /// A doc row claims non-zero reserved bits.
     #[error("Go authority doc {index} has non-zero reserved bits")]
     DocReserved { index: usize },
@@ -2943,5 +2989,95 @@ mod unresolved_cgo_tests {
         reseal(&mut image);
         let image = GoImage::open(&image).expect("legacy zero count opens");
         assert_eq!(image.unresolved_cgo_count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod member_source_tests {
+    use super::*;
+
+    fn reseal(bytes: &mut [u8], version: u16) {
+        let mut digest = Sha256::new();
+        digest.update(match version {
+            5 => DIGEST_DOMAIN_V5,
+            6 => DIGEST_DOMAIN_V6,
+            _ => DIGEST_DOMAIN_V7,
+        });
+        digest.update(&bytes[..52]);
+        digest.update(&bytes[84..]);
+        bytes[52..84].copy_from_slice(&digest.finalize());
+    }
+
+    fn image(version: u16) -> Vec<u8> {
+        let width = if version == 7 {
+            MEMBER_BYTES_V7
+        } else {
+            MEMBER_BYTES
+        };
+        let atoms = b"wgmain.go";
+        let body = TYPE_ROW_BYTES + width + atoms.len();
+        let mut bytes = vec![0_u8; HEADER_BYTES + body];
+        bytes[..4].copy_from_slice(b"NGAI");
+        bytes[4..6].copy_from_slice(&version.to_le_bytes());
+        bytes[6..8].copy_from_slice(&(HEADER_BYTES as u16).to_le_bytes());
+        bytes[12..16].copy_from_slice(&(atoms.len() as u32).to_le_bytes());
+        bytes[16..20].copy_from_slice(&(body as u32).to_le_bytes());
+        bytes[84..88].copy_from_slice(&1_u32.to_le_bytes());
+        bytes[100..104].copy_from_slice(&1_u32.to_le_bytes());
+        let typ = HEADER_BYTES;
+        bytes[typ] = 10; // struct
+        bytes[typ + 40..typ + 44].copy_from_slice(&1_u32.to_le_bytes());
+        let row = HEADER_BYTES + TYPE_ROW_BYTES;
+        bytes[row + 12..row + 16].copy_from_slice(&2_u32.to_le_bytes());
+        bytes[row + 16..row + 20].copy_from_slice(&NONE.to_le_bytes());
+        if version == 7 {
+            for (offset, value) in [(40, 10_u32), (44, 16), (48, 10), (52, 12), (56, 2), (60, 7)] {
+                bytes[row + offset..row + offset + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            bytes[row + 64] = 1;
+        }
+        bytes[row + width..].copy_from_slice(atoms);
+        reseal(&mut bytes, version);
+        bytes
+    }
+
+    #[test]
+    fn v7_member_sources_round_trip_and_v5_v6_stay_explicitly_unproven() {
+        for version in [5, 6, 7] {
+            let bytes = image(version);
+            let row = GoImage::open(&bytes)
+                .expect("checked compatible transport")
+                .member(0)
+                .expect("member");
+            assert_eq!(row.name, b"wg");
+            if version == 7 {
+                assert_eq!(row.span, Some((10, 16)));
+                assert_eq!(row.name_span, Some((10, 12)));
+                assert_eq!(row.file, b"main.go");
+                assert!(row.bound);
+            } else {
+                assert_eq!(row.span, None);
+                assert_eq!(row.name_span, None);
+                assert!(row.file.is_empty());
+                assert!(!row.bound);
+            }
+        }
+    }
+
+    #[test]
+    fn v7_member_sources_refuse_partial_uncontained_foreign_kind_and_reserved_witnesses() {
+        let row = HEADER_BYTES + TYPE_ROW_BYTES;
+        for (offset, value) in [(52, 17_u32), (40, NONE), (60, 0)] {
+            let mut bytes = image(7);
+            bytes[row + offset..row + offset + 4].copy_from_slice(&value.to_le_bytes());
+            reseal(&mut bytes, 7);
+            assert!(GoImage::open(&bytes).is_err());
+        }
+        for (offset, value) in [(4, 1_u8), (64, 2), (65, 1)] {
+            let mut bytes = image(7);
+            bytes[row + offset] = value;
+            reseal(&mut bytes, 7);
+            assert!(GoImage::open(&bytes).is_err());
+        }
     }
 }

@@ -183,8 +183,8 @@ pub use reader::{
 /// Increment this when the compiler's complete semantic output projection
 /// changes without changing the source-language compiler or its toolchain.
 pub const SEMANTIC_IR_PROJECTION_VERSION: u16 = 3;
-/// Go publication ownership changes its output/cache contract independently.
-pub const GO_DECLARATION_PUBLICATION_PROJECTION_VERSION: u16 = 4;
+/// Go publication and source witnesses change their output/cache contract independently.
+pub const GO_DECLARATION_PUBLICATION_PROJECTION_VERSION: u16 = 5;
 pub use segment_boundary_policy::{
     CanonicalSemanticPlaneBoundaryFamilyVerifier, SemanticPlaneSegmentBoundaryAlgorithm,
     SemanticPlaneSegmentBoundaryPolicy,

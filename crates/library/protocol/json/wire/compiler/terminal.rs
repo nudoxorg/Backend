@@ -622,6 +622,9 @@ enum GoImageFaultWire {
     MemberReserved {
         index: u32,
     },
+    MemberSourceWitness {
+        index: u32,
+    },
     DocReserved {
         index: u32,
     },
