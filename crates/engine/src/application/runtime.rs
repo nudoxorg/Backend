@@ -56,6 +56,10 @@ use backend_version::{
 };
 use thiserror::Error;
 
+#[path = "runtime/deferred_go.rs"]
+mod deferred_go;
+pub use deferred_go::DeferredGoAuthority;
+
 const COMPILER_LANE_COUNT: usize = 2;
 const MAX_ADMITTED_COMPILER_REQUESTS: usize = 16;
 const COMMAND_QUEUE_CAPACITY: usize = 8;
@@ -1288,6 +1292,28 @@ impl LocalCompilerCapabilities {
                 {
                     LocalCompilerCapabilityState::Deferred
                 }
+                None if profile.language() == Language::Go
+                    && configuration
+                        .package_authority
+                        .deferred_go
+                        .as_ref()
+                        .is_some_and(|go| go.is_pending()) =>
+                {
+                    match runtime.map(|candidate| candidate.state) {
+                        Some(LocalRuntimeToolchainState::Probing) => {
+                            LocalCompilerCapabilityState::Probing
+                        }
+                        Some(LocalRuntimeToolchainState::Ready) => {
+                            LocalCompilerCapabilityState::Deferred
+                        }
+                        Some(LocalRuntimeToolchainState::ProbeFailed) => {
+                            LocalCompilerCapabilityState::ProbeFailed
+                        }
+                        Some(LocalRuntimeToolchainState::Unavailable) | None => {
+                            LocalCompilerCapabilityState::Unavailable
+                        }
+                    }
+                }
                 None if local_authority_fingerprint.is_none() => {
                     LocalCompilerCapabilityState::Unavailable
                 }
@@ -1480,7 +1506,7 @@ fn package_authority_fingerprint(
             _ => return None,
         },
         Language::Go => {
-            identity.update(&authority.go.as_ref()?.local_configuration_fingerprint());
+            identity.update(&authority.admitted_go()?.local_configuration_fingerprint());
         }
         Language::Java => {
             let java = authority.java.as_ref()?;
@@ -1652,7 +1678,7 @@ fn capability_setup_issue(
     runtime: Option<&LocalRuntimeToolchain>,
     authority: &LocalRuntimePackageAuthority,
 ) -> Option<CompilerToolIssue> {
-    if profile.language() == Language::Go && authority.go_unavailable.is_some() {
+    if profile.language() == Language::Go && authority.go_failure().is_some() {
         return Some(CompilerToolIssue {
             requirement: CompilerToolRequirement::Native(NativeTool::GoCompiler),
             failure: CompilerToolFailure::ProbeFailed,
@@ -1773,7 +1799,7 @@ fn portable_invocation_options_digest(
             );
         }
         Language::Go => {
-            let oracle = authority.go.as_ref()?;
+            let oracle = authority.admitted_go()?;
             if oracle.portable_invocation_options().mode() != GoOracleInvocationModeV1::GoToolchain
                 || !oracle.uses_toolchain_executable(runtime?.executable_path()?)
             {
@@ -2504,6 +2530,7 @@ mod global_typescript_probe_tests {
         assert_eq!(observed.tool, NativeTool::TypeScriptCompiler);
         let admitted = observed
             .result
+            .expect("toolchain version observation, not an authority refresh")
             .expect("version through the admitted interpreter");
         let expected = ResolvedToolchain::from_version(
             NativeTool::TypeScriptCompiler,
@@ -2938,6 +2965,8 @@ pub struct LocalRuntimePackageAuthority {
     pub rust: Option<LocalRuntimeRustAuthority>,
     /// Go package oracle authority.
     pub go: Option<ConfiguredGoOracle>,
+    /// Frozen owner-shared Go selection, admitted by the first Go requester.
+    pub deferred_go: Option<Arc<DeferredGoAuthority>>,
     /// Retained Go-only admission failure; it never prevents unrelated owners from starting.
     pub go_unavailable: Option<LocalRuntimeGoAuthorityFailure>,
     /// C# Roslyn helper authority.
@@ -2949,6 +2978,17 @@ pub struct LocalRuntimePackageAuthority {
 }
 
 impl LocalRuntimePackageAuthority {
+    fn admitted_go(&self) -> Option<&ConfiguredGoOracle> {
+        self.go
+            .as_ref()
+            .or_else(|| self.deferred_go.as_ref().and_then(|go| go.admitted()))
+    }
+
+    fn go_failure(&self) -> Option<LocalRuntimeGoAuthorityFailure> {
+        self.go_unavailable
+            .or_else(|| self.deferred_go.as_ref().and_then(|go| go.failure()))
+    }
+
     fn admitted_python_checker(&self) -> LocalRuntimePythonCheckerAdmission<&Pyrefly> {
         match (&self.python_checker, self.deferred_native_python.as_ref()) {
             (LocalRuntimePythonCheckerAdmission::DeferredNativePython, Some(deferred)) => {
@@ -3078,7 +3118,7 @@ impl DeferredNativePython {
         sender
             .send(ToolchainProbeObservation {
                 tool: NativeTool::Python,
-                result: Ok(row),
+                result: Some(Ok(row)),
             })
             .map_err(|_| CompilerRuntimeCause::RequestOwnerStopped)?;
         // A peer cannot observe a claim until the fallible row and notification succeeded.
@@ -3133,6 +3173,16 @@ impl LocalCompilerRuntimeConfiguration {
             }) != deferred
         {
             return Err(LocalCompilerRuntimeConfigurationError::NativePythonAdmissionPair);
+        }
+        if let Some(go) = &package_authority.deferred_go
+            && (package_authority.go.is_some()
+                || package_authority.go_unavailable.is_some()
+                || !toolchains.iter().any(|row| {
+                    row.tool == NativeTool::GoCompiler
+                        && row.executable_path() == Some(go.selected_executable())
+                }))
+        {
+            return Err(LocalCompilerRuntimeConfigurationError::GoAdmissionPair);
         }
         Ok(Self {
             paths,
@@ -3214,6 +3264,9 @@ impl LocalCompilerRuntimeConfiguration {
 /// Rejection while validating owned bounded runtime tables.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum LocalCompilerRuntimeConfigurationError {
+    /// A deferred Go selection must match its one version row and cannot coexist with ready/refused authority.
+    #[error("inconsistent deferred Go authority admission")]
+    GoAdmissionPair,
     /// Deferred Python row, checker and owner image must be one consistent admission.
     #[error("inconsistent deferred native Python admission")]
     NativePythonAdmissionPair,
@@ -3428,6 +3481,7 @@ impl LocalCompilerClient {
             &configuration,
         )));
         let go_authority = configuration.package_authority.go.clone();
+        let deferred_go = configuration.package_authority.deferred_go.clone();
         let native_python = configuration
             .package_authority
             .deferred_native_python
@@ -3477,6 +3531,7 @@ impl LocalCompilerClient {
                         python_snapshots: Mutex::new(PythonSnapshotCache::default()),
                         typescript_snapshot: Mutex::new(TypeScriptSnapshotCache::default()),
                         go_authority,
+                        deferred_go,
                         native_python,
                         python_interpreter,
                         native_python_timeout,
@@ -3617,7 +3672,33 @@ impl LocalCompilerClient {
     {
         let facts = request.facts();
         let mut lease = RequestLease::acquire(&self.shared, self.client_id, facts)?;
-        self.wait_for_toolchain(facts, &lease.cancelled)?;
+        let admission_deadline = self.wait_for_toolchain(facts, &lease.cancelled)?;
+        if facts.language == Language::Go
+            && let Some(deferred) = &self.shared.deferred_go
+        {
+            let oracle = deferred.admitted().ok_or(CompilerTerminal::Unavailable {
+                language: facts.language,
+                stage: facts.stage,
+            })?;
+            let deadline = admission_deadline.expect("deferred Go carries its admission deadline");
+            oracle
+                .revalidate_toolchain_controlled(GoOracleControl::new(
+                    Some(&lease.cancelled),
+                    deadline,
+                ))
+                .map_err(|error| {
+                    if matches!(&error, OracleError::Cancelled) {
+                        facts.terminal(CompilerRuntimeCause::RequestCancelled)
+                    } else if GoOracleControl::deadline_phase(&error).is_some() {
+                        facts.terminal(CompilerRuntimeCause::ToolchainProbeTimeout)
+                    } else {
+                        CompilerTerminal::Unavailable {
+                            language: facts.language,
+                            stage: facts.stage,
+                        }
+                    }
+                })?;
+        }
         let (response_tx, response_rx) = sync_channel(1);
         let command = RuntimeCommand::Compile {
             request,
@@ -3673,14 +3754,22 @@ impl LocalCompilerClient {
         &self,
         facts: RequestFacts,
         cancelled: &AtomicBool,
-    ) -> Result<(), CompilerTerminal> {
+    ) -> Result<Option<Instant>, CompilerTerminal> {
         const PROBE_WAIT: Duration = Duration::from_secs(6);
         const SIGNAL_WAIT: Duration = Duration::from_millis(25);
         let native_python = (facts.language == Language::Python)
             .then_some(self.shared.native_python.as_ref())
             .flatten();
+        let deferred_go = (facts.language == Language::Go)
+            .then_some(self.shared.deferred_go.as_ref())
+            .flatten();
+        let request_admission = native_python.is_some() || deferred_go.is_some();
         let deadline = Instant::now()
-            .checked_add(native_python.map_or(PROBE_WAIT, |_| *self.shared.native_python_timeout))
+            .checked_add(if request_admission {
+                *self.shared.native_python_timeout
+            } else {
+                PROBE_WAIT
+            })
             .expect("validated compiler admission wait fits the monotonic clock");
         if let Some(deferred) = native_python {
             if !self.shared.alive.load(Ordering::Acquire) {
@@ -3716,6 +3805,48 @@ impl LocalCompilerClient {
                 )
                 .map_err(|cause| facts.terminal(cause))?;
         }
+        if deferred_go.is_some() {
+            let probe_deadline = deadline.min(Instant::now() + PROBE_WAIT);
+            while self.capabilities().for_profile(facts.profile).state()
+                == LocalCompilerCapabilityState::Probing
+            {
+                if !self.shared.alive.load(Ordering::Acquire) {
+                    return Err(facts.terminal(CompilerRuntimeCause::RequestOwnerStopped));
+                }
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(facts.terminal(CompilerRuntimeCause::RequestCancelled));
+                }
+                if Instant::now() >= probe_deadline {
+                    return Err(facts.terminal(CompilerRuntimeCause::ToolchainProbeTimeout));
+                }
+                thread::sleep(SIGNAL_WAIT);
+            }
+        }
+        if let Some(deferred) = deferred_go.filter(|_| {
+            !matches!(
+                self.capabilities().for_profile(facts.profile).state(),
+                LocalCompilerCapabilityState::Unavailable
+                    | LocalCompilerCapabilityState::ProbeFailed
+            )
+        }) {
+            if !self.shared.alive.load(Ordering::Acquire) {
+                return Err(facts.terminal(CompilerRuntimeCause::RequestOwnerStopped));
+            }
+            deferred
+                .resolve(
+                    GoOracleControl::new(Some(cancelled), deadline),
+                    &self.shared.native_python_observations,
+                )
+                .map_err(|error| {
+                    facts.terminal(if matches!(&error, OracleError::Cancelled) {
+                        CompilerRuntimeCause::RequestCancelled
+                    } else if GoOracleControl::deadline_phase(&error).is_some() {
+                        CompilerRuntimeCause::ToolchainProbeTimeout
+                    } else {
+                        CompilerRuntimeCause::RequestOwnerStopped
+                    })
+                })?;
+        }
         let mut signal = self
             .shared
             .capability_signal
@@ -3725,9 +3856,9 @@ impl LocalCompilerClient {
         loop {
             let state = self.capabilities().for_profile(facts.profile).state();
             if !matches!(state, LocalCompilerCapabilityState::Probing)
-                && !(native_python.is_some() && state == LocalCompilerCapabilityState::Deferred)
+                && !(request_admission && state == LocalCompilerCapabilityState::Deferred)
             {
-                return Ok(());
+                return Ok(deferred_go.map(|_| deadline));
             }
             if !self.shared.alive.load(Ordering::Acquire) {
                 return Err(facts.terminal(CompilerRuntimeCause::RequestOwnerStopped));
@@ -3809,9 +3940,10 @@ impl LocalCompilerClient {
         let facts = request.facts();
         let mut lease = RequestLease::acquire(&self.shared, self.client_id, facts)
             .map_err(PackageSemanticRuntimeError::Runtime)?;
-        self.wait_for_toolchain(facts, &lease.cancelled)
-            .map_err(PackageSemanticRuntimeError::Runtime)?;
         let mut request = request;
+        request.go_compile_deadline = self
+            .wait_for_toolchain(facts, &lease.cancelled)
+            .map_err(PackageSemanticRuntimeError::Runtime)?;
         let go_authority_witness =
             self.capture_go_authority_witness(&mut request, &lease.cancelled)?;
         let (response, returned) = sync_channel(1);
@@ -3880,9 +4012,10 @@ impl LocalCompilerClient {
         let mut lease =
             RequestLease::acquire_with_cancelled(&self.shared, self.client_id, facts, cancelled)
                 .map_err(PackageSemanticRuntimeError::Runtime)?;
-        self.wait_for_toolchain(facts, &lease.cancelled)
-            .map_err(PackageSemanticRuntimeError::Runtime)?;
         let mut request = request;
+        request.go_compile_deadline = self
+            .wait_for_toolchain(facts, &lease.cancelled)
+            .map_err(PackageSemanticRuntimeError::Runtime)?;
         let go_authority_witness =
             self.capture_go_authority_witness(&mut request, &lease.cancelled)?;
         let (response, returned) = sync_channel(1);
@@ -3930,7 +4063,13 @@ impl LocalCompilerClient {
         if facts.language != Language::Go {
             return Ok(None);
         }
-        let Some(oracle) = &self.shared.go_authority else {
+        let oracle = self.shared.go_authority.as_ref().or_else(|| {
+            self.shared
+                .deferred_go
+                .as_ref()
+                .and_then(|go| go.admitted())
+        });
+        let Some(oracle) = oracle else {
             return Ok(None);
         };
         if cancelled.load(Ordering::Acquire) {
@@ -3943,12 +4082,18 @@ impl LocalCompilerClient {
         // witness, then carry this exact Instant through queueing and reproof.
         // Construction failure stays with the existing compiler terminal; no
         // native work is attempted on that path.
-        let Ok(deadline) = (LocalCompilerControl {
-            timeout: self.shared.native_python_timeout,
-            cancelled,
-        })
-        .deadline() else {
-            return Ok(None);
+        let deadline = match request.go_compile_deadline {
+            Some(deadline) => deadline,
+            None => {
+                let Ok(deadline) = (LocalCompilerControl {
+                    timeout: self.shared.native_python_timeout,
+                    cancelled,
+                })
+                .deadline() else {
+                    return Ok(None);
+                };
+                deadline
+            }
         };
         request.go_compile_deadline = Some(deadline);
         let result = oracle.package_authority_witness_controlled(
@@ -4109,6 +4254,7 @@ struct RuntimeShared {
     python_snapshots: Mutex<PythonSnapshotCache>,
     typescript_snapshot: Mutex<TypeScriptSnapshotCache>,
     go_authority: Option<ConfiguredGoOracle>,
+    deferred_go: Option<Arc<DeferredGoAuthority>>,
     native_python: Option<Arc<DeferredNativePython>>,
     python_interpreter: Option<Arc<super::host::PythonInterpreterHostAdmission>>,
     native_python_timeout: LocalCompilerTimeout,
@@ -4422,7 +4568,7 @@ enum LaneCompletion {
 
 struct ToolchainProbeObservation {
     tool: NativeTool,
-    result: Result<LocalRuntimeToolchain, ToolchainProbeError>,
+    result: Option<Result<LocalRuntimeToolchain, ToolchainProbeError>>,
 }
 
 fn start_toolchain_probes(
@@ -4440,12 +4586,15 @@ fn start_toolchain_probes(
         let name = format!("nudox-toolchain-{}-probe", u8::from(tool));
         let spawn = thread::Builder::new().name(name).spawn(move || {
             let result = request.admit(limits);
-            let _ = probe_observations.send(ToolchainProbeObservation { tool, result });
+            let _ = probe_observations.send(ToolchainProbeObservation {
+                tool,
+                result: Some(result),
+            });
         });
         if let Err(source) = spawn {
             let _ = observations.send(ToolchainProbeObservation {
                 tool,
-                result: Err(ToolchainProbeError::ProbeWorkerSpawn { tool, source }),
+                result: Some(Err(ToolchainProbeError::ProbeWorkerSpawn { tool, source })),
             });
         }
     }
@@ -4473,8 +4622,10 @@ fn run_worker(
         ) {
             WorkerDisposition::Stop => break,
             WorkerDisposition::Reconfigure(observation) => {
-                let replacement = observation.result.unwrap_or_else(|failure| {
-                    LocalRuntimeToolchain::probe_failed(observation.tool, failure)
+                let replacement = observation.result.map(|result| {
+                    result.unwrap_or_else(|failure| {
+                        LocalRuntimeToolchain::probe_failed(observation.tool, failure)
+                    })
                 });
                 let Some(slot) = configuration
                     .toolchains
@@ -4484,7 +4635,9 @@ fn run_worker(
                     alive.store(false, Ordering::Release);
                     break;
                 };
-                *slot = replacement;
+                if let Some(replacement) = replacement {
+                    *slot = replacement;
+                }
                 *capabilities
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) =
@@ -4637,8 +4790,8 @@ fn run_worker_generation(
         typescript_project_host: configuration.typescript_project_host.as_ref(),
         python_checker: configuration.package_authority.admitted_python_checker(),
         rust,
-        go: configuration.package_authority.go.as_ref(),
-        go_unavailable: configuration.package_authority.go_unavailable,
+        go: configuration.package_authority.admitted_go(),
+        go_unavailable: configuration.package_authority.go_failure(),
         csharp,
         java,
         maximum_image_bytes: configuration
@@ -6537,6 +6690,7 @@ mod request_lease_tests {
             python_snapshots: Mutex::new(PythonSnapshotCache::default()),
             typescript_snapshot: Mutex::new(TypeScriptSnapshotCache::default()),
             go_authority: None,
+            deferred_go: None,
             native_python: None,
             python_interpreter: None,
             native_python_timeout: configuration.timeout,
@@ -7351,7 +7505,13 @@ mod deferred_native_python_tests {
         let observed = received.try_recv().unwrap();
         assert_eq!(observed.tool, NativeTool::Python);
         assert_eq!(
-            observed.result.unwrap().facts.identity.unwrap(),
+            observed
+                .result
+                .expect("native Python producer observation")
+                .unwrap()
+                .facts
+                .identity
+                .unwrap(),
             ContentId::<ToolchainDomain>::from_digest(authority.producer_identity().as_bytes())
         );
         assert!(received.try_recv().is_err());

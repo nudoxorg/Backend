@@ -160,6 +160,19 @@ pub trait Engine {
         ))
     }
 
+    /// Reads an owner-certified graph delivery window for this exact declaration.
+    /// Unsupported engines refuse rather than returning an unbounded or empty result.
+    fn declaration_graph_window(
+        &mut self,
+        _selector: &DeclarationSelector,
+        _window: backend_library::QueryWindow,
+        _continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        Err(ClientError::Protocol(
+            "engine does not expose native graph delivery windows".to_owned(),
+        ))
+    }
+
     /// Reads the current immutable product revision.
     ///
     /// # Errors
@@ -339,11 +352,14 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
         Request::ResumeQuery { query, cursor } => {
             if !matches!(
                 query.as_ref(),
-                Request::Search { .. } | Request::Resolve { .. } | Request::OutlinePage { .. }
+                Request::Search { .. }
+                    | Request::Resolve { .. }
+                    | Request::OutlinePage { .. }
+                    | Request::GraphPage { .. }
             ) {
                 return Err(Fault::usage(
                     "cursor",
-                    "only search, names and bounded outlines have portable query continuations",
+                    "only search, names, bounded outlines and bounded graphs have portable query continuations",
                 ));
             }
             let continuation = engine.prepare_query_continuation(cursor).map_err(|error| {
@@ -422,7 +438,9 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
             Ok(Answer::Records(Box::new(record_list(text, &snapshot))))
         }
         Request::Outline(path) => outline(engine, path),
-        Request::OutlinePage { .. } => answer_paged(engine, request, None),
+        Request::OutlinePage { .. } | Request::GraphPage { .. } => {
+            answer_paged(engine, request, None)
+        }
         Request::Surface(command) => surface(engine, command),
     }
 }
@@ -461,6 +479,33 @@ pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer,
                 return Err(shape("resolve"));
             };
             Ok(Answer::Records(Box::new(record_list(text, &snapshot))))
+        }
+        Request::GraphPage { selector, .. } => {
+            let CommandReply::ProjectionPage(page) = reply.reply else {
+                return Err(shape("graph-page"));
+            };
+            if page.terminal
+                != page
+                    .snapshot
+                    .next
+                    .map_or(backend_library::PageTerminal::Complete, |cursor| {
+                        backend_library::PageTerminal::More(PageContinuation::from_cursor(cursor))
+                    })
+            {
+                return Err(shape("graph-page terminal"));
+            }
+            let heading = match selector {
+                DeclarationSelector::Coordinate(value)
+                | DeclarationSelector::SelectedAt {
+                    coordinate: value, ..
+                } => value.clone(),
+                DeclarationSelector::Selected(id) => backend_library::encode_id(id.bytes()),
+            };
+            let records = record_list(&heading, &page.snapshot);
+            if records.page_basis().is_none() {
+                return Err(shape("graph-page source basis"));
+            }
+            Ok(Answer::Records(Box::new(records)))
         }
         Request::OutlinePage { path, limit } => {
             let CommandReply::ProjectionPage(page) = reply.reply else {
@@ -543,8 +588,47 @@ pub fn answer_paged(
             )?;
             Ok(Answer::Records(Box::new(record_list(text, &snapshot))))
         }
+        Request::GraphPage { selector, limit } => {
+            let selector = match selector {
+                DeclarationSelector::Coordinate(value) => {
+                    DeclarationSelector::Coordinate(resolve_declaration(engine, value, "graph")?)
+                }
+                selected => selected.clone(),
+            };
+            let credit = backend_library::QueryLimit::new(*limit)
+                .ok_or_else(|| Fault::usage("limit", "invalid graph query credit"))?;
+            let reply = engine
+                .declaration_graph_window(
+                    &selector,
+                    backend_library::QueryWindow::fixed(credit),
+                    continuation,
+                )
+                .map_err(|error| {
+                    probe_fault(
+                        &error,
+                        Probe::Declaration {
+                            selector: &selector,
+                            read: DeclarationRead::Graph,
+                        },
+                    )
+                })?;
+            catalog_page_answer(
+                &Request::GraphPage {
+                    selector,
+                    limit: *limit,
+                },
+                reply,
+            )
+        }
         Request::OutlinePage { path, limit } => {
-            let reply = read_page(engine, Probe::OutlinePage { path, limit: *limit }, continuation)?;
+            let reply = read_page(
+                engine,
+                Probe::OutlinePage {
+                    path,
+                    limit: *limit,
+                },
+                continuation,
+            )?;
             catalog_page_answer(request, reply)
         }
         _ if continuation.is_some() => Err(Fault::usage(
@@ -1412,7 +1496,11 @@ mod readiness_controls {
         let existing_path = existing_directory.to_string_lossy();
         // The presenter has only catalog absence for each spelling. Even the
         // existing directory is not proof that indexing this operand is intended.
-        for path in ["/workspace/not-yet-published", "relative/missing", existing_path.as_ref()] {
+        for path in [
+            "/workspace/not-yet-published",
+            "relative/missing",
+            existing_path.as_ref(),
+        ] {
             let query = OutlineQuery::new(package_key(path), library.revision_root());
             let error = library
                 .execute(Command::Outline(query))
@@ -1426,7 +1514,10 @@ mod readiness_controls {
                 )
                 .expect_err("flat page has the same real absence");
             assert_eq!(CommandFailure::from(page_error), CommandFailure::NotFound);
-            for probe in [Probe::Outline(path), Probe::OutlinePage { path, limit: 200 }] {
+            for probe in [
+                Probe::Outline(path),
+                Probe::OutlinePage { path, limit: 200 },
+            ] {
                 let fault = next_step(
                     Fault::from_client_error(
                         &ClientError::CommandFailed(failure.clone()),
@@ -1441,7 +1532,10 @@ mod readiness_controls {
                     fault.affordance().tool_call(),
                     Some(serde_json::json!({"name":"backend.packages", "arguments":{}}))
                 );
-                assert_eq!(fault.affordance().shell().as_deref(), Some("nudox packages"));
+                assert_eq!(
+                    fault.affordance().shell().as_deref(),
+                    Some("nudox packages")
+                );
                 assert!(fault.cause().sentence().contains("no outline is published"));
             }
         }

@@ -1731,6 +1731,173 @@ fn cli_exports_plain_graph_continuation_without_leaking_the_wire_proof() {
             .collect::<Vec<_>>(),
         expected[2..4]
     );
+    // Exercise the command people actually type, reopening its connected client
+    // on every page. The owner, certificates and cursors remain real library DTOs.
+    let mut token: Option<String> = None;
+    let mut observed = Vec::new();
+    let mut pages = 0;
+    loop {
+        let owner = Library::from_view(root.clone(), Cursor::for_view_root(&root))
+            .expect("same immutable graph owner");
+        let mut client = backend_client::Session::from_transport(
+            "/private/graph-owner.sock",
+            GraphTransport(owner),
+        );
+        let mut args = [
+            "--json",
+            "--detail",
+            "full",
+            "graph",
+            "pkg::Parent",
+            "--limit",
+            "1",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        if let Some(cursor) = &token {
+            args.extend(["--cursor".to_owned(), cursor.clone()]);
+        }
+        let (options, rest) = options::split(&args).expect("actual CLI options");
+        let invocation = invoke::parse(&rest, options.limit()).expect("actual CLI graph grammar");
+        let request = lower(&invocation, "/p").expect("actual bounded graph request");
+        let answer = run::execute_with_output_admission(
+            &mut client,
+            &request,
+            None,
+            None,
+            backend_present::Detail::Full,
+            None,
+            |_, _| Ok(()),
+        )
+        .expect("certified native CLI graph page");
+        let Answer::Records(records) = &answer else {
+            panic!("graph records");
+        };
+        assert!(records.records().len() <= 1);
+        let rendered = process::render_admitted_answer(&client, &answer, &options)
+            .expect("complete full CLI encoding");
+        let payload: serde_json::Value = serde_json::from_str(&rendered).expect("actual CLI JSON");
+        observed.extend(
+            payload["records"]
+                .as_array()
+                .expect("records")
+                .iter()
+                .map(|row| {
+                    row["identity"]["coordinate"]
+                        .as_str()
+                        .expect("coordinate")
+                        .to_owned()
+                }),
+        );
+        for format in ["human", "markdown"] {
+            let options =
+                options::split(&["--format", format, "--detail", "full"].map(str::to_owned))
+                    .expect("plain graph options")
+                    .0;
+            let plain = process::render_admitted_answer(&client, &answer, &options)
+                .expect("full plain graph page");
+            assert_eq!(
+                plain.contains("continue the same command with `--cursor`"),
+                payload["more"] == true
+            );
+        }
+        pages += 1;
+        token = payload["nextCursor"].as_str().map(str::to_owned);
+        if pages == 1 {
+            let saved = token.as_ref().expect("first credit1 graph page continues");
+            for (coordinate, credit) in [("pkg::Parent", "2"), ("pkg::Child0", "1")] {
+                let owner = Library::from_view(root.clone(), Cursor::for_view_root(&root))
+                    .expect("same owner for cursor opponent");
+                let mut opponent = backend_client::Session::from_transport(
+                    "/private/graph-owner.sock",
+                    GraphTransport(owner),
+                );
+                let args = [
+                    "graph",
+                    coordinate,
+                    "--limit",
+                    credit,
+                    "--cursor",
+                    saved.as_str(),
+                ]
+                .map(str::to_owned);
+                let (options, rest) = options::split(&args).expect("opponent option parse");
+                let invocation = invoke::parse(&rest, options.limit()).expect("opponent grammar");
+                let request = lower(&invocation, "/p").expect("opponent request");
+                assert!(
+                    run::execute_with_output_admission(
+                        &mut opponent,
+                        &request,
+                        None,
+                        None,
+                        backend_present::Detail::Full,
+                        None,
+                        |_, _| Ok(())
+                    )
+                    .is_err(),
+                    "changed credit or declaration cannot resume the original graph"
+                );
+            }
+        }
+        if payload["more"] == false {
+            assert!(token.is_none());
+            break;
+        }
+        assert!(token.is_some());
+        assert!(pages <= 16, "bounded terminal chain");
+    }
+    let expected_coordinates = baseline
+        .snapshot
+        .root
+        .rows()
+        .iter()
+        .map(|row| row.label.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(observed, expected_coordinates);
+    assert!(pages > 1);
+}
+
+#[test]
+fn bounded_graph_cli_arguments_preserve_exact_selector_credit_and_cursor() {
+    const AT: &str = "/p::semantic::row::Caller";
+    let (options, rest) =
+        options::split(&["--json", "graph", AT, "--limit", "1"].map(str::to_owned))
+            .expect("real graph global options");
+    let invocation = invoke::parse(&rest, options.limit()).expect("real graph grammar");
+    assert!(
+        matches!(lower(&invocation, "/p").expect("bounded graph"), Request::GraphPage { selector: backend_library::DeclarationSelector::Coordinate(value), limit: 1 } if value == AT)
+    );
+    let invocation = invoke::parse(
+        &["graph", AT, "--limit", "1", "--cursor", "pc4-proof"].map(str::to_owned),
+        None,
+    )
+    .expect("graph continuation grammar");
+    assert!(
+        matches!(lower(&invocation, "/p").expect("continued graph"), Request::ResumeQuery { query, cursor } if matches!(*query, Request::GraphPage { limit: 1, .. }) && cursor == "pc4-proof")
+    );
+    let invocation =
+        invoke::parse(&["graph", AT].map(str::to_owned), None).expect("original graph grammar");
+    assert!(matches!(
+        lower(&invocation, "/p").expect("original graph"),
+        Request::Neighbourhood {
+            incoming: false,
+            ..
+        }
+    ));
+    let id = "62".repeat(32);
+    let invocation = invoke::parse(
+        &["graph", AT, "--selected-id", &id, "--limit", "1"].map(str::to_owned),
+        None,
+    )
+    .expect("selected graph grammar");
+    assert!(
+        matches!(lower(&invocation, "/p").expect("selected bounded graph"), Request::GraphPage { selector: backend_library::DeclarationSelector::SelectedAt { coordinate, .. }, limit: 1 } if coordinate == AT)
+    );
+    for bound in ["0", "201"] {
+        let invocation = invoke::parse(&["graph", AT, "--limit", bound].map(str::to_owned), None)
+            .expect("option lexing");
+        assert!(lower(&invocation, "/p").is_err());
+    }
 }
 
 #[test]
@@ -1873,9 +2040,14 @@ fn published_names_search_is_useful_partial_json_with_exact_identity_and_zero_ex
     .expect("shared admitted route");
     // Summary is the ordinary CLI default; every detail must retain stage
     // scope as well as exact useful identities and independent readiness.
-    for detail in [backend_present::Detail::Summary, backend_present::Detail::Standard, backend_present::Detail::Full] {
+    for detail in [
+        backend_present::Detail::Summary,
+        backend_present::Detail::Standard,
+        backend_present::Detail::Full,
+    ] {
         let value: serde_json::Value =
-            serde_json::from_str(&render::json_with_detail(&answer, detail)).expect("ordinary CLI JSON");
+            serde_json::from_str(&render::json_with_detail(&answer, detail))
+                .expect("ordinary CLI JSON");
         assert_eq!(value["readiness"], "partial");
         assert_eq!(value["search_scope"], "published_names_only");
         assert_eq!(value["full_search"], "preparing");
