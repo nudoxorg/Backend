@@ -243,6 +243,11 @@ pub enum GoImageFault {
         /// Zero-based struct-field or interface-method row with nonzero reserved bytes or flag bits.
         index: u32,
     },
+    /// A v7 member source witness failed structural or selected-source admission.
+    MemberSourceWitness {
+        /// Zero-based member row retaining the invalid witness.
+        index: u32,
+    },
     /// Documentation-row reserved byte/bit rejection.
     DocReserved {
         /// Zero-based documentation row with nonzero reserved bytes or flag bits.

@@ -777,3 +777,171 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod go_field_witness_tests {
+    use super::*;
+
+    #[test]
+    fn cold_go_field_extents_unify_exact_bindings_and_preserve_distinct_owners()
+    -> Result<(), String> {
+        use backend_semantic::ir::{
+            BorrowedTree, CorePayloadHash, DeclarationFamilyId, DeclarationPublicationRole,
+            EntityAuthorityFacts, EntityVersion, IrBuilder, ItemKind, ParentageAuthority,
+            SemanticImageView, SourceIdentity, SourceSpan, TreeEntityId, TreeItemInput,
+            VariantFingerprint, Visibility, encode_full_semantic_image, full_semantic_image_len,
+        };
+        use backend_semantic::vocabulary::{
+            CompileRecipeFact, GoVersion, NativeTool, PackageUrl, Stage,
+        };
+        use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
+        let path = "main.go";
+        let source = "package demo\n// λ byte positions\ntype Group struct { wg int }\ntype Other struct { wg int }\n";
+        let analysis = backend_frontend_go::syntax_frontend()
+            .map_err(|e| e.to_string())?
+            .analyze(std::path::Path::new(path), source.as_bytes())
+            .map_err(|e| e.to_string())?;
+        let source_id = ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes());
+        let profile = LanguageProfile::Go(GoVersion::Go125);
+        let recipe = CompileRecipeFact::derive(
+            profile,
+            Stage::LowerIr,
+            NativeTool::GoCompiler,
+            source_id,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"field-witness"),
+        );
+        let mut builder = IrBuilder::new();
+        let coordinate = PackageUrl::parse("pkg:golang/example.com/demo@1.0.0".to_owned())
+            .map_err(|e| e.to_string())?;
+        builder
+            .set_image_provenance_for_package(
+                SourceIdentity {
+                    identity: source_id,
+                    byte_len: source.len() as u32,
+                },
+                recipe,
+                &coordinate,
+                path,
+            )
+            .map_err(|e| e.to_string())?;
+        let file = builder
+            .intern_atom(path.as_bytes())
+            .map_err(|e| e.to_string())?;
+        let versions = (1..=5)
+            .map(|byte| EntityVersion {
+                family: DeclarationFamilyId::from_raw([byte; 16]),
+                variant: VariantFingerprint::from_raw([byte; 16]),
+                core_payload: CorePayloadHash::from_raw([byte; 16]),
+            })
+            .collect::<Vec<_>>();
+        let group_start = source.find("type Group struct { wg int }").expect("owner") as u32;
+        let other_start = source
+            .find("type Other struct { wg int }")
+            .expect("other owner") as u32;
+        let first = source.find("wg int").expect("first field") as u32;
+        let second = source.rfind("wg int").expect("second field") as u32;
+        let definitions = [
+            (
+                b"Group".as_slice(),
+                ItemKind::Record,
+                None,
+                Some((group_start, group_start + 28)),
+            ),
+            (
+                b"Other".as_slice(),
+                ItemKind::Record,
+                None,
+                Some((other_start, other_start + 28)),
+            ),
+            (
+                b"wg".as_slice(),
+                ItemKind::Field,
+                Some(0),
+                Some((first, first + 6)),
+            ),
+            (
+                b"wg".as_slice(),
+                ItemKind::Field,
+                Some(1),
+                Some((second, second + 6)),
+            ),
+            (b"Unproven".as_slice(), ItemKind::Field, Some(1), None),
+        ];
+        let items = definitions
+            .iter()
+            .map(|(name, kind, parent, span)| TreeItemInput {
+                name,
+                anonymous_callable_anchor: None,
+                kind: *kind,
+                visibility: Visibility::Private,
+                authority: EntityAuthorityFacts {
+                    publication: DeclarationPublicationRole::PrimaryOwned,
+                    parentage: parent.map_or(ParentageAuthority::Root, |parent| {
+                        ParentageAuthority::Bound(versions[parent].identity())
+                    }),
+                    source: if span.is_some() {
+                        FactAvailability::Captured
+                    } else {
+                        FactAvailability::Unavailable
+                    },
+                    source_file: if span.is_some() {
+                        FactAvailability::Captured
+                    } else {
+                        FactAvailability::Unavailable
+                    },
+                    ..EntityAuthorityFacts::default()
+                },
+                parent: parent.map(|parent| TreeEntityId::new(parent as u32)),
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: span.and_then(|(start, end)| SourceSpan::new(file, start, end)),
+                extension: None,
+            })
+            .collect::<Vec<_>>();
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &items,
+                links: &[],
+            })
+            .map_err(|e| e.to_string())?;
+        let ir = builder.finish().map_err(|e| e.to_string())?;
+        let mut bytes = vec![0; full_semantic_image_len(&ir).map_err(|e| e.to_string())?];
+        encode_full_semantic_image(&ir, &mut bytes).map_err(|e| e.to_string())?;
+        drop(ir);
+        let image = SemanticImageView::reopen(&bytes).map_err(|e| e.to_string())?;
+        let session = DocumentationSession::new(&image);
+        let declarations = analysis.declarations().iter().collect::<Vec<_>>();
+        let pairs = declaration_sites(profile, &image, &session, path, &declarations)
+            .map_err(|e| e.to_string())?;
+        assert_eq!(
+            pairs.len(),
+            4,
+            "both exact owners and both fields unify after cold reopen"
+        );
+        assert_ne!(
+            pairs[&versions[2].identity()],
+            pairs[&versions[3].identity()],
+            "same spelling in separate exact owners is not one declaration"
+        );
+        assert!(
+            !pairs.contains_key(&versions[4].identity()),
+            "positionless facts remain unproven"
+        );
+        assert!(
+            declaration_sites(profile, &image, &session, "other.go", &declarations)
+                .map_err(|e| e.to_string())?
+                .is_empty(),
+            "another source path cannot borrow field extents"
+        );
+        assert!(
+            declaration_sites(profile, &image, &session, path, &[])
+                .map_err(|e| e.to_string())?
+                .is_empty(),
+            "absent current source bindings cannot be inferred"
+        );
+        Ok(())
+    }
+}

@@ -1,4 +1,4 @@
-// Emits the fixed Go authority image (format version 5) directly from
+// Emits the fixed Go authority image (format version 7) directly from
 // go/packages and go/types facts.
 //
 // The image carries the complete Output: module metadata; one row per
@@ -36,11 +36,13 @@ import (
 	"strings"
 )
 
-// Image format constants. Keep in lockstep with compiler/languages/go/image.rs.
+// Image format constants. Keep in lockstep with frontends/go/src/legacy/image.rs.
+// Version 7 adds optional member source/name extents, file and bound flag
+// (40 ->72 bytes). Unproven members retain absent coordinates; no name join.
 //
 // Version 6 widens three rows additively over version 5; every other row
 // width, plane order, and header cell is unchanged, and the reader accepts
-// both versions:
+// prior versions:
 //
 //   - declaration rows grow 56 → 72 bytes: the declared identifier's exact
 //     byte extent (`nameStart`/`nameEnd`, both NONE or both present and
@@ -53,7 +55,7 @@ import (
 //     target receiver type-name atom (empty for every class but method and
 //     field).
 const (
-	authorityVersion     = 6
+	authorityVersion     = 7
 	authorityHeaderBytes = 136
 
 	authorityModuleBytes    = 32
@@ -63,7 +65,7 @@ const (
 	authoritySigParamBytes  = 28
 	authorityMethodBytes    = 72
 	authorityParamBytes     = 16
-	authorityMemberBytes    = 40
+	authorityMemberBytes    = 72
 	authorityMethodSetBytes = 24
 	authorityDocBytes       = 16
 	authorityRefBytes       = 56
@@ -75,7 +77,7 @@ const (
 	authorityMax  = uint64(^uint32(0))
 )
 
-var authorityDigestDomain = []byte("nudox.go.authority.image.sha256.v6\x00")
+var authorityDigestDomain = []byte("nudox.go.authority.image.sha256.v7\x00")
 
 // atomCell locates one byte run in the shared atom plane.
 type atomCell struct {
@@ -192,14 +194,18 @@ type memberRequest struct {
 
 // memberPlan is one laid-out member row.
 type memberPlan struct {
-	owner    uint32
-	kind     byte // 0 field, 1 interface method signature
-	embedded bool
-	exported bool
-	name     atomCell
-	typeRoot uint32
-	tag      atomCell
-	pkg      atomCell
+	owner              uint32
+	kind               byte // 0 field, 1 interface method signature
+	embedded           bool
+	exported           bool
+	name               atomCell
+	typeRoot           uint32
+	tag                atomCell
+	pkg                atomCell
+	spanStart, spanEnd uint32
+	nameStart, nameEnd uint32
+	file               atomCell
+	bound              bool
 }
 
 // docPlan is one documentation row.
@@ -244,6 +250,7 @@ type satPlan struct {
 // Rows stay structured until marshal so planes can be laid out in the exact
 // canonical orders the reader validates.
 type imagePlan struct {
+	boundSource   string
 	module        modulePlan
 	packages      []packagePlan
 	atoms         []byte
@@ -576,8 +583,30 @@ func (p *imagePlan) emitType(t *Type) (uint32, error) {
 				if err != nil {
 					return 0, err
 				}
+				witness := memberPlan{spanStart: authorityNone, spanEnd: authorityNone,
+					nameStart: authorityNone, nameEnd: authorityNone}
+				if field.sourceSpan != nil && field.nameSpan != nil && field.sourcePos != nil {
+					span := field.sourceSpan
+					name := field.nameSpan
+					if span.Start < 0 || span.Start > name.Start || name.Start >= name.End ||
+						name.End > span.End || uint64(span.End) > authorityMax ||
+						field.sourcePos.Offset != name.Start || field.sourcePos.File == "" {
+						return 0, fmt.Errorf("go/types emitted an invalid field source witness")
+					}
+					witness.spanStart, witness.spanEnd = uint32(span.Start), uint32(span.End)
+					witness.nameStart, witness.nameEnd = uint32(name.Start), uint32(name.End)
+					var err error
+					witness.file, err = p.atom(field.sourcePos.File)
+					if err != nil {
+						return 0, err
+					}
+					witness.bound = sameFile(field.sourcePos.File, p.boundSource)
+				}
 				requests = append(requests, memberRequest{
 					plan: memberPlan{
+						spanStart: witness.spanStart, spanEnd: witness.spanEnd,
+						nameStart: witness.nameStart, nameEnd: witness.nameEnd,
+						file: witness.file, bound: witness.bound,
 						kind:     0,
 						embedded: field.Embedded,
 						exported: field.Exported,
@@ -662,6 +691,8 @@ func (p *imagePlan) emitType(t *Type) (uint32, error) {
 				}
 				requests = append(requests, memberRequest{
 					plan: memberPlan{
+						spanStart: authorityNone, spanEnd: authorityNone,
+						nameStart: authorityNone, nameEnd: authorityNone,
 						kind:     1,
 						exported: method.Exported,
 						name:     name,
@@ -987,7 +1018,7 @@ func (p *imagePlan) appendBuildConstraint(constraint *BuildConstraint) error {
 // so the lowerer can attach primary-source spans without comparing path
 // spellings across processes.
 func buildAuthorityPlan(output *Output, boundSource string) (*imagePlan, error) {
-	p := &imagePlan{}
+	p := &imagePlan{boundSource: boundSource}
 	// The single module-metadata row; every cell stays empty when the
 	// oracle resolved no module (e.g. GOPATH-mode analysis).
 	if output.Module != nil {
@@ -1585,6 +1616,15 @@ func (p *imagePlan) marshal(sourceDigest [32]byte) ([]byte, error) {
 		binary.LittleEndian.PutUint32(rowBytes[24:28], row.tag.length)
 		binary.LittleEndian.PutUint32(rowBytes[28:32], row.pkg.offset)
 		binary.LittleEndian.PutUint32(rowBytes[32:36], row.pkg.length)
+		binary.LittleEndian.PutUint32(rowBytes[40:44], row.spanStart)
+		binary.LittleEndian.PutUint32(rowBytes[44:48], row.spanEnd)
+		binary.LittleEndian.PutUint32(rowBytes[48:52], row.nameStart)
+		binary.LittleEndian.PutUint32(rowBytes[52:56], row.nameEnd)
+		binary.LittleEndian.PutUint32(rowBytes[56:60], row.file.offset)
+		binary.LittleEndian.PutUint32(rowBytes[60:64], row.file.length)
+		if row.bound {
+			rowBytes[64] = 1
+		}
 		members = append(members, rowBytes...)
 	}
 	methodSets := make([]byte, 0, len(p.methodSets)*authorityMethodSetBytes)
