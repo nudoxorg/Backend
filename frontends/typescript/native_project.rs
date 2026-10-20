@@ -796,6 +796,13 @@ fn segment_matches(
     if include && pattern.starts_with(['*', '?']) && path.starts_with('.') {
         return Ok(false);
     }
+    if !wildcard {
+        // Literal absolute-path components recur for every directory entry.
+        // Compare them directly instead of building a quadratic wildcard table;
+        // still meter both byte strings and propagate the checkpoint stop.
+        poll(checkpoint, pattern.len().saturating_add(path.len()) as u64)?;
+        return Ok(pattern == path);
+    }
     let pattern = pattern.encode_utf16().collect::<Vec<_>>();
     let path = path.encode_utf16().collect::<Vec<_>>();
     let minified = ".min.js".encode_utf16().collect::<Vec<_>>();
@@ -1037,6 +1044,46 @@ mod tests {
         assert!(
             glob_path_matches("/repo/**/*", "/repo/src/main.ts", true, false, &Stopped).is_err()
         );
+    }
+    #[test]
+    fn native_literal_root_components_remain_linear_and_metered() -> Result<(), Box<dyn Error>> {
+        struct Budget(std::sync::atomic::AtomicU64);
+        impl ExecutionCheckpoint for Budget {
+            fn checkpoint(&self, work: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+                let prior = self.0.fetch_add(work, std::sync::atomic::Ordering::Relaxed);
+                if prior.saturating_add(work) > 2_000_000 {
+                    return Err(tsz_common::ProjectExecutionStop::WorkBudgetExhausted);
+                }
+                Ok(())
+            }
+        }
+        let budget = Budget(std::sync::atomic::AtomicU64::new(0));
+        let component = format!("captured-{}-😀", "r".repeat(220));
+        let pattern = format!("/root/{component}/src/**/*.ts");
+        let path = format!("/root/{component}/src/app/main.ts");
+        for _ in 0..100 {
+            assert!(glob_match(&pattern, &path, true, false, &budget)?);
+        }
+        assert!(!glob_match(
+            &pattern,
+            &path.replace("captured-", "changed-"),
+            true,
+            false,
+            &budget
+        )?);
+        assert!(segment_matches(
+            &component, &component, false, false, &budget
+        )?);
+        assert!(!segment_matches(
+            &component,
+            "different",
+            false,
+            false,
+            &budget
+        )?);
+        let stopped = Budget(std::sync::atomic::AtomicU64::new(2_000_000));
+        assert!(segment_matches(&component, &component, false, false, &stopped).is_err());
+        Ok(())
     }
     #[test]
     fn reference_directives_are_leading_trivia_with_exact_attribute_names_and_modes()
