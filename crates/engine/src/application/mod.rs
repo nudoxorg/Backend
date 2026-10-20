@@ -93,15 +93,15 @@ pub use self::package_authority::{
 pub use self::package_source::MAX_LOCAL_PACKAGE_SOURCE_BYTES;
 pub(crate) use self::runtime::{AdmittedRustRequestAuthority, LocalCompilerPlaneExecutionSeed};
 pub use self::runtime::{
-    TypeScriptSnapshotReuse, CompilerSessionLineage, ExactInputWitness, LocalCompilerCapabilities, LocalCompilerCapability,
+    CompilerSessionLineage, DeferredGoAuthority, DeferredNativePython, DeferredRustToolchain,
+    ExactInputWitness, LocalCompilerCapabilities, LocalCompilerCapability,
     LocalCompilerCapabilityState, LocalCompilerClient, LocalCompilerExecutionIdentity,
     LocalCompilerPlaneExecutionIdentity, LocalCompilerPlaneRecipeIdentity,
     LocalCompilerRuntimeConfiguration, LocalCompilerRuntimeConfigurationError,
     LocalCompilerRuntimeOpenError, LocalCompilerRuntimePaths, LocalRuntimeCSharpAuthority,
     LocalRuntimeGoAuthorityFailure, LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority,
     LocalRuntimePackageRoot, LocalRuntimePackageRootFacts, LocalRuntimePythonCheckerAdmission,
-    LocalRuntimePythonCheckerProbeFailure, DeferredNativePython, DeferredRustToolchain,
-    LocalRuntimeRustAuthority,
+    LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority,
     LocalRuntimeRustAuthorityFailure, LocalRuntimeRustToolchainSelection, LocalRuntimeToolchain,
     LocalRuntimeToolchainFacts, LocalRuntimeToolchainState, OwnedPackageSource,
     OwnedPackageSourceSet, PackageSemanticRuntimeError, PyreflyToolchainIdentity,
