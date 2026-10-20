@@ -84,6 +84,13 @@ pub trait OwnerService {
     /// idle-retirement timer resets.
     fn serve_one(&mut self) -> bool;
 
+    /// Whether admitted background work is still running independently of
+    /// connected clients or owner-loop progress. Idle retirement must wait for
+    /// that work; explicit shutdown still cancels and joins it as before.
+    fn has_inflight_work(&self) -> bool {
+        false
+    }
+
     /// Handles one command body, or takes it and replies later under
     /// `ticket` ([`Self::poll_deferred`]). An owner that never defers
     /// answers every command now.

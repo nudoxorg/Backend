@@ -63,6 +63,13 @@ impl IndexInputWorkers {
         }
     }
 
+    /// Completed handles alone are not activity; a retained live tail is.
+    pub(super) fn has_inflight_work(&self) -> bool {
+        self.workers
+            .iter()
+            .any(|worker| !worker.handle.is_finished())
+    }
+
     pub(super) fn request_close(&mut self) {
         self.closed = true;
         for worker in &self.workers {
@@ -106,6 +113,7 @@ mod tests {
     #[test]
     fn retained_input_threads_bound_launches_and_are_joined_after_broadcast() {
         let mut workers = IndexInputWorkers::default();
+        assert!(!workers.has_inflight_work());
         let mut controls = Vec::new();
         let mut releases = Vec::new();
         let exited = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -124,6 +132,10 @@ mod tests {
             controls.push(control);
             releases.push(release);
         }
+        assert!(
+            workers.has_inflight_work(),
+            "actual gated input threads are live"
+        );
         assert!(workers.reserve().is_err(), "no detached overflow thread");
         assert!(
             controls
@@ -144,9 +156,22 @@ mod tests {
         for release in releases {
             let _ = release.send(());
         }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while workers.has_inflight_work() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(
+            !workers.has_inflight_work(),
+            "finished retained handles are not activity"
+        );
+        assert_eq!(workers.len(), 2, "the idle witness does not reap or join");
         workers.close();
         assert_eq!(exited.load(Ordering::Acquire), 2);
         assert_eq!(workers.len(), 0);
+        assert!(
+            !workers.has_inflight_work(),
+            "joined work no longer keeps an owner live"
+        );
         workers.close();
         assert!(
             workers.reserve().is_err(),
