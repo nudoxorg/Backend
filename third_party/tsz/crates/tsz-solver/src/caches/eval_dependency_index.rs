@@ -18,6 +18,12 @@ pub(super) fn record_dependencies(
     old_result: Option<TypeId>,
     result: TypeId,
 ) {
+    // Without a DefinitionStore, immutable key/result types determine every
+    // dependency. A store-backed write must still refresh its edges: the same
+    // TypeIds can now reach a different body-dependency graph.
+    if definition_store.is_none() && old_result == Some(result) {
+        return;
+    }
     let deps = collect_eval_entry_def_dependencies(interner, definition_store, key, result);
     dependency_index::record_dependencies(index, key, old_result.is_some(), deps);
 }
