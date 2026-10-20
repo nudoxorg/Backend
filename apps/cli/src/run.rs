@@ -797,6 +797,10 @@ fn graph_with_output_admission<E: Engine>(
 #[path = "tests/outline_admission.rs"]
 mod outline_admission_tests;
 
+#[cfg(test)]
+#[path = "tests/graph_window_admission.rs"]
+mod graph_window_admission_tests;
+
 /// The first native descriptor page may shrink under actual output admission;
 /// a continuation's authenticated credit is never changed. Each attempt keeps
 /// the same source/compiler root pair, total and original request lifetime.
