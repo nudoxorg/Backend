@@ -2014,6 +2014,21 @@ fn scan_project_with_configuration_policy_attempt(
         if !stable
             || !compiler_revision_is_current_with_cancellation(&revision_fence, cancellation)?
         {
+            // This attempt is superseded. Keep its scalar read charge, but do
+            // not retain every decoded fact page while the full retry builds
+            // another complete source snapshot.
+            #[cfg(test)]
+            let discarded_row = scanned
+                .iter()
+                .find(|file| file.compiler_source.is_some())
+                .and_then(|file| file.record.file_fields())
+                .map(|file| std::sync::Arc::downgrade(file.declarations));
+            drop(scanned);
+            #[cfg(test)]
+            assert!(
+                discarded_row.is_none_or(|row| row.strong_count() == 0),
+                "fresh superseded scan rows must retire before the full retry"
+            );
             let mut full = scan_project_with_configuration_policy_attempt(
                 coordinate,
                 project,
@@ -5458,6 +5473,74 @@ mod tests {
             source.relative_path == "lib.rs"
                 && source.content == typed_of::<InputContentSchema>(changed).to_bytes()
         }));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_frontier_full_retry_releases_fresh_rows_and_preserves_complete_facts()
+    -> Result<(), String> {
+        let kept = b"pub fn kept_before_race() {}\n";
+        let initial = b"pub fn before_edit() {}\n";
+        let repository = git_test_repo(
+            "frontier-release-fresh-rows",
+            &[("a_fresh.rs", initial), ("b_raced.rs", kept)],
+        )?
+        .ok_or("Git is required for the physical frontier retry control")?;
+        let root = &repository.0;
+        let root_text = root.to_str().ok_or("non-UTF-8 Git path")?;
+        let project = git_project_key(root);
+        let initial_scan = scan_project(root_text, project, &BTreeMap::new())?;
+        let reusable = reusable_rows(&initial_scan);
+        let mut fresh = String::new();
+        for index in 0..180 {
+            fresh.push_str(&format!(
+                "/// {}\npub fn retained_fact_{index}() -> u64 {{ {index} }}\n",
+                "complete documentation and source evidence ".repeat(24)
+            ));
+        }
+        fs::write(root.join("a_fresh.rs"), fresh.as_bytes())
+            .map_err(|error| error.to_string())?;
+        let raced_bytes = b"pub fn after_race(value: u64) -> u64 { value + 1 }\n";
+        source_frontier::install_source_frontier_race(
+            root.clone(),
+            root.join("b_raced.rs"),
+            raced_bytes.to_vec(),
+        );
+
+        // The delta attempt freshly parses a_fresh.rs and reuses b_raced.rs.
+        // The actual race forces the full retry. Its cfg(test) Weak check at
+        // the retry boundary rejects retaining the fresh first-attempt rows.
+        let raced = scan_project(root_text, project, &reusable)?;
+        assert_eq!(
+            raced.source_bytes_read,
+            fresh.len() + fresh.len() + raced_bytes.len(),
+            "retain the first attempt read charge and every full-retry read"
+        );
+        let fresh_facts = raced
+            .source_facts
+            .iter()
+            .find(|update| update.manifest().path() == "a_fresh.rs")
+            .ok_or("full fresh source facts missing")?;
+        assert_eq!(fresh_facts.declaration_count(), 181);
+        assert!(!fresh_facts.pages().is_empty(), "exercise complete paged facts");
+        assert!(raced.compiler_sources.iter().any(|source| {
+            source.relative_path == "b_raced.rs"
+                && source.content == typed_of::<InputContentSchema>(raced_bytes).to_bytes()
+        }));
+        let cold = scan_project(root_text, project, &BTreeMap::new())?;
+        assert_eq!(cold.source_bytes_read, fresh.len() + raced_bytes.len());
+        assert_eq!(raced.source_version, cold.source_version);
+        assert_eq!(raced.files, cold.files, "same exact compact source rows");
+        assert_eq!(raced.source_facts, cold.source_facts, "same complete fact trees");
+        assert_eq!(raced.encoded_fact_bytes, cold.encoded_fact_bytes);
+        assert_eq!(raced.compiler_sources.len(), cold.compiler_sources.len());
+        for (actual, expected) in raced.compiler_sources.iter().zip(&cold.compiler_sources) {
+            assert_eq!(actual.relative_path, expected.relative_path);
+            assert_eq!(actual.content, expected.content);
+            assert_eq!(actual.source_fact_identity, expected.source_fact_identity);
+            assert_eq!(actual.profile, expected.profile);
+        }
         Ok(())
     }
 

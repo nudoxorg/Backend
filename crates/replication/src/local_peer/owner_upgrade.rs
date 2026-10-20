@@ -629,8 +629,16 @@ mod tests {
                     .expect("Root-qualified same-source locald required"),
             )
             .expect("qualified locald");
-            assert_eq!(cli.file_name().unwrap(), "backend-cli");
-            assert_eq!(qualified_locald.file_name().unwrap(), "backend-locald");
+            assert_eq!(
+                cli.file_name().expect("qualified CLI has a basename"),
+                "backend-cli"
+            );
+            assert_eq!(
+                qualified_locald
+                    .file_name()
+                    .expect("qualified locald has a basename"),
+                "backend-locald"
+            );
             assert_eq!(
                 cli.parent(),
                 qualified_locald.parent(),
@@ -641,19 +649,22 @@ mod tests {
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
+                    .expect("test clock is after the Unix epoch")
                     .as_nanos()
             ));
-            std::fs::create_dir(&root).unwrap();
-            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
-            let root = root.canonicalize().unwrap();
-            std::fs::create_dir(root.join("p")).unwrap();
-            std::fs::create_dir(root.join("home")).unwrap();
+            std::fs::create_dir(&root).expect("create isolated owner fixture root");
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+                .expect("make owner fixture root private");
+            let root = root.canonicalize().expect("resolve owner fixture root");
+            std::fs::create_dir(root.join("p")).expect("create fixture project");
+            std::fs::create_dir(root.join("home")).expect("create fixture home");
             let executable = if copy_owner {
-                std::fs::create_dir(root.join("old")).unwrap();
+                std::fs::create_dir(root.join("old")).expect("create old-image fixture directory");
                 let copy = root.join("old/backend-locald");
-                std::fs::copy(&qualified_locald, &copy).unwrap();
-                std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o500)).unwrap();
+                std::fs::copy(&qualified_locald, &copy)
+                    .expect("copy qualified locald for old-image fixture");
+                std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o500))
+                    .expect("make old-image fixture executable");
                 copy
             } else {
                 qualified_locald.clone()
@@ -691,7 +702,11 @@ mod tests {
                     break;
                 }
                 assert!(
-                    fixture.child.try_wait().unwrap().is_none(),
+                    fixture
+                        .child
+                        .try_wait()
+                        .expect("poll actual owner during startup")
+                        .is_none(),
                     "actual owner startup failed"
                 );
                 assert!(Instant::now() < until, "bounded actual owner startup");
@@ -708,9 +723,9 @@ mod tests {
             Ok((stream, peer))
         }
         fn pid(&self) -> u32 {
-            let (stream, _) = self.connection().unwrap();
+            let (stream, _) = self.connection().expect("connect to actual owner");
             rustix::net::sockopt::socket_peercred(stream.as_fd())
-                .unwrap()
+                .expect("read actual owner peer credentials")
                 .pid
                 .as_raw_nonzero()
                 .get()
@@ -740,17 +755,21 @@ mod tests {
             if pinned {
                 command.env("BACKEND_LOCALD_BIN", &self.qualified_locald);
             }
-            let mut child = command.spawn().unwrap();
+            let mut child = command.spawn().expect("spawn actual CLI health command");
             let until = Instant::now() + Duration::from_secs(20);
-            while child.try_wait().unwrap().is_none() {
+            while child
+                .try_wait()
+                .expect("poll actual CLI health command")
+                .is_none()
+            {
                 if Instant::now() >= until {
-                    child.kill().unwrap();
+                    child.kill().expect("stop timed-out actual CLI command");
                     let _ = child.wait();
                     panic!("bounded actual CLI command");
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
-            let output = child.wait_with_output().unwrap();
+            let output = child.wait_with_output().expect("collect actual CLI output");
             assert!(
                 output.stdout.len() + output.stderr.len() <= 65536,
                 "bounded real health output"
@@ -796,11 +815,17 @@ mod tests {
         drop(same);
         let mut changed = QualifiedOwner::start(true);
         let old_pid = changed.pid();
-        let (stream, peer) = changed.connection().unwrap();
+        let (stream, peer) = changed
+            .connection()
+            .expect("connect to changed-image owner");
         let intended = peer
             .observe_default_locald_image(&changed.qualified_locald)
-            .unwrap();
-        assert!(!intended.matches_peer(&peer, &stream).unwrap());
+            .expect("inspect intended replacement image");
+        assert!(
+            !intended
+                .matches_peer(&peer, &stream)
+                .expect("compare intended image with authenticated peer")
+        );
         assert!(changed.command(true, false).status.success());
         assert_eq!(changed.pid(), old_pid, "explicit helper pin never retires");
         let passive = changed.command(false, true);
@@ -824,9 +849,9 @@ mod tests {
         );
         let lock = changed.root.join("w/OWNER.lock");
         let saved = changed.root.join("old-owner-lock");
-        std::fs::rename(&lock, &saved).unwrap();
+        std::fs::rename(&lock, &saved).expect("remove exact owner lock for refusal control");
         let lock_result = changed.retire(Instant::now() + Duration::from_secs(2), || true);
-        std::fs::rename(&saved, &lock).unwrap();
+        std::fs::rename(&saved, &lock).expect("restore exact owner lock after refusal control");
         assert!(lock_result.is_err());
         assert_eq!(changed.pid(), old_pid, "missing exact lock cannot signal");
         assert!(
@@ -839,10 +864,15 @@ mod tests {
             "default image changed before command admission"
         );
         assert!(
-            changed.child.wait().unwrap().success(),
+            changed
+                .child
+                .wait()
+                .expect("wait for gracefully retired owner")
+                .success(),
             "real old owner graceful terminal"
         );
-        let intent = std::fs::read(changed.root.join("w/authority-initialize.lock")).unwrap();
+        let intent = std::fs::read(changed.root.join("w/authority-initialize.lock"))
+            .expect("read durable owner retirement intent");
         assert_eq!(
             intent
                 .split(|&b| b == b'\n')
@@ -855,7 +885,8 @@ mod tests {
         assert!(changed.command(false, false).status.success());
         assert_eq!(changed.pid(), new_pid);
         assert_eq!(
-            std::fs::read(changed.root.join("w/authority-initialize.lock")).unwrap(),
+            std::fs::read(changed.root.join("w/authority-initialize.lock"))
+                .expect("read durable owner retirement intent"),
             intent
         );
     }
@@ -865,13 +896,18 @@ mod tests {
     fn qualified_deleted_default_image_requires_zero_links_and_refuses_candidate_races() {
         let mut old = QualifiedOwner::start(true);
         let old_pid = old.pid();
-        let (stream, peer) = old.connection().unwrap();
+        let (stream, peer) = old.connection().expect("connect to deleted-image owner");
         let candidate = old.root.join("backend-locald");
-        std::fs::copy(&old.qualified_locald, &candidate).unwrap();
-        let observed = peer.observe_default_locald_image(&candidate).unwrap();
+        std::fs::copy(&old.qualified_locald, &candidate)
+            .expect("copy candidate default locald image");
+        let observed = peer
+            .observe_default_locald_image(&candidate)
+            .expect("inspect candidate default image");
         assert!(observed.is_current());
-        std::fs::rename(&candidate, old.root.join("replaced-locald")).unwrap();
-        std::fs::copy(&old.qualified_locald, &candidate).unwrap();
+        std::fs::rename(&candidate, old.root.join("replaced-locald"))
+            .expect("replace candidate to exercise image race");
+        std::fs::copy(&old.qualified_locald, &candidate)
+            .expect("copy candidate default locald image");
         assert!(!observed.is_current());
         assert!(
             old.retire(Instant::now() + Duration::from_secs(2), || observed
@@ -879,30 +915,49 @@ mod tests {
                 .is_err()
         );
         assert_eq!(old.pid(), old_pid, "changed named candidate cannot signal");
-        std::fs::remove_file(old.root.join("old/backend-locald")).unwrap();
+        std::fs::remove_file(old.root.join("old/backend-locald"))
+            .expect("unlink old executable to test deleted image identity");
         let proc = PathBuf::from(format!("/proc/{old_pid}/exe"));
-        let image = File::open(&proc).unwrap();
+        let image = File::open(&proc).expect("open live process executable link");
         assert_eq!(
-            image.metadata().unwrap().nlink(),
+            image
+                .metadata()
+                .expect("read process executable metadata")
+                .nlink(),
             0,
             "actual unlink, not basename spoof"
         );
         assert!(
             std::fs::read_link(&proc)
-                .unwrap()
+                .expect("read deleted process executable link")
                 .as_os_str()
                 .as_bytes()
                 .ends_with(b" (deleted)")
         );
         let intended = peer
             .observe_default_locald_image(&old.qualified_locald)
-            .unwrap();
-        assert!(!intended.matches_peer(&peer, &stream).unwrap());
+            .expect("inspect qualified default locald image");
+        assert!(
+            !intended
+                .matches_peer(&peer, &stream)
+                .expect("compare intended image with authenticated peer")
+        );
         assert!(peer.is_locald_process(&stream));
         assert!(old.command(false, false).status.success());
         assert_ne!(old.pid(), old_pid);
-        assert!(old.child.wait().unwrap().success());
-        assert_eq!(image.metadata().unwrap().nlink(), 0);
+        assert!(
+            old.child
+                .wait()
+                .expect("wait for gracefully retired owner")
+                .success()
+        );
+        assert_eq!(
+            image
+                .metadata()
+                .expect("read process executable metadata")
+                .nlink(),
+            0
+        );
     }
 
     #[test]
