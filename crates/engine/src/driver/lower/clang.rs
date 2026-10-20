@@ -2768,12 +2768,21 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                                 ReferenceKind::Member => Some(EntityKind::Field),
                                 _ => unreachable!(),
                             };
-                            // A native implicit call can have an exact zero-width
-                            // use span and no written callee. Such a site cannot
-                            // name a package-path ForeignKey. Preserve its proven
-                            // file/USR target in the stable branch below instead.
+                            // Native implicit or macro-produced references can
+                            // retain a whole expression, including an empty
+                            // spelling or literal escapes. Package projection
+                            // requires a representable ForeignKey; otherwise keep
+                            // the proven file/USR target in the stable branch.
                             if let Ok(name) = core::str::from_utf8(name_bytes)
-                                && !name.is_empty()
+                                && ForeignKey::new(
+                                    ForeignOrigin::Universe {
+                                        ecosystem: ECOSYSTEM,
+                                    },
+                                    name,
+                                    name,
+                                    entity_kind,
+                                )
+                                .is_ok()
                             {
                                 self.facts
                                     .push_owned_package_occurrence(
@@ -4638,6 +4647,211 @@ mod tests {
         {
             return Err(TestError::Missing(
                 "named sibling identity and span unchanged",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Every spelling rejected by the foreign-key vocabulary keeps its
+    /// exact authority identity. Valid ASCII and UTF-8 names still package.
+    #[test]
+    fn unrepresentable_project_reference_spellings_preserve_oracle_identity()
+    -> Result<(), TestError> {
+        use backend_frontend_clang::legacy::{
+            ClangFacts, ReferenceFact, ReferenceKind, ReferenceTarget,
+        };
+        let cases: &[(&[u8], bool)] = &[
+            (b"", false),
+            (br#""\x41""#, false),
+            (br#"L"\u0400""#, false),
+            (&[0xff], false),
+            (b"named", true),
+            ("caf\u{e9}".as_bytes(), true),
+        ];
+        for (written, package_expected) in cases {
+            let mut source = b"void use() { ".to_vec();
+            let start = u32::try_from(source.len()).map_err(|_| TestError::Tail)?;
+            source.extend_from_slice(written);
+            let end = u32::try_from(source.len()).map_err(|_| TestError::Tail)?;
+            source.extend_from_slice(b"; }");
+            let owner = SymbolIdentity { bytes: [1; 16] };
+            let target = SymbolIdentity { bytes: [2; 16] };
+            let file = SymbolIdentity { bytes: [3; 16] };
+            let mut declaration = super::empty_declaration();
+            declaration.kind = DeclarationKind::Function;
+            declaration.identity = Some(owner);
+            declaration.name = Some(SourceSpan { start: 5, end: 8 });
+            declaration.span = SourceSpan {
+                start: 0,
+                end: u32::try_from(source.len()).map_err(|_| TestError::Tail)?,
+            };
+            let declarations = [declaration];
+            let references = [
+                ReferenceKind::Call,
+                ReferenceKind::Type,
+                ReferenceKind::Template,
+            ]
+            .map(|kind| ReferenceFact {
+                kind,
+                span: SourceSpan { start, end },
+                owner: Some(owner),
+                target: ReferenceTarget::Foreign {
+                    identity: target,
+                    file: Some(file),
+                    path: Some(0),
+                },
+            });
+            let authority = ClangFacts {
+                declarations: &declarations,
+                types: &[],
+                type_edges: &[],
+                references: &references,
+                diagnostics: &[],
+                includes: &[],
+                overrides: &[],
+                project_paths: vec!["include/decl.hpp".into()],
+            };
+            let mut facts = FactSet::new();
+            let mut projector = super::Projector::new(&source, authority, &mut facts);
+            projector.select_representatives()?;
+            projector.push_type_anchors()?;
+            projector.push_members()?;
+            projector.attach_topology()?;
+            projector.push_occurrences()?;
+            drop(projector);
+            if facts.len() != 1 || facts.occurrence_len != references.len() {
+                return Err(TestError::Missing("all reference spellings retained"));
+            }
+            for (index, reference) in references.iter().enumerate() {
+                let row = &facts.occurrences[index];
+                if row.kind != super::lane_reference_kind(reference.kind)
+                    || row.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle
+                    || row.span.start != start
+                    || row.span.end != end
+                    || facts.occurrence_owners[index] != 0
+                {
+                    return Err(TestError::Missing("exact authority relation preserved"));
+                }
+                if *package_expected {
+                    let OccurrenceTarget::Foreign(key) = row.target else {
+                        return Err(TestError::Missing("valid name package target"));
+                    };
+                    let ForeignOrigin::Package(lineage) = key.origin else {
+                        return Err(TestError::Missing("valid package origin"));
+                    };
+                    let path: Option<&str> = facts.occurrence_package_slot[index]
+                        .and_then(|slot| usize::try_from(slot).ok())
+                        .and_then(|slot| facts.foreign_text.get(slot))
+                        .map(|path| path.as_ref());
+                    let expected = core::str::from_utf8(written)
+                        .map_err(|_| TestError::Missing("valid UTF-8 test name"))?;
+                    let expected_kind = if reference.kind == ReferenceKind::Call {
+                        EntityKind::Function
+                    } else {
+                        EntityKind::Record
+                    };
+                    if lineage.ecosystem != "c"
+                        || path != Some("include/decl.hpp")
+                        || key.path != expected
+                        || key.display != expected
+                        || key.kind != Some(expected_kind)
+                    {
+                        return Err(TestError::Missing(
+                            "valid name package projection unchanged",
+                        ));
+                    }
+                } else if row.target != super::stable_foreign_target(target, file)
+                    || facts.occurrence_package_slot[index].is_some()
+                {
+                    return Err(TestError::Missing(
+                        "unrepresentable spelling keeps file and USR",
+                    ));
+                }
+            }
+            if facts.foreign_text.len()
+                != if *package_expected {
+                    references.len()
+                } else {
+                    0
+                }
+            {
+                return Err(TestError::Missing("no fabricated package slots"));
+            }
+        }
+        Ok(())
+    }
+
+    /// A real C++ implicit conversion may name its constructor by the whole
+    /// escaped literal extent rather than a written callee token.
+    #[test]
+    fn escaped_implicit_project_constructor_keeps_stable_oracle_call() -> Result<(), TestError> {
+        let root = unique_temp_project()?;
+        let header = root.join("include/decl.hpp");
+        let entry = root.join("src/main.cpp");
+        let source = b"#include \"decl.hpp\"\nvoid use() { consume(\"\\x41\"); }\n";
+        fs::write(
+            &header,
+            b"struct word { word(const char*); }; void consume(word);\n",
+        )
+        .map_err(|_| TestError::Missing("header write"))?;
+        fs::write(&entry, source).map_err(|_| TestError::Missing("entry write"))?;
+        let database = format!(
+            "[{{\"directory\":\"{directory}\",\"file\":\"src/main.cpp\",\"arguments\":[\"c++\",\"-Iinclude\",\"-std=c++23\",\"-c\",\"src/main.cpp\"]}}]",
+            directory = root.base.display(),
+        );
+        fs::write(root.join("compile_commands.json"), database)
+            .map_err(|_| TestError::Missing("database write"))?;
+        let project =
+            ClangProject::open(&root, &entry).map_err(|_| TestError::Missing("project open"))?;
+        let bytes = lower_with_authority(
+            LanguageProfile::Cxx(backend_semantic::vocabulary::CxxStandard::Cxx23),
+            Some(&project),
+            source,
+        )?;
+        let view = FragmentView::validate(&bytes)?;
+        let owner = entity_of(&view, b"use", EntityKind::Function)?;
+        let owner_start = source
+            .windows(b"void use".len())
+            .position(|part| part == b"void use")
+            .ok_or(TestError::Absent)?;
+        let literal = br#""\x41""#;
+        let literal_start = source
+            .windows(literal.len())
+            .position(|part| part == literal)
+            .ok_or(TestError::Absent)?;
+        let mut stable_conversion = false;
+        let mut named_call = false;
+        for row in occurrences(&view)? {
+            if row.owner != owner
+                || row.occurrence.kind != backend_semantic::ir::ReferenceKind::FunctionCall
+            {
+                continue;
+            }
+            if row.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle {
+                return Err(TestError::Missing("native call retains Oracle confidence"));
+            }
+            match row.occurrence.target {
+                OccurrenceTarget::Stable(_)
+                    if row.occurrence.span.start
+                        == u32::try_from(literal_start - owner_start)
+                            .map_err(|_| TestError::Tail)?
+                        && row.occurrence.span.end
+                            == u32::try_from(literal_start + literal.len() - owner_start)
+                                .map_err(|_| TestError::Tail)? =>
+                {
+                    stable_conversion = true
+                }
+                OccurrenceTarget::Foreign(key)
+                    if key.path == "consume" && key.kind == Some(EntityKind::Function) =>
+                {
+                    named_call = true
+                }
+                _ => {}
+            }
+        }
+        if !stable_conversion || !named_call {
+            return Err(TestError::Missing(
+                "stable implicit conversion and named call both retained",
             ));
         }
         Ok(())
