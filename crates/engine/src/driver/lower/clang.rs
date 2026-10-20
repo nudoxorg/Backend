@@ -4658,7 +4658,7 @@ mod tests {
     fn unrepresentable_project_reference_spellings_preserve_oracle_identity()
     -> Result<(), TestError> {
         use backend_frontend_clang::legacy::{
-            ClangFacts, ReferenceFact, ReferenceKind, ReferenceTarget,
+            ClangFacts, DeclarationKind, ReferenceFact, ReferenceKind, ReferenceTarget,
         };
         let cases: &[(&[u8], bool)] = &[
             (b"", false),
