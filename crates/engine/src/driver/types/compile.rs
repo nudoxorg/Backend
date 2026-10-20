@@ -1084,47 +1084,30 @@ pub(crate) fn rust_authority_diagnostic<'diagnostic>(
         } => {
             let _ = write!(
                 message,
-                "selected Rust source is cfg-inactive or detached from every active Cargo target; active package HIR roots: {} [",
+                "Rust scope=detached_source; active package HIR roots={}; roots=[",
                 active_hir_roots.package_crate_count,
             );
-            let displayed_roots = active_hir_roots.package_relative_roots.len().min(2);
-            for (index, root) in active_hir_roots
-                .package_relative_roots
-                .iter()
-                .take(displayed_roots)
-                .enumerate()
-            {
-                if index != 0 {
-                    let _ = message.write_str(", ");
-                }
-                // These roots are already package-relative and the inventory is
-                // capped by the Rust frontend. Keep the public diagnostic useful
-                // without ever rendering the absolute selected source path.
-                let display = root.to_string_lossy();
-                let prefix_bytes = display
-                    .char_indices()
-                    .take_while(|(index, character)| {
-                        index.saturating_add(character.len_utf8()) <= 28
-                    })
-                    .map(|(index, character)| index + character.len_utf8())
-                    .last()
-                    .unwrap_or(0);
-                let _ = message.write_str(&display[..prefix_bytes]);
-                if prefix_bytes < display.len() {
-                    let _ = message.write_str("…");
-                }
-            }
-            let _ = write!(
-                message,
-                "] (+{} omitted)",
-                active_hir_roots
-                    .package_crate_count
-                    .saturating_sub(displayed_roots)
+            write_bounded_rust_owner_roots(
+                &mut message,
+                &active_hir_roots.package_relative_roots,
+                active_hir_roots.package_crate_count,
+                "package crate roots",
             );
         }
-        RustError::AmbiguousSourceOwner { .. } => {
-            let _ = message.write_str(
-                "selected Rust source belongs to multiple active Cargo target contexts.",
+        RustError::AmbiguousSourceOwner {
+            definition_count,
+            owner_root_sample,
+            ..
+        } => {
+            let _ = write!(
+                message,
+                "Rust scope=ambiguous_source_owner; active owner definitions={definition_count}; roots=[",
+            );
+            write_bounded_rust_owner_roots(
+                &mut message,
+                owner_root_sample,
+                *definition_count,
+                "owner definitions",
             );
         }
         RustError::SourceOwnershipIndexLimit { .. } => {
@@ -1223,6 +1206,48 @@ pub(crate) fn rust_authority_diagnostic<'diagnostic>(
         }
     }
     message.finish()
+}
+
+/// Retains at most two bounded package-relative owner roots in the public diagnostic.
+/// The source authority retains the full typed inventory on `AuthorityFailure::Rust`.
+fn write_bounded_rust_owner_roots(
+    message: &mut BoundedAuthorityMessage<'_>,
+    roots: &[std::path::PathBuf],
+    total_count: usize,
+    omitted_label: &str,
+) {
+    let displayed_roots = roots.len().min(2);
+    for (index, root) in roots.iter().take(displayed_roots).enumerate() {
+        if index != 0 {
+            let _ = message.write_str(", ");
+        }
+        // The frontend promises package-relative roots. Still refuse to render
+        // an absolute or parent-traversing value if that invariant is ever broken.
+        let display = if root.is_absolute()
+            || root
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            "<invalid-owner-root>".into()
+        } else {
+            root.to_string_lossy()
+        };
+        let prefix_bytes = display
+            .char_indices()
+            .take_while(|(index, character)| index.saturating_add(character.len_utf8()) <= 28)
+            .map(|(index, character)| index + character.len_utf8())
+            .last()
+            .unwrap_or(0);
+        let _ = message.write_str(&display[..prefix_bytes]);
+        if prefix_bytes < display.len() {
+            let _ = message.write_str("…");
+        }
+    }
+    let _ = write!(
+        message,
+        "] (+{} {omitted_label} not shown)",
+        total_count.saturating_sub(displayed_roots)
+    );
 }
 
 /// Returns a validated Cargo package token from known resolver messages.
@@ -1838,5 +1863,164 @@ mod lifecycle_tests {
         assert_eq!(root, private_root);
         assert!(stderr.contains("quote"));
         assert!(stderr.contains("/private/cache"));
+    }
+
+    #[test]
+    fn rust_source_scope_diagnostic_keeps_detached_and_ambiguous_variants_distinct() {
+        use backend_frontend_rust::legacy::{RustActiveHirRootInventory, RustAuthorityError};
+
+        let detached_source = source();
+        let detached_recipe = recipe(detached_source);
+        let selected = std::path::PathBuf::from("/private/ryu/benches/bench.rs");
+        let detached_inventory = RustActiveHirRootInventory {
+            package_crate_count: 4,
+            package_relative_roots: vec![
+                std::path::PathBuf::from("src/lib.rs"),
+                std::path::PathBuf::from("examples/tool.rs"),
+                std::path::PathBuf::from("tests/roundtrip.rs"),
+            ]
+            .into_boxed_slice(),
+            omitted_package_crates: 1,
+        };
+        let mut detached_scratch = [0; MAX_NATIVE_DIAGNOSTIC_BYTES];
+        let detached = rust_terminal(
+            detached_source,
+            detached_recipe,
+            Some(&mut detached_scratch),
+            false,
+            lower::rust::RustCollectError::Authority(RustAuthorityError::DetachedSource {
+                path: selected.clone(),
+                active_hir_roots: detached_inventory.clone(),
+            }),
+        );
+        let CompileFailure::Authority {
+            failure: detached_failure,
+            ..
+        } = detached
+        else {
+            panic!("detached Rust source must remain an authority failure");
+        };
+        let detached_projection = detached_failure.projection();
+        assert_eq!(
+            detached_projection.class,
+            AuthorityDiagnosticClass::SourceScope
+        );
+        let detached_text = std::str::from_utf8(detached_projection.diagnostic.primary)
+            .expect("the bounded ASCII detached diagnostic is UTF-8");
+        assert!(detached_text.starts_with("Rust scope=detached_source;"));
+        assert!(detached_text.contains("active package HIR roots=4"));
+        assert!(detached_text.contains("src/lib.rs"));
+        assert!(detached_text.contains("(+2 package crate roots not shown)"));
+        assert!(detached_text.contains("examples/tool.rs"));
+        assert!(!detached_text.contains("ambiguous_source_owner"));
+        assert!(!detached_text.contains("/private"));
+        let AuthorityFailure::Rust {
+            cause:
+                RustAuthorityError::DetachedSource {
+                    path,
+                    active_hir_roots,
+                },
+            ..
+        } = detached_failure
+        else {
+            panic!("the exact detached Rust source cause must remain attached");
+        };
+        assert_eq!(path, selected);
+        assert_eq!(active_hir_roots, detached_inventory);
+
+        let ambiguous_roots = vec![
+            std::path::PathBuf::from("src/lib.rs"),
+            std::path::PathBuf::from("build.rs"),
+            std::path::PathBuf::from("tests/roundtrip.rs"),
+        ]
+        .into_boxed_slice();
+        let ambiguous_source = source();
+        let ambiguous_recipe = recipe(ambiguous_source);
+        let mut ambiguous_scratch = [0; MAX_NATIVE_DIAGNOSTIC_BYTES];
+        let ambiguous = rust_terminal(
+            ambiguous_source,
+            ambiguous_recipe,
+            Some(&mut ambiguous_scratch),
+            false,
+            lower::rust::RustCollectError::Authority(RustAuthorityError::AmbiguousSourceOwner {
+                path: selected.clone(),
+                definition_count: 5,
+                owner_root_sample: ambiguous_roots.clone(),
+                omitted_owner_definitions: 2,
+            }),
+        );
+        let CompileFailure::Authority {
+            failure: ambiguous_failure,
+            ..
+        } = ambiguous
+        else {
+            panic!("ambiguous Rust ownership must remain an authority failure");
+        };
+        let ambiguous_projection = ambiguous_failure.projection();
+        assert_eq!(
+            ambiguous_projection.class,
+            AuthorityDiagnosticClass::SourceScope
+        );
+        let ambiguous_text = std::str::from_utf8(ambiguous_projection.diagnostic.primary)
+            .expect("the bounded ASCII ambiguous diagnostic is UTF-8");
+        assert!(ambiguous_text.starts_with("Rust scope=ambiguous_source_owner;"));
+        assert!(ambiguous_text.contains("active owner definitions=5"));
+        assert!(ambiguous_text.contains("src/lib.rs, build.rs"));
+        assert!(ambiguous_text.contains("(+3 owner definitions not shown)"));
+        assert!(!ambiguous_text.contains("detached_source"));
+        assert!(!ambiguous_text.contains("/private"));
+        let AuthorityFailure::Rust {
+            cause:
+                RustAuthorityError::AmbiguousSourceOwner {
+                    path,
+                    definition_count,
+                    owner_root_sample,
+                    omitted_owner_definitions,
+                },
+            ..
+        } = ambiguous_failure
+        else {
+            panic!("the exact ambiguous Rust owner cause must remain attached");
+        };
+        assert_eq!(path, selected);
+        assert_eq!(definition_count, 5);
+        assert_eq!(owner_root_sample, ambiguous_roots);
+        assert_eq!(omitted_owner_definitions, 2);
+    }
+
+    #[test]
+    fn rust_ambiguous_scope_diagnostic_keeps_owner_sample_and_output_bounded() {
+        use backend_frontend_rust::legacy::RustAuthorityError;
+
+        let selected = std::path::PathBuf::from("/private/ryu/benches/bench.rs");
+        let cause = RustAuthorityError::AmbiguousSourceOwner {
+            path: selected,
+            definition_count: usize::MAX,
+            owner_root_sample: vec![
+                std::path::PathBuf::from("src/éééééééééé/long_root.rs"),
+                std::path::PathBuf::from("/private/should-not-leak.rs"),
+            ]
+            .into_boxed_slice(),
+            omitted_owner_definitions: usize::MAX - 2,
+        };
+        let mut bounded = [0; 128];
+        let bounded_capacity = bounded.len();
+        let diagnostic = rust_authority_diagnostic(Some(&mut bounded), &cause, false);
+        assert_eq!(diagnostic.primary.len(), bounded_capacity);
+        assert!(diagnostic.truncated);
+        assert!(diagnostic.observed > diagnostic.primary.len());
+        let text = std::str::from_utf8(diagnostic.primary)
+            .expect("bounded owner-root prefixes preserve UTF-8 boundaries");
+        assert!(text.starts_with("Rust scope=ambiguous_source_owner;"));
+        assert!(!text.contains("/private"));
+
+        let mut complete = [0; MAX_NATIVE_DIAGNOSTIC_BYTES];
+        let complete_diagnostic = rust_authority_diagnostic(Some(&mut complete), &cause, false);
+        let complete_text = std::str::from_utf8(complete_diagnostic.primary)
+            .expect("the full bounded owner-root diagnostic is UTF-8");
+        assert!(complete_text.contains("src/éééééééééé/lon…"));
+        assert!(complete_text.contains("<invalid-owner-root>"));
+        assert!(!complete_text.contains("/private"));
+        assert!(!complete_diagnostic.truncated);
     }
 }
