@@ -24,11 +24,48 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
+/// A complete primary document delivered before optional symbol refinements.
+/// The read outcome carries its exact slot generation; the store additionally
+/// joins this root, coordinate and package before exposing the document.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrimarySymbol {
+    symbol: SymbolRef,
+    package: PackageRef,
+    root: backend_library::ViewStateRoot,
+    page: SymbolPage,
+}
+
+impl PrimarySymbol {
+    pub(crate) fn from_document(
+        symbol: &SymbolRef,
+        document: &backend_library::Document,
+        page: SymbolPage,
+    ) -> Option<Self> {
+        let package = symbol.package()?;
+        (page.identity.coordinate == *symbol
+            && page.package.known() == Some(&package)
+            && page.identity.key == Some(document.symbol.into()))
+        .then(|| Self {
+            symbol: symbol.clone(),
+            package,
+            root: document.basis,
+            page,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn page(&self) -> &SymbolPage {
+        &self.page
+    }
+}
+
 /// One read-model value produced by the read pool.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PageValue {
     /// A declaration page.
     Symbol(SymbolPage),
+    /// Authenticated primary document; optional refinements are still running.
+    PrimarySymbol(PrimarySymbol),
     /// A source view.
     Source(SourceView),
     /// A current owner-verified Cargo file, without semantic-index coverage.
@@ -539,17 +576,62 @@ impl<K: Ord + Clone, T> Slots<K, T> {
     where
         T: PartialEq,
     {
-        let Some(slot) = self.map.get_mut(key) else { return Landing::Superseded };
-        let Fetch::Running { generation: running, manner } = slot.fetch else { return Landing::Superseded };
-        if running != generation { return Landing::Superseded; }
-        if manner == Manner::Quiet || slot.resource.is_loaded() {
+        self.stage_admitted(key, generation, value, None)
+    }
+
+    fn stage_admitted(
+        &mut self,
+        key: &K,
+        generation: Generation,
+        value: T,
+        primary_root: Option<backend_library::ViewStateRoot>,
+    ) -> Landing
+    where
+        T: PartialEq,
+    {
+        let Some(slot) = self.map.get_mut(key) else {
+            return Landing::Superseded;
+        };
+        let Fetch::Running {
+            generation: running,
+            manner,
+        } = slot.fetch
+        else {
+            return Landing::Superseded;
+        };
+        if running != generation {
+            return Landing::Superseded;
+        }
+        let Some(root) = slot.asked_at else {
+            return Landing::Superseded;
+        };
+        if primary_root.is_some_and(|primary| primary != root.root()) {
+            return Landing::Superseded;
+        }
+        if primary_root.is_none() {
+            if manner == Manner::Quiet || slot.resource.is_loaded() {
+                return Landing::Unchanged;
+            }
+        } else if slot.resource.is_loaded()
+            && slot.provenance == Provenance::Live
+            && slot.resource.value_root() == Some(root)
+        {
+            // An earlier primary in this authority already made the document
+            // current. Optional refinements arrive with the terminal result.
             return Landing::Unchanged;
         }
-        let Some(root) = slot.asked_at else { return Landing::Superseded };
-        if slot.resource.loaded_value() == Some(&value) && slot.resource.value_root() == Some(root) {
+        if primary_root.is_none()
+            && slot.resource.loaded_value() == Some(&value)
+            && slot.resource.value_root() == Some(root)
+        {
             return Landing::Unchanged;
         }
-        slot.resource = Resource::partial_at(value, root);
+        slot.resource = if primary_root.is_some() {
+            slot.provenance = Provenance::Live;
+            Resource::loaded_at(value, root)
+        } else {
+            Resource::partial_at(value, root)
+        };
         slot.revision = slot.revision.next();
         Landing::Applied
     }
@@ -1020,11 +1102,38 @@ impl PageStore {
 
     /// Publishes an intermediate result without ending its read generation.
     pub fn stage(&mut self, key: &PageKey, generation: Generation, value: PageValue) -> Landing {
+        if let PageValue::PrimarySymbol(primary) = value {
+            let PageKey::Symbol(symbol) = key else {
+                return Landing::Superseded;
+            };
+            if primary.symbol != *symbol || symbol.package().as_ref() != Some(&primary.package) {
+                return Landing::Superseded;
+            }
+            return self.symbols.stage_admitted(
+                symbol,
+                generation,
+                primary.page,
+                Some(primary.root),
+            );
+        }
         match key {
-            PageKey::Symbol(symbol) => match value.symbol() { Some(value) => self.symbols.stage(symbol, generation, value), None => Landing::Superseded },
-            PageKey::Package(package) => match value.package() { Some(value) => self.packages.stage(package, generation, value), None => Landing::Superseded },
-            PageKey::Orbit => match value.orbit() { Some(value) => self.orbit.stage(&(), generation, value), None => Landing::Superseded },
-            PageKey::Source(_) | PageKey::CargoSource(_) | PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => Landing::Superseded,
+            PageKey::Symbol(symbol) => match value.symbol() {
+                Some(value) => self.symbols.stage(symbol, generation, value),
+                None => Landing::Superseded,
+            },
+            PageKey::Package(package) => match value.package() {
+                Some(value) => self.packages.stage(package, generation, value),
+                None => Landing::Superseded,
+            },
+            PageKey::Orbit => match value.orbit() {
+                Some(value) => self.orbit.stage(&(), generation, value),
+                None => Landing::Superseded,
+            },
+            PageKey::Source(_)
+            | PageKey::CargoSource(_)
+            | PageKey::Search(_)
+            | PageKey::Health
+            | PageKey::Browse(_) => Landing::Superseded,
         }
     }
 
