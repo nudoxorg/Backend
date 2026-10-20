@@ -3094,6 +3094,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut forest_root = 0;
         let mut persist_configured_programs = false;
         let mut independent_project_set = false;
+        let mut typescript_project_execution_fingerprint = None;
         if let Some(project) = typescript_project.as_ref() {
             let inputs = project.inputs();
             let package_sources = package.compilation_sources().collect::<Vec<_>>();
@@ -3124,6 +3125,15 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     )),
                 }
             })?;
+            typescript_project_execution_fingerprint = Some(
+                crate::application::typescript_program::native_program_execution_fingerprint(
+                    inputs.fingerprint,
+                    forest
+                        .nodes
+                        .iter()
+                        .map(|node| node.native.options.environment),
+                ),
+            );
             forest_root = forest.root;
             independent_project_set = forest.project_set;
             // Even one configured program retains its exact config/environment
@@ -4615,13 +4625,13 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             );
         }
         let project_plane_seed = typescript_toolchain.and_then(|toolchain| {
-            typescript_project.as_ref().and_then(|project| {
+            typescript_project.as_ref().and_then(|_| {
                 LocalCompilerPlaneExecutionSeed::for_typescript_project(
                     package.package_target.target(),
                     target.profile,
                     target.stage,
                     toolchain.identity,
-                    project.fingerprint(),
+                    typescript_project_execution_fingerprint?,
                 )
             })
         });
