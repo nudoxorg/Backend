@@ -875,6 +875,7 @@ mod go_field_witness_tests {
                 kind: *kind,
                 visibility: Visibility::Private,
                 authority: EntityAuthorityFacts {
+                    visibility: FactAvailability::Captured,
                     publication: DeclarationPublicationRole::PrimaryOwned,
                     parentage: parent.map_or(ParentageAuthority::Root, |parent| {
                         ParentageAuthority::Bound(versions[parent].identity())
