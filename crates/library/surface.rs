@@ -6238,7 +6238,7 @@ mod tests {
         let decoded: SurfaceReply = serde_json::from_value(wire).expect("same protocol roundtrip");
         assert_eq!(decoded, reply);
         let envelope = crate::ReplyDto::new(41, crate::CommandReply::Surface(reply));
-        let encoded = serde_json::to_vec(&envelope).expect("current live DTO36 envelope");
+        let encoded = serde_json::to_vec(&envelope).expect("current live DTO37 envelope");
         assert!(encoded.len() <= crate::MAX_REPLY_BODY);
         assert_eq!(
             crate::decode_reply_body(&encoded).expect("strict current wire"),
