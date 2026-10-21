@@ -1629,9 +1629,9 @@ fn terminal_capture_changes_for_snapshot(
 /// Capture terminal rows and the exact retained semantic after-images needed
 /// to bind them in the same intent. An unchanged after-image is an observation
 /// of admitted publication, not a claim that an ordinary relation row changed.
-pub(super) struct CompletedCaptureChanges {
-    pub(super) captures: Vec<BuiltinCaptureChange>,
-    pub(super) retained_publications: Vec<BuiltinSemanticChange>,
+struct CompletedCaptureChanges {
+    captures: Vec<BuiltinCaptureChange>,
+    retained_publications: Vec<BuiltinSemanticChange>,
 }
 
 fn completed_capture_changes(
@@ -1648,7 +1648,7 @@ fn completed_capture_changes(
     )
 }
 
-pub(super) fn completed_capture_changes_for_snapshot(
+fn completed_capture_changes_for_snapshot(
     snapshot: &WorkspaceSnapshot,
     captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     semantic_changes: &[BuiltinSemanticChange],
@@ -4393,9 +4393,7 @@ pub(super) struct AdmittedCapturePublication {
 }
 
 impl AdmittedCapturePublication {
-    pub(super) fn selected_claim(
-        &self,
-    ) -> (ProductSemanticPublicationKey, SemanticPublicationClaim) {
+    fn selected_claim(&self) -> (ProductSemanticPublicationKey, SemanticPublicationClaim) {
         (self.key.clone(), self.claim)
     }
 
