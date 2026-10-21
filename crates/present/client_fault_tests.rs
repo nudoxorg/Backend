@@ -340,3 +340,82 @@ fn remote_authorization_refusals_preserve_basis_and_require_new_authority() {
         assert!(fault.cause().sentence().contains("obtain"));
     }
 }
+
+#[test]
+fn verified_owner_image_mode_refusal_gets_exact_cli_and_mcp_repair_guidance() {
+    let path = "/home/alice/Backend with 'quotes'/target/debug/backend-locald";
+    let fault = Fault::from_client_error(
+        &ClientError::OwnerUpdate {
+            found: 38,
+            supported: 38,
+            detail: format!(
+                "the installed default owner image could not be proven: owner image {path} is group-writable (uid 1000, gid 1002, mode 0775); no command was submitted"
+            ),
+        },
+        Operand::Whole,
+    );
+    let expected = format!("chmod g-w -- {}", crate::shell::quote_argument(path));
+    assert_eq!(
+        fault.affordance().shell().as_deref(),
+        Some(expected.as_str())
+    );
+    assert_eq!(fault.affordance().tool_call(), None);
+    assert!(
+        fault
+            .cause()
+            .sentence()
+            .contains("rebuild under umask 0022")
+    );
+    assert!(!fault.cause().sentence().contains("group ownership"));
+    let cli = text::fault(&fault, Theme::plain());
+    assert!(cli.contains(&format!("→ {expected}")));
+    assert!(!cli.contains("re-run the same command"));
+
+    let encoded = encode_serializable(
+        "fault",
+        Detail::Full,
+        None,
+        FaultDto::new(&fault),
+        DEFAULT_RESPONSE_BUDGET_BYTES,
+    )
+    .expect("bounded MCP fault DTO");
+    let mcp: serde_json::Value = serde_json::from_slice(&encoded.bytes).expect("MCP fault JSON");
+    assert_eq!(mcp["shell"], expected);
+    assert!(mcp.get("call").is_none());
+    assert!(mcp["detail"].as_str().expect("fault detail").contains("umask 0022"));
+
+    let world_and_group = Fault::from_client_error(
+        &ClientError::OwnerUpdate {
+            found: 38,
+            supported: 38,
+            detail: format!(
+                "the installed default owner image could not be proven: owner image {path} is world-writable (uid 1000, gid 1002, mode 0777); no command was submitted"
+            ),
+        },
+        Operand::Whole,
+    );
+    assert_eq!(
+        world_and_group.affordance().shell().as_deref(),
+        Some(format!("chmod go-w -- {}", crate::shell::quote_argument(path)).as_str())
+    );
+}
+
+#[test]
+fn owner_image_mode_refusal_with_non_displayable_path_does_not_offer_a_blind_retry() {
+    let fault = Fault::from_client_error(
+        &ClientError::OwnerUpdate {
+            found: 38,
+            supported: 38,
+            detail: "the installed default owner image could not be proven: owner image /tmp/bad\nname/backend-locald is group-writable (uid 1000, gid 1002, mode 0775); no command was submitted".into(),
+        },
+        Operand::Whole,
+    );
+    assert_eq!(fault.affordance(), &Affordance::None);
+    assert!(
+        fault
+            .cause()
+            .sentence()
+            .contains("rebuild under umask 0022")
+    );
+    assert!(!text::fault(&fault, Theme::plain()).contains("re-run the same command"));
+}
