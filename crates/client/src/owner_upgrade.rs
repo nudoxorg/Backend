@@ -352,6 +352,11 @@ impl Session {
 mod tests {
     use super::*;
     use crate::{read_body, write_body};
+
+    fn encode_test_reply(reply: &backend_library::ReplyDto) -> Vec<u8> {
+        serde_json::to_vec(reply).expect("serialize test reply DTO")
+    }
+
     #[test]
     fn owner_build_update_keeps_wire_upgrade_diagnostics_distinct() {
         let build = update_error(
@@ -454,7 +459,7 @@ mod tests {
             Command::OutlineOwnerWitnessCapability,
         );
         let library = backend_library::Library::new();
-        let root = library.view().root();
+        let root = library.view();
         let revision = backend_library::RevisionReceipt::new(
             root.root(),
             library.cursor(),
@@ -501,7 +506,7 @@ mod tests {
             .expect("owner-private endpoint");
         let server = std::thread::spawn(move || {
             let library = backend_library::Library::new();
-            let root = library.view().root();
+            let root = library.view();
             let readiness = || {
                 backend_library::ReplyDto::new(
                     PROBE_ID,
@@ -516,10 +521,7 @@ mod tests {
             )
             .expect("valid initial health");
             assert_eq!(health.command, Command::Health);
-            write_body(
-                &mut old_peer,
-                &backend_library::encode_reply_body(&readiness()).expect("health reply"),
-            )
+            write_body(&mut old_peer, &encode_test_reply(&readiness()))
             .expect("write initial health reply");
 
             let probe = backend_library::decode_command_body(
@@ -529,11 +531,10 @@ mod tests {
             assert_eq!(probe.command, Command::OutlineOwnerWitnessCapability);
             write_body(
                 &mut old_peer,
-                &backend_library::encode_reply_body(&backend_library::ReplyDto::error(
+                &encode_test_reply(&backend_library::ReplyDto::error(
                     probe.request_id,
                     "unknown command",
-                ))
-                .expect("unknown-command reply"),
+                )),
             )
             .expect("send old peer refusal");
             old_peer
@@ -548,10 +549,7 @@ mod tests {
             .expect("fallback health request");
             assert_eq!(health.request_id, PROBE_ID);
             assert_eq!(health.command, Command::Health);
-            write_body(
-                &mut replacement,
-                &backend_library::encode_reply_body(&readiness()).expect("fallback health reply"),
-            )
+            write_body(&mut replacement, &encode_test_reply(&readiness()))
             .expect("write fallback health");
 
             let ordinary = backend_library::decode_command_body(
@@ -569,10 +567,7 @@ mod tests {
                 ordinary.request_id,
                 backend_library::CommandReply::Revision(revision),
             );
-            write_body(
-                &mut replacement,
-                &backend_library::encode_reply_body(&reply).expect("ordinary revision reply"),
-            )
+            write_body(&mut replacement, &encode_test_reply(&reply))
             .expect("write ordinary command reply");
         });
 
@@ -608,12 +603,19 @@ mod tests {
         reconnect_after_unsupported_outline_probe(&mut transport, deadline, None)
             .expect("reconnect and bind the replacement using health");
         let ordinary = CommandDto::new(PROBE_ID - 2, Command::Revision);
-        let reply = transport
-            .request_with_budget(
-                ordinary,
+        let body = encode_request(&ordinary).expect("ordinary command request");
+        let bytes = transport
+            .exchange_command_with_budget(
+                &ordinary,
+                &body,
                 probe_budget(deadline, None).expect("ordinary command budget"),
             )
             .expect("ordinary command succeeds on the reopened connection");
+        let reply = admit_reply(
+            &ordinary,
+            transport.decode(&bytes).expect("ordinary reply decode"),
+        )
+        .expect("ordinary reply admission");
         assert!(matches!(
             reply.reply,
             backend_library::CommandReply::Revision(_)
