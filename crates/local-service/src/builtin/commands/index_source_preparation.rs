@@ -672,7 +672,7 @@ impl SourceCompilePlan {
         // compiler-completed milestone.
         compiled
             .admitted
-            .extend(super::index::reused_capture_publications_for_snapshot(
+            .extend(super::reused_capture_publications_for_snapshot(
                 snapshot,
                 &self.captures,
                 &self.reused_profiles,
@@ -739,13 +739,13 @@ impl SourceCompilePlan {
                     .to_owned(),
             ));
         }
-        let admitted = super::index::reused_capture_publications_for_snapshot(
+        let admitted = super::reused_capture_publications_for_snapshot(
             snapshot,
             &self.captures,
             &self.reused_profiles,
             self.operation_key,
         )?;
-        let completed = super::index::completed_capture_changes_for_snapshot(
+        let completed = super::completed_capture_changes_for_snapshot(
             snapshot,
             &self.captures,
             &[],
@@ -765,7 +765,7 @@ impl SourceCompilePlan {
             intent: Some(intent),
             selected: admitted
                 .iter()
-                .map(super::index::AdmittedCapturePublication::selected_claim)
+                .map(super::AdmittedCapturePublication::selected_claim)
                 .collect(),
             revision_fence: Some(self.revision_fence.clone()),
             profile_refusals: Box::new([]),
