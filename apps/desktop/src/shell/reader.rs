@@ -3073,7 +3073,10 @@ impl Render for Reader {
             // A Fold carries the gem itself; the map's own handoff would
             // draw a second one.
             let source = self.graph_source.take().filter(|_| !transit.as_ref().is_some_and(|t| t.verb == Verb::Fold));
-            map.update(cx, |map, cx| map.show(&current.route, current.visit, source.as_ref(), window, cx));
+            map.update(cx, |map, cx| {
+                map.set_measure_width(self.core.width(), cx);
+                map.show(&current.route, current.visit, source.as_ref(), window, cx);
+            });
             self.said = vec!["Graph fixture · pages resolve through your local index".into()];
             self.hero.clear();
             let tint = self.tint_now(cx);
