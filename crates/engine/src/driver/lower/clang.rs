@@ -82,7 +82,7 @@ use backend_semantic::vocabulary::{LanguageProfile, LoweringUnsupported};
 
 use crate::driver::lower::{
     AdmissionFault, EmissionExtension, FactSet, LEAF_PRODUCT, MAX_FACT_CHILDREN, MAX_TYPE_CHILDREN,
-    SemanticFact, StagedSourceSpan, push_fact,
+    SemanticFact, StagedSourceSpan, StagedTypeParameterRange, push_fact,
 };
 use crate::driver::types::{ClangProjectionFault, FactFault, FactRejection};
 
@@ -678,6 +678,9 @@ struct Projector<'authority, 'scratch, 'source> {
     /// Template parameter identity to its borrowed spelling, for `TypeVar`
     /// rows at use sites.
     template_parameters: Vec<(SymbolIdentity, &'source [u8])>,
+    /// Function templates are emitted after pass-two parameter facts so the
+    /// executable product and type graph can bind the exact same carriers.
+    function_templates: Vec<(usize, u32, StagedTypeParameterRange)>,
     /// The pooled atom list naming every include spelling, interned once.
     includes: Option<backend_semantic::ir::AtomListId>,
     /// Type-edge adjacency: edges grouped by source row, preserving
@@ -711,6 +714,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             identities: Vec::new(),
             anonymous: Vec::new(),
             template_parameters: Vec::new(),
+            function_templates: Vec::new(),
             includes: None,
             edge_order: Vec::new(),
             edge_starts: Vec::new(),
@@ -884,8 +888,9 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     /// declarations also intern their template parameters into the pooled
     /// lane so their extension row names exactly them.
     fn push_type_anchors(&mut self) -> Result<(), ClangCollectError> {
-        // Function-template anchors project their signature in this pass, so
-        // the authority type-edge adjacency must be live before the first push.
+        // The authority type-edge adjacency is live before any signature
+        // projection. Function-template anchors are deferred until their
+        // parameter facts exist in pass two.
         self.index_edges().map_err(terminal)?;
         let declarations = self.authority.declarations;
         for index in 0..declarations.len() {
@@ -922,16 +927,20 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             // Template parameters first so the pooled start coordinate the
             // extension row carries is final before the fact is pushed.
             let template_start = self.push_template_parameters(index)?;
+            if kind == EntityKind::Function && declaration.kind == DeclarationKind::Template {
+                let template_range = self
+                    .facts
+                    .type_parameter_range(template_start)
+                    .map_err(|fault| lane_terminal(self.facts, name.len(), fault))?;
+                self.function_templates
+                    .push((index, template_start, template_range));
+                continue;
+            }
             let own_ordinal = u32::try_from(self.facts.len())
                 .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
             let extension = self.extension(declaration, template_start)?;
-            // A function template is an executable anchor, not a nominal
-            // type: two same-named overloads that differ only in a parameter
-            // type (for example `float` versus `double`) must still mint
-            // distinct coordinate-free families. Carrying the projected
-            // function signature makes the overloads structurally distinct and
-            // lets every contained parameter inherit that distinction. Every
-            // other anchor keeps its recursive nominal self-record.
+            // Other function-shaped anchors retain their projected signature;
+            // function-template anchors use the full carrier frame below.
             let fact = if kind == EntityKind::Function {
                 match declaration.type_root {
                     Some(root) => {
@@ -1090,8 +1099,8 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                     // by that function's own signature framing; what remains
                     // here is owner-less storage (a function-pointer
                     // typedef's parameter) with file-scope parentage, and a
-                    // function template's parameters (the template anchor is
-                    // pushed in pass one without signature framing). Both
+                    // function template's parameters (its anchor is emitted
+                    // after these rows so it can frame their exact ordinals). Both
                     // keep the executable framing's twin discrimination, or
                     // macro-generated template operators whose parameters
                     // share the invocation-text name and a dependent frame
@@ -1101,6 +1110,10 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 DeclarationKind::Parameter => {}
                 DeclarationKind::TemplateParameter | DeclarationKind::Unknown => {}
             }
+        }
+        for (index, template_start, template_range) in std::mem::take(&mut self.function_templates)
+        {
+            self.push_function_template(index, template_start, template_range)?;
         }
         Ok(())
     }
@@ -1325,9 +1338,8 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     }
 
     /// Pushes one parameter that no executable's signature framing consumed:
-    /// owner-less function-pointer typedef storage, or the parameters of a
-    /// function template, whose anchor is pushed in pass one without framing
-    /// its own carriers.
+    /// owner-less function-pointer typedef storage, or a function-template
+    /// parameter whose anchor is framed over these rows after pass two.
     ///
     /// The executable framing separates two same-named parameters whose whole
     /// flattened frame is byte-identical (one macro invocation can expand a
@@ -1441,6 +1453,170 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         };
         let ordinal = push(self.facts, fact)?;
         self.record_pushed(index, ordinal, declaration);
+        Ok(())
+    }
+
+    /// Pushes a function-template anchor over the parameter facts that pass
+    /// two already emitted through `push_orphan_parameter`. The product and
+    /// `FunctionPointer` row share those exact carrier ordinals; a non-void
+    /// result receives the same synthetic carrier and twin identity treatment
+    /// as an ordinary executable.
+    fn push_function_template(
+        &mut self,
+        index: usize,
+        template_start: u32,
+        template_range: StagedTypeParameterRange,
+    ) -> Result<(), ClangCollectError> {
+        let declarations = self.authority.declarations;
+        let Some(declaration) = declarations.get(index) else {
+            return Ok(());
+        };
+        let name = self.name_of(declaration).unwrap_or(&[]);
+        if name.is_empty() {
+            return Ok(());
+        }
+
+        let mut parameters: Vec<usize> = Vec::new();
+        for candidate in 0..declarations.len() {
+            if self.representative.get(candidate).copied().flatten() != Some(candidate) {
+                continue;
+            }
+            let Some(parameter) = declarations.get(candidate) else {
+                continue;
+            };
+            if parameter.kind != DeclarationKind::Parameter
+                || parameter.owner != declaration.identity
+                || parameter.owner.is_none()
+                || !span_contains(declaration.span, parameter.span)
+                || parameter.name.is_none()
+            {
+                continue;
+            }
+            parameters.push(candidate);
+        }
+        parameters.sort_by_key(|candidate| {
+            declarations
+                .get(*candidate)
+                .map(|parameter| parameter.span.start)
+                .unwrap_or(u32::MAX)
+        });
+
+        let mut signature_children = Vec::with_capacity(parameters.len().saturating_add(1));
+        for candidate in parameters {
+            let Some(ordinal) = self.ordinals.get(candidate).copied().flatten() else {
+                return Err(terminal(ProjectionFault::IndexCapacity));
+            };
+            signature_children.push(ordinal);
+        }
+
+        let mut result_ordinal = None;
+        if let Some(root) = declaration.type_root
+            && let Some(result) = self.edge_of(root, TypeRelation::Result)
+            && let Some(result_row) = self.type_row(result)
+            && !result_row.is_void()
+        {
+            let projected = self.project_root(result)?;
+            let extension = self.extension(declaration, template_start)?;
+            let twin_frame = (
+                projected.record,
+                projected.children,
+                projected.child_names,
+                projected.child_count,
+            );
+            let fact =
+                projected.attach(SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT));
+            let twins = self.identical_carrier_twins(&signature_children, &twin_frame, name);
+            let fact = match (twins, declaration.identity) {
+                (0, _) => fact,
+                (_, Some(identity)) => fact.with_identity_discriminator(identity.bytes),
+                (_, None) => {
+                    let mut hash = Sha256::new();
+                    hash.update(b"compiler.clang.signature-twin.v1\0");
+                    hash.update(twins.to_le_bytes());
+                    let mut discriminator = [0_u8; 16];
+                    discriminator.copy_from_slice(&hash.finalize()[..16]);
+                    fact.with_identity_discriminator(discriminator)
+                }
+            };
+            let ordinal = push(self.facts, fact)?;
+            let ordinal_index =
+                usize::try_from(ordinal).map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+            self.facts
+                .attach_extension_with_type_parameters(
+                    ordinal_index,
+                    EmissionExtension::Clang(extension),
+                    template_range,
+                )
+                .map_err(|fault| lane_terminal(self.facts, name.len(), fault))?;
+            signature_children.push(ordinal);
+            result_ordinal = Some(ordinal);
+        }
+
+        if signature_children.len() > MAX_FACT_CHILDREN {
+            return Err(lane_terminal(
+                self.facts,
+                name.len(),
+                FactFault::ChildCapacity,
+            ));
+        }
+        let result_count = usize::from(result_ordinal.is_some());
+        let parameter_count = signature_children.len().saturating_sub(result_count);
+        let mut fact = SemanticFact::new(
+            EntityKind::Function,
+            name,
+            SemanticProductConstructor::function(
+                u32::try_from(parameter_count)
+                    .map_err(|_| terminal(ProjectionFault::IndexCapacity))?,
+                u32::try_from(result_count)
+                    .map_err(|_| terminal(ProjectionFault::IndexCapacity))?,
+            ),
+        );
+        for (position, ordinal) in signature_children.iter().enumerate() {
+            let role =
+                if Some(*ordinal) == result_ordinal && position + 1 == signature_children.len() {
+                    ProductChildRole::FunctionResult
+                } else {
+                    ProductChildRole::FunctionParameter
+                };
+            fact = fact.child(role, *ordinal);
+        }
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
+        if declaration
+            .type_root
+            .and_then(|root| self.type_row(root))
+            .is_some_and(|row| row.is_variadic)
+        {
+            record.payload0 = SemanticTypeRecord::FUNCTION_C_VARIADIC_FLAG;
+        }
+        if result_ordinal.is_some() {
+            record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
+        }
+        let mut projected = Projected::leaf(record);
+        for ordinal in &signature_children {
+            let _ = projected.child(*ordinal, None);
+        }
+        let extension = self.extension(declaration, template_start)?;
+        let fact = projected.attach(fact);
+        let fact = match declaration.identity {
+            Some(identity) => fact.with_identity_discriminator(identity.bytes),
+            None => fact,
+        };
+        let ordinal = push(self.facts, fact)?;
+        self.record_pushed(index, ordinal, declaration);
+        let ordinal_index =
+            usize::try_from(ordinal).map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+        self.facts
+            .attach_extension_with_type_parameters(
+                ordinal_index,
+                EmissionExtension::Clang(extension),
+                template_range,
+            )
+            .map_err(|fault| lane_terminal(self.facts, name.len(), fault))?;
+        if let Some(carrier) = result_ordinal {
+            self.facts
+                .attach_parent(carrier, ordinal)
+                .map_err(|fault| lane_terminal(self.facts, name.len(), fault))?;
+        }
         Ok(())
     }
 
@@ -2396,6 +2572,16 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         template_start: u32,
     ) -> Result<WireClangFacts, ClangCollectError> {
         let includes = self.includes_list()?;
+        // Only a template declaration owns a template-parameter range. A
+        // non-template declaration emitted after the template pool was filled
+        // must name the empty range at the current end, not inherit every
+        // earlier template's parameters from start zero.
+        let template_start = if declaration.kind == DeclarationKind::Template {
+            template_start
+        } else {
+            u32::try_from(self.facts.type_parameter_len)
+                .map_err(|_| terminal(ProjectionFault::IndexCapacity))?
+        };
         let (qualifiers, size_bits, align_bits) = declaration
             .type_root
             .and_then(|root| self.type_row(root))
@@ -2582,7 +2768,22 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                                 ReferenceKind::Member => Some(EntityKind::Field),
                                 _ => unreachable!(),
                             };
-                            if let Ok(name) = core::str::from_utf8(name_bytes) {
+                            // Native implicit or macro-produced references can
+                            // retain a whole expression, including an empty
+                            // spelling or literal escapes. Package projection
+                            // requires a representable ForeignKey; otherwise keep
+                            // the proven file/USR target in the stable branch.
+                            if let Ok(name) = core::str::from_utf8(name_bytes)
+                                && ForeignKey::new(
+                                    ForeignOrigin::Universe {
+                                        ecosystem: ECOSYSTEM,
+                                    },
+                                    name,
+                                    name,
+                                    entity_kind,
+                                )
+                                .is_ok()
+                            {
                                 self.facts
                                     .push_owned_package_occurrence(
                                         owner,
@@ -4322,6 +4523,336 @@ mod tests {
         }
         if stable.declaration == other_stable.declaration {
             return Err(TestError::Missing("distinct usr declarations"));
+        }
+        Ok(())
+    }
+
+    /// An implicit project-header reference may carry a valid zero-width
+    /// authority span without a written name. Its file/USR identity is still
+    /// exact; the nameless site must remain an Oracle stable occurrence,
+    /// while a named sibling keeps the normal package-path projection.
+    #[test]
+    fn nameless_project_references_keep_stable_targets_and_named_siblings() -> Result<(), TestError>
+    {
+        use backend_frontend_clang::legacy::{
+            ClangFacts, DeclarationKind, ReferenceFact, ReferenceKind, ReferenceTarget,
+        };
+        let source = b"void use() { named(); }";
+        let owner = SymbolIdentity { bytes: [1; 16] };
+        let target = SymbolIdentity { bytes: [2; 16] };
+        let file = SymbolIdentity { bytes: [3; 16] };
+        let mut declaration = super::empty_declaration();
+        declaration.kind = DeclarationKind::Function;
+        declaration.identity = Some(owner);
+        declaration.name = Some(SourceSpan { start: 5, end: 8 });
+        declaration.span = SourceSpan {
+            start: 0,
+            end: u32::try_from(source.len()).map_err(|_| TestError::Tail)?,
+        };
+        let declarations = [declaration];
+        let foreign = ReferenceTarget::Foreign {
+            identity: target,
+            file: Some(file),
+            path: Some(0),
+        };
+        let references = [
+            ReferenceFact {
+                kind: ReferenceKind::Call,
+                span: SourceSpan { start: 12, end: 12 },
+                owner: Some(owner),
+                target: foreign,
+            },
+            ReferenceFact {
+                kind: ReferenceKind::Type,
+                span: SourceSpan { start: 12, end: 12 },
+                owner: Some(owner),
+                target: foreign,
+            },
+            ReferenceFact {
+                kind: ReferenceKind::Template,
+                span: SourceSpan { start: 12, end: 12 },
+                owner: Some(owner),
+                target: foreign,
+            },
+            ReferenceFact {
+                kind: ReferenceKind::Call,
+                span: SourceSpan { start: 13, end: 18 },
+                owner: Some(owner),
+                target: foreign,
+            },
+        ];
+        let authority = ClangFacts {
+            declarations: &declarations,
+            types: &[],
+            type_edges: &[],
+            references: &references,
+            diagnostics: &[],
+            includes: &[],
+            overrides: &[],
+            project_paths: vec!["include/decl.hpp".into()],
+        };
+        let mut facts = FactSet::new();
+        let mut projector = super::Projector::new(source, authority, &mut facts);
+        projector.select_representatives()?;
+        projector.push_type_anchors()?;
+        projector.push_members()?;
+        projector.attach_topology()?;
+        projector.push_occurrences()?;
+        drop(projector);
+        if facts.len() != 1
+            || facts.occurrence_len != references.len()
+            || facts.foreign_text.len() != 1
+        {
+            return Err(TestError::Missing(
+                "all declaration and reference facts retained",
+            ));
+        }
+        for (index, reference) in references[..3].iter().enumerate() {
+            let occurrence = &facts.occurrences[index];
+            if occurrence.target != super::stable_foreign_target(target, file)
+                || occurrence.kind != super::lane_reference_kind(reference.kind)
+                || occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle
+                || occurrence.span.start != 12
+                || occurrence.span.end != 12
+                || facts.occurrence_owners[index] != 0
+                || facts.occurrence_package_slot[index].is_some()
+            {
+                return Err(TestError::Missing(
+                    "exact nameless stable reference preserved",
+                ));
+            }
+        }
+        let named = &facts.occurrences[3];
+        let OccurrenceTarget::Foreign(key) = named.target else {
+            return Err(TestError::Missing("named sibling package path"));
+        };
+        let ForeignOrigin::Package(lineage) = key.origin else {
+            return Err(TestError::Missing("named sibling package origin"));
+        };
+        // Name-keyed package paths are owned staging text until admission.
+        // The retained slot must still name the original header, never an
+        // invented spelling for one of the nameless stable references.
+        let named_package: Option<&str> = facts.occurrence_package_slot[3]
+            .and_then(|slot| usize::try_from(slot).ok())
+            .and_then(|slot| facts.foreign_text.get(slot))
+            .map(|path| path.as_ref());
+        if lineage.ecosystem != "c"
+            || named_package != Some("include/decl.hpp")
+            || key.path != "named"
+            || key.display != "named"
+            || key.kind != Some(EntityKind::Function)
+            || named.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle
+            || named.span.start != 13
+            || named.span.end != 18
+        {
+            return Err(TestError::Missing(
+                "named sibling identity and span unchanged",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Every spelling rejected by the foreign-key vocabulary keeps its
+    /// exact authority identity. Valid ASCII and UTF-8 names still package.
+    #[test]
+    fn unrepresentable_project_reference_spellings_preserve_oracle_identity()
+    -> Result<(), TestError> {
+        use backend_frontend_clang::legacy::{
+            ClangFacts, DeclarationKind, ReferenceFact, ReferenceKind, ReferenceTarget,
+        };
+        let cases: &[(&[u8], bool)] = &[
+            (b"", false),
+            (br#""\x41""#, false),
+            (br#"L"\u0400""#, false),
+            (&[0xff], false),
+            (b"named", true),
+            ("caf\u{e9}".as_bytes(), true),
+        ];
+        for (written, package_expected) in cases {
+            let mut source = b"void use() { ".to_vec();
+            let start = u32::try_from(source.len()).map_err(|_| TestError::Tail)?;
+            source.extend_from_slice(written);
+            let end = u32::try_from(source.len()).map_err(|_| TestError::Tail)?;
+            source.extend_from_slice(b"; }");
+            let owner = SymbolIdentity { bytes: [1; 16] };
+            let target = SymbolIdentity { bytes: [2; 16] };
+            let file = SymbolIdentity { bytes: [3; 16] };
+            let mut declaration = super::empty_declaration();
+            declaration.kind = DeclarationKind::Function;
+            declaration.identity = Some(owner);
+            declaration.name = Some(SourceSpan { start: 5, end: 8 });
+            declaration.span = SourceSpan {
+                start: 0,
+                end: u32::try_from(source.len()).map_err(|_| TestError::Tail)?,
+            };
+            let declarations = [declaration];
+            let references = [
+                ReferenceKind::Call,
+                ReferenceKind::Type,
+                ReferenceKind::Template,
+            ]
+            .map(|kind| ReferenceFact {
+                kind,
+                span: SourceSpan { start, end },
+                owner: Some(owner),
+                target: ReferenceTarget::Foreign {
+                    identity: target,
+                    file: Some(file),
+                    path: Some(0),
+                },
+            });
+            let authority = ClangFacts {
+                declarations: &declarations,
+                types: &[],
+                type_edges: &[],
+                references: &references,
+                diagnostics: &[],
+                includes: &[],
+                overrides: &[],
+                project_paths: vec!["include/decl.hpp".into()],
+            };
+            let mut facts = FactSet::new();
+            let mut projector = super::Projector::new(&source, authority, &mut facts);
+            projector.select_representatives()?;
+            projector.push_type_anchors()?;
+            projector.push_members()?;
+            projector.attach_topology()?;
+            projector.push_occurrences()?;
+            drop(projector);
+            if facts.len() != 1 || facts.occurrence_len != references.len() {
+                return Err(TestError::Missing("all reference spellings retained"));
+            }
+            for (index, reference) in references.iter().enumerate() {
+                let row = &facts.occurrences[index];
+                if row.kind != super::lane_reference_kind(reference.kind)
+                    || row.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle
+                    || row.span.start != start
+                    || row.span.end != end
+                    || facts.occurrence_owners[index] != 0
+                {
+                    return Err(TestError::Missing("exact authority relation preserved"));
+                }
+                if *package_expected {
+                    let OccurrenceTarget::Foreign(key) = row.target else {
+                        return Err(TestError::Missing("valid name package target"));
+                    };
+                    let ForeignOrigin::Package(lineage) = key.origin else {
+                        return Err(TestError::Missing("valid package origin"));
+                    };
+                    let path: Option<&str> = facts.occurrence_package_slot[index]
+                        .and_then(|slot| usize::try_from(slot).ok())
+                        .and_then(|slot| facts.foreign_text.get(slot))
+                        .map(|path| path.as_ref());
+                    let expected = core::str::from_utf8(written)
+                        .map_err(|_| TestError::Missing("valid UTF-8 test name"))?;
+                    let expected_kind = if reference.kind == ReferenceKind::Call {
+                        EntityKind::Function
+                    } else {
+                        EntityKind::Record
+                    };
+                    if lineage.ecosystem != "c"
+                        || path != Some("include/decl.hpp")
+                        || key.path != expected
+                        || key.display != expected
+                        || key.kind != Some(expected_kind)
+                    {
+                        return Err(TestError::Missing(
+                            "valid name package projection unchanged",
+                        ));
+                    }
+                } else if row.target != super::stable_foreign_target(target, file)
+                    || facts.occurrence_package_slot[index].is_some()
+                {
+                    return Err(TestError::Missing(
+                        "unrepresentable spelling keeps file and USR",
+                    ));
+                }
+            }
+            if facts.foreign_text.len()
+                != if *package_expected {
+                    references.len()
+                } else {
+                    0
+                }
+            {
+                return Err(TestError::Missing("no fabricated package slots"));
+            }
+        }
+        Ok(())
+    }
+
+    /// A real C++ implicit conversion may name its constructor by the whole
+    /// escaped literal extent rather than a written callee token.
+    #[test]
+    fn escaped_implicit_project_constructor_keeps_stable_oracle_call() -> Result<(), TestError> {
+        let root = unique_temp_project()?;
+        let header = root.join("include/decl.hpp");
+        let entry = root.join("src/main.cpp");
+        let source = b"#include \"decl.hpp\"\nvoid use() { consume(\"\\x41\"); }\n";
+        fs::write(
+            &header,
+            b"struct word { word(const char*); }; void consume(word);\n",
+        )
+        .map_err(|_| TestError::Missing("header write"))?;
+        fs::write(&entry, source).map_err(|_| TestError::Missing("entry write"))?;
+        let database = format!(
+            "[{{\"directory\":\"{directory}\",\"file\":\"src/main.cpp\",\"arguments\":[\"c++\",\"-Iinclude\",\"-std=c++23\",\"-c\",\"src/main.cpp\"]}}]",
+            directory = root.base.display(),
+        );
+        fs::write(root.join("compile_commands.json"), database)
+            .map_err(|_| TestError::Missing("database write"))?;
+        let project =
+            ClangProject::open(&root, &entry).map_err(|_| TestError::Missing("project open"))?;
+        let bytes = lower_with_authority(
+            LanguageProfile::Cxx(backend_semantic::vocabulary::CxxStandard::Cxx23),
+            Some(&project),
+            source,
+        )?;
+        let view = FragmentView::validate(&bytes)?;
+        let owner = entity_of(&view, b"use", EntityKind::Function)?;
+        let owner_start = source
+            .windows(b"void use".len())
+            .position(|part| part == b"void use")
+            .ok_or(TestError::Absent)?;
+        let literal = br#""\x41""#;
+        let literal_start = source
+            .windows(literal.len())
+            .position(|part| part == literal)
+            .ok_or(TestError::Absent)?;
+        let mut stable_conversion = false;
+        let mut named_call = false;
+        for row in occurrences(&view)? {
+            if row.owner != owner
+                || row.occurrence.kind != backend_semantic::ir::ReferenceKind::FunctionCall
+            {
+                continue;
+            }
+            if row.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle {
+                return Err(TestError::Missing("native call retains Oracle confidence"));
+            }
+            match row.occurrence.target {
+                OccurrenceTarget::Stable(_)
+                    if row.occurrence.span.start
+                        == u32::try_from(literal_start - owner_start)
+                            .map_err(|_| TestError::Tail)?
+                        && row.occurrence.span.end
+                            == u32::try_from(literal_start + literal.len() - owner_start)
+                                .map_err(|_| TestError::Tail)? =>
+                {
+                    stable_conversion = true
+                }
+                OccurrenceTarget::Foreign(key)
+                    if key.path == "consume" && key.kind == Some(EntityKind::Function) =>
+                {
+                    named_call = true
+                }
+                _ => {}
+            }
+        }
+        if !stable_conversion || !named_call {
+            return Err(TestError::Missing(
+                "stable implicit conversion and named call both retained",
+            ));
         }
         Ok(())
     }
