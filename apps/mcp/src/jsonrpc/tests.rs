@@ -4308,13 +4308,27 @@ fn document_and_source_tools_advertise_their_useful_default_detail() {
         );
         assert_eq!(
             tool["inputSchema"]["properties"]["detail"]["description"],
-            "Page text and structured fields: summary, standard, or full."
+            "Page text and fields detail level."
+        );
+        assert_eq!(
+            tool["outputSchema"]["properties"]["answer"]["description"],
+            "Tagged answer; product responses may include a fault and retain the operation receipt."
+        );
+        assert_eq!(
+            tool["outputSchema"]["properties"]["answer"]["enum"],
+            json!([
+                "page", "records", "shelf", "outline", "status", "product", "fault"
+            ])
         );
     }
     let search = tool_named(&listed["result"]["tools"], "backend.search");
     assert_eq!(
         search["inputSchema"]["properties"]["detail"]["default"],
         "summary"
+    );
+    assert_eq!(
+        search["inputSchema"]["properties"]["detail"]["description"],
+        "Response detail level."
     );
 }
 

@@ -986,9 +986,9 @@ fn detail_property(tool: &str) -> Value {
         Detail::Full => "full",
     };
     let description = if matches!(tool, "backend.document" | "backend.source") {
-        "Page text and structured fields: summary, standard, or full."
+        "Page text and fields detail level."
     } else {
-        "Response fields: summary, standard, or full."
+        "Response detail level."
     };
     json!({
         "type": "string",
@@ -1006,7 +1006,7 @@ fn answer_schema() -> Value {
             "answer": {
                 "type": "string",
                 "enum": ["page", "records", "shelf", "outline", "status", "product", "fault"],
-                "description": "Which presentation answer this is; faults may be attached to a product answer while its exact operation receipt remains available."
+                "description": "Tagged answer; product responses may include a fault and retain the operation receipt."
             }
         },
         "required": ["answer"],

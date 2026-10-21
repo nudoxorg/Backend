@@ -25,11 +25,17 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PackageCompilerFailurePhase {
+    /// Compact-fragment preparation failed before native compilation.
     Prepare,
+    /// Writing the selected compact fragment failed.
     Write,
+    /// Validation of the written compact fragment failed.
     Validate,
+    /// A required tool or pre-recipe authority setup step failed.
     Setup,
+    /// The accepted source could not be lowered to the selected closed recipe.
     Lowering,
+    /// The compiler authority rejected the source or its semantic projection.
     Authority,
 }
 
@@ -37,12 +43,19 @@ pub enum PackageCompilerFailurePhase {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompilerLanguageFact {
+    /// Rust source language.
     Rust,
+    /// TypeScript source language.
     TypeScript,
+    /// Python source language.
     Python,
+    /// Go source language.
     Go,
+    /// Java source language.
     Java,
+    /// C# source language.
     CSharp,
+    /// Clang-family source language.
     Clang,
 }
 
@@ -50,7 +63,9 @@ pub enum CompilerLanguageFact {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CompilerStageFact {
+    /// The compiler parse stage.
     Parse,
+    /// The compiler lowering-to-IR stage.
     LowerIr,
 }
 
@@ -58,12 +73,19 @@ pub enum CompilerStageFact {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompilerNativeToolFact {
+    /// The Rust compiler executable.
     Rustc,
+    /// The Clang compiler executable.
     Clang,
+    /// The Python interpreter executable.
     Python,
+    /// The TypeScript compiler executable.
     TypeScriptCompiler,
+    /// The Go compiler executable.
     GoCompiler,
+    /// The Java compiler executable.
     JavaCompiler,
+    /// The .NET compiler executable.
     CSharpCompiler,
 }
 
@@ -125,37 +147,55 @@ pub enum PackageCompilerFailureCause {
     Fragment(PackageCompilerFragmentFaultFacts),
     /// A registry-selected native tool did not match the configured tool.
     Toolchain {
+        /// Source language whose registry entry selected the tool.
         language: CompilerLanguageFact,
+        /// Compiler stage for which the tool was selected.
         stage: CompilerStageFact,
+        /// Executable family selected by the compiler registry.
         selected: CompilerNativeToolFact,
+        /// Executable family selected by host configuration, when one was configured.
         configured: Option<CompilerNativeToolFact>,
     },
     /// The registry-selected native tool is explicitly absent.
     ToolingUnavailable {
+        /// Source language whose registry entry requires the absent tool.
         language: CompilerLanguageFact,
+        /// Compiler stage blocked by the absent tool.
         stage: CompilerStageFact,
+        /// Registry-selected executable family that could not be found.
         tool: CompilerNativeToolFact,
     },
     /// One exact native or auxiliary tool requirement is absent or failed its bounded probe.
     RequiredTool {
+        /// Source language whose compiler setup requires the tool.
         language: CompilerLanguageFact,
+        /// Compiler stage blocked by the tool requirement.
         stage: CompilerStageFact,
+        /// Exact native or auxiliary requirement and its missing or failed-probe state.
         issue: CompilerToolIssue,
     },
     /// Syntax was accepted but the exact closed lowering recipe was unavailable.
     Lowering(PackageLoweringFaultFacts),
     /// A concrete authority admission failed before a compiler recipe existed.
     AuthorityAdmission {
+        /// Source language whose pre-recipe authority admission failed.
         language: CompilerLanguageFact,
+        /// Compiler stage for which authority admission was attempted.
         stage: CompilerStageFact,
+        /// Authority transaction phase that failed.
         phase: AuthorityPhaseFact,
+        /// Kind of authority rejection reported for the failed phase.
         class: AuthorityClassFact,
+        /// Bounded diagnostic facts retained for the authority rejection, when available.
         diagnostic: Option<CompilerAuthorityDiagnosticFacts>,
     },
     /// Existing compiler authority rejected the source or its semantic projection.
     Authority {
+        /// Authority transaction phase that rejected the compiled source.
         phase: AuthorityPhaseFact,
+        /// Kind of authority rejection reported for the failed phase.
         class: AuthorityClassFact,
+        /// Bounded diagnostic facts retained for the authority rejection, when available.
         diagnostic: Option<CompilerAuthorityDiagnosticFacts>,
     },
 }
@@ -455,52 +495,91 @@ pub struct CompilerAuthorityDiagnosticFacts {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PackageLoweringFaultFacts {
+    /// No declaration in the source has a supported lowering recipe.
     NoSupportedDeclaration,
+    /// A row refers to a provisional extension atom outside the bound atom table.
     ExtensionAtomUnbound {
+        /// Zero-based emission row that named the unbound atom.
         row: u32,
+        /// Provisional atom coordinate named by the fact.
         provisional: u32,
+        /// Number of atoms actually held by the admitted lane.
         atom_count: u32,
     },
+    /// A row refers to a type-parameter slice outside the bound type-parameter table.
     ExtensionTypeParametersUnbound {
+        /// Zero-based extension row that named the unbound interval.
         row: u32,
+        /// Provisional index of the first type-parameter element.
         start: u32,
+        /// Number of provisional type-parameter elements in the interval.
         length: u32,
+        /// Number of elements actually held by the admitted type-parameter lane.
         element_count: u32,
     },
+    /// A projected fact was rejected during canonical admission.
     FactRejected {
+        /// Zero-based ordinal the fact would have occupied.
         fact: u64,
+        /// Byte length of the rejected declaration name.
         name_len: u64,
+        /// Closed cause carrying the details for this fault.
         cause: PackageProjectionAdmissionFaultFacts,
     },
+    /// The Rust function declaration form is unsupported by the selected recipe.
     RustFunction,
+    /// The Rust constant has a type form the selected recipe cannot lower.
     RustConstantType,
+    /// The Rust generic parameter form is unsupported by the selected recipe.
     RustGenericParameter,
+    /// The Python assignment target cannot be represented as a declaration name.
     PythonAssignmentName,
+    /// The Python assignment value has no supported declaration lowering.
     PythonAssignmentValue,
+    /// The Clang declaration form is unsupported by the selected recipe.
     ClangDeclarationForm,
+    /// The TypeScript declaration form is unsupported by the selected recipe.
     TypeScriptDeclarationForm,
+    /// The TypeScript declaration type has no supported lowering.
     TypeScriptDeclarationType,
+    /// The C# declaration form is unsupported by the selected recipe.
     CSharpDeclarationForm,
+    /// The C# declaration type has no supported lowering.
     CSharpDeclarationType,
+    /// The Go declaration form is unsupported by the selected recipe.
     GoDeclarationForm,
+    /// The Go declaration type has no supported lowering.
     GoDeclarationType,
+    /// The Java declaration form is unsupported by the selected recipe.
     JavaDeclarationForm,
+    /// The Java authority projection rejected a fact while lowering.
     JavaProjection {
+        /// Closed language-projection fault retained for this lowering refusal.
         fault: PackageLanguageProjectionFault,
     },
+    /// The Go authority projection rejected a fact while lowering.
     GoProjection {
+        /// Closed language-projection fault retained for this lowering refusal.
         fault: PackageLanguageProjectionFault,
     },
+    /// The TypeScript authority projection rejected a fact while lowering.
     TypeScriptProjection {
+        /// Closed language-projection fault retained for this lowering refusal.
         fault: PackageTypeScriptProjectionFaultFacts,
     },
+    /// The Python authority projection rejected a fact while lowering.
     PythonProjection {
+        /// Closed language-projection fault retained for this lowering refusal.
         fault: PackageLanguageProjectionFault,
     },
+    /// The C# authority projection rejected a fact while lowering.
     CSharpProjection {
+        /// Closed language-projection fault retained for this lowering refusal.
         fault: PackageLanguageProjectionFault,
     },
+    /// The Clang authority projection rejected a fact while lowering.
     ClangProjection {
+        /// Closed language-projection fault retained for this lowering refusal.
         fault: PackageLanguageProjectionFault,
     },
 }
@@ -543,20 +622,32 @@ impl PackageLoweringFaultFacts {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "fault", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PackageTypeScriptProjectionFaultFacts {
+    /// A TypeScript foreign key has an invalid package path.
     ForeignKey {
+        /// Inclusive source-byte offset of the rejected foreign-key spelling.
         start: u32,
+        /// Exclusive source-byte offset of the rejected foreign-key spelling.
         end: u32,
+        /// Closed cause carrying the details for this fault.
         cause: PackageForeignKeyFaultFacts,
     },
+    /// The TypeScript package lineage violates its closed grammar.
     PackageLineage {
+        /// Inclusive source-byte offset of the rejected package-lineage spelling.
         start: u32,
+        /// Exclusive source-byte offset of the rejected package-lineage spelling.
         end: u32,
+        /// Closed cause carrying the details for this fault.
         cause: PackageLineageFaultFacts,
     },
+    /// A TypeScript source coordinate exceeds the supported integer range.
     CoordinateOverflow {
+        /// Host-sized source coordinate that could not fit the wire's `u32` coordinate.
         value: u64,
     },
+    /// A TypeScript import fact has no matching binding.
     MissingImportBinding {
+        /// Zero-based projected import fact with no resolved binding in the authority image.
         fact: u32,
     },
 }
@@ -613,53 +704,101 @@ impl PackageTypeScriptProjectionFaultFacts {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PackageLanguageProjectionFault {
+    /// The Java authority image failed validation.
     JavaImage,
+    /// The Java type projection exceeded its supported depth.
     JavaDepth,
+    /// A Java type record has a malformed representation.
     JavaMalformedType,
+    /// A Java primitive type could not be represented.
     JavaPrimitive,
+    /// A Java name atom is not valid UTF-8.
     JavaAtomUtf8,
+    /// The Java source bytes are not valid UTF-8.
     JavaSourceUtf8,
+    /// A Java UTF-16 offset could not be mapped to a source byte offset.
     JavaUtf16Offset,
+    /// A Java UTF-16 range could not be mapped to a source byte range.
     JavaUtf16Range,
+    /// A Java projected record has no represented owner.
     JavaOrphanOwner,
+    /// A Java foreign member key is invalid.
     JavaForeignKey,
+    /// The Java projection exceeded its sibling capacity.
     JavaSiblingCapacity,
+    /// The Java projection index exceeded its supported capacity.
     JavaIndexCapacity,
+    /// The Go authority image failed validation.
     GoImage,
+    /// The Go projection index exceeded its supported capacity.
     GoIndexCapacity,
+    /// The Go type projection exceeded its supported depth.
     GoDepth,
+    /// A Go variadic function has no corresponding parameter.
     GoVariadicWithoutParameter,
+    /// A Go source anchor could not be represented.
     GoAnchor,
+    /// A Go projected list exceeded its supported capacity.
     GoListCapacity,
+    /// A Go projected reference targets no represented fact.
     GoOrphanTarget,
+    /// A Go foreign member key is invalid.
     GoForeignKey,
+    /// The Go package lineage does not satisfy the package grammar.
     GoPackageLineage,
+    /// A Go name atom is not valid UTF-8.
     GoAtomUtf8,
+    /// A Go source span cannot be represented relative to the selected source.
     GoRelativeSpan,
+    /// A Go projected record has no represented owner.
     GoOrphanOwner,
+    /// The Go projection failed canonical admission.
     GoAdmission,
+    /// A Python foreign spelling is not valid UTF-8.
     PythonForeignSpellingUtf8,
+    /// A Python foreign member key is invalid.
     PythonForeignKey,
+    /// The Python package lineage does not satisfy the package grammar.
     PythonPackageLineage,
+    /// A Python projected source span violates containment.
     PythonContainment,
+    /// The C# authority image failed validation.
     CSharpImage,
+    /// The C# type projection exceeded its supported depth.
     CSharpDepth,
+    /// A C# declaration name span is invalid.
     CSharpNameSpan,
+    /// C# projected records are not in the required owner order.
     CSharpOwnerOrder,
+    /// A C# source anchor could not be represented.
     CSharpAnchor,
+    /// A C# foreign member reference is invalid.
     CSharpForeign,
+    /// The C# projection exceeded its attribute capacity.
     CSharpAttributeCapacity,
+    /// The C# projection index exceeded its supported capacity.
     CSharpIndexCapacity,
+    /// C# array dimensions have inconsistent ranks.
     CSharpHeterogeneousArrayRank,
+    /// A C# result name cannot be represented.
     CSharpResultName,
+    /// The C# projection failed canonical admission.
     CSharpAdmission,
+    /// A Clang source span is invalid.
     ClangSpan,
+    /// A Clang declaration has no representable name.
     ClangNameless,
+    /// A Clang source anchor could not be represented.
     ClangAnchor,
+    /// The Clang projection index exceeded its supported capacity.
     ClangIndexCapacity,
+    /// A Clang foreign override reference is invalid.
     ClangForeignOverride,
+    /// A Clang foreign reference is invalid.
     ClangForeignReference,
+    /// A Clang qualifier targets an unsupported type form.
     ClangIllegalQualifierTarget,
+    /// A Clang member pointer has an unsupported owner type.
     ClangIllegalMemberPointerOwner,
 }
 
@@ -728,22 +867,36 @@ impl PackageLanguageProjectionFault {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "fault", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PackageProjectionConstructorFaultFacts {
+    /// The constructor tag is outside the closed constructor vocabulary.
     Tag {
+        /// Numeric constructor tag found in the rejected record.
         actual: u32,
     },
+    /// A constructor uses payload cells reserved for its tag.
     ReservedPayload {
+        /// Compact numeric tag identifying the constructor.
         tag: u8,
+        /// First constructor payload cell; its meaning or reserved status depends on the closed tag.
         payload0: u32,
+        /// Second payload cell; function tags use it for result count, while other tags may reserve it.
         payload1: u32,
     },
+    /// The constructor child arity overflows its encoded payload.
     ArityOverflow {
+        /// Compact numeric tag identifying the constructor.
         tag: u8,
+        /// Function parameter count before checked addition with the result count.
         payload0: u32,
+        /// Function result count before checked addition with the parameter count.
         payload1: u32,
     },
+    /// The constructor has a child count different from the required arity.
     Arity {
+        /// Compact numeric tag identifying the constructor.
         tag: u8,
+        /// Value required by the closed record shape.
         expected: u32,
+        /// Number of admitted child facts supplied for the constructor.
         actual: u32,
     },
 }
@@ -763,55 +916,93 @@ impl PackageProjectionConstructorFaultFacts {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "fault", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PackageProjectionSemanticTypeFaultFacts {
+    /// The semantic type tag is outside the closed type vocabulary.
     Tag {
+        /// Numeric semantic type tag found in the rejected record.
         actual: u8,
     },
+    /// A cell reserved for this type tag contains a nonzero value.
     ReservedCell {
+        /// Semantic type form whose reserved payload cell must be zero.
         tag: PackageTypeTagFact,
+        /// Type-record cell that is missing or unexpectedly populated.
         cell: PackageTypeCellFact,
+        /// Nonzero cell value; a forbidden present text cell is represented by one.
         actual: u32,
     },
+    /// A required cell for this type tag is absent.
     MissingCell {
+        /// Semantic type form that requires the absent cell.
         tag: PackageTypeTagFact,
+        /// Required payload or text cell that was absent.
         cell: PackageTypeCellFact,
     },
+    /// The type record contains an unknown reason code.
     Reason {
+        /// Unknown reason code found in the type record.
         actual: u32,
     },
+    /// The primitive type shape code is invalid.
     PrimitiveShape {
+        /// Primitive shape code found in the type record.
         actual: u32,
     },
+    /// The cv-qualifier bits are invalid.
     CvQualifiers {
+        /// Qualifier bit field found in the type record.
         actual: u32,
     },
+    /// The type record width is invalid.
     Width {
+        /// Width value found in the type record.
         actual: u32,
     },
+    /// The type tag has a child count outside its permitted bounds.
     ChildCount {
+        /// Semantic type tag whose cell or child constraint failed.
         tag: PackageTypeTagFact,
+        /// Minimum permitted child count for the type tag.
         min: u32,
+        /// Maximum permitted child count for the type tag.
         max: u32,
+        /// Number of children found on the type record.
         actual: u32,
     },
+    /// This type tag forbids a name on the indicated child.
     ChildNameForbidden {
+        /// Semantic type form that forbids a name on this child.
         tag: PackageTypeTagFact,
+        /// Zero-based position of the child with the invalid property.
         position: u32,
     },
+    /// This type tag requires a name on the indicated child.
     ChildNameRequired {
+        /// Semantic type form that requires a name on this child.
         tag: PackageTypeTagFact,
+        /// Zero-based position of the child with the invalid property.
         position: u32,
     },
+    /// The indicated child has flags forbidden for this type tag.
     ChildFlagsForbidden {
+        /// Semantic type form that determines the allowed child flags.
         tag: PackageTypeTagFact,
+        /// Zero-based position of the child with the invalid property.
         position: u32,
+        /// Child flags found at the indicated position.
         actual: u8,
     },
+    /// The indicated child has an invalid variadic-parameter marker.
     VariadicParameter {
+        /// Zero-based position of the child with the invalid property.
         position: u32,
+        /// Variadic marker value observed on the child.
         actual: u8,
     },
+    /// This type tag forbids text on the indicated child.
     ChildTextForbidden {
+        /// Semantic type form that forbids text on this child.
         tag: PackageTypeTagFact,
+        /// Zero-based position of the child with the invalid property.
         position: u32,
     },
 }
@@ -840,40 +1031,75 @@ impl PackageProjectionSemanticTypeFaultFacts {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PackageTypeTagFact {
+    /// The semantic type tag for the receiver type.
     SelfType,
+    /// The semantic type tag for a primitive type.
     Primitive,
+    /// The semantic type tag for a tuple type.
     Tuple,
+    /// The semantic type tag for a slice type.
     Slice,
+    /// The semantic type tag for an array type.
     Array,
+    /// The semantic type tag for a union type.
     Union,
+    /// The semantic type tag for an intersection type.
     Intersection,
+    /// The semantic type tag for the never type.
     Never,
+    /// The semantic type tag for the any type.
     Any,
+    /// The semantic type tag for an unknown type.
     Unknown,
+    /// The semantic type tag for a nominal type.
     Nominal,
+    /// The semantic type tag for a type application.
     Apply,
+    /// The semantic type tag for a type variable.
     TypeVar,
+    /// The semantic type tag for a wildcard type.
     Wildcard,
+    /// The semantic type tag for a function-pointer type.
     FunctionPointer,
+    /// The semantic type tag for an annotated type.
     Annotated,
+    /// The semantic type tag for a conditional type.
     Conditional,
+    /// The semantic type tag for a mapped type.
     Mapped,
+    /// The semantic type tag for a template-literal type.
     TemplateLiteral,
+    /// The semantic type tag for an anonymous record type.
     AnonymousRecord,
+    /// The semantic type tag for an impl-trait type.
     ImplTrait,
+    /// The semantic type tag for a dyn-trait type.
     DynTrait,
+    /// The semantic type tag for an inferred type.
     Inferred,
+    /// The semantic type tag for a qualified path type.
     QualifiedPath,
+    /// The semantic type tag for a map type.
     Map,
+    /// The semantic type tag for a channel type.
     Channel,
+    /// The semantic type tag for an array-sequence type.
     ArraySequence,
+    /// The semantic type tag for a rectangular-array type.
     ArrayRectangular,
+    /// The semantic type tag for a fixed-array type.
     ArrayFixed,
+    /// The semantic type tag for an array type with a constant-expression bound.
     ArrayConstExpression,
+    /// The semantic type tag for an incomplete-array type.
     ArrayIncomplete,
+    /// The semantic type tag for a C-qualified type.
     CQualified,
+    /// The semantic type tag for a keyof type.
     KeyOf,
+    /// The semantic type tag for an indexed-access type.
     IndexedAccess,
+    /// The semantic type tag for a typeof type.
     TypeOf,
 }
 
@@ -881,10 +1107,15 @@ pub enum PackageTypeTagFact {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PackageTypeCellFact {
+    /// The first numeric payload cell.
     Payload0,
+    /// The second numeric payload cell.
     Payload1,
+    /// The primary text cell.
     Text,
+    /// The secondary text cell.
     Text2,
+    /// The nominal-identity cell.
     Nominal,
 }
 
@@ -893,118 +1124,210 @@ pub enum PackageTypeCellFact {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "fault", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PackageProjectionAdmissionFaultFacts {
+    /// A projected declaration name is empty.
     EmptyName,
+    /// An anonymous callable could not be assigned a stable source anchor.
     AnonymousCallableAnchor {
+        /// Closed cause carrying the details for this fault.
         cause: PackageAnonymousCallableAnchorFaultFacts,
     },
+    /// The anonymous-callable anchor pool exceeded its bounded capacity.
     AnonymousCallableAnchorPoolCapacity {
+        /// Bounded anonymous-callable anchor pool that reached its limit.
         pool: PackageAnonymousCallableAnchorPoolFact,
+        /// Existing retained entries or bytes in the selected pool.
         used: u64,
+        /// Number of additional entries or bytes required from the selected pool.
         requested: u64,
+        /// Maximum entries or bytes allowed in the selected pool.
         capacity: u64,
     },
+    /// A bounded projection table has no remaining capacity.
     Capacity,
+    /// The projected child table has no remaining capacity.
     ChildCapacity,
+    /// The product-type child pool exceeded its bounded capacity.
     ProductChildPoolCapacity {
+        /// Product-child entries already retained in the flat arena.
         used: u64,
+        /// Additional product-type children requested by the projection.
         requested: u64,
+        /// Maximum number of product-type child entries allowed in the pool.
         capacity: u64,
     },
+    /// A portable constructor record failed validation.
     Constructor {
+        /// Closed cause carrying the details for this fault.
         cause: PackageProjectionConstructorFaultFacts,
     },
+    /// A child has a role different from the role required at its position.
     ChildRole {
+        /// Zero-based position of the child with the invalid property.
         position: u64,
+        /// Child-role value required at this position.
         expected: u8,
+        /// Child-role value present at this position.
         actual: u8,
     },
+    /// A child target index does not identify a projected fact.
     ChildTarget {
+        /// Zero-based product-child position containing the target.
         position: u64,
+        /// Zero-based fact ordinal named by this product child.
         target: u32,
+        /// Number of facts already pushed; valid target ordinals are smaller.
         fact_count: u64,
     },
+    /// A semantic type record failed validation.
     TypeRecord {
+        /// Closed cause carrying the details for this fault.
         cause: PackageProjectionSemanticTypeFaultFacts,
     },
+    /// A semantic type child failed validation.
     TypeChild {
+        /// Zero-based semantic-type child position that violated its child law.
         position: u64,
+        /// Closed cause carrying the details for this fault.
         cause: PackageProjectionSemanticTypeFaultFacts,
     },
+    /// A semantic type child target does not identify a projected fact.
     TypeChildTarget {
+        /// Zero-based semantic-type child position containing the target.
         position: u64,
+        /// Zero-based fact ordinal named by this type child.
         target: u32,
+        /// Number of facts already pushed; valid target ordinals are smaller.
         fact_count: u64,
     },
+    /// The semantic type child table has no remaining capacity.
     TypeChildCapacity,
+    /// A semantic type child lane exceeded its bounded capacity.
     TypeChildPoolCapacity {
+        /// Closed type-child arena lane whose bound was reached.
         lane: u8,
+        /// Number of child entries already retained in this lane.
         used: u64,
+        /// Additional child entries required by the pending row.
         requested: u64,
+        /// Maximum number of type-child entries allowed in this lane.
         capacity: u64,
     },
+    /// The semantic type row table has no remaining capacity.
     TypeRowCapacity,
+    /// The computed-row table has no remaining capacity.
     ComputedRowCapacity,
+    /// Recursive type projection exceeded its maximum depth.
     TypeProjectionDepthLimit {
+        /// Depth observed at the rejected type node.
         depth: u64,
+        /// Maximum depth allowed for recursive type projection.
         maximum: u64,
     },
+    /// Type projection encountered a cycle at the reported type id.
     TypeProjectionCycle {
+        /// Interned type handle that closes the cycle.
         type_id: u32,
     },
+    /// A recursive type reference exceeds the supported reference distance.
     TypeProjectionRecursiveReference {
+        /// Number of enclosing recursive scopes to reference.
         distance: u32,
     },
+    /// Type projection produced more children than its maximum width.
     TypeProjectionWidth {
+        /// Exact number of children required by the source constructor.
         actual: u64,
+        /// Maximum number of children allowed in the type projection.
         maximum: u64,
     },
+    /// An occurrence owner index does not identify a projected fact.
     OccurrenceOwner {
+        /// Zero-based emitted fact ordinal claimed as the occurrence owner.
         owner: u32,
+        /// Number of facts already pushed; valid owner ordinals are smaller.
         fact_count: u64,
     },
+    /// The occurrence table has no remaining capacity.
     OccurrenceCapacity,
+    /// A documentation owner index does not identify a projected fact.
     DocOwner {
+        /// Zero-based emitted fact ordinal claimed as the documentation owner.
         owner: u32,
+        /// Number of facts already pushed; valid owner ordinals are smaller.
         fact_count: u64,
     },
+    /// The documentation table has no remaining capacity.
     DocCapacity,
+    /// The extension-atom table has no remaining capacity.
     ExtensionAtomCapacity,
+    /// The type-parameter table has no remaining capacity.
     TypeParameterCapacity,
+    /// The requested type-parameter bounds exceed available capacity.
     TypeParameterBoundCapacity {
+        /// Cumulative bound-plane endpoint after append; host `usize::MAX` marks checked-add overflow.
         requested: u64,
+        /// Total planned capacity of the ordered type/lifetime bound lane.
         available: u64,
     },
+    /// The reference-list table has no remaining capacity.
     RefListCapacity,
+    /// A reference list contains an unsupported element.
     RefListElements,
+    /// A reference target index does not identify a projected fact.
     RefTarget {
+        /// Closed relation lane in which the pooled target was read.
         lane: u8,
+        /// Raw zero-based fact ordinal stored as the relation target.
         raw: u32,
+        /// Number of facts already pushed; valid target ordinals are smaller.
         fact_count: u64,
     },
+    /// A source span is outside the selected source bounds.
     SourceSpan {
+        /// Zero-based emitted entity row whose span escaped the selected source.
         entity: u32,
+        /// Inclusive source-byte offset of the reported entity span.
         start: u32,
+        /// Exclusive source-byte offset of the reported entity span.
         end: u32,
+        /// Byte length of the selected source.
         source_len: u32,
     },
+    /// Two projections assign different source spans to the same entity.
     ConflictingSourceSpan {
+        /// Entity assigned different spans by the two projections.
         entity: u32,
+        /// Inclusive source-byte offset in the previously admitted span.
         existing_start: u32,
+        /// Exclusive source-byte offset in the previously admitted span.
         existing_end: u32,
+        /// Inclusive source-byte offset in the newly requested span.
         requested_start: u32,
+        /// Exclusive source-byte offset in the newly requested span.
         requested_end: u32,
     },
+    /// Two projections assign different parentage to the same entity.
     ConflictingParentage {
+        /// Entity assigned different parentage by the two projections.
         entity: u32,
+        /// Parentage state in the first projection.
         existing: PackageParentageFact,
+        /// Parentage state requested by the later projection.
         requested: PackageParentageFact,
     },
+    /// Two projections give different member inventories for the same entity.
     ConflictingMemberInventory {
+        /// Entity assigned different member inventories by the two projections.
         entity: u32,
+        /// Number of members in the previously admitted inventory.
         existing_count: u64,
+        /// Number of members in the newly requested inventory.
         requested_count: u64,
+        /// First member position where the inventories differ.
         first_difference: u64,
+        /// Member index at the first difference in the existing inventory, if present.
         existing_member: Option<u32>,
+        /// Member index at the first difference in the requested inventory, if present.
         requested_member: Option<u32>,
     },
 }
@@ -1101,17 +1424,29 @@ pub enum PackageAnonymousCallableAnchorPoolFact {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PackageParentageFact {
+    /// The source authority did not provide parentage.
     Unavailable,
+    /// The entity is a root with no parent.
     Root,
-    Bound { parent: u32 },
-    UnrepresentedAuthorityOwner { identity: [u8; 16] },
+    /// The entity is bound to a represented parent.
+    Bound {
+        /// Index of the represented parent fact.
+        parent: u32,
+    },
+    /// The parent is an authority owner absent from the projected facts.
+    UnrepresentedAuthorityOwner {
+        /// Opaque stable identity of the authority owner omitted from projected facts.
+        identity: [u8; 16],
+    },
 }
 
 /// Closed foreign-key grammar fault.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PackageForeignKeyFaultFacts {
+    /// The foreign-key path is empty.
     EmptyPath,
+    /// The foreign-key path contains a backslash.
     BackslashInPath,
 }
 
@@ -1119,13 +1454,23 @@ pub enum PackageForeignKeyFaultFacts {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PackageLineageFaultFacts {
+    /// The ecosystem component is empty.
     EmptyEcosystem,
+    /// The package component is empty.
     EmptyPackage,
+    /// The ecosystem component contains a package separator.
     SeparatorInEcosystem,
+    /// The package component contains a lineage separator.
     SeparatorInPackage,
+    /// The ecosystem component contains a backslash.
     BackslashEcosystem,
+    /// The package component contains a backslash.
     BackslashPackage,
-    BackslashInvalid { segment: u8 },
+    /// A lineage component contains a backslash at the reported segment.
+    BackslashInvalid {
+        /// Zero-based path component whose spelling is non-canonical.
+        segment: u8,
+    },
 }
 
 // The source enums and all conversion matches are kept together so new
