@@ -4324,6 +4324,28 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     });
                     continue;
                 }
+                Err(terminal)
+                    if target.profile.language()
+                        == backend_semantic::vocabulary::Language::TypeScript =>
+                {
+                    // TypeScript projects share one checked authority, but a
+                    // source's lowering refusal does not invalidate complete
+                    // artifacts already produced for its siblings. Keep the
+                    // exact source in the input witness and record the existing
+                    // generic SourceNotRepresentable coverage cause before
+                    // continuing through the selected project. The coverage
+                    // manifest does not retain specific lowering facts such as
+                    // a projection-cycle type ID. Shared work/I/O failures,
+                    // cancellation, and packages with no complete artifact
+                    // still refuse.
+                    degraded.degrade(
+                        terminal,
+                        source.relative_path,
+                        source_authority,
+                        &mut coverage_gaps,
+                    )?;
+                    continue;
+                }
                 Err(terminal) => {
                     if target.profile.language() != backend_semantic::vocabulary::Language::Go {
                         return Err(PackageSemanticError::Compile {
