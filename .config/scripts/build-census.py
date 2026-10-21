@@ -104,11 +104,15 @@ class _LinuxProcStat:
     session: int
     flags: int
     start_ticks: str
+    # Missing adapter evidence is never a sole-thread witness. Real proc
+    # parsing always supplies field 20; older deterministic adapters may not.
+    thread_count: int | None = None
 
 
 # Linux include/linux/sched.h: PF_KTHREAD.  This is kernel-provided stat data,
 # not a command-name or parent-process heuristic.
 _LINUX_PF_KTHREAD = 0x00200000
+_LINUX_PF_EXITING = 0x00000004
 _LINUX_TERMINAL_STATES = frozenset({"Z", "X", "x"})
 
 
@@ -355,6 +359,7 @@ def _parse_linux_proc_stat(text: str) -> _LinuxProcStat:
         pgid=int(fields[2]),
         session=int(fields[3]),
         flags=int(fields[6]),
+        thread_count=int(fields[17]),
         start_ticks=fields[19],
     )
 
@@ -642,6 +647,14 @@ class ProcessRecord:
 @dataclasses.dataclass(frozen=True, slots=True)
 class _LinuxKernelThreadWithoutExecutable:
     start_ticks: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _LinuxExitingWithoutExecutable:
+    """A sole exiting task with no mm, retained as occupied, never as dead."""
+
+    stat: _LinuxProcStat
+    uids: tuple[int, ...]
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -1428,6 +1441,82 @@ def _parse_proc_status_uids(status_text: str) -> tuple[int, ...]:
     return values
 
 
+def _linux_exiting_witness_kernel_supported() -> bool:
+    """Enable this source-derived proof only for the exact audited release.
+
+    Suffixes, newer kernels and unavailable/malformed release data require a
+    separate audit; they retain the existing strict executable refusal.
+    """
+    try:
+        release = os.uname().release
+    except (AttributeError, OSError):
+        return False
+    return type(release) is str and release == "6.18.38"
+
+
+def _exiting_status_uids(status_text: str, row: _PsRow, stat: _LinuxProcStat) -> tuple[int, ...]:
+    """Require one complete status payload tying no-mm to its sole task.
+
+    Linux 6.18.38 proc_pid_status acquires mm before task_sig reads Threads
+    under the task's sighand lock. A live sibling keeps that count >=2;
+    releasing an old exec leader clears sighand with the same lock, so that
+    old task reports 0, never a false sole-thread witness. Raw stat flags and
+    num_threads alone are not an atomic pair across a non-leader exec.
+    """
+    if len(status_text) > MAX_RESOURCE_OUTPUT_BYTES or not status_text.endswith("\n") or "\0" in status_text:
+        raise ValueError("exiting-status-incomplete-or-over-limit")
+    fields: dict[str, str] = {}
+    for line in status_text.splitlines():
+        key, separator, value = line.partition(":")
+        if not separator or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is None or key in fields:
+            raise ValueError("exiting-status-malformed-or-duplicate-field")
+        fields[key] = value.strip()
+    required = {
+        "Name", "State", "Pid", "Tgid", "PPid", "Uid", "Kthread", "Threads",
+        "voluntary_ctxt_switches", "nonvoluntary_ctxt_switches",
+    }
+    if not required.issubset(fields):
+        raise ValueError("exiting-status-required-field-missing")
+    # Both MMU and NOMMU task_mem output, plus the mm-only status fields.
+    # Zero memory values still prove an mm was present and are not absence.
+    memory_fields = {"Mem", "Slack", "Shared", "HugetlbPages", "CoreDumping", "THP_enabled", "untag_mask"}
+    if any(key.startswith(("Vm", "Rss")) or key in memory_fields for key in fields):
+        raise ValueError("exiting-status-still-has-mm")
+
+    def number(key: str) -> int:
+        value = fields[key]
+        if not value.isascii() or not value.isdecimal():
+            raise ValueError("exiting-status-invalid-integer")
+        return int(value)
+
+    if any(not value.isascii() or not value.isdecimal() for value in fields["Uid"].split()):
+        raise ValueError("exiting-status-invalid-uid")
+    uids = _parse_proc_status_uids(status_text)
+    if (
+        len(uids) != 4
+        or any(uid < 0 for uid in uids)
+        or row.effective_uid is None
+        or uids[1] != row.effective_uid
+        or number("Pid") != row.pid
+        or number("Tgid") != row.pid
+        or number("PPid") != stat.ppid
+        or number("Threads") != 1
+        or number("Kthread") != 0
+        or fields["State"].split()[0] != stat.state
+        or stat.state in _LINUX_TERMINAL_STATES
+        or stat.thread_count != 1
+        or not (stat.flags & _LINUX_PF_EXITING)
+        or stat.flags & _LINUX_PF_KTHREAD
+        or (row.ppid, row.pgid) != (stat.ppid, stat.pgid)
+    ):
+        raise ValueError("exiting-status-identity-or-task-state-mismatch")
+    # Require the ordinary tail to be present and well formed, rather than
+    # interpreting a truncated status prefix as evidence that mm fields omit.
+    number("voluntary_ctxt_switches")
+    number("nonvoluntary_ctxt_switches")
+    return uids
+
+
 def _linux_process_record(
     row: _PsRow,
     boot_id: str,
@@ -1439,20 +1528,39 @@ def _linux_process_record(
     if environment_budget is None:
         environment_budget = _CargoEnvironmentBudget()
 
-    def read_process(proc: _LinuxProcDirectory, stat: _LinuxProcStat) -> dict[str, Any] | None:
-        process_uids = _parse_proc_status_uids(proc.read_text("status"))
+    def read_process(
+        proc: _LinuxProcDirectory, stat: _LinuxProcStat
+    ) -> dict[str, Any] | _LinuxExitingWithoutExecutable | None:
+        status_text = proc.read_text("status")
+        process_uids = _parse_proc_status_uids(status_text)
         if row.effective_uid is not None and process_uids[1] != row.effective_uid:
             # PID exited/reused after ps observed it; do not trust its old ucomm row.
             return None
         try:
             executable = proc.readlink("exe")
-        except FileNotFoundError:
+        except FileNotFoundError as missing:
             if stat.flags & _LINUX_PF_KTHREAD:
                 return {
                     "kernel_thread_without_executable": True,
                     "start_ticks": stat.start_ticks,
                     "stat_flags": stat.flags,
                 }
+            if (
+                missing.errno == errno.ENOENT
+                and stat.flags & _LINUX_PF_EXITING
+                and _linux_exiting_witness_kernel_supported()
+            ):
+                if proc.pidfd_ready() is not False:
+                    raise missing
+                try:
+                    before_uids = _exiting_status_uids(status_text, row, stat)
+                    after_uids = _exiting_status_uids(proc.read_text("status"), row, stat)
+                except (ValueError, IndexError):
+                    # Missing proof retains the original strict exe-absence
+                    # refusal and its diagnostics; this is never an exit.
+                    raise missing
+                if before_uids == after_uids and proc.pidfd_ready() is False:
+                    return _LinuxExitingWithoutExecutable(stat, before_uids)
             raise
         if _is_cargo_executable(executable):
             environment_cargo_jobs = None
@@ -1520,6 +1628,28 @@ def _linux_process_record(
     if capture.value is None:
         return None
     details = capture.value
+    if isinstance(details, _LinuxExitingWithoutExecutable):
+        if any(
+            sample != details.stat
+            or sample.thread_count != 1
+            or not (sample.flags & _LINUX_PF_EXITING)
+            or sample.flags & _LINUX_PF_KTHREAD
+            for sample in (capture.first, capture.last)
+        ):
+            raise _LinuxProcRace(errno.ESTALE, "exiting-without-executable-identity-not-stable")
+        hint = pathlib.PurePath(row.ucomm).name
+        cargo_hint = hint in {"cargo", "cargo.exe"}
+        compiler_hint = hint in {"rustc", "rustc.exe"}
+        runtime_hint = _is_runtime_owner_executable(hint)
+        return ProcessRecord(
+            pid=row.pid, ppid=details.stat.ppid, pgid=details.stat.pgid,
+            start_token=f"linux:{boot_id}:{details.stat.start_ticks}",
+            executable=None, argv=None, argv_error="sole-exiting-task-without-mm-or-executable",
+            state=details.stat.state, identity_validated=True,
+            comm_candidate=cargo_hint, compiler_candidate=compiler_hint,
+            runtime_owner_candidate=runtime_hint,
+            unknown_executable_candidate=not (cargo_hint or compiler_hint or runtime_hint),
+        )
     if details.get("kernel_thread_without_executable"):
         if (
             details["start_ticks"] != capture.first.start_ticks
