@@ -635,6 +635,7 @@ fn answers_while_indexing(command: &Command) -> bool {
                 | S::Projects
                 | S::Tree
                 | S::ProjectTree { .. }
+                | S::CapturedProjectTree { .. }
                 | S::CargoPackageSourceFile { .. }
                 | S::CargoPackageSourceInventory { .. }
                 | S::CargoPackageReadme { .. }
@@ -1187,6 +1188,20 @@ impl CommandAdapter {
                     .map(Executed::Reply),
                 };
             }
+        }
+        if let Command::Surface(backend_library::SurfaceCommand::CapturedProjectTree { root }) =
+            &request.command
+        {
+            let snapshot = daemon.engine().daemon().owner().snapshot();
+            let reply = super::super::browse::captured_project_tree(&snapshot, root).map_or_else(
+                |error| {
+                    CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(error.to_string()))
+                },
+                |tree| {
+                    CommandReply::Surface(backend_library::SurfaceReply::ProjectTree(Box::new(tree)))
+                },
+            );
+            return Self::encode(daemon, request.request_id, (reply, None), None).map(Executed::Reply);
         }
         if let Command::Surface(surface) = &request.command
             && BrowseLane::accepts(surface)
@@ -6245,6 +6260,17 @@ impl CommandAdapter {
                             ))
                         },
                     )
+            }
+            backend_engine::SurfaceCommand::CapturedProjectTree { root } => {
+                let snapshot = daemon.engine().daemon().owner().snapshot();
+                super::super::browse::captured_project_tree(&snapshot, &root).map_or_else(
+                    |error| {
+                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error.to_string()))
+                    },
+                    |tree| {
+                        CommandReply::Surface(backend_engine::SurfaceReply::ProjectTree(Box::new(tree)))
+                    },
+                )
             }
             backend_engine::SurfaceCommand::CargoPackageSourceFile { request, path } => {
                 CommandReply::Surface(backend_engine::SurfaceReply::CargoPackageSourceFile(
