@@ -774,7 +774,8 @@ mod tests {
                     }
                     Ok(())
                 },
-            )?
+            )
+            .map_err(|error| error.to_string())?
             .ok_or_else(|| "a single retained row must fit the page byte cap".to_owned())?;
             let encoded = serde_json::to_vec(&page)
                 .map_err(|error| format!("serialize complete coverage page: {error}"))?;
@@ -819,7 +820,8 @@ mod tests {
             26,
             0,
             |_, _| panic!("terminal empty page does not revisit source rows"),
-        )?
+        )
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "terminal empty page is valid".to_owned())?;
         assert!(terminal.rows.is_empty());
         assert!(terminal.next.is_none());
