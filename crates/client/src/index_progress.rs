@@ -259,6 +259,14 @@ pub use compiler_progress::{observe_index_operation_progress, read_index_operati
 pub enum IndexOperationWaitStop {
     /// Unknown, unresolved or expired evidence cannot establish completion.
     Uncertain,
+    /// The original publication worker could not finish. Stop this caller's
+    /// wait without changing or cancelling the active durable operation.
+    PublicationPending {
+        /// Bounded owner-reported publication error.
+        detail: backend_library::ProductText,
+        /// The owner retained only the bounded prefix of the original detail.
+        detail_truncated: bool,
+    },
     /// The original caller deadline, cancellation, transport or proof failed.
     Client(ClientError),
 }
@@ -384,6 +392,30 @@ fn wait_operation_with_profiles(
                 });
             }
             IndexOperationState::Accepted | IndexOperationState::Active { .. } => {}
+        }
+        if include_profiles && let Some(page) = &profile_progress {
+            IndexObservationFingerprint::active_with_profile_progress(status, Some(page))?;
+            if let Some(backend_library::IndexJobProgressEvent {
+                kind:
+                    backend_library::IndexJobProgressKind::PublicationPending {
+                        detail,
+                        detail_truncated,
+                    },
+                ..
+            }) = page.events.last()
+                && !page.has_more
+            {
+                // A bounded observation can end on historical pending while
+                // newer retry progress remains beyond its cursor. Stop only
+                // after the current owner history tail is fully observed.
+                return Ok(IndexOperationWaitResult::Stopped {
+                    observation,
+                    reason: IndexOperationWaitStop::PublicationPending {
+                        detail: detail.clone(),
+                        detail_truncated: *detail_truncated,
+                    },
+                });
+            }
         }
         // A preinstalled shorter absolute scope wins; this never renews it.
         // An already admitted terminal receipt needs no further waiting.

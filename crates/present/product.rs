@@ -652,6 +652,14 @@ impl ProductView {
         let operand = Operand::Text(key.to_hex());
         let affordance = crate::Affordance::PollIndexOperation { operation_key: key };
         let wait_ended = match reason {
+            backend_client::IndexOperationWaitStop::PublicationPending {
+                detail,
+                detail_truncated,
+            } => Some(format!(
+                "The CLI wait stopped because publication is pending: {}{}",
+                detail.as_str(),
+                if *detail_truncated { " (detail truncated)" } else { "" },
+            )),
             backend_client::IndexOperationWaitStop::Client(
                 backend_client::ClientError::RemoteDeadlineExceeded,
             ) => Some("The CLI wait deadline expired".to_owned()),
@@ -689,7 +697,8 @@ impl ProductView {
                 backend_client::IndexOperationWaitStop::Client(error) => {
                     Fault::from_client_error(error, operand).with_affordance(affordance)
                 }
-                backend_client::IndexOperationWaitStop::Uncertain => Fault::new(
+                backend_client::IndexOperationWaitStop::Uncertain
+                | backend_client::IndexOperationWaitStop::PublicationPending { .. } => Fault::new(
                     crate::FaultSlug::Rejected,
                     operand,
                     crate::Cause::new(
@@ -1558,6 +1567,27 @@ pub fn index_profile_progress_text(
     page: &backend_library::IndexProgressPage,
 ) -> Result<Option<String>, backend_client::ClientError> {
     backend_client::IndexObservationFingerprint::active_with_profile_progress(status, Some(page))?;
+    if page.stage == backend_library::IndexJobStage::Publishing {
+        // The latest event in a bounded page may be historical; do not label
+        // it as the current publication state while newer history is pending.
+        if page.has_more {
+            return Ok(None);
+        }
+        return Ok(page.events.iter().rev().find_map(|event| match &event.kind {
+            IndexJobProgressKind::PublicationRetryAdmitted => {
+                Some("Publication retry admitted; operation remains active".to_owned())
+            }
+            IndexJobProgressKind::PublicationPending {
+                detail,
+                detail_truncated,
+            } => Some(format!(
+                "Publication pending: {}{}; operation remains active",
+                detail.as_str(),
+                if *detail_truncated { " (detail truncated)" } else { "" },
+            )),
+            _ => None,
+        }));
+    }
     if page.stage != backend_library::IndexJobStage::Compiling {
         return Ok(None);
     }
@@ -1584,7 +1614,9 @@ pub fn index_profile_progress_text(
                 profile.name().unwrap_or("unknown")
             )),
             IndexJobProgressKind::ProfileRefused { .. }
-            | IndexJobProgressKind::StageChanged { .. } => None,
+            | IndexJobProgressKind::StageChanged { .. }
+            | IndexJobProgressKind::PublicationPending { .. }
+            | IndexJobProgressKind::PublicationRetryAdmitted => None,
         });
     let refusals = page
         .events
@@ -1825,6 +1857,20 @@ fn index_observation_view(observation: &IndexJobObservation) -> ProductView {
                 let title = match &event.kind {
                     IndexJobProgressKind::StageChanged { stage } => {
                         format!("stage changed to {}", index_stage_name(*stage))
+                    }
+                    IndexJobProgressKind::PublicationRetryAdmitted => {
+                        tags.push("operation remains active; no terminal receipt".to_owned());
+                        "Publication retry admitted".to_owned()
+                    }
+                    IndexJobProgressKind::PublicationPending {
+                        detail,
+                        detail_truncated,
+                    } => {
+                        tags.push("operation remains active; no terminal receipt".to_owned());
+                        if *detail_truncated {
+                            tags.push("detail truncated".to_owned());
+                        }
+                        format!("Publication pending: {}", detail.as_str())
                     }
                     IndexJobProgressKind::ProfileStarted {
                         profile,
@@ -5328,6 +5374,119 @@ mod compiler_progress_projection_tests {
         IndexJobTicket, IndexOperationKey, IndexOperationObservation, IndexOperationState,
         IndexOperationStatus, IndexProgressPage, SemanticLanguageProfile,
     };
+
+    #[test]
+    fn publication_pending_is_visible_in_cli_and_mcp_with_the_same_active_key() {
+        let package =
+            PackageReference::parse("/workspace/publication-pending".to_owned()).expect("package");
+        let ticket = IndexJobTicket::new(std::num::NonZeroU64::MIN, [1; 16], package.clone());
+        let status = IndexOperationStatus::new(
+            IndexOperationKey::from_bytes([2; 32]).expect("key"),
+            package,
+            CompileExecutionIntent::Interactive,
+            IndexOperationState::Active {
+                ticket: ticket.clone(),
+                stage: IndexJobStage::Publishing,
+            },
+        );
+        let page = IndexProgressPage {
+            ticket: ticket.clone(),
+            stage: IndexJobStage::Publishing,
+            events: vec![IndexJobProgressEvent {
+                ticket,
+                sequence: 5,
+                kind: IndexJobProgressKind::PublicationPending {
+                    detail: backend_library::ProductText::from_static(
+                        "view journal snapshot exceeds record bound",
+                    ),
+                    detail_truncated: false,
+                },
+            }]
+            .into_boxed_slice(),
+            next_sequence: 5,
+            truncated: false,
+            has_more: false,
+        };
+        let words = index_profile_progress_text(&status, &page)
+            .expect("same CLI progress projector")
+            .expect("pending reason");
+        assert!(
+            words.contains("view journal snapshot exceeds record bound")
+                && words.contains("operation remains active")
+        );
+        let mut partial_history = page.clone();
+        partial_history.has_more = true;
+        assert_eq!(
+            index_profile_progress_text(&status, &partial_history)
+                .expect("bounded historical progress remains admitted"),
+            None,
+            "an incomplete publishing page cannot label its last event as current state"
+        );
+        let observation = IndexOperationObservation::Known(status.clone());
+        let view = product_view(&SurfaceReply::IndexOperationStatus(observation.clone()))
+            .with_index_profile_progress(Some(page.clone()))
+            .expect("same MCP exact-ticket join")
+            .with_bounded_index_poll()
+            .expect("same-key conditional continuation");
+        assert_eq!(view.index_operation(), Some(&observation));
+        assert!(view.records().iter().any(|record| record.title() == words));
+        assert!(
+            matches!(view.index_job(), Some(IndexJobProjection::Progress(IndexJobObservation::Pending(actual))) if actual == &page)
+        );
+        assert!(view.index_poll_affordance().is_some());
+        let stopped = product_view(&SurfaceReply::IndexOperationStatus(observation.clone()))
+            .with_index_wait_stop(
+                &backend_client::IndexOperationWaitStop::PublicationPending {
+                    detail: backend_library::ProductText::from_static(
+                        "view journal snapshot exceeds record bound",
+                    ),
+                    detail_truncated: false,
+                },
+            );
+        assert_eq!(stopped.index_operation(), Some(&observation));
+        let note = stopped.note().expect("caller-only wait stop note");
+        assert!(
+            note.contains("view journal snapshot exceeds record bound")
+                && note.contains("did not cancel owner work")
+                && note.contains("Do not resubmit")
+        );
+        let mut retrying = page.clone();
+        retrying.events = vec![
+            page.events[0].clone(),
+            IndexJobProgressEvent {
+                ticket: retrying.ticket.clone(),
+                sequence: 6,
+                kind: IndexJobProgressKind::PublicationRetryAdmitted,
+            },
+        ]
+        .into_boxed_slice();
+        retrying.next_sequence = 6;
+        let retry_words = index_profile_progress_text(&status, &retrying)
+            .expect("same original admitted retry")
+            .expect("retry progress");
+        assert!(
+            retry_words.contains("retry admitted") && !retry_words.contains("exceeds record bound"),
+            "old pending errors are not the current retry state"
+        );
+        let retry_view = product_view(&SurfaceReply::IndexOperationStatus(observation.clone()))
+            .with_index_profile_progress(Some(retrying.clone()))
+            .expect("same-key retry join");
+        assert_eq!(retry_view.index_operation(), Some(&observation));
+        assert!(
+            retry_view
+                .records()
+                .iter()
+                .any(|record| record.title() == retry_words)
+        );
+        let mut malformed = page;
+        malformed.events[0].kind = IndexJobProgressKind::PublicationPending {
+            detail: backend_library::ProductText::new("x".repeat(1025))
+                .expect("bounded product text"),
+            detail_truncated: false,
+        };
+        assert!(index_profile_progress_text(&status, &malformed).is_err());
+    }
+
 
     #[test]
     fn composed_progress_uses_existing_job_slot_and_durable_key_continuation() {
