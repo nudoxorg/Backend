@@ -3968,6 +3968,43 @@ fn compact_outline_witness_rehydrates_cold_and_preserves_complete_page_union() {
 }
 
 #[test]
+fn noncanonical_retained_outline_request_id_falls_back_to_strict_full_pc4() {
+    let owner = Arc::new(Mutex::new(owner_with_package(
+        1,
+        7,
+        0,
+        &["Thing"],
+        Some("/p"),
+    )));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut issuing = session(&owner, &requests);
+    let first = issuing.outline_page("/p", 3, None).expect("first outline page");
+    let cursor = page(&first).next.expect("successor");
+
+    // The ordinary command encoder accepts this valid live request ID, while
+    // the owner-rehydrated portable grammar intentionally requires ID 1.
+    // Eligibility refusal must select the existing strict full-root PC4 path.
+    let retained = issuing
+        .continuations
+        .get_mut(&cursor)
+        .and_then(|retained| retained.next_request.as_mut())
+        .expect("retained outline request");
+    retained.request_id = 17;
+    let continuation = PageContinuation::from_cursor(cursor);
+    assert!(issuing.has_outline_query_continuation(continuation));
+    assert!(!issuing.outline_query_continuation_compact_eligible(continuation));
+
+    let token = issuing
+        .encode_query_continuation(continuation)
+        .expect("strict full-proof fallback");
+    assert!(token.starts_with("pc4-"));
+    let body = decode_portable_body(&token).expect("bounded PC4 body");
+    let request = backend_library::decode_command_body(&body)
+        .expect("standalone full-root decoder remains supported");
+    assert_eq!(request.request_id, 17, "fallback preserves exact request ID");
+}
+
+#[test]
 fn compact_outline_witness_rejects_wrong_scope_credit_and_rehydrated_root_before_reply() {
     let owner = Arc::new(Mutex::new(owner_with_package(
         1,

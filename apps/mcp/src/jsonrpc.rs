@@ -82,6 +82,12 @@ const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// It is the shared driver's [`Engine`] plus the one capability that is not a
 /// registry row: the typed Trustfall lane behind `backend.query`.
 pub(super) trait Product: Engine {
+    /// Whether this product has the explicit owner-side rehydration route for
+    /// compact outline witnesses. Other products retain full-proof cursors.
+    fn supports_outline_owner_witness_route(&self) -> bool {
+        false
+    }
+
     /// Already-selected local serving metadata; must not connect or start an owner.
     /// Frozen local bundle/attachment metadata, available without connecting.
     fn cli_context(&self) -> Option<backend_present::StartupRecoveryContext> {
@@ -288,6 +294,10 @@ impl Engine for SessionProduct {
 }
 
 impl Product for SessionProduct {
+    fn supports_outline_owner_witness_route(&self) -> bool {
+        true
+    }
+
     fn cli_context(&self) -> Option<backend_present::StartupRecoveryContext> {
         observed_cli_context(&self.1)
     }
@@ -304,7 +314,11 @@ impl Product for SessionProduct {
         &mut self,
         continuation: PageContinuation,
     ) -> Result<String, ClientError> {
-        if self.0.has_outline_query_continuation(continuation) {
+        if self.supports_outline_owner_witness_route()
+            && self
+            .0
+            .outline_query_continuation_compact_eligible(continuation)
+        {
             self.0.encode_outline_query_continuation(continuation)
         } else if self.0.has_portable_query_continuation(continuation) {
             self.0.encode_query_continuation(continuation)

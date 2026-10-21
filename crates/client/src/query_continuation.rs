@@ -454,6 +454,24 @@ impl Session {
             .and_then(|retained| retained.next_request.as_ref())
             .is_some_and(|request| matches!(&request.command, Command::OutlinePage { .. }))
     }
+
+    /// Whether a retained outline request fits the closed PC5 witness grammar.
+    /// A false result is only an eligibility decision; callers can still use
+    /// the ordinary strict full-proof PC4 exporter for this retained request.
+    #[must_use]
+    pub fn outline_query_continuation_compact_eligible(
+        &self,
+        continuation: PageContinuation,
+    ) -> bool {
+        self.continuations
+            .get(&continuation.cursor())
+            .and_then(|retained| retained.next_request.as_ref())
+            .is_some_and(|request| {
+                request.request_id == 1
+                    && matches!(&request.command, Command::OutlinePage { .. })
+                    && full_root_catalog_continuation_shape(request)
+            })
+    }
     /// Exports the exact next command admitted from a bounded query page.
     /// No session map or file must survive in the receiving process.
     ///
@@ -508,7 +526,8 @@ impl Session {
                     "outline continuation was not issued by this session".to_owned(),
                 )
             })?;
-        if !matches!(&request.command, Command::OutlinePage { .. })
+        if request.request_id != 1
+            || !matches!(&request.command, Command::OutlinePage { .. })
             || !full_root_catalog_continuation_shape(request)
         {
             return Err(ClientError::Protocol(
