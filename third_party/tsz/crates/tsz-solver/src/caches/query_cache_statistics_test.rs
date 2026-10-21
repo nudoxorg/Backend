@@ -1358,3 +1358,175 @@ fn evict_registration_window_entries_drops_only_tainted_keys() {
     db.evict_registration_window_eval_entries();
     assert!(db.eval_cache_contains_key_for_test(&clean));
 }
+
+#[test]
+fn identical_local_eval_writes_preserve_replacement_and_invalidation() {
+    let interner = TypeInterner::new();
+    let db = QueryCache::new(&interner);
+    let root = DefId(160);
+    let key = interner.lazy(root);
+    let stale_def = DefId(161);
+    let current_def = DefId(162);
+    let stale = interner.lazy(stale_def);
+    let current = interner.lazy(current_def);
+    for result in [stale, current] {
+        for _ in 0..4 {
+            db.insert_eval_cache_entry(
+                crate::evaluation::request::EvaluationCacheKey::new(key, false, false),
+                result,
+            );
+            db.insert_closed_eval_cache(key, false, result);
+            db.insert_application_eval_cache(root, &[TypeId::STRING], false, result);
+        }
+    }
+    db.invalidate_application_eval_cache_for_def(stale_def);
+    assert_eq!(db.lookup_eval_memo(key, false), Some(current));
+    assert_eq!(db.lookup_closed_eval_cache(key, false), Some(current));
+    assert_eq!(
+        db.lookup_application_eval_cache(root, &[TypeId::STRING], false),
+        Some(current)
+    );
+    assert_eq!(db.application_eval_dependency_key_count(stale_def), 0);
+    assert_eq!(db.application_eval_dependency_key_count(current_def), 1);
+    db.invalidate_application_eval_cache_for_def(current_def);
+    assert_eq!(db.lookup_eval_memo(key, false), None);
+    assert_eq!(db.lookup_closed_eval_cache(key, false), None);
+    assert_eq!(
+        db.lookup_application_eval_cache(root, &[TypeId::STRING], false),
+        None
+    );
+    assert_eq!(db.application_eval_dependency_key_count(root), 0);
+}
+
+#[test]
+fn identical_store_backed_result_refreshes_changed_body_dependencies() {
+    let interner = TypeInterner::new();
+    let store = DefinitionStore::new();
+    let root = DefId(170);
+    let stale_def = DefId(171);
+    let current_def = DefId(172);
+    let key = interner.lazy(root);
+    store.set_body(stale_def, TypeId::STRING);
+    store.set_body(current_def, TypeId::STRING);
+    store.set_body(root, interner.lazy(stale_def));
+    store.set_body_dependency_defs(root, [stale_def]);
+    let db = QueryCache::new(&interner).with_definition_store(&store);
+    for dependency in [stale_def, current_def] {
+        store.set_body(root, interner.lazy(dependency));
+        store.set_body_dependency_defs(root, [dependency]);
+        // Both aliases evaluate to string, so the cache key and result stay
+        // identical while the authority graph changes underneath them.
+        db.insert_eval_cache_entry(
+            crate::evaluation::request::EvaluationCacheKey::new(key, false, false),
+            TypeId::STRING,
+        );
+        db.insert_closed_eval_cache(key, false, TypeId::STRING);
+        db.insert_application_eval_cache(root, &[TypeId::NUMBER], false, TypeId::STRING);
+    }
+    db.invalidate_application_eval_cache_for_def(stale_def);
+    assert_eq!(db.lookup_eval_memo(key, false), Some(TypeId::STRING));
+    assert_eq!(
+        db.lookup_closed_eval_cache(key, false),
+        Some(TypeId::STRING)
+    );
+    assert_eq!(
+        db.lookup_application_eval_cache(root, &[TypeId::NUMBER], false),
+        Some(TypeId::STRING)
+    );
+    db.invalidate_application_eval_cache_for_def(current_def);
+    assert_eq!(db.lookup_eval_memo(key, false), None);
+    assert_eq!(db.lookup_closed_eval_cache(key, false), None);
+    assert_eq!(
+        db.lookup_application_eval_cache(root, &[TypeId::NUMBER], false),
+        None
+    );
+}
+
+#[test]
+fn identical_shared_result_refreshes_current_store_edges_for_fresh_consumers() {
+    let interner = TypeInterner::new();
+    let store = DefinitionStore::new();
+    let shared = SharedQueryCache::new_for_instantiation_family_test(true);
+    let root = DefId(180);
+    let stale_def = DefId(181);
+    let current_def = DefId(182);
+    let key = interner.lazy(root);
+    store.set_body(stale_def, TypeId::STRING);
+    store.set_body(current_def, TypeId::STRING);
+    for dependency in [stale_def, current_def] {
+        store.set_body(root, interner.lazy(dependency));
+        store.set_body_dependency_defs(root, [dependency]);
+        shared.insert_eval_cache(
+            &interner,
+            Some(&store),
+            crate::evaluation::request::EvaluationCacheKey::new(key, false, false),
+            TypeId::STRING,
+        );
+        shared.insert_application_eval_cache(
+            &interner,
+            Some(&store),
+            (root, smallvec::smallvec![TypeId::NUMBER], false, false),
+            TypeId::STRING,
+        );
+    }
+    {
+        let db = QueryCache::new_with_shared(&interner, &shared).with_definition_store(&store);
+        db.invalidate_application_eval_cache_for_def(stale_def);
+    }
+    {
+        let db = QueryCache::new_with_shared(&interner, &shared).with_definition_store(&store);
+        assert_eq!(db.lookup_eval_memo(key, false), Some(TypeId::STRING));
+        assert_eq!(
+            db.lookup_application_eval_cache(root, &[TypeId::NUMBER], false),
+            Some(TypeId::STRING)
+        );
+        db.invalidate_application_eval_cache_for_def(current_def);
+    }
+    let db = QueryCache::new_with_shared(&interner, &shared).with_definition_store(&store);
+    assert_eq!(db.lookup_eval_memo(key, false), None);
+    assert_eq!(
+        db.lookup_application_eval_cache(root, &[TypeId::NUMBER], false),
+        None
+    );
+}
+
+#[test]
+fn identical_shared_writes_without_store_keep_replacement_dependency_authority() {
+    let interner = TypeInterner::new();
+    let shared = SharedQueryCache::new_for_instantiation_family_test(true);
+    let root = DefId(190);
+    let key = interner.lazy(root);
+    let stale_def = DefId(191);
+    let current_def = DefId(192);
+    let current = interner.lazy(current_def);
+    for result in [interner.lazy(stale_def), current] {
+        for _ in 0..4 {
+            shared.insert_eval_cache(
+                &interner,
+                None,
+                crate::evaluation::request::EvaluationCacheKey::new(key, false, false),
+                result,
+            );
+            shared.insert_application_eval_cache(
+                &interner,
+                None,
+                (root, smallvec::smallvec![TypeId::NUMBER], false, false),
+                result,
+            );
+        }
+    }
+    let db = QueryCache::new_with_shared(&interner, &shared);
+    db.invalidate_application_eval_cache_for_def(stale_def);
+    assert_eq!(db.lookup_eval_memo(key, false), Some(current));
+    assert_eq!(
+        db.lookup_application_eval_cache(root, &[TypeId::NUMBER], false),
+        Some(current)
+    );
+    db.invalidate_application_eval_cache_for_def(current_def);
+    let next = QueryCache::new_with_shared(&interner, &shared);
+    assert_eq!(next.lookup_eval_memo(key, false), None);
+    assert_eq!(
+        next.lookup_application_eval_cache(root, &[TypeId::NUMBER], false),
+        None
+    );
+}

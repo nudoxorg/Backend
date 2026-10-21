@@ -5351,8 +5351,8 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
     /// OXC body lists prove direct declared membership, independently of the
     /// checker object's effective structural shape. Every body element must
     /// map to one emitted declaration. Merged declarations, unsupported body
-    /// elements and constructor parameter properties stay unavailable until
-    /// their complete inventory has a dedicated producer proof.
+    /// elements stay unavailable. Constructor parameter properties additionally
+    /// require the exact parsed binding, emitted field and direct owner.
     fn pass_declared_member_ownership(
         &mut self,
         capture_inventory: bool,
@@ -5407,13 +5407,6 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             let Some(owner) = self.fact_at_name_start(name.start) else {
                 continue;
             };
-            if self
-                .parameter_properties
-                .iter()
-                .any(|ordinal| self.member_parents.get(*ordinal as usize) == Some(&owner))
-            {
-                continue;
-            }
             // One exact merge part cannot prove the whole merged inventory.
             let declaration = kind.span();
             if self.merged_declaration_parts.contains_key(&owner)
@@ -5431,6 +5424,66 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 };
                 members.push(*member);
             }
+            // Parameter properties are direct class fields as well as
+            // signature parameters. Prove them from this constructor's syntax;
+            // an emitted field with the same spelling elsewhere is not enough.
+            let mut properties = Vec::new();
+            if let Some(class) = kind.as_class() {
+                for element in class.body.body.iter() {
+                    let span = element.span();
+                    let Some(element_kind) = self.ast_kind_at_exact_span(span.start, span.end)
+                    else {
+                        complete = false;
+                        break;
+                    };
+                    let Some(method) = element_kind.as_method_definition() else {
+                        continue;
+                    };
+                    if !method.kind.is_constructor() {
+                        continue;
+                    }
+                    for parameter in method.value.params.items.iter() {
+                        if parameter.accessibility.is_none() && !parameter.readonly {
+                            continue;
+                        }
+                        let Some(identifier) = parameter.pattern.get_binding_identifier() else {
+                            complete = false;
+                            break;
+                        };
+                        let span = parameter.span;
+                        let Some(Some(member)) = declarations.get(&(span.start, span.end)) else {
+                            complete = false;
+                            break;
+                        };
+                        let index = *member as usize;
+                        if self.fact_kinds.get(index) != Some(&EntityKind::Field)
+                            || !self.parameter_properties.contains(member)
+                            || self.member_parents.get(index) != Some(&owner)
+                            || self.name_starts.get(index) != Some(&identifier.span.start)
+                            || self.name_ends.get(index) != Some(&identifier.span.end)
+                            || properties.contains(member)
+                        {
+                            complete = false;
+                            break;
+                        }
+                        properties.push(*member);
+                    }
+                    if !complete {
+                        break;
+                    }
+                }
+            }
+            // Both directions are required: no parsed property may be missing,
+            // and no foreign/unmatched field may enter this owner's inventory.
+            let owned_properties = self
+                .parameter_properties
+                .iter()
+                .filter(|ordinal| self.member_parents.get(**ordinal as usize) == Some(&owner))
+                .count();
+            if properties.len() != owned_properties {
+                complete = false;
+            }
+            members.extend(properties);
             if complete && !capture_inventory {
                 // The AST body proves direct ownership before the lexical
                 // span sweep. Native callable ranges can include trailing
@@ -11936,6 +11989,10 @@ mod lane_tests {
             (&b"Written"[..], &[&b"value"[..], &b"run"[..]][..]),
             (&b"Choice"[..], &[&b"First"[..], &b"Second"[..]][..]),
             (&b"Outer"[..], &[&b"run"[..]][..]),
+            (
+                &b"ParameterProperty"[..],
+                &[&b"constructor"[..], &b"field"[..]][..],
+            ),
         ] {
             let item = ir
                 .items()
@@ -11969,7 +12026,7 @@ mod lane_tests {
             expected.sort();
             assert_eq!(names, expected);
         }
-        for name in [&b"Runtime"[..], &b"ParameterProperty"[..], &b"Merged"[..]] {
+        for name in [&b"Runtime"[..], &b"Merged"[..]] {
             let item = ir
                 .items()
                 .find(|item| item.name() == name)
@@ -12489,6 +12546,175 @@ mod lane_tests {
         );
         assert!(roles.contains(&EntityKind::Parameter));
         assert!(roles.contains(&EntityKind::Field));
+        Ok(())
+    }
+
+    /// The exact 1,858-byte production ArticlesService that failed semantic
+    /// shape projection: inventory must be captured by lowering, not waived by
+    /// the shape reader. The fixture is byte-identical to the real app courier.
+    #[test]
+    fn native_tsz_actual_articles_parameter_property_inventory_is_complete() -> Result<(), LaneError>
+    {
+        use backend_semantic::ir::{FactAvailability, ParentageAuthority};
+        let source = include_str!(
+            "../../application/typescript_program/direct/tests/fixtures/angular-current42/src/app/features/article/services/articles.service.ts"
+        );
+        let ir = owned_tsz_ir_at_path(
+            source,
+            "src/app/features/article/services/articles.service.ts",
+        )?;
+        let owner = ir
+            .items()
+            .find(|item| item.name() == b"ArticlesService")
+            .ok_or(LaneError::Missing("real ArticlesService owner"))?;
+        let owner_entity = ir.entity(owner.id()).expect("class entity");
+        assert_eq!(owner_entity.authority.members, FactAvailability::Captured);
+        let members = owner
+            .members()
+            .iter()
+            .map(|id| ir.entity(*id).expect("captured exact member"))
+            .collect::<Vec<_>>();
+        let mut names = members
+            .iter()
+            .map(|entity| {
+                entity
+                    .name
+                    .named_atom()
+                    .and_then(|name| ir.atom(name))
+                    .expect("named direct member")
+                    .to_vec()
+            })
+            .collect::<Vec<_>>();
+        names.sort();
+        let mut expected = [
+            "constructor",
+            "query",
+            "get",
+            "delete",
+            "create",
+            "update",
+            "favorite",
+            "unfavorite",
+            "http",
+        ]
+        .map(|name| name.as_bytes().to_vec());
+        expected.sort();
+        assert_eq!(
+            names, expected,
+            "all nine source-authored members, no inherited/effective rows"
+        );
+        let field = members
+            .iter()
+            .find(|entity| {
+                entity.kind == EntityKind::Field
+                    && entity.name.named_atom().and_then(|name| ir.atom(name)) == Some(b"http")
+            })
+            .expect("exact constructor parameter-property field");
+        let constructor = members
+            .iter()
+            .find(|entity| {
+                entity.name.named_atom().and_then(|name| ir.atom(name)) == Some(b"constructor")
+            })
+            .expect("actual constructor");
+        let parameters = ir
+            .canonical_entities()
+            .filter(|entity| {
+                entity.kind == EntityKind::Parameter
+                    && entity.name.named_atom().and_then(|name| ir.atom(name)) == Some(b"http")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            parameters.len(),
+            1,
+            "signature parameter is retained independently"
+        );
+        let parameter = parameters[0];
+        assert_ne!(field.id, parameter.id);
+        assert_eq!(
+            field.authority.parentage,
+            ParentageAuthority::Bound(owner_entity.version.identity())
+        );
+        assert_eq!(
+            parameter.authority.parentage,
+            ParentageAuthority::Bound(constructor.version.identity())
+        );
+        assert!(
+            !members.iter().any(|entity| entity.id == parameter.id),
+            "the signature Parameter role is not the class Field role"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_parameter_property_inventory_excludes_foreign_and_nonfield_roles()
+    -> Result<(), LaneError> {
+        use backend_semantic::ir::{FactAvailability, ParentageAuthority};
+        let source = concat!(
+            "class Owner { constructor(private readonly http: string, ordinary: number) {} ",
+            "run() { class Nested { constructor(public http: number) {} } return Nested; } }\n",
+            "class Neighbor { constructor(protected http: boolean) {} }\n",
+            "class Partial { constructor(public field: number) {} static { const runtime = 1; } }\n",
+            "interface Merged { extra: number } class Merged { constructor(public field: number) {} }\n",
+        );
+        let ir = owned_tsz_ir(source)?;
+        for (name, expected) in [
+            (
+                &b"Owner"[..],
+                &[&b"constructor"[..], &b"http"[..], &b"run"[..]][..],
+            ),
+            (&b"Nested"[..], &[&b"constructor"[..], &b"http"[..]][..]),
+            (&b"Neighbor"[..], &[&b"constructor"[..], &b"http"[..]][..]),
+        ] {
+            let item = ir
+                .items()
+                .find(|item| item.name() == name)
+                .ok_or(LaneError::Missing("parameter-property inventory owner"))?;
+            let entity = ir.entity(item.id()).expect("owner entity");
+            assert_eq!(entity.authority.members, FactAvailability::Captured);
+            let mut names = Vec::new();
+            for id in item.members().iter() {
+                let member = ir.entity(*id).expect("direct member");
+                assert_eq!(
+                    member.authority.parentage,
+                    ParentageAuthority::Bound(entity.version.identity()),
+                    "nested/neighbor same-spelling fields cannot become this class's members"
+                );
+                assert_ne!(member.kind, EntityKind::Parameter);
+                names.push(
+                    member
+                        .name
+                        .named_atom()
+                        .and_then(|name| ir.atom(name))
+                        .expect("named direct member")
+                        .to_vec(),
+                );
+            }
+            names.sort();
+            let mut expected = expected
+                .iter()
+                .map(|name| name.to_vec())
+                .collect::<Vec<_>>();
+            expected.sort();
+            assert_eq!(
+                names, expected,
+                "ordinary parameters and nested declarations are excluded"
+            );
+        }
+        for name in [b"Partial".as_slice(), b"Merged".as_slice()] {
+            let item = ir
+                .items()
+                .find(|item| item.name() == name)
+                .ok_or(LaneError::Missing("unproved member inventory"))?;
+            assert_eq!(
+                ir.entity(item.id())
+                    .expect("owner entity")
+                    .authority
+                    .members,
+                FactAvailability::Unavailable,
+                "parameter-property support cannot waive unsupported body or merge inventory"
+            );
+            assert!(item.members().is_empty());
+        }
         Ok(())
     }
 
