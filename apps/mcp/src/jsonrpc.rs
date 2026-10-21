@@ -1281,12 +1281,16 @@ impl<P: Product> Server<P> {
         // legacy cursors, but its inner page-root commitment is deliberately
         // not decoded as a trusted PageContinuation. The owner rehydrates it
         // through the dedicated outline route below.
-        let outline_owner_token = arguments
+        let outline_owner_token = match arguments
             .get("cursor")
             .and_then(Value::as_str)
             .filter(|token| !token.is_empty())
-            .and_then(|token| self.verify_cursor_token(token, &context).ok().flatten())
-            .filter(|owner| owner.starts_with("pc5-"));
+        {
+            Some(token) => self
+                .verify_cursor_token(token, &context)?
+                .filter(|owner| owner.starts_with("pc5-")),
+            None => None,
+        };
         let continuation = if outline_owner_token.is_some() {
             None
         } else {
