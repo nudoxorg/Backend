@@ -7,6 +7,9 @@ use crate::{ActiveTheme as _, highlighter::HighlightTheme};
 /// TextViewStyle used to customize the style for [`TextView`].
 #[derive(Clone)]
 pub struct TextViewStyle {
+    /// The document's allocated width, when supplied by its container.
+    /// Custom block renderers can use this room instead of window geometry.
+    pub container_width: Option<Pixels>,
     /// Gap of each paragraphs, default is 1 rem.
     pub paragraph_gap: Rems,
     /// Base font size for headings, default is 14px.
@@ -48,7 +51,8 @@ pub struct TextViewStyle {
 
 impl PartialEq for TextViewStyle {
     fn eq(&self, other: &Self) -> bool {
-        self.paragraph_gap == other.paragraph_gap
+        self.container_width == other.container_width
+            && self.paragraph_gap == other.paragraph_gap
             && self.heading_base_font_size == other.heading_base_font_size
             && match (&self.heading_font_size, &other.heading_font_size) {
                 (Some(left), Some(right)) => (1..=6).all(|level| {
@@ -71,6 +75,7 @@ impl PartialEq for TextViewStyle {
 impl Default for TextViewStyle {
     fn default() -> Self {
         Self {
+            container_width: None,
             paragraph_gap: rems(1.),
             heading_base_font_size: px(14.),
             heading_font_size: None,
@@ -86,6 +91,12 @@ impl Default for TextViewStyle {
 }
 
 impl TextViewStyle {
+    /// Supplies the container's current allocation to custom renderers.
+    pub fn container_width(mut self, width: Pixels) -> Self {
+        self.container_width = Some(width.max(px(0.0)));
+        self
+    }
+
     /// Set paragraph gap, default is 1 rem.
     pub fn paragraph_gap(mut self, gap: Rems) -> Self {
         self.paragraph_gap = gap;

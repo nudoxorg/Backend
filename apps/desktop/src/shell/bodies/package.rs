@@ -1115,6 +1115,7 @@ fn readme(
         let rich = crate::shell::markdown::view(
             ElementId::Name(SharedString::from("package-readme-markdown")),
             SharedString::from(Arc::clone(source)),
+            measure,
         )
         .w_full();
         let rich = div()
