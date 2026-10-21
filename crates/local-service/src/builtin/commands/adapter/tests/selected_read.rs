@@ -95,8 +95,7 @@ fn local_adapter_rehydrates_pc5_outline_witness_before_library_dispatch() {
 
     let (first, page_certificate, revision_certificate, owner_root, limit) = {
         let (adapter, daemon) = fixture.parts();
-        let library = daemon.engine().daemon().library();
-        let root = library.revision_root();
+        let root = daemon.engine().daemon().library().revision_root();
         let limit = backend_library::QueryLimit::new(4).expect("small test page");
         let request = CommandDto::new(
             1201,
@@ -132,7 +131,7 @@ fn local_adapter_rehydrates_pc5_outline_witness_before_library_dispatch() {
             page,
             page_certificate,
             revision_certificate,
-            library.revision_root(),
+            daemon.engine().daemon().library().revision_root(),
             limit,
         )
     };
