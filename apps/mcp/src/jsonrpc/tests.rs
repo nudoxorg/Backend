@@ -3691,7 +3691,7 @@ fn assert_compact_index_job_receipt(response: &Value, expected: &Value) {
         expected
     );
     assert_eq!(
-        structured["surface"]["index_job"]["value"],
+        &structured["surface"]["index_job"]["value"],
         expected,
         "the compact response retains the entire original receipt"
     );
