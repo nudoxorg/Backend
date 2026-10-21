@@ -9291,12 +9291,12 @@ mod tests {
                 .iter()
                 .find_map(|profile| match (&profile.profile, &profile.state) {
                     (
-                        backend_library::SemanticLanguageProfile::Python(_),
+                        candidate,
                         backend_library::IndexOperationSemanticProfileState::Published {
                             generation,
                             ..
                         },
-                    ) => Some(*generation),
+                    ) if *candidate == py => Some(*generation),
                     _ => None,
                 })
                 .expect("the useful Python generation remains selected");

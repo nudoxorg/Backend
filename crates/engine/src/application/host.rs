@@ -1399,8 +1399,7 @@ mod tests {
             PackageCompileRequest, PackageUrl,
         };
         use crate::application::{OwnedPackageSource, OwnedPackageSourceSet};
-        use backend_semantic::ir::Coverage;
-        use backend_version::{ContentId, SourceFactDomain};
+        use backend_version::{ContentId, Coverage, SourceFactDomain};
         use std::os::unix::fs::PermissionsExt as _;
         let root = std::env::temp_dir().join(format!(
             "nudox-go-python-{}-{}",
