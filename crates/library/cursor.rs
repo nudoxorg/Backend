@@ -4,7 +4,7 @@ use crate::canonical::{
     BranchKey, Frontier, LogKey, ViewRecipeId, ViewStateRoot, ViewVersion, branch_key, log_key,
     view_key, view_state_root, view_version,
 };
-use crate::{CommittedViewDelta, ViewRoot};
+use crate::{CommittedViewDelta, QueryWindow, ViewRoot};
 
 /// Product schema version carried by cursors created by this crate.
 pub const CURSOR_SCHEMA: u16 = crate::canonical::PROTOCOL_SCHEMA;
