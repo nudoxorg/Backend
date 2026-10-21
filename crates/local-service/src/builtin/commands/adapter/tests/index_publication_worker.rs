@@ -1057,6 +1057,14 @@ fn index_publication_worker_warm_and_cold_reuse_refresh_current_capture_without_
         ),
         "the reused Python generation and refused C profile form a typed partial terminal"
     );
+    let backend_library::IndexOperationState::PartiallyPublished {
+        refused_profiles, ..
+    } = &partial.state
+    else {
+        unreachable!("checked partial terminal")
+    };
+    assert_eq!(refused_profiles.len(), 1);
+    assert_eq!(refused_profiles[0].profile.name().expect("profile"), "c");
     assert_eq!(python_generation(&partial), first_generation);
     assert_current_profile_receipt(&mut fixture, &label, &partial);
 }
