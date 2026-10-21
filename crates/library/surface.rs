@@ -3553,6 +3553,13 @@ pub enum SurfaceCommand {
         /// Absolute project directory (any directory inside the workspace).
         root: ProductText,
     },
+    /// Read one bounded page of captured Project source paths. This request
+    /// never performs a current filesystem or Cargo dependency observation.
+    /// Its continuation uses the existing PackageSourceMembership request.
+    CapturedProjectTree {
+        /// Exact absolute local Project label in the selected source snapshot.
+        root: ProductText,
+    },
     /// Read one bounded UTF-8 file under a currently revalidated Cargo
     /// package source root, bound to its exact ProjectTree request.
     CargoPackageSourceFile {
@@ -3661,7 +3668,7 @@ impl SurfaceCommand {
             Self::Tree => CommandId::Tree,
             Self::TreeOpen { .. } => CommandId::TreeOpen,
             Self::TreeClose { .. } => CommandId::TreeClose,
-            Self::ProjectTree { .. } => CommandId::ProjectTree,
+            Self::ProjectTree { .. } | Self::CapturedProjectTree { .. } => CommandId::ProjectTree,
             Self::CargoPackageSourceFile { .. } => CommandId::CargoPackageSourceFile,
             Self::CargoPackageSourceInventory { .. } => CommandId::CargoPackageSourceInventory,
             Self::CargoPackageReadme { .. } => CommandId::CargoPackageReadme,
