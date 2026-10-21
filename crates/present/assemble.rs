@@ -192,21 +192,16 @@ fn member_groups(rows: &[Row], parent: SymbolKey) -> Box<[MemberGroup]> {
         .map(|row| {
             let identity = row_identity(row);
             let language = identity.language();
-            let member = Member::new(
-                identity,
-                row.kind,
-                row.signature
-                    .as_ref()
-                    .and_then(|text| {
-                        Signature::from_declaration(
-                            text,
-                            language,
-                            row.kind,
-                            identity.name(),
-                            &row.excerpt,
-                        )
-                    }),
-            );
+            let signature = row.signature.as_ref().and_then(|text| {
+                Signature::from_declaration(
+                    text,
+                    language,
+                    row.kind,
+                    identity.name(),
+                    &row.excerpt,
+                )
+            });
+            let member = Member::new(identity, row.kind, signature);
             match summary_of(row) {
                 Some(text) => member.with_summary(text),
                 None => member,
