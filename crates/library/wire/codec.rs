@@ -105,9 +105,10 @@ pub fn decode_command_body(bytes: &[u8]) -> Result<CommandDto, String> {
 
 /// Decodes a command against the durable owner's admitted cursor.
 ///
-/// This scoped boundary permits graph-query continuations to use their
-/// constant-size root commitment. Every other command retains the canonical
-/// standalone decoder.
+/// This scoped boundary permits graph-query and exact-grammar catalog-page
+/// continuations to use digest-only commitments. The catalog owner must
+/// recompute the exact predecessor page before accepting that cursor. Every
+/// other command retains the canonical standalone decoder.
 ///
 /// # Errors
 ///
@@ -123,7 +124,7 @@ pub fn decode_command_body_for_owner(bytes: &[u8], owner: Cursor) -> Result<Comm
 }
 
 /// Encodes one command DTO and verifies that its exact typed value survives a
-/// strict round trip.
+/// strict or explicitly owner-bound round trip.
 ///
 /// # Errors
 ///
@@ -138,8 +139,8 @@ pub fn encode_command_body(request: &CommandDto) -> Result<Vec<u8>, String> {
     // Ordinary requests must survive the producer-certificate decoder before
     // an exact comparison. Comparing an envelope only with itself would let a
     // malformed canonical preimage ride along unchecked. Graph-query resumes
-    // are the one deliberate exception: their root claim is an owner-bound
-    // commitment and can only be reopened by `decode_command_body_for_owner`.
+    // are the deliberate exception: their commitments can only be reopened by
+    // the owner decoder. Catalog continuations retain the full canonical root.
     let owner_bound_resume = matches!(
         &request.command,
         crate::Command::GraphQuery(query) if query.page().continuation().is_some()
@@ -287,7 +288,8 @@ mod tests {
                 "outline_order": {"start": 0, "symbols": [], "unknown_future_field": true}
             }},
             "version": crate::DTO_VERSION
-        })).expect("new outline envelope");
+        }))
+        .expect("new outline envelope");
         // The maintained v33 byte-entry version preflight, not a replay of an
         // old binary, rejects the new cohort before its strict page grammar.
         let old_peer = super::check_version_header_against(&current, "reply", 33)
@@ -297,7 +299,10 @@ mod tests {
         assert!(!old_peer.contains("unknown field"));
         let mut old: serde_json::Value = serde_json::from_slice(&current).expect("envelope");
         old["version"] = serde_json::json!(33);
-        old["reply"]["data"].as_object_mut().expect("page").remove("outline_order");
+        old["reply"]["data"]
+            .as_object_mut()
+            .expect("page")
+            .remove("outline_order");
         let bytes = serde_json::to_vec(&old).expect("old owner reply");
         let verifier = CountingVerifier::new();
         for error in [
@@ -346,7 +351,10 @@ mod tests {
         assert!(!old_peer.contains("unknown field"));
         let mut old: serde_json::Value = serde_json::from_slice(&current).expect("envelope");
         old["version"] = serde_json::json!(34);
-        old["reply"]["data"].as_object_mut().expect("health").remove("source_selection");
+        old["reply"]["data"]
+            .as_object_mut()
+            .expect("health")
+            .remove("source_selection");
         let bytes = serde_json::to_vec(&old).expect("old owner reply");
         let verifier = CountingVerifier::new();
         for error in [

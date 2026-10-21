@@ -1,0 +1,72 @@
+{
+  "cohorts": [
+    {
+      "archive": "/Users/mileswirht/.cache/nudox/source-reviews/prod-native-combined-20261016/ROOT-ANGULAR5950-CLOSED-COLLECT01/courier.tar.gz",
+      "archive_sha256": "8efba086ca19f7362c25543ed1e3ce56a73ea7222f12bd861246bd4bdea06e86",
+      "cohort": "angular5950",
+      "duplicate_occurrences": 15,
+      "joined_owner_occurrences": 36,
+      "response_files": 209,
+      "unique_owner_tokens": 21,
+      "unique_totals": {
+        "bqpc_body_bytes_after": 43881,
+        "bqpc_body_bytes_before": 100283,
+        "bqpc_body_bytes_saved": 56402,
+        "full_token_chars": 61373,
+        "full_token_chars_after_fixed_mac_length_python_zlib_estimate": 40288,
+        "owner_token_chars": 60344,
+        "owner_token_chars_after_python_zlib_level6": 39259,
+        "page_root_claim_canonical_bytes": 56318,
+        "zlib_bytes_after_python_zlib_level6": 29375,
+        "zlib_bytes_before": 45190
+      }
+    },
+    {
+      "archive": "/Users/mileswirht/.cache/nudox/source-reviews/prod-native-combined-20261016/ROOT-HTTPIE-GRAPH639-APPLICATION-CLOSED-COLLECT01/full-raw.tar",
+      "archive_sha256": "f5a42129fa1c7511d574a1d0f39a2350ff930a83780da20f46105a7362f1e588",
+      "cohort": "httpie_graph639",
+      "duplicate_occurrences": 2,
+      "joined_owner_occurrences": 22,
+      "response_files": 299,
+      "unique_owner_tokens": 20,
+      "unique_totals": {
+        "bqpc_body_bytes_after": 46052,
+        "bqpc_body_bytes_before": 79986,
+        "bqpc_body_bytes_saved": 33934,
+        "full_token_chars": 55464,
+        "full_token_chars_after_fixed_mac_length_python_zlib_estimate": 42532,
+        "owner_token_chars": 54484,
+        "owner_token_chars_after_python_zlib_level6": 41552,
+        "page_root_claim_canonical_bytes": 33854,
+        "zlib_bytes_after_python_zlib_level6": 31099,
+        "zlib_bytes_before": 40798
+      }
+    },
+    {
+      "archive": "/Users/mileswirht/.cache/nudox/source-reviews/prod-native-combined-20261016/ROOT-CPP638-D824-CLOSED-COLLECT04/full-raw.tar",
+      "archive_sha256": "1287564426523787cec0f5db94ae9b89bd09672274714f63bd95e2b03ed47a64",
+      "cohort": "cpp638_d824",
+      "duplicate_occurrences": 0,
+      "joined_owner_occurrences": 1,
+      "response_files": 41,
+      "unique_owner_tokens": 1,
+      "unique_totals": {
+        "bqpc_body_bytes_after": 2060,
+        "bqpc_body_bytes_before": 3918,
+        "bqpc_body_bytes_saved": 1858,
+        "full_token_chars": 2601,
+        "full_token_chars_after_fixed_mac_length_python_zlib_estimate": 1897,
+        "owner_token_chars": 2552,
+        "owner_token_chars_after_python_zlib_level6": 1848,
+        "page_root_claim_canonical_bytes": 1854,
+        "zlib_bytes_after_python_zlib_level6": 1383,
+        "zlib_bytes_before": 1911
+      }
+    }
+  ],
+  "full_token_after_size": "estimate only: Python zlib level 6 plus unchanged expiry/MAC field lengths; no token/MAC forged",
+  "method_source": "request.params.name",
+  "modified_mac": false,
+  "scope": "retained backend.search/backend.graph owners, joined by JSON-RPC id",
+  "unique_definition": "exact owner pc4 token bytes, SHA-256 keyed; repeated response appearances counted as duplicates"
+}
