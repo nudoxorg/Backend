@@ -199,6 +199,8 @@ strip = "symbols"
 # The pinned upstream adapter and regression coverage are documented beside it.
 accesskit_atspi_common = { path = "vendor/accesskit_atspi_common" }
 gpui_ce_components = { path = "vendor/gpui_ce_components" }
+# Do not present Wayland window buffers until the compositor's first configure.
+gpui_ce_linux = { path = "vendor/gpui_ce_linux" }
 # Deterministic-clock patches: every animation reads the executor clock
 # (`TestClock` headless). See vendor/gpui-ce/NUDOX-PATCHES.md.
 gpui-ce = { path = "vendor/gpui-ce" }
