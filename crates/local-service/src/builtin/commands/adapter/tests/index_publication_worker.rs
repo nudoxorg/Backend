@@ -938,6 +938,209 @@ fn assert_python_published(status: &backend_library::IndexOperationStatus) {
     );
 }
 
+fn python_generation(status: &backend_library::IndexOperationStatus) -> [u8; 32] {
+    status
+        .source_capture
+        .as_ref()
+        .expect("operation source capture")
+        .profiles()
+        .iter()
+        .find_map(|profile| match profile.state {
+            backend_library::IndexOperationSemanticProfileState::Published {
+                generation, ..
+            } if profile.profile.name().ok() == Some("python") => Some(generation),
+            _ => None,
+        })
+        .expect("published Python generation")
+}
+
+fn run_native_reuse_only_operation(
+    fixture: &mut AdapterFixture,
+    label: &str,
+    seed: u8,
+) -> backend_library::IndexOperationStatus {
+    let operation = backend_library::IndexOperationKey::from_bytes([seed; 32]).expect("operation");
+    let reference = backend_library::PackageReference::parse(label.to_owned()).expect("package");
+    let (adapter, daemon) = fixture.parts();
+    assert!(matches!(
+        adapter.start_index_operation(
+            daemon,
+            operation,
+            reference,
+            CompileExecutionIntent::Interactive,
+            u64::from(seed),
+        ),
+        Ok(Executed::Reply(_))
+    ));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while adapter.indexing.is_some() {
+        assert!(Instant::now() < deadline, "reuse-only operation completes");
+        assert!(
+            !matches!(
+                adapter.indexing.as_ref().map(|job| &job.work),
+                Some(IndexJobWork::Compiling { .. })
+            ),
+            "an exact current capture must not submit compiler work"
+        );
+        adapter.poll_deferred(daemon);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let observation = adapter
+        .resolve_index_operation(daemon, operation, None)
+        .expect("checked terminal operation");
+    let backend_library::IndexOperationObservation::Known(status) = observation else {
+        panic!("known operation")
+    };
+    assert_python_published(&status);
+    status
+}
+
+fn assert_current_profile_receipt(
+    fixture: &mut AdapterFixture,
+    label: &str,
+    status: &backend_library::IndexOperationStatus,
+) {
+    let (adapter, daemon) = fixture.parts();
+    let package = backend_library::PackageReference::parse(label.to_owned()).expect("package");
+    let current = package_profile::read(
+        &daemon.engine().daemon().owner().snapshot(),
+        &adapter.index_operations,
+        &adapter.semantic_authority,
+        &package,
+        None,
+    )
+    .expect("current package profile")
+    .expect("local package profile");
+    let backend_library::PackageCompilerOutcomes::Summary { source_capture, .. } = current else {
+        panic!("current package profile must be a summary")
+    };
+    let receipt = status
+        .source_capture
+        .as_ref()
+        .expect("operation capture receipt");
+    assert_eq!(source_capture.profiles.as_ref(), receipt.profiles());
+}
+
+#[test]
+fn index_publication_worker_warm_and_cold_reuse_refresh_current_capture_without_compile() {
+    let mut fixture = native_fixture();
+    let label = fixture.label.clone();
+    let first = keyed_status(
+        &mut fixture,
+        backend_library::IndexOperationKey::from_bytes([0xb1; 32]).expect("first operation"),
+    );
+    let first_generation = python_generation(&first);
+    let warm = run_native_reuse_only_operation(&mut fixture, &label, 0xb7);
+    assert_eq!(python_generation(&warm), first_generation);
+    assert_current_profile_receipt(&mut fixture, &label, &warm);
+
+    let view_journal = fixture
+        .root
+        .0
+        .join("workspace/native-publication-view.journal");
+    fixture = fixture.reopen_with_view_journal(Some(view_journal));
+    install_mixed_native_compiler(&mut fixture);
+    let cold = run_native_reuse_only_operation(&mut fixture, &label, 0xb8);
+    assert_eq!(python_generation(&cold), first_generation);
+    assert_current_profile_receipt(&mut fixture, &label, &cold);
+
+    fs::write(
+        Path::new(&label).join("panel.c"),
+        "int unavailable_sdk(int value) { return value + 2; }\n",
+    )
+    .expect("genuine missing-SDK profile source");
+    let partial = run_mixed_native_operation(&mut fixture, &label, 0xb9);
+    assert!(
+        matches!(
+            &partial.state,
+            backend_library::IndexOperationState::PartiallyPublished { .. }
+        ),
+        "the reused Python generation and refused C profile form a typed partial terminal"
+    );
+    let backend_library::IndexOperationState::PartiallyPublished {
+        refused_profiles, ..
+    } = &partial.state
+    else {
+        unreachable!("checked partial terminal")
+    };
+    assert_eq!(refused_profiles.len(), 1);
+    assert_eq!(refused_profiles[0].profile.name().expect("profile"), "c");
+    assert_eq!(python_generation(&partial), first_generation);
+    assert_current_profile_receipt(&mut fixture, &label, &partial);
+}
+
+#[test]
+fn index_publication_worker_warm_and_cold_typescript_reuse_refreshes_capture_without_compile() {
+    let mut fixture = native_fixture();
+    let label = fixture.label.clone();
+    for (path, source) in [
+        (
+            "package.json",
+            r#"{"name":"typescript-reuse","version":"1.0.0"}"#,
+        ),
+        (
+            "tsconfig.app.json",
+            r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"Bundler"},"files":["src/main.ts"]}"#,
+        ),
+        (
+            "angular.json",
+            r#"{"projects":{"app":{"architect":{"build":{"options":{"tsConfig":"tsconfig.app.json"}}}}}}"#,
+        ),
+        ("src/main.ts", "export const main = 1;"),
+    ] {
+        let path = Path::new(&label).join(path);
+        fs::create_dir_all(path.parent().expect("TS source parent")).expect("TS source directory");
+        fs::write(path, source).expect("TS project input");
+    }
+
+    let first = run_mixed_native_operation(&mut fixture, &label, 0xba);
+    let first_capture = first.source_capture.as_ref().expect("first capture");
+    let first_typescript = first_capture
+        .profiles()
+        .iter()
+        .find(|profile| profile.profile.name().expect("profile") == "typescript")
+        .expect("first TypeScript profile receipt");
+    let first_generation = match first_typescript.state {
+        backend_library::IndexOperationSemanticProfileState::Published { generation, .. } => {
+            generation
+        }
+        ref state => panic!("initial TypeScript profile must publish: {state:?}"),
+    };
+
+    let warm = run_native_reuse_only_operation(&mut fixture, &label, 0xbb);
+    assert_current_profile_receipt(&mut fixture, &label, &warm);
+    assert_reused_typescript_profile(&warm, first_generation);
+
+    let journal = fixture
+        .root
+        .0
+        .join("workspace/native-publication-view.journal");
+    fixture = fixture.reopen_with_view_journal(Some(journal));
+    install_mixed_native_compiler(&mut fixture);
+    let cold = run_native_reuse_only_operation(&mut fixture, &label, 0xbc);
+    assert_current_profile_receipt(&mut fixture, &label, &cold);
+    assert_reused_typescript_profile(&cold, first_generation);
+}
+
+fn assert_reused_typescript_profile(
+    status: &backend_library::IndexOperationStatus,
+    expected_generation: [u8; 32],
+) {
+    let profile = status
+        .source_capture
+        .as_ref()
+        .expect("operation capture")
+        .profiles()
+        .iter()
+        .find(|profile| profile.profile.name().expect("profile") == "typescript")
+        .expect("current TypeScript profile is retained in receipt");
+    assert!(matches!(
+        profile.state,
+        backend_library::IndexOperationSemanticProfileState::Published { generation, .. }
+            if generation == expected_generation
+    ));
+}
+
 fn native_dispatch(
     fixture: &mut AdapterFixture,
     partial: bool,
