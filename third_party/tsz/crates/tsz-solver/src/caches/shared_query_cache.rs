@@ -115,6 +115,12 @@ impl SharedQueryCache {
         result: TypeId,
     ) {
         let old_result = self.application_eval_cache.insert(key.clone(), result);
+        // Without a DefinitionStore, immutable key/result types determine every
+        // dependency. A store-backed write must still refresh its edges: the same
+        // TypeIds can now reach a different body-dependency graph.
+        if definition_store.is_none() && old_result == Some(result) {
+            return;
+        }
         if let Some(old_result) = old_result {
             self.remove_application_eval_dependencies(&key, old_result);
         }
@@ -199,6 +205,12 @@ impl SharedQueryCache {
         old_result: Option<TypeId>,
         result: TypeId,
     ) {
+        // Without a DefinitionStore, immutable key/result types determine every
+        // dependency. A store-backed write must still refresh its edges: the same
+        // TypeIds can now reach a different body-dependency graph.
+        if definition_store.is_none() && old_result == Some(result) {
+            return;
+        }
         if let Some(old_result) = old_result {
             self.remove_eval_dependencies(key, old_result);
         }

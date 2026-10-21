@@ -1190,21 +1190,33 @@ mod tests {
             .expect("capabilities can be inspected without an installed toolchain");
 
         for capability in capabilities.as_slice() {
-            if capability.profile().language() == backend_semantic::vocabulary::Language::Python {
-                // Compiled Python is available for request-time admission; inspection
-                // must not stream the executing image or advertise an unbound recipe.
-                assert_eq!(
-                    capability.state(),
-                    crate::application::LocalCompilerCapabilityState::Deferred
-                );
-                assert!(capability.toolchain_identity().is_none());
-                assert!(capability.local_authority_fingerprint().is_none());
-            } else {
-                assert_eq!(
+            match capability.profile().language() {
+                backend_semantic::vocabulary::Language::Python => {
+                    // Compiled Python is available for request-time admission; inspection
+                    // must not stream the executing image or advertise an unbound recipe.
+                    assert_eq!(
+                        capability.state(),
+                        crate::application::LocalCompilerCapabilityState::Deferred
+                    );
+                    assert!(capability.toolchain_identity().is_none());
+                    assert!(capability.local_authority_fingerprint().is_none());
+                }
+                backend_semantic::vocabulary::Language::TypeScript => {
+                    // The linked TSZ lane is native and needs no external executable.
+                    assert_eq!(
+                        capability.state(),
+                        crate::application::LocalCompilerCapabilityState::Ready,
+                        "linked native TypeScript is available without an external authority: {capability:?}"
+                    );
+                    assert!(capability.toolchain_identity().is_some());
+                    assert!(capability.local_authority_fingerprint().is_some());
+                    assert!(capability.manifest().is_some());
+                }
+                _ => assert_eq!(
                     capability.state(),
                     crate::application::LocalCompilerCapabilityState::Unavailable,
                     "an unconfigured external authority cannot be advertised ready: {capability:?}"
-                );
+                ),
             }
         }
         assert!(!data_root.exists());
@@ -1381,7 +1393,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn closed_go_refusal_keeps_the_actual_native_python_owner_usable() {
+    fn closed_go_refusal_keeps_native_python_and_linked_typescript_usable() {
         use backend_library::interface::{CompilerCapability, CompilerRequest};
         use std::os::unix::fs::PermissionsExt as _;
         let root = std::env::temp_dir().join(format!(
@@ -1427,12 +1439,28 @@ mod tests {
                 .state(),
             crate::application::LocalCompilerCapabilityState::Ready
         );
+        client
+            .generate(CompilerRequest {
+                profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                stage: Stage::LowerIr,
+                source: "export const answer: number = 42;\n",
+            })
+            .expect("closed Go refusal cannot block the linked native TypeScript lane");
         assert_eq!(
             client
                 .capabilities()
                 .for_profile(LanguageProfile::TypeScript(TypeScriptSource::TypeScript))
                 .state(),
-            crate::application::LocalCompilerCapabilityState::Unavailable
+            crate::application::LocalCompilerCapabilityState::Ready,
+            "the linked native TypeScript capability remains ready without an external tool"
+        );
+        assert_eq!(
+            client
+                .capabilities()
+                .for_profile(LanguageProfile::Go(GoVersion::Go125))
+                .state(),
+            crate::application::LocalCompilerCapabilityState::ProbeFailed,
+            "using other native lanes must not clear the captured Go refusal"
         );
         drop(client);
         fs::remove_dir_all(root).unwrap();
