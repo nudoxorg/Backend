@@ -26,9 +26,11 @@
 //! - Import resolution is the absence of a `missing-import` diagnostic over
 //!   the imported module spelling on the pristine file: the checker bound the
 //!   module, so consumers may mint `pypi` package foreign keys.
-//! - Symbol resolution is the absence of `unknown-name`/`missing-import`
-//!   over a call site: the oracle bound the name to the local declaration
-//!   (local outcome) or to a resolved import binding (foreign outcome).
+//! - A source-only symbol site without `unknown-name`/`missing-import` is not
+//!   an exact target binding: the local syntax facts may contain an unrelated
+//!   declaration with the same spelling. Such sites are unverified. Import
+//!   outcomes require the corresponding resolved import binding; project-native
+//!   exact definitions retain their validated source target.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -554,6 +556,10 @@ pub enum SymbolOutcome {
         /// The imported module spelling the binding came from.
         module: String,
     },
+    /// No blocking name/import diagnostic was observed, but this adapter did
+    /// not obtain an exact target binding. Consumers may retain syntax-derived
+    /// targets at index confidence, but must not promote them to oracle.
+    Unverified,
     /// The oracle could not bind the name.
     Unresolved,
 }
@@ -1066,7 +1072,7 @@ fn resolve_imports(
     Ok(imports.into_boxed_slice())
 }
 
-/// Classifies every recorded occurrence's call target.
+/// Classifies recorded occurrence evidence without inventing a target binding.
 fn resolve_symbols(
     facts: &ModuleFacts,
     line_index: &LineIndex<'_>,
@@ -1102,10 +1108,15 @@ fn resolve_symbols(
                         _ => SymbolOutcome::Unresolved,
                     }
                 }
+                // This diagnostic transaction has no native definition query.
+                // A same-spelled declaration may belong to another class or
+                // scope, so absence of a blocking diagnostic cannot prove this
+                // occurrence binds that declaration. Project-native reports
+                // carry exact DefinitionTarget coordinates separately.
                 DeclarationKind::Function
                 | DeclarationKind::Class
                 | DeclarationKind::Constant
-                | DeclarationKind::Field => SymbolOutcome::Local,
+                | DeclarationKind::Field => SymbolOutcome::Unverified,
                 DeclarationKind::Module => SymbolOutcome::Unresolved,
             }
         } else {
@@ -2246,8 +2257,8 @@ mod tests {
     use crate::legacy::{DeclarationKind, Span, extract};
 
     use super::{
-        CheckerError, InferenceSite, InferredType, Pyrefly, PyreflyExecutableError,
-        decode_diagnostics, parse_revealed_type, split_top_level,
+        CheckerError, InferenceSite, InferredType, LineIndex, Pyrefly, PyreflyExecutableError,
+        SymbolOutcome, decode_diagnostics, parse_revealed_type, resolve_symbols, split_top_level,
     };
     use std::path::PathBuf;
 
@@ -2393,6 +2404,25 @@ mod tests {
             return Err(TestError::Rendered);
         }
         Ok(())
+    }
+
+    /// Diagnostic absence cannot bind a spelling to an exact local declaration.
+    #[test]
+    fn same_spelled_source_declaration_is_unverified_without_target_coordinates() {
+        let source = b"def target():\n    return 1\n\ndef caller():\n    target()\n";
+        let facts = extract(source, PythonVersion::Python314).expect("valid source facts");
+        let line_index = LineIndex::new(source);
+        let symbols = resolve_symbols(&facts, &line_index, &[], &[])
+            .expect("source diagnostics resolve without additional imports");
+        let call_start = source
+            .windows(b"target()".len())
+            .rposition(|window| window == b"target()")
+            .expect("caller invocation");
+        let call = symbols
+            .iter()
+            .find(|symbol| symbol.span.start as usize == call_start)
+            .expect("call resolution");
+        assert!(matches!(call.outcome, SymbolOutcome::Unverified));
     }
 
     /// The probe plan splices parameter reveals after the header colon,
@@ -2612,7 +2642,7 @@ mod tests {
             .iter()
             .find(|symbol| symbol.target == "scale")
             .ok_or(TestError::Plan)?;
-        if !matches!(call.outcome, super::SymbolOutcome::Local) {
+        if !matches!(call.outcome, super::SymbolOutcome::Unverified) {
             return Err(TestError::Rendered);
         }
         Ok(())
