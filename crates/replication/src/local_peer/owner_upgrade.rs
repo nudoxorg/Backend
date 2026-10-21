@@ -667,6 +667,7 @@ mod tests {
 
     struct QualifiedOwner {
         root: PathBuf,
+        workspace: PathBuf,
         cli: PathBuf,
         qualified_locald: PathBuf,
         child: std::process::Child,
@@ -713,6 +714,20 @@ mod tests {
             let root = root.canonicalize().expect("resolve owner fixture root");
             std::fs::create_dir(root.join("p")).expect("create fixture project");
             std::fs::create_dir(root.join("home")).expect("create fixture home");
+            // Exercise the production direct-startup contract: an automatic
+            // workspace is the per-project default beneath this private root.
+            let project = root.join("p").canonicalize().expect("canonical fixture project");
+            let mut key = blake3::Hasher::new();
+            key.update(b"backend.runtime.project-state.v1\0");
+            key.update(project.as_os_str().as_encoded_bytes());
+            let workspace = root
+                .join("Nudox")
+                .join("projects")
+                .join(key.finalize().to_hex().as_str());
+            let startup_stdout = std::fs::File::create(root.join("startup.stdout.raw"))
+                .expect("capture startup stdout");
+            let startup_stderr = std::fs::File::create(root.join("startup.stderr.raw"))
+                .expect("capture startup stderr");
             let executable = if copy_owner {
                 std::fs::create_dir(root.join("old")).expect("create old-image fixture directory");
                 let copy = root.join("old/backend-locald");
@@ -729,24 +744,25 @@ mod tests {
                 .arg("direct")
                 .arg(&root)
                 .arg(root.join("p"))
-                .arg(root.join("w"))
+                .arg(&workspace)
                 .arg(root.join("s"))
-                .arg(root.join("w/authority.secret"))
+                .arg(workspace.join("authority.secret"))
                 .arg("--endpoint")
                 .arg(root.join("s"))
                 .arg("--workspace")
-                .arg(root.join("w"))
+                .arg(&workspace)
                 .arg("--authority-secret-file")
-                .arg(root.join("w/authority.secret"))
+                .arg(workspace.join("authority.secret"))
                 .current_dir(root.join("p"))
                 .env("HOME", root.join("home"))
                 .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
+                .stdout(startup_stdout)
+                .stderr(startup_stderr)
                 .spawn()
                 .expect("actual product automatic owner");
             let mut fixture = Self {
                 root,
+                workspace,
                 cli,
                 qualified_locald,
                 child,
@@ -756,18 +772,33 @@ mod tests {
                 if fixture.connection().is_ok() {
                     break;
                 }
-                assert!(
-                    fixture
-                        .child
-                        .try_wait()
-                        .expect("poll actual owner during startup")
-                        .is_none(),
-                    "actual owner startup failed"
-                );
+                if let Some(status) = fixture
+                    .child
+                    .try_wait()
+                    .expect("poll actual owner during startup")
+                {
+                    panic!(
+                        "actual owner startup failed ({status}); {}",
+                        fixture.startup_diagnostic()
+                    );
+                }
                 assert!(Instant::now() < until, "bounded actual owner startup");
                 std::thread::sleep(Duration::from_millis(10));
             }
             fixture
+        }
+        fn startup_diagnostic(&self) -> String {
+            use std::io::Read as _;
+            let mut diagnostic = String::new();
+            for name in ["startup.stdout.raw", "startup.stderr.raw"] {
+                let mut bytes = Vec::new();
+                if let Ok(file) = std::fs::File::open(self.root.join(name)) {
+                    let _ = file.take(16 * 1024).read_to_end(&mut bytes);
+                }
+                use std::fmt::Write as _;
+                let _ = write!(diagnostic, "{name}: {}; ", String::from_utf8_lossy(&bytes));
+            }
+            diagnostic
         }
         fn connection(
             &self,
@@ -792,7 +823,7 @@ mod tests {
                 .arg("--project")
                 .arg(self.root.join("p"))
                 .arg("--workspace")
-                .arg(self.root.join("w"))
+                .arg(&self.workspace)
                 .arg("--endpoint")
                 .arg(self.root.join("s"))
                 .args(["--format", "json"]);
@@ -836,8 +867,8 @@ mod tests {
             peer.retire_automatic_owner(
                 &stream,
                 &self.root.join("p"),
-                &self.root.join("w"),
-                &self.root.join("w/authority.secret"),
+                &self.workspace,
+                &self.workspace.join("authority.secret"),
                 deadline,
                 keep,
             )
@@ -902,7 +933,7 @@ mod tests {
             old_pid,
             "expired/cancelled admission cannot signal"
         );
-        let lock = changed.root.join("w/OWNER.lock");
+        let lock = changed.workspace.join("OWNER.lock");
         let saved = changed.root.join("old-owner-lock");
         std::fs::rename(&lock, &saved).expect("remove exact owner lock for refusal control");
         let lock_result = changed.retire(Instant::now() + Duration::from_secs(2), || true);
@@ -926,7 +957,7 @@ mod tests {
                 .success(),
             "real old owner graceful terminal"
         );
-        let intent = std::fs::read(changed.root.join("w/authority-initialize.lock"))
+        let intent = std::fs::read(changed.workspace.join("authority-initialize.lock"))
             .expect("read durable owner retirement intent");
         assert_eq!(
             intent
@@ -940,7 +971,7 @@ mod tests {
         assert!(changed.command(false, false).status.success());
         assert_eq!(changed.pid(), new_pid);
         assert_eq!(
-            std::fs::read(changed.root.join("w/authority-initialize.lock"))
+            std::fs::read(changed.workspace.join("authority-initialize.lock"))
                 .expect("read durable owner retirement intent"),
             intent
         );
