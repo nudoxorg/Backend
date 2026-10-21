@@ -296,6 +296,7 @@ fn direct_cursor_owner_encodings_and_exact_size_survive_authenticated_roundtrip(
         "pc2-00ff".to_owned(),
         "pc3-AA".to_owned(),
         "pc4-AA".to_owned(),
+        format!("pc5-{}", URL_SAFE_NO_PAD.encode(b"portable binary outline certificate")),
         compressed_index_search_owner(br#"{"state":"fixture"}"#),
         FIXTURE_INDEX_CURSOR.to_owned(),
         largest,
@@ -317,7 +318,9 @@ fn direct_cursor_owner_encodings_and_exact_size_survive_authenticated_roundtrip(
         "pc1-00",
         "pc2-0",
         "pc2-FF",
-        "pc5-AA",
+        "pc5-A",
+        "pc5-YQ==",
+        "pc5-",
         "cGxhaW50ZXh0",
         "pc3-AA\0",
     ] {
@@ -335,6 +338,59 @@ fn direct_cursor_owner_encodings_and_exact_size_survive_authenticated_roundtrip(
                 .is_none()
         );
     }
+}
+
+#[test]
+fn outline_pc5_is_routed_as_an_untrusted_owner_witness_only_after_outer_context_authentication() {
+    let mut server = ready(Fake::default());
+    let owner = format!(
+        "pc5-{}",
+        URL_SAFE_NO_PAD.encode(b"bounded binary outline certificate fixture")
+    );
+    let context_arguments = json!({"path":PROJECT,"limit":4,"detail":"full"});
+    let context = continuation_context(
+        PROJECT,
+        "backend.outline",
+        context_arguments.as_object().expect("arguments"),
+        Detail::Full,
+    );
+    let token = server
+        .sign_cursor_token_at(u64::MAX, &owner, &context)
+        .expect("PC5 framing is signable");
+    let reply = request(
+        &mut server,
+        "tools/call",
+        &json!({"name":"backend.outline","arguments":{
+            "path":PROJECT,"limit":4,"detail":"full","cursor":token
+        }}),
+    );
+    assert!(
+        reply.get("error").is_some() || reply["result"]["isError"] == true,
+        "test product refusal is retained: {reply}"
+    );
+    assert_eq!(server.product.outline_owner_tokens, [owner.clone()]);
+    assert!(server.product.page_windows.is_empty(), "PC5 never enters legacy typed-cursor decoding");
+
+    let other_context = continuation_context(
+        PROJECT,
+        "backend.outline",
+        json!({"path":"/abs/other","limit":4,"detail":"full"})
+            .as_object()
+            .expect("other arguments"),
+        Detail::Full,
+    );
+    let rebound = server
+        .sign_cursor_token_at(u64::MAX, &owner, &other_context)
+        .expect("fixture can sign a deliberately wrong context");
+    let reply = request(
+        &mut server,
+        "tools/call",
+        &json!({"name":"backend.outline","arguments":{
+            "path":PROJECT,"limit":4,"detail":"full","cursor":rebound
+        }}),
+    );
+    assert!(reply.get("error").is_some(), "context rebind is rejected: {reply}");
+    assert_eq!(server.product.outline_owner_tokens, [owner]);
 }
 
 fn compressed_index_search_owner(json: &[u8]) -> String {
@@ -632,6 +688,9 @@ struct Fake {
     empty_outline: bool,
     /// Keep genuine outline transport/proof failures distinct from absence.
     outline_error: Option<ClientError>,
+    /// Records the explicit owner-aware PC5 route without treating the
+    /// untrusted page witness as a locally admitted typed continuation.
+    outline_owner_tokens: Vec<String>,
     /// Exact source availability returned by the document/source boundary.
     document_override: Option<Document>,
     /// Negative control: withhold an overridden document from the member projection.
@@ -1463,6 +1522,18 @@ impl Product for Fake {
             continuation,
             Some(window),
         )
+    }
+
+    fn outline_page_token(
+        &mut self,
+        _coordinate: String,
+        _window: backend_library::QueryWindow,
+        token: &str,
+    ) -> Result<ReplyDto, ClientError> {
+        self.outline_owner_tokens.push(token.to_owned());
+        Err(ClientError::Protocol(
+            "PC5 owner route reached test product".to_owned(),
+        ))
     }
 
     fn decode_continuation(
@@ -3640,7 +3711,7 @@ fn index_progress_returns_bounded_events_and_the_exact_next_sequence() {
 }
 
 #[test]
-fn compact_index_receipt_roundtrips_terminal_cancellation_and_partial_coverage() {
+fn compact_index_receipt_roundtrips_terminal_cancellation() {
     let ticket = index_job_ticket();
     let cancelled = SurfaceReply::IndexProgress(IndexJobObservation::Terminal(IndexJobTerminal {
         ticket: ticket.clone(),
@@ -3694,6 +3765,28 @@ fn assert_compact_index_job_receipt(response: &Value, expected: &Value) {
         &structured["surface"]["index_job"]["value"],
         expected,
         "the compact response retains the entire original receipt"
+    );
+
+    // Reconstruct the full MCP tool-result envelope and measure the actual
+    // serialized JSON bytes. This asserts byte preservation/savings only; it
+    // deliberately makes no tokenization or provider-billing claim.
+    let mut expanded = response.clone();
+    expanded["structuredContent"]["surface"]["data"] = expected.clone();
+    assert_eq!(
+        expanded["content"],
+        response["content"],
+        "human-readable content is unchanged by structured receipt compaction"
+    );
+    let full_bytes = serde_json::to_vec(&expanded).expect("expanded full MCP result");
+    let compact_bytes = serde_json::to_vec(response).expect("compact full MCP result");
+    let receipt_bytes = serde_json::to_vec(expected).expect("full receipt bytes").len();
+    let pointer_bytes =
+        serde_json::to_vec(&structured["surface"]["data"]).expect("pointer bytes").len();
+    assert!(receipt_bytes > pointer_bytes, "fixture must contain removable duplication");
+    assert_eq!(
+        full_bytes.len() - compact_bytes.len(),
+        receipt_bytes - pointer_bytes,
+        "only the duplicate receipt value is removed from the serialized MCP result"
     );
 }
 

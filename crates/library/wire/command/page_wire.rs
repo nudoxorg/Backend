@@ -1,5 +1,6 @@
 use super::{
-    CursorWire, SymbolAddressWire, cursor_from_wire_against_catalog_owner, revision_from_wire,
+    CursorWire, SymbolAddressWire, cursor_from_wire_against_catalog_owner,
+    outline_witness_from_wire, outline_witness_to_cursor_wire, revision_from_wire,
 };
 use crate::{
     Cursor, PageContinuation, PageRequest, QueryLimit, WireCertificate, encode_id,
@@ -38,7 +39,8 @@ pub(crate) fn page_request_to_wire(page: PageRequest) -> PageRequestWire {
         window: super::window_to_wire(page.window()),
         continuation: page
             .continuation()
-            .map(|continuation| cursor_to_wire(continuation.cursor())),
+            .map(|continuation| cursor_to_wire(continuation.cursor()))
+            .or_else(|| page.outline_witness().map(outline_witness_to_cursor_wire)),
     }
 }
 
@@ -64,6 +66,7 @@ pub(crate) fn page_request_from_wire_against_catalog_owner(
     value: PageRequestWire,
     certificate: &WireCertificate,
     owner: Cursor,
+    allow_outline_witness: bool,
 ) -> Result<PageRequest, String> {
     let limit = QueryLimit::new(value.limit).ok_or_else(|| "invalid page limit".to_owned())?;
     let window = super::window_from_wire(value.window.as_ref(), limit)?;
@@ -75,9 +78,21 @@ pub(crate) fn page_request_from_wire_against_catalog_owner(
         .with_window(window)
         .ok_or_else(|| "query window changed issued ceiling".to_owned())?;
     if let Some(cursor) = value.continuation {
-        page = page.with_continuation(PageContinuation::from_cursor(
-            cursor_from_wire_against_catalog_owner(&cursor, certificate, owner)?,
-        ));
+        let compact_outline_root = allow_outline_witness
+            && certificate.claims.iter().any(|claim| {
+                matches!(claim, crate::WireClaim::RootCommitment {
+                    schema: crate::WireSchema::ViewRelation,
+                    id,
+                } if id == cursor.root())
+            });
+        if compact_outline_root {
+            let witness = outline_witness_from_wire(&cursor, certificate, owner)?;
+            page = page.with_outline_witness(witness);
+        } else {
+            page = page.with_continuation(PageContinuation::from_cursor(
+                cursor_from_wire_against_catalog_owner(&cursor, certificate, owner)?,
+            ));
+        }
     }
     Ok(page)
 }

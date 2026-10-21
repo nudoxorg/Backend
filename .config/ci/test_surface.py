@@ -425,6 +425,112 @@ class AuthoredCorpusAdmissionTests(unittest.TestCase):
                 surface.require_authored_symbols({"records": [wrong]}, expected, "java")
 
 
+class PartialSearchReadinessTests(unittest.TestCase):
+    def frames(self, *, transport="cli", readiness="preparing", revision=None):
+        row = {"identity": {"name": "Token", "path": "src/token.py"},
+               "language": "python", "state": "ready"}
+        content = {"answer": "records", "query": "Token", "readiness": "partial",
+                   "search_scope": "published_names_only", "full_search": readiness,
+                   "records": [row], "more": False}
+        if revision is not None:
+            content["revision"] = revision
+        if transport == "cli":
+            return {"exit": 0, "json": content}
+        return {"isError": False, "structuredContent": content, "content": []}
+
+    def ready(self, *, transport="cli", revision=None):
+        row = {"identity": {"name": "Token", "path": "src/token.py"},
+               "language": "python", "state": "ready"}
+        content = {"answer": "records", "query": "Token", "readiness": "ready",
+                   "records": [row], "more": False}
+        if revision is not None:
+            content["revision"] = revision
+        if transport == "cli":
+            return {"exit": 0, "json": content}
+        return {"isError": False, "structuredContent": content, "content": []}
+
+    def test_partial_authored_result_retries_same_query_until_ready(self):
+        from unittest.mock import patch
+        now = [0.0]
+        timeouts = []
+        replies = [self.frames(), self.ready()]
+        def retry(timeout):
+            timeouts.append(timeout)
+            return replies.pop(0)
+        def sleep(delay):
+            now[0] += delay
+        request = ["search", "Token"]
+        with patch.object(surface, "_emit_search_readiness_frame") as emit:
+            final, frames = surface.resolve_partial_authored_search(
+                self.frames(), retry, 1.0, transport="cli", query="Token",
+                expected={"Token": "src/token.py"}, language="python", request=request,
+                now=lambda: now[0], sleep=sleep)
+        self.assertEqual(final, self.ready())
+        self.assertEqual(len(frames), 3)
+        self.assertEqual(len(timeouts), 2)
+        self.assertTrue(all(value > 0 for value in timeouts))
+        self.assertEqual(emit.call_count, 3)
+        self.assertEqual(emit.call_args_list[0].args[2], 0)
+        self.assertEqual(emit.call_args_list[-1].args[2], 2)
+
+    def test_permanent_partial_expires_original_deadline(self):
+        now = [0.0]
+        attempts = []
+        def retry(timeout):
+            attempts.append(timeout)
+            return self.frames()
+        def sleep(delay):
+            now[0] += delay
+        with self.assertRaisesRegex(RuntimeError, "deadline"):
+            surface.resolve_partial_authored_search(
+                self.frames(), retry, 0.12, transport="cli", query="Token",
+                expected={"Token": "src/token.py"}, language="python", request=["search", "Token"],
+                now=lambda: now[0], sleep=sleep)
+        self.assertEqual(len(attempts), 1)
+        self.assertGreater(attempts[0], 0)
+
+        late_now = [0.0]
+        def late_ready(_timeout):
+            late_now[0] = 1.0
+            return self.ready()
+        with self.assertRaisesRegex(RuntimeError, "deadline"):
+            surface.resolve_partial_authored_search(
+                self.frames(), late_ready, 1.0, transport="cli", query="Token",
+                expected={"Token": "src/token.py"}, language="python", request=["search", "Token"],
+                now=lambda: late_now[0], sleep=lambda _delay: None)
+
+    def test_refusal_during_retry_is_not_hidden_as_partial_success(self):
+        refusal = {"exit": 70, "json": {"answer": "fault", "slug": "endpoint"}}
+        attempts = []
+        with self.assertRaisesRegex(RuntimeError, "failed"):
+            surface.resolve_partial_authored_search(
+                self.frames(), lambda timeout: attempts.append(timeout) or refusal,
+                surface.time.monotonic() + 10.0,
+                transport="cli", query="Token", expected={"Token": "src/token.py"},
+                language="python", request=["search", "Token"], sleep=lambda _delay: None)
+        self.assertEqual(len(attempts), 1)
+
+    def test_changed_returned_basis_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, "changed revision"):
+            surface.resolve_partial_authored_search(
+                self.frames(revision="a" * 64), lambda _timeout: self.ready(revision="b" * 64),
+                surface.time.monotonic() + 10.0,
+                transport="cli", query="Token", expected={"Token": "src/token.py"},
+                language="python", request=["search", "Token"], sleep=lambda _delay: None)
+
+    def test_mcp_partial_reply_uses_the_same_useful_to_ready_contract(self):
+        from unittest.mock import patch
+        now = [0.0]
+        final, frames = surface.resolve_partial_authored_search(
+            self.frames(transport="mcp"), lambda _timeout: self.ready(transport="mcp"),
+            surface.time.monotonic() + 1.0,
+            transport="mcp", query="Token", expected={"Token": "src/token.py"},
+            language="python", request={"tool": "backend.search", "arguments": {"query": "Token"}},
+            now=lambda: now[0], sleep=lambda delay: now.__setitem__(0, now[0] + delay))
+        self.assertEqual(final, self.ready(transport="mcp"))
+        self.assertEqual(len(frames), 2)
+
+
 class SnapshotContinuationTests(unittest.TestCase):
     def page(self, token="pc4-one", coordinate="first"):
         size = 100 + len(token)
@@ -541,6 +647,57 @@ class SnapshotContinuationTests(unittest.TestCase):
 
 
 class InteractiveMcpTests(unittest.TestCase):
+    def test_partial_search_is_retried_inside_its_issuing_mcp_session(self):
+        import os
+        import sys
+        import tempfile
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "backend-mcp"
+            executable.write_text("#!" + sys.executable + "\n" + '''
+import json, sys
+searches = 0
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    method = request['method']
+    if method == 'initialize':
+        result = {}
+    elif method == 'tools/list':
+        result = {'tools': [{'name': 'backend.search'}]}
+    else:
+        searches += 1
+        row = {'identity': {'name': 'Token', 'path': 'src/token.py'}, 'language': 'python', 'state': 'ready'}
+        content = {'answer': 'records', 'query': 'Token', 'records': [row], 'more': False}
+        if searches == 1:
+            content.update(readiness='partial', search_scope='published_names_only', full_search='preparing')
+        else:
+            content.update(readiness='ready')
+        result = {'isError': False, 'structuredContent': content, 'content': []}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+''')
+            executable.chmod(0o700)
+            owner = SimpleNamespace(bin_dir=root, endpoint=root / "unused.sock", env=dict(os.environ))
+            expected = {"Token": "src/token.py"}
+
+            def resolve(call, reply, _continuation, readiness_exchange):
+                return surface.resolve_partial_authored_search(
+                    reply,
+                    lambda remaining: readiness_exchange(call, remaining),
+                    readiness_exchange.deadline,
+                    transport="mcp", query="Token", expected=expected,
+                    language="python", request=call,
+                )[0]
+
+            answer, _seconds = surface.run_mcp_interactive(
+                owner, root, [{"tool": "backend.search", "arguments": {"query": "Token"}}], 3, resolve)
+            self.assertEqual(answer["exit"], 0)
+            self.assertEqual(len(answer["calls"]), 1)
+            self.assertEqual(answer["calls"][0]["reply"]["structuredContent"]["readiness"], "ready")
+
     def test_dynamic_continuation_uses_the_issuing_process_and_returned_operands(self):
         import os
         import sys
@@ -576,7 +733,7 @@ for line in sys.stdin:
             owner = SimpleNamespace(bin_dir=root, endpoint=root / "unused.sock", env=dict(os.environ))
             observed = []
 
-            def consume(call, reply, exchange):
+            def consume(call, reply, exchange, _readiness_exchange):
                 observed.append(exchange(surface.mcp_continuation_call(call, reply["structuredContent"])))
 
             answer, _ = surface.run_mcp_interactive(owner, root,
@@ -1044,6 +1201,76 @@ class CIEvidenceTests(unittest.TestCase):
         value = surface.bounded_text("α" * 10000, 8192)
         self.assertLessEqual(len(value.encode("utf-8")), 8192)
         self.assertIn("full detail retained", value)
+
+
+class SourceIdentityTimeoutTests(unittest.TestCase):
+    def test_actual_checkout_checks_all_tracked_changes_and_ignores_untracked(self):
+        import subprocess
+        import tempfile
+        import source_identity
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def git(*args):
+                return subprocess.run(["git", "-C", str(root), *args], check=True,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      text=True).stdout
+
+            git("init", "-q")
+            git("config", "user.name", "Source identity fixture")
+            git("config", "user.email", "source-identity-fixture@localhost")
+            tracked = root / "tracked.txt"
+            tracked.write_text("clean\n")
+            git("add", "tracked.txt")
+            git("commit", "-qm", "fixture")
+            source_sha = git("rev-parse", "HEAD").strip()
+
+            (root / "untracked.txt").write_text("not part of the tracked gate\n")
+            source_identity.verify_checkout(root, source_sha)
+
+            tracked.write_text("unstaged tracked change\n")
+            with self.assertRaisesRegex(ValueError, "clean tracked"):
+                source_identity.verify_checkout(root, source_sha)
+
+            git("checkout", "--", "tracked.txt")
+            tracked.write_text("staged tracked change\n")
+            git("add", "tracked.txt")
+            with self.assertRaisesRegex(ValueError, "clean tracked"):
+                source_identity.verify_checkout(root, source_sha)
+
+    def test_checkout_uses_full_sha_and_tracked_only_cleanliness_check(self):
+        from unittest.mock import call, patch
+        import source_identity
+
+        root = Path("/checkout")
+        source_sha = "a" * 40
+        with patch.object(source_identity.subprocess, "check_output",
+                          side_effect=[source_sha + "\n", ""]) as check_output:
+            source_identity.verify_checkout(root, source_sha)
+
+        self.assertEqual(check_output.call_args_list, [
+            call(["git", "-C", str(root), "rev-parse", "HEAD"], text=True, timeout=10),
+            call(["git", "-C", str(root), "status", "--porcelain",
+                  "--untracked-files=no"], text=True,
+                 timeout=source_identity.TRACKED_STATUS_TIMEOUT_SECONDS),
+        ])
+
+    def test_tracked_status_timeout_propagates_without_retry(self):
+        from unittest.mock import patch
+        import source_identity
+
+        source_sha = "b" * 40
+        timeout = source_identity.subprocess.TimeoutExpired(
+            ["git", "status"], source_identity.TRACKED_STATUS_TIMEOUT_SECONDS)
+        with patch.object(source_identity.subprocess, "check_output",
+                          side_effect=[source_sha, timeout]) as check_output:
+            with self.assertRaises(source_identity.subprocess.TimeoutExpired):
+                source_identity.verify_checkout(Path("/checkout"), source_sha)
+
+        self.assertEqual(check_output.call_count, 2)
+        self.assertEqual(check_output.call_args.kwargs["timeout"],
+                         source_identity.TRACKED_STATUS_TIMEOUT_SECONDS)
 
 
 class IncrementalCaseVerdictTests(unittest.TestCase):

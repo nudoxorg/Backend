@@ -29,6 +29,7 @@ pub use binary_certificate::{
 pub(crate) use cursor_wire::{
     cursor_from_wire, cursor_from_wire_against_catalog_owner, cursor_from_wire_with_capability,
     cursor_to_wire, frontier_from_wire, frontier_from_wire_with_capability, frontier_to_wire,
+    outline_witness_from_wire, outline_witness_to_cursor_wire,
 };
 use graph_query_wire::{
     GraphQueryRequestWire, request_from_wire as graph_request_from_wire,
@@ -608,6 +609,7 @@ enum CommandWire {
     Surface(crate::SurfaceCommand),
     Health(EmptyWire),
     Revision(EmptyWire),
+    OutlineOwnerWitnessCapability(EmptyWire),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -874,6 +876,9 @@ fn command_to_wire(command: &Command) -> CommandWire {
         Command::Surface(command) => CommandWire::Surface(command.clone()),
         Command::Health => CommandWire::Health(EmptyWire {}),
         Command::Revision => CommandWire::Revision(EmptyWire {}),
+        Command::OutlineOwnerWitnessCapability => {
+            CommandWire::OutlineOwnerWitnessCapability(EmptyWire {})
+        }
     }
 }
 
@@ -964,6 +969,9 @@ fn command_from_wire(
         }
         CommandWire::Health(_) => Ok(Command::Health),
         CommandWire::Revision(_) => Ok(Command::Revision),
+        CommandWire::OutlineOwnerWitnessCapability(_) => {
+            Ok(Command::OutlineOwnerWitnessCapability)
+        }
     }
 }
 
@@ -997,14 +1005,24 @@ fn command_from_wire_against_owner(
         CommandWire::GraphPage(value) if value.page.continuation.is_some() => {
             Ok(Command::GraphPage {
                 symbol: symbol_address_from_wire(&value.symbol, certificate)?,
-                page: page_request_from_wire_against_catalog_owner(value.page, certificate, owner)?,
+                page: page_request_from_wire_against_catalog_owner(
+                    value.page,
+                    certificate,
+                    owner,
+                    false,
+                )?,
             })
         }
         CommandWire::OutlinePage(value) if value.page.continuation.is_some() => {
             Ok(Command::OutlinePage {
                 package: certificate
                     .key_value::<PackageSchema>(WireSchema::Package, &value.package)?,
-                page: page_request_from_wire_against_catalog_owner(value.page, certificate, owner)?,
+                page: page_request_from_wire_against_catalog_owner(
+                    value.page,
+                    certificate,
+                    owner,
+                    true,
+                )?,
             })
         }
         command => command_from_wire(command, Some(certificate)),
