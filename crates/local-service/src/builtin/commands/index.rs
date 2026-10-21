@@ -21,16 +21,16 @@ use backend_engine::application::{
     StagedSemanticPackage, VerifiedCompilerInput, VerifiedCompilerInputAdmission,
     VerifierAcceptedFullWorkspaceInput, capture_full_workspace_v2_with_prior,
 };
-#[cfg(test)]
-use backend_engine::builtin::SemanticPublicationSelection;
 use backend_engine::builtin::{
     PartialSemanticCoverage, ProductSemanticCaptureOutcome, ProductSemanticPublicationKey,
     ProductSemanticPublicationRecord, ProductSourceFileFactsRecord, ProductSourceFileFactsRelation,
     ProductSourceFileFactsUpdate, SemanticPublicationClaim, SemanticPublicationCoverage,
-    SemanticPublicationVersion, SemanticSourceCapture, product_source_file_facts_record_key,
-    product_source_file_facts_relation, product_source_file_facts_row_keys,
-    semantic_capture_relation,
+    SemanticPublicationVersion, SemanticSourceCapture,
+    product_source_file_facts_record_key, product_source_file_facts_relation,
+    product_source_file_facts_row_keys, semantic_capture_relation,
 };
+#[cfg(test)]
+use backend_engine::builtin::SemanticPublicationSelection;
 use backend_extension_turso::SourceObservationReceipt;
 use backend_frontend_python::legacy::checker::{
     PythonEnvironmentCapture, PythonEnvironmentInput, PythonProjectControl,
