@@ -2896,10 +2896,17 @@ fn scan_one(
         .analyze(Path::new(&relative), source.as_bytes())
     {
         Ok(analyzed) => analyzed,
-        Err(_) if matches!(profile, LanguageProfile::Python(_)) => {
-            // Browsing keeps the truthful Unparsed row. The independent native
-            // project still receives these exact decoded bytes so it can retain
-            // parser diagnostics and a source gap without dropping this member.
+        Err(_)
+            if matches!(
+                profile,
+                LanguageProfile::Python(_) | LanguageProfile::C(_) | LanguageProfile::Cxx(_)
+            ) =>
+        {
+            // Browsing keeps the truthful Unparsed row. A structural grammar
+            // cannot decide whether the native compiler accepts this source:
+            // C/C++ declaration macros in particular require preprocessing.
+            // Preserve the exact compiler input so native authority can publish
+            // its declarations or record its own diagnostic/coverage gap.
             let mut unavailable = unavailable_file(
                 root,
                 path,
@@ -6360,6 +6367,61 @@ mod robustness_tests {
                 .ok_or("compiler source does not match the retained raw fixture")?
                 .1;
             assert_eq!(source.source, bytes);
+        }
+        Ok(())
+    }
+
+    /// An export macro between `class` and its name is valid after native
+    /// preprocessing, but the structural grammar rejects it. The real pugixml
+    /// header was dropped here before libclang could observe its declarations.
+    #[test]
+    fn cpp_declaration_macros_keep_exact_compiler_frontier() -> Result<(), String> {
+        let scratch = scratch("cpp-macro-frontier")?;
+        let source: &[u8] = b"#define PUGIXML_CLASS\nnamespace pugi {\nclass PUGIXML_CLASS xml_document {};\nstruct PUGIXML_CLASS xml_parse_result { int status; };\n}\n";
+        let path = "pugixml.hpp";
+        fs::write(scratch.0.join(path), source).map_err(|e| e.to_string())?;
+        let frontend = backend_frontend_clang::syntax_frontend().map_err(|e| e.to_string())?;
+        assert!(frontend.analyze(Path::new(path), source).is_err());
+        let first = scan(&scratch)?;
+        assert_eq!(
+            retention_of(&first, path),
+            Some(DeclarationRetention::Unavailable(
+                SourceUnavailableReason::Unparsed
+            ))
+        );
+        assert!(names_of(&first, path).is_empty());
+        // A repeat scan of the unavailable browsing row must still retain the
+        // input, rather than reusing that row as an empty semantic program.
+        let reusable = first.files.iter().cloned().collect::<BTreeMap<_, _>>();
+        let second = scan_project(
+            scratch.0.to_str().ok_or("non-UTF-8 scratch path")?,
+            [8; 32],
+            &reusable,
+        )?;
+        for snapshot in [first, second] {
+            assert_eq!(snapshot.compiler_sources.len(), 1);
+            assert!(snapshot.reused_compiler_files.is_empty());
+            let handle = &snapshot.compiler_sources[0];
+            assert_eq!(handle.relative_path, path);
+            assert!(matches!(handle.profile, LanguageProfile::Cxx(_)));
+            assert_eq!(
+                handle.content,
+                typed_of::<InputContentSchema>(source).to_bytes()
+            );
+            assert_eq!(
+                handle.source_fact_identity,
+                SourceFactIdentity::from_canonical_bytes(source)
+            );
+            let admitted = admit_compiler_sources_for_scan(
+                &scratch.0,
+                &snapshot.revision_fence,
+                snapshot.compiler_sources,
+                snapshot.reused_compiler_files,
+                snapshot.source_admission_policy,
+                None,
+            )?;
+            assert_eq!(admitted.len(), 1);
+            assert_eq!(admitted[0].source, source);
         }
         Ok(())
     }
