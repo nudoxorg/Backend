@@ -181,7 +181,7 @@ struct StoredState {
     active: Option<TreeNodeId>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct IndexSearchCursorState {
     version: u8,
