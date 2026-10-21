@@ -36,6 +36,7 @@ pub(in crate::builtin::commands) struct SourceCompilePlan {
     /// be carried into this operation's receipt without recompiling it.
     reused_profiles: BTreeSet<LanguageProfile>,
     operation_key: Option<backend_library::IndexOperationKey>,
+    reuse_only: bool,
     python_environment: Option<PythonEnvironmentInput>,
     cancellation: Arc<AtomicBool>,
     workspace_snapshot: Option<ingest::CompilerWorkspaceSnapshot>,
@@ -85,7 +86,6 @@ pub(super) struct PreparedScanCompilation {
     /// Exact selected generations omitted from this compile because their
     /// current input witness proves reuse.
     pub(super) reused_profiles: BTreeSet<LanguageProfile>,
-    pub(super) operation_key: Option<backend_library::IndexOperationKey>,
     pub(super) pending_changes: Vec<BuiltinCaptureChange>,
 }
 
@@ -377,7 +377,6 @@ pub(super) fn prepare_scan_source(
             observations,
             captures,
             reused_profiles,
-            operation_key,
             pending_changes,
         }))
     };
@@ -435,33 +434,82 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
         operation_key,
     )?;
     let compilation = match profiles {
-        PreparedScanProfiles::Reused { .. } => {
-            let intent = if changes.is_empty() && source_facts_changes.is_empty() {
-                None
-            } else if source_facts_changes.is_empty() {
-                Some(BuiltinIntent::index_with_semantics(
-                    package,
-                    &label,
-                    changes,
-                    Vec::new(),
-                )?)
-            } else {
-                Some(BuiltinIntent::index_with_source_facts(
-                    package,
-                    &label,
-                    changes,
-                    Vec::new(),
-                    Vec::new(),
-                    source_facts_changes,
-                )?)
-            };
-            return Ok(PreparedSourceScan::Ready(PreparedProductSelection {
-                intent,
+        PreparedScanProfiles::Reused {
+            captures,
+            reused_profiles,
+            pending_changes,
+        } => {
+            if captures.is_empty() {
+                let intent = if changes.is_empty() && source_facts_changes.is_empty() {
+                    None
+                } else if source_facts_changes.is_empty() {
+                    Some(BuiltinIntent::index_with_semantics(
+                        package,
+                        &label,
+                        changes,
+                        Vec::new(),
+                    )?)
+                } else {
+                    Some(BuiltinIntent::index_with_source_facts(
+                        package,
+                        &label,
+                        changes,
+                        Vec::new(),
+                        Vec::new(),
+                        source_facts_changes,
+                    )?)
+                };
+                return Ok(PreparedSourceScan::Ready(PreparedProductSelection {
+                    intent,
+                    selected: Vec::new(),
+                    revision_fence: Some(revision_fence),
+                    profile_refusals: Box::new([]),
+                    partial_plan: None,
+                }));
+            }
+            let mut intent = BuiltinIntent::index_with_capture(
+                package,
+                &label,
+                changes,
+                Vec::new(),
+                pending_changes,
+            )?;
+            if !source_facts_changes.is_empty() {
+                intent = intent.with_source_facts(std::mem::take(&mut source_facts_changes))?;
+            }
+            if let Some(operation_key) = operation_key {
+                intent = intent.with_operation_key(operation_key)?;
+            }
+            let selection = PreparedProductSelection {
+                intent: Some(intent),
                 selected: Vec::new(),
-                revision_fence: Some(revision_fence),
+                revision_fence: Some(revision_fence.clone()),
                 profile_refusals: Box::new([]),
                 partial_plan: None,
-            }));
+            };
+            return Ok(PreparedSourceScan::Capture {
+                selection,
+                continuation: SourceCompilePlan {
+                    package,
+                    label,
+                    project_key,
+                    coordinate,
+                    request_id,
+                    source_root: revision_fence.canonical_root().to_owned(),
+                    revision_fence,
+                    sources: Vec::new(),
+                    observations: BTreeMap::new(),
+                    captures,
+                    reused_profiles,
+                    operation_key,
+                    reuse_only: true,
+                    python_environment,
+                    cancellation,
+                    workspace_snapshot,
+                    route,
+                    execution_intent,
+                },
+            });
         }
         PreparedScanProfiles::Compile(compilation) => compilation,
     };
@@ -514,6 +562,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
             captures,
             reused_profiles,
             operation_key,
+            reuse_only: false,
             python_environment,
             cancellation,
             workspace_snapshot,
@@ -531,6 +580,9 @@ impl SourceCompilePlan {
         semantic: &mut crate::builtin::semantic_authority::SemanticAuthority,
         retained_attempts: &mut Vec<backend_extension_turso::CandidateAttempt>,
     ) -> Result<PreparedIndex, BuiltinModelError> {
+        if self.reuse_only {
+            return Ok(PreparedIndex::Ready(self.reused_selection(snapshot)?));
+        }
         if self.route.is_some() {
             return Ok(PreparedIndex::Cluster(self));
         }
@@ -579,6 +631,9 @@ impl SourceCompilePlan {
         retained_attempts: &mut Vec<backend_extension_turso::CandidateAttempt>,
         #[cfg(test)] before_local_compile: &mut dyn FnMut(),
     ) -> Result<PreparedProductSelection, BuiltinModelError> {
+        if self.reuse_only {
+            return self.reused_selection(snapshot);
+        }
         let (project, files, frontier) =
             current_project_frontier_for_snapshot(snapshot, self.project_key)?;
         let context = SemanticCompilationContext::admit(
@@ -663,6 +718,44 @@ impl SourceCompilePlan {
             refused_profiles: compiled.refused_profiles,
         };
         finish_deferred_index_for_snapshot(snapshot, job)
+    }
+
+    fn reused_selection(
+        &self,
+        snapshot: &WorkspaceSnapshot,
+    ) -> Result<PreparedProductSelection, BuiltinModelError> {
+        let admitted = super::index::reused_capture_publications_for_snapshot(
+            snapshot,
+            &self.captures,
+            &self.reused_profiles,
+            self.operation_key,
+        )?;
+        let completed = super::index::completed_capture_changes_for_snapshot(
+            snapshot,
+            &self.captures,
+            &[],
+            &admitted,
+        )?;
+        let mut intent = BuiltinIntent::index_with_capture(
+            self.package,
+            &self.label,
+            Vec::new(),
+            completed.retained_publications,
+            completed.captures,
+        )?;
+        if let Some(operation_key) = self.operation_key {
+            intent = intent.with_operation_key(operation_key)?;
+        }
+        Ok(PreparedProductSelection {
+            intent: Some(intent),
+            selected: admitted
+                .iter()
+                .map(super::index::AdmittedCapturePublication::selected_claim)
+                .collect(),
+            revision_fence: Some(self.revision_fence.clone()),
+            profile_refusals: Box::new([]),
+            partial_plan: None,
+        })
     }
 }
 
