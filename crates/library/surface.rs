@@ -2631,6 +2631,27 @@ fn detail_for_fragment_failure(
 }
 
 fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, bool) {
+    if let PackageCompilerFailureCause::Lowering(PackageLoweringFaultFacts::FactRejected {
+        cause: PackageProjectionAdmissionFaultFacts::TypeProjectionCycle { type_id },
+        ..
+    }) = cause
+    {
+        // Retain the exact opaque checker handle already admitted in the closed
+        // fault facts. It distinguishes a TSZ handle cycle from a recursive
+        // binder reference without formatting checker/source payload text.
+        let tag = cause.kind_tag().replace('_', " ");
+        let text = format!("lowering fault: {tag} (checker type id {type_id})");
+        return sanitize_package_compiler_detail(&text, false);
+    }
+    if let PackageCompilerFailureCause::Lowering(PackageLoweringFaultFacts::FactRejected {
+        cause: PackageProjectionAdmissionFaultFacts::TypeProjectionRecursiveReference { distance },
+        ..
+    }) = cause
+    {
+        let tag = cause.kind_tag().replace('_', " ");
+        let text = format!("lowering fault: {tag} (recursive binder distance {distance})");
+        return sanitize_package_compiler_detail(&text, false);
+    }
     if let PackageCompilerFailureCause::Authority {
         diagnostic: Some(CompilerAuthorityDiagnosticFacts { go_failure: Some(failure), .. }),
         ..
@@ -6364,6 +6385,37 @@ mod tests {
             serde_json::json!({"event":"profile-started","profile":[1,0],"ordinal":1,"total":2}),
             "existing milestone encoding is unchanged",
         );
+    }
+
+    #[test]
+    fn cycle_detail_retains_checker_handle_and_stays_distinct_from_recursive_binder() {
+        let cycle = PackageCompilerFailureCause::Lowering(
+            PackageLoweringFaultFacts::FactRejected {
+                fact: 7,
+                name_len: 4,
+                cause: PackageProjectionAdmissionFaultFacts::TypeProjectionCycle { type_id: 42 },
+            },
+        );
+        let recursive = PackageCompilerFailureCause::Lowering(
+            PackageLoweringFaultFacts::FactRejected {
+                fact: 7,
+                name_len: 4,
+                cause: PackageProjectionAdmissionFaultFacts::TypeProjectionRecursiveReference {
+                    distance: 2,
+                },
+            },
+        );
+
+        let (cycle_detail, cycle_truncated) = detail_for_package_cause(&cycle);
+        let (recursive_detail, recursive_truncated) = detail_for_package_cause(&recursive);
+        assert!(!cycle_truncated);
+        assert!(!recursive_truncated);
+        assert!(cycle_detail.contains("type projection cycle"));
+        assert!(cycle_detail.contains("checker type id 42"));
+        assert!(!cycle_detail.contains("recursive reference"));
+        assert!(recursive_detail.contains("recursive reference"));
+        assert!(!recursive_detail.contains("checker type id"));
+        assert!(recursive_detail.contains("recursive binder distance 2"));
     }
 
     #[test]
