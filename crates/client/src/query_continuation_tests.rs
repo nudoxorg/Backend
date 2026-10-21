@@ -229,11 +229,20 @@ impl CommandTransport for Transport {
                         .to_vec()
                 }
                 Command::OutlinePage { package, page } => {
-                    let CommandReply::ProjectionPage(projection) = &reply.reply else { panic!("outline page"); };
-                    QueryPageRecipe::outline_window(library.revision_root(), *package, page.window(),
-                        projection.outline_order.as_ref().expect("native outline order"))
-                        .canonical_preimage()
-                        .to_vec()
+                    let CommandReply::ProjectionPage(projection) = &reply.reply else {
+                        panic!("outline page");
+                    };
+                    QueryPageRecipe::outline_window(
+                        library.revision_root(),
+                        *package,
+                        page.window(),
+                        projection
+                            .outline_order
+                            .as_ref()
+                            .expect("native outline order"),
+                    )
+                    .canonical_preimage()
+                    .to_vec()
                 }
                 Command::Graph(_) | Command::Related(_) => {
                     let mut bytes = Vec::new();
@@ -1271,7 +1280,230 @@ fn portable_query_compressible_long_proof_preserves_every_canonical_byte() {
     let token = exported.expect("bounded compact proof");
     assert!(token.starts_with("pc4-"));
     let body = decode_portable_body(&token).expect("bounded expansion");
-    backend_library::decode_command_body(&body).expect("strict canonical proof remains intact");
+    let compact: CommandDto = serde_json::from_slice(&body).expect("bounded compact command");
+    assert!(compact_root_reference_shape(&compact, true));
+    assert!(
+        compact
+            .certificate()
+            .expect("certificate")
+            .claims
+            .iter()
+            .any(|claim| matches!(
+                claim,
+                WireClaim::RootCommitment {
+                    schema: WireSchema::ViewRelation,
+                    ..
+                }
+            ))
+    );
+    assert!(
+        !compact
+            .certificate()
+            .expect("certificate")
+            .claims
+            .iter()
+            .any(|claim| matches!(
+                claim,
+                WireClaim::Root {
+                    schema: WireSchema::ViewRelation,
+                    ..
+                }
+            ))
+    );
+    assert!(
+        backend_library::decode_command_body(&body).is_err(),
+        "the digest-only page root requires owner-aware decoding"
+    );
+
+    let mut fresh = session(&owner, &requests);
+    let continuation = fresh
+        .decode_page_continuation(&token)
+        .expect("cold owner reopens compact root reference");
+    let resumed = fresh
+        .names_page(&text, 3, Some(continuation))
+        .expect("exact cold continuation");
+    assert_eq!(page(&resumed).next, None);
+}
+
+#[test]
+fn portable_search_compact_root_reference_rehydrates_exact_witness_and_page_union() {
+    let owner = Arc::new(Mutex::new(owner(1, 9, 0)));
+    let requests = Arc::new(Mutex::new(vec![]));
+    let mut issuing = session(&owner, &requests);
+    let first = issuing.search_page("Thing", 3, None).expect("first page");
+    let cursor = page(&first).next.expect("second page exists");
+    let original = issuing.continuations[&cursor]
+        .next_request
+        .as_ref()
+        .expect("issued exact next command")
+        .clone();
+    let compact = compact_root_reference(&original).expect("root is the only elided witness");
+    let original_certificate = original.certificate().expect("full certificate");
+    let compact_certificate = compact.certificate().expect("compact certificate");
+    let original_root = original_certificate
+        .claims
+        .iter()
+        .find(|claim| {
+            matches!(
+                claim,
+                WireClaim::Root {
+                    schema: WireSchema::ViewRelation,
+                    ..
+                }
+            )
+        })
+        .expect("full root witness");
+    let (current_root_id, owner_cursor) = {
+        let current = owner.lock().expect("owner");
+        (
+            encode_id(current.view().root().as_bytes()),
+            current.cursor(),
+        )
+    };
+    let WireClaim::Root { id, canonical, .. } = original_root else {
+        panic!("expected root witness")
+    };
+    assert_eq!(id, &encode_id(cursor.root().as_bytes()));
+    assert_ne!(
+        id, &current_root_id,
+        "page root differs from owner basis root"
+    );
+    assert!(
+        backend_library::admit_root_bytes::<backend_library::ViewRelation>(id, canonical).is_ok()
+    );
+    assert!(compact_certificate.claims.iter().any(|claim| {
+        matches!(claim, WireClaim::RootCommitment { schema: WireSchema::ViewRelation, id } if id == &current_root_id)
+    }));
+    let mut non_root_claims = original_certificate
+        .claims
+        .iter()
+        .filter(|claim| {
+            !matches!(
+                claim,
+                WireClaim::Root {
+                    schema: WireSchema::ViewRelation,
+                    ..
+                }
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    non_root_claims.push(WireClaim::RootCommitment {
+        schema: WireSchema::ViewRelation,
+        id: encode_id(cursor.root().as_bytes()),
+    });
+    assert_eq!(
+        compact_certificate.claims, non_root_claims,
+        "all existing witnesses remain byte-for-byte and the page root is replaced by its digest"
+    );
+    let compact_bytes = backend_library::encode_binary_certificate_command(&compact)
+        .expect("compact binary continuation");
+    let full_bytes = backend_library::encode_binary_certificate_command(&original)
+        .expect("full binary continuation");
+    assert!(
+        compact_bytes.len() < full_bytes.len(),
+        "replacing the page relation preimage with its digest reduces the frame"
+    );
+    let compact_json = backend_library::expand_binary_certificate_command(&compact_bytes)
+        .expect("compact command expansion");
+    let reopened = backend_library::decode_command_body_for_owner(&compact_json, owner_cursor)
+        .expect("owner-aware decoder retains digest-only page root");
+    assert_eq!(reopened.command, original.command);
+    assert_eq!(
+        reopened.certificate().expect("retained claims"),
+        compact_certificate
+    );
+
+    let token = issuing
+        .encode_query_continuation(PageContinuation::from_cursor(cursor))
+        .expect("portable compact token");
+    let mut forged_root = token_value(&token);
+    let commitment = forged_root["certificate"]["claims"]
+        .as_array_mut()
+        .expect("claims")
+        .iter_mut()
+        .find(|claim| {
+            claim["kind"] == "root_commitment"
+                && claim["data"]["id"] == encode_id(cursor.root().as_bytes())
+        })
+        .expect("root commitment");
+    let forged_page_root = encode_id(view_state_root(&[]).as_bytes());
+    commitment["data"]["id"] = serde_json::json!(forged_page_root);
+    forged_root["command"]["data"]["cursor"]["root"] = serde_json::json!(forged_page_root);
+    let search_requests_before = requests
+        .lock()
+        .expect("requests")
+        .iter()
+        .filter(|command| matches!(command, Command::Search(_)))
+        .count();
+    let mut reject_forged = session(&owner, &requests);
+    let forged_continuation = reject_forged
+        .decode_page_continuation(&token(&forged_root))
+        .expect("digest-only commitment is parsed before owner page reconstruction");
+    assert!(
+        reject_forged
+            .search_page("Thing", 3, Some(forged_continuation))
+            .is_err()
+    );
+    assert_eq!(
+        requests
+            .lock()
+            .expect("requests")
+            .iter()
+            .filter(|command| matches!(command, Command::Search(_)))
+            .count(),
+        search_requests_before + 1,
+        "owner reconstruction rejects the changed page-root digest"
+    );
+    let mut forged_query = token_value(&token);
+    forged_query["command"]["data"]["text"] = serde_json::json!("Different query");
+    let mut reject_query = session(&owner, &requests);
+    assert!(
+        reject_query
+            .decode_page_continuation(&token(&forged_query))
+            .is_err()
+    );
+    assert_eq!(
+        requests
+            .lock()
+            .expect("requests")
+            .iter()
+            .filter(|command| matches!(command, Command::Search(_)))
+            .count(),
+        search_requests_before,
+        "changed query recipe cannot issue another search page"
+    );
+    let expected = issuing
+        .search_page("Thing", 3, Some(PageContinuation::from_cursor(cursor)))
+        .expect("warm successor");
+    drop(issuing);
+    *owner.lock().expect("owner") = owner_with_label(1, 9, 0, "Thing repeated");
+    let mut fresh = session(&owner, &requests);
+    let reopened = fresh
+        .decode_page_continuation(&token)
+        .expect("cold durable owner reopens compact token");
+    let actual = fresh
+        .search_page("Thing", 3, Some(reopened))
+        .expect("cold successor");
+    assert_eq!(page(&actual), page(&expected), "cold page equals warm page");
+    let third = fresh
+        .search_page(
+            "Thing",
+            3,
+            page(&actual).next.map(PageContinuation::from_cursor),
+        )
+        .expect("third page");
+    let mut union = page(&first).records.clone();
+    union.extend(page(&actual).records.clone());
+    union.extend(page(&third).records.clone());
+    let all = session(&owner, &requests)
+        .search_page("Thing", 200, None)
+        .expect("single full page");
+    assert_eq!(
+        union,
+        page(&all).records,
+        "portable page union equals full search"
+    );
 }
 
 struct RebindingTransport(Transport);
@@ -1429,6 +1661,25 @@ fn portable_compact_proof_rejects_expansion_truncation_and_trailing_bytes() {
     assert!(decode_portable_body(&format!("pc3-{}", URL_SAFE_NO_PAD.encode(&compressed))).is_err());
     compressed.truncate(compressed.len() - 3);
     assert!(decode_portable_body(&format!("pc3-{}", URL_SAFE_NO_PAD.encode(&compressed))).is_err());
+}
+
+#[test]
+fn portable_zlib_stream_requires_complete_header_body_checksum_and_canonical_base64() {
+    let good = encode_compact_proof(b"complete zlib proof body").expect("compact");
+    let compressed = URL_SAFE_NO_PAD
+        .decode(good.strip_prefix("pc3-").expect("version"))
+        .expect("base64");
+    for end in [1, 2, compressed.len() / 2, compressed.len() - 4] {
+        assert!(
+            decode_portable_body(&format!(
+                "pc3-{}",
+                URL_SAFE_NO_PAD.encode(&compressed[..end])
+            ))
+            .is_err(),
+            "truncated stream at byte {end} must fail"
+        );
+    }
+    assert!(decode_portable_body(&format!("{good}=")).is_err());
 }
 
 #[test]
@@ -2889,8 +3140,16 @@ fn portable_windows_reimport_consumed_preparation_and_replay_identical_input_at_
         let (owner, requests) = if family < 2 {
             fixture()
         } else if family == 3 {
-            (Arc::new(Mutex::new(owner_with_package(1, 7, 0, &["Thing"], Some("/p")))),
-                Arc::new(Mutex::new(Vec::new())))
+            (
+                Arc::new(Mutex::new(owner_with_package(
+                    1,
+                    7,
+                    0,
+                    &["Thing"],
+                    Some("/p"),
+                ))),
+                Arc::new(Mutex::new(Vec::new())),
+            )
         } else {
             (
                 Arc::new(Mutex::new(graph_fixture(false, 1, 7))),
@@ -3536,8 +3795,18 @@ fn portable_outline_reopens_exact_native_proof_and_rejects_credit_package_and_sc
     let CommandReply::ProjectionPage(first) = first.reply else {
         panic!("projection");
     };
-    assert_eq!(first.outline_order.as_ref().expect("first order").start(), 0);
-    assert!(first.snapshot.root.rows().iter().all(|row| row.score.is_none()));
+    assert_eq!(
+        first.outline_order.as_ref().expect("first order").start(),
+        0
+    );
+    assert!(
+        first
+            .snapshot
+            .root
+            .rows()
+            .iter()
+            .all(|row| row.score.is_none())
+    );
     let next = PageContinuation::from_cursor(first.snapshot.next.expect("more"));
     let token = issuing
         .encode_query_continuation(next)
@@ -3553,7 +3822,14 @@ fn portable_outline_reopens_exact_native_proof_and_rejects_credit_package_and_sc
         panic!("projection");
     };
     assert_eq!(resumed.snapshot.root.row_count(), 3);
-    assert_eq!(resumed.outline_order.as_ref().expect("resumed order").start(), 3);
+    assert_eq!(
+        resumed
+            .outline_order
+            .as_ref()
+            .expect("resumed order")
+            .start(),
+        3
+    );
     assert_eq!(
         resumed
             .snapshot
@@ -3582,9 +3858,14 @@ fn portable_outline_reopens_exact_native_proof_and_rejects_credit_package_and_sc
         "native recipe binds exact credit"
     );
     let mut wrong_predecessor = token_value(&token);
-    wrong_predecessor["command"]["data"]["page"]["continuation"]["query_offset"] = serde_json::json!(6);
-    assert!(session(&owner, &requests).decode_page_continuation(&self::token(&wrong_predecessor)).is_err(),
-        "the same predecessor row proof cannot claim another ordered start");
+    wrong_predecessor["command"]["data"]["page"]["continuation"]["query_offset"] =
+        serde_json::json!(6);
+    assert!(
+        session(&owner, &requests)
+            .decode_page_continuation(&self::token(&wrong_predecessor))
+            .is_err(),
+        "the same predecessor row proof cannot claim another ordered start"
+    );
     *owner.lock().expect("owner") = owner_with_package(2, 7, 0, &["Thing"], Some("/p"));
     assert!(
         session(&owner, &requests)
@@ -4084,16 +4365,25 @@ fn copied_search_stage_continuation_never_promotes_after_full_projection_becomes
             ))
     );
     assert_eq!(
-        requests.lock().expect("commands").iter()
-            .filter(|command| matches!(command, Command::SearchPublishedNames(_))).count(),
+        requests
+            .lock()
+            .expect("commands")
+            .iter()
+            .filter(|command| matches!(command, Command::SearchPublishedNames(_)))
+            .count(),
         3,
         "all seven rows require three name-stage pages under fixed credit three",
     );
     let mut changed_credit = make();
-    let continuation = changed_credit.decode_page_continuation(&token)
+    let continuation = changed_credit
+        .decode_page_continuation(&token)
         .expect("exact authenticated stage before changed-credit control");
-    assert!(changed_credit.search_page("Thing", 2, Some(continuation)).is_err(),
-        "a copied stage cursor cannot change its issued credit");
+    assert!(
+        changed_credit
+            .search_page("Thing", 2, Some(continuation))
+            .is_err(),
+        "a copied stage cursor cannot change its issued credit"
+    );
     let mut wrong = make();
     let continuation = wrong
         .decode_page_continuation(&token)
@@ -4222,38 +4512,96 @@ fn direct_member_session_refuses_changed_reply_sources_before_retaining_any_curs
 
 #[test]
 fn portable_outline_windows_reopen_legacy_and_variable_spans_without_losing_exact_rows() {
-    let owner = Arc::new(Mutex::new(owner_with_package(1, 11, 0, &["Thing"], Some("/p"))));
+    let owner = Arc::new(Mutex::new(owner_with_package(
+        1,
+        11,
+        0,
+        &["Thing"],
+        Some("/p"),
+    )));
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let expected = owner.lock().expect("owner").view().rows().iter().filter_map(|row| {
-        matches!(row.id, RowId::Symbol(_)).then_some(row.id)
-    }).collect::<std::collections::BTreeSet<_>>();
+    let expected = owner
+        .lock()
+        .expect("owner")
+        .view()
+        .rows()
+        .iter()
+        .filter_map(|row| matches!(row.id, RowId::Symbol(_)).then_some(row.id))
+        .collect::<std::collections::BTreeSet<_>>();
     let mut issuing = session(&owner, &requests);
-    let first = issuing.outline_page("/p", 4, None).expect("legacy fixed page");
-    let mut ids = window_snapshot(&first).root.rows().iter().map(|row| row.id).collect::<std::collections::BTreeSet<_>>();
-    let mut next = PageContinuation::from_cursor(window_snapshot(&first).next.expect("legacy next"));
-    let mut signed = issuing.encode_query_continuation(next).expect("portable fixed predecessor");
+    let first = issuing
+        .outline_page("/p", 4, None)
+        .expect("legacy fixed page");
+    let mut ids = window_snapshot(&first)
+        .root
+        .rows()
+        .iter()
+        .map(|row| row.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut next =
+        PageContinuation::from_cursor(window_snapshot(&first).next.expect("legacy next"));
+    let mut signed = issuing
+        .encode_query_continuation(next)
+        .expect("portable fixed predecessor");
     for delivery in [1, 2, 4] {
         let mut fresh = session(&owner, &requests);
-        let imported = fresh.decode_page_continuation(&signed).expect("fresh proof admission");
+        let imported = fresh
+            .decode_page_continuation(&signed)
+            .expect("fresh proof admission");
         assert_eq!(imported, next);
-        let reply = fresh.outline_page_window("/p", delivery_window(4, delivery), Some(imported)).expect("native successor");
+        let reply = fresh
+            .outline_page_window("/p", delivery_window(4, delivery), Some(imported))
+            .expect("native successor");
         let page = window_snapshot(&reply);
         assert!(page.root.row_count() <= u64::from(delivery));
-        for row in page.root.rows() { assert!(ids.insert(row.id), "one exact ID once"); }
+        for row in page.root.rows() {
+            assert!(ids.insert(row.id), "one exact ID once");
+        }
         if let Some(cursor) = page.next {
-            assert_eq!(cursor.query_offset(), imported.cursor().query_offset() + page.root.row_count());
-            assert_eq!(cursor.query_position().predecessor().expect("window span").delivery().get(), delivery);
+            assert_eq!(
+                cursor.query_offset(),
+                imported.cursor().query_offset() + page.root.row_count()
+            );
+            assert_eq!(
+                cursor
+                    .query_position()
+                    .predecessor()
+                    .expect("window span")
+                    .delivery()
+                    .get(),
+                delivery
+            );
             next = PageContinuation::from_cursor(cursor);
-            signed = fresh.encode_query_continuation(next).expect("portable exact order-bound span");
+            signed = fresh
+                .encode_query_continuation(next)
+                .expect("portable exact order-bound span");
             let mut wrong = token_value(&signed);
-            wrong["command"]["data"]["page"]["continuation"]["query_window"]["delivery"] = serde_json::json!(3);
-            assert!(session(&owner, &requests).decode_page_continuation(&token(&wrong)).is_err(), "tampered predecessor span refuses");
+            wrong["command"]["data"]["page"]["continuation"]["query_window"]["delivery"] =
+                serde_json::json!(3);
+            assert!(
+                session(&owner, &requests)
+                    .decode_page_continuation(&token(&wrong))
+                    .is_err(),
+                "tampered predecessor span refuses"
+            );
             let mut changed = session(&owner, &requests);
-            let imported = changed.decode_page_continuation(&signed).expect("same exact proof");
+            let imported = changed
+                .decode_page_continuation(&signed)
+                .expect("same exact proof");
             let before = requests.lock().expect("requests").len();
-            assert!(changed.outline_page_window("/p", delivery_window(3, 1), Some(imported)).is_err());
-            assert_eq!(requests.lock().expect("requests").len(), before, "changed issued credit refuses before page submission");
-        } else { assert_eq!(delivery, 4); }
+            assert!(
+                changed
+                    .outline_page_window("/p", delivery_window(3, 1), Some(imported))
+                    .is_err()
+            );
+            assert_eq!(
+                requests.lock().expect("requests").len(),
+                before,
+                "changed issued credit refuses before page submission"
+            );
+        } else {
+            assert_eq!(delivery, 4);
+        }
     }
     assert_eq!(ids, expected);
 }

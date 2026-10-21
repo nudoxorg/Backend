@@ -69,11 +69,126 @@ pub(super) fn basis(command: &Command) -> Option<backend_library::ViewRevision> 
         Command::Search(query) => Some(query.basis()),
         Command::SearchPublishedNames(query) => Some(query.query().basis()),
         Command::Name(query) => Some(query.basis()),
+        Command::GraphQuery(query) => Some(query.page().basis()),
         Command::GraphPage { page, .. }
         | Command::OutlinePage { page, .. }
         | Command::MembersPage { page, .. } => Some(page.basis()),
         _ => None,
     }
+}
+
+fn continuation_cursor(command: &Command) -> Option<backend_library::Cursor> {
+    query_parts(command)
+        .and_then(|(_, _, _, cursor)| cursor)
+        .or_else(|| match command {
+            Command::GraphQuery(query) => query.page().continuation().map(|page| page.cursor()),
+            Command::GraphPage { page, .. } | Command::OutlinePage { page, .. } => {
+                page.continuation().map(PageContinuation::cursor)
+            }
+            _ => None,
+        })
+}
+
+// The cursor's page root is reproducible by the catalog owner from the exact
+// predecessor query. The portable token therefore needs only its commitment;
+// query execution re-derives and checks the complete page root before use.
+// Keep this exact shape check narrow so malformed proofs never fall back to a
+// commitment-only decode.
+fn compact_root_reference_shape(request: &CommandDto, rootless: bool) -> bool {
+    let Some(certificate) = request.certificate() else {
+        return false;
+    };
+    if matches!(&request.command, Command::GraphQuery(_)) {
+        // GraphQuery has a separately owner-bound decoder below. Keep that
+        // established path until its complete claim grammar is handled here.
+        return false;
+    }
+    let Some(cursor) = continuation_cursor(&request.command) else {
+        return false;
+    };
+    let Some(owner_root) = basis(&request.command).map(|basis| encode_id(basis.as_bytes())) else {
+        return false;
+    };
+    let page_root = encode_id(cursor.root().as_bytes());
+    if request.request_id != 1 || cursor.query_offset() == 0 {
+        return false;
+    }
+    let mut owner_root_commitments = 0;
+    let mut page_root_commitments = 0;
+    let mut page_roots = 0;
+    let mut coverages = 0;
+    for claim in &certificate.claims {
+        match claim {
+            WireClaim::RootCommitment {
+                schema: WireSchema::ViewRelation,
+                id,
+            } => {
+                if id == &owner_root {
+                    owner_root_commitments += 1;
+                }
+                if id == &page_root {
+                    page_root_commitments += 1;
+                }
+                if id != &owner_root && id != &page_root {
+                    return false;
+                }
+            }
+            WireClaim::Coverage { .. } => coverages += 1,
+            WireClaim::Root {
+                schema: WireSchema::ViewRelation,
+                id,
+                ..
+            } if id == &page_root => page_roots += 1,
+            WireClaim::Root { .. } => return false,
+            claim
+                if claim_describes_cursor(claim, cursor)
+                    || graph_address_claim(&request.command, claim) => {}
+            _ => return false,
+        }
+    }
+    owner_root_commitments == 1
+        && coverages == 1
+        && (if rootless {
+            page_roots == 0
+                && page_root_commitments == 1
+                && certificate
+                    .claims
+                    .iter()
+                    .all(|claim| !matches!(claim, WireClaim::Root { .. }))
+        } else {
+            page_roots == 1 && (page_root_commitments == 0 || page_root_commitments == 1)
+        })
+        && scope(certificate).is_ok()
+}
+
+fn compact_root_reference(request: &CommandDto) -> Option<CommandDto> {
+    let certificate = request.certificate()?;
+    if !compact_root_reference_shape(request, false) {
+        return None;
+    }
+    let page_root = encode_id(continuation_cursor(&request.command)?.root().as_bytes());
+    let mut compact = certificate.clone();
+    let mut removed_page_root = false;
+    compact.claims.retain(|claim| match claim {
+        WireClaim::Root {
+            schema: WireSchema::ViewRelation,
+            id,
+            ..
+        } if id == &page_root => {
+            removed_page_root = true;
+            false
+        }
+        _ => true,
+    });
+    if removed_page_root {
+        compact = compact.with_claim_once(WireClaim::RootCommitment {
+            schema: WireSchema::ViewRelation,
+            id: page_root,
+        });
+    }
+    (compact.claims.len() < certificate.claims.len()).then(|| {
+        CommandDto::new(request.request_id, request.command.clone()).with_certificate(compact)
+    })
 }
 
 // Measure the existing DTO serializer without allocating an oversized body.
@@ -135,7 +250,8 @@ impl Session {
         // Keep the existing strict encoder admission before changing transport
         // spelling. Binary packing never supplies authority of its own.
         backend_library::encode_command_body(request).map_err(ClientError::Protocol)?;
-        let body = backend_library::encode_binary_certificate_command(request)
+        let compact = compact_root_reference(request).unwrap_or_else(|| request.clone());
+        let body = backend_library::encode_binary_certificate_command(&compact)
             .map_err(ClientError::Protocol)?;
         encode_portable_proof(&body, "pc4-")
     }
@@ -278,80 +394,98 @@ impl Session {
                 let envelope: serde_json::Value = serde_json::from_slice(&body)
                     .map_err(|error| ClientError::Protocol(error.to_string()))?;
                 // Ordinary proofs must pass their standalone strict decoder
-                // before any RPC. Only a graph continuation needs the fresh
-                // owner to reopen its constant-size root commitment. This
-                // untrusted tag selects that decoder; it admits no identity.
+                // before any RPC. The two narrowly defined compact cases use
+                // an already admitted owner cursor and retain their full typed
+                // claim checks below.
                 if envelope
                     .get("command")
                     .and_then(|command| command.get("kind"))
                     .and_then(serde_json::Value::as_str)
                     != Some("graph_query")
                 {
-                    return Err(ClientError::Protocol(error));
-                }
-                let certificate: WireCertificate =
-                    serde_json::from_value(envelope.get("certificate").cloned().ok_or_else(
-                        || ClientError::Protocol("query token omitted certificate".to_owned()),
-                    )?)
-                    .map_err(|error| ClientError::Protocol(error.to_string()))?;
-                let mut sequences = certificate.claims.iter().filter_map(|claim| {
-                    if let WireClaim::Cursor { sequence, .. } = claim {
-                        Some(*sequence)
-                    } else {
-                        None
+                    // Only the exact RootCommitment-only shape emitted by the
+                    // compact producer may be reopened against the receiver's
+                    // admitted durable cursor. All other claim preimages and
+                    // recipe checks remain in the owner-aware command decoder.
+                    let compact: CommandDto = serde_json::from_value(envelope.clone())
+                        .map_err(|_| ClientError::Protocol(error.clone()))?;
+                    if !compact_root_reference_shape(&compact, true) {
+                        return Err(ClientError::Protocol(error));
                     }
-                });
-                let sequence = sequences.next().ok_or_else(|| {
-                    ClientError::Protocol("query token omitted owner cursor".to_owned())
-                })?;
-                let revision = self.revision()?;
-                let owner = revision.cursor();
-                if sequences.next().is_some() || sequence > owner.sequence() {
-                    return Err(ClientError::StaleCursor);
+                    let revision = self.revision()?;
+                    if !basis(&compact.command).is_some_and(|basis| basis.matches(revision.root))
+                        || scope(compact.certificate().expect("checked certificate"))?
+                            != scope(&revision.certificate)?
+                    {
+                        return Err(ClientError::StaleCursor);
+                    }
+                    backend_library::decode_command_body_for_owner(&body, revision.cursor())
+                        .map_err(ClientError::Protocol)?
+                } else {
+                    let certificate: WireCertificate =
+                        serde_json::from_value(envelope.get("certificate").cloned().ok_or_else(
+                            || ClientError::Protocol("query token omitted certificate".to_owned()),
+                        )?)
+                        .map_err(|error| ClientError::Protocol(error.to_string()))?;
+                    let mut sequences = certificate.claims.iter().filter_map(|claim| {
+                        if let WireClaim::Cursor { sequence, .. } = claim {
+                            Some(*sequence)
+                        } else {
+                            None
+                        }
+                    });
+                    let sequence = sequences.next().ok_or_else(|| {
+                        ClientError::Protocol("query token omitted owner cursor".to_owned())
+                    })?;
+                    let revision = self.revision()?;
+                    let owner = revision.cursor();
+                    if sequences.next().is_some() || sequence > owner.sequence() {
+                        return Err(ClientError::StaleCursor);
+                    }
+                    if scope(&certificate)? != scope(&revision.certificate)? {
+                        return Err(ClientError::StaleCursor);
+                    }
+                    let retained_owner = backend_library::Cursor::for_view(
+                        owner.recipe(),
+                        owner.version(),
+                        backend_library::Frontier::new(
+                            owner.branch(),
+                            owner.log(),
+                            owner.schema(),
+                            owner.root(),
+                            sequence,
+                        ),
+                    );
+                    let imported =
+                        backend_library::decode_command_body_for_owner(&body, retained_owner)
+                            .map_err(ClientError::Protocol)?;
+                    let Command::GraphQuery(query) = &imported.command else {
+                        return Err(ClientError::Protocol(
+                            "token is not a graph query".to_owned(),
+                        ));
+                    };
+                    let continuation = query.page().continuation().ok_or_else(|| {
+                        ClientError::Protocol("query token omitted predecessor".to_owned())
+                    })?;
+                    if imported.request_id != 1
+                        || query.control() != backend_library::GraphQueryControl::Continue
+                    {
+                        return Err(ClientError::Protocol(
+                            "query token has invalid continuation metadata".to_owned(),
+                        ));
+                    }
+                    query
+                        .start_offset(owner)
+                        .map_err(|error| ClientError::Protocol(error.to_string()))?;
+                    let fresh = revision.certificate.with_claim_once(WireClaim::KeyBytes {
+                        schema: WireSchema::ViewRecipe,
+                        id: encode_id(query.recipe().as_bytes()),
+                        value: query.recipe_preimage(),
+                    });
+                    self.prepared_query =
+                        Some(CommandDto::new(1, imported.command).with_certificate(fresh));
+                    return Ok(continuation);
                 }
-                if scope(&certificate)? != scope(&revision.certificate)? {
-                    return Err(ClientError::StaleCursor);
-                }
-                let retained_owner = backend_library::Cursor::for_view(
-                    owner.recipe(),
-                    owner.version(),
-                    backend_library::Frontier::new(
-                        owner.branch(),
-                        owner.log(),
-                        owner.schema(),
-                        owner.root(),
-                        sequence,
-                    ),
-                );
-                let imported =
-                    backend_library::decode_command_body_for_owner(&body, retained_owner)
-                        .map_err(ClientError::Protocol)?;
-                let Command::GraphQuery(query) = &imported.command else {
-                    return Err(ClientError::Protocol(
-                        "token is not a graph query".to_owned(),
-                    ));
-                };
-                let continuation = query.page().continuation().ok_or_else(|| {
-                    ClientError::Protocol("query token omitted predecessor".to_owned())
-                })?;
-                if imported.request_id != 1
-                    || query.control() != backend_library::GraphQueryControl::Continue
-                {
-                    return Err(ClientError::Protocol(
-                        "query token has invalid continuation metadata".to_owned(),
-                    ));
-                }
-                query
-                    .start_offset(owner)
-                    .map_err(|error| ClientError::Protocol(error.to_string()))?;
-                let fresh = revision.certificate.with_claim_once(WireClaim::KeyBytes {
-                    schema: WireSchema::ViewRecipe,
-                    id: encode_id(query.recipe().as_bytes()),
-                    value: query.recipe_preimage(),
-                });
-                self.prepared_query =
-                    Some(CommandDto::new(1, imported.command).with_certificate(fresh));
-                return Ok(continuation);
             }
         };
         self.admit_query_continuation(imported, None)
@@ -431,16 +565,33 @@ impl Session {
             Command::OutlinePage { package, page } => {
                 let encoded = encode_id(cursor.recipe().as_bytes());
                 let mut preimages = certificate.claims.iter().filter_map(|claim| match claim {
-                    WireClaim::KeyBytes { schema: WireSchema::ViewRecipe, id, value } if id == &encoded => Some(value.as_ref()),
+                    WireClaim::KeyBytes {
+                        schema: WireSchema::ViewRecipe,
+                        id,
+                        value,
+                    } if id == &encoded => Some(value.as_ref()),
                     _ => None,
                 });
-                let preimage = preimages.next().ok_or_else(|| ClientError::Protocol("outline token omitted its order-bound recipe".to_owned()))?;
+                let preimage = preimages.next().ok_or_else(|| {
+                    ClientError::Protocol("outline token omitted its order-bound recipe".to_owned())
+                })?;
                 if preimages.next().is_some() {
-                    return Err(ClientError::Protocol("outline token duplicated its recipe".to_owned()));
+                    return Err(ClientError::Protocol(
+                        "outline token duplicated its recipe".to_owned(),
+                    ));
                 }
                 backend_library::QueryPageRecipe::outline_window_predecessor(
-                    revision.root, *package, page.window(), cursor, preimage,
-                ).ok_or_else(|| ClientError::Protocol("outline token changed its order-bound predecessor context".to_owned()))?
+                    revision.root,
+                    *package,
+                    page.window(),
+                    cursor,
+                    preimage,
+                )
+                .ok_or_else(|| {
+                    ClientError::Protocol(
+                        "outline token changed its order-bound predecessor context".to_owned(),
+                    )
+                })?
             }
             _ => {
                 return Err(ClientError::Protocol(
@@ -459,6 +610,7 @@ impl Session {
         let mut fresh = revision.certificate;
         for claim in &certificate.claims {
             if claim_describes_cursor(claim, cursor)
+                || matches!(claim, WireClaim::RootCommitment { schema: WireSchema::ViewRelation, id } if id == &encode_id(cursor.root().as_bytes()))
                 || graph_address_claim(&imported.command, claim)
             {
                 fresh = fresh.with_claim_once(claim.clone());
@@ -473,21 +625,23 @@ impl Session {
         // A prepared command belongs to one connection. Keep the validated
         // input proof in the existing bounded owner state too, so replacing
         // that connection does not discard a cold imported continuation.
-        let selected_coordinate = selected_coordinate_assertion(&imported.command, Some(certificate))?
-            .and_then(|assertion| {
-                let source = backend_library::Basis {
-                    root: revision.root,
-                    object: revision.source,
-                    branch: owner.branch(),
-                    log: owner.log(),
-                    schema: owner.schema(),
-                };
-                self.continuations
-                    .get(&cursor)
-                    .and_then(|retained| retained.selected_coordinate.as_ref())
-                    .filter(|center| center.matches(&assertion, source))
-                    .cloned()
-            });
+        let selected_coordinate =
+            selected_coordinate_assertion(&imported.command, Some(certificate))?.and_then(
+                |assertion| {
+                    let source = backend_library::Basis {
+                        root: revision.root,
+                        object: revision.source,
+                        branch: owner.branch(),
+                        log: owner.log(),
+                        schema: owner.schema(),
+                    };
+                    self.continuations
+                        .get(&cursor)
+                        .and_then(|retained| retained.selected_coordinate.as_ref())
+                        .filter(|center| center.matches(&assertion, source))
+                        .cloned()
+                },
+            );
         let retained = RetainedContinuation {
             certificate: certificate.clone(),
             owner,
@@ -566,7 +720,9 @@ impl Session {
                 "continuation changed query family".to_owned(),
             ));
         };
-        if *actual != package || page.limit() != window.issued() || page.continuation() != continuation
+        if *actual != package
+            || page.limit() != window.issued()
+            || page.continuation() != continuation
         {
             return Err(ClientError::Protocol(
                 "continuation changed outline package/credit/predecessor".to_owned(),
@@ -574,10 +730,13 @@ impl Session {
         }
         let certificate = request.certificate().cloned();
         let Command::OutlinePage { package, page } = request.command else {
-            return Err(ClientError::Protocol("outline delivery changed family".to_owned()));
+            return Err(ClientError::Protocol(
+                "outline delivery changed family".to_owned(),
+            ));
         };
-        let page = page.with_window(window).ok_or_else(|| ClientError::Protocol(
-            "outline delivery changed issued ceiling".to_owned()))?;
+        let page = page.with_window(window).ok_or_else(|| {
+            ClientError::Protocol("outline delivery changed issued ceiling".to_owned())
+        })?;
         self.send_success(Command::OutlinePage { package, page }, certificate)
     }
 

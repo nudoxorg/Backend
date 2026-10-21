@@ -105,9 +105,10 @@ pub fn decode_command_body(bytes: &[u8]) -> Result<CommandDto, String> {
 
 /// Decodes a command against the durable owner's admitted cursor.
 ///
-/// This scoped boundary permits graph-query continuations to use their
-/// constant-size root commitment. Every other command retains the canonical
-/// standalone decoder.
+/// This scoped boundary permits graph-query and catalog-page continuations to
+/// use a digest-only page-root commitment. The catalog owner must recompute the
+/// exact predecessor page before it can accept that cursor. Every other command
+/// retains the canonical standalone decoder.
 ///
 /// # Errors
 ///
@@ -287,7 +288,8 @@ mod tests {
                 "outline_order": {"start": 0, "symbols": [], "unknown_future_field": true}
             }},
             "version": crate::DTO_VERSION
-        })).expect("new outline envelope");
+        }))
+        .expect("new outline envelope");
         // The maintained v33 byte-entry version preflight, not a replay of an
         // old binary, rejects the new cohort before its strict page grammar.
         let old_peer = super::check_version_header_against(&current, "reply", 33)
@@ -297,7 +299,10 @@ mod tests {
         assert!(!old_peer.contains("unknown field"));
         let mut old: serde_json::Value = serde_json::from_slice(&current).expect("envelope");
         old["version"] = serde_json::json!(33);
-        old["reply"]["data"].as_object_mut().expect("page").remove("outline_order");
+        old["reply"]["data"]
+            .as_object_mut()
+            .expect("page")
+            .remove("outline_order");
         let bytes = serde_json::to_vec(&old).expect("old owner reply");
         let verifier = CountingVerifier::new();
         for error in [
@@ -346,7 +351,10 @@ mod tests {
         assert!(!old_peer.contains("unknown field"));
         let mut old: serde_json::Value = serde_json::from_slice(&current).expect("envelope");
         old["version"] = serde_json::json!(34);
-        old["reply"]["data"].as_object_mut().expect("health").remove("source_selection");
+        old["reply"]["data"]
+            .as_object_mut()
+            .expect("health")
+            .remove("source_selection");
         let bytes = serde_json::to_vec(&old).expect("old owner reply");
         let verifier = CountingVerifier::new();
         for error in [
