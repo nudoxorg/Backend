@@ -195,6 +195,13 @@ pub enum FactFault {
         /// Raw TSZ type-handle payload passed on the revisiting edge, not a
         /// semantic type-row ordinal.
         type_id: u32,
+        /// Exact source declaration that owned this projection, when the
+        /// collector retained a valid UTF-8-boundary span for it.
+        owner_span: Option<SourceSpanFact>,
+        /// Exact source identifier span for the owner declaration, when
+        /// available. This identifies the declaration, not the recursive
+        /// type-use edge.
+        owner_name_span: Option<SourceSpanFact>,
     },
     /// TSZ exposed a recursive binder back-reference with no exact local-row encoding.
     TypeProjectionRecursiveReference {
