@@ -262,7 +262,7 @@ fn linked_tsz_tsx_cycle_is_an_exact_file_gap_while_navbar_and_caller_publish() {
                 };
                 let Some(name) = page
                     .as_bytes()
-                    .get(span.start as usize..span.end as usize)
+                    .get(span.start() as usize..span.end() as usize)
                 else {
                     return false;
                 };
@@ -297,7 +297,7 @@ fn linked_tsz_tsx_cycle_is_an_exact_file_gap_while_navbar_and_caller_publish() {
     assert!(coverage.rows().iter().any(|row| {
         matches!(row, SourceCoverageRow::Gap { path, source, byte_len, cause }
             if path == "src/app/layout.tsx"
-                && *source == gap.source().identity
+                && source == gap.source().identity.as_ref()
                 && *byte_len as usize == recursive.len()
                 && *cause == PackageSourceCoverageGapCause::SourceNotRepresentable)
     }));
