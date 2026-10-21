@@ -19,7 +19,7 @@ use facet::graph::{GraphView, GraphWorkStatus as FacetGraphWorkStatus, NodeId, S
 use facet::ActiveFacet as _;
 use gpui::{
     App, AppContext as _, Context, Entity, Focusable as _, InteractiveElement, IntoElement, ParentElement, Render,
-    Styled, Subscription, Window, div, px,
+    Styled, Subscription, Window, Pixels, div, px,
 };
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -64,6 +64,8 @@ fn visible_work_status(
 /// One map for the reader's lifetime: its rig survives page/code visits.
 pub(crate) struct Map {
     links: Links,
+    /// Current Reader allocation; graph captions never borrow the window width.
+    measure_width: Pixels,
     graph: Option<Entity<GraphView>>,
     ready_scene: Option<(
         Arc<facet::graph::scene::Scene>,
@@ -258,6 +260,14 @@ pub(crate) fn install_test_world(
 }
 
 impl Map {
+    pub(crate) fn set_measure_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        let width = width.max(px(0.0));
+        if self.measure_width != width {
+            self.measure_width = width;
+            cx.notify();
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn projection_evidence(&self) -> Option<(WorldKey, indexed_world::Origin)> {
         Some((self.world_key.clone()?, self.projection_origin.clone()?))
@@ -352,6 +362,7 @@ impl Map {
         let (ready_scene, world_key) = (None, None);
         Self {
             links,
+            measure_width: px(0.0),
             graph: None,
             ready_scene,
             world_key,
@@ -1864,7 +1875,7 @@ impl Render for Map {
             );
         } else {
             let message = self.load_error.clone().unwrap_or_else(|| "Reading the indexed graph…".into());
-            let measure = facet::Measure::new(window.viewport_size().width, &cx.facet());
+            let measure = facet::Measure::new(self.measure_width, &cx.facet());
             root = root.flex().items_center().justify_center().child(
                 crate::shell::kit::text(facet::tokens::ty::SMALL, &measure, cx.facet().palette().ink2)
                     .keyed("graph-terminal-message")
@@ -1882,7 +1893,7 @@ impl Render for Map {
                 })
             }
         });
-        let measure = facet::Measure::new(window.viewport_size().width, &cx.facet());
+        let measure = facet::Measure::new(self.measure_width, &cx.facet());
         let root = if let Some(graph) = &self.graph {
             let detail = self.coverage.as_ref().zip(self.projection_origin.as_ref()).map(|(coverage, origin)| coverage.words(origin));
             graph.update(cx, |graph, cx| graph.set_status(message, detail, cx));

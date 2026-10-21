@@ -2651,6 +2651,7 @@ impl Render for Shell {
             cx,
         );
         self.ask_results_mounted = ask_scene.live_results;
+        self.ask.update(cx, |ask, cx| ask.set_measure_width(ask_scene.content_width, cx));
         let background_input_allowed = !self.ask_open && !over && self.background_input_allowed()
             && snapshot.overlay() != Some(Overlay::AddProject);
         self.reader.update(cx, |reader, cx| reader.set_ask_scene(ask_scene.geometry, background_input_allowed, cx));

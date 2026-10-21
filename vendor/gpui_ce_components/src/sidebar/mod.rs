@@ -548,6 +548,106 @@ impl<E: SidebarItem> RenderOnce for Sidebar<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{Context, Render, TestAppContext, relative};
+
+    #[derive(Clone)]
+    struct ProbeItem {
+        collapsed: bool,
+    }
+
+    impl Collapsible for ProbeItem {
+        fn collapsed(mut self, collapsed: bool) -> Self {
+            self.collapsed = collapsed;
+            self
+        }
+
+        fn is_collapsed(&self) -> bool {
+            self.collapsed
+        }
+    }
+
+    impl SidebarItem for ProbeItem {
+        fn render(self, id: impl Into<ElementId>, _: &mut Window, _: &mut App) -> impl IntoElement {
+            let selector = if self.collapsed {
+                "sidebar-probe-collapsed"
+            } else {
+                "sidebar-probe-expanded"
+            };
+            div()
+                .id(id)
+                .debug_selector(move || selector.into())
+                .w(px(240.))
+                .h(px(20.))
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum ProbeWidth {
+        Pixels,
+        HalfParent,
+    }
+
+    struct SidebarHarness {
+        collapsible: SidebarCollapsible,
+        collapsed: bool,
+        side: Side,
+        width: ProbeWidth,
+    }
+
+    impl Render for SidebarHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let sidebar = Sidebar::new("surface-sidebar")
+                .collapsible(self.collapsible)
+                .collapsed(self.collapsed)
+                .side(self.side)
+                .child(ProbeItem { collapsed: false });
+            let sidebar = match self.width {
+                ProbeWidth::Pixels => sidebar.w(px(240.)),
+                ProbeWidth::HalfParent => sidebar.w(relative(0.5)),
+            };
+            let following = div()
+                .debug_selector(|| "sidebar-following-content".into())
+                .flex_1()
+                .h_full();
+            let root = div().flex().w(px(480.)).h(px(280.));
+            if self.side.is_left() {
+                root.child(sidebar).child(following)
+            } else {
+                root.child(following).child(sidebar)
+            }
+        }
+    }
+
+    fn draw(cx: &mut gpui::VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    fn settle_transition(cx: &mut gpui::VisualTestContext) {
+        cx.background_executor
+            .advance_clock(SIDEBAR_TRANSITION_DURATION);
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        cx.run_until_parked();
+        draw(cx);
+    }
+
+    fn following_x(cx: &mut gpui::VisualTestContext) -> f32 {
+        cx.debug_bounds("sidebar-following-content")
+            .expect("following content rendered")
+            .origin
+            .x
+            .as_f32()
+    }
+
+    fn probe_bounds(
+        cx: &mut gpui::VisualTestContext,
+        selector: &'static str,
+    ) -> gpui::Bounds<Pixels> {
+        cx.debug_bounds(selector).expect("sidebar item rendered")
+    }
 
     fn layout(
         collapsible: SidebarCollapsible,
@@ -689,6 +789,133 @@ mod tests {
 
         assert!(left.align_child_to_end);
         assert!(!right.align_child_to_end);
+    }
+
+    #[gpui::test]
+    fn public_sidebar_modes_preserve_rendered_width_visibility_and_content_edge(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::theme::init);
+
+        let (icon, cx) = cx.add_window_view(|_, _| SidebarHarness {
+            collapsible: SidebarCollapsible::Icon,
+            collapsed: false,
+            side: Side::Left,
+            width: ProbeWidth::Pixels,
+        });
+        draw(cx);
+        assert!((following_x(cx) - 240.).abs() < 1.);
+        assert!(cx.debug_bounds("sidebar-probe-expanded").is_some());
+        icon.update(cx, |this, cx| {
+            this.collapsed = true;
+            cx.notify();
+        });
+        draw(cx);
+        settle_transition(cx);
+        assert!((following_x(cx) - 48.).abs() < 1.);
+        assert!(cx.debug_bounds("sidebar-probe-collapsed").is_some());
+
+        let (_, cx) = cx.add_window_view(|_, _| SidebarHarness {
+            collapsible: SidebarCollapsible::Icon,
+            collapsed: false,
+            side: Side::Left,
+            width: ProbeWidth::HalfParent,
+        });
+        draw(cx);
+        assert!((following_x(cx) - 240.).abs() < 1.);
+        assert!(cx.debug_bounds("sidebar-probe-expanded").is_some());
+
+        let (_, cx) = cx.add_window_view(|_, _| SidebarHarness {
+            collapsible: SidebarCollapsible::Icon,
+            collapsed: true,
+            side: Side::Left,
+            width: ProbeWidth::HalfParent,
+        });
+        draw(cx);
+        assert!((following_x(cx) - 48.).abs() < 1.);
+        assert!(cx.debug_bounds("sidebar-probe-collapsed").is_some());
+
+        let (_, cx) = cx.add_window_view(|_, _| SidebarHarness {
+            collapsible: SidebarCollapsible::None,
+            collapsed: true,
+            side: Side::Right,
+            width: ProbeWidth::Pixels,
+        });
+        draw(cx);
+        assert!((following_x(cx) - 0.).abs() < 1.);
+        assert!(
+            probe_bounds(cx, "sidebar-probe-expanded").origin.x > px(240.),
+            "right-side None keeps its item beyond the content"
+        );
+
+        for side in [Side::Left, Side::Right] {
+            let (offcanvas, cx) = cx.add_window_view(|_, _| SidebarHarness {
+                collapsible: SidebarCollapsible::Offcanvas,
+                collapsed: false,
+                side,
+                width: ProbeWidth::Pixels,
+            });
+            draw(cx);
+            if side.is_left() {
+                assert!((following_x(cx) - 240.).abs() < 1.);
+            } else {
+                assert!((following_x(cx) - 0.).abs() < 1.);
+            }
+            let expanded_item = probe_bounds(cx, "sidebar-probe-expanded");
+            if side.is_right() {
+                assert!(expanded_item.origin.x > px(240.));
+            }
+
+            offcanvas.update(cx, |this, cx| {
+                this.collapsed = true;
+                cx.notify();
+            });
+            draw(cx);
+            cx.background_executor
+                .advance_clock(SIDEBAR_TRANSITION_DURATION / 2);
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            let during_hide = probe_bounds(cx, "sidebar-probe-expanded");
+            assert!(during_hide.size.width > px(0.));
+            let anchor_x = during_hide.origin.x.as_f32();
+            if side.is_left() {
+                assert!(
+                    anchor_x < 0.,
+                    "left sidebar follows its content-facing right edge: {during_hide:?}"
+                );
+                assert!((following_x(cx) - 120.).abs() < 2.);
+            } else {
+                assert!(
+                    anchor_x > 0.,
+                    "right sidebar follows its content-facing left edge: {during_hide:?}"
+                );
+                assert!((following_x(cx) - 0.).abs() < 1.);
+            }
+            settle_transition(cx);
+            assert!(cx.debug_bounds("sidebar-probe-expanded").is_none());
+            if side.is_left() {
+                assert!((following_x(cx) - 0.).abs() < 1.);
+            }
+        }
+
+        let (offcanvas, cx) = cx.add_window_view(|_, _| SidebarHarness {
+            collapsible: SidebarCollapsible::Offcanvas,
+            collapsed: false,
+            side: Side::Left,
+            width: ProbeWidth::HalfParent,
+        });
+        draw(cx);
+        assert!((following_x(cx) - 240.).abs() < 1.);
+        offcanvas.update(cx, |this, cx| {
+            this.collapsed = true;
+            cx.notify();
+        });
+        draw(cx);
+        assert!((following_x(cx) - 0.).abs() < 1.);
+        assert!(cx.debug_bounds("sidebar-probe-expanded").is_none());
     }
 
     #[test]
