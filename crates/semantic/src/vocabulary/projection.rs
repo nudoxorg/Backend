@@ -1,5 +1,7 @@
 //! Shared portable projection admission and grammar vocabulary.
 
+use serde::{Deserialize, Serialize};
+
 /// Exact foreign-key grammar rejection projected by Go, TypeScript, or
 /// Python. The shared shape is closed and has no coordinate bag.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -379,7 +381,8 @@ pub enum ProjectionParentageState {
 }
 
 /// Exact portable source span snapshot.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectionSpan {
     /// Inclusive source start.
     pub start: u32,
@@ -517,6 +520,12 @@ pub enum ProjectionAdmissionFault {
     TypeProjectionCycle {
         /// Exact interned type handle that closes the cycle.
         type_id: u32,
+        /// Exact source declaration span that owned the projection, when
+        /// supplied by the language lowerer.
+        owner_span: Option<ProjectionSpan>,
+        /// Exact identifier span of that owner declaration, when available.
+        /// This is not the span of the recursive type-use edge.
+        owner_name_span: Option<ProjectionSpan>,
     },
     /// Native checker exposed a recursive back-reference that cannot be represented as a local row.
     TypeProjectionRecursiveReference {

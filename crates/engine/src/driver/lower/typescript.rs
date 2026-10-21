@@ -44,7 +44,7 @@ use crate::driver::{
         MAX_EMISSION_FACTS, MAX_FACT_CHILDREN, MAX_TYPE_CHILDREN, SemanticFact, StagedSourceSpan,
         push_fact,
     },
-    types::{FactFault, FactRejection, LoweringUnsupported},
+    types::{FactFault, FactRejection, LoweringUnsupported, SourceSpanFact},
 };
 
 /// Recursion bound for type-expression lowering; deeper expressions are
@@ -235,11 +235,58 @@ fn computed_fault<'source>(
         Ok(fact) => fact,
         Err(_) => 0,
     };
+    let cause = match cause {
+        FactFault::TypeProjectionCycle { type_id, .. } => {
+            let owner_span = index.and_then(|index| {
+                registry_source_span(
+                    registry,
+                    registry.decl_starts.get(index).copied(),
+                    registry.decl_ends.get(index).copied(),
+                )
+            });
+            let owner_name_span = index
+                .and_then(|index| {
+                    registry_source_span(
+                        registry,
+                        registry.name_starts.get(index).copied(),
+                        registry.name_ends.get(index).copied(),
+                    )
+                })
+                .filter(|name| {
+                    owner_span.is_some_and(|owner| {
+                        owner.start <= name.start && name.end <= owner.end
+                    })
+                });
+            FactFault::TypeProjectionCycle {
+                type_id,
+                owner_span,
+                owner_name_span,
+            }
+        }
+        other => other,
+    };
     TypeScriptCollectError::Rejected(FactRejection {
         fact,
         name_len,
         cause,
     })
+}
+
+/// Retains only source coordinates that are valid half-open UTF-8 boundaries
+/// in the exact source borrow admitted by this TypeScript projection.
+fn registry_source_span(
+    registry: &FactRegistry<'_, '_>,
+    start: Option<u32>,
+    end: Option<u32>,
+) -> Option<SourceSpanFact> {
+    let (start, end) = (start?, end?);
+    if start == UNSET || end == UNSET || start >= end {
+        return None;
+    }
+    let start_index = usize::try_from(start).ok()?;
+    let end_index = usize::try_from(end).ok()?;
+    registry.source.get(start_index..end_index)?;
+    Some(SourceSpanFact { start, end })
 }
 
 /// Widens one lane counter to the wire's `u32` coordinate width; an overflow
@@ -10877,7 +10924,11 @@ fn intern_native_tsz_type<'source>(
         return Err(computed_fault(
             registry,
             owner,
-            FactFault::TypeProjectionCycle { type_id: type_id.0 },
+            FactFault::TypeProjectionCycle {
+                type_id: type_id.0,
+                owner_span: None,
+                owner_name_span: None,
+            },
         ));
     }
     let result = intern_native_tsz_type_inner(
@@ -17329,9 +17380,26 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
                 Err(error) => error,
                 Ok(_) => return Err(LaneError::Missing("raw structural back-edge refusal")),
             };
-            assert!(matches!(error, TypeScriptCollectError::Rejected(super::FactRejection {
-                cause: super::FactFault::TypeProjectionCycle { .. }, ..
-            })));
+            let TypeScriptCollectError::Rejected(super::FactRejection {
+                cause: super::FactFault::TypeProjectionCycle {
+                    type_id: _,
+                    owner_span: Some(owner_span),
+                    owner_name_span: Some(owner_name_span),
+                },
+                ..
+            }) = error else {
+                return Err(LaneError::Missing("raw structural back-edge with exact owner source spans"));
+            };
+            assert!(owner_span.start <= owner_name_span.start);
+            assert!(owner_name_span.end <= owner_span.end);
+            assert_eq!(
+                source.get(owner_name_span.start as usize..owner_name_span.end as usize),
+                Some("Recursive"),
+                "the owner name span must be checked against the admitted local source"
+            );
+            assert!(source
+                .get(owner_span.start as usize..owner_span.end as usize)
+                .is_some_and(|text| text.contains("export type Recursive")));
             Ok(())
         }).map_err(|_| LaneError::Missing("native recursive identity query"))??;
         Ok(())
