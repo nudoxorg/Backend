@@ -226,7 +226,7 @@ fn linked_tsz_tsx_cycle_is_an_exact_file_gap_while_navbar_and_caller_publish() {
     let staged = fixture.compile_profile(LanguageProfile::TypeScript(TypeScriptSource::Tsx));
     assert_eq!(staged.artifacts().len(), 2);
     assert_eq!(
-        staged.input_witness().coverage(),
+        staged.input_witness().coverage().state(),
         backend_version::Coverage::Partial,
         "one refused TSX source must not claim complete profile coverage"
     );
