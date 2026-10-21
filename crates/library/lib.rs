@@ -183,6 +183,7 @@ pub use graph_query::{
     MAX_GRAPH_VALUE_BYTES, MAX_GRAPH_VALUE_DEPTH,
 };
 pub use package_compiler_outcomes::{
+    MAX_PACKAGE_COMPILER_COVERAGE_PAGE_BYTES, MAX_PACKAGE_COMPILER_COVERAGE_PAGE_ROWS,
     PackageCompilerCoverage, PackageCompilerCoveragePage, PackageCompilerCoverageRow,
     PackageCompilerCoverageSelector, PackageCompilerDiagnostic, PackageCompilerOutcomeBasis,
     PackageCompilerOutcomeRead, PackageCompilerOutcomeSelector, PackageCompilerOutcomes,

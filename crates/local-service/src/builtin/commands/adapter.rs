@@ -9095,7 +9095,11 @@ mod tests {
                     panic!("exact coverage page")
                 };
                 assert_eq!((page.source_count, page.completed), (3, 1));
-                assert_eq!(page.rows.len(), 1);
+                assert!(
+                    !page.rows.is_empty()
+                        && page.rows.len()
+                            <= backend_library::MAX_PACKAGE_COMPILER_COVERAGE_PAGE_ROWS
+                );
                 assert!(serde_json::to_vec(&page).test_value()?.len() <= 4096);
                 rows.extend(page.rows);
                 next = page.next;

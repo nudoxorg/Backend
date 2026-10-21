@@ -1838,7 +1838,7 @@ fn dto_versions_and_outer_fields_are_strict() {
 
 #[test]
 fn compiler_outcome_selector_cutover_refuses_dto32_before_payload_shape() {
-    assert_eq!(DTO_VERSION, 36);
+    assert_eq!(DTO_VERSION, 37);
     let command = CommandDto::new(
         1,
         Command::Surface(crate::SurfaceCommand::PackageProfile {
@@ -1856,7 +1856,7 @@ fn compiler_outcome_selector_cutover_refuses_dto32_before_payload_shape() {
     assert!(
         super::codec::check_version_header_against(&bytes, "command", 32)
             .expect_err("old peer rejects before decoding new field")
-            .contains("command DTO version 36")
+            .contains("command DTO version 37")
     );
     value["version"] = serde_json::json!(32);
     let error = crate::decode_command_body(&serde_json::to_vec(&value).expect("old envelope"))
@@ -2795,7 +2795,7 @@ fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::interface::TypeScriptAuthorityFailureKind as F;
     assert_eq!(
-        DTO_VERSION, 36,
+        DTO_VERSION, 37,
         "current matched cohort retains catalog windows, admission details and worker refusal"
     );
     let kind = F::NativeCheckerWorkerPoolUnavailable;
@@ -2942,7 +2942,7 @@ fn windowed_catalog_admission_checks_actual_delivery_offset_and_predecessor_span
 
 #[test]
 fn catalog_window_current_cohort_refuses_dto29_and_keeps_owner_journal_grammar() {
-    assert_eq!(DTO_VERSION, 36);
+    assert_eq!(DTO_VERSION, 37);
     let issued = QueryLimit::new(4).expect("issued");
     let fixed = CommandDto::new(
         1,
@@ -3298,7 +3298,7 @@ fn borrowed_catalog_wire_keeps_real_producer_certificate_and_graph_sidecars() {
 
 #[test]
 fn settled_gap_current_cohort_rejects_old30_before_payload_and_requires_a_matched_cohort() {
-    assert_eq!(DTO_VERSION, 36);
+    assert_eq!(DTO_VERSION, 37);
     // Use the real strict coverage projection, rather than a hand-written field.
     let coverage = super::reply_coverage::coverage_to_wire(crate::Coverage::Gapped {
         lane: crate::Lane::Semantic,
@@ -3311,14 +3311,14 @@ fn settled_gap_current_cohort_rejects_old30_before_payload_and_requires_a_matche
     .expect("cohort envelope");
     let old_peer = super::codec::check_version_header_against(&current, "reply", 30)
         .expect_err("old peer stops before decoding a gapped variant");
-    assert!(old_peer.contains("reply DTO version 36"));
+    assert!(old_peer.contains("reply DTO version 37"));
     assert!(old_peer.contains("same build"));
     assert!(!old_peer.contains("unknown variant"));
     // A mutation under the previous cohort is refused before its nested shape.
     let old_mutation = br#"{"version":30,"request_id":1,"command":{"index_operation_start":{"unknown_future_field":true}}}"#;
     let error = crate::decode_command_body(old_mutation).expect_err("old live mutation refused");
     assert!(error.contains("command DTO version 30"));
-    assert!(error.contains("this build supports 36"));
+    assert!(error.contains("this build supports 37"));
     assert!(!error.contains("unknown field"));
     let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("same container");
     for version in 21..=33 {

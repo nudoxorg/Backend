@@ -2529,6 +2529,9 @@ fn valid_direct_cursor_owner(owner: &str) -> bool {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
     }
+    if let Some(encoded) = owner.strip_prefix("is1-") {
+        return valid_compressed_index_search_owner(encoded);
+    }
     let (encoded, portable) = owner
         .strip_prefix("pc3-")
         .or_else(|| owner.strip_prefix("pc4-"))
@@ -2549,6 +2552,60 @@ fn valid_direct_cursor_owner(owner: &str) -> bool {
     // The unprefixed index-search issuer serializes a JSON object. This is a
     // framing check, not authority to admit its fields or its selected state.
     portable || (decoded.first() == Some(&b'{') && decoded.last() == Some(&b'}'))
+}
+
+/// Checks the bounded framing of the compressed index-search owner token.
+/// The local-service decoder still performs typed cursor and snapshot checks
+/// before the token can resume any work.
+fn valid_compressed_index_search_owner(encoded: &str) -> bool {
+    if encoded.is_empty() {
+        return false;
+    }
+    let Ok(compressed) = URL_SAFE_NO_PAD.decode(encoded) else {
+        return false;
+    };
+    if compressed.len() > backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES
+        || URL_SAFE_NO_PAD.encode(&compressed) != encoded
+    {
+        return false;
+    }
+
+    let mut decoder = flate2::Decompress::new(true);
+    let mut expanded = Vec::new();
+    let mut input_offset = 0;
+    loop {
+        let mut chunk = [0_u8; 8192];
+        let input = &compressed[input_offset..];
+        let input_before = decoder.total_in();
+        let output_before = decoder.total_out();
+        let Ok(status) = decoder.decompress(input, &mut chunk, flate2::FlushDecompress::Finish)
+        else {
+            return false;
+        };
+        let consumed = decoder.total_in().saturating_sub(input_before) as usize;
+        let produced = decoder.total_out().saturating_sub(output_before) as usize;
+        input_offset = input_offset.saturating_add(consumed);
+        if expanded.len().saturating_add(produced)
+            > backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES
+        {
+            return false;
+        }
+        expanded.extend_from_slice(&chunk[..produced]);
+        match status {
+            flate2::Status::StreamEnd => {
+                if input_offset != compressed.len() {
+                    return false;
+                }
+                return serde_json::from_slice::<Value>(&expanded)
+                    .is_ok_and(|value| value.is_object());
+            }
+            flate2::Status::Ok | flate2::Status::BufError => {
+                if consumed == 0 && produced == 0 {
+                    return false;
+                }
+            }
+        }
+    }
 }
 
 /// Renders one answer: Markdown for a reader, the typed DTO for a program.
