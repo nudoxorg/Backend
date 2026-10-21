@@ -9461,6 +9461,7 @@ mod tests {
             "int refused_name(void) { return 7; }\n",
         )
         .expect("C source");
+        let mut first_published_python_generation = None;
         for attempt in 0..2 {
             install_mixed_native_compiler(&mut fixture);
             let (adapter, daemon) = fixture.parts();
@@ -9503,6 +9504,26 @@ mod tests {
             assert_eq!(partial.source_capture.producer_package.as_str(), label);
             assert_eq!(partial.source_capture.profiles.len(), 2);
             assert_eq!(partial.refused_profiles.len(), 1);
+            let python_generation = partial
+                .source_capture
+                .profiles
+                .iter()
+                .find_map(|profile| match &profile.state {
+                    backend_library::IndexOperationSemanticProfileState::Published {
+                        generation,
+                        ..
+                    } if profile.profile.name() == Some("python") => Some(*generation),
+                    _ => None,
+                })
+                .expect("the useful Python generation remains selected");
+            if let Some(first_generation) = first_published_python_generation {
+                assert_eq!(
+                    python_generation, first_generation,
+                    "the cold retry carries forward the exact reused Python generation"
+                );
+            } else {
+                first_published_python_generation = Some(python_generation);
+            }
             let package_ref=backend_library::PackageReference::parse(label.clone()).expect("local");
             let discovered=package_profile::read(&daemon.engine().daemon().owner().snapshot(),&adapter.index_operations,&adapter.semantic_authority,&package_ref,None).expect("current unkeyed partial captures").expect("local");
             let backend_library::PackageCompilerOutcomes::Summary { source_capture,refusals,.. }=&discovered else { panic!("partial discovery") };

@@ -526,14 +526,109 @@ pub(super) fn finish_index_scan(
         profile_refusals,
         partial_plan,
     ) = match profiles {
-        PreparedScanProfiles::Reused => (
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Box::new([]) as Box<[backend_library::IndexOperationProfileRefusal]>,
-            None,
-        ),
+        PreparedScanProfiles::Reused {
+            captures,
+            reused_profiles,
+            pending_changes,
+        } => {
+            if captures.is_empty() {
+                (
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Box::new([]) as Box<[backend_library::IndexOperationProfileRefusal]>,
+                    None,
+                )
+            } else {
+                if !ingest::compiler_revision_is_current_with_cancellation(
+                    revision_fence,
+                    Some(cancellation.as_ref()),
+                )
+                .map_err(BuiltinModelError)?
+                {
+                    return Err(BuiltinModelError(
+                        "compiler source or configuration revision changed before source capture; retry indexing"
+                            .to_owned(),
+                    ));
+                }
+                let mut capture_intent = BuiltinIntent::index_with_capture(
+                    package,
+                    &label,
+                    std::mem::take(&mut changes),
+                    Vec::new(),
+                    pending_changes,
+                )?;
+                if !source_facts_changes.is_empty() {
+                    capture_intent = capture_intent
+                        .with_source_facts(std::mem::take(&mut source_facts_changes))?;
+                }
+                let capture_intent = match operation_key {
+                    Some(key) => capture_intent.with_operation_key(key)?,
+                    None => capture_intent,
+                };
+                let capture_request =
+                    super::adapter::prepare_owned_builtin_intent(daemon, capture_intent)?;
+                let capture_request_identity = capture_request.request_identity();
+                let daemon_for_commit = &mut *daemon;
+                semantic_authority.commit_product_selection_transaction(Vec::new(), move || {
+                    super::adapter::commit_prepared_builtin_intent(
+                        daemon_for_commit,
+                        request_id,
+                        capture_request,
+                    )
+                })?;
+                *committed_captures = captures.clone();
+                if let (Some(operation_key), Some(index_operations)) =
+                    (operation_key, index_operations.as_deref_mut())
+                {
+                    let receipt = source_capture_receipt_for_root(
+                        daemon,
+                        &semantic_context.package_reference,
+                        operation_key,
+                        Some(capture_request_identity),
+                    )?
+                    .ok_or_else(|| {
+                        BuiltinModelError(
+                            "source capture root does not retain its exact keyed operation marker"
+                                .to_owned(),
+                        )
+                    })?;
+                    index_operations
+                        .source_captured(operation_key, receipt)
+                        .map_err(|error| {
+                            BuiltinModelError(format!("persist source-capture receipt: {error}"))
+                        })?;
+                }
+                let admitted = reused_capture_publications_for_snapshot(
+                    &daemon.engine().daemon().owner().snapshot(),
+                    &captures,
+                    &reused_profiles,
+                    operation_key,
+                )?;
+                let completed = completed_capture_changes(daemon, &captures, &[], &admitted)?;
+                let mut capture_changes = completed.captures;
+                let (profile_refusals, partial_plan) = prepare_terminal_profile_partition(
+                    daemon,
+                    &captures,
+                    &mut capture_changes,
+                    &BTreeMap::new(),
+                    !admitted.is_empty(),
+                )?;
+                let selected = admitted
+                    .iter()
+                    .map(AdmittedCapturePublication::selected_claim)
+                    .collect();
+                (
+                    completed.retained_publications,
+                    selected,
+                    Vec::new(),
+                    capture_changes,
+                    profile_refusals,
+                    partial_plan,
+                )
+            }
+        }
         PreparedScanProfiles::Compile(compilation) => {
             let PreparedScanCompilation {
                 fresh,
@@ -541,6 +636,7 @@ pub(super) fn finish_index_scan(
                 source_admission_policy,
                 observations,
                 captures,
+                reused_profiles,
                 pending_changes,
             } = *compilation;
             // The synchronous reference path commits the independently
@@ -652,6 +748,8 @@ pub(super) fn finish_index_scan(
                     revision_fence.clone(),
                     &observations,
                     captures,
+                    reused_profiles,
+                    operation_key,
                     semantic_authority,
                     None,
                 )
@@ -681,6 +779,14 @@ pub(super) fn finish_index_scan(
                     return Err(error);
                 }
             };
+            compiled
+                .admitted
+                .extend(reused_capture_publications_for_snapshot(
+                    &daemon.engine().daemon().owner().snapshot(),
+                    &captures,
+                    &reused_profiles,
+                    operation_key,
+                )?);
             let completed = completed_capture_changes(
                 daemon,
                 &captures,
@@ -1523,9 +1629,9 @@ fn terminal_capture_changes_for_snapshot(
 /// Capture terminal rows and the exact retained semantic after-images needed
 /// to bind them in the same intent. An unchanged after-image is an observation
 /// of admitted publication, not a claim that an ordinary relation row changed.
-struct CompletedCaptureChanges {
-    captures: Vec<BuiltinCaptureChange>,
-    retained_publications: Vec<BuiltinSemanticChange>,
+pub(super) struct CompletedCaptureChanges {
+    pub(super) captures: Vec<BuiltinCaptureChange>,
+    pub(super) retained_publications: Vec<BuiltinSemanticChange>,
 }
 
 fn completed_capture_changes(
@@ -1542,7 +1648,7 @@ fn completed_capture_changes(
     )
 }
 
-fn completed_capture_changes_for_snapshot(
+pub(super) fn completed_capture_changes_for_snapshot(
     snapshot: &WorkspaceSnapshot,
     captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     semantic_changes: &[BuiltinSemanticChange],
@@ -2157,6 +2263,8 @@ fn prepare_deferred_compile(
     revision_fence: ingest::CompilerRevisionFence,
     observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
     captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    reused_profiles: BTreeSet<LanguageProfile>,
+    operation_key: Option<backend_library::IndexOperationKey>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     mut retained_attempts: Option<&mut Vec<backend_extension_turso::CandidateAttempt>>,
 ) -> Result<DeferredIndex, BuiltinModelError> {
@@ -2168,6 +2276,12 @@ fn prepare_deferred_compile(
                 .map_err(|error| BuiltinModelError(error.to_string()))?,
         );
     }
+    let reused_publications = reused_capture_publications_for_snapshot(
+        snapshot,
+        &captures,
+        &reused_profiles,
+        operation_key,
+    )?;
     let structural_only =
         take_structural_only_profiles(snapshot, context, observations, &mut by_profile)?;
     let mut profiles = Vec::with_capacity(by_profile.len());
@@ -2286,7 +2400,7 @@ fn prepare_deferred_compile(
         completed_profiles: 0,
         captures,
         semantic_changes: structural_only,
-        capture_publications: Vec::with_capacity(expected_profiles),
+        capture_publications: reused_publications,
         cargo_alias_observations: BTreeMap::new(),
         refused_profiles: BTreeMap::new(),
     })
@@ -4272,14 +4386,16 @@ fn publish_local_compile(
 /// changes. Its constructor is the publication recorder called only after
 /// the local or remote compiler result has been selected and admitted.
 #[derive(Clone, Debug)]
-struct AdmittedCapturePublication {
+pub(super) struct AdmittedCapturePublication {
     key: ProductSemanticPublicationKey,
     coverage: SemanticPublicationCoverage,
     claim: SemanticPublicationClaim,
 }
 
 impl AdmittedCapturePublication {
-    fn selected_claim(&self) -> (ProductSemanticPublicationKey, SemanticPublicationClaim) {
+    pub(super) fn selected_claim(
+        &self,
+    ) -> (ProductSemanticPublicationKey, SemanticPublicationClaim) {
         (self.key.clone(), self.claim)
     }
 
@@ -4289,6 +4405,76 @@ impl AdmittedCapturePublication {
             claim: self.claim,
         }
     }
+}
+
+/// Carries exact previously selected generations into a refreshed operation
+/// capture only when their input witnesses were proven current by scan
+/// admission. These are retained selections, never compiler completions.
+pub(super) fn reused_capture_publications_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    reused_profiles: &BTreeSet<LanguageProfile>,
+    operation_key: Option<backend_library::IndexOperationKey>,
+) -> Result<Vec<AdmittedCapturePublication>, BuiltinModelError> {
+    if reused_profiles.is_empty() {
+        return Ok(Vec::new());
+    }
+    let relation = snapshot
+        .relation::<BuiltinSemanticRelation>()
+        .map_err(|error| BuiltinModelError(format!("open reused semantic selections: {error}")))?;
+    let capture_relation = semantic_capture_relation(snapshot)
+        .map_err(|error| BuiltinModelError(format!("open reused source captures: {error}")))?
+        .ok_or_else(|| BuiltinModelError("reused source capture relation is absent".to_owned()))?;
+    let mut reused = Vec::with_capacity(reused_profiles.len());
+    let expected_operation_key = operation_key.map(|key| key.to_bytes());
+    for (key, capture) in captures {
+        if !reused_profiles.contains(&key.profile()) {
+            continue;
+        }
+        if capture.operation_key().copied() != expected_operation_key {
+            return Err(BuiltinModelError(
+                "reused source capture belongs to another index operation".to_owned(),
+            ));
+        }
+        let selected = relation.lookup(key).map_err(|error| {
+            BuiltinModelError(format!("read reused semantic selection: {error}"))
+        })?;
+        let Some(ProductSemanticPublicationRecord::Published { coverage, claim }) = selected else {
+            return Err(BuiltinModelError(
+                "reused profile lost its exact selected semantic generation".to_owned(),
+            ));
+        };
+        let current_capture = capture_relation
+            .lookup(key)
+            .map_err(|error| BuiltinModelError(format!("read reused source capture: {error}")))?;
+        let current_capture = current_capture.as_ref().ok_or_else(|| {
+            BuiltinModelError(
+                "reused source capture disappeared before terminal receipt".to_owned(),
+            )
+        })?;
+        if current_capture.capture() != *capture
+            || current_capture.capture().operation_key().copied() != expected_operation_key
+            || !matches!(current_capture.outcome(), ProductSemanticCaptureOutcome::Pending {
+                prior: Some(prior)
+            } if prior.claim() == claim && prior.coverage() == coverage)
+        {
+            return Err(BuiltinModelError(
+                "reused source and selected generation differ from the admitted operation"
+                    .to_owned(),
+            ));
+        }
+        reused.push(AdmittedCapturePublication {
+            key: key.clone(),
+            coverage,
+            claim,
+        });
+    }
+    if reused.len() != reused_profiles.len() {
+        return Err(BuiltinModelError(
+            "reused profiles differ from the refreshed source capture set".to_owned(),
+        ));
+    }
+    Ok(reused)
 }
 
 /// Records history/selection deltas and returns the admitted completion even
@@ -4448,8 +4634,16 @@ mod admitted_capture_publication_tests {
         .expect("initial selected relation intent");
         super::super::adapter::commit_builtin_intent(&mut daemon, 1, &initial)
             .expect("persist selected relation");
-        let capture = SemanticSourceCapture::new(None, source_version, [0x52; 32], 1, 0)
-            .expect("zero syntax-source capture");
+        let operation_key =
+            backend_library::IndexOperationKey::from_bytes([0x61; 32]).expect("operation key");
+        let capture = SemanticSourceCapture::new(
+            Some(operation_key.to_bytes()),
+            source_version,
+            [0x52; 32],
+            1,
+            0,
+        )
+        .expect("syntax-source capture");
         let pending = BuiltinIntent::index_with_capture(
             package,
             label,
@@ -4468,11 +4662,62 @@ mod admitted_capture_publication_tests {
                 compiler_failure: None,
             }],
         )
-        .expect("new pending observation over selected generation");
+        .expect("new pending observation over selected generation")
+        .with_operation_key(operation_key)
+        .expect("bind pending capture to exact operation");
         super::super::adapter::commit_builtin_intent(&mut daemon, 2, &pending)
             .expect("persist pending capture");
         let captures = BTreeMap::from([(key.clone(), capture)]);
         let snapshot = daemon.engine().daemon().owner().snapshot();
+        let reused_profiles = BTreeSet::from([key.profile()]);
+        let reused = reused_capture_publications_for_snapshot(
+            &snapshot,
+            &captures,
+            &reused_profiles,
+            Some(operation_key),
+        )
+        .expect("exact source capture retains its previously selected generation");
+        assert_eq!(reused.len(), 1);
+        assert_eq!(
+            reused[0].record(),
+            ProductSemanticPublicationRecord::Published {
+                coverage: SemanticPublicationCoverage::Complete,
+                claim: original_claim,
+            }
+        );
+        assert!(
+            reused_capture_publications_for_snapshot(
+                &snapshot,
+                &captures,
+                &reused_profiles,
+                Some(
+                    backend_library::IndexOperationKey::from_bytes([0x62; 32]).expect("other key")
+                ),
+            )
+            .is_err(),
+            "a receipt cannot borrow another operation's capture"
+        );
+        let wrong_source = BTreeMap::from([(
+            key.clone(),
+            SemanticSourceCapture::new(
+                Some(operation_key.to_bytes()),
+                [0x50; 32],
+                [0x52; 32],
+                1,
+                0,
+            )
+            .expect("changed source capture"),
+        )]);
+        assert!(
+            reused_capture_publications_for_snapshot(
+                &snapshot,
+                &wrong_source,
+                &reused_profiles,
+                Some(operation_key),
+            )
+            .is_err(),
+            "a reused generation cannot be attached to another source capture"
+        );
         let relation = snapshot
             .relation::<BuiltinSemanticRelation>()
             .expect("selected relation");
@@ -6267,7 +6512,10 @@ fn semantic_input_digest(scan: &ingest::IndexSnapshot, profile: LanguageProfile)
             hasher.update(&environment.identity());
         }
     }
-    if matches!(profile, LanguageProfile::Python(_) | LanguageProfile::TypeScript(_)) {
+    if matches!(
+        profile,
+        LanguageProfile::Python(_) | LanguageProfile::TypeScript(_)
+    ) {
         let mut sources = scan
             .compiler_sources
             .iter()
@@ -6282,7 +6530,11 @@ fn semantic_input_digest(scan: &ingest::IndexSnapshot, profile: LanguageProfile)
             .collect::<Vec<_>>();
         if matches!(profile, LanguageProfile::Python(_)) {
             // Preserve the existing Python snapshot key contract.
-            sources = sources.into_iter().collect::<BTreeMap<_, _>>().into_iter().collect();
+            sources = sources
+                .into_iter()
+                .collect::<BTreeMap<_, _>>()
+                .into_iter()
+                .collect();
         }
         // TS keeps every admitted row, including any duplicate, so partition
         // ordering cannot hide an inconsistent source tuple.
@@ -6340,10 +6592,11 @@ mod typescript_snapshot_input_tests {
     use std::fs;
 
     #[test]
-    fn exact_typescript_input_does_not_depend_on_fresh_or_reused_scan_partition() -> Result<(), String>
-    {
+    fn exact_typescript_input_does_not_depend_on_fresh_or_reused_scan_partition()
+    -> Result<(), String> {
         use crate::test_support::TestValue as _;
-        let directory = crate::test_support::private_temp_dir("tsz-input-partition").test_value()?;
+        let directory =
+            crate::test_support::private_temp_dir("tsz-input-partition").test_value()?;
         let root = directory.path();
         fs::write(root.join("a.ts"), "export const a = 1;").test_value()?;
         fs::write(root.join("b.ts"), "export const b = 2;").test_value()?;
