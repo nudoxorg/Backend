@@ -2968,7 +2968,7 @@ impl DiscoverySearchIndex {
                     if substring_keys
                         .iter()
                         .nth(needed_substring_hits.saturating_sub(1))
-                        .is_some_and(|boundary| sort_key > boundary)
+                        .is_some_and(|boundary| sort_key > boundary.as_str())
                     {
                         return Ok(true);
                     }
