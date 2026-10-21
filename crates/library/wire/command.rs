@@ -27,8 +27,8 @@ pub use binary_certificate::{
     encode_binary_certificate_command, expand_binary_certificate_command,
 };
 pub(crate) use cursor_wire::{
-    cursor_from_wire, cursor_from_wire_with_capability, cursor_to_wire, frontier_from_wire,
-    frontier_from_wire_with_capability, frontier_to_wire,
+    cursor_from_wire, cursor_from_wire_against_catalog_owner, cursor_from_wire_with_capability,
+    cursor_to_wire, frontier_from_wire, frontier_from_wire_with_capability, frontier_to_wire,
 };
 use graph_query_wire::{
     GraphQueryRequestWire, request_from_wire as graph_request_from_wire,
@@ -37,7 +37,8 @@ use graph_query_wire::{
 };
 pub(crate) use graph_query_wire::{GraphValueWire, value_from_wire, value_to_wire};
 use page_wire::{
-    PackagePageWire, PageRequestWire, SymbolPageWire, page_request_from_wire, page_request_to_wire,
+    PackagePageWire, PageRequestWire, SymbolPageWire, page_request_from_wire,
+    page_request_from_wire_against_catalog_owner, page_request_to_wire,
 };
 use read_manifest_wire::{ReadManifestWire, read_manifest_from_wire, read_manifest_to_wire};
 use semantic_shape_wire::{
@@ -111,12 +112,9 @@ impl CommandDto {
         Ok(expected.clone())
     }
 
-    /// Decodes a command using the durable owner's already admitted cursor
-    /// for graph-query continuation roots.
-    ///
-    /// All ordinary commands retain the strict canonical decoder. A graph
-    /// continuation may carry a constant-size root commitment because the
-    /// owner supplies and later compares the materialized root itself.
+    /// Decodes graph-query continuations against the durable owner's already
+    /// admitted cursor. Catalog continuations retain strict canonical root
+    /// preimage decoding.
     ///
     /// # Errors
     /// Returns an error when the envelope, certificate, or continuation does
@@ -125,21 +123,13 @@ impl CommandDto {
         let envelope: CommandEnvelope = super::codec::parse_command_body(bytes)?;
         ensure_version(envelope.version, "command")?;
         let certificate = envelope.certificate.as_ref();
-        let command = match envelope.command {
-            CommandWire::GraphQuery(value) => {
-                Command::GraphQuery(graph_request_from_wire_against_owner(
-                    value,
-                    required_certificate(certificate)?,
-                    owner,
-                )?)
-            }
-            command => command_from_wire(command, certificate)?,
-        };
-        Ok(Self {
+        let command = command_from_wire_against_owner(envelope.command, certificate, owner)?;
+        let request = Self {
             request_id: envelope.request_id,
             command,
             certificate: envelope.certificate,
-        })
+        };
+        Ok(request)
     }
 }
 
@@ -975,6 +965,104 @@ fn command_from_wire(
         CommandWire::Health(_) => Ok(Command::Health),
         CommandWire::Revision(_) => Ok(Command::Revision),
     }
+}
+
+fn command_from_wire_against_owner(
+    command: CommandWire,
+    certificate: Option<&WireCertificate>,
+    owner: crate::Cursor,
+) -> Result<Command, String> {
+    let Some(certificate) = certificate else {
+        return command_from_wire(command, None);
+    };
+    match command {
+        CommandWire::GraphQuery(value) => Ok(Command::GraphQuery(
+            graph_request_from_wire_against_owner(value, certificate, owner)?,
+        )),
+        CommandWire::Name(value) if value.cursor.is_some() => Ok(Command::Name(
+            name_query_from_wire_against_owner(value, certificate, owner)?,
+        )),
+        CommandWire::Search(value) if value.cursor.is_some() => Ok(Command::Search(
+            query_from_wire_against_owner(value, certificate, owner)?,
+        )),
+        CommandWire::SearchPublishedNames(value) if value.cursor.is_some() => {
+            let query = query_from_wire_against_owner(value, certificate, owner)?;
+            Ok(Command::SearchPublishedNames(
+                crate::PublishedNameSearchQuery::admit(query).map_err(|_| {
+                    "published-name search requires one identifier or qualified identifier"
+                        .to_owned()
+                })?,
+            ))
+        }
+        CommandWire::GraphPage(value) if value.page.continuation.is_some() => {
+            Ok(Command::GraphPage {
+                symbol: symbol_address_from_wire(&value.symbol, certificate)?,
+                page: page_request_from_wire_against_catalog_owner(value.page, certificate, owner)?,
+            })
+        }
+        CommandWire::OutlinePage(value) if value.page.continuation.is_some() => {
+            Ok(Command::OutlinePage {
+                package: certificate
+                    .key_value::<PackageSchema>(WireSchema::Package, &value.package)?,
+                page: page_request_from_wire_against_catalog_owner(value.page, certificate, owner)?,
+            })
+        }
+        command => command_from_wire(command, Some(certificate)),
+    }
+}
+
+fn name_query_from_wire_against_owner(
+    value: NameQueryWire,
+    certificate: &WireCertificate,
+    owner: crate::Cursor,
+) -> Result<NameQuery, String> {
+    let limit = QueryLimit::new(value.limit).ok_or_else(|| "invalid query limit".to_owned())?;
+    let basis = revision_from_wire(certificate, &value.basis)?;
+    if basis != owner.root() {
+        return Err("query basis does not match the owner root".to_owned());
+    }
+    Ok(NameQuery {
+        text: value.text,
+        window: window_from_wire(value.window.as_ref(), limit)?,
+        basis,
+        cursor: value
+            .cursor
+            .as_ref()
+            .map(|cursor| cursor_from_wire_against_catalog_owner(cursor, certificate, owner))
+            .transpose()?,
+        read_manifest: value
+            .read_manifest
+            .as_ref()
+            .map(read_manifest_from_wire)
+            .transpose()?,
+    })
+}
+
+fn query_from_wire_against_owner(
+    value: QueryWire,
+    certificate: &WireCertificate,
+    owner: crate::Cursor,
+) -> Result<Query, String> {
+    let limit = QueryLimit::new(value.limit).ok_or_else(|| "invalid query limit".to_owned())?;
+    let basis = revision_from_wire(certificate, &value.basis)?;
+    if basis != owner.root() {
+        return Err("query basis does not match the owner root".to_owned());
+    }
+    Ok(Query {
+        text: value.text,
+        window: window_from_wire(value.window.as_ref(), limit)?,
+        basis,
+        cursor: value
+            .cursor
+            .as_ref()
+            .map(|cursor| cursor_from_wire_against_catalog_owner(cursor, certificate, owner))
+            .transpose()?,
+        read_manifest: value
+            .read_manifest
+            .as_ref()
+            .map(read_manifest_from_wire)
+            .transpose()?,
+    })
 }
 
 fn document_query_to_wire(query: &DocumentQuery) -> DocumentQueryWire {

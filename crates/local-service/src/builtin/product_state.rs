@@ -51,6 +51,122 @@ const MAX_PROJECT_MEMBERS: usize = backend_library::MAX_PROJECT_MEMBERS;
 const MAX_SUBSCRIPTIONS: usize = 4096;
 const MAX_TREE_NODES: usize = 2048;
 const INDEX_SEARCH_CURSOR_VERSION: u8 = 4;
+const MAX_INDEX_SEARCH_CURSOR_STATE_BYTES: usize = 48 * 1024;
+const INDEX_SEARCH_CURSOR_PREFIX: &str = "is1-";
+
+/// Index-search cursors are portable owner state. Keep accepting the original
+/// base64(JSON) spelling while issuing a lossless zlib-compressed spelling;
+/// the outer MCP cursor wrapper still authenticates the exact opaque token.
+fn decode_index_search_cursor_state(
+    cursor: &IndexSearchCursor,
+) -> Result<IndexSearchCursorState, String> {
+    let encoded = cursor
+        .as_str()
+        .strip_prefix(INDEX_SEARCH_CURSOR_PREFIX)
+        .unwrap_or(cursor.as_str());
+    let bytes = decode_canonical_index_search_cursor_base64(encoded)?;
+    if bytes.len() > MAX_INDEX_SEARCH_CURSOR_STATE_BYTES {
+        return Err("index search cursor exceeds its encoded bound".to_owned());
+    }
+    let json = if !cursor.as_str().starts_with(INDEX_SEARCH_CURSOR_PREFIX) {
+        if bytes.first() != Some(&b'{') {
+            return Err("index search cursor is malformed".to_owned());
+        }
+        // Backward compatibility for every previously issued cursor.
+        bytes
+    } else {
+        let json = decode_index_search_cursor_zlib(&bytes)?;
+        if !json.starts_with(b"{") {
+            return Err("index search cursor is malformed".to_owned());
+        }
+        json
+    };
+    serde_json::from_slice(&json).map_err(|_| "index search cursor is malformed".to_owned())
+}
+
+fn decode_canonical_index_search_cursor_base64(encoded: &str) -> Result<Vec<u8>, String> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| "index search cursor is malformed".to_owned())?;
+    if URL_SAFE_NO_PAD.encode(&bytes) != encoded {
+        return Err("index search cursor is malformed".to_owned());
+    }
+    Ok(bytes)
+}
+
+fn decode_index_search_cursor_zlib(compressed: &[u8]) -> Result<Vec<u8>, String> {
+    if compressed.is_empty() || compressed.len() > MAX_INDEX_SEARCH_CURSOR_STATE_BYTES {
+        return Err("index search cursor exceeds its encoded bound".to_owned());
+    }
+
+    let mut decoder = flate2::Decompress::new(true);
+    let mut expanded = Vec::new();
+    let mut input_offset = 0_usize;
+    loop {
+        let mut chunk = [0_u8; 8192];
+        let input = &compressed[input_offset..];
+        let input_before = decoder.total_in();
+        let output_before = decoder.total_out();
+        let status = decoder
+            .decompress(input, &mut chunk, flate2::FlushDecompress::Finish)
+            .map_err(|_| "index search cursor is malformed".to_owned())?;
+        let consumed = decoder.total_in().saturating_sub(input_before) as usize;
+        let produced = decoder.total_out().saturating_sub(output_before) as usize;
+        input_offset = input_offset.saturating_add(consumed);
+        if produced > MAX_INDEX_SEARCH_CURSOR_STATE_BYTES.saturating_sub(expanded.len()) {
+            return Err("index search cursor exceeds its expanded bound".to_owned());
+        }
+        expanded.extend_from_slice(&chunk[..produced]);
+        match status {
+            flate2::Status::StreamEnd => {
+                if input_offset != compressed.len() {
+                    return Err("index search cursor is malformed".to_owned());
+                }
+                return Ok(expanded);
+            }
+            flate2::Status::Ok | flate2::Status::BufError => {
+                if consumed == 0 && produced == 0 {
+                    return Err("index search cursor is malformed".to_owned());
+                }
+            }
+        }
+    }
+}
+
+fn encode_index_search_cursor_state(
+    state: &IndexSearchCursorState,
+) -> Result<IndexSearchCursor, String> {
+    use std::io::Write as _;
+
+    let json = serde_json::to_vec(state)
+        .map_err(|error| format!("encode index search cursor: {error}"))?;
+    if json.len() > MAX_INDEX_SEARCH_CURSOR_STATE_BYTES {
+        return Err("index search cursor exceeds its encoded bound".to_owned());
+    }
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    encoder
+        .write_all(&json)
+        .map_err(|error| format!("compress index search cursor: {error}"))?;
+    let compressed = encoder
+        .finish()
+        .map_err(|error| format!("compress index search cursor: {error}"))?;
+    if compressed.len() > MAX_INDEX_SEARCH_CURSOR_STATE_BYTES {
+        return Err("index search cursor exceeds its encoded bound".to_owned());
+    }
+    let compact = format!(
+        "{INDEX_SEARCH_CURSOR_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(compressed)
+    );
+    // Highly entropic cursors can grow slightly under compression. Preserve
+    // the old bounded representation for those cases instead of making a
+    // valid continuation larger or crossing its product token ceiling.
+    if compact.len() >= URL_SAFE_NO_PAD.encode(&json).len() {
+        return IndexSearchCursor::new(URL_SAFE_NO_PAD.encode(json))
+            .map_err(|error| format!("index search cursor exceeds product bounds: {error:?}"));
+    }
+    IndexSearchCursor::new(compact)
+        .map_err(|error| format!("index search cursor exceeds product bounds: {error:?}"))
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,7 +181,7 @@ struct StoredState {
     active: Option<TreeNodeId>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct IndexSearchCursorState {
     version: u8,
@@ -1420,14 +1536,7 @@ fn index_search_page_with_discovery_measured_snapshot(
     let normalized_query = unicode_lowercase(query.as_str());
     let mut cursor_state = match cursor {
         Some(cursor) => {
-            let bytes = URL_SAFE_NO_PAD
-                .decode(cursor.as_str())
-                .map_err(|_| "index search cursor is malformed".to_owned())?;
-            if bytes.len() > 48 * 1024 {
-                return Err("index search cursor exceeds its encoded bound".to_owned());
-            }
-            let state: IndexSearchCursorState = serde_json::from_slice(&bytes)
-                .map_err(|_| "index search cursor is malformed".to_owned())?;
+            let state = decode_index_search_cursor_state(cursor)?;
             if state.version != INDEX_SEARCH_CURSOR_VERSION
                 || state.normalized_query != normalized_query
                 || state.snapshot != snapshot
@@ -1750,13 +1859,7 @@ fn index_search_page_with_discovery_measured_snapshot(
         }
     };
     let next_cursor = if has_more {
-        let bytes = serde_json::to_vec(&cursor_state)
-            .map_err(|error| format!("encode index search cursor: {error}"))?;
-        Some(
-            IndexSearchCursor::new(URL_SAFE_NO_PAD.encode(bytes)).map_err(|error| {
-                format!("index search cursor exceeds product bounds: {error:?}")
-            })?,
-        )
+        Some(encode_index_search_cursor_state(&cursor_state)?)
     } else {
         None
     };
@@ -3868,6 +3971,128 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("fixture directory");
         path
+    }
+
+    #[test]
+    fn index_search_cursor_compression_roundtrips_new_and_legacy_state() {
+        let state = IndexSearchCursorState {
+            version: INDEX_SEARCH_CURSOR_VERSION,
+            normalized_query: "needle muscle-group".to_owned(),
+            snapshot: [0x5a; 32],
+            evaluated_at_millis: 1_797_000_000_000,
+            acquired: Some(SearchContinuation {
+                next_tier: 6,
+                after_sort_key: format!(
+                    "registry:pkg:cargo/needle@1.2.3:{}",
+                    "field/".repeat(400)
+                ),
+                returned_before: 125,
+            }),
+            discovery: None,
+            forge_source_pins: None,
+            local: Some(SearchContinuation {
+                next_tier: 6,
+                after_sort_key: format!("local:src/components/needle.rs:{}", "symbol/".repeat(400)),
+                returned_before: 125,
+            }),
+        };
+
+        let legacy_bytes = serde_json::to_vec(&state).expect("legacy cursor JSON");
+        let legacy = IndexSearchCursor::new(URL_SAFE_NO_PAD.encode(&legacy_bytes))
+            .expect("legacy cursor token");
+        assert_eq!(
+            decode_index_search_cursor_state(&legacy).expect("legacy decode"),
+            state
+        );
+
+        let compact = encode_index_search_cursor_state(&state).expect("compressed cursor");
+        assert_eq!(
+            decode_index_search_cursor_state(&compact).expect("compressed decode"),
+            state
+        );
+        assert!(
+            compact.as_str().len() < legacy.as_str().len(),
+            "lossless compression should reduce retained cursor from {} to {} bytes",
+            legacy.as_str().len(),
+            compact.as_str().len(),
+        );
+
+        let mut tampered = URL_SAFE_NO_PAD
+            .decode(
+                compact
+                    .as_str()
+                    .strip_prefix(INDEX_SEARCH_CURSOR_PREFIX)
+                    .expect("new prefix"),
+            )
+            .expect("compressed bytes");
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0x01;
+        let tampered = IndexSearchCursor::new(format!(
+            "{INDEX_SEARCH_CURSOR_PREFIX}{}",
+            URL_SAFE_NO_PAD.encode(tampered)
+        ))
+            .expect("URL-safe tampered token");
+        assert!(decode_index_search_cursor_state(&tampered).is_err());
+    }
+
+    #[test]
+    fn index_search_cursor_zlib_requires_complete_bounded_canonical_input() {
+        use std::io::Write as _;
+
+        assert_eq!(
+            decode_canonical_index_search_cursor_base64("AA").expect("canonical zero byte"),
+            [0]
+        );
+        assert!(decode_canonical_index_search_cursor_base64("AB").is_err());
+
+        let state = IndexSearchCursorState {
+            version: INDEX_SEARCH_CURSOR_VERSION,
+            normalized_query: "needle".to_owned(),
+            snapshot: [0x2a; 32],
+            evaluated_at_millis: 1_797_000_000_000,
+            acquired: Some(SearchContinuation {
+                next_tier: 6,
+                after_sort_key: "registry:pkg:cargo/needle@1.2.3".to_owned(),
+                returned_before: 2,
+            }),
+            discovery: None,
+            forge_source_pins: None,
+            local: None,
+        };
+        let token = encode_index_search_cursor_state(&state).expect("compressed cursor");
+        let compressed = decode_canonical_index_search_cursor_base64(
+            token
+                .as_str()
+                .strip_prefix(INDEX_SEARCH_CURSOR_PREFIX)
+                .expect("prefix"),
+        )
+        .expect("canonical compressed bytes");
+        assert!(
+            compressed.len() > 8,
+            "fixture must contain header, body and checksum"
+        );
+
+        for truncated in [
+            compressed[..1].to_vec(),
+            compressed[..compressed.len() - 5].to_vec(),
+            compressed[..compressed.len() - 4].to_vec(),
+        ] {
+            assert!(
+                decode_index_search_cursor_zlib(&truncated).is_err(),
+                "truncated zlib header/body/checksum must be rejected"
+            );
+        }
+
+        let mut trailing = compressed.clone();
+        trailing.push(0);
+        assert!(decode_index_search_cursor_zlib(&trailing).is_err());
+
+        let bomb = vec![b'a'; MAX_INDEX_SEARCH_CURSOR_STATE_BYTES + 1];
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        encoder.write_all(&bomb).expect("compress bomb fixture");
+        let bomb = encoder.finish().expect("finish bomb fixture");
+        assert!(decode_index_search_cursor_zlib(&bomb).is_err());
     }
 
     struct SearchForgeTransport {
@@ -6104,6 +6329,17 @@ mod tests {
         assert!(discovery_documents <= 2);
         assert!(discovery_releases <= 16);
         assert!(first_cursor.is_some());
+        let retained = first_cursor.as_ref().expect("first page cursor");
+        let retained_state = decode_index_search_cursor_state(retained).expect("issued cursor");
+        let legacy_size = URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&retained_state).expect("legacy state"))
+            .len();
+        assert!(retained.as_str().starts_with(INDEX_SEARCH_CURSOR_PREFIX));
+        assert!(
+            retained.as_str().len() < legacy_size,
+            "retained merged-search cursor shrank from {legacy_size} to {} bytes",
+            retained.as_str().len()
+        );
 
         // A cursor is tied to the full selected catalog digest. Changing one
         // row's standing/advisory payload cannot resume against stale facets.

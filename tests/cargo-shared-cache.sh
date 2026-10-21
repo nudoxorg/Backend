@@ -260,6 +260,20 @@ assert_eq "$cargo_in_root" "$(cat "$cargo_in_build/.nudox-worktree-root")"
 assert_eq "$cargo_in_root" "$(cat "$cargo_in_target/.nudox-worktree-root")"
 assert_eq "$test_root/rustc-cache-wrapper" "$(cut -d '|' -f 6 "$cargo_in_log")"
 
+# The host-wide CPU count divided by one requested warm slot can exceed the
+# per-process compiler admission bound. The wrapper caps only its computed
+# default; an explicit caller job count remains authoritative.
+printf '%s\n' '#!/bin/sh' '[ "${1:-}" = _NPROCESSORS_ONLN ] || exit 1' 'printf "6\\n"' \
+  > "$test_root/bin/getconf"
+chmod +x "$test_root/bin/getconf"
+computed_jobs_log="$test_root/computed-jobs.log"
+NUDOX_TEST_WORKTREE="$test_root/roots/computed-jobs" NUDOX_TEST_LOG="$computed_jobs_log" \
+  PATH="$test_root/bin:$PATH" CARGO_BUILD_JOBS="" \
+  NUDOX_BUILD_CACHE_ROOT="$test_root/computed-jobs-cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" build
+assert_eq 4 "$(cut -d '|' -f 5 "$computed_jobs_log")"
+
 # The development shell exports this exact in-worktree default target before
 # the Cargo wrapper runs. It remains usable when populated, while receiving a
 # root stamp that cannot authorize another worktree.
