@@ -4452,10 +4452,25 @@ fn native_tsz_member_symbol(
         return Some((target.symbol_id, Some(target.owner_file_idx)));
     }
     let receiver_type = checker.get_type_of_node(receiver);
-    let owner = checker.ctx.resolve_type_to_symbol_id(receiver_type);
-    let owner = owner?;
-    let owner = binder.resolve_import_symbol(owner).unwrap_or(owner);
-    let owner = binder.symbols.get(owner)?;
+    let owner_symbol = checker.ctx.resolve_type_to_symbol_id(receiver_type)?;
+    // A receiver's class symbol may belong to a different project file than
+    // the call site (for example, a field initialized with Angular's
+    // `inject(Service)`). Symbol ids are binder-relative, so looking the id
+    // up in the caller's binder can miss the real member or select an
+    // unrelated same-numbered symbol. Carry the checker's exact file owner
+    // through both the member lookup and the later declaration-coordinate
+    // join.
+    let owner_file_idx = checker.ctx.resolve_symbol_file_index(owner_symbol);
+    let owner_binder = match owner_file_idx {
+        Some(owner_file_idx) => checker.ctx.get_binder_for_file(owner_file_idx)?,
+        // Same-file symbols do not always need a cross-file owner entry. Keep
+        // the existing caller-binder route for those local receiver types.
+        None => binder,
+    };
+    let owner_symbol = owner_binder
+        .resolve_import_symbol(owner_symbol)
+        .unwrap_or(owner_symbol);
+    let owner = owner_binder.symbols.get(owner_symbol)?;
     let member = owner
         .members
         .as_ref()
@@ -4466,7 +4481,7 @@ fn native_tsz_member_symbol(
                 .as_ref()
                 .and_then(|exports| exports.get(member_name))
         });
-    member.map(|symbol| (symbol, None))
+    member.map(|symbol| (symbol, owner_file_idx))
 }
 
 /// An object method is a source-owned callable even though it has no
@@ -12928,6 +12943,90 @@ mod lane_tests {
                 }),
             "spec call must name the exact controller declaration: {spec_targets:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_joins_injected_service_field_calls_to_the_exact_foreign_owner()
+    -> Result<(), LaneError> {
+        let service = "export class ExerciseAnalyticsService { totalsEntries() { return []; } }";
+        let records = concat!(
+            "import { ExerciseAnalyticsService } from './exercise-analytics.service.js';\n",
+            "declare function inject<T>(token: new (...args: any[]) => T): T;\n",
+            "export class RecordsPage {\n",
+            "  private readonly svc = inject(ExerciseAnalyticsService);\n",
+            "  load() { return this.svc.totalsEntries(); }\n",
+            "}\n",
+        );
+        let training_totals = concat!(
+            "import { ExerciseAnalyticsService } from './exercise-analytics.service.js';\n",
+            "declare function inject<T>(token: new (...args: any[]) => T): T;\n",
+            "export class TrainingTotalsPage {\n",
+            "  private readonly svc = inject(ExerciseAnalyticsService);\n",
+            "  load() { return this.svc.totalsEntries(); }\n",
+            "}\n",
+        );
+        let resolutions = [
+            module_resolution(
+                "src/pages/records/records.ts",
+                "./exercise-analytics.service.js",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "src/analytics/exercise-analytics.service.ts".to_owned(),
+                },
+            ),
+            module_resolution(
+                "src/pages/analytics/totals/training-totals.ts",
+                "./exercise-analytics.service.js",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "src/analytics/exercise-analytics.service.ts".to_owned(),
+                },
+            ),
+        ];
+        let authority = native_tsz_project_with_resolutions(
+            &[
+                ("src/analytics/exercise-analytics.service.ts", service),
+                ("src/pages/records/records.ts", records),
+                (
+                    "src/pages/analytics/totals/training-totals.ts",
+                    training_totals,
+                ),
+            ],
+            &resolutions,
+        )?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("injected-service TSZ project"))?;
+        let method_start = u32::try_from(
+            service
+                .find("totalsEntries()")
+                .ok_or(LaneError::Missing("injected-service method source"))?,
+        )?;
+        let method_end = method_start
+            .checked_add(u32::try_from("totalsEntries() { return []; }".len())?)
+            .ok_or(LaneError::Scalar)?;
+
+        for (path, source) in [
+            ("src/pages/records/records.ts", records),
+            (
+                "src/pages/analytics/totals/training-totals.ts",
+                training_totals,
+            ),
+        ] {
+            let facts = collect_native_tsz_file(project, path, source)?;
+            let targets = staged_tsz_coordinates(&facts)?;
+            assert!(
+                targets.iter().any(|(kind, target_path, start, end, name, _)| {
+                    *kind == ReferenceKind::MethodCall
+                        && target_path == "src/analytics/exercise-analytics.service.ts"
+                        && *start == method_start
+                        && *end == method_end
+                        && *name == method_start
+                }),
+                "injected service call must target the exact method declaration from {path}: {targets:?}"
+            );
+        }
         Ok(())
     }
 
