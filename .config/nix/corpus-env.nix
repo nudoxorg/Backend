@@ -180,9 +180,6 @@ in
   BACKEND_LOCALD_PYTHON_CANDIDATE_11 = "${compilers.python}/bin/python3";
   NUDOX_CARGO = toolchains.stableCargo;
   NUDOX_RUSTC = "${toolchains.stable}/bin/rustc";
-  NUDOX_TSC = "${compilers.typescript}/bin/tsc";
-  NUDOX_TYPESCRIPT_MODULE_ROOT = "${compilers.typescript}/lib/node_modules";
-  NUDOX_TYPESCRIPT_NODE = "${compilers.node}/bin/node";
   RUSTC = "${toolchains.stable}/bin/rustc";
   # Native build scripts (e.g. `blake3`) link against libiconv/zlib; the
   # linker only finds them via `LIBRARY_PATH`, not `PATH`.
