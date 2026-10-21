@@ -9444,14 +9444,11 @@ mod tests {
                 .source_capture
                 .profiles
                 .iter()
-                .find_map(|profile| match (&profile.profile, &profile.state) {
-                    (
-                        backend_library::SemanticLanguageProfile::Python(_),
-                        backend_library::IndexOperationSemanticProfileState::Published {
-                            generation,
-                            ..
-                        },
-                    ) => Some(*generation),
+                .find_map(|profile| match &profile.state {
+                    backend_library::IndexOperationSemanticProfileState::Published {
+                        generation,
+                        ..,
+                    } if profile.profile.name() == Some("python") => Some(*generation),
                     _ => None,
                 })
                 .expect("the useful Python generation remains selected");

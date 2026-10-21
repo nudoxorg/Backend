@@ -948,7 +948,7 @@ fn python_generation(status: &backend_library::IndexOperationStatus) -> [u8; 32]
         .find_map(|profile| match profile.state {
             backend_library::IndexOperationSemanticProfileState::Published {
                 generation, ..
-            } if profile.profile.name().ok() == Some("python") => Some(generation),
+            } if profile.profile.name() == Some("python") => Some(generation),
             _ => None,
         })
         .expect("published Python generation")
