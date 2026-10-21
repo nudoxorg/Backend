@@ -368,7 +368,7 @@ fn outline_pc5_is_routed_as_an_untrusted_owner_witness_only_after_outer_context_
         reply.get("error").is_some() || reply["result"]["isError"] == true,
         "test product refusal is retained: {reply}"
     );
-    assert_eq!(server.product.outline_owner_tokens, [owner]);
+    assert_eq!(server.product.outline_owner_tokens, [owner.clone()]);
     assert!(server.product.page_windows.is_empty(), "PC5 never enters legacy typed-cursor decoding");
 
     let other_context = continuation_context(
