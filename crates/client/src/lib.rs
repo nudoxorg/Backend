@@ -75,6 +75,10 @@ pub use request_context::RequestCancellationReason;
 #[cfg(any(unix, windows))]
 pub use request_context::RequestContext;
 mod index_operation;
+mod saved_workspaces;
+pub use saved_workspaces::{
+    SavedIndexWorkspace, find_existing_indexed_project,
+};
 mod index_progress;
 pub use backend_replication::SelectedGenerationStamp as SelectedStamp;
 use backend_replication::{

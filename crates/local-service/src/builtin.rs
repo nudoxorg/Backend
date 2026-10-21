@@ -59,6 +59,8 @@ pub(super) const MAX_REBUILD_BYTES: usize = 64 * 1024 * 1024;
 /// profile. Product verification material is loaded from the host.
 const ECHO_AUTHORITY_SECRET: [u8; 32] = [0x5a; 32];
 
+#[path = "builtin/index_work_observation.rs"]
+mod index_work_observation;
 #[path = "builtin/ingest.rs"]
 mod ingest;
 #[path = "builtin/profile.rs"]
