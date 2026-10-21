@@ -315,6 +315,7 @@ impl<P: Product> Server<P> {
                     reply: &reply,
                     next_cursor: None,
                     index_job: None,
+                    compact_receipt: false,
                 },
             },
             DEFAULT_RESPONSE_BUDGET_BYTES,

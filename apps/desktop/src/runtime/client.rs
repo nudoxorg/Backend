@@ -1021,13 +1021,13 @@ mod tests {
     #[test]
     fn owner_update_is_manual_action_without_transport_or_cancellation_reclassification() {
         let update = ClientError::OwnerUpdate {
-            found: 36,
-            supported: 37,
+            found: 37,
+            supported: 38,
             detail: "custody could not be proven".into(),
         };
         let EngineFault::Failed(error) = fault(update) else { panic!("manual update is a visible failure"); };
         assert_eq!(error.code(), FaultCode::OwnerUpdate);
-        assert!(error.message().contains("36 → 37"));
+        assert!(error.message().contains("37 → 38"));
         assert!(error.message().contains("Restart the previous NuDox owner, then retry."));
         assert!(error.message().contains("custody could not be proven"));
         assert!(matches!(fault(ClientError::RequestCancelled(backend_client::RequestCancellationReason::Explicit)), EngineFault::Cancelled));
@@ -1117,8 +1117,8 @@ mod tests {
                     "healthy" => Ok(7),
                     "protocol" => Err(ClientError::Protocol("correlated refusal".into())),
                     "owner_update" => Err(ClientError::OwnerUpdate {
-                        found: 36,
-                        supported: 37,
+                        found: 37,
+                        supported: 38,
                         detail: "manual restart required".into(),
                     }),
                     _ => unreachable!(),
@@ -1136,7 +1136,7 @@ mod tests {
                 "healthy" => assert!(matches!(result, Ok(7))),
                 "owner_update" => assert!(matches!(result, Err(EngineFault::Failed(ref error))
                     if error.code() == FaultCode::OwnerUpdate
-                        && error.message().contains("36 → 37")
+                        && error.message().contains("37 → 38")
                         && error.message().contains("Restart the previous NuDox owner, then retry.")
                         && error.message().contains("manual restart required"))),
                 "protocol" => assert!(matches!(result, Err(EngineFault::Failed(ref error))

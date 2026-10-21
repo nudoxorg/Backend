@@ -384,6 +384,7 @@ pub(in crate::builtin) struct CommandAdapter {
     pending_semantic_search: Option<backend_library::SemanticSearchStatus>,
     semantic_search_replies: std::collections::VecDeque<PendingSemanticSearchReply>,
     published: Option<super::super::view_publish::PublishedRoots>,
+    published_view_root: Option<backend_library::ViewStateRoot>,
     manifests: super::super::local_manifest::LocalManifestResidence,
     project_roots: super::super::project_root_residence::ProjectRootResidence,
     image_rows: super::super::view_build::ImageRowResidence,
@@ -626,6 +627,7 @@ fn answers_while_indexing(command: &Command) -> bool {
                 | S::SemanticShapes { .. }
                 | S::PackageSourceMembership { .. }
                 | S::PackageProfile { .. }
+                | S::PackageCoverageCurrent { .. }
                 | S::Subscribe { project: None, .. }
                 | S::Unsubscribe { .. }
                 | S::Subscriptions
@@ -837,6 +839,7 @@ impl CommandAdapter {
         search_snapshots: super::super::query::SearchSnapshotOwner,
         remote_semantic: super::super::query::RemoteSemantic,
         published: Option<super::super::view_publish::PublishedRoots>,
+        published_view_root: Option<backend_library::ViewStateRoot>,
         image_rows: super::super::view_build::ImageRowResidence,
         generations: super::super::generation_residence::SemanticGenerationResidence,
         semantic_authority: super::super::semantic_authority::SemanticAuthority,
@@ -877,6 +880,7 @@ impl CommandAdapter {
             pending_semantic_search: None,
             semantic_search_replies: std::collections::VecDeque::new(),
             published,
+            published_view_root,
             manifests: super::super::local_manifest::LocalManifestResidence::default(),
             project_roots: super::super::project_root_residence::ProjectRootResidence::default(),
             image_rows,
@@ -5376,6 +5380,7 @@ impl CommandAdapter {
         )
         .map_err(|error| BuiltinModelError(format!("publish product source view: {error}")))?;
         self.published = Some(outcome.roots);
+        self.published_view_root = Some(daemon.engine().daemon().library().view().root());
         project_view_deltas(
             self.sql_projection
                 .writer_mut()
@@ -6030,6 +6035,21 @@ impl CommandAdapter {
             }
         }
         let reply = match surface {
+            backend_engine::SurfaceCommand::PackageCoverageCurrent { package, view_root } => {
+                self.package_coverage_current(daemon, &package, view_root)
+                    .map_or_else(
+                        |error| {
+                            CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
+                                error.to_string(),
+                            ))
+                        },
+                        |result| {
+                            CommandReply::Surface(
+                                backend_engine::SurfaceReply::PackageCoverageCurrent(result),
+                            )
+                        },
+                    )
+            }
             backend_engine::SurfaceCommand::PackageProfile {
                 package,
                 compiler_outcome: Some(read)
@@ -6503,6 +6523,100 @@ impl CommandAdapter {
             }
         };
         Ok((reply, None))
+    }
+
+    fn package_coverage_current(
+        &self,
+        daemon: &ProductDaemon,
+        package: &backend_library::PackageReference,
+        requested_view_root: [u8; 32],
+    ) -> Result<backend_library::PackageCoverageCurrentResult, BuiltinModelError> {
+        use backend_library::{
+            PackageCompilerOutcomes as Outcomes, PackageCompilerOutcomesUnavailable as Unavailable,
+            PackageCoverageBinding, PackageCoverageCurrentResult as ResultState,
+        };
+
+        let stale = || ResultState::Stale {
+            package: package.clone(),
+            view_root: requested_view_root,
+        };
+        let unavailable = || ResultState::Unavailable {
+            package: package.clone(),
+            view_root: requested_view_root,
+            reason: Unavailable::PublicationUnavailable,
+        };
+        let library = daemon.engine().daemon().library();
+        let resident_view_root = library.view().root();
+        if requested_view_root != *resident_view_root.as_bytes()
+            || self.published_view_root != Some(resident_view_root)
+        {
+            return Ok(stale());
+        }
+        let Some(published) = self.published.as_ref() else {
+            return Ok(stale());
+        };
+
+        // Use one owner snapshot for the publication-root check and the
+        // profile read. A newer capture can never be joined to the older
+        // resident view by two individually-current observations.
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let source_root = super::super::view_publish::source_root(&snapshot)?;
+        let semantic_root = super::super::view_publish::semantic_root(&snapshot)?;
+        let capture_root = super::super::view_publish::capture_root(&snapshot)?;
+        if source_root != published.source
+            || semantic_root != published.semantic
+            || capture_root != published.capture
+            || published.capture.is_none()
+        {
+            return Ok(stale());
+        }
+        let Some(capture_relation_root) = capture_root else {
+            return Ok(stale());
+        };
+
+        let Some(outcomes) = super::package_profile::read(
+            &snapshot,
+            &self.index_operations,
+            &self.semantic_authority,
+            package,
+            Some(&backend_library::PackageCompilerOutcomeRead::Current),
+        )? else {
+            return Ok(unavailable());
+        };
+        match outcomes {
+            Outcomes::Summary {
+                ref basis,
+                ref source_capture,
+                ..
+            } => {
+                let project_key = backend_engine::package_key(package.as_str());
+                if source_capture.profiles.iter().any(|profile| {
+                    matches!(
+                        &profile.state,
+                        backend_library::IndexOperationSemanticProfileState::Published { .. }
+                    ) && !profile.profile.profile().is_ok_and(|language| {
+                        published.activated.contains(&(project_key, language))
+                    })
+                }) {
+                    return Ok(unavailable());
+                }
+                let binding = PackageCoverageBinding {
+                    package_key: basis.package_key,
+                    view_root: requested_view_root,
+                    source_relation_root: source_root,
+                    semantic_relation_root: semantic_root,
+                    capture_relation_root,
+                };
+                Ok(ResultState::Current { binding, outcomes })
+            }
+            Outcomes::Stale { .. } => Ok(stale()),
+            Outcomes::Unavailable { reason, .. } => Ok(ResultState::Unavailable {
+                package: package.clone(),
+                view_root: requested_view_root,
+                reason,
+            }),
+            _ => Ok(unavailable()),
+        }
     }
 
     fn select_semantic_version(
@@ -7924,6 +8038,7 @@ mod tests {
                 super::super::super::query::SearchSnapshotOwner::default(),
                 remote,
                 Some(publication.roots),
+                Some(daemon.engine().daemon().library().view().root()),
                 image_rows,
                 generations,
                 authority,
@@ -11500,6 +11615,235 @@ mod tests {
         outcomes
     }
 
+    #[test]
+    fn package_coverage_owner_binds_to_resident_view_and_same_snapshot_roots() {
+        let mut fixture = AdapterFixture::new();
+        let package_label = fixture.label.clone();
+        let other_label = fixture
+            .root
+            .0
+            .join("workspace/not-selected")
+            .to_string_lossy()
+            .into_owned();
+        let (adapter, daemon) = fixture.parts();
+        let requested_package = backend_library::PackageReference::parse(package_label)
+            .expect("fixture package is local");
+        let view_root = *daemon.engine().daemon().library().view().root().as_bytes();
+        let command = backend_library::SurfaceCommand::PackageCoverageCurrent {
+            package: requested_package.clone(),
+            view_root,
+        };
+        let (reply, _) = adapter
+            .surface(daemon, command.clone(), 738)
+            .expect("owner reads bound package coverage");
+        let CommandReply::Surface(reply) = reply else {
+            panic!("coverage reads use the typed surface reply");
+        };
+        backend_library::admit_surface_reply(&command, &reply)
+            .expect("reply correlates with exact package and view");
+        assert!(matches!(
+            reply,
+            backend_library::SurfaceReply::PackageCoverageCurrent(
+                backend_library::PackageCoverageCurrentResult::Unavailable {
+                    reason: backend_library::PackageCompilerOutcomesUnavailable::CaptureNotRecorded,
+                    ..
+                }
+            )
+        ));
+
+        let forged = backend_library::SurfaceCommand::PackageCoverageCurrent {
+            package: requested_package.clone(),
+            view_root: [211; 32],
+        };
+        let (reply, _) = adapter
+            .surface(daemon, forged.clone(), 739)
+            .expect("forged revision is a typed stale read");
+        let CommandReply::Surface(reply) = reply else {
+            panic!("stale coverage remains a typed result");
+        };
+        backend_library::admit_surface_reply(&forged, &reply)
+            .expect("stale response binds to the exact rejected request");
+        assert!(matches!(
+            reply,
+            backend_library::SurfaceReply::PackageCoverageCurrent(
+                backend_library::PackageCoverageCurrentResult::Stale { .. }
+            )
+        ));
+
+        let other_package = backend_library::PackageReference::parse(other_label)
+            .expect("substitute package remains syntactically local");
+        let substituted = backend_library::SurfaceCommand::PackageCoverageCurrent {
+            package: other_package,
+            view_root,
+        };
+        let (reply, _) = adapter
+            .surface(daemon, substituted.clone(), 740)
+            .expect("substituted package is a typed unavailable read");
+        let CommandReply::Surface(reply) = reply else {
+            panic!("unavailable coverage remains a typed result");
+        };
+        backend_library::admit_surface_reply(&substituted, &reply)
+            .expect("unavailable response cannot change package or view");
+
+        let original_semantic = adapter
+            .published
+            .as_ref()
+            .expect("resident publication roots")
+            .semantic;
+        adapter
+            .published
+            .as_mut()
+            .expect("resident publication roots")
+            .semantic = [212; 32];
+        let (reply, _) = adapter
+            .surface(daemon, command.clone(), 741)
+            .expect("publication mismatch is a typed stale read");
+        let CommandReply::Surface(reply) = reply else {
+            panic!("stale publication remains a typed result");
+        };
+        assert!(matches!(
+            reply,
+            backend_library::SurfaceReply::PackageCoverageCurrent(
+                backend_library::PackageCoverageCurrentResult::Stale { .. }
+            )
+        ));
+        adapter
+            .published
+            .as_mut()
+            .expect("resident publication roots")
+            .semantic = original_semantic;
+
+        let original_capture = adapter
+            .published
+            .as_ref()
+            .expect("resident publication roots")
+            .capture;
+        adapter
+            .published
+            .as_mut()
+            .expect("resident publication roots")
+            .capture = Some([213; 32]);
+        let (reply, _) = adapter
+            .surface(daemon, command, 742)
+            .expect("capture advancement under a fixed view is refused");
+        let CommandReply::Surface(reply) = reply else {
+            panic!("stale capture remains a typed result");
+        };
+        assert!(matches!(
+            reply,
+            backend_library::SurfaceReply::PackageCoverageCurrent(
+                backend_library::PackageCoverageCurrentResult::Stale { .. }
+            )
+        ));
+        adapter
+            .published
+            .as_mut()
+            .expect("resident publication roots")
+            .capture = original_capture;
+    }
+
+    #[test]
+    fn package_coverage_rejects_owner_capture_advance_under_fixed_view_and_source() {
+        use backend_engine::builtin::{
+            ProductSemanticCaptureOutcome, SemanticSourceCapture, semantic_capture_relation,
+        };
+        use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, TypeScriptSource};
+
+        let mut fixture = AdapterFixture::new();
+        let fixture_label = fixture.label.clone();
+        let (adapter, daemon) = fixture.parts();
+        let package = backend_library::PackageReference::parse(fixture_label)
+            .expect("fixture package is local");
+        let view_root = *daemon.engine().daemon().library().view().root().as_bytes();
+        let before = daemon.engine().daemon().owner().snapshot();
+        let source_before = super::super::super::view_publish::source_root(&before)
+            .expect("selected source relation");
+        let semantic_before = super::super::super::view_publish::semantic_root(&before)
+            .expect("selected semantic relation");
+        let capture_before = super::super::super::view_publish::capture_root(&before)
+            .expect("selected capture relation");
+
+        let label = "pkg:npm/coverage-owner-capture-advance@1.0.0";
+        let capture_package = backend_engine::PackageKey::from_value(label);
+        let key = ProductSemanticPublicationKey::new(
+            backend_library::PackageReference::parse(label.to_owned())
+                .expect("capture package reference"),
+            PackageUrl::parse(label).expect("capture package coordinate"),
+            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+        )
+        .expect("selected capture key");
+        let intent = BuiltinIntent::index_with_capture(
+            capture_package,
+            label,
+            Vec::new(),
+            Vec::new(),
+            vec![crate::builtin::BuiltinCaptureChange {
+                key: key.clone(),
+                expected: None,
+                capture: SemanticSourceCapture::new(None, [0xA1; 32], [0xA2; 32], 2, 1)
+                    .expect("well-formed next-generation capture"),
+                outcome: ProductSemanticCaptureOutcome::Pending { prior: None },
+                compiler_failure: None,
+            }],
+        )
+        .expect("valid owner capture transition");
+        super::commit_builtin_intent(daemon, 744, &intent)
+            .expect("advance the owner-selected capture relation");
+
+        let after = daemon.engine().daemon().owner().snapshot();
+        assert_eq!(
+            *daemon.engine().daemon().library().view().root().as_bytes(),
+            view_root,
+            "capture-only owner transition leaves the resident published view fixed"
+        );
+        assert_eq!(
+            super::super::super::view_publish::source_root(&after)
+                .expect("selected source relation after capture"),
+            source_before,
+            "capture-only owner transition leaves the selected source relation fixed"
+        );
+        assert_eq!(
+            super::super::super::view_publish::semantic_root(&after)
+                .expect("selected semantic relation after capture"),
+            semantic_before,
+            "capture-only owner transition leaves the selected semantic relation fixed"
+        );
+        let capture_after = super::super::super::view_publish::capture_root(&after)
+            .expect("selected capture relation after owner transition");
+        assert_ne!(capture_after, capture_before);
+        assert!(
+            capture_after.is_some(),
+            "the selected capture generation advanced"
+        );
+        let selected_capture = semantic_capture_relation(&after)
+            .expect("selected owner capture relation")
+            .expect("capture relation was added");
+        let selected_record = selected_capture
+            .lookup(&key)
+            .expect("selected profile capture row")
+            .expect("valid typed capture row was committed");
+        assert_eq!(selected_record.capture().observation_sequence(), 2);
+
+        let command = backend_library::SurfaceCommand::PackageCoverageCurrent {
+            package,
+            view_root,
+        };
+        let (reply, _) = adapter
+            .surface(daemon, command.clone(), 745)
+            .expect("owner refuses to join a new capture generation to the old view");
+        let CommandReply::Surface(reply) = reply else {
+            panic!("capture advancement remains a typed coverage result");
+        };
+        backend_library::admit_surface_reply(&command, &reply)
+            .expect("stale result remains bound to the exact request");
+        assert!(matches!(
+            reply,
+            backend_library::SurfaceReply::PackageCoverageCurrent(
+                backend_library::PackageCoverageCurrentResult::Stale { .. }
+            )
+        ));
+    }
+
     fn all_profiles_refused_completion_control(journal_busy: bool, restart_before_receipt: bool) {
         use index_publication_worker::{Completion, Disposition, Head, TestHook, TestStage};
         let mut fixture = AdapterFixture::new();
@@ -11763,6 +12107,35 @@ mod tests {
             .admit(backend_library::CommandId::IndexProgress)
             .expect("strict terminal reply");
         let outcomes = assert_current_compiler_outcomes(adapter, daemon, operation);
+        if !journal_busy && !restart_before_receipt {
+            let package = outcomes.package().clone();
+            let requested_view = *daemon.engine().daemon().library().view().root().as_bytes();
+            let command = backend_library::SurfaceCommand::PackageCoverageCurrent {
+                package: package.clone(),
+                view_root: requested_view,
+            };
+            let (reply, _) = adapter
+                .surface(daemon, command.clone(), 743)
+                .expect("owner coverage read uses its exact published view");
+            let CommandReply::Surface(reply) = reply else {
+                panic!("coverage request returns its typed owner result");
+            };
+            backend_library::admit_surface_reply(&command, &reply)
+                .expect("actual owner coverage tuple matches its request");
+            let backend_library::SurfaceReply::PackageCoverageCurrent(
+                backend_library::PackageCoverageCurrentResult::Current { binding, outcomes },
+            ) = reply
+            else {
+                panic!("retained capture summary is bound to the published view");
+            };
+            let backend_library::PackageCompilerOutcomes::Summary { basis, .. } = outcomes else {
+                panic!("exact current request returns only bounded summary");
+            };
+            assert_eq!(binding.package_key, basis.package_key);
+            assert_eq!(binding.source_relation_root, basis.source_relation_root);
+            assert_eq!(binding.capture_relation_root, basis.capture_relation_root);
+            assert_eq!(binding.view_root, requested_view);
+        }
         let mut fixture = fixture.reopen();
         let (adapter, daemon) = fixture.parts();
         assert!(matches!(

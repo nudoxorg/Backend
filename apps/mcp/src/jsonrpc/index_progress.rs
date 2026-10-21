@@ -33,6 +33,7 @@ impl<P: Product> Server<P> {
         detail: Detail,
         context: &[u8],
         exposure: McpExposure,
+        compact_receipt: bool,
     ) -> Result<Option<Value>, RpcError> {
         let operation = matches!(command, SurfaceCommand::IndexOperationStatus { .. });
         if !operation
@@ -73,7 +74,14 @@ impl<P: Product> Server<P> {
             match update {
                 IndexProgressUpdate::Changed(reply) => {
                     return self
-                        .surface_reply_result(command, &reply, detail, context, exposure)
+                        .surface_reply_result_with_compact_receipt(
+                            command,
+                            &reply,
+                            detail,
+                            context,
+                            exposure,
+                            compact_receipt,
+                        )
                         .map(Some);
                 }
                 IndexProgressUpdate::Unchanged(reference) => {
@@ -96,14 +104,16 @@ impl<P: Product> Server<P> {
                     detail,
                     context,
                     exposure,
+                    compact_receipt,
                 )?,
             IndexCompilerProgressUpdate::Unchanged(reference) => {
-                let index_poll = backend_present::IndexPollDto::for_reference_in_context(
+                let mut index_poll = backend_present::IndexPollDto::for_reference_in_context(
                     &reference,
                     detail,
                     self.product.cli_context().as_ref(),
                 )
                 .ok_or_else(|| RpcError::tool("pending progress has no exact observation"))?;
+                preserve_compact_receipt_in_poll(Some(&mut index_poll), command, compact_receipt);
                 let text = format!(
                     "Operation remains pending; the referenced observation is unchanged.\n\nObserve changes with `{}`. Omit the conditional options to read the complete current receipt.",
                     index_poll.call

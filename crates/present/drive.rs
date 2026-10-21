@@ -25,7 +25,7 @@
 
 use crate::assemble::{
     outline_tree, page_from_document, page_from_document_with_graph_relations, record_list,
-    shelf_from_snapshot, shelf_from_snapshot_with_health,
+    shelf_from_snapshot, shelf_from_snapshot_with_project_coverage,
 };
 use crate::call::Request;
 use crate::fault::{Affordance, Fault, Operand};
@@ -33,6 +33,7 @@ use crate::identity::{Coordinate, Identity, KeyTag};
 use crate::outline::OutlineTree;
 use crate::page::Page;
 use crate::product::{ProductRecord, ProductView};
+use crate::project_coverage::read_current_project_coverage;
 use crate::record::RecordList;
 use crate::shelf::Shelf;
 use crate::status::Status;
@@ -655,7 +656,10 @@ fn shelf(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     // reports the count as unread rather than inventing one.
     let health = engine.health().ok();
     let shelf = match health.as_ref() {
-        Some(health) => shelf_from_snapshot_with_health(&snapshot, tag, health),
+        Some(health) => {
+            let project_coverage = read_current_project_coverage(engine, &snapshot, health);
+            shelf_from_snapshot_with_project_coverage(&snapshot, tag, health, &project_coverage)
+        }
         None => shelf_from_snapshot(&snapshot, tag),
     };
     let causes = health.as_ref().map_or_else(Default::default, |health| {

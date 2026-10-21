@@ -32,6 +32,148 @@ pub struct PackageCompilerOutcomeBasis {
     pub capture_relation_root: [u8; 32],
 }
 
+/// Exact resident-view publication roots authorizing a package coverage read.
+///
+/// The owner issues this binding only when the requested view is still
+/// resident and its source, semantic-publication, and capture roots are the
+/// exact roots recorded when that view was published.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageCoverageBinding {
+    /// Exact package row identity in the bound view.
+    #[serde(with = "crate::surface::hex_32")]
+    pub package_key: [u8; 32],
+    /// Exact current product view revision.
+    #[serde(with = "crate::surface::hex_32")]
+    pub view_root: [u8; 32],
+    /// Source relation root used to publish the view.
+    #[serde(with = "crate::surface::hex_32")]
+    pub source_relation_root: [u8; 32],
+    /// Semantic publication relation root used to publish the view.
+    #[serde(with = "crate::surface::hex_32")]
+    pub semantic_relation_root: [u8; 32],
+    /// Selected source-capture relation root used to publish the view.
+    #[serde(with = "crate::surface::hex_32")]
+    pub capture_relation_root: [u8; 32],
+}
+
+impl PackageCoverageBinding {
+    /// Returns whether every identity is present and usable.
+    #[must_use]
+    pub fn has_admissible_shape(&self) -> bool {
+        [
+            self.package_key,
+            self.view_root,
+            self.source_relation_root,
+            self.semantic_relation_root,
+            self.capture_relation_root,
+        ]
+        .iter()
+        .all(|value| value.iter().any(|byte| *byte != 0))
+    }
+}
+
+/// Owner response to an exact package-coverage request.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum PackageCoverageCurrentResult {
+    /// Profile evidence from the exact published view and relation roots.
+    Current {
+        /// Owner-issued publication binding.
+        binding: PackageCoverageBinding,
+        /// Complete bounded selected profile summary.
+        outcomes: PackageCompilerOutcomes,
+    },
+    /// Requested view no longer matches the owner's resident publication.
+    Stale {
+        /// Exact package requested.
+        package: PackageReference,
+        /// Exact view root supplied by the caller.
+        #[serde(with = "crate::surface::hex_32")]
+        view_root: [u8; 32],
+    },
+    /// Exact published view is current, but no usable profile summary exists.
+    Unavailable {
+        /// Exact package requested.
+        package: PackageReference,
+        /// Exact view root supplied by the caller.
+        #[serde(with = "crate::surface::hex_32")]
+        view_root: [u8; 32],
+        /// Typed reason no summary could be returned.
+        reason: PackageCompilerOutcomesUnavailable,
+    },
+}
+
+impl PackageCoverageCurrentResult {
+    /// Exact package carried by this bounded result.
+    #[must_use]
+    pub fn package(&self) -> &PackageReference {
+        match self {
+            Self::Current { outcomes, .. } => outcomes.package(),
+            Self::Stale { package, .. } | Self::Unavailable { package, .. } => package,
+        }
+    }
+
+    /// Exact requested view root carried by this bounded result.
+    #[must_use]
+    pub const fn view_root(&self) -> [u8; 32] {
+        match self {
+            Self::Current { binding, .. } => binding.view_root,
+            Self::Stale { view_root, .. } | Self::Unavailable { view_root, .. } => *view_root,
+        }
+    }
+
+    /// Correlates the result with the package and view requested by the caller.
+    pub fn admit_request(
+        &self,
+        package: &PackageReference,
+        view_root: [u8; 32],
+    ) -> Result<(), ProductAdmissionError> {
+        match self {
+            Self::Stale {
+                package: observed,
+                view_root: observed_root,
+            } if observed == package
+                && *observed_root == view_root
+                && matches!(observed, PackageReference::Local(_))
+                && view_root.iter().any(|byte| *byte != 0) =>
+            {
+                Ok(())
+            }
+            Self::Unavailable {
+                package: observed,
+                view_root: observed_root,
+                ..
+            } if observed == package
+                && *observed_root == view_root
+                && matches!(observed, PackageReference::Local(_))
+                && view_root.iter().any(|byte| *byte != 0) =>
+            {
+                Ok(())
+            }
+            Self::Current { binding, outcomes }
+                if binding.has_admissible_shape()
+                    && binding.package_key == crate::package_key(package.as_str()).to_bytes()
+                    && binding.view_root == view_root =>
+            {
+                let read = PackageCompilerOutcomeRead::Current;
+                outcomes.admit_request(package, Some(&read))?;
+                let PackageCompilerOutcomes::Summary { basis, .. } = outcomes else {
+                    return Err(ProductAdmissionError::IndexOperationShape);
+                };
+                if basis.package_key != binding.package_key
+                    || basis.source_relation_root != binding.source_relation_root
+                    || basis.capture_relation_root != binding.capture_relation_root
+                {
+                    return Err(ProductAdmissionError::IndexOperationShape);
+                }
+                Ok(())
+            }
+            _ => Err(ProductAdmissionError::IndexOperationShape),
+        }
+    }
+}
+
 /// Copies one retained profile diagnostic from the discovered current basis.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -234,6 +376,8 @@ pub enum PackageCompilerOutcomesUnavailable {
     ProfileNotPublished,
     /// One exact row cannot fit the bounded coverage response; no row was truncated.
     CoverageRowTooLarge,
+    /// The exact published view could not be checked against its owner snapshot.
+    PublicationUnavailable,
 }
 
 /// Bounded discovery or one full diagnostic, under the same selected roots.
@@ -340,6 +484,9 @@ impl PackageCompilerOutcomes {
                     | PackageCompilerOutcomesUnavailable::ProfileNotPublished
                     | PackageCompilerOutcomesUnavailable::CoverageRowTooLarge => {
                         !matches!(read, Some(PackageCompilerOutcomeRead::Coverage(_)))
+                    }
+                    PackageCompilerOutcomesUnavailable::PublicationUnavailable => {
+                        selector.is_none()
                     }
                     PackageCompilerOutcomesUnavailable::CaptureIncomplete => false,
                 },
