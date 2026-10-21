@@ -3,8 +3,9 @@
 use super::*;
 use backend_library::{
     AuthorityScopeClaim, Basis, Coverage, CoverageCapability, Cursor, Frontier, Library,
-    ProducerObservationClaims, ProducerObservationVerifier, QueryPageRecipe, Row, RowId, ScopeRoot,
-    UntrustedProducerObservation, ViewRoot, admit_complete_scope, admit_producer_observation,
+    OutlineCursorWitness, ProducerObservationClaims, ProducerObservationVerifier,
+    QueryPageRecipe, Row, RowId, ScopeRoot, UntrustedProducerObservation, ViewRoot,
+    admit_complete_scope, admit_producer_observation,
     object_version, symbol_key, view_key, view_state_root, view_version_preimage,
 };
 use std::sync::{Arc, Mutex};
@@ -118,7 +119,53 @@ impl CommandTransport for Transport {
             }
             _ => false,
         };
-        let request = if is_catalog_continuation {
+        let is_outline_witness = matches!(
+            &request.command,
+            Command::OutlinePage { page, .. } if page.outline_witness().is_some()
+        );
+        let request = if is_outline_witness {
+            let bytes = backend_library::encode_command_body(&request)
+                .map_err(ClientError::Protocol)?;
+            let admitted = backend_library::decode_command_body_for_owner(
+                &bytes,
+                library.cursor(),
+            )
+            .map_err(ClientError::Protocol)?;
+            assert_eq!(admitted, request, "explicit owner witness wire round-trip");
+            let Command::OutlinePage { package, page } = &admitted.command else {
+                panic!("outline witness command");
+            };
+            let witness = page.outline_witness().expect("untrusted witness");
+            let certificate = admitted.certificate().expect("witness certificate");
+            let recipe_id = backend_library::encode_id(witness.recipe().as_bytes());
+            let mut recipes = certificate.claims.iter().filter_map(|claim| match claim {
+                WireClaim::KeyBytes {
+                    schema: WireSchema::ViewRecipe,
+                    id,
+                    value,
+                } if id == &recipe_id => Some(value.as_ref()),
+                _ => None,
+            });
+            let preimage = recipes.next().expect("recipe preimage");
+            assert!(recipes.next().is_none(), "unique recipe preimage");
+            let cursor = library
+                .rehydrate_outline_cursor(
+                    *package,
+                    page.basis(),
+                    page.window(),
+                    witness,
+                    preimage,
+                )
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            CommandDto::new(
+                admitted.request_id,
+                Command::OutlinePage {
+                    package: *package,
+                    page: page.with_continuation(PageContinuation::from_cursor(cursor)),
+                },
+            )
+            .with_certificate(certificate.clone())
+        } else if is_catalog_continuation {
             let bytes =
                 backend_library::encode_command_body(&request).map_err(ClientError::Protocol)?;
             let admitted = backend_library::decode_command_body_for_owner(&bytes, library.cursor())
@@ -135,7 +182,7 @@ impl CommandTransport for Transport {
                 | Command::MembersPage { .. }
                 | Command::SearchPublishedNames(_)
         ) {
-            if !is_catalog_continuation {
+            if !is_catalog_continuation && !is_outline_witness {
                 let bytes = backend_library::encode_command_body(&request)
                     .map_err(ClientError::Protocol)?;
                 let admitted =
@@ -3843,6 +3890,195 @@ fn portable_outline_reopens_exact_native_proof_and_rejects_credit_package_and_sc
             .is_err(),
         "foreign issuing scope"
     );
+}
+
+#[test]
+fn compact_outline_witness_rehydrates_cold_and_preserves_complete_page_union() {
+    let owner = Arc::new(Mutex::new(owner_with_package(
+        1,
+        7,
+        0,
+        &["Thing"],
+        Some("/p"),
+    )));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut issuing = session(&owner, &requests);
+    let first = issuing
+        .outline_page("/p", 3, None)
+        .expect("first outline page");
+    let mut emitted = page(&first)
+        .root
+        .rows()
+        .iter()
+        .map(|row| row.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let first_cursor = page(&first).next.expect("first successor");
+    let token = issuing
+        .encode_outline_query_continuation(PageContinuation::from_cursor(first_cursor))
+        .expect("compact owner witness");
+    assert!(token.starts_with("pc5-"));
+    let body = decode_portable_body(&token).expect("bounded expanded proof");
+    assert!(
+        backend_library::decode_command_body(&body).is_err(),
+        "digest-only outline witness never enters the standalone decoder"
+    );
+    let decoded = backend_library::decode_command_body_for_owner(
+        &body,
+        owner.lock().expect("owner").cursor(),
+    )
+    .expect("owner-only witness decoder");
+    let Command::OutlinePage {
+        page: request_page, ..
+    } = decoded.command
+    else {
+        panic!("outline page command");
+    };
+    assert!(request_page.outline_witness().is_some());
+    assert!(request_page.continuation().is_none());
+
+    let mut restarted = session(&owner, &requests);
+    let second = restarted
+        .outline_page_from_query_token("/p", backend_library::QueryWindow::fixed(
+            QueryLimit::new(3).expect("credit"),
+        ), &token)
+        .expect("cold owner rehydrates predecessor and resumes");
+    let second_page = page(&second);
+    emitted.extend(second_page.root.rows().iter().map(|row| row.id));
+    let second_cursor = second_page.next.expect("third page remains");
+    let next = restarted
+        .encode_outline_query_continuation(PageContinuation::from_cursor(second_cursor))
+        .expect("next compact witness");
+    let mut cold_again = session(&owner, &requests);
+    let third = cold_again
+        .outline_page_from_query_token("/p", backend_library::QueryWindow::fixed(
+            QueryLimit::new(3).expect("credit"),
+        ), &next)
+        .expect("second cold owner rehydrates predecessor");
+    assert_eq!(page(&third).next, None);
+    emitted.extend(page(&third).root.rows().iter().map(|row| row.id));
+    let expected = owner
+        .lock()
+        .expect("owner")
+        .view()
+        .rows()
+        .iter()
+        .filter_map(|row| matches!(row.id, RowId::Symbol(_)).then_some(row.id))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(emitted, expected, "no row is lost or repeated across the union");
+}
+
+#[test]
+fn compact_outline_witness_rejects_wrong_scope_credit_and_rehydrated_root_before_reply() {
+    let owner = Arc::new(Mutex::new(owner_with_package(
+        1,
+        7,
+        0,
+        &["Thing"],
+        Some("/p"),
+    )));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut issuing = session(&owner, &requests);
+    let first = issuing.outline_page("/p", 3, None).expect("first page");
+    let cursor = page(&first).next.expect("successor");
+    let token = issuing
+        .encode_outline_query_continuation(PageContinuation::from_cursor(cursor))
+        .expect("compact witness");
+    let window = backend_library::QueryWindow::fixed(QueryLimit::new(3).expect("credit"));
+
+    for (path, credit) in [("/other", 3), ("/p", 2)] {
+        let count = requests.lock().expect("requests").len();
+        let mut cold = session(&owner, &requests);
+        let selected = backend_library::QueryWindow::fixed(
+            QueryLimit::new(credit).expect("selected credit"),
+        );
+        assert!(cold
+            .outline_page_from_query_token(path, selected, &token)
+            .is_err());
+        assert_eq!(requests.lock().expect("requests").len(), count);
+    }
+
+    let compact_body = decode_portable_body(&token).expect("portable body");
+    let owner_cursor = owner.lock().expect("owner").cursor();
+    let imported = backend_library::decode_command_body_for_owner(&compact_body, owner_cursor)
+        .expect("owner-decoded witness");
+    let certificate = imported.certificate().expect("certificate");
+    let Command::OutlinePage { package, page } = imported.command else {
+        panic!("outline command");
+    };
+    let witness = page.outline_witness().expect("untrusted witness");
+    let old_root = backend_library::encode_id(&witness.root_commitment());
+    let forged_root = [0xA5; 32];
+    let forged_root_id = backend_library::encode_id(&forged_root);
+    let forged_witness = OutlineCursorWitness::new_untrusted(
+        witness.recipe(),
+        witness.version(),
+        witness.branch(),
+        witness.log(),
+        witness.schema(),
+        forged_root,
+        witness.sequence(),
+        witness.query_position().offset(),
+        witness.query_position().predecessor(),
+    )
+    .expect("well-formed forged digest position");
+    let claims = certificate
+        .claims
+        .iter()
+        .cloned()
+        .map(|claim| match claim {
+            WireClaim::RootCommitment {
+                schema: WireSchema::ViewRelation,
+                id,
+            } if id == old_root => WireClaim::RootCommitment {
+                schema: WireSchema::ViewRelation,
+                id: forged_root_id.clone(),
+            },
+            WireClaim::Cursor {
+                recipe,
+                version,
+                branch,
+                log,
+                schema,
+                root,
+                sequence,
+            } if root == old_root => WireClaim::Cursor {
+                recipe,
+                version,
+                branch,
+                log,
+                schema,
+                root: forged_root_id.clone(),
+                sequence,
+            },
+            other => other,
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let forged = CommandDto::new(
+        1,
+        Command::OutlinePage {
+            package,
+            page: page.with_outline_witness(forged_witness),
+        },
+    )
+    .with_certificate(WireCertificate::from_claims(claims));
+    let forged_body = backend_library::encode_binary_certificate_command(&forged)
+        .expect("bounded forged owner witness");
+    let forged_token = encode_portable_proof(&forged_body, "pc5-").expect("compressed witness");
+    let count = requests.lock().expect("requests").len();
+    let mut cold = session(&owner, &requests);
+    assert!(cold
+        .outline_page_from_query_token("/p", window, &forged_token)
+        .is_err(), "matching digest and cursor claims still cannot invent predecessor rows");
+    assert_eq!(requests.lock().expect("requests").len(), count + 1);
+
+    *owner.lock().expect("owner") = owner_with_package(2, 7, 0, &["Thing"], Some("/p"));
+    let count = requests.lock().expect("requests").len();
+    let mut stale = session(&owner, &requests);
+    assert!(stale
+        .outline_page_from_query_token("/p", window, &token)
+        .is_err());
+    assert_eq!(requests.lock().expect("requests").len(), count);
 }
 
 // This adversarial witness deliberately discloses the actual owner relation.

@@ -94,6 +94,14 @@ pub fn admit_request(request: &CommandDto) -> Result<(), RequestAdmissionError> 
     {
         return Err(RequestAdmissionError::InvalidSurface);
     }
+    if let Command::OutlinePage { page, .. } = &request.command
+        && let Some(witness) = page.outline_witness()
+        && (page.continuation().is_some()
+            || witness.query_position().offset() == 0
+            || page.window().predecessor(witness.query_position()).is_none())
+    {
+        return Err(RequestAdmissionError::InvalidSurface);
+    }
     if let Command::MembersPage { owner, page } = &request.command
         && owner.basis() != page.basis()
     {
@@ -482,7 +490,17 @@ fn admit_projection_page(
             let order = page.outline_order.as_ref().ok_or_else(|| {
                 ReplyAdmissionError::Protocol("outline page omitted its native order".to_owned())
             })?;
-            let start = request.continuation().map_or(0, |cursor| cursor.cursor().query_offset());
+            let predecessor = request.continuation().map(crate::PageContinuation::cursor);
+            let witness = request.outline_witness();
+            if predecessor.is_some() && witness.is_some() {
+                return Err(ReplyAdmissionError::Protocol(
+                    "outline page supplied both a cursor and witness".to_owned(),
+                ));
+            }
+            let start = predecessor.map_or_else(
+                || witness.map_or(0, |witness| witness.query_position().offset()),
+                Cursor::query_offset,
+            );
             if order.start() != start {
                 return Err(ReplyAdmissionError::Protocol("outline order changed its absolute start".to_owned()));
             }
@@ -499,9 +517,57 @@ fn admit_projection_page(
             // Only the native producer reconstructs/authenticates the prior
             // ordered rows and digest. This helper use checks span and scope;
             // echoing the supplied recipe here grants no predecessor authority.
-            let predecessor = request.continuation().map(crate::PageContinuation::cursor);
-            admit_catalog_window(&page.snapshot, request.window(), predecessor,
-                predecessor.map_or(page.snapshot.root.recipe, Cursor::recipe))?;
+            if let Some(predecessor) = predecessor {
+                admit_catalog_window(
+                    &page.snapshot,
+                    request.window(),
+                    Some(predecessor),
+                    predecessor.recipe(),
+                )?;
+            } else if let Some(witness) = witness {
+                let count = page.snapshot.root.row_count();
+                if count > u64::from(request.window().delivery().get())
+                    || (start > 0 && count == 0)
+                    || witness.query_position().offset() == 0
+                    || request.window().predecessor(witness.query_position()).is_none()
+                    || witness.branch() != page.snapshot.root.frontier().branch
+                    || witness.log() != page.snapshot.root.frontier().log
+                    || witness.schema() != page.snapshot.root.frontier().schema
+                {
+                    return Err(ReplyAdmissionError::Protocol(
+                        "outline page does not match its untrusted predecessor span".to_owned(),
+                    ));
+                }
+                if let Some(next) = page.snapshot.next {
+                    if count != u64::from(request.window().delivery().get())
+                        || next.query_offset() != start.checked_add(count).ok_or_else(|| {
+                            ReplyAdmissionError::Protocol("outline offset overflow".to_owned())
+                        })?
+                        || next.sequence() < witness.sequence()
+                        || next.branch() != witness.branch()
+                        || next.log() != witness.log()
+                        || next.schema() != witness.schema()
+                    {
+                        return Err(ReplyAdmissionError::Protocol(
+                            "outline successor changed the witnessed frontier".to_owned(),
+                        ));
+                    }
+                    match (request.window().is_windowed(), next.query_position().predecessor()) {
+                        (false, None) => {}
+                        (true, Some(span))
+                            if span.issued() == request.window().issued()
+                                && span.delivery() == request.window().delivery() => {}
+                        _ => {
+                            return Err(ReplyAdmissionError::Protocol(
+                                "outline successor changed its issued credit/delivery span"
+                                    .to_owned(),
+                            ));
+                        }
+                    }
+                }
+            } else {
+                admit_catalog_window(&page.snapshot, request.window(), None, page.snapshot.root.recipe)?;
+            }
             crate::QueryPageRecipe::outline_window(page.snapshot.root.basis().root, *package, request.window(), order).identity()
         },
         Command::MembersPage {

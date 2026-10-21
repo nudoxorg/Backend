@@ -1828,6 +1828,24 @@ impl Session {
         self.outline_page_with_window(coordinate, window, continuation)
     }
 
+    /// Resumes an outline directly from a compact owner-rehydrated PC5 token.
+    /// The token's page-root digest remains untrusted until the owner rebuilds
+    /// its exact predecessor rows before normal dispatch.
+    ///
+    /// # Errors
+    /// Refuses malformed, stale, foreign-scope, wrong-package, or non-outline
+    /// tokens and propagates the ordinary request/reply admission failures.
+    pub fn outline_page_from_query_token(
+        &mut self,
+        coordinate: &str,
+        window: backend_library::QueryWindow,
+        token: &str,
+    ) -> Result<ReplyDto, ClientError> {
+        let (command, certificate) =
+            self.outline_witness_request(coordinate, window, token)?;
+        self.send_success(command, Some(certificate))
+    }
+
     fn outline_page_with_window(
         &mut self,
         coordinate: &str,

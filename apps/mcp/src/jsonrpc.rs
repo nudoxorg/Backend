@@ -137,6 +137,19 @@ pub(super) trait Product: Engine {
         self.graph_page(coordinate, window.issued().get(), continuation)
     }
 
+    /// Resumes an outline from an authenticated compact token whose page root
+    /// remains untrusted until the owner reconstructs its predecessor rows.
+    fn outline_page_token(
+        &mut self,
+        _coordinate: String,
+        _window: backend_library::QueryWindow,
+        _token: &str,
+    ) -> Result<ReplyDto, ClientError> {
+        Err(ClientError::Protocol(
+            "this product does not expose owner-rehydrated outline tokens".to_owned(),
+        ))
+    }
+
     /// Reads a selected declaration window, without weakening its opaque cursor.
     fn graph_page_declaration(
         &mut self,
@@ -291,7 +304,9 @@ impl Product for SessionProduct {
         &mut self,
         continuation: PageContinuation,
     ) -> Result<String, ClientError> {
-        if self.0.has_portable_query_continuation(continuation) {
+        if self.0.has_outline_query_continuation(continuation) {
+            self.0.encode_outline_query_continuation(continuation)
+        } else if self.0.has_portable_query_continuation(continuation) {
             self.0.encode_query_continuation(continuation)
         } else {
             Ok(self.0.encode_page_continuation(continuation))
@@ -300,6 +315,16 @@ impl Product for SessionProduct {
 
     fn decode_continuation(&mut self, token: &str) -> Result<PageContinuation, ClientError> {
         self.0.decode_page_continuation(token)
+    }
+
+    fn outline_page_token(
+        &mut self,
+        coordinate: String,
+        window: backend_library::QueryWindow,
+        token: &str,
+    ) -> Result<ReplyDto, ClientError> {
+        self.0
+            .outline_page_from_query_token(&coordinate, window, token)
     }
 
     fn graph_page(
@@ -1252,7 +1277,22 @@ impl<P: Product> Server<P> {
         page_arguments.insert("limit".to_owned(), json!(effective));
         let mut context =
             continuation_context(&self.project, "backend.outline", &page_arguments, detail);
-        let continuation = self.continuation(arguments, &context)?;
+        // PC5 is authenticated by the same workspace/path/limit wrapper as
+        // legacy cursors, but its inner page-root commitment is deliberately
+        // not decoded as a trusted PageContinuation. The owner rehydrates it
+        // through the dedicated outline route below.
+        let outline_owner_token = arguments
+            .get("cursor")
+            .and_then(Value::as_str)
+            .filter(|token| !token.is_empty())
+            .and_then(|token| self.verify_cursor_token(token, &context).ok().flatten())
+            .filter(|owner| owner.starts_with("pc5-"));
+        let continuation = if outline_owner_token.is_some() {
+            None
+        } else {
+            self.continuation(arguments, &context)?
+        };
+        let has_continuation = continuation.is_some() || outline_owner_token.is_some();
         let mut pinned = None;
         let mut pinned_revision = None;
         loop {
@@ -1262,17 +1302,22 @@ impl<P: Product> Server<P> {
                     backend_present::Operand::Whole,
                 ))
             })?;
-            self.reimport_catalog_cursor(&page_arguments, detail, invocation, continuation)?;
+            if outline_owner_token.is_none() {
+                self.reimport_catalog_cursor(&page_arguments, detail, invocation, continuation)?;
+            }
             let selected = Request::OutlinePage { path: path.clone(), limit: effective };
             let probe = Probe::OutlinePage { path: &path, limit: effective };
-            let reply = self.product.probe_page_window(
-                probe, continuation, record_pages::query_window(effective, delivery)?,
-            );
+            let window = record_pages::query_window(effective, delivery)?;
+            let reply = if let Some(token) = outline_owner_token.as_deref() {
+                self.product.outline_page_token(path.clone(), window, token)
+            } else {
+                self.product.probe_page_window(probe, continuation, window)
+            };
             lifetime.check().map_err(semantic_pages::semantic_client_error)?;
             let reply = match reply {
                 Err(ClientError::ResponseTooLarge { basis: Some(basis) }) => {
                     record_pages::pin_revision(&mut pinned_revision, basis)?;
-                    if record_pages::shrink_window(continuation.is_some(), &mut effective,
+                    if record_pages::shrink_window(has_continuation, &mut effective,
                         &mut delivery, &mut page_arguments) {
                         context = continuation_context(&self.project, "backend.outline", &page_arguments, detail);
                         continue;
@@ -1362,7 +1407,7 @@ impl<P: Product> Server<P> {
                     .and_then(|frame| frame.remove("result"))
                     .unwrap_or(Value::Null));
             }
-            if !record_pages::shrink_window(continuation.is_some(), &mut effective,
+            if !record_pages::shrink_window(has_continuation, &mut effective,
                 &mut delivery, &mut page_arguments) {
                 return Err(RpcError::tool("outline delivery cannot make progress"));
             }
@@ -2597,6 +2642,21 @@ fn valid_direct_cursor_owner(owner: &str) -> bool {
     }
     if let Some(encoded) = owner.strip_prefix("is1-") {
         return valid_compressed_index_search_owner(encoded);
+    }
+    if let Some(encoded) = owner.strip_prefix("pc5-") {
+        if encoded.is_empty()
+            || !encoded
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        {
+            return false;
+        }
+        let Ok(decoded) = URL_SAFE_NO_PAD.decode(encoded) else {
+            return false;
+        };
+        return !decoded.is_empty()
+            && decoded.len() <= backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES
+            && URL_SAFE_NO_PAD.encode(decoded) == encoded;
     }
     let (encoded, portable) = owner
         .strip_prefix("pc3-")
