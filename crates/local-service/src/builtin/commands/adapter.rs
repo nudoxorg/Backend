@@ -608,6 +608,7 @@ fn answers_while_indexing(command: &Command) -> bool {
         | Command::SemanticShapes(_)
         | Command::Health
         | Command::Revision => true,
+        Command::OutlineOwnerWitnessCapability => true,
         Command::Surface(surface) => matches!(
             surface,
             S::Advisory { .. }
@@ -945,6 +946,53 @@ impl CommandAdapter {
         let owner = daemon.engine().daemon().library().cursor();
         let request = backend_engine::decode_command_dto_for_owner(body, owner)
             .map_err(|error| BuiltinModelError(format!("decode command DTO: {error}")))?;
+        let request = match (&request.command, request.certificate()) {
+            (
+                Command::OutlinePage { package, page },
+                Some(certificate),
+            ) if let Some(witness) = page.outline_witness() => {
+                let recipe_id = backend_library::encode_id(witness.recipe().as_bytes());
+                let mut preimages = certificate.claims.iter().filter_map(|claim| match claim {
+                    backend_library::WireClaim::KeyBytes {
+                        schema: backend_library::WireSchema::ViewRecipe,
+                        id,
+                        value,
+                    } if id == &recipe_id => Some(value.as_ref()),
+                    _ => None,
+                });
+                let preimage = preimages.next().ok_or_else(|| {
+                    BuiltinModelError("compact outline cursor omitted its recipe".to_owned())
+                })?;
+                if preimages.next().is_some() {
+                    return Err(BuiltinModelError(
+                        "compact outline cursor duplicated its recipe".to_owned(),
+                    ));
+                }
+                let library = daemon.engine().daemon().library();
+                let cursor = library
+                    .rehydrate_outline_cursor(
+                        *package,
+                        page.basis(),
+                        page.window(),
+                        witness,
+                        preimage,
+                    )
+                    .map_err(|error| {
+                        BuiltinModelError(format!("rehydrate outline cursor: {error}"))
+                    })?;
+                backend_library::CommandDto::new(
+                    request.request_id,
+                    Command::OutlinePage {
+                        package: *package,
+                        page: page.with_continuation(backend_library::PageContinuation::from_cursor(
+                            cursor,
+                        )),
+                    },
+                )
+                .with_certificate(certificate.clone())
+            }
+            _ => request,
+        };
         if let Command::Surface(backend_library::SurfaceCommand::IndexAwait { ticket }) =
             &request.command
         {
@@ -1262,7 +1310,7 @@ impl CommandAdapter {
             self.retain_live_semantic_completion();
             return Ok(Executed::Deferred);
         }
-        self.execute_from(daemon, body, &origin)
+        self.execute_request_from(daemon, body, request, &origin)
             .map(Executed::Reply)
     }
 
@@ -4547,6 +4595,16 @@ impl CommandAdapter {
         let owner = daemon.engine().daemon().library().cursor();
         let request = backend_engine::decode_command_dto_for_owner(body, owner)
             .map_err(|error| BuiltinModelError(format!("decode command DTO: {error}")))?;
+        self.execute_request_from(daemon, body, request, origin)
+    }
+
+    fn execute_request_from(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        body: &[u8],
+        request: backend_library::CommandDto,
+        origin: &DeferredCommandOrigin,
+    ) -> Result<Vec<u8>, BuiltinModelError> {
         let short_control = self.can_answer_short_control(&request.command, origin);
         if answers_while_indexing(&request.command) && !short_control {
             return Err(BuiltinModelError(
@@ -5029,6 +5087,12 @@ impl CommandAdapter {
                 )?;
                 let command = Command::SemanticShapes(request);
                 Self::certify(daemon, &command, reply, certificate)
+            }
+            Command::OutlineOwnerWitnessCapability => {
+                // Answering this explicit read proves the connected peer
+                // implements the owner-rehydration continuation route. The
+                // standalone library deliberately refuses to make this claim.
+                self.standard(daemon, &Command::Revision, None)
             }
             Command::Surface(surface) => self.surface(daemon, surface, request_id),
             command => self.standard(daemon, &command, certificate),

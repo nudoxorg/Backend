@@ -4,6 +4,100 @@ use super::{CursorWire, FrontierWire};
 use crate::canonical::{BranchSchema, LogSchema, ViewRecipeSchema, ViewVersionSchema, encode_id};
 use crate::{CoverageCapability, Cursor, Frontier, WireCertificate, WireSchema};
 
+pub(crate) fn outline_witness_to_cursor_wire(
+    witness: crate::OutlineCursorWitness,
+) -> CursorWire {
+    CursorWire {
+        recipe: encode_id(witness.recipe().as_bytes()),
+        version: encode_id(witness.version().as_bytes()),
+        branch: encode_id(witness.branch().as_bytes()),
+        log: encode_id(witness.log().as_bytes()),
+        schema: witness.schema(),
+        root: encode_id(&witness.root_commitment()),
+        sequence: witness.sequence(),
+        query_offset: witness.query_position().offset(),
+        query_window: witness
+            .query_position()
+            .predecessor()
+            .and_then(super::window_to_wire),
+    }
+}
+
+pub(crate) fn outline_witness_from_wire(
+    value: &CursorWire,
+    certificate: &WireCertificate,
+    owner: Cursor,
+) -> Result<crate::OutlineCursorWitness, String> {
+    let root = certificate.root_commitment_bytes::<crate::ViewRelation>(
+        WireSchema::ViewRelation,
+        &value.root,
+    )?;
+    if certificate.claims.iter().any(|claim| {
+        matches!(claim, crate::WireClaim::Root { schema: WireSchema::ViewRelation, id, .. } if id == &value.root)
+    }) {
+        return Err("compact outline cursor also carries a full root preimage".to_owned());
+    }
+    let recipe = certificate.key_bytes::<ViewRecipeSchema>(WireSchema::ViewRecipe, &value.recipe)?;
+    let version = certificate.version_value::<ViewVersionSchema>(WireSchema::ViewVersion, &value.version)?;
+    let branch = certificate.key_value::<BranchSchema>(WireSchema::Branch, &value.branch)?;
+    let log = certificate.key_value::<LogSchema>(WireSchema::Log, &value.log)?;
+    if branch != owner.branch()
+        || log != owner.log()
+        || value.schema != owner.schema()
+        || value.sequence > owner.sequence()
+        || value.query_offset == 0
+    {
+        return Err("outline cursor witness does not match the owner frontier".to_owned());
+    }
+    let mut cursor_claims = certificate.claims.iter().filter_map(|claim| match claim {
+        crate::WireClaim::Cursor {
+            recipe,
+            version,
+            branch,
+            log,
+            schema,
+            root,
+            sequence,
+        } => Some((recipe, version, branch, log, schema, root, sequence)),
+        _ => None,
+    });
+    let claim = cursor_claims
+        .next()
+        .ok_or_else(|| "outline cursor witness omitted its cursor claim".to_owned())?;
+    if cursor_claims.next().is_some()
+        || claim.0 != &value.recipe
+        || claim.1 != &value.version
+        || claim.2 != &value.branch
+        || claim.3 != &value.log
+        || *claim.4 != value.schema
+        || claim.5 != &value.root
+        || *claim.6 != value.sequence
+    {
+        return Err("outline cursor witness cursor claim does not match".to_owned());
+    }
+    let predecessor = value
+        .query_window
+        .as_ref()
+        .map(|raw| {
+            let issued = crate::QueryLimit::new(raw.issued)
+                .ok_or_else(|| "invalid query position ceiling".to_owned())?;
+            super::window_from_wire(Some(raw), issued)
+        })
+        .transpose()?;
+    crate::OutlineCursorWitness::new_untrusted(
+        recipe,
+        version,
+        branch,
+        log,
+        value.schema,
+        root,
+        value.sequence,
+        value.query_offset,
+        predecessor,
+    )
+    .ok_or_else(|| "invalid outline predecessor position".to_owned())
+}
+
 pub(crate) fn cursor_to_wire(cursor: Cursor) -> CursorWire {
     CursorWire {
         recipe: encode_id(cursor.recipe().as_bytes()),

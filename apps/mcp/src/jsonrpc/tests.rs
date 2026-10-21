@@ -296,6 +296,7 @@ fn direct_cursor_owner_encodings_and_exact_size_survive_authenticated_roundtrip(
         "pc2-00ff".to_owned(),
         "pc3-AA".to_owned(),
         "pc4-AA".to_owned(),
+        format!("pc5-{}", URL_SAFE_NO_PAD.encode(b"portable binary outline certificate")),
         compressed_index_search_owner(br#"{"state":"fixture"}"#),
         FIXTURE_INDEX_CURSOR.to_owned(),
         largest,
@@ -317,7 +318,9 @@ fn direct_cursor_owner_encodings_and_exact_size_survive_authenticated_roundtrip(
         "pc1-00",
         "pc2-0",
         "pc2-FF",
-        "pc5-AA",
+        "pc5-A",
+        "pc5-YQ==",
+        "pc5-",
         "cGxhaW50ZXh0",
         "pc3-AA\0",
     ] {
@@ -335,6 +338,59 @@ fn direct_cursor_owner_encodings_and_exact_size_survive_authenticated_roundtrip(
                 .is_none()
         );
     }
+}
+
+#[test]
+fn outline_pc5_is_routed_as_an_untrusted_owner_witness_only_after_outer_context_authentication() {
+    let mut server = ready(Fake::default());
+    let owner = format!(
+        "pc5-{}",
+        URL_SAFE_NO_PAD.encode(b"bounded binary outline certificate fixture")
+    );
+    let context_arguments = json!({"path":PROJECT,"limit":4,"detail":"full"});
+    let context = continuation_context(
+        PROJECT,
+        "backend.outline",
+        context_arguments.as_object().expect("arguments"),
+        Detail::Full,
+    );
+    let token = server
+        .sign_cursor_token_at(u64::MAX, &owner, &context)
+        .expect("PC5 framing is signable");
+    let reply = request(
+        &mut server,
+        "tools/call",
+        &json!({"name":"backend.outline","arguments":{
+            "path":PROJECT,"limit":4,"detail":"full","cursor":token
+        }}),
+    );
+    assert!(
+        reply.get("error").is_some() || reply["result"]["isError"] == true,
+        "test product refusal is retained: {reply}"
+    );
+    assert_eq!(server.product.outline_owner_tokens, [owner]);
+    assert!(server.product.page_windows.is_empty(), "PC5 never enters legacy typed-cursor decoding");
+
+    let other_context = continuation_context(
+        PROJECT,
+        "backend.outline",
+        json!({"path":"/abs/other","limit":4,"detail":"full"})
+            .as_object()
+            .expect("other arguments"),
+        Detail::Full,
+    );
+    let rebound = server
+        .sign_cursor_token_at(u64::MAX, &owner, &other_context)
+        .expect("fixture can sign a deliberately wrong context");
+    let reply = request(
+        &mut server,
+        "tools/call",
+        &json!({"name":"backend.outline","arguments":{
+            "path":PROJECT,"limit":4,"detail":"full","cursor":rebound
+        }}),
+    );
+    assert!(reply.get("error").is_some(), "context rebind is rejected: {reply}");
+    assert_eq!(server.product.outline_owner_tokens, [owner]);
 }
 
 fn compressed_index_search_owner(json: &[u8]) -> String {
@@ -632,6 +688,9 @@ struct Fake {
     empty_outline: bool,
     /// Keep genuine outline transport/proof failures distinct from absence.
     outline_error: Option<ClientError>,
+    /// Records the explicit owner-aware PC5 route without treating the
+    /// untrusted page witness as a locally admitted typed continuation.
+    outline_owner_tokens: Vec<String>,
     /// Exact source availability returned by the document/source boundary.
     document_override: Option<Document>,
     /// Negative control: withhold an overridden document from the member projection.
@@ -1463,6 +1522,18 @@ impl Product for Fake {
             continuation,
             Some(window),
         )
+    }
+
+    fn outline_page_token(
+        &mut self,
+        _coordinate: String,
+        _window: backend_library::QueryWindow,
+        token: &str,
+    ) -> Result<ReplyDto, ClientError> {
+        self.outline_owner_tokens.push(token.to_owned());
+        Err(ClientError::Protocol(
+            "PC5 owner route reached test product".to_owned(),
+        ))
     }
 
     fn decode_continuation(

@@ -746,6 +746,36 @@ impl UnixCommandTransport {
         })
     }
 
+    /// Reopens an authenticated owner connection inside an existing startup
+    /// deadline. This is used after a read-only compatibility probe receives
+    /// an unsupported-command refusal from a peer that closes the channel.
+    pub(super) fn reconnect_before(
+        &mut self,
+        deadline: std::time::Instant,
+        context: Option<&RequestContext>,
+    ) -> Result<(), ClientError> {
+        let endpoint = self.endpoint.clone().ok_or_else(|| {
+            ClientError::Protocol(
+                "stream-backed command transport has no reconnect endpoint".to_owned(),
+            )
+        })?;
+        let remaining = Self::connection_budget(self.connect_timeout, Some(deadline), context)?;
+        let replacement = Self::connect_before(
+            endpoint,
+            self.connect_timeout.min(remaining),
+            remaining,
+            context,
+            Some(deadline),
+        )?;
+        self.stream = replacement.stream;
+        self.interrupt = replacement.interrupt;
+        self.peer = replacement.peer;
+        self.endpoint = replacement.endpoint;
+        self.frames_sent = 0;
+        self.frame_budget = replacement.frame_budget;
+        Ok(())
+    }
+
     fn connection_budget(
         ceiling: Duration,
         deadline: Option<std::time::Instant>,
@@ -972,6 +1002,9 @@ pub struct Session {
     request_context: Option<RequestContext>,
     search_wait_scope: Option<RequestContext>,
     next_request_id: u64,
+    /// True only when this session's authenticated owner connection answered
+    /// the explicit owner-witness capability command with an admitted Revision.
+    outline_owner_witness_route: bool,
     admitted_owner: Option<backend_library::Cursor>,
     admitted_source: Option<backend_library::SemanticObject>,
     prepared_query: Option<CommandDto>,
@@ -1060,6 +1093,7 @@ impl Session {
             request_context: None,
             search_wait_scope: None,
             next_request_id: 1,
+            outline_owner_witness_route: false,
             admitted_owner: None,
             admitted_source: None,
             prepared_query: None,
@@ -1098,6 +1132,7 @@ impl Session {
             request_context: None,
             search_wait_scope: None,
             next_request_id: 1,
+            outline_owner_witness_route: false,
             admitted_owner: None,
             admitted_source: None,
             prepared_query: None,
@@ -1111,6 +1146,13 @@ impl Session {
     #[must_use]
     pub fn request_context(&self) -> Option<&RequestContext> {
         self.request_context.as_ref()
+    }
+
+    /// Whether this connection has concrete evidence that its owner image
+    /// implements the compact outline witness decoder.
+    #[must_use]
+    pub const fn supports_outline_owner_witness_route(&self) -> bool {
+        self.outline_owner_witness_route
     }
 
     /// Installs or retires the context for one caller-owned request.
@@ -1256,6 +1298,9 @@ impl Session {
     /// Returns an error when the endpoint is unavailable or cannot
     /// authenticate.
     pub fn reconnect(&mut self) -> Result<(), ClientError> {
+        // The negotiated owner-only route belongs to the exact authenticated
+        // connection on which the peer answered its capability probe.
+        self.outline_owner_witness_route = false;
         self.transport.reconnect()?;
         self.next_request_id = 1;
         Ok(())
@@ -1826,6 +1871,24 @@ impl Session {
     ) -> Result<ReplyDto, ClientError> {
         self.prepare_query_window(window, continuation, None)?;
         self.outline_page_with_window(coordinate, window, continuation)
+    }
+
+    /// Resumes an outline directly from a compact owner-rehydrated PC5 token.
+    /// The token's page-root digest remains untrusted until the owner rebuilds
+    /// its exact predecessor rows before normal dispatch.
+    ///
+    /// # Errors
+    /// Refuses malformed, stale, foreign-scope, wrong-package, or non-outline
+    /// tokens and propagates the ordinary request/reply admission failures.
+    pub fn outline_page_from_query_token(
+        &mut self,
+        coordinate: &str,
+        window: backend_library::QueryWindow,
+        token: &str,
+    ) -> Result<ReplyDto, ClientError> {
+        let (command, certificate) =
+            self.outline_witness_request(coordinate, window, token)?;
+        self.send_success(command, Some(certificate))
     }
 
     fn outline_page_with_window(

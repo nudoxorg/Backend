@@ -168,7 +168,7 @@ pub use command_registry::{
 };
 pub use cursor::{
     CURSOR_CONTROL_BYTES, CURSOR_QUERY_BYTES, CURSOR_SCHEMA, CURSOR_WINDOW_QUERY_BYTES, Cursor, CursorError, CursorEvent,
-    CursorRead, CursorResetReason, CursorSub,
+    CursorRead, CursorResetReason, CursorSub, OutlineCursorWitness,
 };
 pub use declaration_selector::{DeclarationRead, DeclarationSelector, SelectedSymbolId};
 pub use delta::{Delta, Intent, IntentError, IntentLog, IntentReceipt, Settings};

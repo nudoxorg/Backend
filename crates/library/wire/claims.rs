@@ -365,6 +365,46 @@ impl WireCertificate {
         }
     }
 
+    /// Replaces exactly one canonical relation-root preimage with its already
+    /// matching digest commitment while preserving every other claim and its
+    /// order. The result is suitable only for an owner-rehydrated route; this
+    /// method does not admit the commitment as a typed root.
+    #[must_use]
+    pub fn replace_root_preimage_with_commitment(
+        &self,
+        schema: WireSchema,
+        id: &str,
+    ) -> Option<Self> {
+        let mut replaced = false;
+        let mut claims = self.claims.to_vec();
+        for claim in &mut claims {
+            match claim {
+                WireClaim::Root {
+                    schema: claim_schema,
+                    id: claim_id,
+                    ..
+                } if *claim_schema == schema && claim_id == id && !replaced => {
+                    *claim = WireClaim::RootCommitment {
+                        schema,
+                        id: id.to_owned(),
+                    };
+                    replaced = true;
+                }
+                WireClaim::RootCommitment {
+                    schema: claim_schema,
+                    id: claim_id,
+                } if *claim_schema == schema && claim_id == id => return None,
+                WireClaim::Root {
+                    schema: claim_schema,
+                    id: claim_id,
+                    ..
+                } if *claim_schema == schema && claim_id == id => return None,
+                _ => {}
+            }
+        }
+        replaced.then(|| Self::from_claims(claims.into_boxed_slice()))
+    }
+
     /// Returns a certificate with one additional producer claim.
     #[must_use]
     pub fn with_claim(self, claim: WireClaim) -> Self {
