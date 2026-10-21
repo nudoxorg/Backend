@@ -1255,6 +1255,12 @@ pub enum Command {
     Health,
     /// Read a constant-size revision and subscription cursor.
     Revision,
+    /// Read-only protocol capability probe for owner-rehydrated outline resumes.
+    ///
+    /// This command is answered only by the local product owner. It shares the
+    /// `Revision` reply shape so a new client can distinguish a supporting peer
+    /// from an older same-DTO owner without changing the ordinary health reply.
+    OutlineOwnerWitnessCapability,
 }
 
 impl Command {
@@ -1278,7 +1284,7 @@ impl Command {
             Self::SemanticShapes(_) => CommandId::SemanticShapes,
             Self::Surface(command) => command.id(),
             Self::Health => CommandId::Health,
-            Self::Revision => CommandId::Revision,
+            Self::Revision | Self::OutlineOwnerWitnessCapability => CommandId::Revision,
         }
     }
 

@@ -609,6 +609,7 @@ enum CommandWire {
     Surface(crate::SurfaceCommand),
     Health(EmptyWire),
     Revision(EmptyWire),
+    OutlineOwnerWitnessCapability(EmptyWire),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -875,6 +876,9 @@ fn command_to_wire(command: &Command) -> CommandWire {
         Command::Surface(command) => CommandWire::Surface(command.clone()),
         Command::Health => CommandWire::Health(EmptyWire {}),
         Command::Revision => CommandWire::Revision(EmptyWire {}),
+        Command::OutlineOwnerWitnessCapability => {
+            CommandWire::OutlineOwnerWitnessCapability(EmptyWire {})
+        }
     }
 }
 
@@ -965,6 +969,9 @@ fn command_from_wire(
         }
         CommandWire::Health(_) => Ok(Command::Health),
         CommandWire::Revision(_) => Ok(Command::Revision),
+        CommandWire::OutlineOwnerWitnessCapability(_) => {
+            Ok(Command::OutlineOwnerWitnessCapability)
+        }
     }
 }
 

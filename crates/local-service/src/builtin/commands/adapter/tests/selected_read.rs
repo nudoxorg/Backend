@@ -51,6 +51,20 @@ fn align_fixture_sql(adapter: &mut CommandAdapter, daemon: &ProductDaemon) {
 }
 
 #[test]
+fn local_owner_explicitly_answers_outline_witness_route_probe_with_revision() {
+    let mut fixture = AdapterFixture::new();
+    let request = CommandDto::new(u64::MAX - 1, Command::OutlineOwnerWitnessCapability);
+    let (adapter, daemon) = fixture.parts();
+    let body = backend_library::encode_command_body(&request).expect("probe request encoding");
+    let bytes = adapter
+        .execute(daemon, &body)
+        .expect("local product owner answers capability probe");
+    let reply = backend_library::decode_reply_body(&bytes).expect("actual owner reply decode");
+    backend_library::admit_reply(&request, &reply).expect("correlated owner capability reply");
+    assert!(matches!(reply.reply, CommandReply::Revision(_)));
+}
+
+#[test]
 fn local_batch_read_ignores_invalid_unrelated_manifest_and_unconfigured_catalog() {
     let mut fixture = AdapterFixture::new();
     let project = PathBuf::from(&fixture.label);

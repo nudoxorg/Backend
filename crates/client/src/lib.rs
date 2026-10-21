@@ -972,8 +972,8 @@ pub struct Session {
     request_context: Option<RequestContext>,
     search_wait_scope: Option<RequestContext>,
     next_request_id: u64,
-    /// True only when the owner compatibility path proved the running locald
-    /// image matches the installed image whose library advertises this route.
+    /// True only when this session's authenticated owner connection answered
+    /// the explicit owner-witness capability command with an admitted Revision.
     outline_owner_witness_route: bool,
     admitted_owner: Option<backend_library::Cursor>,
     admitted_source: Option<backend_library::SemanticObject>,
@@ -1268,6 +1268,9 @@ impl Session {
     /// Returns an error when the endpoint is unavailable or cannot
     /// authenticate.
     pub fn reconnect(&mut self) -> Result<(), ClientError> {
+        // The negotiated owner-only route belongs to the exact authenticated
+        // connection on which the peer answered its capability probe.
+        self.outline_owner_witness_route = false;
         self.transport.reconnect()?;
         self.next_request_id = 1;
         Ok(())

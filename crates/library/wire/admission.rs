@@ -958,7 +958,10 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
         | (Command::Search(_), CommandReply::Search(_) | CommandReply::PublishedNameSearch(_))
         | (Command::SearchPublishedNames(_), CommandReply::PublishedNameSearch(_))
         | (Command::Health, CommandReply::Health(_) | CommandReply::Readiness(_))
-        | (Command::Revision, CommandReply::Revision(_))
+        | (
+            Command::Revision | Command::OutlineOwnerWitnessCapability,
+            CommandReply::Revision(_),
+        )
         | (
             Command::PackagePage(_)
             | Command::OutlinePage { .. }

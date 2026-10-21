@@ -9,6 +9,7 @@ use backend_runtime::WorkspacePaths;
 use std::time::{Duration, Instant};
 
 const PROBE_ID: u64 = u64::MAX;
+const OUTLINE_CAPABILITY_PROBE_ID: u64 = u64::MAX - 1;
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProbeEnvelope {
@@ -42,11 +43,42 @@ fn update_error(found: u16, detail: impl Into<String>) -> ClientError {
     }
 }
 
-fn outline_witness_route_for_owner(
-    matched_default_image: bool,
-    library_capability: Option<bool>,
-) -> bool {
-    matched_default_image && library_capability == Some(true)
+fn peer_reports_outline_witness_route(
+    transport: &mut UnixCommandTransport,
+    deadline: Instant,
+    context: Option<&RequestContext>,
+) -> Result<bool, ClientError> {
+    let remaining = probe_budget(deadline, context)?;
+    let request = CommandDto::new(
+        OUTLINE_CAPABILITY_PROBE_ID,
+        Command::OutlineOwnerWitnessCapability,
+    );
+    let body = encode_request(&request)?;
+    // Use the already authenticated health connection. A new connection here
+    // could race an owner replacement and bind capability to a different
+    // process than the one this Session will continue using.
+    let bytes = match transport.exchange_command_with_budget(&request, &body, remaining) {
+        Ok(bytes) => bytes,
+        Err(error) if error.is_connection_lost() => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    probe_budget(deadline, context)?;
+    let reply = match transport.decode(&bytes) {
+        Ok(reply) => reply,
+        // A refusal or older/unknown reply grammar only disables the optional
+        // route. Normal strict full-proof PC4 continuation remains available.
+        Err(_) => return Ok(false),
+    };
+    Ok(outline_witness_route_ack(&request, reply))
+}
+
+fn outline_witness_route_ack(request: &CommandDto, reply: backend_library::ReplyDto) -> bool {
+    admit_reply(request, reply).is_ok_and(|admitted| {
+        matches!(
+            admitted.reply,
+            backend_library::CommandReply::Revision(_)
+        )
+    })
 }
 fn probe_budget(
     deadline: Instant,
@@ -133,6 +165,8 @@ impl Session {
             let same_version = found == backend_library::DTO_VERSION;
             if same_version {
                 admit_reply(&request, transport.decode(&bytes)?)?;
+                let outline_witness_route =
+                    peer_reports_outline_witness_route(&mut transport, deadline, context)?;
                 #[cfg(target_os = "linux")]
                 {
                     let peer = transport.peer.as_ref().ok_or_else(|| {
@@ -145,7 +179,11 @@ impl Session {
                             // BACKEND_LOCALD_BIN is an intentional helper pin, not
                             // authority to replace its owner with this install's default.
                             return Self::finish_owner_connection(
-                                paths, transport, context, deadline, false,
+                                paths,
+                                transport,
+                                context,
+                                deadline,
+                                outline_witness_route,
                             );
                         };
                         intended_image = Some(peer.observe_default_locald_image(&candidate)
@@ -161,17 +199,23 @@ impl Session {
                         .map_err(|e| update_error(found, format!("the running/default owner image comparison could not be proven: {e}; no command was submitted")))?;
                     probe_budget(deadline, context)?;
                     if matches {
-                        let route = outline_witness_route_for_owner(
-                            true,
-                            Some(backend_library::protocol::OUTLINE_OWNER_WITNESS_ROUTE),
-                        );
                         return Self::finish_owner_connection(
-                            paths, transport, context, deadline, route,
+                            paths,
+                            transport,
+                            context,
+                            deadline,
+                            outline_witness_route,
                         );
                     }
                 }
                 #[cfg(not(target_os = "linux"))]
-                return Self::finish_owner_connection(paths, transport, context, deadline, false);
+                return Self::finish_owner_connection(
+                    paths,
+                    transport,
+                    context,
+                    deadline,
+                    outline_witness_route,
+                );
             }
             if passive
                 || attempt != 0
@@ -370,24 +414,38 @@ mod tests {
     }
 
     #[test]
-    fn outline_witness_route_requires_image_proof_and_known_library_capability() {
-        let supported = Some(backend_library::protocol::OUTLINE_OWNER_WITNESS_ROUTE);
-        assert!(
-            !outline_witness_route_for_owner(false, supported),
-            "a same-DTO or unproven owner image is not route evidence"
+    fn actual_peer_reply_policy_requires_correlated_revision_ack() {
+        let request = CommandDto::new(
+            OUTLINE_CAPABILITY_PROBE_ID,
+            Command::OutlineOwnerWitnessCapability,
         );
-        assert!(
-            !outline_witness_route_for_owner(true, None),
-            "missing owner/library capability fails closed"
+        let library = backend_library::Library::new();
+        let root = library.view().root();
+        let revision = backend_library::RevisionReceipt::new(
+            root.root(),
+            library.cursor(),
+            root.basis().object,
         );
-        assert!(
-            !outline_witness_route_for_owner(true, Some(false)),
-            "unknown or unsupported capability fails closed"
+        let supported = backend_library::ReplyDto::new(
+            OUTLINE_CAPABILITY_PROBE_ID,
+            backend_library::CommandReply::Revision(revision),
         );
-        assert_eq!(
-            outline_witness_route_for_owner(true, supported),
-            backend_library::protocol::OUTLINE_OWNER_WITNESS_ROUTE,
-            "only the proven matched image joined with this library capability enables PC5"
+        assert!(outline_witness_route_ack(&request, supported));
+
+        let old_peer =
+            backend_library::ReplyDto::error(OUTLINE_CAPABILITY_PROBE_ID, "unknown command");
+        assert!(!outline_witness_route_ack(&request, old_peer));
+        let unknown_success = backend_library::ReplyDto::new(
+            OUTLINE_CAPABILITY_PROBE_ID,
+            backend_library::CommandReply::Failed(
+                backend_library::CommandFailure::InvalidQuery("unknown capability".to_owned()),
+            ),
         );
+        assert!(!outline_witness_route_ack(&request, unknown_success));
+        let wrong_peer = backend_library::ReplyDto::new(
+            OUTLINE_CAPABILITY_PROBE_ID - 1,
+            backend_library::CommandReply::Revision(revision),
+        );
+        assert!(!outline_witness_route_ack(&request, wrong_peer));
     }
 }

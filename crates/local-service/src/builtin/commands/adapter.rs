@@ -608,6 +608,7 @@ fn answers_while_indexing(command: &Command) -> bool {
         | Command::SemanticShapes(_)
         | Command::Health
         | Command::Revision => true,
+        Command::OutlineOwnerWitnessCapability => true,
         Command::Surface(surface) => matches!(
             surface,
             S::Advisory { .. }
@@ -5076,6 +5077,12 @@ impl CommandAdapter {
                 )?;
                 let command = Command::SemanticShapes(request);
                 Self::certify(daemon, &command, reply, certificate)
+            }
+            Command::OutlineOwnerWitnessCapability => {
+                // Answering this explicit read proves the connected peer
+                // implements the owner-rehydration continuation route. The
+                // standalone library deliberately refuses to make this claim.
+                self.standard(daemon, &Command::Revision, None)
             }
             Command::Surface(surface) => self.surface(daemon, surface, request_id),
             command => self.standard(daemon, &command, certificate),
