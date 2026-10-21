@@ -1394,7 +1394,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn closed_go_refusal_keeps_native_python_and_linked_typescript_usable() {
-        use backend_library::interface::{CompilerCapability, CompilerRequest};
+        use backend_library::interface::{
+            CompilerCapability, CompilerRequest, CorrelationId, GenerateTarget,
+            PackageCompileRequest, PackageUrl,
+        };
+        use crate::application::{OwnedPackageSource, OwnedPackageSourceSet};
+        use backend_semantic::ir::Coverage;
+        use backend_version::{ContentId, SourceFactDomain};
         use std::os::unix::fs::PermissionsExt as _;
         let root = std::env::temp_dir().join(format!(
             "nudox-go-python-{}-{}",
@@ -1403,6 +1409,22 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        // The linked TSZ lane consumes an admitted package program. A direct
+        // `generate` request instead enters the legacy single-file checker.
+        let package_root = root.join("typescript-project");
+        fs::create_dir_all(package_root.join("src")).unwrap();
+        fs::write(
+            package_root.join("package.json"),
+            r#"{"name":"closed-go","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"strict":true,"target":"ES2022","module":"ESNext"},"include":["src/**/*.ts"]}"#,
+        )
+        .unwrap();
+        const TYPESCRIPT_SOURCE: &str = "export const answer: number = 42;\n";
+        fs::write(package_root.join("src/index.ts"), TYPESCRIPT_SOURCE).unwrap();
         let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths([])
             .unwrap()
             .with_go_failure(Some(LocalRuntimeGoAuthorityFailure::OracleUnavailable))
@@ -1439,13 +1461,46 @@ mod tests {
                 .state(),
             crate::application::LocalCompilerCapabilityState::Ready
         );
-        client
-            .generate(CompilerRequest {
+        let typescript_request = PackageCompileRequest::new(
+            GenerateTarget {
+                correlation: CorrelationId(1),
                 profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
                 stage: Stage::LowerIr,
-                source: "export const answer: number = 42;\n",
-            })
-            .expect("closed Go refusal cannot block the linked native TypeScript lane");
+            },
+            PackageUrl::try_from("pkg:npm/closed-go@1.0.0#src/index.ts".to_owned()).unwrap(),
+        )
+        .unwrap();
+        let package = OwnedPackageSourceSet::new(
+            typescript_request,
+            package_root,
+            vec![OwnedPackageSource::new("src/index.ts", TYPESCRIPT_SOURCE).unwrap()]
+                .into_boxed_slice(),
+        )
+        .unwrap();
+        let generated = client
+            .compile_package_sources_staged(package)
+            .expect("closed Go refusal cannot block an admitted linked native TypeScript program");
+        assert_eq!(generated.artifacts().len(), 1);
+        assert_eq!(
+            generated.artifacts()[0].source().identity,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(TYPESCRIPT_SOURCE.as_bytes())
+        );
+        assert_eq!(
+            generated.artifacts()[0].source().byte_len as usize,
+            TYPESCRIPT_SOURCE.len()
+        );
+        assert_eq!(
+            generated.input_witness().coverage().state(),
+            Coverage::Partial
+        );
+        let native_program = generated
+            .native_program_sources()
+            .expect("the linked TSZ package program is retained");
+        assert!(
+            native_program
+                .sources()
+                .any(|row| row.package_path == Some("src/index.ts"))
+        );
         assert_eq!(
             client
                 .capabilities()
