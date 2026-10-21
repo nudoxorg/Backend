@@ -1069,6 +1069,78 @@ fn index_publication_worker_warm_and_cold_reuse_refresh_current_capture_without_
     assert_current_profile_receipt(&mut fixture, &label, &partial);
 }
 
+#[test]
+fn index_publication_worker_warm_and_cold_typescript_reuse_refreshes_capture_without_compile() {
+    let mut fixture = native_fixture();
+    let label = fixture.label.clone();
+    for (path, source) in [
+        (
+            "package.json",
+            r#"{"name":"typescript-reuse","version":"1.0.0"}"#,
+        ),
+        (
+            "tsconfig.app.json",
+            r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"Bundler"},"files":["src/main.ts"]}"#,
+        ),
+        (
+            "angular.json",
+            r#"{"projects":{"app":{"architect":{"build":{"options":{"tsConfig":"tsconfig.app.json"}}}}}}"#,
+        ),
+        ("src/main.ts", "export const main = 1;"),
+    ] {
+        let path = Path::new(&label).join(path);
+        fs::create_dir_all(path.parent().expect("TS source parent")).expect("TS source directory");
+        fs::write(path, source).expect("TS project input");
+    }
+
+    let first = run_mixed_native_operation(&mut fixture, &label, 0xba);
+    let first_capture = first.source_capture.as_ref().expect("first capture");
+    let first_typescript = first_capture
+        .profiles()
+        .iter()
+        .find(|profile| profile.profile.name().expect("profile") == "typescript")
+        .expect("first TypeScript profile receipt");
+    let first_generation = match first_typescript.state {
+        backend_library::IndexOperationSemanticProfileState::Published { generation, .. } => {
+            generation
+        }
+        ref state => panic!("initial TypeScript profile must publish: {state:?}"),
+    };
+
+    let warm = run_native_reuse_only_operation(&mut fixture, &label, 0xbb);
+    assert_current_profile_receipt(&mut fixture, &label, &warm);
+    assert_reused_typescript_profile(&warm, first_generation);
+
+    let journal = fixture
+        .root
+        .0
+        .join("workspace/native-publication-view.journal");
+    fixture = fixture.reopen_with_view_journal(Some(journal));
+    install_mixed_native_compiler(&mut fixture);
+    let cold = run_native_reuse_only_operation(&mut fixture, &label, 0xbc);
+    assert_current_profile_receipt(&mut fixture, &label, &cold);
+    assert_reused_typescript_profile(&cold, first_generation);
+}
+
+fn assert_reused_typescript_profile(
+    status: &backend_library::IndexOperationStatus,
+    expected_generation: [u8; 32],
+) {
+    let profile = status
+        .source_capture
+        .as_ref()
+        .expect("operation capture")
+        .profiles()
+        .iter()
+        .find(|profile| profile.profile.name().expect("profile") == "typescript")
+        .expect("current TypeScript profile is retained in receipt");
+    assert!(matches!(
+        profile.state,
+        backend_library::IndexOperationSemanticProfileState::Published { generation, .. }
+            if generation == expected_generation
+    ));
+}
+
 fn native_dispatch(
     fixture: &mut AdapterFixture,
     partial: bool,

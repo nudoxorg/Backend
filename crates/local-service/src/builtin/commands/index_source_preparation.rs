@@ -332,11 +332,12 @@ pub(super) fn prepare_scan_source(
     let mut dirty =
         profiles_requiring_compilation(&live, &lost, &fresh_profiles, &inputs, &reusable_inputs);
     dirty.retain(|profile| !typescript_reused_profiles.contains(profile));
-    let reused_profiles = live
+    let mut reused_profiles = live
         .intersection(&reusable_inputs)
         .filter(|profile| !dirty.contains(profile))
         .copied()
         .collect::<BTreeSet<_>>();
+    reused_profiles.extend(typescript_reused_profiles.iter().copied());
     let profiles = if dirty.is_empty() {
         let (captures, pending_changes, _) = prepare_source_capture_changes_for_snapshot(
             base_snapshot,
