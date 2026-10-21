@@ -531,10 +531,8 @@ fn coverage_pages_bind_generation_input_catalog_and_exact_continuation_without_r
     terminal_selector.offset = terminal_page.row_count;
     terminal_page.rows = Box::default();
     terminal_page.next = None;
-    checked(terminal.admit_request(
-        &package,
-        Some(&PackageCompilerOutcomeRead::Coverage(*terminal_selector)),
-    ))?;
+    let terminal_request = PackageCompilerOutcomeRead::Coverage(*terminal_selector);
+    checked(terminal.admit_request(&package, Some(&terminal_request)))?;
     assert!(observed.admit_request(&package, None).is_err());
     assert!(
         observed
