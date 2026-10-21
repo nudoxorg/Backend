@@ -2,7 +2,7 @@
 //! rename API, and the stable volume and object identity of an open file.
 #![allow(
     unsafe_code,
-    reason = "reviewed MoveFileExW and GetFileInformationByHandleEx calls over owned buffers and live handles"
+    reason = "reviewed Win32 file-information and rename calls over owned buffers and live handles"
 )]
 
 use super::busy::{is_busy, retry_while_busy_pausing};
@@ -16,6 +16,130 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ID_INFO, FILE_STANDARD_INFO, FileIdInfo, FileStandardInfo, GetFileInformationByHandleEx,
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
 };
+
+/// One extended rename of an already-admitted source handle. This is deliberately separate
+/// from `replace`: a durability repair may not fall back to changing the old inode's seal.
+pub(crate) fn replace_readonly(source: &File, destination: &Path) -> io::Result<()> {
+    let name = wide_path(destination)?;
+    replace_readonly_name(source, std::ptr::null_mut(), &name[..name.len() - 1])
+}
+
+pub(crate) fn replace_readonly_at(
+    source: &File,
+    destination_parent: &File,
+    name: &str,
+) -> io::Result<()> {
+    let name = super::workspace_fs::durability_component(name)?;
+    replace_readonly_name(source, destination_parent.as_raw_handle().cast(), &name)
+}
+
+fn replace_readonly_name(
+    source: &File,
+    parent: windows_sys::Win32::Foundation::HANDLE,
+    name: &[u16],
+) -> io::Result<()> {
+    use std::mem::{align_of, offset_of};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_RENAME_INFO, FileRenameInfoEx, SetFileInformationByHandle,
+    };
+
+    // FILE_RENAME_INFO's SDK union carries Flags with FileRenameInfoEx. Use the binding's
+    // offsets/size on both 32- and 64-bit Windows, rather than a handwritten NT layout.
+    const _: () = assert!(align_of::<FILE_RENAME_INFO>() <= align_of::<u64>());
+    const REPLACE_IF_EXISTS: u32 = 0x1;
+    const POSIX_SEMANTICS: u32 = 0x2;
+    const IGNORE_READONLY_ATTRIBUTE: u32 = 0x40;
+    if name.len() > 32_767 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "rename path exceeds UTF-16 limit",
+        ));
+    }
+    let name_bytes = name
+        .len()
+        .checked_mul(size_of::<u16>())
+        .ok_or_else(|| io::Error::other("rename name size overflow"))?;
+    let length = offset_of!(FILE_RENAME_INFO, FileName)
+        .checked_add(name_bytes)
+        .map(|length| length.max(size_of::<FILE_RENAME_INFO>()))
+        .ok_or_else(|| io::Error::other("rename request size overflow"))?;
+    let request_length =
+        u32::try_from(length).map_err(|_| io::Error::other("rename request too large"))?;
+    let name_length =
+        u32::try_from(name_bytes).map_err(|_| io::Error::other("rename name too large"))?;
+    let mut storage = Vec::<u64>::new();
+    storage
+        .try_reserve_exact(length.div_ceil(size_of::<u64>()))
+        .map_err(|_| io::Error::other("cannot allocate rename request"))?;
+    storage.resize(length.div_ceil(size_of::<u64>()), 0);
+    let information = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    // SAFETY: zeroed u64 storage is aligned for the SDK structure and covers its full size
+    // plus every UTF-16 name unit. The length excludes NUL. Every offset comes from the SDK.
+    unsafe {
+        (&raw mut (*information).Anonymous.Flags)
+            .write(REPLACE_IF_EXISTS | POSIX_SEMANTICS | IGNORE_READONLY_ATTRIBUTE);
+        (&raw mut (*information).RootDirectory).write(parent);
+        (&raw mut (*information).FileNameLength).write(name_length);
+        std::ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            (&raw mut (*information).FileName).cast(),
+            name.len(),
+        );
+    }
+    // SAFETY: the source handle and fully initialized request storage remain live for this
+    // synchronous Win32 call. The name is either absolute with NULL RootDirectory, or a
+    // validated single component resolved under a live directory handle.
+    let renamed = unsafe {
+        SetFileInformationByHandle(
+            source.as_raw_handle().cast(),
+            FileRenameInfoEx,
+            information.cast(),
+            request_length,
+        )
+    };
+    if renamed == 0 {
+        Err(extended_operation_error())
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn unlink_readonly(file: &File) -> io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+        FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO_EX, FileDispositionInfoEx,
+        SetFileInformationByHandle,
+    };
+
+    let information = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_DELETE
+            | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+            | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+    };
+    // SAFETY: a live owned file handle and an SDK-defined, fully initialized fixed-size
+    // request are kept alive throughout the call. No file's attributes are changed.
+    let removed = unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle().cast(),
+            FileDispositionInfoEx,
+            (&raw const information).cast(),
+            size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+        )
+    };
+    if removed == 0 {
+        Err(extended_operation_error())
+    } else {
+        Ok(())
+    }
+}
+
+fn extended_operation_error() -> io::Error {
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(1 | 50 | 87) => io::Error::new(io::ErrorKind::Unsupported, error),
+        _ => error,
+    }
+}
 
 /// How a replacing rename dealt with the name it replaced.
 ///
@@ -324,6 +448,19 @@ mod tests {
     #[test]
     fn replace_overwrites_a_read_only_destination_without_waiting() {
         let directory = scratch("read-only");
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                if let Ok(directory) = crate::durability::open_directory_readonly_nofollow(&self.0) {
+                    let _ = crate::durability::unlink_directory_files_preserving_readonly(
+                        &directory,
+                        |name| matches!(name, "next" | "state"),
+                    );
+                }
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
         let (source, destination) = (directory.join("next"), directory.join("state"));
         fs::write(&destination, b"old").expect("write destination");
         let mut permissions = fs::metadata(&destination).expect("stat").permissions();

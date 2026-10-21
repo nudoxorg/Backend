@@ -547,7 +547,7 @@ impl StreamingClosureBuilder {
             {
                 return Err(StoreError::Corrupt);
             }
-            artifact_fs::unlink_stage_file(&self.staging_dir, name)?;
+            artifact_fs::unlink_stage_file(&self.staging_dir, name, &file)?;
             self.staging_dir.sync_all()?;
         } else {
             let linked = artifact_fs::link_stage_object(
@@ -557,7 +557,11 @@ impl StreamingClosureBuilder {
                 &self.store,
                 object_id,
             )?;
-            if linked {
+            if linked.is_some() {
+                // This builder keeps its per-member metadata on disk and deliberately does
+                // not retain the stream session's in-memory inode receipts. Seal admission
+                // therefore performs a fresh actual barrier, including a verified private
+                // copy on Windows; this boolean is accounting, never durability provenance.
                 created = true;
             } else {
                 let existing = self
@@ -572,7 +576,7 @@ impl StreamingClosureBuilder {
                 {
                     return Err(StoreError::Corrupt);
                 }
-                artifact_fs::unlink_stage_file(&self.staging_dir, name)?;
+                artifact_fs::unlink_stage_file(&self.staging_dir, name, &file)?;
                 self.staging_dir.sync_all()?;
             }
         }
@@ -836,6 +840,7 @@ mod tests {
     struct TestStore {
         path: PathBuf,
         store: FileStore,
+        _cleanup: super::super::artifact_fs::TestDirectoryCleanup,
     }
 
     impl TestStore {
@@ -845,15 +850,14 @@ mod tests {
                 "backend-store-streamed-closure-{}-{ordinal}",
                 std::process::id()
             ));
-            let _ = fs::remove_dir_all(&path);
+            let _ = super::super::artifact_fs::remove_test_directory(&path);
+            let cleanup = super::super::artifact_fs::TestDirectoryCleanup::new(&path);
             let store = FileStore::open(&path, 64 * 1024).expect("open test store");
-            Self { path, store }
-        }
-    }
-
-    impl Drop for TestStore {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
+            Self {
+                path,
+                store,
+                _cleanup: cleanup,
+            }
         }
     }
 
@@ -1388,7 +1392,8 @@ mod tests {
             assert!(session.join("ACTIVE.lock").is_file());
         }
 
-        fs::remove_file(&hostile_alias).expect("remove test-only extra alias");
+        super::super::artifact_fs::remove_test_file(&hostile_alias)
+            .expect("remove test-only extra alias without unsealing");
         let cold = FileStore::open(&test.path, 64 * 1024).expect("cold-open repaired store");
         let mut followup = cold
             .begin_streaming_closure(budget(4))

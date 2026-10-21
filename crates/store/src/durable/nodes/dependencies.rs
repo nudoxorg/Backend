@@ -1,7 +1,9 @@
 //! Dependency completion is scoped to a held GC pin, never inferred from a reference file.
 
-use super::super::{FileStore, Hash, ObjectId, ObjectWriteReceipt, StoreError, artifact_fs, io_error, sync_directory};
+use super::super::{FileStore, Hash, ObjectId, ObjectWriteReceipt, StoreError, artifact_fs, io_error};
 use super::super::layout::GcPinLease;
+#[cfg(not(windows))]
+use super::super::sync_directory;
 use super::{NODE_MAX_COUNT, wire};
 use crate::UntrustedObjectId;
 use backend_version::SchemaIdentity;
@@ -25,19 +27,91 @@ pub(in crate::durable) struct RelationAdmission<'pin> {
     complete: HashMap<ObjectId, (SchemaIdentity, Hash)>,
     complete_references: BTreeSet<(SchemaIdentity, Hash)>,
     written_objects: HashSet<ObjectId>,
+    streamed_objects: Option<&'pin HashMap<ObjectId, artifact_fs::DurableObjectFile>>,
+    #[cfg(windows)]
+    directories: DependencyDirectories,
+    #[cfg(windows)]
+    repair: std::sync::OnceLock<Result<artifact_fs::DurabilityRepair<'pin>, StoreError>>,
     cancellation: Option<&'pin std::sync::atomic::AtomicBool>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 enum DependencyFile {
     Object(ObjectId),
     Reference(SchemaIdentity, Hash, ObjectId),
 }
 
+/// Two fixed directory capabilities per admission, rather than one retained handle per
+/// member. All Windows file opens and the final directory barriers share these objects.
+#[cfg(windows)]
+struct DependencyDirectories {
+    objects: std::fs::File,
+    nodes: std::fs::File,
+}
+
+#[cfg(windows)]
+impl DependencyDirectories {
+    fn new(store: &FileStore) -> Result<Self, StoreError> {
+        let root = backend_platform::durability::open_directory_readonly_nofollow(&store.root)
+            .map_err(|error| io_error(&error))?;
+        Ok(Self {
+            objects: backend_platform::durability::open_directory_child_nofollow(&root, "objects")
+                .map_err(|error| io_error(&error))?,
+            nodes: backend_platform::durability::open_directory_child_nofollow(&root, "nodes")
+                .map_err(|error| io_error(&error))?,
+        })
+    }
+
+    fn parent(&self, member: DependencyFile) -> &std::fs::File {
+        match member {
+            DependencyFile::Object(_) => &self.objects,
+            DependencyFile::Reference(..) => &self.nodes,
+        }
+    }
+
+    fn sync(&self, directory: &str) -> Result<(), StoreError> {
+        let parent = match directory {
+            "objects" => &self.objects,
+            "nodes" => &self.nodes,
+            _ => return Err(StoreError::UnsafePath),
+        };
+        parent.sync_all().map_err(|error| io_error(&error))
+    }
+}
+
 impl<'pin> RelationAdmission<'pin> {
-    pub(in crate::durable) fn new(store: &'pin FileStore, pin: &'pin GcPinLease) -> Result<Self, StoreError> {
-        if !pin.covers_root(&store.root)? { return Err(StoreError::UnsafePath); }
-        Ok(Self { store, _pin: pin, complete: HashMap::new(), complete_references: BTreeSet::new(), written_objects: HashSet::new(), cancellation: None })
+    pub(in crate::durable) fn new(
+        store: &'pin FileStore,
+        pin: &'pin GcPinLease,
+    ) -> Result<Self, StoreError> {
+        if !pin.covers_root(&store.root)? {
+            return Err(StoreError::UnsafePath);
+        }
+        Ok(Self {
+            store,
+            _pin: pin,
+            complete: HashMap::new(),
+            complete_references: BTreeSet::new(),
+            written_objects: HashSet::new(),
+            streamed_objects: None,
+            #[cfg(windows)]
+            directories: DependencyDirectories::new(store)?,
+            #[cfg(windows)]
+            repair: std::sync::OnceLock::new(),
+            cancellation: None,
+        })
+    }
+
+    /// Receipts stay in the receive session and are borrowed with its original, still-held
+    /// GC lease. A hit is checked against an opened CAS identity again at the barrier.
+    pub(in crate::durable) fn streamed(
+        store: &'pin FileStore,
+        pin: &'pin GcPinLease,
+        receipts: &'pin HashMap<ObjectId, artifact_fs::DurableObjectFile>,
+    ) -> Result<Self, StoreError> {
+        let mut admission = Self::new(store, pin)?;
+        admission.streamed_objects = Some(receipts);
+        Ok(admission)
     }
 
     pub(in crate::durable) fn controlled(
@@ -108,6 +182,9 @@ impl<'pin> RelationAdmission<'pin> {
         self.checkpoint(0, object)?;
         if !durable_new {
             self.flush_file(DependencyFile::Reference(schema, *version, object))?;
+            #[cfg(windows)]
+            self.directories.sync("nodes")?;
+            #[cfg(not(windows))]
             sync_directory(&self.store.root.join("nodes"))?;
         }
         self.complete_references.insert((schema, *version));
@@ -193,6 +270,11 @@ impl<'pin> RelationAdmission<'pin> {
         }
         // Legacy files may be visible after a failed directory barrier. Re-observe every file
         // barrier before granting a receipt, then flush names only after all file work joined.
+        // A DAG can repeat a reference. Repairing the same read-only name concurrently would
+        // make one worker invalidate the other's identity observation, so each name gets one
+        // barrier per batch. Sorting/deduplication needs no second per-member allocation.
+        files.sort_unstable();
+        files.dedup();
         let file_failure = self.checkpoint(3, root).err();
         backend_platform::durability::try_flush_concurrently_bounded(&files, 16, |file| {
             self.checkpoint(0, root)?;
@@ -211,6 +293,9 @@ impl<'pin> RelationAdmission<'pin> {
         if let Some(error) = file_failure { return Err(error); }
         for directory in ["objects", "nodes"].into_iter().filter(|_| !files.is_empty()) {
             if directory == "nodes" { self.checkpoint(4, root)?; }
+            #[cfg(windows)]
+            self.directories.sync(directory)?;
+            #[cfg(not(windows))]
             sync_directory(&self.store.root.join(directory))?;
         }
         self.checkpoint(0, root)?;
@@ -224,12 +309,24 @@ impl<'pin> RelationAdmission<'pin> {
     }
 
     fn flush_file(&self, member: DependencyFile) -> Result<(), StoreError> {
-        let file = match member {
-            DependencyFile::Object(object) => artifact_fs::open_object(self.store, object)?,
+        #[cfg(windows)]
+        let parent = self.directories.parent(member);
+        #[allow(unused_mut)]
+        let mut file = match member {
+            DependencyFile::Object(object) => {
+                #[cfg(windows)]
+                { artifact_fs::open_directory_file(parent, &format!("{}.object", super::super::hex(object.as_bytes())))? }
+                #[cfg(not(windows))]
+                { artifact_fs::open_object(self.store, object)? }
+            }
             DependencyFile::Reference(schema, version, object) => {
                 let path = self.store.relation_ref_path(schema, &version);
                 let name = path.file_name().and_then(|name| name.to_str()).ok_or(StoreError::Corrupt)?;
-                let Some(mut file) = artifact_fs::open_store_file(self.store, "nodes", name)? else {
+                #[cfg(windows)]
+                let opened = artifact_fs::open_directory_file(parent, name)?;
+                #[cfg(not(windows))]
+                let opened = artifact_fs::open_store_file(self.store, "nodes", name)?;
+                let Some(mut file) = opened else {
                     return Err(StoreError::Corrupt);
                 };
                 let mut bytes = Vec::new();
@@ -241,21 +338,82 @@ impl<'pin> RelationAdmission<'pin> {
                 Some(file)
             }
         }.ok_or(StoreError::Corrupt)?;
+        if let DependencyFile::Object(object) = member
+            && let Some(receipt) = self
+                .streamed_objects
+                .and_then(|objects| objects.get(&object))
+            && receipt.matches(object, &file)?
+        {
+            return Ok(());
+        }
         #[cfg(windows)]
-        let file = {
-            let path = match member {
-                DependencyFile::Object(object) => self.store.object_path(object),
-                DependencyFile::Reference(schema, version, _) => self.store.relation_ref_path(schema, &version),
+        {
+            let (_directory, path, maximum) = match member {
+                DependencyFile::Object(object) => (
+                    "objects",
+                    self.store.object_path(object),
+                    u64::try_from(self.store.object_envelope_limit()?)
+                        .map_err(|_| StoreError::Bounds)?,
+                ),
+                DependencyFile::Reference(schema, version, _) => (
+                    "nodes",
+                    self.store.relation_ref_path(schema, &version),
+                    u64::try_from(wire::relation_ref_encoded_len())
+                        .map_err(|_| StoreError::Bounds)?,
+                ),
             };
-            let writable = backend_platform::durability::open_regular_file_readwrite_nofollow(&path)
-                .map_err(|error| io_error(&error))?;
-            if backend_platform::FileIdentity::of_file(&file).map_err(|error| io_error(&error))?
-                != backend_platform::FileIdentity::of_file(&writable).map_err(|error| io_error(&error))?
+            let name = path.file_name().and_then(|name| name.to_str()).ok_or(StoreError::UnsafePath)?;
+            // Ordinary references are writable and need no replacement. Read-only references
+            // and all objects without a matching inode receipt need a fresh actual barrier;
+            // their read-only bit, content hash, and metadata are never a durability receipt.
+            if matches!(member, DependencyFile::Reference(..))
+                && !file
+                    .metadata()
+                    .map_err(|error| io_error(&error))?
+                    .permissions()
+                    .readonly()
             {
-                return Err(StoreError::UnsafePath);
+                let writable =
+                    backend_platform::durability::open_regular_file_readwrite_child_nofollow(parent, name)
+                        .map_err(|error| io_error(&error))?;
+                if backend_platform::FileIdentity::of_file(&file)
+                    .map_err(|error| io_error(&error))?
+                    != backend_platform::FileIdentity::of_file(&writable)
+                        .map_err(|error| io_error(&error))?
+                {
+                    return Err(StoreError::UnsafePath);
+                }
+                return writable.sync_all().map_err(|error| io_error(&error));
             }
-            writable
-        };
+            let repair = self
+                .repair
+                .get_or_init(|| artifact_fs::DurabilityRepair::new(self.store, self._pin))
+                .as_ref()
+                .map_err(Clone::clone)?;
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(StoreError::UnsafePath)?;
+            return repair.replace_verified(parent, name, &mut file, maximum, |mut copy| {
+                match member {
+                    DependencyFile::Object(object) => {
+                        super::super::artifact::verify_object_file_handle(self.store, object, copy)
+                    }
+                    DependencyFile::Reference(schema, version, object) => {
+                        let mut bytes = Vec::new();
+                        (&mut copy)
+                            .take(maximum + 1)
+                            .read_to_end(&mut bytes)
+                            .map_err(|error| io_error(&error))?;
+                        if wire::decode_relation_ref(&bytes, schema, &version)? != object {
+                            return Err(StoreError::Corrupt);
+                        }
+                        Ok(())
+                    }
+                }
+            });
+        }
+        #[cfg(not(windows))]
         file.sync_all().map_err(|error| io_error(&error))
     }
 }

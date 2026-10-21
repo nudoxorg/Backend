@@ -226,6 +226,204 @@ fn ensure_regular_file(file: File) -> io::Result<File> {
     }
 }
 
+/// Replaces a file name without clearing the replaced inode's read-only attribute.
+///
+/// `source` must be the already-written handle at `source_path`. This does not flush either
+/// file contents or directory entries: the caller must flush `source` before this call and
+/// the destination directory afterwards. The source handle is compared with the no-follow
+/// rename handle, so a different file substituted at `source_path` cannot be published.
+///
+/// This uses the local Win32 extended rename capability, including POSIX replacement of a
+/// held target and ignoring its read-only attribute. Unsupported filesystems/OS versions,
+/// insufficient access, and sharing refusals are errors; there is no attribute-changing or
+/// unlink-then-rename fallback. In particular, this does not promise support on SMB shares.
+#[cfg(windows)]
+pub fn replace_file_preserving_readonly(
+    source_path: &Path,
+    source: &File,
+    destination: &Path,
+) -> io::Result<()> {
+    let rename = open_regular_file_delete_nofollow(source_path)?;
+    if crate::FileIdentity::of_file(source)? != crate::FileIdentity::of_file(&rename)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "rename source changed",
+        ));
+    }
+    crate::win32::file::replace_readonly(&rename, destination)
+}
+
+/// Unlinks the exact file at a private staging name without unsealing its other hard links.
+/// Unsupported extended deletion or denied access fails without changing attributes.
+#[cfg(windows)]
+pub fn unlink_file_preserving_readonly(path: &Path, expected: &File) -> io::Result<()> {
+    let unlink = open_regular_file_delete_nofollow(path)?;
+    if crate::FileIdentity::of_file(expected)? != crate::FileIdentity::of_file(&unlink)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unlink source changed",
+        ));
+    }
+    crate::win32::file::unlink_readonly(&unlink)
+}
+
+#[cfg(windows)]
+fn open_regular_file_delete_nofollow(path: &Path) -> io::Result<File> {
+    use std::fs::OpenOptions;
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+    };
+
+    ensure_regular_file(
+        OpenOptions::new()
+            .access_mode(DELETE | FILE_READ_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?,
+    )
+}
+
+/// Opens a direct child directory relative to an actual Windows directory handle, rejecting
+/// reparse points. The result supports both bounded enumeration and a durability flush.
+#[cfg(windows)]
+pub fn open_directory_child_nofollow(parent: &File, name: &str) -> io::Result<File> {
+    crate::win32::workspace_fs::open_durability_child(
+        parent,
+        name,
+        crate::win32::workspace_fs::DurabilityChild::Directory,
+    )
+}
+
+/// Opens a direct directory child for validation and reading, without requesting write access.
+#[cfg(windows)]
+pub fn open_directory_readonly_child_nofollow(parent: &File, name: &str) -> io::Result<File> {
+    crate::win32::workspace_fs::open_durability_child(
+        parent,
+        name,
+        crate::win32::workspace_fs::DurabilityChild::ReadDirectory,
+    )
+}
+
+/// Exclusively creates a direct directory child without resolving a parent path again.
+#[cfg(windows)]
+pub fn create_directory_child_nofollow(parent: &File, name: &str) -> io::Result<File> {
+    crate::win32::workspace_fs::open_durability_child(
+        parent,
+        name,
+        crate::win32::workspace_fs::DurabilityChild::CreateDirectory,
+    )
+}
+
+/// Enumerates names from an actual directory handle without reopening its path.
+#[cfg(windows)]
+pub fn directory_child_names(directory: &File) -> io::Result<Vec<String>> {
+    crate::win32::workspace_fs::durability_directory_names(directory)
+}
+
+/// Opens a direct regular-file child without resolving any parent pathname again.
+#[cfg(windows)]
+pub fn open_regular_file_child_nofollow(parent: &File, name: &str) -> io::Result<File> {
+    crate::win32::workspace_fs::open_durability_child(
+        parent,
+        name,
+        crate::win32::workspace_fs::DurabilityChild::ReadFile,
+    )
+}
+
+/// Opens an existing writable regular-file child under a held directory.
+#[cfg(windows)]
+pub fn open_regular_file_readwrite_child_nofollow(parent: &File, name: &str) -> io::Result<File> {
+    crate::win32::workspace_fs::open_durability_child(
+        parent,
+        name,
+        crate::win32::workspace_fs::DurabilityChild::ReadWriteFile,
+    )
+}
+
+/// Exclusively creates a writable regular-file child beneath the actual directory handle.
+#[cfg(windows)]
+pub fn create_regular_file_child_nofollow(parent: &File, name: &str) -> io::Result<File> {
+    crate::win32::workspace_fs::open_durability_child(
+        parent,
+        name,
+        crate::win32::workspace_fs::DurabilityChild::CreateFile,
+    )
+}
+
+/// Publishes an already-flushed source under a held destination directory. Both names are
+/// direct children of their held parents; a parent-path substitution cannot redirect it.
+/// Unsupported extended rename fails without changing any existing inode's attributes.
+#[cfg(windows)]
+pub fn replace_file_preserving_readonly_at(
+    source_parent: &File,
+    source_name: &str,
+    source: &File,
+    destination_parent: &File,
+    destination_name: &str,
+) -> io::Result<()> {
+    let rename = crate::win32::workspace_fs::open_durability_child(
+        source_parent,
+        source_name,
+        crate::win32::workspace_fs::DurabilityChild::DeleteFile,
+    )?;
+    if crate::FileIdentity::of_file(source)? != crate::FileIdentity::of_file(&rename)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "rename source changed",
+        ));
+    }
+    crate::win32::file::replace_readonly_at(&rename, destination_parent, destination_name)
+}
+
+/// Unlinks an exact direct regular-file child without unsealing any other hard link.
+#[cfg(windows)]
+pub fn unlink_file_preserving_readonly_at(
+    parent: &File,
+    name: &str,
+    expected: &File,
+) -> io::Result<()> {
+    let unlink = crate::win32::workspace_fs::open_durability_child(
+        parent,
+        name,
+        crate::win32::workspace_fs::DurabilityChild::DeleteFile,
+    )?;
+    if crate::FileIdentity::of_file(expected)? != crate::FileIdentity::of_file(&unlink)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unlink source changed",
+        ));
+    }
+    crate::win32::file::unlink_readonly(&unlink)
+}
+
+/// Deletes only authorized regular direct children, without following reparse points or
+/// reopening their parent by path. Uses bounded 64 KiB enumeration batches and checks each
+/// opened child against its enumerated file identity. The caller retains cleanup authority.
+#[cfg(windows)]
+pub fn unlink_directory_files_preserving_readonly(
+    parent: &File,
+    allowed: impl Fn(&str) -> bool,
+) -> io::Result<()> {
+    crate::win32::workspace_fs::unlink_durability_children(parent, allowed)
+}
+
+/// Removes an exact empty child directory through a handle, with no recursive path deletion.
+#[cfg(windows)]
+pub fn remove_empty_directory_child(parent: &File, name: &str, expected: &File) -> io::Result<()> {
+    let unlink = crate::win32::workspace_fs::open_durability_child(
+        parent,
+        name,
+        crate::win32::workspace_fs::DurabilityChild::DeleteDirectory,
+    )?;
+    if crate::FileIdentity::of_file(expected)? != crate::FileIdentity::of_file(&unlink)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "directory cleanup name changed",
+        ));
+    }
+    crate::win32::file::unlink_readonly(&unlink)
+}
+
 /// Opens a directory without following a symbolic link or reparse point.
 #[cfg(unix)]
 pub fn open_directory_nofollow(directory: &Path) -> io::Result<File> {
@@ -481,6 +679,54 @@ mod tests {
         std::env::temp_dir().join(format!("bp-dirsync-{label}-{}-{nonce}", std::process::id()))
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn relative_mutations_stay_under_the_opened_parent_after_its_path_is_rebound()
+    -> std::io::Result<()> {
+        let root = scratch("readonly-relative-parent");
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        fs::create_dir_all(root.join("stage"))?;
+        fs::create_dir(root.join("destination"))?;
+        let root_handle = super::open_directory_nofollow(&root)?;
+        let stage = super::open_directory_child_nofollow(&root_handle, "stage")?;
+        let destination = super::open_directory_child_nofollow(&root_handle, "destination")?;
+        let mut source = super::create_regular_file_child_nofollow(&stage, "member.tmp")?;
+        source.write_all(b"verified durable bytes")?;
+        source.sync_all()?;
+
+        fs::rename(root.join("destination"), root.join("retired"))?;
+        fs::create_dir(root.join("destination"))?;
+        fs::write(root.join("destination/member"), b"foreign bytes")?;
+        super::replace_file_preserving_readonly_at(
+            &stage,
+            "member.tmp",
+            &source,
+            &destination,
+            "member",
+        )?;
+        destination.sync_all()?;
+        stage.sync_all()?;
+        assert_eq!(
+            fs::read(root.join("retired/member"))?,
+            b"verified durable bytes"
+        );
+        assert_eq!(fs::read(root.join("destination/member"))?, b"foreign bytes");
+        super::unlink_directory_files_preserving_readonly(&destination, |name| name == "member")?;
+        destination.sync_all()?;
+        assert!(!root.join("retired/member").exists());
+        assert_eq!(fs::read(root.join("destination/member"))?, b"foreign bytes");
+        super::remove_empty_directory_child(&root_handle, "retired", &destination)?;
+        root_handle.sync_all()?;
+        drop((source, stage, destination, root_handle));
+        fs::remove_dir_all(root)
+    }
+
     #[test]
     fn bounded_barriers_cover_every_item_with_zero_or_small_limits() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -496,7 +742,8 @@ mod tests {
                 active.fetch_sub(1, Ordering::SeqCst);
                 completed.fetch_add(1, Ordering::SeqCst);
                 Ok(())
-            }).expect("bounded barriers");
+            })
+            .expect("bounded barriers");
             assert!(maximum.load(Ordering::SeqCst) <= limit.max(1));
             assert_eq!(completed.load(Ordering::SeqCst), 40);
             assert_eq!(active.load(Ordering::SeqCst), 0);

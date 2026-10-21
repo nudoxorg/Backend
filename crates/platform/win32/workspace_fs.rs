@@ -1651,6 +1651,153 @@ fn open_relative(
     )
 }
 
+/// Minimal handle-relative capabilities for the store's durability boundary. These do not
+/// impose workspace ACL policy and never alter the attributes of an existing object.
+pub(crate) enum DurabilityChild {
+    Directory,
+    ReadDirectory,
+    CreateDirectory,
+    ReadFile,
+    ReadWriteFile,
+    CreateFile,
+    DeleteFile,
+    DeleteDirectory,
+}
+
+pub(crate) fn durability_component(name: &str) -> io::Result<Vec<u16>> {
+    Ok(ExistingName::parse(name)?.wide())
+}
+
+pub(crate) fn open_durability_child(
+    parent: &File,
+    name: &str,
+    mode: DurabilityChild,
+) -> io::Result<File> {
+    ensure_directory_handle(parent.as_raw_handle())?;
+    let name = ExistingName::parse(name)?;
+    let (access, kind, disposition) = match mode {
+        DurabilityChild::Directory => (
+            FILE_LIST_DIRECTORY | FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES | FILE_TRAVERSE,
+            FILE_DIRECTORY_FILE,
+            FILE_OPEN,
+        ),
+        DurabilityChild::ReadDirectory => (
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | FILE_TRAVERSE,
+            FILE_DIRECTORY_FILE,
+            FILE_OPEN,
+        ),
+        DurabilityChild::CreateDirectory => {
+            NewName::new(name)?;
+            (
+                FILE_LIST_DIRECTORY | FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES | FILE_TRAVERSE,
+                FILE_DIRECTORY_FILE,
+                FILE_CREATE,
+            )
+        }
+        DurabilityChild::ReadFile => (
+            FILE_READ_DATA | FILE_READ_ATTRIBUTES,
+            FILE_NON_DIRECTORY_FILE,
+            FILE_OPEN,
+        ),
+        DurabilityChild::ReadWriteFile => (
+            FILE_READ_DATA | FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES,
+            FILE_NON_DIRECTORY_FILE,
+            FILE_OPEN,
+        ),
+        DurabilityChild::CreateFile => {
+            NewName::new(name)?;
+            (
+                FILE_READ_DATA | FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES,
+                FILE_NON_DIRECTORY_FILE,
+                FILE_CREATE,
+            )
+        }
+        DurabilityChild::DeleteFile => (
+            DELETE | FILE_READ_ATTRIBUTES,
+            FILE_NON_DIRECTORY_FILE,
+            FILE_OPEN,
+        ),
+        DurabilityChild::DeleteDirectory => (
+            DELETE | FILE_READ_ATTRIBUTES,
+            FILE_DIRECTORY_FILE,
+            FILE_OPEN,
+        ),
+    };
+    let handle = nt_create_relative(
+        parent.as_raw_handle().cast(),
+        &name.wide(),
+        access | SYNCHRONIZE,
+        Sharing::Transient.bits(),
+        disposition,
+        kind | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        ptr::null_mut(),
+    )?;
+    let file = File::from(handle);
+    let metadata = file.metadata()?;
+    if attributes(file.as_raw_handle())? & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || (kind == FILE_DIRECTORY_FILE && !metadata.is_dir())
+        || (kind == FILE_NON_DIRECTORY_FILE && !metadata.is_file())
+    {
+        return Err(invalid_data(
+            "durability child is a reparse point or has the wrong type",
+        ));
+    }
+    Ok(file)
+}
+
+pub(crate) fn durability_directory_names(directory: &File) -> io::Result<Vec<String>> {
+    ensure_directory_handle(directory.as_raw_handle())?;
+    enumerate_names(directory.as_raw_handle().cast(), usize::MAX)
+        .map(|names| names.into_iter().map(|entry| entry.name).collect())
+}
+
+/// Deletes one bounded enumeration batch at a time, opening each child under the actual
+/// directory handle and matching its enumerated identity before disposition. Restarting each
+/// batch avoids depending on enumeration positions after the preceding records were removed.
+pub(crate) fn unlink_durability_children(
+    directory: &File,
+    allowed: impl Fn(&str) -> bool,
+) -> io::Result<()> {
+    ensure_directory_handle(directory.as_raw_handle())?;
+    let mut buffer = vec![0_u64; 8192];
+    let mut names = Vec::new();
+    loop {
+        // SAFETY: the live directory handle and aligned 64 KiB owned buffer are valid for
+        // this synchronous query. The existing decoder validates every record and name.
+        let read = unsafe {
+            GetFileInformationByHandleEx(
+                directory.as_raw_handle().cast(),
+                FileIdExtdDirectoryRestartInfo,
+                buffer.as_mut_ptr().cast(),
+                std::mem::size_of_val(buffer.as_slice()) as u32,
+            )
+        };
+        if read == 0 {
+            let error = io::Error::last_os_error();
+            return if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
+                Ok(())
+            } else {
+                Err(error)
+            };
+        }
+        names.clear();
+        decode_directory_records(&buffer, &mut names, buffer.len(), &mut || Ok(()))?;
+        if names.is_empty() {
+            return Ok(());
+        }
+        for entry in &names {
+            if !allowed(&entry.name) {
+                return Err(invalid_data("unauthorized durability cleanup name"));
+            }
+            let file = open_durability_child(directory, &entry.name, DurabilityChild::DeleteFile)?;
+            if FileId128::of_handle(file.as_raw_handle())? != entry.id {
+                return Err(invalid_data("durability cleanup child changed"));
+            }
+            super::file::unlink_readonly(&file)?;
+        }
+    }
+}
+
 fn nt_create_relative(
     parent: HANDLE,
     name: &[u16],
