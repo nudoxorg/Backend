@@ -332,11 +332,15 @@ pub(super) fn prepare_scan_source(
     let mut dirty =
         profiles_requiring_compilation(&live, &lost, &fresh_profiles, &inputs, &reusable_inputs);
     dirty.retain(|profile| !typescript_reused_profiles.contains(profile));
-    let reused_profiles = live
+    let mut reused_profiles = live
         .intersection(&reusable_inputs)
         .filter(|profile| !dirty.contains(profile))
         .copied()
         .collect::<BTreeSet<_>>();
+    // The native TSZ snapshot proof is independent of the compiler-input
+    // replay cache above, but it authorizes the same exact selected profile
+    // to be carried into this operation's refreshed capture.
+    reused_profiles.extend(typescript_reused_profiles.iter().copied());
     let profiles = if dirty.is_empty() {
         let (captures, pending_changes, _) = prepare_source_capture_changes_for_snapshot(
             base_snapshot,
@@ -724,6 +728,17 @@ impl SourceCompilePlan {
         &self,
         snapshot: &WorkspaceSnapshot,
     ) -> Result<PreparedProductSelection, BuiltinModelError> {
+        if !ingest::compiler_revision_is_current_with_cancellation(
+            &self.revision_fence,
+            Some(self.cancellation.as_ref()),
+        )
+        .map_err(BuiltinModelError)?
+        {
+            return Err(BuiltinModelError(
+                "compiler source or configuration revision changed before reused capture terminal; retry indexing"
+                    .to_owned(),
+            ));
+        }
         let admitted = super::index::reused_capture_publications_for_snapshot(
             snapshot,
             &self.captures,
