@@ -3711,7 +3711,7 @@ fn index_progress_returns_bounded_events_and_the_exact_next_sequence() {
 }
 
 #[test]
-fn compact_index_receipt_roundtrips_terminal_cancellation_and_partial_coverage() {
+fn compact_index_receipt_roundtrips_terminal_cancellation() {
     let ticket = index_job_ticket();
     let cancelled = SurfaceReply::IndexProgress(IndexJobObservation::Terminal(IndexJobTerminal {
         ticket: ticket.clone(),
@@ -3765,6 +3765,28 @@ fn assert_compact_index_job_receipt(response: &Value, expected: &Value) {
         &structured["surface"]["index_job"]["value"],
         expected,
         "the compact response retains the entire original receipt"
+    );
+
+    // Reconstruct the full MCP tool-result envelope and measure the actual
+    // serialized JSON bytes. This asserts byte preservation/savings only; it
+    // deliberately makes no tokenization or provider-billing claim.
+    let mut expanded = response.clone();
+    expanded["structuredContent"]["surface"]["data"] = expected.clone();
+    assert_eq!(
+        expanded["content"],
+        response["content"],
+        "human-readable content is unchanged by structured receipt compaction"
+    );
+    let full_bytes = serde_json::to_vec(&expanded).expect("expanded full MCP result");
+    let compact_bytes = serde_json::to_vec(response).expect("compact full MCP result");
+    let receipt_bytes = serde_json::to_vec(expected).expect("full receipt bytes").len();
+    let pointer_bytes =
+        serde_json::to_vec(&structured["surface"]["data"]).expect("pointer bytes").len();
+    assert!(receipt_bytes > pointer_bytes, "fixture must contain removable duplication");
+    assert_eq!(
+        full_bytes.len() - compact_bytes.len(),
+        receipt_bytes - pointer_bytes,
+        "only the duplicate receipt value is removed from the serialized MCP result"
     );
 }
 
