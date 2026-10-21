@@ -72,7 +72,7 @@ fn fixture(root: &str, count: usize, source_version: u8, missing: bool) -> TestR
         .map_err(|error| error.to_string())?;
     let registry = RelationAdmissionRegistry::new()
         .with_relation::<ProductSourceRelation>()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("relation admission failed: {error:?}"))?;
     let directory =
         crate::private_temp::create("captured-tree").map_err(|error| error.to_string())?;
     let store = FileStore::open_with_registry(directory.path(), 16 * 1024 * 1024, registry)
