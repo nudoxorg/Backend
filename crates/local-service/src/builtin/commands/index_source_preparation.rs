@@ -32,6 +32,10 @@ pub(in crate::builtin::commands) struct SourceCompilePlan {
     observations: BTreeMap<LanguageProfile, SourceObservationReceipt>,
     pub(in crate::builtin::commands) captures:
         BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    /// Profiles whose exact selected generation was proven current and will
+    /// be carried into this operation's receipt without recompiling it.
+    reused_profiles: BTreeSet<LanguageProfile>,
+    operation_key: Option<backend_library::IndexOperationKey>,
     python_environment: Option<PythonEnvironmentInput>,
     cancellation: Arc<AtomicBool>,
     workspace_snapshot: Option<ingest::CompilerWorkspaceSnapshot>,
@@ -62,7 +66,11 @@ pub(super) struct PreparedScanSource {
 }
 
 pub(super) enum PreparedScanProfiles {
-    Reused,
+    Reused {
+        captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+        reused_profiles: BTreeSet<LanguageProfile>,
+        pending_changes: Vec<BuiltinCaptureChange>,
+    },
     Compile(Box<PreparedScanCompilation>),
 }
 
@@ -74,6 +82,10 @@ pub(super) struct PreparedScanCompilation {
     pub(super) source_admission_policy: crate::builtin::source_budget::SourceAdmissionPolicy,
     pub(super) observations: BTreeMap<LanguageProfile, SourceObservationReceipt>,
     pub(super) captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    /// Exact selected generations omitted from this compile because their
+    /// current input witness proves reuse.
+    pub(super) reused_profiles: BTreeSet<LanguageProfile>,
+    pub(super) operation_key: Option<backend_library::IndexOperationKey>,
     pub(super) pending_changes: Vec<BuiltinCaptureChange>,
 }
 
@@ -320,14 +332,34 @@ pub(super) fn prepare_scan_source(
     let mut dirty =
         profiles_requiring_compilation(&live, &lost, &fresh_profiles, &inputs, &reusable_inputs);
     dirty.retain(|profile| !typescript_reused_profiles.contains(profile));
+    let reused_profiles = live
+        .intersection(&reusable_inputs)
+        .filter(|profile| !dirty.contains(profile))
+        .copied()
+        .collect::<BTreeSet<_>>();
     let profiles = if dirty.is_empty() {
-        PreparedScanProfiles::Reused
-    } else {
         let (captures, pending_changes, _) = prepare_source_capture_changes_for_snapshot(
             base_snapshot,
             package,
             &semantic_context,
-            &dirty,
+            &reused_profiles,
+            &observations,
+            scan.source_version,
+            operation_key,
+        )?;
+        PreparedScanProfiles::Reused {
+            captures,
+            reused_profiles,
+            pending_changes,
+        }
+    } else {
+        let mut captured_profiles = dirty.clone();
+        captured_profiles.extend(reused_profiles.iter().copied());
+        let (captures, pending_changes, _) = prepare_source_capture_changes_for_snapshot(
+            base_snapshot,
+            package,
+            &semantic_context,
+            &captured_profiles,
             &observations,
             scan.source_version,
             operation_key,
@@ -344,6 +376,8 @@ pub(super) fn prepare_scan_source(
             source_admission_policy: scan.source_admission_policy,
             observations,
             captures,
+            reused_profiles,
+            operation_key,
             pending_changes,
         }))
     };
@@ -401,7 +435,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
         operation_key,
     )?;
     let compilation = match profiles {
-        PreparedScanProfiles::Reused => {
+        PreparedScanProfiles::Reused { .. } => {
             let intent = if changes.is_empty() && source_facts_changes.is_empty() {
                 None
             } else if source_facts_changes.is_empty() {
@@ -437,6 +471,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
         source_admission_policy,
         observations,
         captures,
+        reused_profiles,
         pending_changes,
     } = *compilation;
     // The owned path materializes before requesting any capture grant. The
@@ -477,6 +512,8 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
             sources,
             observations,
             captures,
+            reused_profiles,
+            operation_key,
             python_environment,
             cancellation,
             workspace_snapshot,
@@ -524,6 +561,8 @@ impl SourceCompilePlan {
             self.revision_fence,
             &self.observations,
             self.captures,
+            self.reused_profiles,
+            self.operation_key,
             semantic,
             Some(retained_attempts),
         )
@@ -569,6 +608,17 @@ impl SourceCompilePlan {
             #[cfg(test)]
             before_local_compile,
         )?;
+        // Reuse remains separate from compiler progress: this carries the
+        // exact retained generation into the receipt without emitting a new
+        // compiler-completed milestone.
+        compiled
+            .admitted
+            .extend(super::index::reused_capture_publications_for_snapshot(
+                snapshot,
+                &self.captures,
+                &self.reused_profiles,
+                self.operation_key,
+            )?);
         let count = compiled
             .admitted
             .len()
