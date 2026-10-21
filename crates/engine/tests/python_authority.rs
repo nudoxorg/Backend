@@ -275,6 +275,41 @@ fn supplied_local_resolution_upgrades_the_call_to_oracle() -> Result<(), TestErr
     })
 }
 
+/// A diagnostic-only same-spelling match is not an exact target binding:
+/// keep the syntax-derived local target at Index confidence.
+#[test]
+fn supplied_unverified_resolution_never_upgrades_the_call() -> Result<(), TestError> {
+    with_deep_stack(|| {
+        let report = report_with_symbols(Box::from([SymbolResolution {
+            target: "target".to_owned(),
+            span: TARGET_CALL_SPAN,
+            outcome: SymbolOutcome::Unverified,
+        }]));
+        let bytes = compile_fragment(SOURCE, SemanticAuthorityInput::Python { report: &report })?;
+        let (fragment, occurrences) = decoded_occurrences(&bytes)?;
+        let target_row = entity_position(&fragment, b"target", EntityKind::Function)?;
+        let matching: Vec<_> = occurrences
+            .iter()
+            .filter(|fact| {
+                matches!(fact.occurrence.target,
+                    OccurrenceTarget::Local(local) if local.raw as usize == target_row)
+            })
+            .collect();
+        if matching.len() == 1
+            && matching[0].occurrence.confidence == OccurrenceConfidence::Index
+            && matching
+                .iter()
+                .all(|fact| fact.occurrence.confidence != OccurrenceConfidence::Oracle)
+        {
+            Ok(())
+        } else {
+            Err(TestError::Falsified(
+                "unverified same-spelling evidence did not retain one Index local target",
+            ))
+        }
+    })
+}
+
 /// Falsifier 2: the supplied report binds the `osp` binding call at its
 /// exact span to a resolved import, and the decoded occurrence carries the
 /// import tier over a foreign target.
