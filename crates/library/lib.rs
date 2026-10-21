@@ -188,6 +188,7 @@ pub use package_compiler_outcomes::{
     PackageCompilerCoverageSelector, PackageCompilerDiagnostic, PackageCompilerOutcomeBasis,
     PackageCompilerOutcomeRead, PackageCompilerOutcomeSelector, PackageCompilerOutcomes,
     PackageCompilerOutcomesUnavailable, PackageCompilerProfileRefusal,
+    PackageCoverageBinding, PackageCoverageCurrentResult,
 };
 pub use package_graph::{
     BorrowedPackageGraphSourceState, CheckedPackageGraphFacts, CheckedPackageGraphSourceWitness,

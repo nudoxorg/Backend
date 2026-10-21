@@ -83,4 +83,4 @@ pub(crate) use reply_coverage::{
 /// `Gapped` coverage and compiler details, and version 30 catalog windows and
 /// predecessor spans remain strict; live peers must upgrade together.
 /// The view journal container stays version 3 and retains historical bytes.
-pub const DTO_VERSION: u16 = 37;
+pub const DTO_VERSION: u16 = 38;

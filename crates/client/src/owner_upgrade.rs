@@ -162,7 +162,7 @@ impl Session {
             }
             if passive
                 || attempt != 0
-                || (!same_version && (found, backend_library::DTO_VERSION) != (36, 37))
+                || (!same_version && (found, backend_library::DTO_VERSION) != (37, 38))
             {
                 return Err(update_error(
                     found,
@@ -272,8 +272,8 @@ mod tests {
             backend_library::DTO_VERSION,
             backend_library::DTO_VERSION
         )));
-        let wire = update_error(36, "old protocol").to_string();
-        assert!(wire.contains("version 36 → 37"));
+        let wire = update_error(37, "old protocol").to_string();
+        assert!(wire.contains("version 37 → 38"));
         assert!(!wire.contains("build update"));
     }
 
@@ -339,14 +339,14 @@ mod tests {
     #[test]
     fn incompatible_owner_has_typed_unsent_command_guidance() {
         let error = update_error(
-            36,
+            37,
             "restart the previous NuDox owner; no command was submitted",
         );
         assert!(matches!(
             error,
             ClientError::OwnerUpdate {
-                found: 36,
-                supported: 37,
+                found: 37,
+                supported: 38,
                 ..
             }
         ));

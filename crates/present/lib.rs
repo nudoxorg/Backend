@@ -77,6 +77,7 @@ mod document_sections;
 pub use document_sections::{DocumentContinuation, DocumentSectionPage};
 mod compiler_causes;
 mod product;
+mod project_coverage;
 mod projection;
 #[cfg(test)]
 mod projection_tests;

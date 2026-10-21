@@ -632,6 +632,11 @@ impl ProductState {
                 profile(view, catalog, catalog_index, &package, workspace)?,
                 false,
             ),
+            SurfaceCommand::PackageCoverageCurrent { .. } => {
+                return Err(
+                    "published package coverage requires the local owner adapter".to_owned(),
+                );
+            }
             SurfaceCommand::Dependents { package } => (
                 SurfaceReply::Dependents(dependents(
                     catalog,
