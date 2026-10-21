@@ -107,7 +107,7 @@ def check_payload(name: str, generated: dict, encoding, metadata: dict, writing:
     path = FIXTURE_ROOT / PAYLOAD_FILES[name]
     if not path.exists() and not writing:
         fail(f"{name} checked-in payload is missing: {path}")
-    if path.exists() and path.read_bytes() != raw:
+    if not writing and path.exists() and path.read_bytes() != raw:
         fail(f"{name} checked-in payload differs from canonical typed DTO output")
     caps = metadata["caps"]
     byte_cap = caps["hard_bytes"] if name in HARD_BUDGET_FIXTURES else caps["default_bytes"]
