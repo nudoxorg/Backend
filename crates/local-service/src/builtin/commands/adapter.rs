@@ -4271,8 +4271,21 @@ impl CommandAdapter {
     fn spawn_index_scan(
         &mut self,
         indexing: &mut IndexJob,
-        work: IndexScanWork,
+        mut work: IndexScanWork,
     ) -> Result<(), BuiltinModelError> {
+        work.observation = work.observation.or_else(|| {
+            self.product_state
+                .workspace_path()
+                .ok()
+                .and_then(|path| {
+                    crate::builtin::index_work_observation::IndexWorkObservation::enabled(
+                        path,
+                        indexing.owner_ticket.clone(),
+                        indexing.operation_key,
+                        Arc::clone(&indexing.cancelled),
+                    )
+                })
+        });
         self.index_input_workers
             .reserve()
             .map_err(|error| BuiltinModelError(error.to_owned()))?;

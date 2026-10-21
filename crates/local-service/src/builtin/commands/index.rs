@@ -370,6 +370,7 @@ pub(super) fn capture_index_scan(
         capture_workspace_snapshot,
         cancellation,
         interpreter,
+        observation: None,
     })
 }
 
@@ -379,13 +380,17 @@ pub(super) fn run_index_scan(work: IndexScanWork) -> Result<IndexScanResult, Ind
     if work.cancellation.load(Ordering::Acquire) {
         return Err(IndexScanFailure::Cancelled);
     }
+    if let Some(observed) = &work.observation {
+        observed.phase("source-discovery-and-analysis");
+    }
     let source_coordinate = work.source_root.to_string_lossy();
-    let mut scan = ingest::scan_project_for_unproven_authorities_cancellable_with_interpreter(
+    let mut scan = ingest::scan_project_for_unproven_authorities_cancellable_with_observation(
         &source_coordinate,
         work.project_key,
         &work.reusable,
         &work.cancellation,
         work.interpreter.as_deref(),
+        work.observation.as_deref(),
     )
     .map_err(|error| {
         if work.cancellation.load(Ordering::Acquire) {
@@ -410,6 +415,9 @@ pub(super) fn run_index_scan(work: IndexScanWork) -> Result<IndexScanResult, Ind
     // Remote execution is available only when a complete, confined workspace
     // inventory can be captured. Failure to build that optional evidence
     // leaves the existing local compile path available.
+    if let Some(observed) = &work.observation {
+        observed.phase("compiler-workspace-inventory");
+    }
     let workspace_snapshot = work.capture_workspace_snapshot.then(|| {
         match ingest::CompilerWorkspaceSnapshot::open_with_cancellation(
             &work.source_root,
@@ -426,6 +434,9 @@ pub(super) fn run_index_scan(work: IndexScanWork) -> Result<IndexScanResult, Ind
     }).flatten();
     if work.cancellation.load(Ordering::Acquire) {
         return Err(IndexScanFailure::Cancelled);
+    }
+    if let Some(observed) = &work.observation {
+        observed.phase("source-revision-revalidation");
     }
     let workspace_is_current = match workspace_snapshot.as_ref() {
         Some(snapshot) => snapshot
@@ -454,6 +465,9 @@ pub(super) fn run_index_scan(work: IndexScanWork) -> Result<IndexScanResult, Ind
         return Err(IndexScanFailure::Refused(BuiltinModelError(
             "project files changed while the index scan was running; retry indexing".to_owned(),
         )));
+    }
+    if let Some(observed) = &work.observation {
+        observed.phase("source-scan-result-delivery");
     }
     Ok(IndexScanResult {
         work,
@@ -1768,6 +1782,8 @@ pub(super) struct IndexScanWork {
     capture_workspace_snapshot: bool,
     cancellation: Arc<AtomicBool>,
     interpreter: Option<Arc<backend_engine::application::PythonInterpreterHostAdmission>>,
+    pub(super) observation:
+        Option<Arc<crate::builtin::index_work_observation::IndexWorkObservation>>,
 }
 
 /// Worker scan outcome, distinguishing an explicit job cancellation from an
@@ -1791,6 +1807,15 @@ pub(super) struct IndexScanResult {
     work: IndexScanWork,
     scan: ingest::IndexSnapshot,
     workspace_snapshot: Option<ingest::CompilerWorkspaceSnapshot>,
+}
+
+impl IndexScanResult {
+    /// Shares only the existing optional diagnostic handle with sibling workers.
+    pub(super) fn observation(
+        &self,
+    ) -> Option<Arc<crate::builtin::index_work_observation::IndexWorkObservation>> {
+        self.work.observation.clone()
+    }
 }
 
 /// The complete candidate product transaction. Its intent is the one durable
