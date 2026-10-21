@@ -171,14 +171,16 @@ impl Signature {
     }
 
     /// Builds a single-line result-list preview of at most 240 characters,
-    /// including an ellipsis when content is omitted. Physical CRLF uses LF
-    /// before escaping and bounding. Spaces and authored
-    /// backslash escapes are preserved. Physical controls and line separators
-    /// are escaped visibly, so this preview is not a source excerpt.
+    /// including an ellipsis when content is omitted. Physical layout
+    /// newlines fold to one space when the snippet has no quote or comment
+    /// syntax; otherwise physical controls and line separators are escaped
+    /// visibly to preserve literal content. Spaces and authored backslash
+    /// escapes are preserved, so this preview is not a source excerpt.
     /// Declaration pages retain the complete signature through
     /// [`Self::tokenize`], and source reads retain captured bytes independently.
     #[must_use]
     pub fn preview(text: &str, language: Language) -> Self {
+        let text = fold_unambiguous_layout_newlines(text);
         let mut characters = Vec::with_capacity(PREVIEW_CHARACTERS + 1);
         let mut ellipsis_boundary = 0;
         let mut source = text.chars().peekable();
@@ -253,6 +255,50 @@ impl Signature {
                 .collect(),
         }
     }
+}
+
+/// Fold physical layout only when this lightweight preview can prove it is
+/// outside quoted and commented source. The full signature lexer is
+/// intentionally not changed for this result-list formatting behavior.
+fn fold_unambiguous_layout_newlines(text: &str) -> Cow<'_, str> {
+    if text
+        .chars()
+        .any(|character| matches!(character, '"' | '\'' | '`' | '#'))
+        || text.contains("//")
+        || text.contains("/*")
+    {
+        return Cow::Borrowed(text);
+    }
+
+    let mut folded = String::with_capacity(text.len());
+    let mut source = text.chars().peekable();
+    while let Some(mut character) = source.next() {
+        if character == '\r' && source.next_if_eq(&'\n').is_some() {
+            character = '\n';
+        }
+        if character != '\n' {
+            folded.push(character);
+            continue;
+        }
+
+        while folded
+            .chars()
+            .next_back()
+            .is_some_and(|previous| matches!(previous, ' ' | '\t'))
+        {
+            folded.pop();
+        }
+        if !folded.ends_with(' ') {
+            folded.push(' ');
+        }
+        while source
+            .peek()
+            .is_some_and(|next| matches!(*next, ' ' | '\t'))
+        {
+            source.next();
+        }
+    }
+    Cow::Owned(folded)
 }
 
 fn display_line_endings(text: &str) -> Cow<'_, str> {
@@ -682,6 +728,32 @@ mod display_tests {
     use super::*;
 
     #[test]
+    fn compact_previews_fold_only_unambiguous_layout_newlines() {
+        let source = "export default function NavBar(\n  {\n    \n  }: NavBarProps)";
+        let expected = "export default function NavBar( { }: NavBarProps)";
+        assert_eq!(
+            Signature::preview(source, Language::TypeScript).text(),
+            expected
+        );
+        assert_eq!(
+            Signature::preview(&source.replace('\n', "\r\n"), Language::TypeScript).text(),
+            expected
+        );
+        assert_eq!(
+            Signature::preview("// note\nnext", Language::TypeScript).text(),
+            "// note\\nnext"
+        );
+        assert_eq!(
+            Signature::preview("/* note\ncontinued */\nnext", Language::TypeScript).text(),
+            "/* note\\ncontinued */\\nnext"
+        );
+        assert_eq!(
+            Signature::preview("const label = `one\ntwo`", Language::TypeScript).text(),
+            "const label = `one\\ntwo`"
+        );
+    }
+
+    #[test]
     fn display_signatures_normalize_crlf_without_interpreting_authored_escapes() {
         let windows =
             "export async function generateSchedule(\r\n  request: Request\r\n): Promise<string>";
@@ -719,7 +791,7 @@ mod display_tests {
         let text = format!("const routes = [\r\n  {}\r\n];", "東京界".repeat(120));
         let full = Signature::tokenize(&text, Language::TypeScript).text();
         let preview = Signature::preview(&text, Language::TypeScript).text();
-        assert!(preview.starts_with("const routes = [\\n  東京界"));
+        assert!(preview.starts_with("const routes = [ 東京界"));
         assert!(preview.ends_with('…'));
         assert!(preview.chars().count() <= PREVIEW_CHARACTERS);
         assert!(
@@ -809,9 +881,9 @@ mod display_tests {
             Language::Cxx,
             Language::Unknown,
         ] {
-            assert_eq!(Signature::preview("a\r\nb", language).text(), "a\\nb");
+            assert_eq!(Signature::preview("a\r\nb", language).text(), "a b");
             assert_eq!(Signature::preview("a\rb", language).text(), "a\\rb");
-            assert_eq!(Signature::preview("a\r\r\nb", language).text(), "a\\r\\nb");
+            assert_eq!(Signature::preview("a\r\r\nb", language).text(), "a\\r b");
             for width in [0, 235, 236, 237, 238, 239, 240] {
                 for tail in ["", "Y", "YZ"] {
                     let unix = format!("{}\n{tail}", "x".repeat(width));
@@ -834,7 +906,7 @@ mod display_tests {
     #[test]
     fn signature_preview_boundaries_keep_generated_escapes_atomic() {
         for (character, displayed) in [
-            ('\n', "\\n"),
+            ('\n', " "),
             ('\r', "\\r"),
             ('\t', "\\t"),
             ('\0', "\\u{0}"),
@@ -887,7 +959,7 @@ mod display_tests {
         }
         assert_eq!(
             Signature::preview(&("x".repeat(238) + "\nY"), Language::Unknown).text(),
-            "x".repeat(238) + "…"
+            "x".repeat(238) + " Y"
         );
     }
 }
