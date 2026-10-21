@@ -967,6 +967,17 @@ mod tests {
             Err(ClientError::Protocol("unused legacy decoder".to_owned()))
         }
 
+        fn graph_query(
+            &mut self,
+            _: AdmittedGraphQueryInput,
+            _: u16,
+            _: Option<PageContinuation>,
+        ) -> Result<GraphQueryPage, ClientError> {
+            Err(ClientError::Protocol(
+                "unsupported witness fixture has no graph query".to_owned(),
+            ))
+        }
+
         fn outline_page_token(
             &mut self,
             _: String,
