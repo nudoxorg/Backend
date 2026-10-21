@@ -8,7 +8,7 @@ use backend_engine::driver::{
 };
 use backend_semantic::ir::{
     EntityKind, FragmentView, LanguageExtensionWireFact, NominalRef, PrimitiveShape,
-    SemanticTypeTag,
+    ReopenedTypeParameterList, SemanticTypeTag,
 };
 use backend_semantic::vocabulary::{CStandard, CxxStandard, LanguageProfile, NativeTool, Stage};
 use backend_version::{ContentId, ToolchainDomain};
@@ -87,9 +87,7 @@ fn lower_with<'output>(
         },
     )
     .map_err(|failure| match failure {
-        backend_engine::driver::CompileFailure::LoweringUnsupported { cause, .. } => {
-            TestError::Lowering(cause)
-        }
+        CompileFailure::LoweringUnsupported { cause, .. } => TestError::Lowering(cause),
         _ => TestError::Compile,
     })?;
     let length = compiled.fragment.as_ref().len();
@@ -226,7 +224,7 @@ where
         if removed.is_ok() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50u64 + 25u64 * attempt));
+        std::thread::sleep(Duration::from_millis(50u64 + 25u64 * attempt));
         removed = std::fs::remove_dir_all(&work);
     }
     result.and(removed.map_err(|_| TestError::Check("remove native work")))
@@ -457,7 +455,7 @@ fn empty_source_lowers_to_the_authority_empty_product() -> Result<(), TestError>
         if removed.is_ok() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50u64 + 25u64 * attempt));
+        std::thread::sleep(Duration::from_millis(50u64 + 25u64 * attempt));
         removed = std::fs::remove_dir_all(&work);
     }
     removed.map_err(|_| TestError::Check("remove native work"))?;
@@ -789,6 +787,148 @@ fn template_parameter_is_pooled_and_field_is_typevar() -> Result<(), TestError> 
             .ok_or(TestError::Check("value row"))?;
         if row.record.tag != SemanticTypeTag::TypeVar || row.record.text != Some(b"T") {
             return Err(TestError::Check("value TypeVar"));
+        }
+        Ok(())
+    })
+}
+
+fn template_names<'a>(
+    view: &'a FragmentView<'a>,
+    ordinal: usize,
+) -> Result<Vec<&'a [u8]>, TestError> {
+    let facts = extension(view, ordinal)?;
+    let pools = view
+        .discover()
+        .extension_pools()
+        .map_err(|_| TestError::Check("template extension pool"))?
+        .ok_or(TestError::Check("missing template extension pool"))?;
+    let list = pools
+        .type_parameter_list(facts.templates)
+        .map_err(|_| TestError::Check("template list decode"))?;
+    let ReopenedTypeParameterList::Exact(list) = list else {
+        return Err(TestError::Check("template list is not exact"));
+    };
+    let cursor = list
+        .cursor()
+        .map_err(|_| TestError::Check("template list cursor"))?;
+    cursor
+        .map(|parameter| {
+            parameter
+                .map(|parameter| parameter.name)
+                .map_err(|_| TestError::Check("template parameter decode"))
+        })
+        .collect()
+}
+
+#[test]
+fn deferred_function_templates_keep_exact_parameter_ranges_and_variadic_shape()
+-> Result<(), TestError> {
+    let source = b"\
+template<typename T> static void first_template(T value) {}
+template<typename C> struct Interleaved {};
+void ordinary(int value) {}
+template<typename U> static int second_template(U second_value) { return 0; }
+template<typename V> static void variadic_template(V value, ...) {}
+";
+    inspect_cxx(source, |view| {
+        let facts = entities(view);
+        let ordinal = |name: &[u8], kind: EntityKind| {
+            facts
+                .iter()
+                .position(|(candidate, candidate_kind)| {
+                    *candidate == name && *candidate_kind == kind
+                })
+                .ok_or(TestError::Check("template entity"))
+        };
+        let first = ordinal(b"first_template", EntityKind::Function)?;
+        let class = ordinal(b"Interleaved", EntityKind::Record)?;
+        let ordinary = ordinal(b"ordinary", EntityKind::Function)?;
+        let second = ordinal(b"second_template", EntityKind::Function)?;
+        let variadic = ordinal(b"variadic_template", EntityKind::Function)?;
+        let parameter = ordinal(b"second_value", EntityKind::Parameter)?;
+        let result = ordinal(b"second_template", EntityKind::Parameter)?;
+        if template_names(view, first)? != [b"T".as_slice()]
+            || template_names(view, class)? != [b"C".as_slice()]
+            || !template_names(view, ordinary)?.is_empty()
+            || template_names(view, second)? != [b"U".as_slice()]
+            || template_names(view, variadic)? != [b"V".as_slice()]
+            || template_names(view, result)? != [b"U".as_slice()]
+        {
+            return Err(TestError::Check(
+                "template parameter range leaked across declarations",
+            ));
+        }
+        let rows = rows(view)?;
+        let type_row = |owner: usize| {
+            rows.iter()
+                .find(|row| usize::try_from(row.owner.raw).ok() == Some(owner))
+                .ok_or(TestError::Check("function type row"))
+        };
+        let plain_record = type_row(first)?.record;
+        let variadic_record = type_row(variadic)?.record;
+        if plain_record.tag != SemanticTypeTag::FunctionPointer
+            || plain_record.payload0 != 0
+            || variadic_record.tag != SemanticTypeTag::FunctionPointer
+            || variadic_record.payload0
+                != backend_semantic::ir::SemanticTypeRecord::FUNCTION_C_VARIADIC_FLAG
+        {
+            return Err(TestError::Check("function-template variadic metadata"));
+        }
+
+        let function_type = rows
+            .iter()
+            .find(|row| {
+                usize::try_from(row.owner.raw).ok() == Some(second)
+                    && row.record.tag == SemanticTypeTag::FunctionPointer
+            })
+            .ok_or(TestError::Check("non-void function-template type"))?;
+        let signature_children = children(view, function_type)?;
+        if signature_children.len() != 2
+            || signature_children[0].0 != 0
+            || usize::try_from(signature_children[0].1).ok() != Some(parameter)
+            || signature_children[1].0 != 0
+            || usize::try_from(signature_children[1].1).ok() != Some(result)
+        {
+            return Err(TestError::Check("function-template type carrier join"));
+        }
+
+        let data = view
+            .semantic_data()
+            .ok_or(TestError::Check("missing semantic products"))?;
+        let product_root = |entity: usize| {
+            let entity = backend_semantic::ir::EntityId::try_from_index(entity)
+                .map_err(|_| TestError::Check("entity ordinal overflow"))?;
+            match data.entity_root(entity) {
+                Some(backend_semantic::ir::SemanticDataEntityRoot::Captured(product)) => {
+                    Ok(product)
+                }
+                _ => Err(TestError::Check("missing captured product root")),
+            }
+        };
+        let function_product = product_root(second)?;
+        let product = data
+            .product(function_product)
+            .ok_or(TestError::Check("function product"))?;
+        let span = data
+            .list(product.children)
+            .ok_or(TestError::Check("function product children"))?;
+        if span.length != 2 {
+            return Err(TestError::Check("function product child count"));
+        }
+        let parameter_product = product_root(parameter)?;
+        let result_product = product_root(result)?;
+        let first = data
+            .child(span.start)
+            .ok_or(TestError::Check("parameter product child"))?;
+        let second_child = data
+            .child(span.start + 1)
+            .ok_or(TestError::Check("result product child"))?;
+        if first.role != backend_semantic::ir::ProductChildRole::FunctionParameter
+            || first.target != backend_semantic::ir::ProductRef::Local(parameter_product)
+            || second_child.role != backend_semantic::ir::ProductChildRole::FunctionResult
+            || second_child.target != backend_semantic::ir::ProductRef::Local(result_product)
+        {
+            return Err(TestError::Check("function product carrier join"));
         }
         Ok(())
     })
@@ -1347,10 +1487,9 @@ fn include_list_over_the_retired_row_width_reopens_every_spelling() -> Result<()
     std::fs::remove_dir_all(&work).map_err(|_| TestError::Check("remove native work"))
 }
 
-/// A function whose signature exceeds the lane's fixed child width is an
-/// exact typed rejection — never a silently shortened signature. The width
-/// is sixty-four children (d40260a45), so sixty-five parameters cross the
-/// lane and name the cause.
+/// A function signature at the lane's fixed child width is admitted intact,
+/// while the next child is an exact typed rejection. The width is the u8
+/// child count (255): a non-void function uses one child for its result.
 #[test]
 fn signature_beyond_the_child_width_is_an_exact_rejection() -> Result<(), TestError> {
     use backend_engine::driver::{DatabaseCompileFailure, compile_database_translation_unit};
@@ -1366,26 +1505,28 @@ fn signature_beyond_the_child_width_is_an_exact_rejection() -> Result<(), TestEr
         std::process::id()
     ));
     std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
-    let mut source = String::new();
-    let mut call_arguments = String::new();
-    for index in 0..65u32 {
-        source.push_str(&format!("int parameter_{index};\n"));
-        if index > 0 {
-            call_arguments.push_str(", ");
+    let source_for = |function: &str, parameter_count: u32| {
+        let mut source = String::new();
+        let mut parameters = String::new();
+        for index in 0..parameter_count {
+            source.push_str(&format!("int parameter_{index};\n"));
+            if index > 0 {
+                parameters.push_str(", ");
+            }
+            parameters.push_str(&format!("int parameter_{index}"));
         }
-        call_arguments.push_str(&format!("parameter_{index}"));
-    }
-    source.push_str(&format!(
-        "int wide({args}) {{ return parameter_0; }}\nint narrow(int only) {{ return only; }}\n",
-        args = call_arguments
-    ));
-    std::fs::write(work.join("src.c"), &source).map_err(|_| TestError::Check("write source"))?;
+        source.push_str(&format!(
+            "int {function}({parameters}) {{ return parameter_0; }}\n"
+        ));
+        source
+    };
+    let source_path = work.join("src.c");
+    let database_path = work.join("compile_commands.json");
     let arguments = format!(
         "[{{\"directory\":\"{}\",\"file\":\"src.c\",\"arguments\":[\"clang\",\"-c\",\"src.c\"]}}]",
         work.display()
     );
-    std::fs::write(work.join("compile_commands.json"), arguments)
-        .map_err(|_| TestError::Check("write database"))?;
+    std::fs::write(&database_path, arguments).map_err(|_| TestError::Check("write database"))?;
     let environment = clang_environment()?;
     let cancelled = AtomicBool::new(false);
     let mut output = vec![0xa5_u8; 4 << 20];
@@ -1395,13 +1536,93 @@ fn signature_beyond_the_child_width_is_an_exact_rejection() -> Result<(), TestEr
         ContentId::from_canonical_bytes(b"clang-lane-signature-width"),
     )
     .map_err(|_| TestError::Check("toolchain"))?;
+    // A non-void result consumes one child, so this is exactly 254
+    // parameters plus the result carrier: the full 255-child row.
+    let boundary_source = source_for("boundary", u32::from(u8::MAX) - 1);
+    std::fs::write(&source_path, &boundary_source)
+        .map_err(|_| TestError::Check("write boundary source"))?;
+    let length = {
+        let boundary = compile_database_translation_unit(
+            &work,
+            Path::new("src.c"),
+            &environment,
+            LanguageProfile::C(CStandard::C23),
+            Stage::LowerIr,
+            boundary_source.as_bytes(),
+            toolchain,
+            &cancelled,
+            &mut output,
+        )
+        .map_err(|_| TestError::Check("maximum-width signature rejected"))?;
+        boundary.fragment.as_ref().len()
+    };
+    {
+        let view = FragmentView::validate(&output[..length])
+            .map_err(|_| TestError::Check("maximum-width fragment validation"))?;
+        let atoms: Vec<&[u8]> = view.atoms().map(|atom| atom.bytes).collect();
+        let function = view
+            .entities()
+            .find(|entity| {
+                entity.kind == EntityKind::Function
+                    && atoms
+                        .get(entity.name.raw as usize)
+                        .is_some_and(|name| *name == b"boundary")
+            })
+            .ok_or(TestError::Check("maximum-width function absent"))?;
+        let data = view
+            .semantic_data()
+            .ok_or(TestError::Check("maximum-width semantic products absent"))?;
+        let product_id = match data.entity_root(function.entity) {
+            Some(backend_semantic::ir::SemanticDataEntityRoot::Captured(product)) => product,
+            _ => return Err(TestError::Check("maximum-width function product absent")),
+        };
+        let product = data
+            .product(product_id)
+            .ok_or(TestError::Check("maximum-width function product"))?;
+        let constructor = data
+            .constructor(product_id)
+            .ok_or(TestError::Check("maximum-width function constructor"))?;
+        let span = data
+            .list(product.children)
+            .ok_or(TestError::Check("maximum-width function children"))?;
+        if constructor.tag != backend_semantic::ir::ProductConstructorTag::Function
+            || constructor.payload0 != u32::from(u8::MAX) - 1
+            || constructor.payload1 != 1
+            || span.length != u32::from(u8::MAX)
+        {
+            return Err(TestError::Check("maximum-width signature was shortened"));
+        }
+        for position in 0..span.length {
+            let child = data
+                .child(span.start + position)
+                .ok_or(TestError::Check("maximum-width function child"))?;
+            let expected = if position + 1 == span.length {
+                backend_semantic::ir::ProductChildRole::FunctionResult
+            } else {
+                backend_semantic::ir::ProductChildRole::FunctionParameter
+            };
+            if child.role != expected {
+                return Err(TestError::Check("maximum-width function child role"));
+            }
+        }
+    }
+    if output[length..].iter().any(|byte| *byte != 0xa5) {
+        return Err(TestError::Check("maximum-width output tail changed"));
+    }
+
+    // The next parameter makes 256 children including the result and must
+    // retain the exact typed capacity failure without publishing a fragment.
+    let over_width_source = source_for("over_width", u32::from(u8::MAX));
+    std::fs::write(&source_path, &over_width_source)
+        .map_err(|_| TestError::Check("write over-width source"))?;
+    output.fill(0xa5);
     let result = compile_database_translation_unit(
         &work,
         Path::new("src.c"),
         &environment,
         LanguageProfile::C(CStandard::C23),
         Stage::LowerIr,
-        source.as_bytes(),
+        over_width_source.as_bytes(),
         toolchain,
         &cancelled,
         &mut output,
@@ -1412,7 +1633,7 @@ fn signature_beyond_the_child_width_is_an_exact_rejection() -> Result<(), TestEr
                 return Err(TestError::Check("wrong signature-width cause"));
             }
         }
-        Err(other) => return Err(TestError::Check("wrong signature-width terminal")),
+        Err(_) => return Err(TestError::Check("wrong signature-width terminal")),
         Ok(_) => return Err(TestError::Check("signature-width wall admitted")),
     }
     if !output.iter().all(|byte| *byte == 0xa5) {
