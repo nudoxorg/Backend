@@ -16,7 +16,7 @@ use backend_frontend_typescript::legacy::{
 };
 use backend_frontend_typescript::{
     TszAtom, TszAuthorityError, TszBinderState, TszBoundFile, TszCheckerState, TszNodeArena,
-    TszNodeIndex, TszProject, TszSymbolId, TszSyntaxKind, TszTypeDatabase,
+    TszNodeIndex, TszProject, TszSymbolId, TszSyntaxKind, TszTypeDatabase, Utf16Span,
     tsz_type_handles::{
         ConditionalType, FunctionShape, IndexSignature as TszIndexSignature, IntrinsicKind,
         LiteralValue as TszLiteral, MappedModifier as TszMappedModifier, MappedType,
@@ -4332,6 +4332,36 @@ fn native_tsz_symbol_at_identifier_span(
     found
 }
 
+/// Returns the symbol attached to one exact class or interface declaration.
+/// The TSZ binder records declaration identity on the declaration node, while
+/// `node_symbols` need not also contain its identifier child. Matching the
+/// full source span prevents an unrelated same-named or nested declaration
+/// from supplying merge evidence.
+fn native_tsz_symbol_at_declaration_span(
+    bound_file: &TszBoundFile,
+    span: Span,
+) -> Option<TszSymbolId> {
+    let mut found = None;
+    for (&raw_node, &symbol) in bound_file.node_symbols.iter() {
+        let node_index = TszNodeIndex(raw_node);
+        if bound_file.arena.pos_end_at(node_index) != Some((span.start, span.end)) {
+            continue;
+        }
+        let node = bound_file.arena.get(node_index)?;
+        if !matches!(
+            node.kind,
+            TszSyntaxKind::CLASS_DECLARATION | TszSyntaxKind::INTERFACE_DECLARATION
+        ) {
+            continue;
+        }
+        if found.is_some_and(|existing| existing != symbol) {
+            return None;
+        }
+        found = Some(symbol);
+    }
+    found
+}
+
 /// Matches an OXC TypeQuery node to the exact TSZ TypeQuery AST node and
 /// returns the symbol bound to its simple identifier expression. Qualified
 /// queries are intentionally left unresolved until the IR has an exact path
@@ -4436,7 +4466,9 @@ enum NativeCallableScopeEvent {
 fn native_tsz_member_symbol(
     checker: &mut TszCheckerState<'_>,
     binder: &backend_frontend_typescript::TszBinderState,
+    project: &TszProject,
     arena: &TszNodeArena,
+    source: &str,
     receiver: TszNodeIndex,
     member_name: TszNodeIndex,
 ) -> Option<(TszSymbolId, Option<usize>)> {
@@ -4452,10 +4484,49 @@ fn native_tsz_member_symbol(
         return Some((target.symbol_id, Some(target.owner_file_idx)));
     }
     let receiver_type = checker.get_type_of_node(receiver);
-    let owner = checker.ctx.resolve_type_to_symbol_id(receiver_type);
-    let owner = owner?;
-    let owner = binder.resolve_import_symbol(owner).unwrap_or(owner);
-    let owner = binder.symbols.get(owner)?;
+    let receiver_type = if receiver_type == TszTypeId::ERROR {
+        native_tsz_this_field_type(checker, binder, arena, source, receiver)
+            .unwrap_or(receiver_type)
+    } else {
+        receiver_type
+    };
+    let owner_symbol = checker.ctx.resolve_type_to_symbol_id(receiver_type)?;
+    // A receiver's class symbol may belong to a different project file than
+    // the call site (for example, a field initialized with Angular's
+    // `inject(Service)`). Symbol ids are binder-relative, so looking the id
+    // up in the caller's binder can miss the real member or select an
+    // unrelated same-numbered symbol. Carry the checker's exact file owner
+    // through both the member lookup and the later declaration-coordinate
+    // join.
+    let checker_file_idx = checker.ctx.resolve_symbol_file_index(owner_symbol);
+    let program_file_idx = native_tsz_symbol_file_index(project, owner_symbol);
+    // The live checker owner is tied to the resolved receiver type. The
+    // program fallback is useful only when that owner is absent: symbol IDs
+    // read from a checker binder can numerically collide with a different
+    // project-table symbol, so a disagreement is not evidence against the
+    // checker's exact file.
+    let owner_file_idx = checker_file_idx.or(program_file_idx);
+    let owner_binder = match owner_file_idx {
+        Some(owner_file_idx) => checker.ctx.get_binder_for_file(owner_file_idx)?,
+        // Same-file symbols do not always need a cross-file owner entry. Keep
+        // the caller-binder route only when the symbol itself proves local
+        // ownership; a same-numbered local symbol is not a fallback witness
+        // for an unresolved cross-file receiver.
+        None => {
+            let local = binder.symbols.get(owner_symbol)?;
+            if local.decl_file_idx != checker.ctx.current_file_idx as u32 {
+                return None;
+            }
+            binder
+        }
+    };
+    let owner_symbol = owner_binder
+        .resolve_import_symbol(owner_symbol)
+        .unwrap_or(owner_symbol);
+    let owner = owner_binder.symbols.get(owner_symbol)?;
+    if owner_file_idx.is_some_and(|file_idx| owner.decl_file_idx != file_idx as u32) {
+        return None;
+    }
     let member = owner
         .members
         .as_ref()
@@ -4466,7 +4537,191 @@ fn native_tsz_member_symbol(
                 .as_ref()
                 .and_then(|exports| exports.get(member_name))
         });
-    member.map(|symbol| (symbol, None))
+    member.map(|symbol| (symbol, owner_file_idx))
+}
+
+/// Resolve only a direct `this.field` receiver in a named instance method.
+/// The field symbol is joined through that exact class declaration, then its
+/// checker-inferred type is queried. This handles TSZ's ERROR result for the
+/// property-access node without inventing a type or using project-wide names.
+fn native_tsz_this_field_type(
+    checker: &mut TszCheckerState<'_>,
+    binder: &backend_frontend_typescript::TszBinderState,
+    arena: &TszNodeArena,
+    source: &str,
+    receiver: TszNodeIndex,
+) -> Option<TszTypeId> {
+    let receiver_node = arena.get(receiver)?;
+    if receiver_node.kind != TszSyntaxKind::PROPERTY_ACCESS_EXPRESSION {
+        return None;
+    }
+    let access = arena.get_access_expr_at(receiver)?;
+    let field_name = arena
+        .get_identifier_at(access.name_or_argument)?
+        .escaped_text
+        .as_str();
+    // TSZ's `ThisKeyword` token is not exposed through syntax_kind_ext. Admit
+    // the fallback only when this exact UTF-16 source span is the `this` token.
+    let (base_start, base_end) = arena.pos_end_at(access.expression)?;
+    let base_span = Utf16Span::try_from(base_start..base_end)
+        .ok()?
+        .to_utf8(source)
+        .ok()?;
+    if source.get(base_span.start as usize..base_span.end as usize) != Some("this") {
+        return None;
+    }
+
+    // Find the nearest non-arrow function boundary. `this` is lexical inside
+    // arrows, but a nested ordinary function owns a different receiver.
+    let mut current = receiver;
+    let mut method_node = None;
+    for _ in 0..128 {
+        let parent = arena.parent_of(current)?;
+        let parent_node = arena.get(parent)?;
+        match parent_node.kind {
+            TszSyntaxKind::ARROW_FUNCTION => current = parent,
+            TszSyntaxKind::METHOD_DECLARATION => {
+                method_node = Some(parent);
+                break;
+            }
+            TszSyntaxKind::FUNCTION_DECLARATION
+            | TszSyntaxKind::FUNCTION_EXPRESSION
+            | TszSyntaxKind::CONSTRUCTOR
+            | TszSyntaxKind::GET_ACCESSOR
+            | TszSyntaxKind::SET_ACCESSOR
+            | TszSyntaxKind::CLASS_DECLARATION
+            | TszSyntaxKind::CLASS_EXPRESSION => return None,
+            _ => current = parent,
+        }
+    }
+    let method_node = method_node?;
+    let class_node = arena.parent_of(method_node)?;
+    let class_ast = arena.get_class_at(class_node)?;
+    if !matches!(
+        arena.get(class_node)?.kind,
+        TszSyntaxKind::CLASS_DECLARATION | TszSyntaxKind::CLASS_EXPRESSION
+    ) || !class_ast.members.nodes.contains(&method_node)
+    {
+        return None;
+    }
+
+    // The binder registers a class declaration on its declaration node;
+    // class-expression names have an additional name-node entry. Method
+    // names are registered separately. Keep the exact class-node join and
+    // reject static methods, whose `this` denotes the constructor side.
+    let class_name = arena.get_identifier_at(class_ast.name)?;
+    let class_symbol = binder.get_node_symbol(class_node)?;
+    let current_file = checker.ctx.current_file_idx as u32;
+    let class_record = binder.symbols.get(class_symbol)?;
+    if class_record.decl_file_idx != current_file
+        || !class_record.declarations.contains(&class_node)
+        || class_record.escaped_name.is_empty()
+        || class_record.escaped_name.as_str() != class_name.escaped_text.as_str()
+    {
+        return None;
+    }
+    let method = arena.get_method_decl_at(method_node)?;
+    let method_symbol = binder.get_node_symbol(method.name)?;
+    let method_record = binder.symbols.get(method_symbol)?;
+    if method_record.decl_file_idx != current_file
+        || !method_record.declarations.contains(&method_node)
+        || native_tsz_has_static_modifier(
+            source,
+            arena,
+            method
+                .modifiers
+                .as_ref()
+                .map_or(&[], |modifiers| modifiers.nodes.as_slice()),
+        )?
+    {
+        return None;
+    }
+
+    // Require one direct class property declaration and an exact binder-node
+    // join. Merged/ambiguous members and inherited fields remain unresolved.
+    let mut field_declaration = None;
+    for &member_node in &class_ast.members.nodes {
+        if arena.get(member_node)?.kind != TszSyntaxKind::PROPERTY_DECLARATION {
+            continue;
+        }
+        let property = arena.get_property_decl_at(member_node)?;
+        if arena
+            .get_identifier_at(property.name)
+            .is_some_and(|identifier| identifier.escaped_text == field_name)
+        {
+            if field_declaration.replace((member_node, property.name)).is_some() {
+                return None;
+            }
+        }
+    }
+    let (field_declaration, field_name_node) = field_declaration?;
+    let property = arena.get_property_decl_at(field_declaration)?;
+    if native_tsz_has_static_modifier(
+        source,
+        arena,
+        property
+            .modifiers
+            .as_ref()
+            .map_or(&[], |modifiers| modifiers.nodes.as_slice()),
+    )? {
+        return None;
+    }
+    let field_symbol = class_record.members.as_ref()?.get(field_name)?;
+    let field_record = binder.symbols.get(field_symbol)?;
+    if field_record.decl_file_idx != current_file
+        || field_record.declarations.len() != 1
+        || field_record.declarations.first() != Some(&field_declaration)
+        || binder.get_node_symbol(field_name_node) != Some(field_symbol)
+    {
+        return None;
+    }
+    let field_type = checker.get_type_of_symbol(field_symbol);
+    (field_type != TszTypeId::ERROR).then_some(field_type)
+}
+
+fn native_tsz_has_static_modifier(
+    source: &str,
+    arena: &TszNodeArena,
+    modifiers: &[TszNodeIndex],
+) -> Option<bool> {
+    let mut is_static = false;
+    for &modifier in modifiers {
+        let (start, end) = arena.pos_end_at(modifier)?;
+        let span = Utf16Span::try_from(start..end).ok()?.to_utf8(source).ok()?;
+        let text = source.get(span.start as usize..span.end as usize)?;
+        is_static |= text == "static";
+    }
+    Some(is_static)
+}
+
+/// Finds a symbol's file only when its exact retained program declarations
+/// all belong to one bound source file and that file independently maps every
+/// declaration node back to this symbol. This supplies an immutable project
+/// witness when the checker has not populated its dynamic symbol-owner map.
+fn native_tsz_symbol_file_index(project: &TszProject, symbol: TszSymbolId) -> Option<usize> {
+    let program = project.program();
+    let symbol_data = program.symbols.get(symbol)?;
+    if symbol_data.declarations.is_empty()
+        || symbol_data.declarations.len() != symbol_data.stable_declarations.len()
+    {
+        return None;
+    }
+    let file_index = usize::try_from(symbol_data.stable_declarations.first()?.file_idx).ok()?;
+    let file = program.files.get(file_index)?;
+    for (declaration, stable) in symbol_data
+        .declarations
+        .iter()
+        .zip(&symbol_data.stable_declarations)
+    {
+        if usize::try_from(stable.file_idx).ok()? != file_index
+            || stable.pos >= stable.end
+            || file.arena.pos_end_at(*declaration) != Some((stable.pos, stable.end))
+            || file.node_symbols.get(&declaration.0) != Some(&symbol)
+        {
+            return None;
+        }
+    }
+    Some(file_index)
 }
 
 /// An object method is a source-owned callable even though it has no
@@ -5415,8 +5670,23 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             {
                 continue;
             }
+            // Class/interface declaration merging crosses the IR's Record and
+            // Trait entity kinds, so `merged_declaration_parts` cannot group
+            // those parts under one owner. The exact TSZ binding still records
+            // the merged declarations; preserve that evidence by withholding
+            // a complete member inventory from either source declaration.
+            let checker_reports_merge = (kind.as_class().is_some()
+                || kind.as_ts_interface_declaration().is_some())
+                && self
+                    .tsz_bound_file
+                    .and_then(|file| native_tsz_symbol_at_declaration_span(file, declaration))
+                    .and_then(|symbol| {
+                        self.tsz_project
+                            .and_then(|project| project.program().symbols.get(symbol))
+                    })
+                    .is_some_and(|symbol| symbol.declarations.len() > 1);
             let mut members = Vec::with_capacity(spans.len());
-            let mut complete = true;
+            let mut complete = !checker_reports_merge;
             for span in spans {
                 let Some(Some(member)) = declarations.get(&(span.start, span.end)) else {
                     complete = false;
@@ -7024,7 +7294,9 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 let Some((target, target_owner)) = native_tsz_member_symbol(
                     checker,
                     binder,
+                    session.project(),
                     arena,
+                    self.source,
                     access.expression,
                     access.name_or_argument,
                 ) else {
@@ -7113,7 +7385,9 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             let Some((target_symbol, target_owner)) = native_tsz_member_symbol(
                 checker,
                 binder,
+                session.project(),
                 arena,
+                self.source,
                 access.expression,
                 access.name_or_argument,
             ) else {
@@ -10591,6 +10865,15 @@ fn intern_native_tsz_type<'source>(
     // therefore comes from the checker-owned body and must keep its native
     // dynamically-typed meaning instead of being confused with a failed lookup.
     if !active.insert(resolved_type_id) {
+        // A checker-owned lazy alias may close on its already active body.
+        // Keep that named reference through the existing entity plane only
+        // after proving its exact definition/file/declaration identity. A raw
+        // structural TypeId cycle is not evidence of a recursive binder.
+        if let Some(target) = native_tsz_recursive_alias_target(registry, checker, database, type_id) {
+            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
+            record.nominal = Some(NominalRef::Local(EntityId::new(target)));
+            return intern_native_tsz_row(registry, facts, record, owner, &[]);
+        }
         return Err(computed_fault(
             registry,
             owner,
@@ -10609,6 +10892,85 @@ fn intern_native_tsz_type<'source>(
     );
     active.remove(&resolved_type_id);
     result
+}
+
+/// Returns one exact same-file, non-generic alias entity for a lazy back-edge.
+/// Definition IDs and binder-local symbol IDs are never interchanged. The
+/// primary definition index, declaring file, source bytes, stable declaration,
+/// parsed alias name span, and unique emitted entity must all agree.
+fn native_tsz_recursive_alias_target(
+    registry: &FactRegistry<'_, '_>,
+    checker: &TszCheckerState<'_>,
+    database: &dyn TszTypeDatabase,
+    type_id: TszTypeId,
+) -> Option<u32> {
+    let TypeData::Lazy(def_id) = database.lookup(type_id)? else {
+        return None;
+    };
+    let info = checker.ctx.definition_store.get(def_id)?;
+    // Generic aliases require their application environment; this narrow route
+    // does not erase that environment or infer a De Bruijn binder distance.
+    if !info.type_params.is_empty() {
+        return None;
+    }
+    let file_index = info.file_id.filter(|index| *index != u32::MAX)?;
+    let project = registry.tsz_project?;
+    let file = project.program().files.get(usize::try_from(file_index).ok()?)?;
+    if Some(file.file_name.as_str()) != registry.source_path.as_deref()
+        || file.arena.get_source_file_at(file.source_file)?.text.as_ref() != registry.source
+    {
+        return None;
+    }
+    let symbol = TszSymbolId(info.symbol_id?);
+    if checker.ctx.definition_store.lookup_by_symbol(symbol.0, file_index) != Some(def_id)
+        || checker.ctx.get_existing_def_id(symbol) != Some(def_id)
+    {
+        return None;
+    }
+    let symbol_data = project.program().symbols.get(symbol)?;
+    let expected_name = database.resolve_atom(info.name);
+    if symbol_data.escaped_name != expected_name
+        || symbol_data.declarations.len() != symbol_data.stable_declarations.len()
+        || symbol_data.stable_declarations.len() != 1
+    {
+        return None;
+    }
+    let declaration = symbol_data.stable_declarations.first()?;
+    if declaration.file_idx != file_index
+        || !matches!(info.span, Some(span) if span == (declaration.pos, declaration.end)
+            || span == (declaration.pos, declaration.pos))
+    {
+        return None;
+    }
+    let target = *registry.native_tsz_entities?.get(&symbol)?;
+    if target >= registry.fact_len {
+        return None;
+    }
+    let index = usize::try_from(target).ok()?;
+    if registry.fact_kinds.get(index) != Some(&EntityKind::Alias) {
+        return None;
+    }
+    let name_span = (*registry.name_starts.get(index)?, *registry.name_ends.get(index)?);
+    for (&raw_node, &bound_symbol) in file.node_symbols.iter() {
+        if bound_symbol != symbol {
+            continue;
+        }
+        let node = TszNodeIndex(raw_node);
+        let Some(alias) = file.arena.get(node).and_then(|node| file.arena.get_type_alias(node)) else {
+            continue;
+        };
+        if alias.type_parameters.is_some()
+            || file.arena.pos_end_at(node) != Some((declaration.pos, declaration.end))
+            || file.arena.pos_end_at(alias.name) != Some(name_span)
+        {
+            continue;
+        }
+        let identifier = file.arena.get_identifier_at(alias.name)?;
+        if identifier.escaped_text == expected_name {
+            return Some(target);
+        }
+    }
+    None
 }
 
 fn intern_native_tsz_type_inner<'source>(
@@ -11951,6 +12313,7 @@ mod lane_tests {
         TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszProject,
         TszProjectAuthority, TszProjectModuleRequestKind, TszProjectModuleResolution,
         TszProjectModuleResolutionTarget, TszProjectOptions, TszProjectSemanticOptions,
+        TszNodeIndex, TszSyntaxKind, Utf16Span,
     };
     use backend_semantic::ir::{
         AnonymousCallableAnchorView, AnonymousCallableFamilyMultiplicity, CallableChildRole,
@@ -12711,7 +13074,7 @@ mod lane_tests {
                     .authority
                     .members,
                 FactAvailability::Unavailable,
-                "parameter-property support cannot waive unsupported body or merge inventory"
+                "parameter-property support cannot waive unsupported body or merge inventory for {name:?}"
             );
             assert!(item.members().is_empty());
         }
@@ -12928,6 +13291,284 @@ mod lane_tests {
                 }),
             "spec call must name the exact controller declaration: {spec_targets:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_joins_injected_service_field_calls_to_the_exact_foreign_owner()
+    -> Result<(), LaneError> {
+        let service = "export class ExerciseAnalyticsService { totalsEntries() { return []; } }";
+        let records = concat!(
+            "import { ExerciseAnalyticsService } from './exercise-analytics.service.js';\n",
+            "declare function inject<T>(token: new (...args: any[]) => T): T;\n",
+            "class Decoy { totalsEntries() { return ['wrong']; } }\n",
+            "export class RecordsPage {\n",
+            "  private readonly svc = inject(ExerciseAnalyticsService);\n",
+            "  load() { return this.svc.totalsEntries(); }\n",
+            "}\n",
+        );
+        let training_totals = concat!(
+            "import { ExerciseAnalyticsService } from './exercise-analytics.service.js';\n",
+            "declare function inject<T>(token: new (...args: any[]) => T): T;\n",
+            "class Decoy { totalsEntries() { return ['wrong']; } }\n",
+            "export class TrainingTotalsPage {\n",
+            "  private readonly svc = inject(ExerciseAnalyticsService);\n",
+            "  load() { return this.svc.totalsEntries(); }\n",
+            "}\n",
+        );
+        let resolutions = [
+            module_resolution(
+                "src/pages/records/records.ts",
+                "./exercise-analytics.service.js",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "src/analytics/exercise-analytics.service.ts".to_owned(),
+                },
+            ),
+            module_resolution(
+                "src/pages/analytics/totals/training-totals.ts",
+                "./exercise-analytics.service.js",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "src/analytics/exercise-analytics.service.ts".to_owned(),
+                },
+            ),
+        ];
+        let authority = native_tsz_project_with_resolutions(
+            &[
+                ("src/analytics/exercise-analytics.service.ts", service),
+                ("src/pages/records/records.ts", records),
+                (
+                    "src/pages/analytics/totals/training-totals.ts",
+                    training_totals,
+                ),
+            ],
+            &resolutions,
+        )?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("injected-service TSZ project"))?;
+        let method_start = u32::try_from(
+            service
+                .find("totalsEntries()")
+                .ok_or(LaneError::Missing("injected-service method source"))?,
+        )?;
+        let method_end = method_start
+            .checked_add(u32::try_from("totalsEntries() { return []; }".len())?)
+            .ok_or(LaneError::Scalar)?;
+
+        let session = project
+            .checked_query_session_unmetered_for_test()
+            .map_err(|_| LaneError::Missing("injected-service identity session"))?;
+        let service_index = session
+            .file_index("src/analytics/exercise-analytics.service.ts")
+            .map_err(|_| LaneError::Missing("injected-service identity source index"))?;
+        let expected_program_identity = session
+            .native_program_identity()
+            .ok_or(LaneError::Missing("injected-service native program identity"))?;
+        let expected_source_identity = session
+            .native_source_identity(service_index, service.as_bytes())
+            .ok_or(LaneError::Missing("injected-service exact source identity"))?;
+
+        let mut exact_target_count = 0;
+        for (path, source) in [
+            ("src/pages/records/records.ts", records),
+            (
+                "src/pages/analytics/totals/training-totals.ts",
+                training_totals,
+            ),
+        ] {
+            let facts = collect_native_tsz_file(project, path, source)?;
+            let targets = staged_tsz_coordinates(&facts)?;
+            let load_facts = (0..facts.len())
+                .filter(|&index| {
+                    facts.names[index] == b"load" && facts.kinds[index] == EntityKind::Function
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(load_facts.len(), 1, "one enclosing load method in {path}");
+            let load = load_facts[0];
+            let load_span = facts.provenance.source_spans()[load]
+                .ok_or(LaneError::Missing("load method source span"))?;
+            let call_name_start = u32::try_from(
+                source
+                    .find("this.svc.totalsEntries()")
+                    .ok_or(LaneError::Missing("injected-service call source"))?
+                    + "this.svc.".len(),
+            )?;
+            let call_name_end = call_name_start
+                .checked_add(u32::try_from("totalsEntries".len())?)
+                .ok_or(LaneError::Scalar)?;
+            let call_uses = (0..facts.occurrence_len)
+                .filter(|&index| {
+                    let occurrence = facts.occurrences[index];
+                    let absolute_start = load_span.start + occurrence.span.start;
+                    let absolute_end = load_span.start + occurrence.span.end;
+                    absolute_start == call_name_start && absolute_end == call_name_end
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(call_uses.len(), 1, "one exact call-site reference in {path}");
+            let call_use = call_uses[0];
+            assert_eq!(facts.occurrence_owners[call_use], load as u32);
+            assert_eq!(facts.occurrences[call_use].kind, ReferenceKind::MethodCall);
+            let target_slot = facts.occurrence_source_coordinate_slot[call_use]
+                .ok_or(LaneError::Missing("injected-service exact call target slot"))?;
+            let target_text = facts
+                .foreign_source_coordinate_text
+                .get(target_slot as usize)
+                .ok_or(LaneError::Missing("injected-service exact call target text"))?;
+            let target_coordinate = TypeScriptSourceCoordinate::decode(target_text)
+                .ok_or(LaneError::Missing("injected-service exact call target coordinate"))?;
+            assert_eq!(
+                target_coordinate.program, expected_program_identity,
+                "the called member retains this exact native program in {path}"
+            );
+            assert_eq!(
+                target_coordinate.source, expected_source_identity,
+                "the called member retains the exact service source bytes in {path}"
+            );
+            assert_eq!(
+                source.as_bytes().get(call_name_start as usize..call_name_end as usize),
+                Some(b"totalsEntries".as_slice()),
+                "the reference span names exactly the called member in {path}"
+            );
+            let call_targets = targets
+                .iter()
+                .filter(|(kind, _, _, _, _, owner)| {
+                    *kind == ReferenceKind::MethodCall && *owner == load as u32
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(call_targets.len(), 1, "one target for the call in {path}");
+            exact_target_count += call_targets.len();
+            assert!(
+                matches!(
+                    call_targets[0],
+                    (ReferenceKind::MethodCall, target_path, start, end, name, owner)
+                        if target_path == "src/analytics/exercise-analytics.service.ts"
+                            && *start == method_start
+                            && *end == method_end
+                            && *name == method_start
+                            && *owner == load as u32
+                ),
+                "injected service call must target the exact service method, not the same-named decoy, from {path}: {call_targets:?}"
+            );
+        }
+        assert_eq!(exact_target_count, 2, "both reported caller files have one exact target");
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_this_field_recovery_requires_one_unambiguous_instance_witness()
+    -> Result<(), LaneError> {
+        let service = "export class Service { totalsEntries() { return []; } }\nexport class OtherService { totalsEntries() { return ['other']; } }";
+        let caller = concat!(
+            "import { Service, OtherService } from './service.js';\n",
+            "declare function inject<T>(token: new (...args: any[]) => T): T;\n",
+            "class Caller {\n",
+            "  private readonly svc = inject(Service);\n",
+            "  private readonly duplicate = inject(Service);\n",
+            "  private readonly duplicate = inject(OtherService);\n",
+            "  private static readonly staticSvc = inject(Service);\n",
+            "  instanceField() { return this.staticSvc.totalsEntries(); }\n",
+            "  static instanceFieldFromStaticMethod() { return this.svc.totalsEntries(); }\n",
+            "  nestedOrdinaryFunction() { function nested() { return this.svc.totalsEntries(); } return nested(); }\n",
+            "  ambiguousField() { return this.duplicate.totalsEntries(); }\n",
+            "}\n",
+        );
+        let authority = native_tsz_project_with_resolutions(
+            &[
+                ("src/service.ts", service),
+                ("src/caller.ts", caller),
+            ],
+            &[module_resolution(
+                "src/caller.ts",
+                "./service.js",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "src/service.ts".to_owned(),
+                },
+            )],
+        )?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("negative injected-service TSZ project"))?;
+        let session = project
+            .checked_query_session_unmetered_for_test()
+            .map_err(|_| LaneError::Missing("negative injected-service TSZ session"))?;
+        let file_index = session
+            .file_index("src/caller.ts")
+            .map_err(|_| LaneError::Missing("negative injected-service caller file"))?;
+        project
+            .with_file_checker_and_types(file_index, |checker, binder, bound_file, _database| {
+                let arena = &bound_file.arena;
+                let mut refused = std::collections::BTreeSet::new();
+                for (raw_node, node) in arena.nodes.iter().enumerate() {
+                    if node.kind != TszSyntaxKind::CALL_EXPRESSION {
+                        continue;
+                    }
+                    let call_node = TszNodeIndex(u32::try_from(raw_node).unwrap());
+                    let Some(call) = arena.get_call_expr_at(call_node) else {
+                        continue;
+                    };
+                    let Some(access) = arena.get_access_expr_at(call.expression) else {
+                        continue;
+                    };
+                    if arena.get(call.expression).map(|node| node.kind)
+                        != Some(TszSyntaxKind::PROPERTY_ACCESS_EXPRESSION)
+                        || arena
+                            .get_identifier_at(access.name_or_argument)
+                            .is_none_or(|name| name.escaped_text != "totalsEntries")
+                    {
+                        continue;
+                    }
+                    // Access-expression end positions may include the following
+                    // token. Bound this exact receiver by its base token and
+                    // final identifier, so every intended refusal is exercised.
+                    if arena.get(access.expression).map(|node| node.kind)
+                        != Some(TszSyntaxKind::PROPERTY_ACCESS_EXPRESSION)
+                    {
+                        continue;
+                    }
+                    let Some(receiver_access) = arena.get_access_expr_at(access.expression) else {
+                        continue;
+                    };
+                    let Some((start, _)) = arena.pos_end_at(receiver_access.expression) else {
+                        continue;
+                    };
+                    let Some((_, end)) = arena.pos_end_at(receiver_access.name_or_argument) else {
+                        continue;
+                    };
+                    let Ok(span) = Utf16Span::try_from(start..end) else {
+                        continue;
+                    };
+                    let Ok(span) = span.to_utf8(caller) else {
+                        continue;
+                    };
+                    let Some(receiver) = caller.get(span.start as usize..span.end as usize) else {
+                        continue;
+                    };
+                    if !["this.staticSvc", "this.svc", "this.duplicate"].contains(&receiver) {
+                        continue;
+                    }
+                    assert_eq!(
+                        super::native_tsz_this_field_type(
+                            checker,
+                            binder,
+                            arena,
+                            caller,
+                            access.expression,
+                        ),
+                        None,
+                        "unsafe recovery must refuse {receiver} in {caller:?}"
+                    );
+                    refused.insert((start, receiver.to_owned()));
+                }
+                assert_eq!(
+                    refused.len(),
+                    4,
+                    "static field, static method, nested ordinary-function this, and duplicate direct fields are all refused: {refused:?}"
+                );
+            })
+            .map_err(|_| LaneError::Missing("negative injected-service checker session"))?;
         Ok(())
     }
 
@@ -16589,8 +17230,29 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
     }
 
     #[test]
-    fn native_tsz_recursive_structural_type_fails_with_exact_typed_cause() {
+    fn native_tsz_named_recursive_alias_closes_on_exact_local_entity() -> Result<(), LaneError> {
         let source = "export type Recursive = { next: Recursive };";
+        let ir = owned_tsz_ir_at_path(source, "layout.tsx")?;
+        let alias = ir.items().find(|item| item.name() == b"Recursive")
+            .ok_or(LaneError::Missing("exact recursive alias entity"))?;
+        let (_, observed) = native_observation(&ir, b"Recursive")
+            .ok_or(LaneError::Missing("recursive alias observation"))?;
+        let TypeExpr::Concrete(backend_semantic::ir::ConcreteType::Object(members)) = observed else {
+            return Err(LaneError::Missing("structural recursive alias root"));
+        };
+        let members = ir.object_members(members).ok_or(LaneError::Missing("recursive members"))?;
+        assert_eq!(members.len(), 1);
+        let backend_semantic::ir::ObjectMember::Property { ty, .. } = members[0] else {
+            return Err(LaneError::Missing("recursive next property"));
+        };
+        assert_eq!(ir.ty(ty), Some(TypeExpr::Concrete(
+            backend_semantic::ir::ConcreteType::Nominal(alias.id()))));
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_recursive_structural_type_fails_with_exact_typed_cause() {
+        let source = "export interface Recursive { next: Recursive; }";
         let error = match owned_tsz_ir(source) {
             Ok(ir) => panic!(
                 "recursive row must refuse atomically; observed {:?}",
@@ -16613,6 +17275,108 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
             ),
             "recursive type refusal must retain exact cycle cause; got {error:?}"
         );
+    }
+
+
+    #[test]
+    fn native_tsz_recursive_alias_identity_refuses_same_spelling_in_another_file()
+    -> Result<(), LaneError> {
+        let source = "export type Recursive = { next: Recursive };";
+        let authority = native_tsz_project_with_resolutions(
+            &[("local.tsx", source), ("foreign.tsx", source)], &[])?;
+        let project = authority.project().ok_or(LaneError::Missing("recursive identity project"))?;
+        let file_index = project.program().files.iter().position(|file| file.file_name == "local.tsx")
+            .ok_or(LaneError::Missing("recursive local source"))?;
+        project.with_file_checker_and_types(file_index, |checker, binder, _, database|
+            -> Result<(), LaneError> {
+            let symbol = binder.file_locals.get("Recursive")
+                .ok_or(LaneError::Missing("native recursive symbol"))?;
+            checker.get_type_of_symbol(symbol);
+            let lazy = checker.ctx.create_lazy_type_ref(symbol);
+            let names = [u32::try_from(source.find("Recursive").ok_or(LaneError::Missing("recursive source name"))?)?];
+            let ends = [names[0] + 9];
+            let declarations = [0];
+            let declaration_ends = [u32::try_from(source.len())?];
+            let entities = std::collections::HashMap::from([(symbol, 0)]);
+            let parts = std::collections::HashMap::new();
+            let mut registry = super::FactRegistry {
+                source, tsz_project: Some(project), source_path: Some("local.tsx".into()),
+                decl_starts: &declarations, decl_ends: &declaration_ends,
+                declaration_parts: &parts, name_starts: &names,
+                name_start_index: std::collections::HashMap::from([(names[0], 0)]),
+                name_ends: &ends, fact_kinds: &[EntityKind::Alias],
+                native_tsz_entities: Some(&entities), fact_len: 1,
+            };
+            assert_eq!(super::native_tsz_recursive_alias_target(&registry, checker, database, lazy), Some(0));
+            // Same bytes/name/offsets and a deliberately retained local symbol
+            // cannot redirect its DefId to a different file's entity.
+            registry.source_path = Some("foreign.tsx".into());
+            assert_eq!(super::native_tsz_recursive_alias_target(&registry, checker, database, lazy), None);
+            registry.source_path = Some("local.tsx".into());
+            let wrong_ends = [ends[0] - 1];
+            registry.name_ends = &wrong_ends;
+            assert_eq!(super::native_tsz_recursive_alias_target(&registry, checker, database, lazy), None);
+            registry.name_ends = &ends;
+            // A repeated structural body with no original Lazy(DefId) cannot
+            // gain a nominal meaning from equal TypeIds or source spelling.
+            let body = checker.resolve_lazy_type(lazy);
+            assert_ne!(body, lazy);
+            assert_eq!(super::native_tsz_recursive_alias_target(&registry, checker, database, body), None);
+            let mut facts = FactSet::new();
+            let mut active = std::collections::HashSet::from([body]);
+            let error = match super::intern_native_tsz_type(&registry, &mut facts, checker, database,
+                body, 0, 1, &mut active) {
+                Err(error) => error,
+                Ok(_) => return Err(LaneError::Missing("raw structural back-edge refusal")),
+            };
+            assert!(matches!(error, TypeScriptCollectError::Rejected(super::FactRejection {
+                cause: super::FactFault::TypeProjectionCycle { .. }, ..
+            })));
+            Ok(())
+        }).map_err(|_| LaneError::Missing("native recursive identity query"))??;
+        Ok(())
+    }
+
+
+    #[test]
+    fn native_tsz_primary_recursive_reference_keeps_exact_typed_cause()
+    -> Result<(), LaneError> {
+        let source = "export type Marker = string;";
+        let authority = native_tsz_project_with_resolutions(&[("input.ts", source)], &[])?;
+        let project = authority.project().ok_or(LaneError::Missing("recursive marker project"))?;
+        project.with_file_checker_and_types(0, |checker, _, file, database|
+            -> Result<(), LaneError> {
+            // Use the actual shared native interner, independently of Lazy
+            // alias resolution and the adapter's raw structural-cycle guard.
+            let recursive = checker.ctx.types.recursive(0);
+            assert!(matches!(database.lookup(recursive), Some(super::TypeData::Recursive(0))));
+            let names = [u32::try_from(source.find("Marker")
+                .ok_or(LaneError::Missing("recursive marker name"))?)?];
+            let ends = [names[0] + 6];
+            let declarations = [0];
+            let declaration_ends = [u32::try_from(source.len())?];
+            let parts = std::collections::HashMap::new();
+            let registry = super::FactRegistry {
+                source, tsz_project: Some(project), source_path: Some(file.file_name.clone()),
+                decl_starts: &declarations, decl_ends: &declaration_ends,
+                declaration_parts: &parts, name_starts: &names,
+                name_start_index: std::collections::HashMap::from([(names[0], 0)]),
+                name_ends: &ends, fact_kinds: &[EntityKind::Alias],
+                native_tsz_entities: None, fact_len: 1,
+            };
+            let mut facts = FactSet::new();
+            let mut active = std::collections::HashSet::new();
+            let error = match super::intern_native_tsz_type(&registry, &mut facts, checker, database,
+                recursive, 0, 0, &mut active) {
+                Err(error) => error,
+                Ok(_) => return Err(LaneError::Missing("primary recursive-reference refusal")),
+            };
+            assert!(matches!(error, TypeScriptCollectError::Rejected(super::FactRejection {
+                cause: super::FactFault::TypeProjectionRecursiveReference { distance: 0 }, ..
+            })));
+            Ok(())
+        }).map_err(|_| LaneError::Missing("native primary recursive-reference query"))??;
+        Ok(())
     }
 
     #[test]
