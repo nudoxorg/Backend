@@ -68,10 +68,8 @@ pub(crate) fn cursor_from_wire_against_owner(
     Ok(admitted)
 }
 
-/// Decodes a catalog-page cursor's digest-only predecessor root. Its root and
-/// version are not authoritative until the catalog query reconstructs the
-/// exact predecessor page from the admitted owner. Canonical recipe, version,
-/// branch and log preimages are still required from the certificate.
+/// Decodes a catalog-page cursor with its canonical predecessor-root proof
+/// and checks the cursor context against the admitted owner.
 pub(crate) fn cursor_from_wire_against_catalog_owner(
     value: &CursorWire,
     certificate: &WireCertificate,

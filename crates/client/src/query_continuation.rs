@@ -458,9 +458,9 @@ impl Session {
                 let envelope: serde_json::Value = serde_json::from_slice(&body)
                     .map_err(|error| ClientError::Protocol(error.to_string()))?;
                 // Ordinary proofs must pass their standalone strict decoder
-                // before any RPC. The two narrowly defined compact cases use
-                // an already admitted owner cursor and retain their full typed
-                // claim checks below.
+                // before any RPC. The graph-query continuation path uses an
+                // already admitted owner cursor and retains its typed claim
+                // checks below.
                 if envelope
                     .get("command")
                     .and_then(|command| command.get("kind"))
