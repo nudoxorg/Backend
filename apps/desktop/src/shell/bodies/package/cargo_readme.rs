@@ -360,6 +360,7 @@ fn document_leaf(
         ElementId::Name(document_id),
         SharedString::from(Arc::clone(&document.source)),
         painted.identity(),
+        measure,
     )
     .w_full()
     .link_availability(move |url| link_disclosure.link_actionable(url))

@@ -27,7 +27,7 @@ use facet::{ActiveFacet as _, Measure, Space};
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, InteractiveElement, Role,
     IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Task, Window, ScrollHandle, div, px,
+    Subscription, Task, Window, ScrollHandle, Pixels, div, px,
 };
 use gpui_component::input::{InputEvent, InputState};
 use std::cell::Cell;
@@ -207,6 +207,8 @@ pub(crate) struct Ask {
     /// keeps the shown place instead of opening the first row.
     walked: bool,
     renders: u64,
+    /// Width allocated to the live Ask plate by its owning shell scene.
+    measure_width: Pixels,
     pending: Option<Task<()>>,
     scroll: ScrollHandle,
     /// One pending keyboard request; resolved only by the current painted list.
@@ -270,12 +272,21 @@ impl Ask {
             selected: 0,
             walked: false,
             renders: 0,
+            measure_width: px(0.0),
             pending: None,
             scroll: ScrollHandle::new(),
             scroll_request: None,
             row_focus: Vec::new(),
             all_focus: cx.focus_handle().tab_stop(true),
             _subscriptions: vec![typed, landed],
+        }
+    }
+
+    pub(crate) fn set_measure_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        let width = width.max(px(0.0));
+        if self.measure_width != width {
+            self.measure_width = width;
+            cx.notify();
         }
     }
 
@@ -914,8 +925,7 @@ impl Ask {
         self.renders = self.renders.saturating_add(1);
         let facet = cx.facet();
         let palette = facet.palette();
-        let viewport = window.viewport_size();
-        let measure = Measure::new(viewport.width, &facet);
+        let measure = Measure::new(self.measure_width, &facet);
         let choices = self.choices(cx);
         let all_results = self.all_results(cx).filter(|_| !choices.is_empty());
         self.sync_row_focus(&choices, all_results.is_some(), window, cx);
@@ -925,7 +935,7 @@ impl Ask {
         self.apply_result_scroll(&choices, &scroll_map, cx);
         let mut list = div().id("ask-results").role(Role::List).aria_label("Search results")
             .flex().flex_col().pt(measure.space(Space::Tight))
-            .flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll);
+            .flex_1().min_w_0().min_h_0().overflow_x_hidden().overflow_y_scroll().track_scroll(&self.scroll);
         if let Some(status) = semantic_status {
             let status_words = semantic_search_label(status);
             list = list.child(
@@ -1145,6 +1155,25 @@ mod tests {
     use std::rc::Rc;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    #[gpui::test]
+    fn ask_measurement_tracks_its_allocated_plate_on_a_narrow_window(cx: &mut TestAppContext) {
+        let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 800.0,
+            ReadPool::start(2, |_| Fixture).expect("search reader"));
+        rig.go(crate::navigation::Intent::SetMotion(crate::model::MotionPreference::Reduced));
+        native_ask(&mut rig);
+        rig.cx.simulate_input("RelationLabel");
+        rig.settle();
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        let narrow = ask.read_with(rig.cx, |ask, _| ask.measure_width);
+        assert!(narrow > px(0.0) && narrow < px(1440.0), "Ask uses its allocated panel width: {narrow:?}");
+
+        rig.cx.simulate_resize(gpui::size(px(390.0), px(800.0)));
+        rig.settle();
+        let wide = ask.read_with(rig.cx, |ask, _| ask.measure_width);
+        assert_ne!(wide, narrow, "Ask remeasures when the allocated scene changes");
+        assert_eq!(wide, px(390.0), "the narrow sheet owns the full window width");
+    }
 
     #[test]
     fn query_draft_distinguishes_blank_invalid_and_valid_unicode() {
