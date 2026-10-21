@@ -631,15 +631,25 @@ def run_mcp_interactive(owner: Owner, project: Path, calls: list[dict], timeout:
                       "params": {"name": call["tool"], "arguments": call.get("arguments", {})}})
                 return receive(identifier, per_call)
 
-            def continue_call(call):
+            def continue_call(call, per_call=10):
                 nonlocal continuation_id
                 continuation_id += 1
-                return exchange(call, continuation_id, 10)
+                return exchange(call, continuation_id, per_call)
+
+            def readiness_call(call, per_call):
+                nonlocal continuation_id
+                continuation_id += 1
+                return exchange(call, continuation_id, per_call)
+
+            readiness_call.remaining = lambda: max(0.0, deadline - time.monotonic())
+            readiness_call.deadline = deadline
 
             for identifier, call in enumerate(calls, start=2):
                 reply = exchange(call, identifier, timeout)
                 answers.append({"call": call, "reply": reply})
-                on_reply(call, reply, continue_call)
+                replacement = on_reply(call, reply, continue_call, readiness_call)
+                if replacement is not None:
+                    answers[-1]["reply"] = replacement
             process.stdin.close()
             process.wait(timeout=max(0.01, deadline - time.monotonic()))
             return {"tools": tools, "calls": answers, "exit": process.returncode}, time.monotonic() - started
@@ -1153,6 +1163,106 @@ def require_authored_symbols(answer: dict, expected: dict, language: str) -> Non
             raise RuntimeError(f"real corpus: missing authored {language} symbol {name} in {filename}; observed {observed}; first records {json.dumps(answer.get("records", [])[:2], sort_keys=True)}")
 
 
+def _search_frame_content(frame: dict, transport: str, query: str) -> dict:
+    if transport == "cli":
+        require_cli_success(f"cli search {query}", frame)
+        content = frame["json"]
+    elif transport == "mcp":
+        if not isinstance(frame, dict) or frame.get("isError", False) or "code" in frame:
+            raise RuntimeError(f"MCP search {query} failed: {frame}")
+        content = frame.get("structuredContent")
+    else:
+        raise ValueError(f"unknown search transport: {transport}")
+    if not isinstance(content, dict) or content.get("answer") != "records":
+        raise RuntimeError(f"{transport} search {query} returned no records page: {frame}")
+    if content.get("query") != query:
+        raise RuntimeError(f"{transport} search changed query {query!r}: {content.get('query')!r}")
+    return content
+
+
+def _require_same_search_basis(first: dict, current: dict, transport: str, query: str) -> None:
+    # Public summary pages do not always serialize the view commitment. When
+    # they do, keep every exposed basis field fixed across the retry. The
+    # caller also reuses the same owner, project, and exact request operands.
+    for field in ("basis", "view_root", "viewRoot", "revision", "revision_tag", "source_root"):
+        if field in first or field in current:
+            if first.get(field) != current.get(field):
+                raise RuntimeError(f"{transport} search {query}: changed {field} during readiness retry")
+
+
+def _emit_search_readiness_frame(transport: str, query: str, attempt: int,
+                                 request: dict | list[str], response: dict) -> None:
+    # Retain complete raw product frames in CI logs, outside the reviewed
+    # snapshot payload, so run-dependent readiness does not enter goldens.
+    with OUTPUT_LOCK:
+        print("SURFACE-READINESS-FRAME " + json.dumps({
+            "transport": transport, "query": query, "attempt": attempt,
+            "request": request, "response": response,
+        }, sort_keys=True, separators=(",", ":"), ensure_ascii=False), flush=True)
+
+
+def resolve_partial_authored_search(first: dict, retry, deadline: float, *,
+                                    transport: str, query: str, expected: dict,
+                                    language: str, request: dict | list[str],
+                                    now=time.monotonic, sleep=time.sleep) -> tuple[dict, list[dict]]:
+    """Keep the useful name-stage observation, then require full readiness.
+
+    The retry callback must use the same owner and exact request operands. Its
+    timeout is always the remaining time to the original query/session
+    deadline; retries cannot restart that deadline or turn a refusal into a
+    partial success.
+    """
+    first_content = _search_frame_content(first, transport, query)
+    frames = [first]
+    readiness = first_content.get("readiness")
+    scope = first_content.get("search_scope")
+    full_search = first_content.get("full_search")
+    if readiness == "ready" and scope != "published_names_only" and full_search in (None, "ready"):
+        require_authored_symbols(first_content, expected, language)
+        return first, frames
+    if (readiness != "partial" or scope != "published_names_only"
+            or full_search != "preparing"):
+        raise RuntimeError(
+            f"{transport} search {query}: expected an explicit useful preparing-stage reply "
+            f"or a steady ready reply; readiness={readiness!r}, scope={scope!r}, full_search={full_search!r}"
+        )
+    _emit_search_readiness_frame(transport, query, 0, request, first)
+    require_authored_symbols(first_content, expected, language)
+    delay = 0.05
+    attempt = 0
+    while True:
+        remaining = deadline - now()
+        if remaining <= 0:
+            raise RuntimeError(f"{transport} search {query}: full-search readiness deadline exceeded")
+        sleep(min(delay, remaining))
+        remaining = deadline - now()
+        if remaining <= 0:
+            raise RuntimeError(f"{transport} search {query}: full-search readiness deadline exceeded")
+        attempt += 1
+        current = retry(remaining)
+        frames.append(current)
+        _emit_search_readiness_frame(transport, query, attempt, request, current)
+        if now() >= deadline:
+            raise RuntimeError(f"{transport} search {query}: full-search readiness deadline exceeded")
+        content = _search_frame_content(current, transport, query)
+        _require_same_search_basis(first_content, content, transport, query)
+        readiness = content.get("readiness")
+        scope = content.get("search_scope")
+        full_search = content.get("full_search")
+        if readiness == "ready" and scope != "published_names_only" and full_search in (None, "ready"):
+            require_authored_symbols(content, expected, language)
+            return current, frames
+        if (readiness != "partial" or scope != "published_names_only"
+                or full_search != "preparing"):
+            raise RuntimeError(
+                f"{transport} search {query}: readiness retry left the admitted preparing state "
+                f"without a ready full-search reply; readiness={readiness!r}, scope={scope!r}, "
+                f"full_search={full_search!r}"
+            )
+        require_authored_symbols(content, expected, language)
+        delay = min(delay * 2, 0.5)
+
+
 def make_case_directories_writable(root: Path) -> None:
     """Only our copied directories need write permission for a repeat run.
 
@@ -1211,12 +1321,24 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         record["performance"]["seconds"].update(index_times)
         for args in case.get("cli", []):
             key = "cli " + " ".join(args)
+            query_started = time.monotonic()
+            query_deadline = query_started + timeout
             answer, seconds = run_cli(owner, project, args, timeout)
             require_cli_success(key, answer)
             if args[0] == "search" and not answer["json"].get("records"):
                 raise RuntimeError(f"{key}: expected fixture symbol, got no records")
             if args[0] == "search" and args[-1] in case.get("authored_symbols", {}):
-                require_authored_symbols(answer["json"], {args[-1]: case["authored_symbols"][args[-1]]}, case["languages"][0])
+                answer, _frames = resolve_partial_authored_search(
+                    answer,
+                    lambda remaining: run_cli(owner, project, args, remaining)[0],
+                    query_deadline,
+                    transport="cli",
+                    query=args[-1],
+                    expected={args[-1]: case["authored_symbols"][args[-1]]},
+                    language=case["languages"][0],
+                    request=args,
+                )
+                seconds = time.monotonic() - query_started
             if answer["json"].get("nextCursor") is not None:
                 token = answer["json"]["nextCursor"]
                 following, _ = run_cli(owner, project, args + ["--cursor", token], 10)
@@ -1227,19 +1349,40 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             record["answers"][key] = answer
             record["performance"]["seconds"][key] = round(seconds, 2)
         if case.get("mcp"):
-            def prove_session_outline(call, reply, exchange):
+            def prove_session_outline(call, reply, exchange, readiness_exchange):
+                query = call.get("arguments", {}).get("query")
+                if (call["tool"] == "backend.search" and query in case.get("authored_symbols", {})):
+                    ready, _frames = resolve_partial_authored_search(
+                        reply,
+                        lambda remaining: readiness_exchange(call, remaining),
+                        readiness_exchange.deadline,
+                        transport="mcp",
+                        query=query,
+                        expected={query: case["authored_symbols"][query]},
+                        language=case["languages"][0],
+                        request=call,
+                    )
+                    replacement = ready
+                else:
+                    replacement = None
                 first = reply.get("structuredContent", {}) if isinstance(reply, dict) else {}
+                if (call["tool"] == "backend.search" and query in case.get("authored_symbols", {})):
+                    first = ready.get("structuredContent", {})
                 token = offered_cursor(first)
                 if call["tool"] != "backend.outline" or token is None:
-                    return
+                    return replacement
                 following = exchange(mcp_continuation_call(call, first))
                 if not isinstance(following, dict) or following.get("isError", False) or not isinstance(following.get("structuredContent"), dict):
                     raise RuntimeError(f"snapshot continuation: MCP refused offered outline token: {following}")
                 require_continuation_reply(first, following["structuredContent"], published_root)
                 proven_tokens.add(token)
                 log("backend.outline: offered continuation consumed in its issuing MCP session")
+                return replacement
 
-            answer, seconds = run_mcp_interactive(owner, project, case["mcp"], timeout, prove_session_outline)
+            def track_mcp_reply(call, reply, exchange, readiness_exchange):
+                return prove_session_outline(call, reply, exchange, readiness_exchange)
+
+            answer, seconds = run_mcp_interactive(owner, project, case["mcp"], timeout, track_mcp_reply)
             if answer["exit"] != 0 or not answer["tools"]:
                 raise RuntimeError(f"MCP session failed: {answer}")
             for result in answer["calls"]:

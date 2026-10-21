@@ -96,6 +96,110 @@ fn tree_names_share_the_exact_bounded_page_and_cold_pages_retain_every_row() {
 }
 
 #[test]
+fn digest_only_outline_witness_rehydrates_only_after_exact_cold_predecessor_rebuild() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let package = package_key("/gymbro");
+    let mut rows = vec![Row::new(RowId::Package(package), basis, "/gymbro")];
+    rows.extend((0..9).map(|index| {
+        Row::in_package(
+            RowId::Symbol(symbol_key(&format!("/gymbro::Item{index}"))),
+            basis,
+            package,
+            format!("/gymbro::Item{index}"),
+        )
+    }));
+    let library = projection(rows);
+    let credit = QueryLimit::new(3).expect("credit");
+    let request = PageRequest::new(library.revision_root(), credit);
+    let first = library.outline_page(package, request).expect("first page");
+    let PageTerminal::More(next) = first.terminal else {
+        panic!("expected another page");
+    };
+    let cursor = next.cursor();
+    let order = first.outline_order.as_ref().expect("canonical page order");
+    let recipe = QueryPageRecipe::outline_window(
+        library.revision_root(),
+        package,
+        QueryWindow::fixed(credit),
+        order,
+    );
+    let mut root_commitment = [0_u8; 32];
+    root_commitment.copy_from_slice(cursor.root().as_bytes());
+    let witness = OutlineCursorWitness::new_untrusted(
+        cursor.recipe(),
+        cursor.version(),
+        cursor.branch(),
+        cursor.log(),
+        cursor.schema(),
+        root_commitment,
+        cursor.sequence(),
+        cursor.query_offset(),
+        cursor.query_position().predecessor(),
+    )
+    .expect("valid witness position");
+    let cold = Library::from_view(
+        library.view().clone(),
+        Cursor::for_view_root(library.view()),
+    )
+    .expect("equivalent durable owner after restart");
+    let rebuilt = cold
+        .rehydrate_outline_cursor(
+            package,
+            request.basis(),
+            request.window(),
+            witness,
+            recipe.canonical_preimage(),
+        )
+        .expect("rebuild predecessor from durable rows");
+    assert_eq!(rebuilt, cursor);
+    let resumed = cold
+        .outline_page(
+            package,
+            request.with_continuation(PageContinuation::from_cursor(rebuilt)),
+        )
+        .expect("standard typed path after rehydration");
+    assert_eq!(resumed.snapshot.root.rows().len(), 3);
+
+    let mut forged_root = root_commitment;
+    forged_root[0] ^= 1;
+    let tampered = OutlineCursorWitness::new_untrusted(
+        cursor.recipe(),
+        cursor.version(),
+        cursor.branch(),
+        cursor.log(),
+        cursor.schema(),
+        forged_root,
+        cursor.sequence(),
+        cursor.query_offset(),
+        cursor.query_position().predecessor(),
+    )
+    .expect("same well-formed position");
+    assert!(
+        cold.rehydrate_outline_cursor(
+            package,
+            request.basis(),
+            request.window(),
+            tampered,
+            recipe.canonical_preimage(),
+        )
+        .is_err()
+    );
+    let mut wrong_recipe = recipe.canonical_preimage().to_vec();
+    wrong_recipe[0] ^= 1;
+    assert!(
+        cold.rehydrate_outline_cursor(
+            package,
+            request.basis(),
+            request.window(),
+            witness,
+            &wrong_recipe,
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn retained_application_declarations_precede_spec_mentions_without_dropping_them() {
     let (root, object) = source();
     let basis = Basis::new(root, object);

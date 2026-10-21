@@ -21,6 +21,8 @@ use std::borrow::Cow;
 
 const PREVIEW_CHARACTERS: usize = 240;
 
+mod display;
+
 /// What one signature token reads as.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum TokenKind {
@@ -161,6 +163,35 @@ pub struct Signature {
 }
 
 impl Signature {
+    /// Projects a captured declaration header for a bounded result-list
+    /// preview, then applies the existing 240-character display limit.
+    /// Source excerpts and the signature supplied by the engine stay intact.
+    #[must_use]
+    pub(crate) fn preview_declaration(
+        text: &str,
+        language: Language,
+        kind: Option<backend_library::DeclarationKind>,
+        local_name: &str,
+        excerpt: &backend_library::SourceExcerpt,
+    ) -> Option<Self> {
+        display::text(text, language, kind, local_name, excerpt)
+            .map(|shown| Self::preview(&shown, language))
+    }
+
+    /// Projects a captured declaration header for display, then classifies it.
+    /// Distinguishable legacy machine encodings are omitted conservatively.
+    #[must_use]
+    pub(crate) fn from_declaration(
+        text: &str,
+        language: Language,
+        kind: Option<backend_library::DeclarationKind>,
+        local_name: &str,
+        excerpt: &backend_library::SourceExcerpt,
+    ) -> Option<Self> {
+        display::text(text, language, kind, local_name, excerpt)
+            .map(|shown| Self::tokenize(&shown, language))
+    }
+
     /// Tokenizes one signature under the rules of its source language.
     #[must_use]
     pub fn tokenize(text: &str, language: Language) -> Self {

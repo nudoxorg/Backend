@@ -100,6 +100,12 @@ impl Library {
                 self.cursor,
                 self.view.basis().object,
             ))),
+            Command::OutlineOwnerWitnessCapability => Ok(CommandReply::Failed(
+                crate::CommandFailure::InvalidQuery(
+                    "outline owner witness capability is available only from the local product owner"
+                        .to_owned(),
+                ),
+            )),
         }
     }
 
