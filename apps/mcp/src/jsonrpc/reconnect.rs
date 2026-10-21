@@ -936,6 +936,64 @@ mod tests {
         }
     }
 
+    struct UnsupportedWitnessConnection {
+        calls: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl Engine for UnsupportedWitnessConnection {
+        fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
+            Err(ClientError::Protocol("unused legacy revision".to_owned()))
+        }
+
+        fn health(&mut self) -> Result<HealthReport, ClientError> {
+            Err(ClientError::Protocol("unused legacy health".to_owned()))
+        }
+
+        fn probe(&mut self, _: Probe<'_>) -> Result<ReplyDto, ClientError> {
+            Err(ClientError::Protocol("unused legacy probe".to_owned()))
+        }
+
+        fn surface(&mut self, _: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+            Err(ClientError::Protocol("unused legacy surface".to_owned()))
+        }
+    }
+
+    impl Product for UnsupportedWitnessConnection {
+        fn encode_continuation(&mut self, _: PageContinuation) -> Result<String, ClientError> {
+            Err(ClientError::Protocol("unused legacy encoder".to_owned()))
+        }
+
+        fn decode_continuation(&mut self, _: &str) -> Result<PageContinuation, ClientError> {
+            Err(ClientError::Protocol("unused legacy decoder".to_owned()))
+        }
+
+        fn outline_page_token(
+            &mut self,
+            _: String,
+            _: backend_library::QueryWindow,
+            _: &str,
+        ) -> Result<ReplyDto, ClientError> {
+            self.calls.lock().expect("legacy call log").push("outline-page-token");
+            Err(ClientError::Protocol("legacy PC5 dispatch".to_owned()))
+        }
+    }
+
+    struct UnsupportedWitnessFixture {
+        calls: Arc<Mutex<Vec<&'static str>>>,
+        connects: usize,
+    }
+
+    impl Endpoint for UnsupportedWitnessFixture {
+        type Product = UnsupportedWitnessConnection;
+
+        fn connect(&mut self, _: Option<Self::Product>) -> Result<Self::Product, ClientError> {
+            self.connects = self.connects.checked_add(1).expect("connect count");
+            Ok(UnsupportedWitnessConnection {
+                calls: Arc::clone(&self.calls),
+            })
+        }
+    }
+
     #[test]
     fn immutable_local_context_does_not_open_a_disconnected_owner() {
         let handle = Reconnecting::disconnected(Fixture {
@@ -971,6 +1029,29 @@ mod tests {
             calls,
             vec!["live:outline-owner-token:/scope/project:pc5-owner-token".to_owned()]
         );
+        assert_eq!(product.endpoint.connects, 1);
+    }
+
+    #[test]
+    fn reconnecting_refuses_pc5_before_dispatch_to_an_unsupported_connected_peer() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut product = Reconnecting::disconnected(UnsupportedWitnessFixture {
+            calls: Arc::clone(&calls),
+            connects: 0,
+        });
+        let window = backend_library::QueryWindow::fixed(
+            backend_library::QueryLimit::new(2).expect("bounded outline limit"),
+        );
+        let error = product
+            .outline_page_token("/scope/project".to_owned(), window, "pc5-owner-token")
+            .expect_err("an old peer cannot admit the PC5 owner route");
+        assert!(matches!(
+            error,
+            ClientError::Protocol(message)
+                if message == "connected owner does not expose owner-rehydrated outline tokens"
+        ));
+        assert!(!product.supports_outline_owner_witness_route());
+        assert!(calls.lock().expect("legacy call log").is_empty());
         assert_eq!(product.endpoint.connects, 1);
     }
 
