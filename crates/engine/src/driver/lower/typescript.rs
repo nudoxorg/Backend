@@ -4464,13 +4464,24 @@ fn native_tsz_member_symbol(
     let owner_binder = match owner_file_idx {
         Some(owner_file_idx) => checker.ctx.get_binder_for_file(owner_file_idx)?,
         // Same-file symbols do not always need a cross-file owner entry. Keep
-        // the existing caller-binder route for those local receiver types.
-        None => binder,
+        // the caller-binder route only when the symbol itself proves local
+        // ownership; a same-numbered local symbol is not a fallback witness
+        // for an unresolved cross-file receiver.
+        None => {
+            let local = binder.symbols.get(owner_symbol)?;
+            if local.decl_file_idx != checker.ctx.current_file_idx as u32 {
+                return None;
+            }
+            binder
+        }
     };
     let owner_symbol = owner_binder
         .resolve_import_symbol(owner_symbol)
         .unwrap_or(owner_symbol);
     let owner = owner_binder.symbols.get(owner_symbol)?;
+    if owner_file_idx.is_some_and(|file_idx| owner.decl_file_idx != file_idx as u32) {
+        return None;
+    }
     let member = owner
         .members
         .as_ref()
@@ -12953,6 +12964,7 @@ mod lane_tests {
         let records = concat!(
             "import { ExerciseAnalyticsService } from './exercise-analytics.service.js';\n",
             "declare function inject<T>(token: new (...args: any[]) => T): T;\n",
+            "class Decoy { totalsEntries() { return ['wrong']; } }\n",
             "export class RecordsPage {\n",
             "  private readonly svc = inject(ExerciseAnalyticsService);\n",
             "  load() { return this.svc.totalsEntries(); }\n",
@@ -12961,6 +12973,7 @@ mod lane_tests {
         let training_totals = concat!(
             "import { ExerciseAnalyticsService } from './exercise-analytics.service.js';\n",
             "declare function inject<T>(token: new (...args: any[]) => T): T;\n",
+            "class Decoy { totalsEntries() { return ['wrong']; } }\n",
             "export class TrainingTotalsPage {\n",
             "  private readonly svc = inject(ExerciseAnalyticsService);\n",
             "  load() { return this.svc.totalsEntries(); }\n",
@@ -13007,6 +13020,7 @@ mod lane_tests {
             .checked_add(u32::try_from("totalsEntries() { return []; }".len())?)
             .ok_or(LaneError::Scalar)?;
 
+        let mut exact_target_count = 0;
         for (path, source) in [
             ("src/pages/records/records.ts", records),
             (
@@ -13016,17 +13030,63 @@ mod lane_tests {
         ] {
             let facts = collect_native_tsz_file(project, path, source)?;
             let targets = staged_tsz_coordinates(&facts)?;
+            let load_facts = (0..facts.len())
+                .filter(|&index| {
+                    facts.names[index] == b"load" && facts.kinds[index] == EntityKind::Function
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(load_facts.len(), 1, "one enclosing load method in {path}");
+            let load = load_facts[0];
+            let load_span = facts.provenance.source_spans()[load]
+                .ok_or(LaneError::Missing("load method source span"))?;
+            let call_name_start = u32::try_from(
+                source
+                    .find("this.svc.totalsEntries()")
+                    .ok_or(LaneError::Missing("injected-service call source"))?
+                    + "this.svc.".len(),
+            )?;
+            let call_name_end = call_name_start
+                .checked_add(u32::try_from("totalsEntries".len())?)
+                .ok_or(LaneError::Scalar)?;
+            let call_uses = (0..facts.occurrence_len)
+                .filter(|&index| {
+                    let occurrence = facts.occurrences[index];
+                    let absolute_start = load_span.start + occurrence.span.start;
+                    let absolute_end = load_span.start + occurrence.span.end;
+                    absolute_start == call_name_start && absolute_end == call_name_end
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(call_uses.len(), 1, "one exact call-site reference in {path}");
+            let call_use = call_uses[0];
+            assert_eq!(facts.occurrence_owners[call_use], load as u32);
+            assert_eq!(facts.occurrences[call_use].kind, ReferenceKind::MethodCall);
+            assert_eq!(
+                source.as_bytes().get(call_name_start as usize..call_name_end as usize),
+                Some(b"totalsEntries".as_slice()),
+                "the reference span names exactly the called member in {path}"
+            );
+            let call_targets = targets
+                .iter()
+                .filter(|(kind, _, _, _, _, owner)| {
+                    *kind == ReferenceKind::MethodCall && *owner == load as u32
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(call_targets.len(), 1, "one target for the call in {path}");
+            exact_target_count += call_targets.len();
             assert!(
-                targets.iter().any(|(kind, target_path, start, end, name, _)| {
-                    *kind == ReferenceKind::MethodCall
-                        && target_path == "src/analytics/exercise-analytics.service.ts"
-                        && *start == method_start
-                        && *end == method_end
-                        && *name == method_start
-                }),
-                "injected service call must target the exact method declaration from {path}: {targets:?}"
+                matches!(
+                    call_targets[0],
+                    (ReferenceKind::MethodCall, target_path, start, end, name, owner)
+                        if target_path == "src/analytics/exercise-analytics.service.ts"
+                            && *start == method_start
+                            && *end == method_end
+                            && *name == method_start
+                            && *owner == load as u32
+                ),
+                "injected service call must target the exact service method, not the same-named decoy, from {path}: {call_targets:?}"
             );
         }
+        assert_eq!(exact_target_count, 2, "both reported caller files have one exact target");
         Ok(())
     }
 
