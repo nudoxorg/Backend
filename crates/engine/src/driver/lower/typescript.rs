@@ -4332,6 +4332,36 @@ fn native_tsz_symbol_at_identifier_span(
     found
 }
 
+/// Returns the symbol attached to one exact class or interface declaration.
+/// The TSZ binder records declaration identity on the declaration node, while
+/// `node_symbols` need not also contain its identifier child. Matching the
+/// full source span prevents an unrelated same-named or nested declaration
+/// from supplying merge evidence.
+fn native_tsz_symbol_at_declaration_span(
+    bound_file: &TszBoundFile,
+    span: Span,
+) -> Option<TszSymbolId> {
+    let mut found = None;
+    for (&raw_node, &symbol) in bound_file.node_symbols.iter() {
+        let node_index = TszNodeIndex(raw_node);
+        if bound_file.arena.pos_end_at(node_index) != Some((span.start, span.end)) {
+            continue;
+        }
+        let node = bound_file.arena.get(node_index)?;
+        if !matches!(
+            node.kind,
+            TszSyntaxKind::CLASS_DECLARATION | TszSyntaxKind::INTERFACE_DECLARATION
+        ) {
+            continue;
+        }
+        if found.is_some_and(|existing| existing != symbol) {
+            return None;
+        }
+        found = Some(symbol);
+    }
+    found
+}
+
 /// Matches an OXC TypeQuery node to the exact TSZ TypeQuery AST node and
 /// returns the symbol bound to its simple identifier expression. Qualified
 /// queries are intentionally left unresolved until the IR has an exact path
@@ -4463,12 +4493,12 @@ fn native_tsz_member_symbol(
     // join.
     let checker_file_idx = checker.ctx.resolve_symbol_file_index(owner_symbol);
     let program_file_idx = native_tsz_symbol_file_index(project, owner_symbol);
-    let owner_file_idx = match (checker_file_idx, program_file_idx) {
-        (Some(checker), Some(program)) if checker != program => return None,
-        (Some(checker), _) => Some(checker),
-        (None, Some(program)) => Some(program),
-        (None, None) => None,
-    };
+    // The live checker owner is tied to the resolved receiver type. The
+    // program fallback is useful only when that owner is absent: symbol IDs
+    // read from a checker binder can numerically collide with a different
+    // project-table symbol, so a disagreement is not evidence against the
+    // checker's exact file.
+    let owner_file_idx = checker_file_idx.or(program_file_idx);
     let owner_binder = match owner_file_idx {
         Some(owner_file_idx) => checker.ctx.get_binder_for_file(owner_file_idx)?,
         // Same-file symbols do not always need a cross-file owner entry. Keep
@@ -5488,7 +5518,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 || kind.as_ts_interface_declaration().is_some())
                 && self
                     .tsz_bound_file
-                    .and_then(|file| native_tsz_symbol_at_identifier_span(file, name))
+                    .and_then(|file| native_tsz_symbol_at_declaration_span(file, declaration))
                     .and_then(|symbol| {
                         self.tsz_project
                             .and_then(|project| project.program().symbols.get(symbol))
