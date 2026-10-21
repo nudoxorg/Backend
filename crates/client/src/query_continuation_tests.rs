@@ -1463,15 +1463,15 @@ fn portable_search_full_root_preserves_exact_witness_and_page_union() {
             page(&actual).next.map(PageContinuation::from_cursor),
         )
         .expect("third page");
-    let mut union = page(&first).rows().to_vec();
-    union.extend_from_slice(page(&actual).rows());
-    union.extend_from_slice(page(&third).rows());
+    let mut union = page(&first).root.rows().to_vec();
+    union.extend_from_slice(page(&actual).root.rows());
+    union.extend_from_slice(page(&third).root.rows());
     let all = session(&owner, &requests)
         .search_page("Thing", 200, None)
         .expect("single full page");
     assert_eq!(
         union,
-        page(&all).rows(),
+        page(&all).root.rows(),
         "portable page union equals full search"
     );
 }
