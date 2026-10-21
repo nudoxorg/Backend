@@ -9242,6 +9242,7 @@ mod tests {
             "int refused_name(void) { return 7; }\n",
         )
         .expect("C source");
+        let py = backend_library::SemanticLanguageProfile::from_name("python").expect("Python");
         let mut first_published_python_generation = None;
         for attempt in 0..2 {
             install_mixed_native_compiler(&mut fixture);
