@@ -9,6 +9,9 @@ use super::super::super::{ClosureManifest, LayoutId, OrderedMap, StoredValue};
 use super::index::{MarkIndex, QueueIndex};
 use super::roots::QueueItem;
 use super::*;
+use super::super::artifact_fs::{
+    TestDirectoryCleanup, remove_test_directory as remove_store_fixture,
+};
 use backend_version::{ObjectKey, Schema};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -28,12 +31,13 @@ impl Schema for TestSchema {
     }
 }
 
-fn temp_store(label: &str) -> (FileStore, PathBuf) {
+fn temp_store(label: &str) -> (TestDirectoryCleanup, FileStore, PathBuf) {
     let path =
         std::env::temp_dir().join(format!("backend-store-gc-{label}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&path);
+    let _ = remove_store_fixture(&path);
+    let cleanup = TestDirectoryCleanup::new(&path);
     let store = FileStore::open(&path, 64 * 1024).expect("open test store");
-    (store, path)
+    (cleanup, store, path)
 }
 
 fn object(value: u64) -> super::super::super::TypedObject {
@@ -74,7 +78,7 @@ fn physical_closure_path(root: &Path, id: super::super::super::ClosureId) -> Pat
 
 #[test]
 fn orphan_objects_are_reclaimed_and_roots_are_retained() {
-    let (store, path) = temp_store("objects");
+    let (_cleanup_path, store, path) = temp_store("objects");
     let live = object(1);
     let orphan = object(2);
     store.write_object(&live).expect("write live");
@@ -87,12 +91,76 @@ fn orphan_objects_are_reclaimed_and_roots_are_retained() {
     assert_eq!(report.swept_items, 1);
     assert!(store.contains_object(live.id()).expect("live metadata"));
     assert!(!store.contains_object(orphan.id()).expect("orphan metadata"));
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
+}
+
+#[cfg(windows)]
+#[test]
+fn readonly_quarantine_deletion_preserves_live_members_and_held_old_readers() {
+    use std::io::Read as _;
+
+    let (_cleanup_path, store, path) = temp_store("windows-readonly-quarantine");
+    let live = object(10_001);
+    let orphan = object(10_002);
+    for member in [&live, &orphan] {
+        store.write_object(member).expect("write GC fixture member");
+        let member_path = store.object_path(member.id());
+        let handle = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&member_path)
+            .expect("hold actual writable fixture handle");
+        let mut permissions = handle.metadata().expect("fixture metadata").permissions();
+        permissions.set_readonly(true);
+        handle.set_permissions(permissions).expect("seal fixture");
+        handle
+            .sync_all()
+            .expect("flush actual sealed fixture handle");
+    }
+    let orphan_path = store.object_path(orphan.id());
+    let expected = fs::read(&orphan_path).expect("orphan envelope");
+    let mut held = fs::File::open(&orphan_path).expect("hold old readonly reader");
+    let mut roots = GcRoots::new();
+    roots.add(GcRoot::Object(live.id()));
+    let report = store
+        .collect_garbage(&roots, GcLimits::default())
+        .expect("collect real readonly Windows member");
+    assert_eq!(report.swept_items, 1);
+    assert!(!orphan_path.exists());
+    assert!(
+        store
+            .contains_object(live.id())
+            .expect("live member retained")
+    );
+    assert!(
+        fs::metadata(store.object_path(live.id()))
+            .expect("live metadata")
+            .permissions()
+            .readonly()
+    );
+    assert!(
+        held.metadata()
+            .expect("old reader metadata")
+            .permissions()
+            .readonly()
+    );
+    let mut actual = Vec::new();
+    held.read_to_end(&mut actual)
+        .expect("old reader stays readable after unlink");
+    assert_eq!(actual, expected);
+    let live_path = store.object_path(live.id());
+    let live_file = backend_platform::durability::open_regular_file_nofollow(&live_path)
+        .expect("open remaining readonly fixture");
+    backend_platform::durability::unlink_file_preserving_readonly(&live_path, &live_file)
+        .expect("remove remaining fixture without unsealing");
+    drop(live_file);
+    drop((held, store));
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn missing_reachable_object_fails_closed_before_sweep() {
-    let (store, path) = temp_store("missing");
+    let (_cleanup_path, store, path) = temp_store("missing");
     let orphan = object(3);
     store.write_object(&orphan).expect("write orphan");
     let mut roots = GcRoots::new();
@@ -102,7 +170,7 @@ fn missing_reachable_object_fails_closed_before_sweep() {
         Err(StoreError::Corrupt)
     ));
     assert!(store.contains_object(orphan.id()).expect("orphan retained"));
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
@@ -116,7 +184,7 @@ fn staged_direct_object_mark_pages_continue_at_the_existing_byte_limit() {
             output.extend_from_slice(value);
         }
     }
-    let (store, path) = temp_store("direct-object-byte-pages");
+    let (_cleanup_path, store, path) = temp_store("direct-object-byte-pages");
     let mut roots = GcRoots::new();
     let live = (0..3)
         .map(|byte| {
@@ -157,12 +225,12 @@ fn staged_direct_object_mark_pages_continue_at_the_existing_byte_limit() {
     for object in live {
         assert_eq!(store.read_object(object.id()).unwrap(), object);
     }
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn remote_residency_requires_scoped_verifier_and_keeps_unlisted_members() {
-    let (store, path) = temp_store("remote-residency-allowlist");
+    let (_cleanup_path, store, path) = temp_store("remote-residency-allowlist");
     let remote = object(101);
     let local = object(102);
     let mut members = vec![remote.clone(), local.clone()];
@@ -258,12 +326,12 @@ fn remote_residency_requires_scoped_verifier_and_keeps_unlisted_members() {
             .contains_object_id(local.id())
             .expect("cold local membership")
     );
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn remote_allowlist_rejects_nonmembers_and_empty_allowlist_keeps_every_payload() {
-    let (store, path) = temp_store("remote-residency-empty");
+    let (_cleanup_path, store, path) = temp_store("remote-residency-empty");
     let member = object(103);
     let manifest = ClosureManifest::new(vec![member.clone()]).expect("manifest");
     let closure = store.write_closure(&manifest).expect("write closure");
@@ -338,12 +406,12 @@ fn remote_allowlist_rejects_nonmembers_and_empty_allowlist_keeps_every_payload()
             .contains_object(member.id())
             .expect("claimed member evicted")
     );
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn verified_remote_member_reachable_from_selected_pack_stays_local() {
-    let (store, path) = temp_store("remote-selected-head");
+    let (_cleanup_path, store, path) = temp_store("remote-selected-head");
     store
         .publish(&map(3), LayoutId::derive(b"remote-selected-head"))
         .expect("publish selected map");
@@ -407,12 +475,12 @@ fn verified_remote_member_reachable_from_selected_pack_stays_local() {
             .contains_object_id(remote_member)
             .expect("membership remains authenticated")
     );
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn unreferenced_allowlisted_member_is_reclaimed_across_cold_gc_while_selected_pack_survives() {
-    let (mut store, path) = temp_store("remote-unreferenced-selected-pack");
+    let (_cleanup_path, mut store, path) = temp_store("remote-unreferenced-selected-pack");
     store
         .publish(
             &map(4),
@@ -493,12 +561,12 @@ fn unreferenced_allowlisted_member_is_reclaimed_across_cold_gc_while_selected_pa
             );
         }
     }
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn remote_allowlist_keeps_member_referenced_by_local_relation_after_cold_gc() {
-    let (mut store, path) = temp_store("remote-transitive-local-edge");
+    let (_cleanup_path, mut store, path) = temp_store("remote-transitive-local-edge");
     let remote = object(151);
     let remote_manifest = ClosureManifest::new(vec![remote.clone()]).expect("remote manifest");
     let remote_closure = store
@@ -547,12 +615,12 @@ fn remote_allowlist_keeps_member_referenced_by_local_relation_after_cold_gc() {
             store = FileStore::open(&path, 64 * 1024).expect("cold reopen relation closures");
         }
     }
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn cold_gc_fails_closed_for_missing_remote_relation_target_and_nonmember_claim() {
-    let (mut store, path) = temp_store("remote-transitive-missing-target");
+    let (_cleanup_path, mut store, path) = temp_store("remote-transitive-missing-target");
     let remote = object(161);
     let remote_manifest = ClosureManifest::new(vec![remote.clone()]).expect("remote manifest");
     let remote_closure = store
@@ -667,7 +735,7 @@ fn cold_gc_fails_closed_for_missing_remote_relation_target_and_nonmember_claim()
             .expect("no sweep after missing edge")
     );
     assert!(store.read_closure_index(remote_closure).is_ok());
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 fn relation_with_value_reference(key: &[u8], target: ObjectId) -> super::super::super::TypedObject {
@@ -731,7 +799,7 @@ fn root_snapshot_rejects_overflow_without_retaining_unbounded_inputs() {
 
 #[test]
 fn interrupted_quarantine_is_restored_on_reopen() {
-    let (store, path) = temp_store("crash");
+    let (_cleanup_path, store, path) = temp_store("crash");
     let orphan = object(4);
     store.write_object(&orphan).expect("write orphan");
     set_test_fault(1);
@@ -744,12 +812,12 @@ fn interrupted_quarantine_is_restored_on_reopen() {
             .contains_object(orphan.id())
             .expect("restored orphan")
     );
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn malformed_mark_metadata_is_discarded_without_touching_objects() {
-    let (store, path) = temp_store("metadata");
+    let (_cleanup_path, store, path) = temp_store("metadata");
     let orphan = object(7);
     store.write_object(&orphan).expect("write orphan");
     let gc = path.join("gc");
@@ -764,19 +832,19 @@ fn malformed_mark_metadata_is_discarded_without_touching_objects() {
             .contains_object(orphan.id())
             .expect("orphan metadata")
     );
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn unknown_files_are_retained() {
-    let (store, path) = temp_store("unknown");
+    let (_cleanup_path, store, path) = temp_store("unknown");
     let path = path.join("objects").join("future-format.object.tmp");
     fs::write(&path, b"opaque").expect("write unknown");
     store
         .collect_garbage(&GcRoots::new(), GcLimits::default())
         .expect("collect unknown");
     assert!(path.is_file());
-    let _ = fs::remove_dir_all(
+    let _ = remove_store_fixture(
         path.parent()
             .and_then(Path::parent)
             .unwrap_or(Path::new("/")),
@@ -785,7 +853,7 @@ fn unknown_files_are_retained() {
 
 #[test]
 fn selected_head_collection_reclaims_old_generation() {
-    let (store, path) = temp_store("generations");
+    let (_cleanup_path, store, path) = temp_store("generations");
     let _first_root = store
         .publish(&map(1), LayoutId::derive(b"first"))
         .expect("publish first");
@@ -801,12 +869,12 @@ fn selected_head_collection_reclaims_old_generation() {
     assert!(!physical_pack_path(&path, first.descriptor().pack()).exists());
     assert!(physical_pack_path(&path, second.descriptor().pack()).exists());
     assert!(!physical_closure_path(&path, first.descriptor().closure()).exists());
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn live_reader_pin_retains_object_until_released() {
-    let (store, path) = temp_store("reader-pin");
+    let (_cleanup_path, store, path) = temp_store("reader-pin");
     let pinned = object(5);
     let orphan = object(6);
     store.write_object(&pinned).expect("write pinned");
@@ -818,12 +886,12 @@ fn live_reader_pin_retains_object_until_released() {
         .expect("collect pinned");
     assert!(store.contains_object(pinned.id()).expect("pinned metadata"));
     assert!(!store.contains_object(orphan.id()).expect("orphan metadata"));
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn bucketed_sweep_reclaims_all_candidates_with_tiny_pages() {
-    let (store, path) = temp_store("bucketed-pages");
+    let (_cleanup_path, store, path) = temp_store("bucketed-pages");
     let live = object(10_000);
     store.write_object(&live).expect("write live");
     let mut orphan_ids = Vec::new();
@@ -847,12 +915,12 @@ fn bucketed_sweep_reclaims_all_candidates_with_tiny_pages() {
     for id in orphan_ids {
         assert!(!store.contains_object(id).expect("orphan metadata"));
     }
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn all_live_candidates_are_charged_and_page_bounded() {
-    let (store, path) = temp_store("all-live-pages");
+    let (_cleanup_path, store, path) = temp_store("all-live-pages");
     let mut roots = GcRoots::new();
     let count = 73u64;
     for value in 20_000..20_000 + count {
@@ -871,12 +939,12 @@ fn all_live_candidates_are_charged_and_page_bounded() {
         .expect("collect all-live candidates");
     assert_eq!(report.swept_items, 0);
     assert_eq!(report.examined_items, count);
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn mark_freeze_external_merges_duplicates_with_bounded_records() {
-    let (_store, path) = temp_store("mark-freeze");
+    let (_cleanup_path, _store, path) = temp_store("mark-freeze");
     let directory = path.join("gc");
     fs::create_dir_all(&directory).expect("create gc directory");
     let mark = directory.join("mark");
@@ -916,13 +984,13 @@ fn mark_freeze_external_merges_duplicates_with_bounded_records() {
     let mut index = MarkIndex::load(&mark, GcLimits::default()).expect("index");
     assert!(index.contains(present).expect("index present"));
     assert!(!index.contains(absent).expect("index absent"));
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn mark_freeze_rename_faults_restart_without_losing_objects() {
     for fault in [5, 6] {
-        let (store, path) = temp_store(&format!("mark-freeze-fault-{fault}"));
+        let (_cleanup_path, store, path) = temp_store(&format!("mark-freeze-fault-{fault}"));
         let live = object(80 + u64::from(fault));
         let orphan = object(90 + u64::from(fault));
         store.write_object(&live).expect("write live");
@@ -941,13 +1009,13 @@ fn mark_freeze_rename_faults_restart_without_losing_objects() {
                 .contains_object(live.id())
                 .expect("live after restart")
         );
-        let _ = fs::remove_dir_all(path);
+        let _ = remove_store_fixture(path);
     }
 }
 
 #[test]
 fn manifest_mark_continuation_bounds_one_page_per_work_item() {
-    let (store, path) = temp_store("manifest-continuation");
+    let (_cleanup_path, store, path) = temp_store("manifest-continuation");
     let mut objects = (0..600u64).map(object).collect::<Vec<_>>();
     objects.sort_by_key(|value| (value.schema(), *value.key(), *value.version()));
     let manifest = ClosureManifest::new(objects).expect("manifest");
@@ -980,12 +1048,12 @@ fn manifest_mark_continuation_bounds_one_page_per_work_item() {
             .chunks_exact(GC_QUEUE_RECORD_BYTES)
             .any(|record| record[0] == 5)
     );
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn relation_reference_continuation_is_paged_with_mark_credits() {
-    let (store, path) = temp_store("relation-reference-continuation");
+    let (_cleanup_path, store, path) = temp_store("relation-reference-continuation");
     let mut objects = (0..600u64).map(object).collect::<Vec<_>>();
     objects.sort_by_key(|value| (value.schema(), *value.key(), *value.version()));
     let manifest = ClosureManifest::new(objects).expect("manifest");
@@ -1025,7 +1093,7 @@ fn relation_reference_continuation_is_paged_with_mark_credits() {
             break;
         }
     }
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
     assert!(
         found,
         "dense relation node did not emit a bounded continuation"
@@ -1034,7 +1102,7 @@ fn relation_reference_continuation_is_paged_with_mark_credits() {
 
 #[test]
 fn flat_compatibility_closure_is_rejected_by_production_mark_walk() {
-    let (store, path) = temp_store("flat-closure");
+    let (_cleanup_path, store, path) = temp_store("flat-closure");
     let retained = object(60_000);
     let orphan = object(60_001);
     let manifest = ClosureManifest::new(vec![retained.clone()]).expect("manifest");
@@ -1052,12 +1120,12 @@ fn flat_compatibility_closure_is_rejected_by_production_mark_walk() {
         Err(StoreError::Corrupt)
     ));
     assert!(store.contains_object(orphan.id()).expect("orphan retained"));
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn adversarial_filename_order_is_frozen_once_and_counted() {
-    let (store, path) = temp_store("adversarial-order");
+    let (_cleanup_path, store, path) = temp_store("adversarial-order");
     let count = 41u8;
     for value in (0..count).rev() {
         let mut id = [0; 32];
@@ -1084,7 +1152,7 @@ fn adversarial_filename_order_is_frozen_once_and_counted() {
         .expect("collect adversarial candidates");
     assert_eq!(report.swept_items, u64::from(count));
     assert_eq!(report.examined_items, u64::from(count));
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
@@ -1095,7 +1163,7 @@ fn candidate_index_write_crash_before_or_after_rename_recovers() {
         } else {
             "candidate-index-after"
         };
-        let (store, path) = temp_store(label);
+        let (_cleanup_path, store, path) = temp_store(label);
         let live = object(30_000 + u64::from(point));
         store.write_object(&live).expect("write live");
         let mut roots = GcRoots::new();
@@ -1115,13 +1183,13 @@ fn candidate_index_write_crash_before_or_after_rename_recovers() {
         assert_eq!(report.swept_items, 0);
         assert_eq!(report.examined_items, 1);
         assert!(reopened.contains_object(live.id()).expect("live metadata"));
-        let _ = fs::remove_dir_all(path);
+        let _ = remove_store_fixture(path);
     }
 }
 
 #[test]
 fn committed_sweep_cursor_resumes_without_revisiting_live_candidates() {
-    let (store, path) = temp_store("candidate-cursor-restart");
+    let (_cleanup_path, store, path) = temp_store("candidate-cursor-restart");
     let count = 9u64;
     let mut roots = GcRoots::new();
     for value in 31_000..31_000 + count {
@@ -1143,12 +1211,12 @@ fn committed_sweep_cursor_resumes_without_revisiting_live_candidates() {
         .expect("resume committed cursor");
     assert_eq!(report.swept_items, 0);
     assert_eq!(report.examined_items, count);
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn long_lived_product_pin_blocks_the_exclusive_metadata_gc_barrier() {
-    let (store, path) = temp_store("product-gc-pin-barrier");
+    let (_cleanup_path, store, path) = temp_store("product-gc-pin-barrier");
     let pin = store
         .pin_garbage_collection()
         .expect("acquire shared product pin");
@@ -1177,12 +1245,12 @@ fn long_lived_product_pin_blocks_the_exclusive_metadata_gc_barrier() {
             .expect("exclusive barrier resumes after reader release")
     );
     worker.join().expect("exclusive worker joined");
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
 fn try_exclusive_metadata_gc_reports_reader_backpressure() {
-    let (store, path) = temp_store("product-gc-pin-backpressure");
+    let (_cleanup_path, store, path) = temp_store("product-gc-pin-backpressure");
     let pin = store
         .pin_garbage_collection()
         .expect("acquire shared product pin");
@@ -1201,7 +1269,7 @@ fn try_exclusive_metadata_gc_reports_reader_backpressure() {
             .expect("acquire released exclusive lease"),
         Some(())
     );
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }
 
 #[test]
@@ -1222,7 +1290,7 @@ fn gc_pin_child_process_holds_shared_lease_until_killed() {
 
 #[test]
 fn killed_reader_process_does_not_leave_a_stale_gc_pin_after_reopen() {
-    let (_store, path) = temp_store("stale-product-gc-pin");
+    let (_cleanup_path, _store, path) = temp_store("stale-product-gc-pin");
     let executable = std::env::current_exe().expect("test executable path");
     let mut child = Command::new(executable)
         .arg("gc_pin_child_process_holds_shared_lease_until_killed")
@@ -1250,5 +1318,5 @@ fn killed_reader_process_does_not_leave_a_stale_gc_pin_after_reopen() {
     reopened
         .with_gc_exclusive_lease(|| Ok(()))
         .expect("operating system releases the dead process pin");
-    let _ = fs::remove_dir_all(path);
+    let _ = remove_store_fixture(path);
 }

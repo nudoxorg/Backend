@@ -474,6 +474,62 @@ pub(super) fn restore_quarantine(paths: &GcPaths) -> Result<(), StoreError> {
 }
 
 pub(super) fn remove_quarantine(paths: &GcPaths) -> Result<(), StoreError> {
+    #[cfg(windows)]
+    {
+        // The configured store root is the trust boundary. Every mutable child from there
+        // is opened, enumerated, and removed relative to its actual held directory handle.
+        let root = backend_platform::durability::open_directory_nofollow(
+            paths.dir.parent().ok_or(StoreError::Bounds)?,
+        )
+        .map_err(|error| io_error(&error))?;
+        let collector =
+            match backend_platform::durability::open_directory_child_nofollow(&root, GC_DIR) {
+                Ok(directory) => directory,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(io_error(&error)),
+            };
+        let quarantine = match backend_platform::durability::open_directory_child_nofollow(
+            &collector,
+            GC_QUARANTINE,
+        ) {
+            Ok(directory) => directory,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(io_error(&error)),
+        };
+        for kind in [SweepKind::Pack, SweepKind::Closure, SweepKind::Object] {
+            let directory = match backend_platform::durability::open_directory_child_nofollow(
+                &quarantine,
+                kind.directory(),
+            ) {
+                Ok(directory) => directory,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(io_error(&error)),
+            };
+            // Existing sweep selection or Finished-state recovery authorized these members.
+            // The platform compares each relative DELETE handle to its enumerated identity.
+            backend_platform::durability::unlink_directory_files_preserving_readonly(
+                &directory,
+                |name| parse_candidate(name, kind).is_some(),
+            )
+            .map_err(|error| io_error(&error))?;
+            directory.sync_all().map_err(|error| io_error(&error))?;
+            backend_platform::durability::remove_empty_directory_child(
+                &quarantine,
+                kind.directory(),
+                &directory,
+            )
+            .map_err(|error| io_error(&error))?;
+        }
+        quarantine.sync_all().map_err(|error| io_error(&error))?;
+        backend_platform::durability::remove_empty_directory_child(
+            &collector,
+            GC_QUARANTINE,
+            &quarantine,
+        )
+        .map_err(|error| io_error(&error))?;
+        return collector.sync_all().map_err(|error| io_error(&error));
+    }
+    #[cfg(not(windows))]
     match fs::remove_dir_all(&paths.quarantine) {
         Ok(()) => sync_directory(&paths.dir),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),

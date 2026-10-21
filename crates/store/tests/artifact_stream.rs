@@ -38,6 +38,7 @@ impl Schema for BytesSchema {
 struct TestStore {
     path: PathBuf,
     store: FileStore,
+    _cleanup: TestDirectoryCleanup,
 }
 
 impl TestStore {
@@ -47,16 +48,48 @@ impl TestStore {
             "backend-store-artifact-{}-{ordinal}",
             std::process::id()
         ));
-        let _ = fs::remove_dir_all(&path);
+        let _ = remove_test_directory(&path);
+        let cleanup = TestDirectoryCleanup(path.clone());
         let store = FileStore::open(&path, 64 * 1024).expect("open artifact test store");
-        Self { path, store }
+        Self {
+            path,
+            store,
+            _cleanup: cleanup,
+        }
     }
 }
 
-impl Drop for TestStore {
+struct TestDirectoryCleanup(PathBuf);
+
+impl Drop for TestDirectoryCleanup {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        let _ = remove_test_directory(&self.0);
     }
+}
+
+fn remove_test_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{FileTypeExt as _, MetadataExt as _};
+        const REPARSE_POINT: u32 = 0x400;
+        let metadata = fs::symlink_metadata(path)?;
+        if metadata.file_attributes() & REPARSE_POINT != 0 {
+            return if metadata.is_dir() || metadata.file_type().is_symlink_dir() {
+                fs::remove_dir(path)
+            } else {
+                fs::remove_file(path)
+            };
+        }
+        if !metadata.is_dir() {
+            return remove_immutable_fixture(path);
+        }
+        for entry in fs::read_dir(path)? {
+            remove_test_directory(&entry?.path())?;
+        }
+        fs::remove_dir(path)
+    }
+    #[cfg(not(windows))]
+    fs::remove_dir_all(path)
 }
 
 fn object(seed: u8, length: usize) -> TypedObject {
@@ -122,6 +155,18 @@ fn budget() -> ArtifactBudget {
 fn object_path(root: &Path, object: &TypedObject) -> PathBuf {
     root.join("objects")
         .join(format!("{}.object", hex(object.id().as_bytes())))
+}
+
+fn remove_immutable_fixture(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        let file = backend_platform::durability::open_regular_file_nofollow(path)?;
+        backend_platform::durability::unlink_file_preserving_readonly(path, &file)
+    }
+    #[cfg(not(windows))]
+    {
+        fs::remove_file(path)
+    }
 }
 
 fn closure_path(root: &Path, id: ClosureId) -> PathBuf {
@@ -237,6 +282,265 @@ fn received_closure_keeps_its_existing_gc_pin_through_selection() {
         .expect("collector resumed")
         .expect("collector completed");
     collector.join().expect("join collector");
+}
+
+// These exercise real Windows attributes, handles, and extended rename/delete operations.
+// They must run on Windows; a Unix run is not evidence for these controls.
+#[cfg(windows)]
+mod windows_immutable_durability {
+    use super::*;
+    use backend_platform::FileIdentity;
+    use std::io::Write as _;
+
+    fn begin_one(
+        test: &TestStore,
+        item: &TypedObject,
+        known_id: bool,
+    ) -> backend_store::ArtifactSession {
+        let claim = if known_id {
+            object_claim(item)
+        } else {
+            ArtifactObjectClaim::new(
+                item.schema(),
+                *item.key(),
+                *item.version(),
+                item.bytes().len() as u64,
+            )
+        };
+        test.store
+            .artifact_sink(budget())
+            .begin(ArtifactPlan::new(
+                None,
+                ArtifactClosureClaim::from_id(closure_id(std::slice::from_ref(item))),
+                vec![claim],
+                Vec::new(),
+            ))
+            .expect("begin Windows durability control")
+    }
+
+    #[test]
+    fn fresh_stream_reuses_only_its_flushed_sealed_inode_and_keeps_the_gc_pin() {
+        let test = TestStore::new();
+        let item = object(101, 32);
+        let mut session = begin_one(&test, &item, true);
+        put_objects(&mut session, std::slice::from_ref(&item), false);
+        let path = object_path(&test.path, &item);
+        assert!(
+            fs::metadata(&path)
+                .expect("sealed stream metadata")
+                .permissions()
+                .readonly()
+        );
+        assert!(fs::OpenOptions::new().write(true).open(&path).is_err());
+        let identity = FileIdentity::of_path_nofollow(&path).expect("stream inode");
+        assert!(
+            test.store
+                .try_with_gc_exclusive_lease(|| Ok(()))
+                .expect("try GC during receive")
+                .is_none()
+        );
+        let pinned = session
+            .finish_pinned()
+            .expect("finish real sealed Windows stream");
+        assert_eq!(
+            identity,
+            FileIdentity::of_path_nofollow(&path).expect("same fresh inode")
+        );
+        assert!(
+            test.store
+                .try_with_gc_exclusive_lease(|| Ok(()))
+                .expect("try GC after finish")
+                .is_none()
+        );
+        drop(pinned);
+        assert!(
+            test.store
+                .try_with_gc_exclusive_lease(|| Ok(()))
+                .expect("try GC after receipt drop")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn collision_cannot_promote_its_discarded_stage_barrier_and_preserves_a_held_reader() {
+        use std::io::Read as _;
+        let test = TestStore::new();
+        let (item, closure) = stored_one_object(&test, 102);
+        let path = object_path(&test.path, &item);
+        let descriptor_path = closure_path(&test.path, closure);
+        let mut held_descriptor =
+            fs::File::open(&descriptor_path).expect("hold old readonly descriptor");
+        let old_descriptor =
+            FileIdentity::of_file(&held_descriptor).expect("old descriptor identity");
+        let descriptor_bytes = fs::read(&descriptor_path).expect("old descriptor bytes");
+        let bytes = fs::read(&path).expect("original envelope");
+        let mut held = fs::File::open(&path).expect("hold old immutable reader");
+        let before = FileIdentity::of_file(&held).expect("old inode");
+        let mut session = begin_one(&test, &item, false);
+        assert_eq!(session.have_bitmap().present_count(), 0);
+        put_objects(&mut session, std::slice::from_ref(&item), false);
+        session
+            .finish()
+            .expect("re-admit collision using a fresh actual barrier");
+        assert_ne!(
+            before,
+            FileIdentity::of_path_nofollow(&path).expect("new durable inode")
+        );
+        assert!(
+            held.metadata()
+                .expect("old handle metadata")
+                .permissions()
+                .readonly()
+        );
+        let mut held_bytes = Vec::new();
+        held.read_to_end(&mut held_bytes)
+            .expect("old reader remains readable");
+        assert_eq!(held_bytes, bytes);
+        assert_eq!(fs::read(&path).expect("new envelope"), bytes);
+        assert_ne!(
+            old_descriptor,
+            FileIdentity::of_path_nofollow(&descriptor_path)
+                .expect("fresh descriptor barrier inode")
+        );
+        assert!(
+            held_descriptor
+                .metadata()
+                .expect("old descriptor seal")
+                .permissions()
+                .readonly()
+        );
+        let mut old_descriptor_bytes = Vec::new();
+        held_descriptor
+            .read_to_end(&mut old_descriptor_bytes)
+            .expect("old descriptor reader remains usable");
+        assert_eq!(old_descriptor_bytes, descriptor_bytes);
+        assert_eq!(
+            fs::read(&descriptor_path).expect("same canonical descriptor"),
+            descriptor_bytes
+        );
+        assert!(
+            fs::metadata(&path)
+                .expect("new seal")
+                .permissions()
+                .readonly()
+        );
+    }
+
+    #[test]
+    fn cold_readonly_have_and_injected_readonly_member_receive_fresh_barriers() {
+        for injected in [false, true] {
+            let mut test = TestStore::new();
+            let item = object(if injected { 104 } else { 103 }, 32);
+            if injected {
+                let mut envelope = Vec::new();
+                write_object_envelope(&item, &mut envelope, 4096).expect("encode injected member");
+                let path = object_path(&test.path, &item);
+                fs::write(&path, envelope).expect("inject without a file durability receipt");
+                let mut mode = fs::metadata(&path)
+                    .expect("injected metadata")
+                    .permissions();
+                mode.set_readonly(true);
+                fs::set_permissions(&path, mode).expect("set untrusted read-only metadata");
+            } else {
+                let (stored, _) = stored_one_object(&test, 103);
+                assert_eq!(stored.id(), item.id());
+                test.store =
+                    FileStore::open(&test.path, 64 * 1024).expect("cold reopen without provenance");
+            }
+            let path = object_path(&test.path, &item);
+            let before = FileIdentity::of_path_nofollow(&path).expect("pre-admission inode");
+            let session = begin_one(&test, &item, true);
+            assert_eq!(session.have_bitmap().present_count(), 1);
+            session.finish().expect("re-admit old read-only member");
+            assert_ne!(
+                before,
+                FileIdentity::of_path_nofollow(&path).expect("freshly flushed inode")
+            );
+            assert_eq!(
+                test.store
+                    .read_object(item.id())
+                    .expect("read admitted bytes"),
+                item
+            );
+        }
+    }
+
+    #[test]
+    fn substituting_equal_bytes_never_promotes_a_foreign_inode_to_a_stream_receipt() {
+        let test = TestStore::new();
+        let item = object(105, 32);
+        let mut session = begin_one(&test, &item, true);
+        put_objects(&mut session, std::slice::from_ref(&item), false);
+        let path = object_path(&test.path, &item);
+        let original = FileIdentity::of_path_nofollow(&path).expect("original receipt inode");
+        let replacement = test.path.join("independent-copy");
+        let mut foreign = fs::OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&replacement)
+            .expect("independent writable file");
+        foreign
+            .write_all(&fs::read(&path).expect("equal canonical bytes"))
+            .expect("copy fixture");
+        foreign.sync_all().expect("flush independent fixture");
+        let foreign_id = FileIdentity::of_file(&foreign).expect("independent inode");
+        assert_ne!(foreign_id, original);
+        backend_platform::durability::replace_file_preserving_readonly(
+            &replacement,
+            &foreign,
+            &path,
+        )
+        .expect("substitute a different inode");
+        drop(foreign);
+        session.finish().expect("admit after foreign substitution");
+        assert_ne!(
+            foreign_id,
+            FileIdentity::of_path_nofollow(&path).expect("fresh barrier inode")
+        );
+        assert!(
+            fs::metadata(&path)
+                .expect("repaired seal")
+                .permissions()
+                .readonly()
+        );
+    }
+
+    #[test]
+    fn readonly_cas_hardlinks_and_symlinks_do_not_enter_dependency_admission() {
+        let test = TestStore::new();
+        let (item, _) = stored_one_object(&test, 106);
+        let path = object_path(&test.path, &item);
+        let alias = test.path.join("held-alias");
+        fs::hard_link(&path, &alias).expect("plant extra immutable alias");
+        assert!(
+            test.store
+                .artifact_sink(budget())
+                .have(&[UntrustedObjectId::from_bytes(*item.id().as_bytes())])
+                .is_err()
+        );
+        let alias_handle = fs::File::open(&alias).expect("open private alias");
+        backend_platform::durability::unlink_file_preserving_readonly(&alias, &alias_handle)
+            .expect("remove fixture alias without unsealing");
+        drop(alias_handle);
+        let link_item = object(107, 32);
+        let link = object_path(&test.path, &link_item);
+        match std::os::windows::fs::symlink_file(&path, &link) {
+            Ok(()) => {
+                assert!(
+                    test.store
+                        .artifact_sink(budget())
+                        .have(&[UntrustedObjectId::from_bytes(*link_item.id().as_bytes())])
+                        .is_err()
+                );
+                fs::remove_file(&link).expect("remove symlink fixture");
+            }
+            Err(error) if error.raw_os_error() == Some(1314) => {
+                eprintln!("symlink control requires Windows symlink capability: {error}")
+            }
+            Err(error) => panic!("create Windows symlink control: {error}"),
+        }
+    }
 }
 
 #[test]
@@ -552,7 +856,7 @@ fn streamed_delta_reopens_cold_and_accounts_for_one_object_edit() {
         .collect::<BTreeSet<_>>();
     assert_eq!(persisted_ids, model_ids);
 
-    fs::remove_file(object_path(&test_store.path, &replacement))
+    remove_immutable_fixture(&object_path(&test_store.path, &replacement))
         .expect("remove one reachable CAS member");
     assert!(
         test_store
@@ -631,7 +935,8 @@ fn missing_member_before_finish_never_commits_a_closure_descriptor() {
         ))
         .expect("begin missing-member test session");
     put_objects(&mut session, std::slice::from_ref(&item), false);
-    fs::remove_file(object_path(&test_store.path, &item)).expect("remove streamed CAS member");
+    remove_immutable_fixture(&object_path(&test_store.path, &item))
+        .expect("remove streamed CAS member");
     assert!(session.finish().is_err());
     assert!(!closure_path(&test_store.path, id).exists());
 }
