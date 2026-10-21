@@ -2,6 +2,7 @@
 """Evict an owned CI accelerator without removing its mounted root."""
 import os
 import shutil
+import stat
 import sys
 
 
@@ -25,5 +26,74 @@ def clear_cache(path):
         os.close(descriptor)
 
 
+def ensure_cargo_home(cache_root, cargo_home):
+    """Admit only the exact Cargo-home child of the mounted fast cache.
+
+    Cargo creates files inside CARGO_HOME but does not create its parent. An
+    unexpectedly absent child therefore makes Cargo's package-cache lock fail
+    with ENOENT before useful work. This repairs only that direct child under
+    the configured cache root; it never clears or follows a path.
+    """
+    root = os.fspath(cache_root)
+    home = os.fspath(cargo_home)
+    if not os.path.isabs(root) or not os.path.isabs(home):
+        raise ValueError('fast cache and Cargo home must be absolute paths')
+    if os.path.normpath(home) != os.path.join(os.path.normpath(root), 'cargo-home'):
+        raise ValueError('Cargo home is not the exact fast-cache child')
+
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        root_stat = os.fstat(directory)
+        if not stat.S_ISDIR(root_stat.st_mode):
+            raise ValueError('fast cache root is not a directory')
+        filesystem_root = os.stat('/')
+        if (root_stat.st_dev, root_stat.st_ino) == (
+            filesystem_root.st_dev, filesystem_root.st_ino
+        ):
+            raise ValueError('refusing to create Cargo home under the filesystem root')
+        try:
+            before = os.stat('cargo-home', dir_fd=directory, follow_symlinks=False)
+            created = False
+        except FileNotFoundError:
+            os.mkdir('cargo-home', 0o700, dir_fd=directory)
+            before = os.stat('cargo-home', dir_fd=directory, follow_symlinks=False)
+            created = True
+        if not stat.S_ISDIR(before.st_mode):
+            raise ValueError('Cargo home is not a real directory')
+
+        child = os.open(
+            'cargo-home', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory
+        )
+        try:
+            home_stat = os.fstat(child)
+            after = os.stat('cargo-home', dir_fd=directory, follow_symlinks=False)
+            if (before.st_dev, before.st_ino) != (home_stat.st_dev, home_stat.st_ino):
+                raise ValueError('Cargo home changed while being admitted')
+            if (after.st_dev, after.st_ino) != (home_stat.st_dev, home_stat.st_ino):
+                raise ValueError('Cargo home name changed while being admitted')
+            if home_stat.st_dev != root_stat.st_dev:
+                raise ValueError('Cargo home is mounted outside the fast cache')
+            if home_stat.st_uid != os.geteuid() or home_stat.st_mode & 0o022:
+                raise ValueError('Cargo home ownership or write permissions are unsafe')
+        finally:
+            os.close(child)
+        named_root = os.stat(root, follow_symlinks=False)
+        if (named_root.st_dev, named_root.st_ino) != (root_stat.st_dev, root_stat.st_ino):
+            raise ValueError('fast cache root changed while Cargo home was admitted')
+    finally:
+        os.close(directory)
+    print(
+        'CI-FAST-CARGO-HOME '
+        f'state=ready created={str(created).lower()} '
+        f'root_dev={root_stat.st_dev} root_ino={root_stat.st_ino} '
+        f'home_dev={home_stat.st_dev} home_ino={home_stat.st_ino}'
+    )
+
+
 if __name__ == '__main__':
-    clear_cache(sys.argv[1])
+    if len(sys.argv) == 4 and sys.argv[1] == '--ensure-cargo-home':
+        ensure_cargo_home(sys.argv[2], sys.argv[3])
+    elif len(sys.argv) == 2:
+        clear_cache(sys.argv[1])
+    else:
+        raise SystemExit('usage: fast_cache.py CACHE_ROOT | --ensure-cargo-home CACHE_ROOT CARGO_HOME')

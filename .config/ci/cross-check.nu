@@ -10,6 +10,13 @@ def split-targets [raw: string]: nothing -> list<string> {
     | where {|entry| not ($entry | is-empty) }
 }
 
+def ensure-fast-cache-cargo-home []: nothing -> nothing {
+    let cache = $env.CI_FAST_CACHE_ROOT? | default ""
+    if ($cache | is-empty) { return }
+    let home = $env.CARGO_HOME? | default ""
+    run-external "python3" ($env.FILE_PWD | path join "fast_cache.py") "--ensure-cargo-home" $cache $home
+}
+
 # Compile-checks the whole workspace and all its targets for each configured
 # cross target. Proves Windows and aarch64 Linux still build from the CI host.
 # Then, unless `--compile-only`, runs each platform's `platform` test selection
@@ -48,6 +55,10 @@ def main [
         # LAST_EXIT_CODE made inside the block does not survive it, so
         # reading it afterwards reported every clean target as failed.
         let status = (try {
+            # Recheck the exact owned Cargo-home child at the point of use.
+            # If a previous cache lifecycle step removed it, recreate only
+            # that direct child; never clear or follow any cache path here.
+            ensure-fast-cache-cargo-home
             with-env {CARGO_TARGET_DIR: $target_dir} {
                 run-external "cargo" "check" "--locked" "--keep-going" "--workspace" "--all-targets" "--target" $triple "--jobs" ($jobs | into string)
             }

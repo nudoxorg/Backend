@@ -1,13 +1,57 @@
 #!/usr/bin/env python3
 """Filesystem safety controls for the CI cache's mount-preserving eviction."""
 from pathlib import Path
+import os
 import tempfile
 import unittest
 
-from fast_cache import clear_cache
+from fast_cache import clear_cache, ensure_cargo_home
 
 
 class FastCacheTest(unittest.TestCase):
+    def test_missing_cargo_home_parent_is_recreated_as_the_owned_direct_child(self):
+        with tempfile.TemporaryDirectory() as parent:
+            root = Path(parent) / 'fast-cache'
+            root.mkdir()
+            sibling = root / 'targets'
+            sibling.mkdir()
+            sentinel = sibling / 'keep'
+            sentinel.write_bytes(b'preserve')
+            cargo_home = root / 'cargo-home'
+            lock = cargo_home / '.package-cache'
+            with self.assertRaises(FileNotFoundError):
+                os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+
+            ensure_cargo_home(root, cargo_home)
+            home_identity = cargo_home.stat().st_ino
+            fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+            os.close(fd)
+            ensure_cargo_home(root, cargo_home)
+
+            self.assertEqual(cargo_home.stat().st_ino, home_identity)
+            self.assertEqual(sentinel.read_bytes(), b'preserve')
+
+    def test_cargo_home_admission_rejects_symlink_and_wrong_child_without_touching_target(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as parent:
+            root = Path(parent) / 'fast-cache'
+            root.mkdir()
+            foreign = Path(parent) / 'foreign'
+            foreign.mkdir()
+            sentinel = foreign / 'keep'
+            sentinel.write_bytes(b'foreign')
+            (root / 'cargo-home').symlink_to(foreign, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                ensure_cargo_home(root, root / 'cargo-home')
+            with self.assertRaises(ValueError):
+                ensure_cargo_home(root, foreign)
+            self.assertEqual(sentinel.read_bytes(), b'foreign')
+
+    def test_cargo_home_admission_refuses_filesystem_root(self):
+        with self.assertRaises(ValueError):
+            ensure_cargo_home('/', '/cargo-home')
+
     def test_eviction_preserves_root_inode_and_removes_hidden_nested_outputs(self):
         with tempfile.TemporaryDirectory() as parent:
             root = Path(parent) / 'cache'
