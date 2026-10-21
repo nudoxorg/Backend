@@ -9,6 +9,97 @@ surface = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(surface)
 
 
+class LocaldStartupDiagnosticTests(unittest.TestCase):
+    def test_process_observation_is_bounded_and_filters_non_case_descriptors(self):
+        import json, tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            case = root / "case"
+            workspace = root / "state" / "workspace"
+            proc = root / "proc" / "42"
+            (case / "project").mkdir(parents=True)
+            workspace.mkdir(parents=True)
+            (proc / "fd").mkdir(parents=True)
+            executable = case / "backend-locald"
+            executable.write_bytes(b"owned executable")
+            project_file = case / "project" / "input"
+            project_file.write_text("case data")
+            workspace_secret = workspace / "authority.secret"
+            workspace_secret.write_text("secret contents must not be captured")
+            outside = root / "outside-secret"
+            outside.write_text("must not leak")
+            for name, value in (("stat", "42 (locald) S 1"), ("wchan", "futex_wait"),
+                                ("syscall", "202 0x1"), ("io", "read_bytes: 3\n")):
+                (proc / name).write_text(value)
+            (proc / "exe").symlink_to(executable)
+            (proc / "fd" / "3").symlink_to(project_file)
+            (proc / "fd" / "4").symlink_to(outside)
+            (proc / "fd" / "5").symlink_to(executable)
+            (proc / "fd" / "6").symlink_to(workspace_secret)
+            observed = json.loads(surface._locald_process_diagnostic(42, case, workspace, executable, proc_root=root / "proc"))
+            self.assertEqual(observed["stat"], "42 (locald) S 1")
+            self.assertEqual(observed["running_executable_identity"]["inode"], executable.stat().st_ino)
+            self.assertEqual(observed["fd_paths"], [{"fd": "3", "target": "case:project/input"},
+                                                     {"fd": "4", "target": "filtered"},
+                                                     {"fd": "5", "target": "executable"},
+                                                     {"fd": "6", "target": "workspace:authority.secret"}])
+            self.assertNotIn("outside-secret", str(observed))
+            self.assertNotIn("secret contents", str(observed))
+
+    def test_fd_enumeration_stops_after_sixteen_entries_and_marks_truncation(self):
+        import json, tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            case = root / "case"
+            workspace = root / "workspace"
+            proc_fd = root / "proc" / "9" / "fd"
+            case.mkdir()
+            workspace.mkdir()
+            proc_fd.mkdir(parents=True)
+            outside = root / "outside"
+            outside.write_text("not retained")
+            for fd in range(20):
+                (proc_fd / str(fd)).symlink_to(outside)
+            observed = json.loads(surface._locald_process_diagnostic(9, case, workspace, None, proc_root=root / "proc"))
+            self.assertEqual(len(observed["fd_paths"]), 16)
+            self.assertTrue(observed["fd_paths_truncated"])
+            self.assertTrue(all(row["target"] == "filtered" for row in observed["fd_paths"]))
+            self.assertNotIn("not retained", str(observed))
+
+    def test_endpoint_wait_probes_once_at_25s_and_keeps_30s_timeout(self):
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        now = [0.0]
+        process = SimpleNamespace(pid=42, poll=lambda: None)
+        probes = []
+        def sleep(seconds):
+            now[0] += seconds
+        def probe(pid, case_root, workspace_root, executable):
+            probes.append((pid, case_root, workspace_root, executable, now[0]))
+            return '{"captured":true}'
+        endpoint = Path("/tmp/surface-diagnostic-test-missing.sock")
+        with patch.object(surface, "_locald_process_diagnostic", side_effect=probe):
+            with self.assertRaisesRegex(RuntimeError, "did not open its endpoint") as failure:
+                surface._wait_for_endpoint(endpoint, process, endpoint.parent / "workspace", lambda: "", monotonic=lambda: now[0], sleep=sleep)
+        self.assertEqual(len(probes), 1)
+        self.assertGreaterEqual(probes[0][4], 25.0)
+        self.assertLess(probes[0][4], 25.1)
+        self.assertIn('process_diagnostic={"captured":true}', str(failure.exception))
+        self.assertIn("waited=30.", str(failure.exception))
+        self.assertEqual(surface.LOCALD_ENDPOINT_START_TIMEOUT_SECONDS, 30)
+
+    def test_missing_proc_files_are_explicit_and_do_not_raise(self):
+        import json, tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            case = root / "case"
+            case.mkdir()
+            observed = json.loads(surface._locald_process_diagnostic(7, case, case / "workspace", case / "missing", proc_root=root / "proc"))
+            self.assertEqual(observed["stat"], "unsupported:FileNotFoundError")
+            self.assertEqual(observed["fd_paths"], "unsupported:FileNotFoundError")
+
+
 class ProjectCopyLifecycleTests(unittest.TestCase):
     def test_readonly_pinned_source_stays_unchanged_and_copied_case_can_be_removed(self):
         import tempfile, shutil, stat
@@ -1178,6 +1269,16 @@ sys.exit(surface.main())
                     child.stderr.close()
 
 
+
+
+class CommunicateDeadlineTests(unittest.TestCase):
+    def test_input_uses_remaining_deadline_and_followups_stay_clamped(self):
+        c = surface.process_custody
+        self.assertAlmostEqual(c._communicate_timeout(10.0, "payload", 9.95), 0.05)
+        self.assertAlmostEqual(c._communicate_timeout(10.0, None, 9.95), 0.05)
+        self.assertEqual(c._communicate_timeout(10.0, None, 9.0), 0.1)
+        self.assertAlmostEqual(c._communicate_timeout(10.0, "", 9.95), 0.05)
+        self.assertEqual(c._communicate_timeout(None, "payload", 0.0), 0.1)
 
 
 class PlatformPopenCompatibilityTests(unittest.TestCase):
