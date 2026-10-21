@@ -746,6 +746,36 @@ impl UnixCommandTransport {
         })
     }
 
+    /// Reopens an authenticated owner connection inside an existing startup
+    /// deadline. This is used after a read-only compatibility probe receives
+    /// an unsupported-command refusal from a peer that closes the channel.
+    pub(super) fn reconnect_before(
+        &mut self,
+        deadline: std::time::Instant,
+        context: Option<&RequestContext>,
+    ) -> Result<(), ClientError> {
+        let endpoint = self.endpoint.clone().ok_or_else(|| {
+            ClientError::Protocol(
+                "stream-backed command transport has no reconnect endpoint".to_owned(),
+            )
+        })?;
+        let remaining = Self::connection_budget(self.connect_timeout, Some(deadline), context)?;
+        let replacement = Self::connect_before(
+            endpoint,
+            self.connect_timeout.min(remaining),
+            remaining,
+            context,
+            Some(deadline),
+        )?;
+        self.stream = replacement.stream;
+        self.interrupt = replacement.interrupt;
+        self.peer = replacement.peer;
+        self.endpoint = replacement.endpoint;
+        self.frames_sent = 0;
+        self.frame_budget = replacement.frame_budget;
+        Ok(())
+    }
+
     fn connection_budget(
         ceiling: Duration,
         deadline: Option<std::time::Instant>,

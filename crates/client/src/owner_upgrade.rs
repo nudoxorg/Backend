@@ -72,6 +72,36 @@ fn peer_reports_outline_witness_route(
     Ok(outline_witness_route_ack(&request, reply))
 }
 
+fn reconnect_after_unsupported_outline_probe(
+    transport: &mut UnixCommandTransport,
+    deadline: Instant,
+    context: Option<&RequestContext>,
+) -> Result<(), ClientError> {
+    probe_budget(deadline, context)?;
+    transport.reconnect_before(deadline, context)?;
+    probe_budget(deadline, context)?;
+
+    // An older locald writes its ordinary unknown-command error and then
+    // closes the connection. Bind the session to a newly authenticated
+    // connection and a correlated health reply; do not retry the capability
+    // probe or any product command on this fallback path.
+    let request = CommandDto::new(PROBE_ID, Command::Health);
+    let body = encode_request(&request)?;
+    let remaining = probe_budget(deadline, context)?;
+    let bytes = transport.exchange_command_with_budget(&request, &body, remaining)?;
+    probe_budget(deadline, context)?;
+    let found = version(&bytes)?;
+    if found != backend_library::DTO_VERSION {
+        return Err(update_error(
+            found,
+            "the owner changed during optional capability fallback; no product command was submitted",
+        ));
+    }
+    admit_reply(&request, transport.decode(&bytes)?)?;
+    probe_budget(deadline, context)?;
+    Ok(())
+}
+
 fn outline_witness_route_ack(request: &CommandDto, reply: backend_library::ReplyDto) -> bool {
     admit_reply(request, reply).is_ok_and(|admitted| {
         matches!(
@@ -167,6 +197,9 @@ impl Session {
                 admit_reply(&request, transport.decode(&bytes)?)?;
                 let outline_witness_route =
                     peer_reports_outline_witness_route(&mut transport, deadline, context)?;
+                if !outline_witness_route {
+                    reconnect_after_unsupported_outline_probe(&mut transport, deadline, context)?;
+                }
                 #[cfg(target_os = "linux")]
                 {
                     let peer = transport.peer.as_ref().ok_or_else(|| {
@@ -318,6 +351,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{read_body, write_body};
     #[test]
     fn owner_build_update_keeps_wire_upgrade_diagnostics_distinct() {
         let build = update_error(
@@ -447,5 +481,146 @@ mod tests {
             backend_library::CommandReply::Revision(revision),
         );
         assert!(!outline_witness_route_ack(&request, wrong_peer));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsupported_outline_probe_reopens_and_health_binds_old_peer_fallback() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let path = std::path::PathBuf::from(format!(
+            "/tmp/nudox-old-pc5-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("old-peer fixture");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("owner-private endpoint");
+        let server = std::thread::spawn(move || {
+            let library = backend_library::Library::new();
+            let root = library.view().root();
+            let readiness = || {
+                backend_library::ReplyDto::new(
+                    PROBE_ID,
+                    backend_library::CommandReply::Readiness(
+                        backend_library::HealthReport::from_root(root, library.cursor()),
+                    ),
+                )
+            };
+            let (mut old_peer, _) = listener.accept().expect("accept initial connection");
+            let health = backend_library::decode_command_body(
+                &read_body(&mut old_peer).expect("old peer initial health"),
+            )
+            .expect("valid initial health");
+            assert_eq!(health.command, Command::Health);
+            write_body(
+                &mut old_peer,
+                &backend_library::encode_reply_body(&readiness()).expect("health reply"),
+            )
+            .expect("write initial health reply");
+
+            let probe = backend_library::decode_command_body(
+                &read_body(&mut old_peer).expect("unsupported capability request"),
+            )
+            .expect("well-formed old-peer command");
+            assert_eq!(probe.command, Command::OutlineOwnerWitnessCapability);
+            write_body(
+                &mut old_peer,
+                &backend_library::encode_reply_body(&backend_library::ReplyDto::error(
+                    probe.request_id,
+                    "unknown command",
+                ))
+                .expect("unknown-command reply"),
+            )
+            .expect("send old peer refusal");
+            old_peer
+                .shutdown(std::net::Shutdown::Both)
+                .expect("old owner closes the unsupported-command stream");
+            drop(old_peer);
+
+            let (mut replacement, _) = listener.accept().expect("reopened connection");
+            let health = backend_library::decode_command_body(
+                &read_body(&mut replacement).expect("fallback health probe"),
+            )
+            .expect("fallback health request");
+            assert_eq!(health.request_id, PROBE_ID);
+            assert_eq!(health.command, Command::Health);
+            write_body(
+                &mut replacement,
+                &backend_library::encode_reply_body(&readiness()).expect("fallback health reply"),
+            )
+            .expect("write fallback health");
+
+            let ordinary = backend_library::decode_command_body(
+                &read_body(&mut replacement).expect("first ordinary command after fallback"),
+            )
+            .expect("ordinary request codec");
+            assert_eq!(ordinary.command, Command::Revision);
+            assert_ne!(ordinary.request_id, OUTLINE_CAPABILITY_PROBE_ID);
+            let revision = backend_library::RevisionReceipt::new(
+                root.root(),
+                library.cursor(),
+                root.basis().object,
+            );
+            let reply = backend_library::ReplyDto::new(
+                ordinary.request_id,
+                backend_library::CommandReply::Revision(revision),
+            );
+            write_body(
+                &mut replacement,
+                &backend_library::encode_reply_body(&reply).expect("ordinary revision reply"),
+            )
+            .expect("write ordinary command reply");
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut transport = UnixCommandTransport::connect_before(
+            &path,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            None,
+            Some(deadline),
+        )
+        .expect("authenticate old peer");
+        let health = CommandDto::new(PROBE_ID, Command::Health);
+        let health_bytes = encode_request(&health).expect("initial health request");
+        let response = transport
+            .exchange_command_with_budget(
+                &health,
+                &health_bytes,
+                probe_budget(deadline, None).expect("initial health budget"),
+            )
+            .expect("old peer health response");
+        assert_eq!(
+            version(&response).expect("health version"),
+            backend_library::DTO_VERSION
+        );
+        admit_reply(&health, transport.decode(&response).expect("health decode"))
+            .expect("initial health admission");
+
+        assert!(
+            !peer_reports_outline_witness_route(&mut transport, deadline, None)
+                .expect("old peer refuses optional capability")
+        );
+        reconnect_after_unsupported_outline_probe(&mut transport, deadline, None)
+            .expect("reconnect and bind the replacement using health");
+        let ordinary = CommandDto::new(PROBE_ID - 2, Command::Revision);
+        let reply = transport
+            .request_with_budget(
+                ordinary,
+                probe_budget(deadline, None).expect("ordinary command budget"),
+            )
+            .expect("ordinary command succeeds on the reopened connection");
+        assert!(matches!(
+            reply.reply,
+            backend_library::CommandReply::Revision(_)
+        ));
+        server
+            .join()
+            .expect("old-peer fixture observed one probe and one command");
+        let _ = std::fs::remove_file(path);
     }
 }
