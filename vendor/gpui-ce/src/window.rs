@@ -7,20 +7,19 @@ use crate::{
     DevicePixels, DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, DrawResult,
     Edges, Effect, Entity, EntityId, EventEmitter, FileDropEvent, Filter, FilterBoundary, FontId,
     Global, GlobalElementId, GlyphId, GpuSpecs, InputHandler, InputHandlerOwner, IsZero,
-    KeyBinding, KeyContext,
-    KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayerTransform, LayoutId, Lerp,
-    LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, Motion, MouseButton,
-    MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay,
-    PlatformInput, PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, Priority,
-    PromptButton, PromptLevel, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams,
-    RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X,
-    SUBPIXEL_VARIANTS_Y, ScaledFilter, ScaledPixels, Scene, Shadow, SharedString, Size,
-    StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
-    SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextRenderingMode, TextStyle,
-    TextStyleRefinement, ThermalState, TransformationMatrix, Transition, TransitionState,
-    Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
-    WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem, point,
-    prelude::*, profiler, px, rems, size, transparent_black,
+    KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayerTransform,
+    LayoutId, Lerp, LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, Motion,
+    MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas,
+    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PolychromeSprite,
+    Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams, RenderImage,
+    RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
+    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledFilter, ScaledPixels, Scene, Shadow,
+    SharedString, Size, StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription,
+    SystemWindowTab, SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task,
+    TextRenderingMode, TextStyle, TextStyleRefinement, ThermalState, TransformationMatrix,
+    Transition, TransitionState, Underline, UnderlineStyle, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations, WindowOptions,
+    WindowParams, WindowTextSystem, point, prelude::*, profiler, px, rems, size, transparent_black,
 };
 
 use anyhow::{Context as _, Result, anyhow};
@@ -2510,6 +2509,10 @@ impl Window {
                 },
             });
 
+            // AT-SPI Screen coordinates include the native window origin.
+            // Initialize the adapter even if the window has not moved since opening.
+            platform_window.a11y_update_window_bounds();
+
             // A11y can be activated at any time, and so we cannot compute a
             // correct `TreeUpdate` on-demand. When this happens, we return a
             // default empty `TreeUpdate`.
@@ -3123,15 +3126,24 @@ impl Window {
         self.native_activation_scope.get()
     }
 
-    pub(crate) fn with_native_activation_scope<R>(&mut self, scope: Option<crate::NativeActivationScope>, f: impl FnOnce(&mut Self) -> R) -> R {
+    pub(crate) fn with_native_activation_scope<R>(
+        &mut self,
+        scope: Option<crate::NativeActivationScope>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
         struct Restore {
             context: Rc<Cell<Option<crate::NativeActivationScope>>>,
             previous: Option<crate::NativeActivationScope>,
         }
         impl Drop for Restore {
-            fn drop(&mut self) { self.context.set(self.previous); }
+            fn drop(&mut self) {
+                self.context.set(self.previous);
+            }
         }
-        let _restore = Restore { context: self.native_activation_scope.clone(), previous: self.native_activation_scope.replace(scope) };
+        let _restore = Restore {
+            context: self.native_activation_scope.clone(),
+            previous: self.native_activation_scope.replace(scope),
+        };
         f(self)
     }
 
@@ -3710,6 +3722,7 @@ impl Window {
     /// the platform window, then notifies observers. Normally called automatically
     /// by the platform's resize callback, but exposed publicly for test infrastructure.
     pub fn bounds_changed(&mut self, cx: &mut App) {
+        self.platform_window.a11y_update_window_bounds();
         self.scale_factor = self.platform_window.scale_factor();
         self.viewport_size = self.platform_window.content_size();
         self.display_id = self.platform_window.display().map(|display| display.id());
@@ -4229,21 +4242,14 @@ impl Window {
         } else {
             None
         };
-        let selected_index = self
-            .next_frame
-            .input_handlers
-            .iter()
-            .rposition(|slot| {
-                slot.handler.is_some()
-                    || (retained_focus.is_some()
-                        && slot.selected
-                        && slot.focus == retained_focus)
-            });
-        let retained_extracted_handler = selected_index.is_some_and(|index| {
-            self.next_frame.input_handlers[index].handler.is_none()
+        let selected_index = self.next_frame.input_handlers.iter().rposition(|slot| {
+            slot.handler.is_some()
+                || (retained_focus.is_some() && slot.selected && slot.focus == retained_focus)
         });
-        let input_handler = selected_index
-            .and_then(|index| self.next_frame.input_handlers[index].handler.take());
+        let retained_extracted_handler = selected_index
+            .is_some_and(|index| self.next_frame.input_handlers[index].handler.is_none());
+        let input_handler =
+            selected_index.and_then(|index| self.next_frame.input_handlers[index].handler.take());
         for (index, slot) in self.next_frame.input_handlers.iter_mut().enumerate() {
             slot.selected = Some(index) == selected_index;
             if !slot.selected {
@@ -4273,7 +4279,9 @@ impl Window {
         self.invalidator.set_phase(DrawPhase::Focus);
         let previous_focus_path = self.rendered_frame.focus_path();
         let previous_window_active = self.rendered_frame.window_active;
-        self.next_frame.painted_texts.clone_from(&self.painted_texts);
+        self.next_frame
+            .painted_texts
+            .clone_from(&self.painted_texts);
         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
         self.next_frame.clear();
         self.prune_grouped_animation_frame_requests();
@@ -5241,8 +5249,10 @@ impl Window {
 
     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) {
         if self.text_trace_enabled {
-            self.painted_texts.extend_from_slice(&self.rendered_frame.painted_texts
-                [range.start.painted_texts_index..range.end.painted_texts_index]);
+            self.painted_texts.extend_from_slice(
+                &self.rendered_frame.painted_texts
+                    [range.start.painted_texts_index..range.end.painted_texts_index],
+            );
         }
 
         if !self.is_inert_subtree() {
@@ -5804,7 +5814,9 @@ impl Window {
         let result = f(self);
         if result.is_err() {
             self.next_frame.hitboxes.truncate(index.hitboxes_index);
-            self.next_frame.hitbox_owners.truncate(index.hitbox_owners_index);
+            self.next_frame
+                .hitbox_owners
+                .truncate(index.hitbox_owners_index);
             self.next_frame
                 .tooltip_requests
                 .truncate(index.tooltips_index);
@@ -6333,7 +6345,12 @@ impl Window {
                 self.prepaint_deferred_draw_at(ix, cx);
             }
         }
-        if self.next_frame.local_draw_scopes.get(id).is_none_or(|entries| first == entries.len()) {
+        if self
+            .next_frame
+            .local_draw_scopes
+            .get(id)
+            .is_none_or(|entries| first == entries.len())
+        {
             return;
         }
         panic!("Exceeded maximum (10) local deferred depth");
@@ -7472,17 +7489,15 @@ impl Window {
 
         if !self.is_inert_subtree() && focus_handle.is_focused(self) {
             let cx = self.to_async(cx);
-            self.next_frame
-                .input_handlers
-                .push(FrameInputHandler {
-                    focus: Some(focus_handle.id),
-                    handler: Some(PlatformInputHandler::pending(
-                        self.input_handler_owner.clone(),
-                        cx,
-                        Box::new(input_handler),
-                    )),
-                    selected: false,
-                });
+            self.next_frame.input_handlers.push(FrameInputHandler {
+                focus: Some(focus_handle.id),
+                handler: Some(PlatformInputHandler::pending(
+                    self.input_handler_owner.clone(),
+                    cx,
+                    Box::new(input_handler),
+                )),
+                selected: false,
+            });
         }
     }
 
@@ -9658,6 +9673,27 @@ mod tests {
             }
             div().child("paced scene")
         }
+    }
+
+    #[gpui::test]
+    fn native_accessibility_bounds_follow_window_creation_move_and_resize(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| EmptyView);
+        let mut platform = cx.test_window(window.into());
+        let initial = platform.0.lock().a11y_bounds_updates.clone();
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0], platform.0.lock().bounds);
+
+        // A move must update Screen coordinates even when the content size is unchanged.
+        let moved = Bounds::new(point(px(32.), px(10.)), size(px(1380.), px(880.)));
+        platform.0.lock().bounds = moved;
+        cx.update_window(window.into(), |_, window, cx| window.bounds_changed(cx))
+            .expect("the moved native window remains open");
+        assert_eq!(platform.0.lock().a11y_bounds_updates.last(), Some(&moved));
+
+        platform.simulate_resize(size(px(900.), px(600.)));
+        let resized = Bounds::new(moved.origin, size(px(900.), px(600.)));
+        assert_eq!(platform.0.lock().a11y_bounds_updates.last(), Some(&resized));
+        assert_eq!(platform.0.lock().a11y_bounds_updates.len(), 3);
     }
 
     #[gpui::test]
