@@ -124,6 +124,9 @@ if [ -z "${CARGO_BUILD_JOBS:-}" ]; then
   # while Cargo's own scheduler still avoids exceeding it per invocation.
   jobs="$(((logical_cpus + slot_count - 1) / slot_count))"
   if [ "$jobs" -lt 1 ]; then jobs=1; fi
+  # A single Cargo process must stay within the per-process admission bound,
+  # even when a small slot count divides a large host CPU count.
+  if [ "$jobs" -gt 4 ]; then jobs=4; fi
   export CARGO_BUILD_JOBS="$jobs"
 fi
 

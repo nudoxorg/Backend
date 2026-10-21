@@ -29,6 +29,7 @@ backend-replication = { path = "../../crates/replication" }
 backend-runtime = { path = "../../crates/runtime" }
 base64.workspace = true
 blake3.workspace = true
+flate2.workspace = true
 futures-executor.workspace = true
 futures-util.workspace = true
 serde.workspace = true
@@ -39,7 +40,6 @@ tokio = { workspace = true, features = ["net"] }
 backend-frontend-python = { path = "../../frontends/python" }
 backend-semantic = { path = "../../crates/semantic" }
 backend-version = { path = "../../crates/version" }
-flate2.workspace = true
 
 [lints]
 workspace = true
