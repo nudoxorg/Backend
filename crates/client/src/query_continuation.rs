@@ -546,7 +546,7 @@ impl Session {
             }
         })?;
         backend_library::encode_command_body(request).map_err(ClientError::Protocol)?;
-        let cursor = continuation_cursor(request).ok_or_else(|| {
+        let cursor = continuation_cursor(&request.command).ok_or_else(|| {
             ClientError::Protocol("outline token omitted its page cursor".to_owned())
         })?;
         let certificate = request

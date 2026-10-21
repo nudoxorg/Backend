@@ -749,7 +749,7 @@ impl UnixCommandTransport {
     /// Reopens an authenticated owner connection inside an existing startup
     /// deadline. This is used after a read-only compatibility probe receives
     /// an unsupported-command refusal from a peer that closes the channel.
-    pub(super) fn reconnect_before(
+    pub(crate) fn reconnect_before(
         &mut self,
         deadline: std::time::Instant,
         context: Option<&RequestContext>,
