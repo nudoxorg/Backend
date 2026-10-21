@@ -1,4 +1,6 @@
 {
+  "candidate_rejected": true,
+  "candidate_status": "REJECTED_UNSOUND_PAGE_ROOT_PREIMAGE_ELISION",
   "cohorts": [
     {
       "archive": "/Users/mileswirht/.cache/nudox/source-reviews/prod-native-combined-20261016/ROOT-ANGULAR5950-CLOSED-COLLECT01/courier.tar.gz",
@@ -95,10 +97,14 @@
     }
   ],
   "correlation": "sort evidence/mcp-NNNNNN-{request,response}.json by numeric counter; initialize resets session; match exactly one outstanding request id; duplicate IDs and orphan responses fail closed",
+  "current_implementation": "The delivered pc4 implementation retains the full canonical page-root witness.",
   "full_token_after_size": "estimate only: Python zlib level 6 plus unchanged expiry/MAC field lengths; no token/MAC forged",
+  "measurements_are_delivered_savings": false,
   "method_source": "tools/call request.params.name; JSON-RPC method retained for other calls",
   "modified_mac": false,
   "prior_global_id_join": "retained as evidence/pc4-page-root-cursor-20261020/legacy-global-id-join-invalidated.json; invalid because IDs recur across initialize-delimited sessions",
+  "production_runtime_acceptance": false,
+  "rejection_reason": "Removing the canonical page-root preimage and retaining only its digest does not reconstruct or prove the exact predecessor page; root equality alone cannot authorize continuation.",
   "scope": "retained backend.search/backend.graph owners, joined chronologically within initialize-delimited JSON-RPC sessions",
   "unique_definition": "exact owner pc4 token bytes, SHA-256 keyed; repeated response appearances counted as duplicates"
 }

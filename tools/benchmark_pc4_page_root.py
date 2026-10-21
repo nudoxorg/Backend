@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""Join closed MCP raw calls and measure a digest-only page-root BQPC rewrite.
+"""REJECTED HYPOTHETICAL: join closed calls and size an unsound root-elision rewrite.
 
-This script never changes a MAC or claims a newly forged full token. It measures
-the exact uncompressed BQPC frame delta and reports the outer-token size only as
-an offline zlib estimate with the fixed existing MAC/expiry length retained.
+The proposed digest-only page-root rewrite is rejected: it removes the
+canonical page-root preimage without rederiving the exact predecessor page,
+so it does not preserve proof authority and its measured deltas are NOT
+delivered token savings. The current implementation retains the full canonical
+page-root witness; production/runtime acceptance of this rewrite is false.
+
+This script preserves the historical raw joins and sizes only that rejected
+offline what-if. It never changes a MAC or emits a usable token. The uncompressed
+frame delta is hypothetical, and the outer-token value is only a Python-zlib
+estimate with the existing expiry/MAC lengths held constant.
 """
 
 from __future__ import annotations
@@ -341,6 +348,12 @@ def main() -> None:
                 "correlation": "sort evidence/mcp-NNNNNN-{request,response}.json by numeric counter; initialize resets session; match exactly one outstanding request id; duplicate IDs and orphan responses fail closed",
                 "prior_global_id_join": "retained as evidence/pc4-page-root-cursor-20261020/legacy-global-id-join-invalidated.json; invalid because IDs recur across initialize-delimited sessions",
                 "unique_definition": "exact owner pc4 token bytes, SHA-256 keyed; repeated response appearances counted as duplicates",
+                "candidate_rejected": True,
+                "candidate_status": "REJECTED_UNSOUND_PAGE_ROOT_PREIMAGE_ELISION",
+                "rejection_reason": "Removing the canonical page-root preimage and retaining only its digest does not reconstruct or prove the exact predecessor page; root equality alone cannot authorize continuation.",
+                "current_implementation": "The delivered pc4 implementation retains the full canonical page-root witness.",
+                "measurements_are_delivered_savings": False,
+                "production_runtime_acceptance": False,
                 "modified_mac": False,
                 "full_token_after_size": "estimate only: Python zlib level 6 plus unchanged expiry/MAC field lengths; no token/MAC forged",
                 "cohorts": summaries,
@@ -350,7 +363,20 @@ def main() -> None:
         )
         + "\n"
     )
-    print(json.dumps(summaries, indent=2))
+    print(
+        json.dumps(
+            {
+                "candidate_rejected": True,
+                "candidate_status": "REJECTED_UNSOUND_PAGE_ROOT_PREIMAGE_ELISION",
+                "rejection_reason": "Removing the canonical page-root preimage and retaining only its digest does not reconstruct or prove the exact predecessor page; root equality alone cannot authorize continuation.",
+                "current_implementation": "The delivered pc4 implementation retains the full canonical page-root witness.",
+                "measurements_are_delivered_savings": False,
+                "production_runtime_acceptance": False,
+                "cohorts": summaries,
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":
