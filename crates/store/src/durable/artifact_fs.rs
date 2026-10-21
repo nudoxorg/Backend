@@ -1952,7 +1952,11 @@ mod imp {
                     .expect("GC cannot cut across repair")
                     .is_none()
             );
-            drop((repair, pin));
+            // `repair` borrows the existing pin; release the staged collision
+            // handle and repair session before releasing GC custody.
+            drop(_collision);
+            drop(repair);
+            drop(pin);
             assert!(
                 fixture
                     .store

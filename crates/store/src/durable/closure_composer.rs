@@ -501,6 +501,10 @@ impl FileStore {
             facts.payload_bytes,
         );
         drop(staging);
+        // Keep relation admission alive through durable node and descriptor
+        // writes and the cold reopen above. It borrows `gc_pin`, so release it
+        // explicitly before transferring that pin into the returned receipt.
+        drop(admission);
         drop(_process_lock);
         Ok(PinnedStoredClosureReceipt::from_parts(receipt, gc_pin))
     }
