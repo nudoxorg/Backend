@@ -6,11 +6,11 @@ use backend_engine::{
     FileStore, ProductSourceRecord, ProductSourceRelation, RelationAdmissionRegistry,
     RelationState, WorkspaceHead, WorkspaceSnapshot,
 };
-use backend_library::browse::{
-    PackageSourceMembershipPageRequestV1 as Request, PackageSourceMembershipPageResultV1 as Page,
-    PackageSourceMembershipUnavailableV1 as Unavailable,
+use backend_library::{
+    PackageReference, PackageSourceMembershipPageRequestV1 as Request,
+    PackageSourceMembershipPageResultV1 as Page,
+    PackageSourceMembershipUnavailableV1 as Unavailable, ProductText,
 };
-use backend_library::{PackageReference, ProductText};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -26,9 +26,9 @@ impl Fixture {
     fn reopen(&self) -> TestResult<WorkspaceSnapshot> {
         let registry = RelationAdmissionRegistry::new()
             .with_relation::<ProductSourceRelation>()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("{error:?}"))?;
         let store = FileStore::open_with_registry(self.store.path(), 16 * 1024 * 1024, registry)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("{error:?}"))?;
         Ok(self.head.snapshot_in(Arc::new(store)))
     }
 }
@@ -76,10 +76,10 @@ fn fixture(root: &str, count: usize, source_version: u8, missing: bool) -> TestR
     let directory =
         crate::private_temp::create("captured-tree").map_err(|error| error.to_string())?;
     let store = FileStore::open_with_registry(directory.path(), 16 * 1024 * 1024, registry)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("{error:?}"))?;
     store
         .write_relation_state(&relation)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("{error:?}"))?;
     let head = super::super::head_from_relation(relation).map_err(|error| error.to_string())?;
     let snapshot = head.snapshot_in(Arc::new(store));
     Ok(Fixture {

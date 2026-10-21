@@ -22,7 +22,6 @@ pub(in crate::builtin) use adapter::{
     commit_builtin_intent, commit_prepared_builtin_intent,
     prepare_builtin_intent,
 };
-#[cfg(test)]
 pub(in crate::builtin) use index::package_source_membership_page_from_snapshot;
 #[cfg(test)]
 pub(in crate::builtin) use index::prepare_source_facts_changes;
