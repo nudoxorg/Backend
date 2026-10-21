@@ -79,6 +79,12 @@ let
       export CLIPPY_CONF_DIR="$PWD/.config"
       export BACKEND_WORKSPACE_SNAPSHOT="$PWD"
     ''
+    + pkgs.lib.optionalString (pkgs.stdenv.hostPlatform.isLinux || pkgs.stdenv.hostPlatform.isDarwin) ''
+      # Rust product executables are rejected by owner custody when group- or
+      # world-writable. Tighten permissive masks for this Cargo development
+      # shell while preserving every stricter caller mask (for example 0077).
+      . "${../scripts/nix-cargo-output-umask.sh}"
+    ''
     + pinnedToolchainShellHook;
   };
   # Shells that run product binaries still need the pinned compiler discovery
