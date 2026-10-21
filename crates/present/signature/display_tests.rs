@@ -128,6 +128,10 @@ fn literal_contents_singleton_tuples_comments_and_lifetimes_remain_exact() {
             Language::Python,
             "def f(\n value=f\"{x!r:>{width}}  words\",\n):",
         ),
+        (
+            Language::Python,
+            "def f(\n text=t\"{ \"first  second\" }\",\n):",
+        ),
         (Language::Python, "def f(text='''unterminated\n  "),
         (Language::Rust, "fn f( // parameter follows\n x: u8,\n)"),
         (Language::Python, "def f( # parameter follows\n x: int,\n):"),

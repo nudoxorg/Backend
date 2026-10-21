@@ -457,9 +457,9 @@ fn literal_end(text: &str, at: usize, language: Language) -> Option<usize> {
             .rsplit(|ch: char| !ch.is_alphabetic())
             .next()
             .unwrap_or_default();
-        if prefix.eq_ignore_ascii_case("f")
-            || prefix.eq_ignore_ascii_case("rf")
-            || prefix.eq_ignore_ascii_case("fr")
+        if ["f", "rf", "fr", "t", "tr", "rt"]
+            .iter()
+            .any(|interpolated| prefix.eq_ignore_ascii_case(interpolated))
         {
             return None;
         }
