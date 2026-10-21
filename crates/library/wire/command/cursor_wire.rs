@@ -37,6 +37,16 @@ pub(crate) fn outline_witness_from_wire(
     }) {
         return Err("compact outline cursor also carries a full root preimage".to_owned());
     }
+    let owner_root = encode_id(owner.root().as_bytes());
+    if owner_root == value.root
+        || owner.schema() != crate::CURSOR_SCHEMA
+        || owner.query_offset() != 0
+    {
+        return Err(
+            "outline cursor witness must bind a distinct page root and exact owner cursor"
+                .to_owned(),
+        );
+    }
     let recipe = certificate.key_bytes::<ViewRecipeSchema>(WireSchema::ViewRecipe, &value.recipe)?;
     let version = certificate.version_value::<ViewVersionSchema>(WireSchema::ViewVersion, &value.version)?;
     let branch = certificate.key_value::<BranchSchema>(WireSchema::Branch, &value.branch)?;
@@ -49,8 +59,16 @@ pub(crate) fn outline_witness_from_wire(
     {
         return Err("outline cursor witness does not match the owner frontier".to_owned());
     }
-    let mut cursor_claims = certificate.claims.iter().filter_map(|claim| match claim {
-        crate::WireClaim::Cursor {
+    let owner_recipe = encode_id(owner.recipe().as_bytes());
+    let owner_version = encode_id(owner.version().as_bytes());
+    let owner_branch = encode_id(owner.branch().as_bytes());
+    let owner_log = encode_id(owner.log().as_bytes());
+    let owner_schema = owner.schema();
+    let owner_sequence = owner.sequence();
+    let mut owner_cursor_claims = 0;
+    let mut page_cursor_claims = 0;
+    for claim in &certificate.claims {
+        let crate::WireClaim::Cursor {
             recipe,
             version,
             branch,
@@ -58,21 +76,31 @@ pub(crate) fn outline_witness_from_wire(
             schema,
             root,
             sequence,
-        } => Some((recipe, version, branch, log, schema, root, sequence)),
-        _ => None,
-    });
-    let claim = cursor_claims
-        .next()
-        .ok_or_else(|| "outline cursor witness omitted its cursor claim".to_owned())?;
-    if cursor_claims.next().is_some()
-        || claim.0 != &value.recipe
-        || claim.1 != &value.version
-        || claim.2 != &value.branch
-        || claim.3 != &value.log
-        || *claim.4 != value.schema
-        || claim.5 != &value.root
-        || *claim.6 != value.sequence
-    {
+        } = claim
+        else {
+            continue;
+        };
+        let matches_owner = recipe == &owner_recipe
+            && version == &owner_version
+            && branch == &owner_branch
+            && log == &owner_log
+            && *schema == owner_schema
+            && root == &owner_root
+            && *sequence == owner_sequence;
+        let matches_page = recipe == &value.recipe
+            && version == &value.version
+            && branch == &value.branch
+            && log == &value.log
+            && *schema == value.schema
+            && root == &value.root
+            && *sequence == value.sequence;
+        match (matches_owner, matches_page) {
+            (true, false) => owner_cursor_claims += 1,
+            (false, true) => page_cursor_claims += 1,
+            _ => return Err("outline cursor witness cursor claim does not match".to_owned()),
+        }
+    }
+    if owner_cursor_claims > 1 || page_cursor_claims != 1 {
         return Err("outline cursor witness cursor claim does not match".to_owned());
     }
     let predecessor = value
