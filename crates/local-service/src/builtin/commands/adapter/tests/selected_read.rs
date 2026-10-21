@@ -5,8 +5,8 @@
 
 use super::*;
 use backend_library::{
-    CommandDto, CommandReply, DeclarationReadExtent, ProductText, Row, RowId, SourceExcerpt,
-    SurfaceCommand, SurfaceReply,
+    Command, CommandDto, CommandReply, DeclarationReadExtent, PageTerminal, ProductText, Row,
+    RowId, SourceExcerpt, SurfaceCommand, SurfaceReply,
 };
 
 fn read_request(id: u64, labels: &[&str]) -> CommandDto {
@@ -62,6 +62,192 @@ fn local_owner_explicitly_answers_outline_witness_route_probe_with_revision() {
     let reply = backend_library::decode_reply_body(&bytes).expect("actual owner reply decode");
     backend_library::admit_reply(&request, &reply).expect("correlated owner capability reply");
     assert!(matches!(reply.reply, CommandReply::Revision(_)));
+}
+
+#[test]
+fn local_adapter_rehydrates_pc5_outline_witness_before_library_dispatch() {
+    let mut fixture = AdapterFixture::new();
+    let package = fixture.package;
+    let mut rows = (0..7)
+        .map(|index| {
+            let symbol =
+                backend_library::symbol_key(&format!("{}::outline::{index}", fixture.label));
+            backend_library::Row::in_package(
+                backend_library::RowId::Symbol(symbol),
+                fixture
+                    .daemon
+                    .as_ref()
+                    .expect("owner")
+                    .engine()
+                    .daemon()
+                    .library()
+                    .view()
+                    .basis(),
+                package,
+                format!("{}::outline::{index}", fixture.label),
+            )
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.id);
+    let mut expected = rows.iter().map(|row| row.id).collect::<Vec<_>>();
+    expected.sort_unstable();
+    fixture.publish_rows(rows);
+
+    let (first, page_certificate, revision_certificate, owner_root, limit) = {
+        let (adapter, daemon) = fixture.parts();
+        let library = daemon.engine().daemon().library();
+        let root = library.revision_root();
+        let limit = backend_library::QueryLimit::new(4).expect("small test page");
+        let request = CommandDto::new(
+            1201,
+            Command::OutlinePage {
+                package,
+                page: backend_library::PageRequest::new(root, limit),
+            },
+        );
+        let bytes = backend_library::encode_command_body(&request).expect("first page request");
+        let response = adapter
+            .execute(daemon, &bytes)
+            .expect("first page from adapter");
+        let decoded = backend_library::decode_reply_body(&response).expect("first page reply");
+        backend_library::admit_reply(&request, &decoded).expect("first page correlation");
+        let page_certificate = decoded.certificate().expect("page proof").clone();
+        let CommandReply::ProjectionPage(page) = decoded.reply else {
+            panic!("first outline page");
+        };
+        let PageTerminal::More(_) = page.terminal else {
+            panic!("first outline page has a continuation");
+        };
+        let revision_request = CommandDto::new(1202, Command::Revision);
+        let revision_bytes =
+            backend_library::encode_command_body(&revision_request).expect("revision request");
+        let revision_response = adapter
+            .execute(daemon, &revision_bytes)
+            .expect("revision from same local owner");
+        let revision =
+            backend_library::decode_reply_body(&revision_response).expect("revision reply");
+        backend_library::admit_reply(&revision_request, &revision).expect("revision correlation");
+        let revision_certificate = revision.certificate().expect("revision proof").clone();
+        (
+            page,
+            page_certificate,
+            revision_certificate,
+            library.revision_root(),
+            limit,
+        )
+    };
+
+    let PageTerminal::More(continuation) = first.terminal else {
+        unreachable!("checked above")
+    };
+    let cursor = continuation.cursor();
+    let mut page_root = [0_u8; 32];
+    page_root.copy_from_slice(cursor.root().as_bytes());
+    let witness = backend_library::OutlineCursorWitness::new_untrusted(
+        cursor.recipe(),
+        cursor.version(),
+        cursor.branch(),
+        cursor.log(),
+        cursor.schema(),
+        page_root,
+        cursor.sequence(),
+        cursor.query_offset(),
+        cursor.query_position().predecessor(),
+    )
+    .expect("untrusted witness retains valid cursor position");
+    let page_root_id = backend_library::encode_id(&page_root);
+    let recipe_id = backend_library::encode_id(cursor.recipe().as_bytes());
+    let mut certificate = revision_certificate;
+    for claim in &page_certificate.claims {
+        let keep = match claim {
+            backend_library::WireClaim::Root { schema, id, .. }
+                if *schema == backend_library::WireSchema::ViewRelation && id == &page_root_id =>
+            {
+                certificate =
+                    certificate.with_claim_once(backend_library::WireClaim::RootCommitment {
+                        schema: *schema,
+                        id: id.clone(),
+                    });
+                false
+            }
+            backend_library::WireClaim::RootCommitment { schema, id }
+                if *schema == backend_library::WireSchema::ViewRelation && id == &page_root_id =>
+            {
+                certificate = certificate.with_claim_once(claim.clone());
+                false
+            }
+            backend_library::WireClaim::KeyBytes {
+                schema: backend_library::WireSchema::ViewRecipe,
+                id,
+                ..
+            } if id == &recipe_id => true,
+            backend_library::WireClaim::Version {
+                schema: backend_library::WireSchema::ViewVersion,
+                id,
+                ..
+            } if id == &backend_library::encode_id(cursor.version().as_bytes()) => true,
+            backend_library::WireClaim::Key {
+                schema: backend_library::WireSchema::Branch,
+                id,
+                ..
+            } if id == &backend_library::encode_id(cursor.branch().as_bytes()) => true,
+            backend_library::WireClaim::Key {
+                schema: backend_library::WireSchema::Log,
+                id,
+                ..
+            } if id == &backend_library::encode_id(cursor.log().as_bytes()) => true,
+            backend_library::WireClaim::Key {
+                schema: backend_library::WireSchema::Package,
+                id,
+                ..
+            } if id == &backend_library::encode_id(package.as_bytes()) => true,
+            backend_library::WireClaim::Cursor { .. } => true,
+            _ => false,
+        };
+        if keep {
+            certificate = certificate.with_claim_once(claim.clone());
+        }
+    }
+    assert_ne!(
+        backend_library::encode_id(owner_root.as_bytes()),
+        page_root_id,
+        "the page witness must not alias the current owner root"
+    );
+    let request = CommandDto::new(
+        1203,
+        Command::OutlinePage {
+            package,
+            page: backend_library::PageRequest::new(owner_root, limit)
+                .with_outline_witness(witness),
+        },
+    )
+    .with_certificate(certificate);
+    let body = backend_library::encode_command_body(&request)
+        .expect("closed owner-bound PC5 wire request");
+    let (adapter, daemon) = fixture.parts();
+    let ticket = 1203;
+    let executed = adapter
+        .execute_or_defer(daemon, &body, ticket)
+        .expect("owner rehydrates witness before dispatch");
+    let Executed::Reply(bytes) = executed else {
+        panic!("outline continuation is a read and must reply immediately");
+    };
+    let decoded = backend_library::decode_reply_body(&bytes).expect("continued page reply");
+    backend_library::admit_reply(&request, &decoded).expect("continued page admission");
+    let CommandReply::ProjectionPage(second) = decoded.reply else {
+        panic!("continued outline page");
+    };
+    assert_eq!(second.terminal, PageTerminal::Complete);
+    let mut ids = first
+        .snapshot
+        .root
+        .rows()
+        .iter()
+        .map(|row| row.id)
+        .collect::<Vec<_>>();
+    ids.extend(second.snapshot.root.rows().iter().map(|row| row.id));
+    ids.sort_unstable();
+    assert_eq!(ids, expected, "wire page union retains every outline row");
 }
 
 #[test]

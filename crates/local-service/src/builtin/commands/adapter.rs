@@ -1310,7 +1310,7 @@ impl CommandAdapter {
             self.retain_live_semantic_completion();
             return Ok(Executed::Deferred);
         }
-        self.execute_from(daemon, body, &origin)
+        self.execute_request_from(daemon, body, request, &origin)
             .map(Executed::Reply)
     }
 
@@ -4595,6 +4595,16 @@ impl CommandAdapter {
         let owner = daemon.engine().daemon().library().cursor();
         let request = backend_engine::decode_command_dto_for_owner(body, owner)
             .map_err(|error| BuiltinModelError(format!("decode command DTO: {error}")))?;
+        self.execute_request_from(daemon, body, request, origin)
+    }
+
+    fn execute_request_from(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        body: &[u8],
+        request: backend_library::CommandDto,
+        origin: &DeferredCommandOrigin,
+    ) -> Result<Vec<u8>, BuiltinModelError> {
         let short_control = self.can_answer_short_control(&request.command, origin);
         if answers_while_indexing(&request.command) && !short_control {
             return Err(BuiltinModelError(
