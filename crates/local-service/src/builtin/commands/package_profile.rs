@@ -300,7 +300,7 @@ pub(super) fn read(
                             }
                             Ok(())
                         };
-                        let page = coverage_page(
+                        let page = build_coverage_page(
                             catalog,
                             requested,
                             *claim.binding().identity.as_ref(),
@@ -428,7 +428,7 @@ fn coverage_row(
     Ok(row.cloned())
 }
 
-fn coverage_page(
+fn build_coverage_page(
     catalog: &backend_semantic::ir::SourceCoverageManifest,
     selector: backend_library::PackageCompilerCoverageSelector,
     generation: [u8; 32],
@@ -759,7 +759,7 @@ mod tests {
         let mut recovered = Vec::new();
         let mut first_page_rows = None;
         while let Some(selector) = next {
-            let page = coverage_page(
+            let page = build_coverage_page(
                 &catalog,
                 selector,
                 [5; 32],
@@ -807,7 +807,7 @@ mod tests {
                 assert_eq!(path, &format!("src/{index:02}.spec.ts"));
             }
         }
-        let terminal = coverage_page(
+        let terminal = build_coverage_page(
             &catalog,
             PackageCompilerCoverageSelector {
                 offset: 26,
@@ -823,7 +823,7 @@ mod tests {
         assert!(terminal.rows.is_empty());
         assert!(terminal.next.is_none());
         assert!(
-            coverage_page(
+            build_coverage_page(
                 &catalog,
                 PackageCompilerCoverageSelector {
                     offset: 27,
