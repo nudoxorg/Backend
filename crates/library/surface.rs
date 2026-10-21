@@ -3225,6 +3225,17 @@ pub enum IndexJobProgressKind {
         /// Source-bound native refusal, including its existing typed cause.
         failure: Box<PackageCompilerFailure>,
     },
+    /// The original worker accepted the same retained work for explicit retry.
+    /// This is neither successful persistence nor a terminal receipt.
+    PublicationRetryAdmitted,
+    /// The original publication worker returned a retryable error. The job
+    /// remains active; this observation is never a terminal or publication receipt.
+    PublicationPending {
+        /// Bounded worker-reported reason publication could not finish.
+        detail: ProductText,
+        /// The original reason exceeded the bounded retained detail.
+        detail_truncated: bool,
+    },
 }
 
 impl IndexJobProgressKind {
@@ -3233,7 +3244,14 @@ impl IndexJobProgressKind {
             failure.validate()?;
         }
         match self {
-            Self::StageChanged { .. } => Ok(()),
+            Self::StageChanged { .. } | Self::PublicationRetryAdmitted => Ok(()),
+            Self::PublicationPending { detail, .. } => {
+                if detail.as_str().len() <= 1024 {
+                    Ok(())
+                } else {
+                    Err(ProductAdmissionError::IndexProgressShape)
+                }
+            }
             Self::ProfileStarted {
                 profile,
                 ordinal,
@@ -3314,6 +3332,17 @@ impl IndexProgressPage {
                 return Err(ProductAdmissionError::IndexProgressShape);
             }
             prior_sequence = event.sequence;
+        }
+        if self.stage != IndexJobStage::Publishing
+            && self.events.last().is_some_and(|event| {
+                matches!(
+                    event.kind,
+                    IndexJobProgressKind::PublicationPending { .. }
+                        | IndexJobProgressKind::PublicationRetryAdmitted
+                )
+            })
+        {
+            return Err(ProductAdmissionError::IndexProgressShape);
         }
         if prior_sequence > self.next_sequence
             || (!self.events.is_empty() && prior_sequence != self.next_sequence)

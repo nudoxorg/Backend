@@ -2351,6 +2351,35 @@ impl CommandAdapter {
         );
     }
 
+    fn emit_index_publication_pending(
+        &mut self,
+        indexing: &mut IndexJob,
+        error: &BuiltinModelError,
+    ) {
+        if indexing.progress_stage != Some(backend_library::IndexJobStage::Publishing) {
+            return;
+        }
+        let value = error.to_string().replace('\0', " ");
+        let mut boundary = value.len().min(1024);
+        while !value.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        let kind = backend_library::IndexJobProgressKind::PublicationPending {
+            detail: bounded_index_detail(&value[..boundary]),
+            detail_truncated: boundary < value.len(),
+        };
+        if self
+            .index_progress
+            .iter()
+            .rev()
+            .find(|event| event.ticket == indexing.owner_ticket)
+            .is_some_and(|event| event.kind == kind)
+        {
+            return;
+        }
+        self.emit_index_progress(indexing, kind);
+    }
+
     fn read_index_progress(
         &self,
         daemon: &ProductDaemon,
@@ -3590,7 +3619,8 @@ impl CommandAdapter {
                         }
                     }
                     if let Some(mut done) = completion {
-                        if matches!(done.disposition, Disposition::Pending(_)) {
+                        if let Disposition::Pending(error) = &done.disposition {
+                            self.emit_index_publication_pending(&mut indexing, error);
                             if !retry_admitted && !cancelling_before_grant {
                                 indexing.work = Self::owned_publication_state(
                                     preparing_source,
@@ -3604,6 +3634,12 @@ impl CommandAdapter {
                             if let Some(running) = worker.as_ref() {
                                 match running.retry(done.work) {
                                     Ok(()) => {
+                                        if indexing.progress_stage
+                                            == Some(backend_library::IndexJobStage::Publishing)
+                                        {
+                                            self.emit_index_progress(&mut indexing,
+                                                backend_library::IndexJobProgressKind::PublicationRetryAdmitted);
+                                        }
                                         indexing.work = Self::owned_publication_state(
                                             preparing_source,
                                             worker,

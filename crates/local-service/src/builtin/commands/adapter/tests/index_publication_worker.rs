@@ -2084,6 +2084,37 @@ fn index_publication_worker_selected_sink_error_is_observed_without_a_terminal()
     assert_eq!(diagnostic["readiness_authority"], false);
     assert!(!diagnostic["detail"].as_str().expect("retained actual sink error").is_empty());
     assert_old_read(&mut fixture, &old, &view, cursor, package);
+    let pending_sequence = {
+        let (adapter, daemon) = fixture.parts();
+        let command = backend_engine::CommandDto::new(
+            0x939,
+            Command::Surface(backend_library::SurfaceCommand::IndexProgress {
+                ticket: ticket.clone(),
+                after_sequence: 0,
+            }),
+        );
+        let body = serde_json::to_vec(&command).expect("actual public progress command");
+        let Executed::Reply(bytes) = adapter
+            .execute_or_defer(daemon, &body, 0x939)
+            .expect("actual owner progress dispatch")
+        else {
+            panic!("progress is an immediate read")
+        };
+        let reply = backend_library::decode_reply_body(&bytes).expect("actual public reply");
+        backend_library::admit_reply(&command, &reply).expect("exact public ticket admission");
+        let CommandReply::Surface(backend_library::SurfaceReply::IndexProgress(
+            backend_library::IndexJobObservation::Pending(page),
+        )) = reply.reply
+        else {
+            panic!("sink error cannot become a terminal")
+        };
+        assert_eq!(page.stage, backend_library::IndexJobStage::Publishing);
+        assert!(page.events.iter().any(|event| matches!(&event.kind,
+            backend_library::IndexJobProgressKind::PublicationPending { detail, detail_truncated: false }
+                if detail.as_str() == diagnostic["detail"].as_str().expect("same original sink error")
+        )));
+        page.next_sequence
+    };
     assert!(fixture.adapter.as_ref().expect("adapter").index_terminals.iter()
         .all(|terminal| terminal.ticket != ticket));
     // A selected sink failure deliberately retains the original work until
@@ -2098,6 +2129,15 @@ fn index_publication_worker_selected_sink_error_is_observed_without_a_terminal()
     }
     let adapter = fixture.adapter.as_ref().expect("adapter");
     assert!(adapter.journal_readiness.retry_token() == retry);
+    assert_eq!(
+        adapter
+            .indexing
+            .as_ref()
+            .expect("same active job")
+            .progress_sequence,
+        pending_sequence,
+        "unchanged retained failure cannot manufacture progress on ordinary ticks"
+    );
     assert!(matches!(adapter.indexing.as_ref().map(|job| &job.work),
         Some(IndexJobWork::PublicationWorker {
             completion: Some(Completion { disposition: Disposition::Pending(_), .. }), ..
@@ -2114,6 +2154,20 @@ fn index_publication_worker_selected_sink_error_is_observed_without_a_terminal()
     assert!(matches!(adapter.execute_or_defer(daemon, &body, 0x93a), Ok(Executed::Reply(_))));
     assert!(adapter.journal_readiness.retry_token() != retry,
         "the actual status protocol must authorize retry, not the test helper");
+    tick(&mut fixture);
+    let retry_progress = fixture
+        .adapter
+        .as_ref()
+        .expect("same owner")
+        .index_progress
+        .back()
+        .expect("actual admitted retry milestone");
+    assert_eq!(retry_progress.ticket, ticket);
+    assert!(matches!(
+        retry_progress.kind,
+        backend_library::IndexJobProgressKind::PublicationRetryAdmitted
+    ));
+    assert_eq!(retry_progress.sequence, pending_sequence + 1);
     published(&mut fixture, &ticket);
     let (adapter, daemon) = fixture.parts();
     assert!(project_is_admitted(daemon, package));
