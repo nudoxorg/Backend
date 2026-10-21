@@ -89,24 +89,43 @@ def ensure_cargo_home(cache_root, cargo_home):
 
 
 def observe_cargo_home_parent(cargo_home):
-    """Report the configured Cargo-home parent without creating or owning it."""
+    """Best-effort diagnostics when no fast-cache root was configured.
+
+    This branch must not change Cargo's existing behavior: unlike the
+    configured-cache guard, observations here are never admission checks.
+    """
     home = os.fspath(cargo_home)
     if not home:
-        print('CI-FAST-CARGO-HOME state=skipped reason=cache-root-unset cargo_home=unset')
+        print(
+            'CI-FAST-CARGO-HOME state=skipped reason=cache-root-unset '
+            'cargo_home=unset cache_parent=unavailable home_parent=unavailable'
+        )
         return
     if not os.path.isabs(home):
-        raise ValueError('Cargo home must be absolute')
-    parent = os.path.dirname(os.path.normpath(home))
-    try:
-        metadata = os.stat(parent, follow_symlinks=False)
-    except FileNotFoundError:
-        print('CI-FAST-CARGO-HOME state=skipped reason=cache-root-unset parent=absent')
+        print(
+            'CI-FAST-CARGO-HOME state=skipped reason=cache-root-unset '
+            'cargo_home=relative cache_parent=unavailable home_parent=unavailable'
+        )
         return
-    if not stat.S_ISDIR(metadata.st_mode):
-        raise ValueError('Cargo-home parent is not a real directory')
+
+    def directory_status(path):
+        try:
+            metadata = os.stat(path, follow_symlinks=False)
+        except FileNotFoundError:
+            return 'absent'
+        except OSError as error:
+            return f'unavailable_errno_{error.errno}'
+        if not stat.S_ISDIR(metadata.st_mode):
+            return 'not_directory'
+        return f'present_dev_{metadata.st_dev}_ino_{metadata.st_ino}'
+
+    normalized = os.path.normpath(home)
+    cache_parent = os.path.dirname(normalized)
+    home_parent = normalized
     print(
         'CI-FAST-CARGO-HOME state=skipped reason=cache-root-unset '
-        f'parent=present parent_dev={metadata.st_dev} parent_ino={metadata.st_ino}'
+        f'cargo_home=absolute cache_parent={directory_status(cache_parent)} '
+        f'home_parent={directory_status(home_parent)}'
     )
 
 

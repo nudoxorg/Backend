@@ -3,6 +3,7 @@
 from pathlib import Path
 from contextlib import redirect_stdout
 from io import StringIO
+import errno
 import os
 import tempfile
 import unittest
@@ -60,8 +61,35 @@ class FastCacheTest(unittest.TestCase):
             output = StringIO()
             with redirect_stdout(output):
                 observe_cargo_home_parent(home)
-            self.assertIn('state=skipped reason=cache-root-unset parent=absent', output.getvalue())
+            self.assertIn('state=skipped reason=cache-root-unset', output.getvalue())
+            self.assertIn('cache_parent=absent', output.getvalue())
+            self.assertIn('home_parent=absent', output.getvalue())
             self.assertFalse(home.parent.exists())
+
+    def test_unconfigured_fast_cache_diagnostics_are_best_effort(self):
+        with tempfile.TemporaryDirectory() as parent:
+            relative_output = StringIO()
+            with redirect_stdout(relative_output):
+                observe_cargo_home_parent('relative/cargo-home')
+            self.assertIn('cargo_home=relative', relative_output.getvalue())
+
+            not_directory = Path(parent) / 'file'
+            not_directory.write_text('preserve')
+            non_directory_output = StringIO()
+            with redirect_stdout(non_directory_output):
+                observe_cargo_home_parent(not_directory / 'cargo-home')
+            self.assertIn('cache_parent=not_directory', non_directory_output.getvalue())
+            self.assertIn(
+                f'home_parent=unavailable_errno_{errno.ENOTDIR}', non_directory_output.getvalue()
+            )
+
+            loop = Path(parent) / 'loop'
+            loop.symlink_to(loop)
+            unavailable_output = StringIO()
+            with redirect_stdout(unavailable_output):
+                observe_cargo_home_parent(loop / 'cargo-home')
+            self.assertIn('cache_parent=not_directory', unavailable_output.getvalue())
+            self.assertIn('home_parent=unavailable_errno_', unavailable_output.getvalue())
 
     def test_eviction_preserves_root_inode_and_removes_hidden_nested_outputs(self):
         with tempfile.TemporaryDirectory() as parent:
