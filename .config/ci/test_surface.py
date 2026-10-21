@@ -1271,6 +1271,16 @@ sys.exit(surface.main())
 
 
 
+class CommunicateDeadlineTests(unittest.TestCase):
+    def test_input_uses_remaining_deadline_and_followups_stay_clamped(self):
+        c = surface.process_custody
+        self.assertAlmostEqual(c._communicate_timeout(10.0, "payload", 9.95), 0.05)
+        self.assertAlmostEqual(c._communicate_timeout(10.0, None, 9.95), 0.05)
+        self.assertEqual(c._communicate_timeout(10.0, None, 9.0), 0.1)
+        self.assertAlmostEqual(c._communicate_timeout(10.0, "", 9.95), 0.05)
+        self.assertEqual(c._communicate_timeout(None, "payload", 0.0), 0.1)
+
+
 class PlatformPopenCompatibilityTests(unittest.TestCase):
     def test_non_linux_popen_run_and_forced_owner_cleanup_preserve_original_paths(self):
         """Real ordinary children exercise the Darwin-selected API path."""
