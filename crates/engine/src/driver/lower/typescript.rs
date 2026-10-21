@@ -4436,6 +4436,7 @@ enum NativeCallableScopeEvent {
 fn native_tsz_member_symbol(
     checker: &mut TszCheckerState<'_>,
     binder: &backend_frontend_typescript::TszBinderState,
+    project: &TszProject,
     arena: &TszNodeArena,
     receiver: TszNodeIndex,
     member_name: TszNodeIndex,
@@ -4460,7 +4461,14 @@ fn native_tsz_member_symbol(
     // unrelated same-numbered symbol. Carry the checker's exact file owner
     // through both the member lookup and the later declaration-coordinate
     // join.
-    let owner_file_idx = checker.ctx.resolve_symbol_file_index(owner_symbol);
+    let checker_file_idx = checker.ctx.resolve_symbol_file_index(owner_symbol);
+    let program_file_idx = native_tsz_symbol_file_index(project, owner_symbol);
+    let owner_file_idx = match (checker_file_idx, program_file_idx) {
+        (Some(checker), Some(program)) if checker != program => return None,
+        (Some(checker), _) => Some(checker),
+        (None, Some(program)) => Some(program),
+        (None, None) => None,
+    };
     let owner_binder = match owner_file_idx {
         Some(owner_file_idx) => checker.ctx.get_binder_for_file(owner_file_idx)?,
         // Same-file symbols do not always need a cross-file owner entry. Keep
@@ -4493,6 +4501,36 @@ fn native_tsz_member_symbol(
                 .and_then(|exports| exports.get(member_name))
         });
     member.map(|symbol| (symbol, owner_file_idx))
+}
+
+/// Finds a symbol's file only when its exact retained program declarations
+/// all belong to one bound source file and that file independently maps every
+/// declaration node back to this symbol. This supplies an immutable project
+/// witness when the checker has not populated its dynamic symbol-owner map.
+fn native_tsz_symbol_file_index(project: &TszProject, symbol: TszSymbolId) -> Option<usize> {
+    let program = project.program();
+    let symbol_data = program.symbols.get(symbol)?;
+    if symbol_data.declarations.is_empty()
+        || symbol_data.declarations.len() != symbol_data.stable_declarations.len()
+    {
+        return None;
+    }
+    let file_index = usize::try_from(symbol_data.stable_declarations.first()?.file_idx).ok()?;
+    let file = program.files.get(file_index)?;
+    for (declaration, stable) in symbol_data
+        .declarations
+        .iter()
+        .zip(&symbol_data.stable_declarations)
+    {
+        if usize::try_from(stable.file_idx).ok()? != file_index
+            || stable.pos >= stable.end
+            || file.arena.pos_end_at(*declaration) != Some((stable.pos, stable.end))
+            || file.node_symbols.get(&declaration.0) != Some(&symbol)
+        {
+            return None;
+        }
+    }
+    Some(file_index)
 }
 
 /// An object method is a source-owned callable even though it has no
@@ -5451,7 +5489,10 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 && self
                     .tsz_bound_file
                     .and_then(|file| native_tsz_symbol_at_identifier_span(file, name))
-                    .and_then(|symbol| self.tsz_binder?.symbols.get(symbol))
+                    .and_then(|symbol| {
+                        self.tsz_project
+                            .and_then(|project| project.program().symbols.get(symbol))
+                    })
                     .is_some_and(|symbol| symbol.declarations.len() > 1);
             let mut members = Vec::with_capacity(spans.len());
             let mut complete = !checker_reports_merge;
@@ -7062,6 +7103,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 let Some((target, target_owner)) = native_tsz_member_symbol(
                     checker,
                     binder,
+                    session.project(),
                     arena,
                     access.expression,
                     access.name_or_argument,
@@ -7151,6 +7193,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             let Some((target_symbol, target_owner)) = native_tsz_member_symbol(
                 checker,
                 binder,
+                session.project(),
                 arena,
                 access.expression,
                 access.name_or_argument,
