@@ -1275,7 +1275,7 @@ fn portable_query_duplicate_json_fields_are_not_normalized_into_a_proof() {
 }
 
 #[test]
-fn portable_query_full_credit_can_export_a_compact_predecessor() {
+fn portable_query_full_credit_can_export_a_full_root_predecessor() {
     let owner = Arc::new(Mutex::new(owner(1, 401, 0)));
     let requests = Arc::new(Mutex::new(vec![]));
     let mut session = session(&owner, &requests);
@@ -1284,7 +1284,7 @@ fn portable_query_full_credit_can_export_a_compact_predecessor() {
         .expect("full credit query");
     let next = page(&reply).next.expect("successor exists");
     let exported = session.encode_query_continuation(PageContinuation::from_cursor(next));
-    assert!(exported.is_ok(), "compact export: {exported:?}");
+    assert!(exported.is_ok(), "full-root export: {exported:?}");
 }
 
 #[test]
@@ -1298,28 +1298,13 @@ fn portable_query_compressible_long_proof_preserves_every_canonical_byte() {
         .expect("admitted bounded long query");
     let next = page(&reply).next.expect("successor exists");
     let exported = session.encode_query_continuation(PageContinuation::from_cursor(next));
-    let token = exported.expect("bounded compact proof");
+    let token = exported.expect("bounded full-root proof");
     assert!(token.starts_with("pc4-"));
     let body = decode_portable_body(&token).expect("bounded expansion");
-    let compact: CommandDto = serde_json::from_slice(&body).expect("bounded compact command");
-    assert!(compact_root_reference_shape(&compact, true));
+    let full: CommandDto = serde_json::from_slice(&body).expect("bounded full-root command");
+    assert!(full_root_catalog_continuation_shape(&full));
     assert!(
-        compact
-            .certificate()
-            .expect("certificate")
-            .claims
-            .iter()
-            .any(|claim| matches!(
-                claim,
-                WireClaim::RootCommitment {
-                    schema: WireSchema::ViewRelation,
-                    ..
-                }
-            ))
-    );
-    assert!(
-        !compact
-            .certificate()
+        full.certificate()
             .expect("certificate")
             .claims
             .iter()
@@ -1332,14 +1317,14 @@ fn portable_query_compressible_long_proof_preserves_every_canonical_byte() {
             ))
     );
     assert!(
-        backend_library::decode_command_body(&body).is_err(),
-        "the digest-only page root requires owner-aware decoding"
+        backend_library::decode_command_body(&body).is_ok(),
+        "full page-root preimage must pass the strict standalone decoder"
     );
 
     let mut fresh = session(&owner, &requests);
     let continuation = fresh
         .decode_page_continuation(&token)
-        .expect("cold owner reopens compact root reference");
+        .expect("cold owner reopens full-root token");
     let resumed = fresh
         .names_page(&text, 3, Some(continuation))
         .expect("exact cold continuation");
@@ -1347,7 +1332,7 @@ fn portable_query_compressible_long_proof_preserves_every_canonical_byte() {
 }
 
 #[test]
-fn portable_search_compact_root_reference_rehydrates_exact_witness_and_page_union() {
+fn portable_search_full_root_preserves_exact_witness_and_page_union() {
     let owner = Arc::new(Mutex::new(owner(1, 9, 0)));
     let requests = Arc::new(Mutex::new(vec![]));
     let mut issuing = session(&owner, &requests);
@@ -1358,128 +1343,54 @@ fn portable_search_compact_root_reference_rehydrates_exact_witness_and_page_unio
         .as_ref()
         .expect("issued exact next command")
         .clone();
-    let compact = compact_root_reference(&original).expect("root is the only elided witness");
-    let original_certificate = original.certificate().expect("full certificate");
-    let compact_certificate = compact.certificate().expect("compact certificate");
-    assert!(
-        original_certificate
-            .claims
-            .iter()
-            .all(|claim| !matches!(claim, WireClaim::Cursor { .. })),
-        "real catalog responses may bind cursor fields through their preimage claims without a duplicate Cursor claim"
-    );
-    assert_eq!(
-        compact_certificate.claims.len(),
-        original_certificate.claims.len(),
-        "replacing the canonical page root with its commitment preserves claim count"
-    );
-    let original_root = original_certificate
+    let certificate = original.certificate().expect("full certificate");
+    let page_root_id = encode_id(cursor.root().as_bytes());
+    let _page_root = certificate
         .claims
         .iter()
         .find(|claim| {
-            matches!(
-                claim,
-                WireClaim::Root {
-                    schema: WireSchema::ViewRelation,
-                    ..
-                }
-            )
+            matches!(claim, WireClaim::Root { schema: WireSchema::ViewRelation, id, .. } if id == &page_root_id)
         })
-        .expect("full root witness");
-    let (current_root_id, owner_cursor) = {
-        let current = owner.lock().expect("owner");
-        (
-            encode_id(current.view().root().as_bytes()),
-            current.cursor(),
-        )
-    };
-    let WireClaim::Root { id, canonical, .. } = original_root else {
-        panic!("expected root witness")
-    };
-    assert_eq!(id, &encode_id(cursor.root().as_bytes()));
-    assert_ne!(
-        id, &current_root_id,
-        "page root differs from owner basis root"
-    );
-    assert!(
-        backend_library::admit_root_bytes::<backend_library::ViewRelation>(id, canonical).is_ok()
-    );
-    assert!(compact_certificate.claims.iter().any(|claim| {
-        matches!(claim, WireClaim::RootCommitment { schema: WireSchema::ViewRelation, id } if id == &current_root_id)
-    }));
-    assert!(compact_root_reference_shape(&compact, true));
-    let mut non_root_claims = original_certificate
-        .claims
-        .iter()
-        .filter(|claim| {
-            !matches!(
-                claim,
-                WireClaim::Root {
-                    schema: WireSchema::ViewRelation,
-                    ..
-                }
-            )
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    non_root_claims.push(WireClaim::RootCommitment {
-        schema: WireSchema::ViewRelation,
-        id: encode_id(cursor.root().as_bytes()),
+        .expect("canonical page root preimage remains present");
+    let owner_cursor = owner.lock().expect("owner").cursor();
+    assert_ne!(cursor.root(), owner_cursor.root());
+    let mut rootless_certificate = certificate.clone();
+    rootless_certificate.claims.retain(|claim| {
+        !matches!(claim, WireClaim::Root { schema: WireSchema::ViewRelation, id, .. } if id == &page_root_id)
     });
-    assert_eq!(
-        compact_certificate.claims, non_root_claims,
-        "all existing witnesses remain byte-for-byte and the page root is replaced by its digest"
-    );
-    let compact_bytes = backend_library::encode_binary_certificate_command(&compact)
-        .expect("compact binary continuation");
-    let full_bytes = backend_library::encode_binary_certificate_command(&original)
-        .expect("full binary continuation");
-    assert!(
-        compact_bytes.len() < full_bytes.len(),
-        "replacing the page relation preimage with its digest reduces the frame"
-    );
-    let compact_json = backend_library::expand_binary_certificate_command(&compact_bytes)
-        .expect("compact command expansion");
-    assert!(compact.is_compact_catalog_continuation());
-    let reopened = backend_library::decode_command_body_for_owner(&compact_json, owner_cursor)
-        .expect("owner-aware decoder retains digest-only page root");
-    assert_eq!(reopened.command, original.command);
-    assert_eq!(
-        reopened.certificate().expect("retained claims"),
-        compact_certificate
-    );
-    let live_compact =
-        CommandDto::new(42, compact.command.clone()).with_certificate(compact_certificate.clone());
-    let live_body = backend_library::encode_command_body(&live_compact)
-        .expect("normal transport encoder accepts the exact compact grammar with a live id");
-    assert_eq!(
-        backend_library::decode_command_body_for_owner(&live_body, owner_cursor)
-            .expect("normal owner decoder accepts exact compact continuation"),
-        live_compact
-    );
-    let legacy_body =
-        backend_library::encode_command_body(&original).expect("legacy full-root strict encoding");
-    assert_eq!(
-        backend_library::decode_command_body_for_owner(&legacy_body, owner_cursor)
-            .expect("owner-aware decoder preserves legacy full-root path"),
-        original
-    );
+    let rootless_certificate = rootless_certificate.with_claim_once(WireClaim::RootCommitment {
+        schema: WireSchema::ViewRelation,
+        id: page_root_id.clone(),
+    });
+    let rootless = CommandDto::new(original.request_id, original.command.clone())
+        .with_certificate(rootless_certificate);
+    let rootless_body = serde_json::to_vec(&rootless).expect("rootless envelope");
+    assert!(backend_library::decode_command_body_for_owner(&rootless_body, owner_cursor).is_err());
 
-    let token = issuing
+    let portable_token = issuing
         .encode_query_continuation(PageContinuation::from_cursor(cursor))
-        .expect("portable compact token");
-    let mut forged_root = token_value(&token);
-    let commitment = forged_root["certificate"]["claims"]
+        .expect("portable full-root token");
+    assert!(portable_token.starts_with("pc4-"));
+    let body = decode_portable_body(&portable_token).expect("bounded expansion");
+    let reopened = backend_library::decode_command_body(&body)
+        .expect("full-root command passes standalone strict decoding");
+    assert_eq!(reopened.command, original.command);
+    assert_eq!(reopened.certificate(), original.certificate());
+    assert!(backend_library::decode_command_body_for_owner(&body, owner_cursor).is_ok());
+
+    let mut forged_root = token_value(&portable_token);
+    let forged_page_root = encode_id(view_state_root(&[]).as_bytes());
+    let root_claim = forged_root["certificate"]["claims"]
         .as_array_mut()
         .expect("claims")
         .iter_mut()
         .find(|claim| {
-            claim["kind"] == "root_commitment"
-                && claim["data"]["id"] == encode_id(cursor.root().as_bytes())
+            claim["kind"] == "root"
+                && claim["data"]["schema"] == "view_relation"
+                && claim["data"]["id"] == page_root_id
         })
-        .expect("root commitment");
-    let forged_page_root = encode_id(view_state_root(&[]).as_bytes());
-    commitment["data"]["id"] = serde_json::json!(forged_page_root);
+        .expect("page root claim");
+    root_claim["data"]["id"] = serde_json::json!(forged_page_root);
     forged_root["command"]["data"]["cursor"]["root"] = serde_json::json!(forged_page_root);
     let search_requests_before = requests
         .lock()
@@ -1488,12 +1399,9 @@ fn portable_search_compact_root_reference_rehydrates_exact_witness_and_page_unio
         .filter(|command| matches!(command, Command::Search(_)))
         .count();
     let mut reject_forged = session(&owner, &requests);
-    let forged_continuation = reject_forged
-        .decode_page_continuation(&token(&forged_root))
-        .expect("digest-only commitment is parsed before owner page reconstruction");
     assert!(
         reject_forged
-            .search_page("Thing", 3, Some(forged_continuation))
+            .decode_page_continuation(&token(&forged_root))
             .is_err()
     );
     assert_eq!(
@@ -1503,58 +1411,11 @@ fn portable_search_compact_root_reference_rehydrates_exact_witness_and_page_unio
             .iter()
             .filter(|command| matches!(command, Command::Search(_)))
             .count(),
-        search_requests_before + 1,
-        "owner reconstruction rejects the changed page-root digest"
+        search_requests_before,
+        "a changed root id cannot pass strict canonical-preimage admission"
     );
-    let mut same_owner_and_page_root = token_value(&token);
-    let owner_root = same_owner_and_page_root["command"]["data"]["basis"]
-        .as_str()
-        .expect("owner basis root")
-        .to_owned();
-    same_owner_and_page_root["command"]["data"]["cursor"]["root"] =
-        serde_json::json!(owner_root.clone());
-    let claims = same_owner_and_page_root["certificate"]["claims"]
-        .as_array_mut()
-        .expect("claims");
-    let page_root_commitment = claims
-        .iter_mut()
-        .find(|claim| {
-            claim["kind"] == "root_commitment"
-                && claim["data"]["id"] == encode_id(cursor.root().as_bytes())
-        })
-        .expect("page root commitment");
-    page_root_commitment["data"]["id"] = serde_json::json!(owner_root.clone());
-    let mut shortcut_claim_removed = false;
-    claims.retain(|claim| {
-        if !shortcut_claim_removed
-            && claim["kind"] == "root_commitment"
-            && claim["data"]["id"] == owner_root
-        {
-            shortcut_claim_removed = true;
-            true
-        } else if claim["kind"] == "root_commitment" && claim["data"]["id"] == owner_root {
-            false
-        } else {
-            true
-        }
-    });
-    let mut reject_owner_root_shortcut = session(&owner, &requests);
-    assert!(
-        reject_owner_root_shortcut
-            .decode_page_continuation(&token(&same_owner_and_page_root))
-            .is_err()
-    );
-    assert_eq!(
-        requests
-            .lock()
-            .expect("requests")
-            .iter()
-            .filter(|command| matches!(command, Command::Search(_)))
-            .count(),
-        search_requests_before + 1,
-        "a page-root commitment cannot be aliased to the owner root"
-    );
-    let mut forged_query = token_value(&token);
+
+    let mut forged_query = token_value(&portable_token);
     forged_query["command"]["data"]["text"] = serde_json::json!("Different query");
     let mut reject_query = session(&owner, &requests);
     assert!(
@@ -1570,17 +1431,17 @@ fn portable_search_compact_root_reference_rehydrates_exact_witness_and_page_unio
             .filter(|command| matches!(command, Command::Search(_)))
             .count(),
         search_requests_before,
-        "changed query recipe cannot issue another search page"
+        "a changed query cannot be accepted with the original certificate"
     );
+
     let expected = issuing
         .search_page("Thing", 3, Some(PageContinuation::from_cursor(cursor)))
         .expect("warm successor");
     drop(issuing);
-    *owner.lock().expect("owner") = owner_with_label(1, 9, 0, "Thing repeated");
     let mut fresh = session(&owner, &requests);
     let reopened = fresh
-        .decode_page_continuation(&token)
-        .expect("cold durable owner reopens compact token");
+        .decode_page_continuation(&portable_token)
+        .expect("cold durable owner reopens full-root token");
     let actual = fresh
         .search_page("Thing", 3, Some(reopened))
         .expect("cold successor");

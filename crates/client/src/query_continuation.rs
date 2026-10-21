@@ -111,12 +111,10 @@ fn continuation_cursor(command: &Command) -> Option<backend_library::Cursor> {
         })
 }
 
-// The cursor's page root is reproducible by the catalog owner from the exact
-// predecessor query. The portable token therefore needs only its commitment;
-// query execution re-derives and checks the complete page root before use.
-// Keep this exact shape check narrow so malformed proofs never fall back to a
-// commitment-only decode.
-fn compact_root_reference_shape(request: &CommandDto, rootless: bool) -> bool {
+// Retain the closed candidate-shape check as an eligibility guard, but export
+// the full root preimage until the library can carry a deferred root without
+// promoting its untrusted digest to `StateRoot`.
+fn full_root_catalog_continuation_shape(request: &CommandDto) -> bool {
     let Some(certificate) = request.certificate() else {
         return false;
     };
@@ -174,23 +172,14 @@ fn compact_root_reference_shape(request: &CommandDto, rootless: bool) -> bool {
     }
     owner_root_commitments == 1
         && coverages == 1
-        && (if rootless {
-            page_roots == 0
-                && page_root_commitments == 1
-                && certificate
-                    .claims
-                    .iter()
-                    .all(|claim| !matches!(claim, WireClaim::Root { .. }))
-        } else {
-            page_roots == 1 && (page_root_commitments == 0 || page_root_commitments == 1)
-        })
+        && page_roots == 1
+        && page_root_commitments <= 1
         && scope(certificate).is_ok()
 }
 
-// A raw closed-envelope prefilter selects the compact decoder before any
-// owner-bound reconstruction. The typed shared predicate still performs the
-// complete claim grammar check after parsing the strict envelope.
-fn raw_compact_catalog_candidate(body: &[u8]) -> bool {
+// Recognize only a closed rootless catalog envelope so it can be rejected
+// explicitly; it never enters an owner decoder that would promote its digest.
+fn raw_rootless_catalog_candidate(body: &[u8]) -> bool {
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
         return false;
     };
@@ -259,39 +248,11 @@ fn raw_compact_catalog_candidate(body: &[u8]) -> bool {
             .all(|claim| claim.get("kind").and_then(serde_json::Value::as_str) != Some("root"))
 }
 
-fn compact_root_reference(request: &CommandDto) -> Option<CommandDto> {
-    let certificate = request.certificate()?;
-    if !compact_root_reference_shape(request, false) {
+fn full_root_catalog_continuation(request: &CommandDto) -> Option<CommandDto> {
+    if !full_root_catalog_continuation_shape(request) {
         return None;
     }
-    let page_root = encode_id(continuation_cursor(&request.command)?.root().as_bytes());
-    let mut compact = certificate.clone();
-    let mut removed_page_root = false;
-    compact.claims.retain(|claim| match claim {
-        WireClaim::Root {
-            schema: WireSchema::ViewRelation,
-            id,
-            ..
-        } if id == &page_root => {
-            removed_page_root = true;
-            false
-        }
-        _ => true,
-    });
-    if removed_page_root {
-        compact = compact.with_claim_once(WireClaim::RootCommitment {
-            schema: WireSchema::ViewRelation,
-            id: page_root,
-        });
-    }
-    if !removed_page_root {
-        return None;
-    }
-    let candidate =
-        CommandDto::new(request.request_id, request.command.clone()).with_certificate(compact);
-    candidate
-        .is_compact_catalog_continuation()
-        .then_some(candidate)
+    Some(request.clone())
 }
 
 // Measure the existing DTO serializer without allocating an oversized body.
@@ -353,13 +314,8 @@ impl Session {
         // Keep the existing strict encoder admission before changing transport
         // spelling. Binary packing never supplies authority of its own.
         backend_library::encode_command_body(request).map_err(ClientError::Protocol)?;
-        let compact = compact_root_reference(request).unwrap_or_else(|| request.clone());
-        if compact != *request && !compact.is_compact_catalog_continuation() {
-            return Err(ClientError::Protocol(
-                "compact query proof does not match the shared owner-bound grammar".to_owned(),
-            ));
-        }
-        let body = backend_library::encode_binary_certificate_command(&compact)
+        let full_root = full_root_catalog_continuation(request).unwrap_or_else(|| request.clone());
+        let body = backend_library::encode_binary_certificate_command(&full_root)
             .map_err(ClientError::Protocol)?;
         encode_portable_proof(&body, "pc4-")
     }
@@ -511,29 +467,13 @@ impl Session {
                     .and_then(serde_json::Value::as_str)
                     != Some("graph_query")
                 {
-                    // Select owner-bound reconstruction only for the explicit
-                    // compact envelope discriminator; malformed ordinary
-                    // proofs never fall through from a strict decode error.
-                    if !raw_compact_catalog_candidate(&body) {
-                        return Err(ClientError::Protocol(error));
+                    if raw_rootless_catalog_candidate(&body) {
+                        return Err(ClientError::Protocol(
+                            "catalog continuation requires the canonical page-root preimage"
+                                .to_owned(),
+                        ));
                     }
-                    let revision = self.revision()?;
-                    let compact =
-                        backend_library::decode_command_body_for_owner(&body, revision.cursor())
-                            .map_err(|_| ClientError::Protocol(error.clone()))?;
-                    if compact.request_id != 1
-                        || !compact.is_compact_catalog_continuation()
-                        || !compact_root_reference_shape(&compact, true)
-                    {
-                        return Err(ClientError::Protocol(error));
-                    }
-                    if !basis(&compact.command).is_some_and(|basis| basis.matches(revision.root))
-                        || scope(compact.certificate().expect("checked certificate"))?
-                            != scope(&revision.certificate)?
-                    {
-                        return Err(ClientError::StaleCursor);
-                    }
-                    compact
+                    return Err(ClientError::Protocol(error));
                 } else {
                     let certificate: WireCertificate =
                         serde_json::from_value(envelope.get("certificate").cloned().ok_or_else(

@@ -82,154 +82,6 @@ impl CommandDto {
         self.certificate.as_ref()
     }
 
-    /// Whether this DTO is the exact compact catalog-continuation grammar.
-    ///
-    /// This is shared by the bounded producer encoder and owner-scoped
-    /// receiver. It admits only a digest-only predecessor page root plus the
-    /// unchanged owner basis, cursor preimages, issuing scope, and optional
-    /// exact graph coordinate. It deliberately excludes GraphQuery, whose
-    /// separate owner-bound grammar predates this format.
-    #[must_use]
-    pub fn is_compact_catalog_continuation(&self) -> bool {
-        let Some(certificate) = self.certificate.as_ref() else {
-            return false;
-        };
-        let (basis, cursor, address) = match &self.command {
-            Command::Search(query) => (query.basis(), query.cursor(), None),
-            Command::SearchPublishedNames(query) => {
-                (query.query().basis(), query.query().cursor(), None)
-            }
-            Command::Name(query) => (query.basis(), query.cursor(), None),
-            Command::GraphPage { symbol, page } => (
-                page.basis(),
-                page.continuation().map(crate::PageContinuation::cursor),
-                Some((
-                    WireSchema::Symbol,
-                    encode_id(&symbol.claimed_bytes()),
-                    symbol.is_selected(),
-                )),
-            ),
-            Command::OutlinePage { package, page } => (
-                page.basis(),
-                page.continuation().map(crate::PageContinuation::cursor),
-                Some((WireSchema::Package, encode_id(package.as_bytes()), false)),
-            ),
-            _ => return false,
-        };
-        let Some(cursor) = cursor else {
-            return false;
-        };
-        let owner_root = encode_id(basis.as_bytes());
-        let page_root = encode_id(cursor.root().as_bytes());
-        if owner_root == page_root || cursor.query_offset() == 0 {
-            return false;
-        }
-        let expected_address_count = if address.is_some() { 1 } else { 0 };
-        let mut owner_root_commitments = 0;
-        let mut page_root_commitments = 0;
-        let mut coverages = 0;
-        let mut cursor_claims = 0;
-        let mut recipe = 0;
-        let mut version = 0;
-        let mut branch = 0;
-        let mut log = 0;
-        let mut address_count = 0;
-        for claim in &certificate.claims {
-            match claim {
-                crate::WireClaim::RootCommitment {
-                    schema: WireSchema::ViewRelation,
-                    id,
-                } if id == &owner_root => owner_root_commitments += 1,
-                crate::WireClaim::RootCommitment {
-                    schema: WireSchema::ViewRelation,
-                    id,
-                } if id == &page_root => page_root_commitments += 1,
-                crate::WireClaim::Coverage { .. } => coverages += 1,
-                crate::WireClaim::Key {
-                    schema: WireSchema::ViewRecipe,
-                    id,
-                    ..
-                }
-                | crate::WireClaim::KeyBytes {
-                    schema: WireSchema::ViewRecipe,
-                    id,
-                    ..
-                } if id == &encode_id(cursor.recipe().as_bytes()) => recipe += 1,
-                crate::WireClaim::Version {
-                    schema: WireSchema::ViewVersion,
-                    id,
-                    ..
-                } if id == &encode_id(cursor.version().as_bytes()) => version += 1,
-                crate::WireClaim::Cursor {
-                    recipe: claimed_recipe,
-                    version: claimed_version,
-                    branch: claimed_branch,
-                    log: claimed_log,
-                    schema,
-                    root,
-                    sequence,
-                } if claimed_recipe == &encode_id(cursor.recipe().as_bytes())
-                    && claimed_version == &encode_id(cursor.version().as_bytes())
-                    && claimed_branch == &encode_id(cursor.branch().as_bytes())
-                    && claimed_log == &encode_id(cursor.log().as_bytes())
-                    && *schema == cursor.schema()
-                    && root == &page_root
-                    && *sequence == cursor.sequence() =>
-                {
-                    cursor_claims += 1
-                }
-                crate::WireClaim::Key {
-                    schema: WireSchema::Branch,
-                    id,
-                    ..
-                }
-                | crate::WireClaim::KeyBytes {
-                    schema: WireSchema::Branch,
-                    id,
-                    ..
-                } if id == &encode_id(cursor.branch().as_bytes()) => branch += 1,
-                crate::WireClaim::Key {
-                    schema: WireSchema::Log,
-                    id,
-                    ..
-                }
-                | crate::WireClaim::KeyBytes {
-                    schema: WireSchema::Log,
-                    id,
-                    ..
-                } if id == &encode_id(cursor.log().as_bytes()) => log += 1,
-                crate::WireClaim::Key { schema, id, .. }
-                    if address
-                        .as_ref()
-                        .is_some_and(|(expected_schema, expected_id, _)| {
-                            schema == expected_schema && id == expected_id
-                        }) =>
-                {
-                    address_count += 1
-                }
-                crate::WireClaim::KeyCommitment { schema, id }
-                    if address.as_ref().is_some_and(
-                        |(expected_schema, expected_id, selected)| {
-                            *selected && schema == expected_schema && id == expected_id
-                        },
-                    ) =>
-                {
-                    address_count += 1
-                }
-                _ => return false,
-            }
-        }
-        owner_root_commitments == 1
-            && page_root_commitments == 1
-            && coverages == 1
-            && cursor_claims <= 1
-            && recipe == 1
-            && version == 1
-            && branch == 1
-            && log == 1
-            && address_count == expected_address_count
-    }
-
     /// Returns the encoded DTO version.
     #[must_use]
     pub const fn version(&self) -> u16 {
@@ -260,13 +112,9 @@ impl CommandDto {
         Ok(expected.clone())
     }
 
-    /// Decodes graph-query and catalog-page continuations against the durable
-    /// owner's already admitted cursor.
-    ///
-    /// All ordinary commands retain strict canonical preimage decoding. A
-    /// graph query binds its commitment to the owner root; the exact compact
-    /// catalog grammar carries a predecessor-page commitment that execution
-    /// rederives from the durable owner before accepting the query.
+    /// Decodes graph-query continuations against the durable owner's already
+    /// admitted cursor. Catalog continuations retain strict canonical root
+    /// preimage decoding.
     ///
     /// # Errors
     /// Returns an error when the envelope, certificate, or continuation does
@@ -281,51 +129,6 @@ impl CommandDto {
             command,
             certificate: envelope.certificate,
         };
-        let catalog_continuation = match &request.command {
-            Command::Search(query) => query.cursor().is_some(),
-            Command::SearchPublishedNames(query) => query.query().cursor().is_some(),
-            Command::Name(query) => query.cursor().is_some(),
-            Command::GraphPage { page, .. } | Command::OutlinePage { page, .. } => {
-                page.continuation().is_some()
-            }
-            _ => false,
-        };
-        let has_root_commitment_without_full_root =
-            request
-                .certificate
-                .as_ref()
-                .is_some_and(|certificate| {
-                    let has_commitment = certificate.claims.iter().any(|claim| {
-                        matches!(claim, crate::WireClaim::RootCommitment { schema: WireSchema::ViewRelation, .. })
-                    });
-                    let page_root = match &request.command {
-                        Command::Search(query) => query.cursor().map(|cursor| cursor.root()),
-                        Command::SearchPublishedNames(query) => {
-                            query.query().cursor().map(|cursor| cursor.root())
-                        }
-                        Command::Name(query) => query.cursor().map(|cursor| cursor.root()),
-                        Command::GraphPage { page, .. } | Command::OutlinePage { page, .. } => {
-                            page.continuation().map(crate::PageContinuation::cursor).map(|cursor| cursor.root())
-                        }
-                        _ => None,
-                    };
-                    let has_full_page_root = page_root.is_some_and(|root| {
-                        let encoded = encode_id(root.as_bytes());
-                        certificate.claims.iter().any(|claim| {
-                            matches!(claim, crate::WireClaim::Root { schema: WireSchema::ViewRelation, id, .. } if id == &encoded)
-                        })
-                    });
-                    has_commitment && !has_full_page_root
-                });
-        if catalog_continuation
-            && has_root_commitment_without_full_root
-            && !request.is_compact_catalog_continuation()
-        {
-            return Err(
-                "compact catalog continuation does not match its closed owner-bound grammar"
-                    .to_owned(),
-            );
-        }
         Ok(request)
     }
 }

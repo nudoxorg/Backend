@@ -77,26 +77,10 @@ pub(crate) fn cursor_from_wire_against_catalog_owner(
     certificate: &WireCertificate,
     owner: Cursor,
 ) -> Result<Cursor, String> {
-    // Preserve the legacy standalone certificate path. A full Root carries
-    // its canonical preimage and must be checked by the ordinary root decoder;
-    // only the explicit RootCommitment spelling is owner-bound.
-    let admitted = if certificate.claims.iter().any(|claim| {
-        matches!(
-            claim,
-            crate::WireClaim::Root {
-                schema: WireSchema::ViewRelation,
-                ..
-            }
-        )
-    }) {
-        cursor_from_wire(value, certificate)?
-    } else {
-        cursor(value, certificate, |certificate, encoded| {
-            certificate
-                .root_commitment_bytes::<crate::ViewRelation>(WireSchema::ViewRelation, encoded)
-                .map(crate::ViewStateRoot::from_bytes)
-        })?
-    };
+    // A digest-only RootCommitment is not a StateRoot proof. Keep portable
+    // catalog continuations on the strict path until the page root can remain
+    // untrusted through owner-side predecessor-page reconstruction.
+    let admitted = cursor_from_wire(value, certificate)?;
     if admitted.branch() != owner.branch()
         || admitted.log() != owner.log()
         || admitted.schema() != owner.schema()
