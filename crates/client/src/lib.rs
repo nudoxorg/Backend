@@ -972,6 +972,9 @@ pub struct Session {
     request_context: Option<RequestContext>,
     search_wait_scope: Option<RequestContext>,
     next_request_id: u64,
+    /// True only when the owner compatibility path proved the running locald
+    /// image matches the installed image whose library advertises this route.
+    outline_owner_witness_route: bool,
     admitted_owner: Option<backend_library::Cursor>,
     admitted_source: Option<backend_library::SemanticObject>,
     prepared_query: Option<CommandDto>,
@@ -1060,6 +1063,7 @@ impl Session {
             request_context: None,
             search_wait_scope: None,
             next_request_id: 1,
+            outline_owner_witness_route: false,
             admitted_owner: None,
             admitted_source: None,
             prepared_query: None,
@@ -1098,6 +1102,7 @@ impl Session {
             request_context: None,
             search_wait_scope: None,
             next_request_id: 1,
+            outline_owner_witness_route: false,
             admitted_owner: None,
             admitted_source: None,
             prepared_query: None,
@@ -1111,6 +1116,13 @@ impl Session {
     #[must_use]
     pub fn request_context(&self) -> Option<&RequestContext> {
         self.request_context.as_ref()
+    }
+
+    /// Whether this connection has concrete evidence that its owner image
+    /// implements the compact outline witness decoder.
+    #[must_use]
+    pub const fn supports_outline_owner_witness_route(&self) -> bool {
+        self.outline_owner_witness_route
     }
 
     /// Installs or retires the context for one caller-owned request.

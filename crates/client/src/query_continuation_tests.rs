@@ -3978,6 +3978,10 @@ fn noncanonical_retained_outline_request_id_falls_back_to_strict_full_pc4() {
     )));
     let requests = Arc::new(Mutex::new(Vec::new()));
     let mut issuing = session(&owner, &requests);
+    assert!(
+        !issuing.supports_outline_owner_witness_route(),
+        "an injected/legacy transport has no matched-owner capability proof"
+    );
     let first = issuing.outline_page("/p", 3, None).expect("first outline page");
     let cursor = page(&first).next.expect("successor");
 

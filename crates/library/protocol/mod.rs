@@ -16,6 +16,11 @@ mod json;
 pub mod mcp;
 mod source;
 
+/// The owner/library protocol features implemented by this source revision.
+/// The capability is enabled only after the client proves it is connected to
+/// an owner image built from a library that advertises the same feature.
+pub const OUTLINE_OWNER_WITNESS_ROUTE: bool = true;
+
 pub use cli::{
     AdapterError, AdapterErrorCause, AdapterErrorCode, CANONICAL_CONTENT_ID_TEXT_BYTES,
     CLI_COMMAND_SEPARATOR, CanonicalContentId, CanonicalContentIdDecodeError, MAX_CLI_ARGUMENTS,

@@ -295,7 +295,7 @@ impl Engine for SessionProduct {
 
 impl Product for SessionProduct {
     fn supports_outline_owner_witness_route(&self) -> bool {
-        true
+        self.0.supports_outline_owner_witness_route()
     }
 
     fn cli_context(&self) -> Option<backend_present::StartupRecoveryContext> {

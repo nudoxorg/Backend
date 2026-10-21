@@ -41,6 +41,13 @@ fn update_error(found: u16, detail: impl Into<String>) -> ClientError {
         detail: detail.into(),
     }
 }
+
+fn outline_witness_route_for_owner(
+    matched_default_image: bool,
+    library_capability: Option<bool>,
+) -> bool {
+    matched_default_image && library_capability == Some(true)
+}
 fn probe_budget(
     deadline: Instant,
     context: Option<&RequestContext>,
@@ -112,7 +119,7 @@ impl Session {
                         "the replacement owner image could not be proven; no command was submitted",
                     ));
                 }
-                return Self::finish_owner_connection(paths, transport, context, deadline);
+                return Self::finish_owner_connection(paths, transport, context, deadline, false);
             }
             let remaining = probe_budget(deadline, context)?;
             let request = CommandDto::new(PROBE_ID, Command::Health);
@@ -138,7 +145,7 @@ impl Session {
                             // BACKEND_LOCALD_BIN is an intentional helper pin, not
                             // authority to replace its owner with this install's default.
                             return Self::finish_owner_connection(
-                                paths, transport, context, deadline,
+                                paths, transport, context, deadline, false,
                             );
                         };
                         intended_image = Some(peer.observe_default_locald_image(&candidate)
@@ -154,11 +161,17 @@ impl Session {
                         .map_err(|e| update_error(found, format!("the running/default owner image comparison could not be proven: {e}; no command was submitted")))?;
                     probe_budget(deadline, context)?;
                     if matches {
-                        return Self::finish_owner_connection(paths, transport, context, deadline);
+                        let route = outline_witness_route_for_owner(
+                            true,
+                            Some(backend_library::protocol::OUTLINE_OWNER_WITNESS_ROUTE),
+                        );
+                        return Self::finish_owner_connection(
+                            paths, transport, context, deadline, route,
+                        );
                     }
                 }
                 #[cfg(not(target_os = "linux"))]
-                return Self::finish_owner_connection(paths, transport, context, deadline);
+                return Self::finish_owner_connection(paths, transport, context, deadline, false);
             }
             if passive
                 || attempt != 0
@@ -248,9 +261,11 @@ impl Session {
         transport: UnixCommandTransport,
         context: Option<&RequestContext>,
         deadline: Instant,
+        outline_owner_witness_route: bool,
     ) -> Result<Self, ClientError> {
         probe_budget(deadline, context)?;
         let mut session = Self::from_transport(paths.endpoint(), transport);
+        session.outline_owner_witness_route = outline_owner_witness_route;
         session.set_request_context(context.cloned())?;
         probe_budget(deadline, context)?;
         Ok(session)
@@ -352,5 +367,27 @@ mod tests {
         ));
         assert!(!error.is_connection_lost());
         assert!(error.to_string().contains("no command was submitted"));
+    }
+
+    #[test]
+    fn outline_witness_route_requires_image_proof_and_known_library_capability() {
+        let supported = Some(backend_library::protocol::OUTLINE_OWNER_WITNESS_ROUTE);
+        assert!(
+            !outline_witness_route_for_owner(false, supported),
+            "a same-DTO or unproven owner image is not route evidence"
+        );
+        assert!(
+            !outline_witness_route_for_owner(true, None),
+            "missing owner/library capability fails closed"
+        );
+        assert!(
+            !outline_witness_route_for_owner(true, Some(false)),
+            "unknown or unsupported capability fails closed"
+        );
+        assert_eq!(
+            outline_witness_route_for_owner(true, supported),
+            backend_library::protocol::OUTLINE_OWNER_WITNESS_ROUTE,
+            "only the proven matched image joined with this library capability enables PC5"
+        );
     }
 }
