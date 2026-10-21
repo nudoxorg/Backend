@@ -86,7 +86,14 @@ def main []: nothing -> nothing {
         # them inside the same bounded cache to avoid every task fetching the
         # full workspace dependency graph again.
         $env.CARGO_HOME = ($cache | path join "cargo-home")
-        mkdir $env.CARGO_HOME
+        let admission = (
+            run-external "python3" ($env.FILE_PWD | path join "fast_cache.py") "--ensure-cargo-home" $cache $env.CARGO_HOME
+            | complete
+        )
+        if ($admission.stdout | is-not-empty) { print $admission.stdout }
+        if $admission.exit_code != 0 {
+            error make {msg: $"fast Cargo home admission failed: ($admission.stderr)"}
+        }
         $env.ZIG_GLOBAL_CACHE_DIR = ($cache | path join "zig")
         $env.ZIG_LOCAL_CACHE_DIR = ($cache | path join "zig")
         ^python3 ($env.FILE_PWD | path join "restore-mtimes.py") ($cache | path join "source-mtimes.json")
