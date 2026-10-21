@@ -237,6 +237,9 @@ fn direct_cursor_encoding_boundaries_do_not_mint_or_load_cold_authority() {
         "pc4-Zh",
         "pc4-λ",
         "pc4-AA\n",
+        "is1-",
+        "is1-Zg",
+        "is1-Zg==",
         "pc5-AA",
         "pc3-λ",
         "pc3-AA\n",
@@ -293,6 +296,7 @@ fn direct_cursor_owner_encodings_and_exact_size_survive_authenticated_roundtrip(
         "pc2-00ff".to_owned(),
         "pc3-AA".to_owned(),
         "pc4-AA".to_owned(),
+        compressed_index_search_owner(br#"{"state":"fixture"}"#),
         FIXTURE_INDEX_CURSOR.to_owned(),
         largest,
     ] {
@@ -331,6 +335,44 @@ fn direct_cursor_owner_encodings_and_exact_size_survive_authenticated_roundtrip(
                 .is_none()
         );
     }
+}
+
+fn compressed_index_search_owner(json: &[u8]) -> String {
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    std::io::Write::write_all(&mut encoder, json).expect("JSON cursor bytes");
+    format!(
+        "is1-{}",
+        URL_SAFE_NO_PAD.encode(encoder.finish().expect("complete zlib stream"))
+    )
+}
+
+#[test]
+fn compressed_index_search_framing_requires_bounded_complete_zlib_json_object() {
+    assert!(valid_direct_cursor_owner(&compressed_index_search_owner(
+        br#"{"state":"fixture"}"#
+    )));
+    assert!(!valid_direct_cursor_owner(&compressed_index_search_owner(b"[]")));
+    assert!(!valid_direct_cursor_owner(&compressed_index_search_owner(b"not-json")));
+
+    let valid = compressed_index_search_owner(br#"{"state":"fixture"}"#);
+    let encoded = valid.strip_prefix("is1-").expect("prefix");
+    let mut trailing = URL_SAFE_NO_PAD.decode(encoded).expect("canonical base64");
+    trailing.push(0);
+    assert!(!valid_direct_cursor_owner(&format!(
+        "is1-{}",
+        URL_SAFE_NO_PAD.encode(trailing)
+    )));
+
+    let mut corrupt = URL_SAFE_NO_PAD.decode(encoded).expect("canonical base64");
+    *corrupt.last_mut().expect("checksum byte") ^= 1;
+    assert!(!valid_direct_cursor_owner(&format!(
+        "is1-{}",
+        URL_SAFE_NO_PAD.encode(corrupt)
+    )));
+
+    assert!(!valid_direct_cursor_owner(&compressed_index_search_owner(
+        &vec![b'x'; backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES + 1]
+    )));
 }
 
 #[test]
@@ -3069,6 +3111,42 @@ fn owner_index_job_tools_advertise_exact_tickets_and_immediate_progress() {
         progress["inputSchema"]["properties"]["after_sequence"]["default"],
         0
     );
+    assert_eq!(
+        progress["inputSchema"]["properties"]["compact_receipt"]["default"],
+        false
+    );
+    let output_surfaces = progress["outputSchema"]["properties"]["surface"]["oneOf"]
+        .as_array()
+        .expect("receipt output alternatives");
+    let legacy_surface_schema = &output_surfaces[0];
+    let compact_surface_schema = &output_surfaces[1];
+    let compact_surface = json!({
+        "result": "index-progress",
+        "data": {"receipt_pointer": "#/surface/index_job/value"},
+        "index_job": {"kind": "progress", "value": {"state": "pending"}}
+    });
+    let raw_surface = json!({
+        "result": "index-progress",
+        "data": {"state": "pending"},
+        "index_job": {"kind": "progress", "value": {"state": "pending"}}
+    });
+    assert!(compact_surface_schema_matches(
+        compact_surface_schema,
+        &compact_surface
+    ));
+    assert!(legacy_pointer_exclusion_matches(
+        legacy_surface_schema,
+        &compact_surface
+    ));
+    assert!(!legacy_pointer_exclusion_matches(
+        legacy_surface_schema,
+        &raw_surface
+    ));
+    assert_eq!(
+        legacy_surface_schema["properties"]["data"]["type"],
+        "object",
+        "the default raw data schema remains intact"
+    );
     assert_eq!(progress["annotations"]["readOnlyHint"], true);
     let wait = &progress["inputSchema"]["properties"]["wait_millis"];
     assert_eq!(wait["maximum"], 10000);
@@ -3137,6 +3215,28 @@ fn owner_index_job_tools_advertise_exact_tickets_and_immediate_progress() {
             .unwrap_or_default()
             .contains("not terminal")
     );
+}
+
+fn compact_surface_schema_matches(schema: &Value, surface: &Value) -> bool {
+    schema["properties"]["result"]["const"] == surface["result"]
+        && schema["properties"]["data"]["properties"]["receipt_pointer"]["const"]
+            == surface["data"]["receipt_pointer"]
+        && schema["properties"]["index_job"]["properties"]["kind"]["const"]
+            == surface["index_job"]["kind"]
+        && surface["index_job"]["value"].is_object()
+}
+
+fn legacy_pointer_exclusion_matches(schema: &Value, surface: &Value) -> bool {
+    let exclusion = &schema["not"];
+    let required = exclusion["required"].as_array();
+    let data_required = exclusion["properties"]["data"]["required"].as_array();
+    required.is_some_and(|required| {
+        required.iter().any(|value| value == "result")
+            && required.iter().any(|value| value == "data")
+    }) && data_required
+        .is_some_and(|required| required.iter().any(|value| value == "receipt_pointer"))
+        && exclusion["properties"]["result"]["const"] == surface["result"]
+        && surface["data"].get("receipt_pointer").is_some()
 }
 
 #[test]
@@ -3208,6 +3308,7 @@ fn keyed_index_progress_preserves_durable_owner_evidence_and_rejects_mixed_ident
     for input in [
         json!({"operation_key":key,"ticket":ticket_value(&index_job_ticket())}),
         json!({"operation_key":key,"after_sequence":0}),
+        json!({"operation_key":key,"compact_receipt":true}),
         json!({"operation_key":"00".repeat(32)}),
     ] {
         let mut server = ready(Fake::default());
@@ -3457,6 +3558,143 @@ fn index_progress_returns_bounded_events_and_the_exact_next_sequence() {
             after_sequence: 2,
         }] if seen == &ticket
     ));
+
+    let mut server = ready(Fake {
+        surface_reply: Some(reply.clone()),
+        ..Fake::default()
+    });
+    let compact = call(
+        &mut server,
+        INDEX_PROGRESS_TOOL,
+        &json!({
+            "ticket": ticket_value(&ticket),
+            "after_sequence": 2,
+            "compact_receipt": true
+        }),
+    );
+    let wire = serde_json::to_value(&reply).expect("typed observation");
+    assert_compact_index_job_receipt(&compact, &wire["data"]);
+    assert_eq!(
+        compact["structuredContent"]["index_poll"]["call"]["arguments"]["compact_receipt"], true,
+        "the recommended next ticket poll preserves the opted-in wire shape"
+    );
+    assert_eq!(
+        compact["structuredContent"]["surface"]["index_job"]["value"]["detail"]["events"][0]["ticket"]
+            ["owner_epoch"],
+        serde_json::to_value([7_u8; 16]).expect("owner epoch")
+    );
+    assert_eq!(
+        compact["structuredContent"]["surface"]["index_job"]["value"]["detail"]["events"][0]["sequence"],
+        3
+    );
+    assert_eq!(
+        server.product.surface_commands,
+        [SurfaceCommand::IndexProgress {
+            ticket: ticket.clone(),
+            after_sequence: 2,
+        }],
+        "the presentation flag does not change the owner command or authority"
+    );
+    assert_context_bounded(&compact);
+
+    let mut conditional_server = ready(Fake {
+        surface_reply: Some(reply.clone()),
+        ..Fake::default()
+    });
+    let conditional = call(
+        &mut conditional_server,
+        INDEX_PROGRESS_TOOL,
+        &json!({
+            "ticket": ticket_value(&ticket),
+            "after_sequence": 2,
+            "wait_millis": 0,
+            "compact_receipt": true
+        }),
+    );
+    assert_compact_index_job_receipt(&conditional, &wire["data"]);
+    assert_context_bounded(&conditional);
+
+    let mut unchanged_server = ready(Fake {
+        surface_reply: Some(reply.clone()),
+        ..Fake::default()
+    });
+    let unchanged = call(
+        &mut unchanged_server,
+        INDEX_PROGRESS_TOOL,
+        &json!({
+            "ticket": ticket_value(&ticket),
+            "after_sequence": 3,
+            "wait_millis": 0,
+            "compact_receipt": true
+        }),
+    );
+    assert_eq!(
+        unchanged["structuredContent"]["surface"]["result"],
+        "index-progress-unchanged"
+    );
+    assert_eq!(
+        unchanged["structuredContent"]["index_poll"]["call"]["arguments"]["compact_receipt"],
+        true
+    );
+    assert_context_bounded(&unchanged);
+}
+
+#[test]
+fn compact_index_receipt_roundtrips_terminal_cancellation_and_partial_coverage() {
+    let ticket = index_job_ticket();
+    let cancelled = SurfaceReply::IndexProgress(IndexJobObservation::Terminal(IndexJobTerminal {
+        ticket: ticket.clone(),
+        outcome: IndexJobOutcome::Cancelled,
+    }));
+    let mut server = ready(Fake {
+        surface_reply: Some(cancelled.clone()),
+        ..Fake::default()
+    });
+    let response = call(
+        &mut server,
+        INDEX_PROGRESS_TOOL,
+        &json!({"ticket":ticket_value(&ticket), "compact_receipt":true}),
+    );
+    let cancelled_wire = serde_json::to_value(&cancelled).expect("cancelled terminal");
+    assert_compact_index_job_receipt(&response, &cancelled_wire["data"]);
+    assert_eq!(
+        response["structuredContent"]["surface"]["index_job"]["value"]["detail"]["outcome"]["state"],
+        "cancelled"
+    );
+    let mut invalid = ready(Fake::default());
+    let response = call(
+        &mut invalid,
+        INDEX_PROGRESS_TOOL,
+        &json!({
+            "ticket":ticket_value(&ticket),
+            "compact_receipt":true,
+            "detail":"full"
+        }),
+    );
+    assert_eq!(response["isError"], true);
+    assert!(invalid.product.surface_commands.is_empty());
+}
+
+fn assert_compact_index_job_receipt(response: &Value, expected: &Value) {
+    let structured = &response["structuredContent"];
+    let pointer = structured["surface"]["data"]["receipt_pointer"]
+        .as_str()
+        .expect("advertised receipt pointer");
+    assert_eq!(
+        structured["surface"]["data"],
+        json!({"receipt_pointer":"#/surface/index_job/value"})
+    );
+    assert_eq!(
+        structured
+            .pointer(pointer.strip_prefix('#').expect("JSON pointer fragment"))
+            .expect("the advertised JSON pointer resolves"),
+        expected
+    );
+    assert_eq!(
+        &structured["surface"]["index_job"]["value"],
+        expected,
+        "the compact response retains the entire original receipt"
+    );
 }
 
 #[test]
@@ -4070,13 +4308,27 @@ fn document_and_source_tools_advertise_their_useful_default_detail() {
         );
         assert_eq!(
             tool["inputSchema"]["properties"]["detail"]["description"],
-            "Page text and structured fields: summary, standard, or full."
+            "Page text and fields detail level."
+        );
+        assert_eq!(
+            tool["outputSchema"]["properties"]["answer"]["description"],
+            "Tagged answer; product responses may include a fault and retain the operation receipt."
+        );
+        assert_eq!(
+            tool["outputSchema"]["properties"]["answer"]["enum"],
+            json!([
+                "page", "records", "shelf", "outline", "status", "product", "fault"
+            ])
         );
     }
     let search = tool_named(&listed["result"]["tools"], "backend.search");
     assert_eq!(
         search["inputSchema"]["properties"]["detail"]["default"],
         "summary"
+    );
+    assert_eq!(
+        search["inputSchema"]["properties"]["detail"]["description"],
+        "Response detail level."
     );
 }
 
@@ -7936,6 +8188,40 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
         assert_context_bounded(&wire);
         assert_eq!(server.product.surface_commands.len(), 1);
     }
+    let mut compact_server = ready(Fake {
+        surface_reply: Some(reply.clone()),
+        ..Fake::default()
+    });
+    let compact = call(
+        &mut compact_server,
+        INDEX_PROGRESS_TOOL,
+        &json!({
+            "ticket":ticket_value(&ticket),
+            "after_sequence":0,
+            "compact_receipt":true
+        }),
+    );
+    assert_eq!(compact["isError"], true);
+    let compact_data = serde_json::to_value(&observation).expect("exact partial observation");
+    assert_compact_index_job_receipt(&compact, &compact_data["data"]);
+    let compact_value = &compact["structuredContent"]["surface"]["index_job"]["value"]["detail"];
+    assert_eq!(
+        compact_value["ticket"]["owner_epoch"],
+        serde_json::to_value([19_u8; 16]).expect("owner epoch")
+    );
+    let profiles = compact_value["outcome"]["detail"]["source_capture"]["profiles"]
+        .as_array()
+        .expect("all source profiles retained");
+    assert!(
+        profiles
+            .iter()
+            .any(|profile| { profile["state"]["detail"]["coverage"]["coverage"] == "complete" })
+    );
+    assert_eq!(
+        compact_value["outcome"]["detail"]["refused_profiles"][0]["reason"],
+        "rejected"
+    );
+    assert_context_bounded(&compact);
     let expected_cause = backend_present::product_view(&reply)
         .fault()
         .expect("legacy partial fault")

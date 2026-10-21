@@ -19,7 +19,7 @@ use backend_client::Session;
 use backend_present::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand, grammar_for};
 use backend_present::{Request, lower, lower_surface_json};
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -521,11 +521,187 @@ fn plan(words: &[String], options: &Options, project: &str) -> Result<Plan, Faul
     }
     let invocation = invoke::parse(words, options.limit())?;
     let wait = crate::index_wait::IndexWaitPolicy::from_invocation(&invocation)?;
-    lower(&invocation, project).map(|request| Plan {
+    let request = lower(&invocation, project)?;
+    let request = normalize_package_profile_path(request, project)?;
+    Ok(Plan {
         request,
         wait,
         output: options.clone(),
     })
+}
+
+// A local directory passed to `add` is canonicalized by the owner before it
+// becomes a Project label. Resolve explicit relative path operands for the CLI
+// package-profile command against the same selected workspace root so its
+// lookup uses that exact local identity. PURLs and bare local labels stay
+// untouched, and the JSON surface escape hatch above keeps protocol operands
+// exact.
+fn normalize_package_profile_path(request: Request, project: &str) -> Result<Request, Fault> {
+    let command = match request {
+        Request::Surface(command) => command,
+        other => return Ok(other),
+    };
+    let (label, compiler_outcome) = match *command {
+        backend_library::SurfaceCommand::PackageProfile {
+            package: backend_library::PackageReference::Local(label),
+            compiler_outcome,
+        } => (label, compiler_outcome),
+        other => return Ok(Request::Surface(Box::new(other))),
+    };
+    let value = label.as_str();
+    let is_dot_path =
+        value == "." || value.starts_with("./") || (cfg!(windows) && value.starts_with(".\\"));
+    let is_parent_path =
+        value == ".." || value.starts_with("../") || (cfg!(windows) && value.starts_with("..\\"));
+    let is_relative_path = !Path::new(value).is_absolute() && (is_dot_path || is_parent_path);
+    if !is_relative_path {
+        return Ok(Request::Surface(Box::new(
+            backend_library::SurfaceCommand::PackageProfile {
+                package: backend_library::PackageReference::Local(label),
+                compiler_outcome,
+            },
+        )));
+    }
+    let path = backend_runtime::normalize_surface_path(Path::new(project).join(value));
+    let resolved = path.to_str().ok_or_else(|| {
+        Fault::admission(
+            backend_library::ProductAdmissionError::PackageReference,
+            Operand::Argument(value.to_owned()),
+        )
+    })?;
+    let package = backend_library::PackageReference::from_kind(
+        backend_library::PackageReferenceKind::Local,
+        resolved.to_owned(),
+    )
+    .map_err(|error| Fault::admission(error, Operand::Argument(value.to_owned())))?;
+    let command = backend_library::SurfaceCommand::PackageProfile {
+        package,
+        compiler_outcome,
+    };
+    command
+        .admit()
+        .map_err(|error| Fault::admission(error, Operand::Argument(value.to_owned())))?;
+    Ok(Request::Surface(Box::new(command)))
+}
+
+#[cfg(test)]
+mod package_profile_path_tests {
+    use super::*;
+    use backend_library::{PackageCompilerOutcomeRead, PackageReference, SurfaceCommand};
+
+    fn package_profile(request: Request) -> (PackageReference, Option<PackageCompilerOutcomeRead>) {
+        let Request::Surface(command) = request else {
+            panic!("package-profile lowers to a surface request");
+        };
+        let SurfaceCommand::PackageProfile {
+            package,
+            compiler_outcome,
+        } = *command
+        else {
+            panic!("package-profile command");
+        };
+        (package, compiler_outcome)
+    }
+
+    fn planned_package(
+        words: &[&str],
+        project: &str,
+    ) -> (PackageReference, Option<PackageCompilerOutcomeRead>) {
+        let words = words
+            .iter()
+            .map(|word| (*word).to_owned())
+            .collect::<Vec<_>>();
+        let plan = plan(&words, &Options::fallback(), project).expect("package-profile plan");
+        package_profile(plan.request)
+    }
+
+    fn canonical_surface_path(path: &Path) -> PathBuf {
+        let canonical = std::fs::canonicalize(path).expect("canonical filesystem path");
+        backend_runtime::normalize_surface_path(canonical)
+    }
+
+    #[test]
+    fn relative_local_package_profile_paths_resolve_to_selected_project_identity() {
+        let temp = tempfile::tempdir().expect("temporary workspace");
+        let project_path = temp.path().join("project");
+        let nested_path = project_path.join("nested/project");
+        let sibling_path = temp.path().join("sibling");
+        std::fs::create_dir_all(&nested_path).expect("nested project directory");
+        std::fs::create_dir_all(&sibling_path).expect("sibling directory");
+        let project = project_path.to_str().expect("UTF-8 temporary path");
+        let dot = canonical_surface_path(&project_path);
+        let nested = canonical_surface_path(&nested_path);
+        let parent = canonical_surface_path(&sibling_path);
+
+        let cases = vec![
+            (".", dot),
+            ("./nested/project", nested),
+            ("../sibling", parent),
+        ];
+        #[cfg(unix)]
+        let cases = {
+            let mut cases = cases;
+            use std::os::unix::fs::symlink;
+
+            let link_path = project_path.join("nested-link");
+            symlink(&nested_path, &link_path).expect("create project symlink");
+            cases.push(("./nested-link", canonical_surface_path(&nested_path)));
+            cases
+        };
+
+        for (input, expected) in cases {
+            let (package, selector) = planned_package(
+                &[
+                    "package-profile",
+                    input,
+                    "--compiler-outcome",
+                    r#"{"kind":"current"}"#,
+                ],
+                project,
+            );
+            let PackageReference::Local(label) = package else {
+                panic!("relative local path remains a local package reference");
+            };
+            assert_eq!(label.as_str(), expected.to_string_lossy().as_ref());
+            assert_eq!(selector, Some(PackageCompilerOutcomeRead::Current));
+        }
+    }
+
+    #[test]
+    fn package_profile_keeps_registry_and_bare_local_coordinates_exact() {
+        let (registry, selector) =
+            planned_package(&["package-profile", "pkg:cargo/demo@1.0.0"], "/repo");
+        assert_eq!(registry.as_str(), "pkg:cargo/demo@1.0.0");
+        assert!(matches!(registry, PackageReference::Purl(_)));
+        assert_eq!(selector, None);
+
+        let (local, selector) = planned_package(&["package-profile", "demo"], "/repo");
+        assert_eq!(local, PackageReference::parse("demo").expect("local label"));
+        assert_eq!(selector, None);
+
+        let (hierarchical, selector) = planned_package(&["package-profile", "scope/name"], "/repo");
+        assert_eq!(
+            hierarchical,
+            PackageReference::parse("scope/name").expect("hierarchical local label")
+        );
+        assert_eq!(selector, None);
+    }
+
+    #[test]
+    fn surface_json_keeps_the_exact_local_package_operand() {
+        let words = [
+            "surface",
+            r#"{"operation":"package-profile","package":{"kind":"local","value":"."}}"#,
+        ]
+        .map(str::to_owned);
+        let plan = plan(&words, &Options::fallback(), "/repo").expect("surface request");
+        let (package, selector) = package_profile(plan.request);
+        assert_eq!(
+            package,
+            PackageReference::parse(".").expect("local operand")
+        );
+        assert_eq!(selector, None);
+    }
 }
 
 fn workspace(options: &Options) -> Result<backend_runtime::WorkspacePaths, Fault> {

@@ -1685,6 +1685,16 @@ impl<P: Product> Server<P> {
         context: &[u8],
         exposure: McpExposure,
     ) -> Result<Value, RpcError> {
+        let compact_receipt = match arguments.get("compact_receipt") {
+            None => false,
+            Some(Value::Bool(value)) if *value && detail != Detail::Summary => {
+                return Err(RpcError::invalid("compact_receipt requires detail=summary"));
+            }
+            Some(Value::Bool(value)) => *value,
+            Some(_) => {
+                return Err(RpcError::invalid("compact_receipt must be a boolean"));
+            }
+        };
         let command = match name {
             INDEX_START_TOOL => {
                 no_extra(
@@ -1780,10 +1790,16 @@ impl<P: Product> Server<P> {
                         "operation_key",
                         "after_observation",
                         "wait_millis",
+                        "compact_receipt",
                         "detail",
                     ],
                 )?;
                 if let Some(key) = arguments.get("operation_key") {
+                    if compact_receipt {
+                        return Err(RpcError::invalid(
+                            "compact_receipt is only supported with ticket-based index_progress",
+                        ));
+                    }
                     if arguments.contains_key("ticket") || arguments.contains_key("after_sequence")
                     {
                         return Err(RpcError::invalid(
@@ -1795,7 +1811,12 @@ impl<P: Product> Server<P> {
                             .map_err(|error| RpcError::invalid(format!("operation_key: {error}")))?;
                     let command = SurfaceCommand::IndexOperationStatus { operation_key };
                     if let Some(result) = self.conditional_index_progress(
-                        arguments, &command, detail, context, exposure,
+                        arguments,
+                        &command,
+                        detail,
+                        context,
+                        exposure,
+                        compact_receipt,
                     )? {
                         return Ok(result);
                     }
@@ -1805,7 +1826,14 @@ impl<P: Product> Server<P> {
                             surface_error_operand(&command),
                         ))
                     })?;
-                    return self.surface_reply_result(&command, &reply, detail, context, exposure);
+                    return self.surface_reply_result_with_compact_receipt(
+                        &command,
+                        &reply,
+                        detail,
+                        context,
+                        exposure,
+                        compact_receipt,
+                    );
                 }
                 let ticket = index_job_ticket(arguments)?;
                 let after_sequence = match arguments.get("after_sequence") {
@@ -1818,9 +1846,14 @@ impl<P: Product> Server<P> {
                     ticket,
                     after_sequence,
                 };
-                if let Some(result) =
-                    self.conditional_index_progress(arguments, &command, detail, context, exposure)?
-                {
+                if let Some(result) = self.conditional_index_progress(
+                    arguments,
+                    &command,
+                    detail,
+                    context,
+                    exposure,
+                    compact_receipt,
+                )? {
                     return Ok(result);
                 }
                 command
@@ -1841,7 +1874,14 @@ impl<P: Product> Server<P> {
             .product
             .surface(command.clone())
             .map_err(|error| RpcError::from_fault(&Fault::from_client_error(&error, operand)))?;
-        self.surface_reply_result(&command, &reply, detail, context, exposure)
+        self.surface_reply_result_with_compact_receipt(
+            &command,
+            &reply,
+            detail,
+            context,
+            exposure,
+            compact_receipt,
+        )
     }
     fn surface_reply_result(
         &mut self,
@@ -1851,7 +1891,29 @@ impl<P: Product> Server<P> {
         context: &[u8],
         exposure: McpExposure,
     ) -> Result<Value, RpcError> {
-        self.surface_reply_with_profile_progress(command, reply, None, detail, context, exposure)
+        self.surface_reply_result_with_compact_receipt(
+            command, reply, detail, context, exposure, false,
+        )
+    }
+
+    fn surface_reply_result_with_compact_receipt(
+        &mut self,
+        command: &SurfaceCommand,
+        reply: &SurfaceReply,
+        detail: Detail,
+        context: &[u8],
+        exposure: McpExposure,
+        compact_receipt: bool,
+    ) -> Result<Value, RpcError> {
+        self.surface_reply_with_profile_progress(
+            command,
+            reply,
+            None,
+            detail,
+            context,
+            exposure,
+            compact_receipt,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1863,6 +1925,7 @@ impl<P: Product> Server<P> {
         detail: Detail,
         context: &[u8],
         exposure: McpExposure,
+        compact_receipt: bool,
     ) -> Result<Value, RpcError> {
         let mut reply = std::borrow::Cow::Borrowed(reply);
         let mut profile_progress = profile_progress;
@@ -1910,6 +1973,8 @@ impl<P: Product> Server<P> {
                 None => view,
             };
             let next_cursor = view.index_search_page().and_then(|page| page.next_cursor());
+            let mut index_poll = backend_present::IndexPollDto::for_detail(&view, detail);
+            preserve_compact_receipt_in_poll(index_poll.as_mut(), command, compact_receipt);
             let payload = match encode_serializable(
                 "surface",
                 detail,
@@ -1917,11 +1982,12 @@ impl<P: Product> Server<P> {
                 SurfaceBody {
                     fault: view.fault().map(backend_present::FaultDto::new),
                     continuation_call: None,
-                    index_poll: backend_present::IndexPollDto::for_detail(&view, detail),
+                    index_poll,
                     surface: SurfaceProjection {
                         reply: reply_ref,
                         next_cursor,
                         index_job: view.index_job(),
+                        compact_receipt,
                     },
                 },
                 DEFAULT_RESPONSE_BUDGET_BYTES,
@@ -2529,6 +2595,9 @@ fn valid_direct_cursor_owner(owner: &str) -> bool {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
     }
+    if let Some(encoded) = owner.strip_prefix("is1-") {
+        return valid_compressed_index_search_owner(encoded);
+    }
     let (encoded, portable) = owner
         .strip_prefix("pc3-")
         .or_else(|| owner.strip_prefix("pc4-"))
@@ -2549,6 +2618,60 @@ fn valid_direct_cursor_owner(owner: &str) -> bool {
     // The unprefixed index-search issuer serializes a JSON object. This is a
     // framing check, not authority to admit its fields or its selected state.
     portable || (decoded.first() == Some(&b'{') && decoded.last() == Some(&b'}'))
+}
+
+/// Checks the bounded framing of the compressed index-search owner token.
+/// The local-service decoder still performs typed cursor and snapshot checks
+/// before the token can resume any work.
+fn valid_compressed_index_search_owner(encoded: &str) -> bool {
+    if encoded.is_empty() {
+        return false;
+    }
+    let Ok(compressed) = URL_SAFE_NO_PAD.decode(encoded) else {
+        return false;
+    };
+    if compressed.len() > backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES
+        || URL_SAFE_NO_PAD.encode(&compressed) != encoded
+    {
+        return false;
+    }
+
+    let mut decoder = flate2::Decompress::new(true);
+    let mut expanded = Vec::new();
+    let mut input_offset = 0;
+    loop {
+        let mut chunk = [0_u8; 8192];
+        let input = &compressed[input_offset..];
+        let input_before = decoder.total_in();
+        let output_before = decoder.total_out();
+        let Ok(status) = decoder.decompress(input, &mut chunk, flate2::FlushDecompress::Finish)
+        else {
+            return false;
+        };
+        let consumed = decoder.total_in().saturating_sub(input_before) as usize;
+        let produced = decoder.total_out().saturating_sub(output_before) as usize;
+        input_offset = input_offset.saturating_add(consumed);
+        if expanded.len().saturating_add(produced)
+            > backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES
+        {
+            return false;
+        }
+        expanded.extend_from_slice(&chunk[..produced]);
+        match status {
+            flate2::Status::StreamEnd => {
+                if input_offset != compressed.len() {
+                    return false;
+                }
+                return serde_json::from_slice::<Value>(&expanded)
+                    .is_ok_and(|value| value.is_object());
+            }
+            flate2::Status::Ok | flate2::Status::BufError => {
+                if consumed == 0 && produced == 0 {
+                    return false;
+                }
+            }
+        }
+    }
 }
 
 /// Renders one answer: Markdown for a reader, the typed DTO for a program.
@@ -3519,6 +3642,24 @@ struct SurfaceProjection<'a> {
     reply: &'a SurfaceReply,
     next_cursor: Option<&'a str>,
     index_job: Option<&'a backend_present::IndexJobProjection>,
+    compact_receipt: bool,
+}
+
+fn preserve_compact_receipt_in_poll(
+    index_poll: Option<&mut backend_present::IndexPollDto>,
+    command: &SurfaceCommand,
+    compact_receipt: bool,
+) {
+    if !compact_receipt || !matches!(command, SurfaceCommand::IndexProgress { .. }) {
+        return;
+    }
+    let Some(arguments) = index_poll
+        .and_then(|poll| poll.call.get_mut("arguments"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    arguments.insert("compact_receipt".to_owned(), Value::Bool(true));
 }
 
 impl Serialize for SurfaceProjection<'_> {
@@ -3579,12 +3720,32 @@ impl SurfaceProjection<'_> {
         let Some(index_job) = self.index_job else {
             return self.reply.serialize(serializer);
         };
+        // On ticket progress, `data` and `index_job.value` are the same typed
+        // observation. Durable operation status plus profile progress carries
+        // two distinct receipts, so keep both raw even when compaction is opted in.
+        let compact_receipt =
+            self.compact_receipt && matches!(self.reply, SurfaceReply::IndexProgress(_));
         let mut map = serializer.serialize_map(Some(3))?;
         map.serialize_entry("result", result)?;
-        map.serialize_entry("data", data)?;
+        if compact_receipt {
+            map.serialize_entry(
+                "data",
+                &IndexJobReceiptReference {
+                    pointer: "#/surface/index_job/value",
+                },
+            )?;
+        } else {
+            map.serialize_entry("data", data)?;
+        }
         map.serialize_entry("index_job", index_job)?;
         map.end()
     }
+}
+
+#[derive(Serialize)]
+struct IndexJobReceiptReference {
+    #[serde(rename = "receipt_pointer")]
+    pointer: &'static str,
 }
 
 #[derive(Serialize)]

@@ -132,3 +132,41 @@ pub(crate) fn atspi_scroll_type_to_scroll_hint(scroll_type: ScrollType) -> Optio
         ScrollType::Anywhere => None,
     }
 }
+
+#[cfg(test)]
+mod window_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn screen_coordinates_include_scaled_native_origin_but_window_coordinates_do_not() {
+        // X11 publishes physical pixels: a logical (32, 10) origin at scale 2.
+        let bounds = WindowBounds::new(
+            Rect::new(64.0, 20.0, 2824.0, 1780.0),
+            Rect::new(64.0, 20.0, 2824.0, 1780.0),
+        );
+        let local = Point::new(1932.0, 1090.0);
+        let screen = bounds.accesskit_point_to_atspi_point(local, None, CoordType::Screen);
+        assert_eq!(screen, Point::new(1996.0, 1110.0));
+        assert_eq!(
+            bounds.accesskit_point_to_atspi_point(local, None, CoordType::Window),
+            local
+        );
+        assert_eq!(
+            bounds.atspi_point_to_accesskit_point(screen, None, CoordType::Screen),
+            local
+        );
+        // Moving only the native window must not move the window-local point.
+        let moved = WindowBounds::new(
+            Rect::new(200.0, 100.0, 2960.0, 1860.0),
+            Rect::new(200.0, 100.0, 2960.0, 1860.0),
+        );
+        assert_eq!(
+            moved.accesskit_point_to_atspi_point(local, None, CoordType::Screen),
+            Point::new(2132.0, 1190.0)
+        );
+        assert_eq!(
+            moved.accesskit_point_to_atspi_point(local, None, CoordType::Window),
+            local
+        );
+    }
+}

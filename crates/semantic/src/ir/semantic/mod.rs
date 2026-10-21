@@ -22,9 +22,7 @@ pub use columns::{
     LinkOccurrenceColumns, OptionalId, SourceColumnsView, SparseColumnView, StorageColumns,
     VcsColumns,
 };
-pub use error::{
-    BuildError, DeclarationCollisionSite, EntityRange, LanguageExtensionViolation, SemanticSpace,
-};
+pub use error::{BuildError, EntityRange, LanguageExtensionViolation, SemanticSpace};
 pub use ids::{
     AtomListId, DocId, EntityListId, External, ExternalId, FreePredicateListId, ItemKind, LinkId,
     LinkOccurrenceId, LinkOccurrenceSpace, LinkSpace, ObjectMemberListId, TemplatePartListId,

@@ -3468,6 +3468,14 @@ pub enum SurfaceCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         compiler_outcome: Option<crate::PackageCompilerOutcomeRead>,
     },
+    /// Read selected profile coverage from one exact published product view.
+    PackageCoverageCurrent {
+        /// Exact local package row in the requested view.
+        package: PackageReference,
+        /// Exact product view revision previously admitted by the caller.
+        #[serde(with = "hex_32")]
+        view_root: [u8; 32],
+    },
     /// Follow one package for releases.
     Subscribe {
         /// Package locator.
@@ -3639,6 +3647,7 @@ impl SurfaceCommand {
             Self::PackageSourceMembership { .. } => CommandId::PackageSourceMembership,
             Self::SelectSemanticVersion { .. } => CommandId::SelectSemanticVersion,
             Self::PackageProfile { .. } => CommandId::PackageProfile,
+            Self::PackageCoverageCurrent { .. } => CommandId::PackageProfile,
             Self::Subscribe { .. } => CommandId::Subscribe,
             Self::Unsubscribe { .. } => CommandId::Unsubscribe,
             Self::Subscriptions => CommandId::Subscriptions,
@@ -3714,6 +3723,12 @@ impl SurfaceCommand {
             }
                 if !matches!(package, PackageReference::Local(_))
                     || !selector.has_admissible_shape() =>
+            {
+                Err(ProductAdmissionError::IndexOperationShape)
+            }
+            Self::PackageCoverageCurrent { package, view_root }
+                if !matches!(package, PackageReference::Local(_))
+                    || view_root.iter().all(|byte| *byte == 0) =>
             {
                 Err(ProductAdmissionError::IndexOperationShape)
             }
@@ -5229,6 +5244,8 @@ pub enum SurfaceReply {
     },
     /// Explicit current compiler-capture read, independent of packaging facts.
     PackageCompilerOutcomes(crate::PackageCompilerOutcomes),
+    /// Current package profile outcomes bound to an exact published view.
+    PackageCoverageCurrent(crate::PackageCoverageCurrentResult),
     /// Subscription after mutation.
     Subscribed(SubscriptionRecord),
     /// Whether a subscription was removed.
@@ -5305,6 +5322,7 @@ impl SurfaceReply {
             Self::SemanticVersionSelected(_) => CommandId::SelectSemanticVersion,
             Self::PackageProfile { .. } | Self::PackageCompilerOutcomes(_) =>
                 CommandId::PackageProfile,
+            Self::PackageCoverageCurrent(_) => CommandId::PackageProfile,
             Self::Subscribed(_) => CommandId::Subscribe,
             Self::Unsubscribed(_) => CommandId::Unsubscribe,
             Self::Subscriptions(_) => CommandId::Subscriptions,
@@ -5427,7 +5445,11 @@ impl SurfaceReply {
             Self::PackageCompilerOutcomes(outcomes) => {
                 outcomes.admit()?;
                 1
-            },
+            }
+            Self::PackageCoverageCurrent(result) => {
+                result.admit_request(result.package(), result.view_root())?;
+                1
+            }
             Self::PackageSourceMembershipPage(result) => {
                 if !result.has_admissible_shape() {
                     return Err(ProductAdmissionError::PackageSourceMembershipShape);
@@ -5763,6 +5785,9 @@ impl SurfaceReply {
                 )
                 .saturating_add(serde_json::to_vec(source_metadata).map_or(0, |bytes| bytes.len()))
                 .saturating_add(serde_json::to_vec(compiler_outcomes).map_or(0, |bytes| bytes.len())),
+            Self::PackageCoverageCurrent(result) => {
+                serde_json::to_vec(result).map_or(0, |bytes| bytes.len())
+            }
             Self::Subscribed(record) => subscription_record_bound(record),
             Self::Unsubscribed(_) | Self::ProjectDeleted(_) | Self::TreeClosed(_) => 64,
             Self::Subscriptions(records) => records.iter().fold(0_usize, |bound, record| {
@@ -6238,7 +6263,7 @@ mod tests {
         let decoded: SurfaceReply = serde_json::from_value(wire).expect("same protocol roundtrip");
         assert_eq!(decoded, reply);
         let envelope = crate::ReplyDto::new(41, crate::CommandReply::Surface(reply));
-        let encoded = serde_json::to_vec(&envelope).expect("current live DTO36 envelope");
+        let encoded = serde_json::to_vec(&envelope).expect("current live DTO38 envelope");
         assert!(encoded.len() <= crate::MAX_REPLY_BODY);
         assert_eq!(
             crate::decode_reply_body(&encoded).expect("strict current wire"),

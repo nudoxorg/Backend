@@ -95,6 +95,13 @@ def main() -> None:
         "BACKEND_LOCALD_TYPESCRIPT_BUNDLED_APPLICATION",
         "BACKEND_LOCALD_DEFAULT_TYPESCRIPT_MODULE_ROOT",
     }
+    # The shared corpus environment defaults LocalHost to linked native TSZ.
+    # The TypeScript CLI oracle remains available separately as COMPILER_TYPESCRIPT_COMPILER.
+    native_tsz_defaults = {
+        "NUDOX_TSC",
+        "NUDOX_TYPESCRIPT_NODE",
+        "NUDOX_TYPESCRIPT_MODULE_ROOT",
+    }
     if not supplied_by_process_or_profile <= host_names:
         fail(
             "process/profile exception contains names outside the closed host set: "
@@ -103,8 +110,19 @@ def main() -> None:
 
     declared_nix = set(re.findall(r"^\s*([A-Z][A-Z0-9_]*)\s*=", corpus_env, re.M))
     declared_nix.update(re.findall(r"\bexport\s+([A-Z][A-Z0-9_]*)=", shells))
+    if not native_tsz_defaults <= host_names:
+        fail(
+            "native TSZ default exclusions are outside the closed host set: "
+            f"{sorted(native_tsz_defaults - host_names)}"
+        )
+    overridden_native_tsz = declared_nix & native_tsz_defaults
+    if overridden_native_tsz:
+        fail(
+            "shared Nix environment must retain the linked native TSZ default; "
+            f"unexpected overrides={sorted(overridden_native_tsz)}"
+        )
     observed_host_names = declared_nix & host_names
-    required_host_names = host_names - supplied_by_process_or_profile
+    required_host_names = host_names - supplied_by_process_or_profile - native_tsz_defaults
     if observed_host_names != required_host_names:
         fail(
             "Nix/LocalHost runtime set drift: "

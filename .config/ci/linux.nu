@@ -218,13 +218,18 @@ def main [
         | where {|flag| $flag not-in ["fortify" "fortify3"] }
         | str join " "
     )
+    let requested_jobs = $env.CARGO_BUILD_JOBS? | default "2" | into int
+    if $requested_jobs < 1 {
+        error make {msg: "CARGO_BUILD_JOBS must be positive"}
+    }
+    # The lane's per-process budget is two jobs. Preserve lower caller values,
+    # but do not inherit a wider host-wide default into this Cargo invocation.
+    let test_jobs = if $requested_jobs > 2 { 2 } else { $requested_jobs }
     let test_env = {
         BACKEND_PROCESS_ARTIFACT_POLICY: "private-debug"
         CARGO_PROFILE_DEV_DEBUG: "0"
         CARGO_PROFILE_TEST_DEBUG: "0"
-        # The deep task sets its capacity budget; never silently widen it.
-        # Local runs keep the workspace's two-job default unless overridden.
-        CARGO_BUILD_JOBS: ($env.CARGO_BUILD_JOBS? | default "2")
+        CARGO_BUILD_JOBS: ($test_jobs | into string)
         NIX_HARDENING_ENABLE: $test_hardening
     }
     | merge (

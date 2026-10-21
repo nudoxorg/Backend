@@ -287,15 +287,15 @@ def _run_ordinary(*args, input=None, capture_output=False, timeout=None, check=F
         deadline = None if timeout is None else time.monotonic()+timeout
         pending_input = input
         while True:
-            # A finite communicate slice also makes CPython's final wait finite:
-            # no worker holds _waitpid_lock in an indefinite wait during stop.
-            remaining = .1 if deadline is None else min(.1, max(0, deadline-time.monotonic()))
+            remaining = _communicate_timeout(deadline, pending_input, time.monotonic())
             try:
                 stdout, stderr = child.communicate(pending_input, timeout=remaining)
                 break
             except subprocess.TimeoutExpired as error:
-                # CPython retains unsent stdin and both output buffers across
-                # retries. Re-sending input would duplicate it or raise ValueError.
+                # CPython cannot resume a partial input write on an
+                # input=None retry. Finite-deadline input is sent in one call;
+                # unbounded input retains short polling for prompt stop, so a
+                # delayed reader may still outlast its first communication slice.
                 pending_input = None
                 if deadline is not None and time.monotonic() >= deadline:
                     raise subprocess.TimeoutExpired(child.args, timeout,
@@ -315,6 +315,16 @@ def _run_ordinary(*args, input=None, capture_output=False, timeout=None, check=F
         for stream in (child.stdin, child.stdout, child.stderr):
             if stream is not None:
                 stream.close()
+
+
+def _communicate_timeout(deadline, pending_input, now):
+    """Choose a bounded poll interval, keeping finite input sends intact."""
+    if deadline is None:
+        return .1
+    remaining = max(0, deadline-now)
+    if pending_input:
+        return remaining
+    return min(.1, remaining)
 
 
 def run(*args, input=None, capture_output=False, timeout=None, check=False, **kwargs):

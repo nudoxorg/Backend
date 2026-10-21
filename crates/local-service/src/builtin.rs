@@ -2315,6 +2315,7 @@ fn compose_owner_timed(
         search_snapshots,
         remote_semantic,
         Some(published_roots),
+        Some(daemon.engine().daemon().library().view().root()),
         image_rows,
         generations,
         semantic_authority,

@@ -292,14 +292,14 @@ pub enum BuildError {
         /// Entity assigned an invalid signature-carrier role.
         entity: EntityId,
         /// Actual declaration kind at that entity coordinate.
-        kind: crate::ir::ItemKind,
+        kind: ItemKind,
     },
     /// A function-signature product edge was attached to a non-function owner.
     SignatureCarrierRoleOwnerKind {
         /// Entity used as the owner of a function-signature edge.
         owner: EntityId,
         /// Actual declaration kind of the proposed owner.
-        kind: crate::ir::ItemKind,
+        kind: ItemKind,
     },
     /// A complete signature-carrier role plane was already captured.
     SignatureCarrierRoleAlreadyCaptured,
@@ -356,7 +356,7 @@ pub enum BuildError {
         /// Entity selected to carry the parameter or result cell.
         carrier: EntityId,
         /// Actual declaration kind at the selected carrier entity.
-        kind: crate::ir::ItemKind,
+        kind: ItemKind,
     },
     /// The carrier's semantic type does not match its exact tuple cell.
     SignatureCarrierBindingType {
