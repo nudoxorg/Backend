@@ -6,6 +6,11 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Maximum number of immutable coverage observations returned in one page.
+pub const MAX_PACKAGE_COMPILER_COVERAGE_PAGE_ROWS: usize = 25;
+/// Maximum serialized size of one immutable coverage page.
+pub const MAX_PACKAGE_COMPILER_COVERAGE_PAGE_BYTES: usize = 4096;
+
 /// Public compiler coverage row contract, shared unchanged with authenticated IR storage.
 pub use backend_semantic::ir::SourceCoverageRow as PackageCompilerCoverageRow;
 
@@ -53,7 +58,7 @@ pub struct PackageCompilerCoverageSelector {
     /// Exact compiler input returned by discovery.
     #[serde(with = "crate::surface::hex_32")]
     pub input_digest: [u8; 32],
-    /// Zero-based row offset. One row per response bounds long paths independently of catalog size.
+    /// Zero-based row offset. The next selector advances by the actual returned row count.
     pub offset: u32,
 }
 
@@ -80,7 +85,7 @@ pub enum PackageCompilerCoverage {
     },
 }
 
-/// One row of a complete coverage catalog; catalog absence is never an empty-gap proof.
+/// A bounded page of a complete coverage catalog; catalog absence is never an empty-gap proof.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackageCompilerCoveragePage {
@@ -96,7 +101,7 @@ pub struct PackageCompilerCoveragePage {
     pub completed: u32,
     /// Total configuration and gap rows.
     pub row_count: u32,
-    /// Config and gap observations from the compiler producer, at most one per page.
+    /// Config and gap observations from the compiler producer, at most 25 per page.
     pub rows: Box<[PackageCompilerCoverageRow]>,
     /// Exact next page, absent only after the last row.
     pub next: Option<PackageCompilerOutcomeRead>,
@@ -378,7 +383,12 @@ impl PackageCompilerOutcomes {
                 || page.row_count < page.source_count - page.completed
                 || page.row_count > (page.source_count - page.completed).saturating_add(256)
                 || selector.offset > page.row_count
-                || page.rows.len() != usize::from(selector.offset < page.row_count)
+                || page.rows.len() > MAX_PACKAGE_COMPILER_COVERAGE_PAGE_ROWS
+                || (page.rows.is_empty() != (selector.offset == page.row_count))
+                || selector
+                    .offset
+                    .checked_add(page.rows.len() as u32)
+                    .is_none_or(|end| end > page.row_count)
                 || page
                     .rows
                     .iter()
@@ -386,7 +396,7 @@ impl PackageCompilerOutcomes {
                 || serde_json::to_vec(page)
                     .map_err(|_| ProductAdmissionError::IndexOperationShape)?
                     .len()
-                    > 4096
+                    > MAX_PACKAGE_COMPILER_COVERAGE_PAGE_BYTES
             {
                 return Err(fail);
             }

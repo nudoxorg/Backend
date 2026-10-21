@@ -499,6 +499,42 @@ fn coverage_pages_bind_generation_input_catalog_and_exact_continuation_without_r
     };
     let request = PackageCompilerOutcomeRead::Coverage(first);
     checked(observed.admit_request(&package, Some(&request)))?;
+    let mut batched = observed.clone();
+    let PackageCompilerOutcomes::Coverage { page, .. } = &mut batched else {
+        unreachable!()
+    };
+    let mut second = page.rows[0].clone();
+    if let SourceCoverageRow::Gap { path, .. } = &mut second {
+        *path = "src/second.spec.ts".to_owned();
+    }
+    page.rows = vec![page.rows[0].clone(), second].into_boxed_slice();
+    page.next = Some(PackageCompilerOutcomeRead::Coverage(
+        PackageCompilerCoverageSelector { offset: 2, ..first },
+    ));
+    checked(batched.admit_request(&package, Some(&request)))?;
+    let PackageCompilerOutcomes::Coverage { page, .. } = &mut batched else {
+        unreachable!()
+    };
+    page.next = Some(PackageCompilerOutcomeRead::Coverage(
+        PackageCompilerCoverageSelector { offset: 1, ..first },
+    ));
+    assert!(batched.admit_request(&package, Some(&request)).is_err());
+    let mut terminal = observed.clone();
+    let PackageCompilerOutcomes::Coverage {
+        selector: terminal_selector,
+        page: terminal_page,
+        ..
+    } = &mut terminal
+    else {
+        unreachable!()
+    };
+    terminal_selector.offset = terminal_page.row_count;
+    terminal_page.rows = Box::default();
+    terminal_page.next = None;
+    checked(terminal.admit_request(
+        &package,
+        Some(&PackageCompilerOutcomeRead::Coverage(*terminal_selector)),
+    ))?;
     assert!(observed.admit_request(&package, None).is_err());
     assert!(
         observed

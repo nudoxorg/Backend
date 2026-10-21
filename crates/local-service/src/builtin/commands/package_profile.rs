@@ -187,7 +187,7 @@ pub(super) fn read(
             } = record.outcome()
         {
             use backend_library::{
-                PackageCompilerCoverage as Availability, PackageCompilerCoveragePage as Page,
+                PackageCompilerCoverage as Availability,
                 PackageCompilerCoverageSelector as Selector,
             };
             let observations = authority.selected_source_coverage(key, claim)?;
@@ -272,12 +272,7 @@ pub(super) fn read(
                             }));
                         }
                         let offset = requested.offset as usize;
-                        if offset > catalog.rows().len() {
-                            return Err(BuiltinModelError(
-                                "compiler coverage offset is outside catalog".to_owned(),
-                            ));
-                        }
-                        let row = coverage_row(catalog, offset, |path, identity| {
+                        let check_source = |path: &str, identity: &[u8; 32]| {
                             let file_key =
                                 backend_engine::product_source_file_key(project_key, path);
                             let row = source
@@ -304,34 +299,17 @@ pub(super) fn read(
                                 ));
                             }
                             Ok(())
-                        })?;
-                        let rows = row.into_iter().collect::<Vec<_>>().into_boxed_slice();
-                        let end = offset + rows.len();
-                        let page = Page {
-                            generation: *claim.binding().identity.as_ref(),
-                            input_digest: *capture.input_digest(),
-                            source_count: observations.source_count(),
-                            completed: observations.completed(),
-                            row_count: catalog.rows().len() as u32,
-                            rows,
-                            next: (end < catalog.rows().len()).then_some(
-                                PackageCompilerOutcomeRead::Coverage(Selector {
-                                    offset: end as u32,
-                                    ..requested
-                                }),
-                            ),
                         };
-                        coverage_page = Some(
-                            if serde_json::to_vec(&page)
-                                .map_err(|e| BuiltinModelError(e.to_string()))?
-                                .len()
-                                > 4096
-                            {
-                                Err(Unavailable::CoverageRowTooLarge)
-                            } else {
-                                Ok(page)
-                            },
-                        );
+                        let page = build_coverage_page(
+                            catalog,
+                            requested,
+                            *claim.binding().identity.as_ref(),
+                            *capture.input_digest(),
+                            observations.source_count(),
+                            observations.completed(),
+                            check_source,
+                        )?;
+                        coverage_page = Some(page.ok_or(Unavailable::CoverageRowTooLarge));
                     }
                 }
             }
@@ -431,12 +409,12 @@ fn wants_coverage(
     }
 }
 
-/// Only this indexed row is checked against the source frontier. Other
-/// profiles and earlier gaps have no source lookup work in this request.
+/// Each indexed row in the selected bounded page is checked against the source
+/// frontier. Other profiles and earlier gaps have no source lookup work.
 fn coverage_row(
     catalog: &backend_semantic::ir::SourceCoverageManifest,
     offset: usize,
-    check_source: impl FnOnce(&str, &[u8; 32]) -> Result<(), BuiltinModelError>,
+    mut check_source: impl FnMut(&str, &[u8; 32]) -> Result<(), BuiltinModelError>,
 ) -> Result<Option<backend_semantic::ir::SourceCoverageRow>, BuiltinModelError> {
     if offset > catalog.rows().len() {
         return Err(BuiltinModelError(
@@ -448,6 +426,84 @@ fn coverage_row(
         check_source(path, source)?;
     }
     Ok(row.cloned())
+}
+
+fn build_coverage_page(
+    catalog: &backend_semantic::ir::SourceCoverageManifest,
+    selector: backend_library::PackageCompilerCoverageSelector,
+    generation: [u8; 32],
+    input_digest: [u8; 32],
+    source_count: u32,
+    completed: u32,
+    mut check_source: impl FnMut(&str, &[u8; 32]) -> Result<(), BuiltinModelError>,
+) -> Result<Option<backend_library::PackageCompilerCoveragePage>, BuiltinModelError> {
+    use backend_library::{PackageCompilerCoveragePage as Page, PackageCompilerOutcomeRead};
+    let offset = selector.offset as usize;
+    if offset > catalog.rows().len() {
+        return Err(BuiltinModelError(
+            "compiler coverage offset outside catalog".to_owned(),
+        ));
+    }
+    let mut rows = Vec::new();
+    let end_limit = offset
+        .saturating_add(backend_library::MAX_PACKAGE_COMPILER_COVERAGE_PAGE_ROWS)
+        .min(catalog.rows().len());
+    for row_offset in offset..end_limit {
+        let Some(row) = catalog.rows().get(row_offset).cloned() else {
+            break;
+        };
+        rows.push(row);
+        let end = offset + rows.len();
+        let candidate = Page {
+            generation,
+            input_digest,
+            source_count,
+            completed,
+            row_count: catalog.rows().len() as u32,
+            rows: rows.clone().into_boxed_slice(),
+            next: (end < catalog.rows().len()).then_some(PackageCompilerOutcomeRead::Coverage(
+                backend_library::PackageCompilerCoverageSelector {
+                    offset: end as u32,
+                    ..selector
+                },
+            )),
+        };
+        if serde_json::to_vec(&candidate)
+            .map_err(|error| BuiltinModelError(error.to_string()))?
+            .len()
+            > backend_library::MAX_PACKAGE_COMPILER_COVERAGE_PAGE_BYTES
+        {
+            rows.pop();
+            if rows.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        let checked = coverage_row(catalog, row_offset, &mut check_source)?.ok_or_else(|| {
+            BuiltinModelError("compiler coverage row disappeared from catalog".to_owned())
+        })?;
+        *rows.last_mut().expect("just appended coverage row") = checked;
+    }
+    let end = offset + rows.len();
+    let page = Page {
+        generation,
+        input_digest,
+        source_count,
+        completed,
+        row_count: catalog.rows().len() as u32,
+        rows: rows.into_boxed_slice(),
+        next: (end < catalog.rows().len()).then_some(PackageCompilerOutcomeRead::Coverage(
+            backend_library::PackageCompilerCoverageSelector {
+                offset: end as u32,
+                ..selector
+            },
+        )),
+    };
+    debug_assert!(page.rows.len() <= backend_library::MAX_PACKAGE_COMPILER_COVERAGE_PAGE_ROWS);
+    debug_assert!(serde_json::to_vec(&page).is_ok_and(
+        |bytes| bytes.len() <= backend_library::MAX_PACKAGE_COMPILER_COVERAGE_PAGE_BYTES
+    ));
+    Ok(Some(page))
 }
 
 fn receipt_matches_capture(
@@ -562,7 +618,9 @@ mod tests {
     -> Result<(), String> {
         use crate::test_support::TestValue as _;
         use backend_library::{PackageCompilerCoverageSelector, SemanticLanguageProfile};
-        use backend_semantic::ir::{SourceCoverageGapCause, SourceCoverageManifest, SourceCoverageRow};
+        use backend_semantic::ir::{
+            SourceCoverageGapCause, SourceCoverageManifest, SourceCoverageRow,
+        };
         use std::cell::Cell;
         let profile = SemanticLanguageProfile::from_name("typescript").test_value()?;
         let selector = PackageCompilerCoverageSelector {
@@ -649,6 +707,137 @@ mod tests {
         );
         let diagnostic = PackageCompilerOutcomeRead::Diagnostic(selector.outcome);
         assert!(!wants_coverage(Some(&diagnostic), profile));
+        Ok(())
+    }
+
+    #[test]
+    fn coverage_pages_batch_all_rows_and_stop_at_the_serialized_byte_boundary() -> Result<(), String>
+    {
+        use crate::test_support::TestValue as _;
+        use backend_library::{
+            MAX_PACKAGE_COMPILER_COVERAGE_PAGE_BYTES, MAX_PACKAGE_COMPILER_COVERAGE_PAGE_ROWS,
+            PackageCompilerCoverageSelector, PackageCompilerOutcomeSelector,
+            SemanticLanguageProfile,
+        };
+        use backend_semantic::ir::{
+            SourceCoverageGapCause, SourceCoverageManifest, SourceCoverageRow,
+        };
+        use std::cell::Cell;
+
+        let source =
+            *backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                b"coverage-page-source",
+            )
+            .as_ref();
+        let wide_path = format!("src/12-{}.spec.ts", "q\"".repeat(650));
+        let rows = (0..26)
+            .map(|index| SourceCoverageRow::Gap {
+                path: if index == 12 {
+                    wide_path.clone()
+                } else {
+                    format!("src/{index:02}.spec.ts")
+                },
+                source,
+                byte_len: 4,
+                cause: SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
+            })
+            .collect();
+        let catalog =
+            SourceCoverageManifest::new([3; 32], [1, 0], [7; 32], 26, 0, rows).test_value()?;
+        let selector = PackageCompilerCoverageSelector {
+            outcome: PackageCompilerOutcomeSelector {
+                basis: [8; 32],
+                profile: SemanticLanguageProfile::from_name("typescript").test_value()?,
+            },
+            catalog: [4; 32],
+            generation: [5; 32],
+            input_digest: [7; 32],
+            offset: 0,
+        };
+        let lookups = Cell::new(0);
+        let mut next = Some(selector);
+        let mut recovered = Vec::new();
+        let mut first_page_rows = None;
+        while let Some(selector) = next {
+            let page = build_coverage_page(
+                &catalog,
+                selector,
+                [5; 32],
+                [7; 32],
+                26,
+                0,
+                |path, identity| {
+                    lookups.set(lookups.get() + 1);
+                    assert_eq!(*identity, source);
+                    if selector.offset < 12 {
+                        assert!(!path.contains('"'));
+                    }
+                    Ok(())
+                },
+            )?
+            .ok_or_else(|| "a single retained row must fit the page byte cap".to_owned())?;
+            let encoded = serde_json::to_vec(&page)
+                .map_err(|error| format!("serialize complete coverage page: {error}"))?;
+            assert!(page.rows.len() <= MAX_PACKAGE_COMPILER_COVERAGE_PAGE_ROWS);
+            assert!(encoded.len() <= MAX_PACKAGE_COMPILER_COVERAGE_PAGE_BYTES);
+            if first_page_rows.is_none() {
+                first_page_rows = Some(page.rows.len());
+                assert!(page.rows.len() > 1, "the first bounded page batches rows");
+                assert!(page.rows.len() < MAX_PACKAGE_COMPILER_COVERAGE_PAGE_ROWS);
+                assert!(page.next.is_some(), "26 entries need a continuation");
+            }
+            recovered.extend(page.rows.iter().map(|row| row.path().to_owned()));
+            next = match page.next {
+                Some(backend_library::PackageCompilerOutcomeRead::Coverage(next)) => {
+                    assert_eq!(next.offset as usize, recovered.len());
+                    Some(next)
+                }
+                None => None,
+                _ => return Err("coverage page returned a different continuation".to_owned()),
+            };
+        }
+        assert_eq!(recovered.len(), 26);
+        assert_eq!(
+            lookups.get(),
+            26,
+            "every emitted gap is source checked once"
+        );
+        assert_eq!(recovered[12], wide_path);
+        for (index, path) in recovered.iter().enumerate() {
+            if index != 12 {
+                assert_eq!(path, &format!("src/{index:02}.spec.ts"));
+            }
+        }
+        let terminal = build_coverage_page(
+            &catalog,
+            PackageCompilerCoverageSelector {
+                offset: 26,
+                ..selector
+            },
+            [5; 32],
+            [7; 32],
+            26,
+            0,
+            |_, _| panic!("terminal empty page does not revisit source rows"),
+        )?
+        .ok_or_else(|| "terminal empty page is valid".to_owned())?;
+        assert!(terminal.rows.is_empty());
+        assert!(terminal.next.is_none());
+        assert!(
+            build_coverage_page(
+                &catalog,
+                PackageCompilerCoverageSelector {
+                    offset: 27,
+                    ..selector
+                },
+                [5; 32],
+                [7; 32],
+                26,
+                0,
+                |_, _| panic!("invalid offset does not load sources"),
+            )
+            .is_err()
+        );
         Ok(())
     }
 }
