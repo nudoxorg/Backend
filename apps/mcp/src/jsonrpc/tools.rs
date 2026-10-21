@@ -550,7 +550,7 @@ fn index_progress_tool() -> Value {
     job_tool(
         INDEX_PROGRESS_TOOL,
         "Index Progress",
-        "Read an immediate observation of an owner-issued indexing ticket or durable operation_key. Copy the returned index_poll.call for a conditional wait of at most 10 seconds: unchanged pending observations return a compact reference, while changed/terminal/unknown evidence returns the complete receipt. Omit conditional options for the complete immediate snapshot. Ticket unknown-after-restart, operation unknown, unresolved, active and published evidence remain distinct.",
+        "Read an immediate observation of an owner-issued indexing ticket or durable operation_key. Copy the returned index_poll.call for a conditional wait of at most 10 seconds: unchanged pending observations return a compact reference, while changed/terminal/unknown evidence returns the complete receipt. For ticket-based calls, set compact_receipt=true with detail=summary to replace duplicate surface.data with a JSON pointer to the exact complete surface.index_job.value; no receipt fields are removed. Durable operation status plus profile progress are distinct evidence and stay uncompressed. Omit conditional options for the complete immediate snapshot. Ticket unknown-after-restart, operation unknown, unresolved, active and published evidence remain distinct.",
         json!({
             "type": "object",
             "properties": {
@@ -573,6 +573,10 @@ fn index_progress_tool() -> Value {
                     "type": "integer", "minimum": 0, "maximum": 10000,
                     "description": "Defaults to 10000 when after_observation is supplied, otherwise 0. Explicit 0 reads immediately. Bounded conditional wait under the original request deadline/cancellation. With an operation_key requires after_observation; ticket uses after_sequence. Never starts or cancels owner work."
                 },
+                "compact_receipt": {
+                    "type": "boolean", "default": false,
+                    "description": "Opt-in lossless envelope compaction for ticket calls only, with detail=summary. When the ticket observation and index_job.value are identical, surface.data is {receipt_pointer:\"#/surface/index_job/value\"}; follow that JSON pointer to recover the unchanged full typed receipt. Durable operation status plus profile progress are distinct and remain raw."
+                },
                 "detail": detail_property(INDEX_PROGRESS_TOOL)
             },
             "oneOf": [
@@ -582,6 +586,12 @@ fn index_progress_tool() -> Value {
             "allOf": [{
                 "if": {"required": ["operation_key", "wait_millis"], "properties": {"wait_millis": {"minimum": 1}}},
                 "then": {"required": ["after_observation"]}
+            }, {
+                "if": {"required": ["compact_receipt"], "properties": {"compact_receipt": {"const": true}}},
+                "then": {
+                    "required": ["ticket"],
+                    "properties": {"detail": {"const": "summary"}}
+                }
             }],
             "additionalProperties": false
         }),
@@ -680,6 +690,39 @@ fn index_job_output_schema() -> Value {
 
 fn index_progress_output_schema() -> Value {
     let complete = index_job_output_schema();
+    let mut legacy_surface = complete["properties"]["surface"].clone();
+    legacy_surface["not"] = json!({
+        "properties": {
+            "result": {"const": "index-progress"},
+            "data": {"required": ["receipt_pointer"]}
+        },
+        "required": ["result", "data"]
+    });
+    let compact = json!({
+        "type": "object",
+        "properties": {
+            "result": {"const": "index-progress"},
+            "data": {
+                "type": "object",
+                "properties": {
+                    "receipt_pointer": {"const": "#/surface/index_job/value"}
+                },
+                "required": ["receipt_pointer"],
+                "additionalProperties": false
+            },
+            "index_job": {
+                "type": "object",
+                "properties": {
+                    "kind": {"const": "progress"},
+                    "value": complete["properties"]["surface"]["properties"]["index_job"]["properties"]["value"]
+                },
+                "required": ["kind", "value"],
+                "additionalProperties": false
+            }
+        },
+        "required": ["result", "data", "index_job"],
+        "additionalProperties": false
+    });
     let reference = json!({"oneOf": [
         {"type":"object", "properties": {
             "identity":{"const":"operation"},
@@ -702,7 +745,7 @@ fn index_progress_output_schema() -> Value {
             "budget":complete["properties"]["budget"],
             "fault":complete["properties"]["fault"],
             "index_poll":index_poll_schema(),
-            "surface":{"oneOf":[complete["properties"]["surface"], {
+            "surface":{"oneOf":[legacy_surface, compact, {
                 "type":"object", "properties": {
                     "result":{"const":"index-progress-unchanged"},
                     "data":{"type":"object", "properties": {
