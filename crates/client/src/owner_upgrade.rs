@@ -162,7 +162,7 @@ impl Session {
             }
             if passive
                 || attempt != 0
-                || (!same_version && (found, backend_library::DTO_VERSION) != (35, 36))
+                || (!same_version && (found, backend_library::DTO_VERSION) != (36, 37))
             {
                 return Err(update_error(
                     found,
