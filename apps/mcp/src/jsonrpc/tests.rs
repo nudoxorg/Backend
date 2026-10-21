@@ -237,6 +237,9 @@ fn direct_cursor_encoding_boundaries_do_not_mint_or_load_cold_authority() {
         "pc4-Zh",
         "pc4-λ",
         "pc4-AA\n",
+        "is1-",
+        "is1-Zg",
+        "is1-Zg==",
         "pc5-AA",
         "pc3-λ",
         "pc3-AA\n",
@@ -293,6 +296,7 @@ fn direct_cursor_owner_encodings_and_exact_size_survive_authenticated_roundtrip(
         "pc2-00ff".to_owned(),
         "pc3-AA".to_owned(),
         "pc4-AA".to_owned(),
+        compressed_index_search_owner(br#"{"state":"fixture"}"#),
         FIXTURE_INDEX_CURSOR.to_owned(),
         largest,
     ] {
@@ -331,6 +335,44 @@ fn direct_cursor_owner_encodings_and_exact_size_survive_authenticated_roundtrip(
                 .is_none()
         );
     }
+}
+
+fn compressed_index_search_owner(json: &[u8]) -> String {
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    std::io::Write::write_all(&mut encoder, json).expect("JSON cursor bytes");
+    format!(
+        "is1-{}",
+        URL_SAFE_NO_PAD.encode(encoder.finish().expect("complete zlib stream"))
+    )
+}
+
+#[test]
+fn compressed_index_search_framing_requires_bounded_complete_zlib_json_object() {
+    assert!(valid_direct_cursor_owner(&compressed_index_search_owner(
+        br#"{"state":"fixture"}"#
+    )));
+    assert!(!valid_direct_cursor_owner(&compressed_index_search_owner(b"[]")));
+    assert!(!valid_direct_cursor_owner(&compressed_index_search_owner(b"not-json")));
+
+    let valid = compressed_index_search_owner(br#"{"state":"fixture"}"#);
+    let encoded = valid.strip_prefix("is1-").expect("prefix");
+    let mut trailing = URL_SAFE_NO_PAD.decode(encoded).expect("canonical base64");
+    trailing.push(0);
+    assert!(!valid_direct_cursor_owner(&format!(
+        "is1-{}",
+        URL_SAFE_NO_PAD.encode(trailing)
+    )));
+
+    let mut corrupt = URL_SAFE_NO_PAD.decode(encoded).expect("canonical base64");
+    *corrupt.last_mut().expect("checksum byte") ^= 1;
+    assert!(!valid_direct_cursor_owner(&format!(
+        "is1-{}",
+        URL_SAFE_NO_PAD.encode(corrupt)
+    )));
+
+    assert!(!valid_direct_cursor_owner(&compressed_index_search_owner(
+        &vec![b'x'; backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES + 1]
+    )));
 }
 
 #[test]

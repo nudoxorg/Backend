@@ -68,6 +68,27 @@ pub(crate) fn cursor_from_wire_against_owner(
     Ok(admitted)
 }
 
+/// Decodes a catalog-page cursor with its canonical predecessor-root proof
+/// and checks the cursor context against the admitted owner.
+pub(crate) fn cursor_from_wire_against_catalog_owner(
+    value: &CursorWire,
+    certificate: &WireCertificate,
+    owner: Cursor,
+) -> Result<Cursor, String> {
+    // A digest-only RootCommitment is not a StateRoot proof. Keep portable
+    // catalog continuations on the strict path until the page root can remain
+    // untrusted through owner-side predecessor-page reconstruction.
+    let admitted = cursor_from_wire(value, certificate)?;
+    if admitted.branch() != owner.branch()
+        || admitted.log() != owner.log()
+        || admitted.schema() != owner.schema()
+        || admitted.sequence() > owner.sequence()
+    {
+        return Err("catalog query cursor does not match the owner frontier".to_owned());
+    }
+    Ok(admitted)
+}
+
 fn cursor(
     value: &CursorWire,
     certificate: &WireCertificate,
