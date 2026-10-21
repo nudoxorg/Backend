@@ -259,7 +259,8 @@ mod tests {
             Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 1),
             rows,
             Vec::new(),
-        )?;
+        )
+        .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
         let cursor = Cursor::for_view_root(&root);
         let library = Library::from_view(root.clone(), cursor)?;
         let health = HealthReport::from_admitted_parts(
@@ -353,7 +354,8 @@ mod tests {
         generation: u8,
         partial: bool,
     ) -> Result<ProjectCoverageEvidence, Box<dyn std::error::Error>> {
-        let package = PackageReference::parse(package.to_owned())?;
+        let package = PackageReference::parse(package.to_owned())
+            .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
         let key = package_key(package.as_str());
         ProjectCoverageEvidence::from_owner_reply(
             view_root,
@@ -472,7 +474,8 @@ mod tests {
             (
                 package_key(ASP),
                 owner_summary(
-                    &PackageReference::parse(ASP)?,
+                    &PackageReference::parse(ASP)
+                        .map_err(|error| std::io::Error::other(format!("{error:?}")))?,
                     view_root,
                     source_root,
                     source_version,
@@ -483,7 +486,8 @@ mod tests {
             (
                 package_key(GBA),
                 owner_summary(
-                    &PackageReference::parse(GBA)?,
+                    &PackageReference::parse(GBA)
+                        .map_err(|error| std::io::Error::other(format!("{error:?}")))?,
                     view_root,
                     source_root,
                     source_version,
