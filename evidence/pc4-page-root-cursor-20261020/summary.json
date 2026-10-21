@@ -5,20 +5,30 @@
       "archive_sha256": "8efba086ca19f7362c25543ed1e3ce56a73ea7222f12bd861246bd4bdea06e86",
       "cohort": "angular5950",
       "duplicate_occurrences": 15,
-      "joined_owner_occurrences": 36,
+      "joined_owner_occurrences": 37,
+      "jsonrpc_sessions": 3,
       "response_files": 209,
-      "unique_owner_tokens": 21,
+      "session_aware_pairs": 209,
+      "unique_owner_claim_tag_counts": {
+        "1": 44,
+        "11": 22,
+        "2": 22,
+        "5": 22,
+        "6": 22,
+        "7": 22
+      },
+      "unique_owner_tokens": 22,
       "unique_totals": {
-        "bqpc_body_bytes_after": 43881,
-        "bqpc_body_bytes_before": 100283,
-        "bqpc_body_bytes_saved": 56402,
-        "full_token_chars": 61373,
-        "full_token_chars_after_fixed_mac_length_python_zlib_estimate": 40288,
-        "owner_token_chars": 60344,
-        "owner_token_chars_after_python_zlib_level6": 39259,
-        "page_root_claim_canonical_bytes": 56318,
-        "zlib_bytes_after_python_zlib_level6": 29375,
-        "zlib_bytes_before": 45190
+        "bqpc_body_bytes_after": 46009,
+        "bqpc_body_bytes_before": 106375,
+        "bqpc_body_bytes_saved": 60366,
+        "full_token_chars": 64798,
+        "full_token_chars_after_fixed_mac_length_python_zlib_estimate": 42232,
+        "owner_token_chars": 63720,
+        "owner_token_chars_after_python_zlib_level6": 41154,
+        "page_root_claim_canonical_bytes": 60278,
+        "zlib_bytes_after_python_zlib_level6": 30793,
+        "zlib_bytes_before": 47719
       }
     },
     {
@@ -27,7 +37,17 @@
       "cohort": "httpie_graph639",
       "duplicate_occurrences": 2,
       "joined_owner_occurrences": 22,
+      "jsonrpc_sessions": 3,
       "response_files": 299,
+      "session_aware_pairs": 299,
+      "unique_owner_claim_tag_counts": {
+        "1": 59,
+        "11": 20,
+        "2": 20,
+        "5": 20,
+        "6": 20,
+        "7": 20
+      },
       "unique_owner_tokens": 20,
       "unique_totals": {
         "bqpc_body_bytes_after": 46052,
@@ -48,7 +68,17 @@
       "cohort": "cpp638_d824",
       "duplicate_occurrences": 0,
       "joined_owner_occurrences": 1,
+      "jsonrpc_sessions": 1,
       "response_files": 41,
+      "session_aware_pairs": 41,
+      "unique_owner_claim_tag_counts": {
+        "1": 2,
+        "11": 1,
+        "2": 1,
+        "5": 1,
+        "6": 1,
+        "7": 1
+      },
       "unique_owner_tokens": 1,
       "unique_totals": {
         "bqpc_body_bytes_after": 2060,
@@ -64,9 +94,11 @@
       }
     }
   ],
+  "correlation": "sort evidence/mcp-NNNNNN-{request,response}.json by numeric counter; initialize resets session; match exactly one outstanding request id; duplicate IDs and orphan responses fail closed",
   "full_token_after_size": "estimate only: Python zlib level 6 plus unchanged expiry/MAC field lengths; no token/MAC forged",
-  "method_source": "request.params.name",
+  "method_source": "tools/call request.params.name; JSON-RPC method retained for other calls",
   "modified_mac": false,
-  "scope": "retained backend.search/backend.graph owners, joined by JSON-RPC id",
+  "prior_global_id_join": "retained as evidence/pc4-page-root-cursor-20261020/legacy-global-id-join-invalidated.json; invalid because IDs recur across initialize-delimited sessions",
+  "scope": "retained backend.search/backend.graph owners, joined chronologically within initialize-delimited JSON-RPC sessions",
   "unique_definition": "exact owner pc4 token bytes, SHA-256 keyed; repeated response appearances counted as duplicates"
 }

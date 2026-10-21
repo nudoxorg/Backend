@@ -64,6 +64,28 @@ fn scope(certificate: &WireCertificate) -> Result<&WireClaim, ClientError> {
     Ok(claim)
 }
 
+fn cursor_claim_matches(claim: &WireClaim, cursor: backend_library::Cursor) -> bool {
+    let WireClaim::Cursor {
+        recipe,
+        version,
+        branch,
+        log,
+        schema,
+        root,
+        sequence,
+    } = claim
+    else {
+        return false;
+    };
+    recipe == &encode_id(cursor.recipe().as_bytes())
+        && version == &encode_id(cursor.version().as_bytes())
+        && branch == &encode_id(cursor.branch().as_bytes())
+        && log == &encode_id(cursor.log().as_bytes())
+        && *schema == cursor.schema()
+        && root == &encode_id(cursor.root().as_bytes())
+        && *sequence == cursor.sequence()
+}
+
 pub(super) fn basis(command: &Command) -> Option<backend_library::ViewRevision> {
     match command {
         Command::Search(query) => Some(query.basis()),
@@ -110,7 +132,10 @@ fn compact_root_reference_shape(request: &CommandDto, rootless: bool) -> bool {
         return false;
     };
     let page_root = encode_id(cursor.root().as_bytes());
-    if request.request_id != 1 || cursor.query_offset() == 0 {
+    if owner_root == page_root {
+        return false;
+    }
+    if cursor.query_offset() == 0 {
         return false;
     }
     let mut owner_root_commitments = 0;
@@ -142,6 +167,7 @@ fn compact_root_reference_shape(request: &CommandDto, rootless: bool) -> bool {
             WireClaim::Root { .. } => return false,
             claim
                 if claim_describes_cursor(claim, cursor)
+                    || cursor_claim_matches(claim, cursor)
                     || graph_address_claim(&request.command, claim) => {}
             _ => return false,
         }
@@ -159,6 +185,78 @@ fn compact_root_reference_shape(request: &CommandDto, rootless: bool) -> bool {
             page_roots == 1 && (page_root_commitments == 0 || page_root_commitments == 1)
         })
         && scope(certificate).is_ok()
+}
+
+// A raw closed-envelope prefilter selects the compact decoder before any
+// owner-bound reconstruction. The typed shared predicate still performs the
+// complete claim grammar check after parsing the strict envelope.
+fn raw_compact_catalog_candidate(body: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    let Some(envelope) = value.as_object() else {
+        return false;
+    };
+    if envelope.len() != 4
+        || !envelope.contains_key("version")
+        || !envelope.contains_key("request_id")
+        || !envelope.contains_key("command")
+        || !envelope.contains_key("certificate")
+        || envelope
+            .get("request_id")
+            .and_then(serde_json::Value::as_u64)
+            != Some(1)
+    {
+        return false;
+    }
+    let Some(command) = envelope
+        .get("command")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    if command.len() != 2 || !command.contains_key("kind") || !command.contains_key("data") {
+        return false;
+    }
+    let Some(kind) = command.get("kind").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    if !matches!(
+        kind,
+        "search" | "search_published_names" | "name" | "graph_page" | "outline_page"
+    ) {
+        return false;
+    }
+    let Some(data) = command.get("data").and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+    let continued = match kind {
+        "graph_page" | "outline_page" => data
+            .get("page")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|page| page.get("continuation"))
+            .is_some_and(|value| !value.is_null()),
+        _ => data.get("cursor").is_some_and(|value| !value.is_null()),
+    };
+    let Some(claims) = envelope
+        .get("certificate")
+        .and_then(|certificate| certificate.get("claims"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return false;
+    };
+    continued
+        && claims.iter().any(|claim| {
+            claim.get("kind").and_then(serde_json::Value::as_str) == Some("root_commitment")
+                && claim
+                    .get("data")
+                    .and_then(|data| data.get("schema"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("view_relation")
+        })
+        && claims
+            .iter()
+            .all(|claim| claim.get("kind").and_then(serde_json::Value::as_str) != Some("root"))
 }
 
 fn compact_root_reference(request: &CommandDto) -> Option<CommandDto> {
@@ -186,9 +284,14 @@ fn compact_root_reference(request: &CommandDto) -> Option<CommandDto> {
             id: page_root,
         });
     }
-    (compact.claims.len() < certificate.claims.len()).then(|| {
-        CommandDto::new(request.request_id, request.command.clone()).with_certificate(compact)
-    })
+    if !removed_page_root {
+        return None;
+    }
+    let candidate =
+        CommandDto::new(request.request_id, request.command.clone()).with_certificate(compact);
+    candidate
+        .is_compact_catalog_continuation()
+        .then_some(candidate)
 }
 
 // Measure the existing DTO serializer without allocating an oversized body.
@@ -251,6 +354,11 @@ impl Session {
         // spelling. Binary packing never supplies authority of its own.
         backend_library::encode_command_body(request).map_err(ClientError::Protocol)?;
         let compact = compact_root_reference(request).unwrap_or_else(|| request.clone());
+        if compact != *request && !compact.is_compact_catalog_continuation() {
+            return Err(ClientError::Protocol(
+                "compact query proof does not match the shared owner-bound grammar".to_owned(),
+            ));
+        }
         let body = backend_library::encode_binary_certificate_command(&compact)
             .map_err(ClientError::Protocol)?;
         encode_portable_proof(&body, "pc4-")
@@ -403,24 +511,29 @@ impl Session {
                     .and_then(serde_json::Value::as_str)
                     != Some("graph_query")
                 {
-                    // Only the exact RootCommitment-only shape emitted by the
-                    // compact producer may be reopened against the receiver's
-                    // admitted durable cursor. All other claim preimages and
-                    // recipe checks remain in the owner-aware command decoder.
-                    let compact: CommandDto = serde_json::from_value(envelope.clone())
-                        .map_err(|_| ClientError::Protocol(error.clone()))?;
-                    if !compact_root_reference_shape(&compact, true) {
+                    // Select owner-bound reconstruction only for the explicit
+                    // compact envelope discriminator; malformed ordinary
+                    // proofs never fall through from a strict decode error.
+                    if !raw_compact_catalog_candidate(&body) {
                         return Err(ClientError::Protocol(error));
                     }
                     let revision = self.revision()?;
+                    let compact =
+                        backend_library::decode_command_body_for_owner(&body, revision.cursor())
+                            .map_err(|_| ClientError::Protocol(error.clone()))?;
+                    if compact.request_id != 1
+                        || !compact.is_compact_catalog_continuation()
+                        || !compact_root_reference_shape(&compact, true)
+                    {
+                        return Err(ClientError::Protocol(error));
+                    }
                     if !basis(&compact.command).is_some_and(|basis| basis.matches(revision.root))
                         || scope(compact.certificate().expect("checked certificate"))?
                             != scope(&revision.certificate)?
                     {
                         return Err(ClientError::StaleCursor);
                     }
-                    backend_library::decode_command_body_for_owner(&body, revision.cursor())
-                        .map_err(ClientError::Protocol)?
+                    compact
                 } else {
                     let certificate: WireCertificate =
                         serde_json::from_value(envelope.get("certificate").cloned().ok_or_else(
@@ -610,6 +723,7 @@ impl Session {
         let mut fresh = revision.certificate;
         for claim in &certificate.claims {
             if claim_describes_cursor(claim, cursor)
+                || cursor_claim_matches(claim, cursor)
                 || matches!(claim, WireClaim::RootCommitment { schema: WireSchema::ViewRelation, id } if id == &encode_id(cursor.root().as_bytes()))
                 || graph_address_claim(&imported.command, claim)
             {

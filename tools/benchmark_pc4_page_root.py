@@ -26,6 +26,7 @@ COHORTS = {
 }
 TOKEN = re.compile(r"mcp2-([^-]+)-(pc4-.*)-([0-9a-f]{32})\Z")
 CALL_FILE = re.compile(r"evidence/mcp-\d+-(request|response)\.json\Z")
+COUNTER = re.compile(r"evidence/mcp-(\d+)-(request|response)\.json\Z")
 
 
 def digest(data: bytes) -> str:
@@ -134,6 +135,8 @@ def rewrite_root_claim(body: bytes, header: bytes, claims: list[dict]) -> tuple[
         raise ValueError(f"query header omitted page/owner root: {header.decode()}")
     page_digest = bytes.fromhex(page_root)
     owner_digest = bytes.fromhex(owner_root)
+    if page_digest == owner_digest:
+        raise ValueError("owner and predecessor page roots are identical; compact rewrite is forbidden")
     root_claims = [claim for claim in claims if claim["tag"] == 6 and claim["id"] == page_digest]
     if len(root_claims) != 1:
         raise ValueError(f"expected one exact page-root witness, observed {len(root_claims)}")
@@ -163,25 +166,75 @@ def collect(cohort: str, path: Path) -> tuple[list[dict], dict]:
     archive_hash = digest(archive_bytes)
     with tarfile.open(path) as archive:
         names = archive.getnames()
-        requests = {}
-        responses = []
+        entries = []
         for name in names:
             if not CALL_FILE.fullmatch(name):
                 continue
             raw = archive.extractfile(name).read()
             value = json.loads(raw)
+            counter = int(COUNTER.fullmatch(name).group(1))
+            entries.append((counter, name, raw, value))
+        entries.sort(key=lambda item: item[0])
+        outstanding = {}
+        session = 0
+        joined_calls = []
+        correlation_errors = []
+        for counter, name, raw, value in entries:
             if name.endswith("-request.json"):
-                requests[value.get("id")] = (name, raw, value.get("params", {}).get("name"))
+                rpc_method = value.get("method")
+                if rpc_method == "initialize":
+                    if outstanding:
+                        correlation_errors.append(
+                            f"initialize at {name} began with outstanding IDs {sorted(map(str, outstanding))}"
+                        )
+                    session += 1
+                    outstanding = {}
+                if "id" not in value:
+                    continue  # JSON-RPC notification has no response.
+                request_id = value["id"]
+                if request_id in outstanding:
+                    correlation_errors.append(
+                        f"duplicate outstanding request id {request_id!r} at {name} in session {session}"
+                    )
+                    continue
+                logical_method = (
+                    value.get("params", {}).get("name")
+                    if rpc_method == "tools/call"
+                    else rpc_method
+                )
+                outstanding[request_id] = (
+                    session,
+                    counter,
+                    name,
+                    raw,
+                    logical_method,
+                )
             else:
-                responses.append((name, raw, value))
+                if "id" not in value:
+                    correlation_errors.append(f"response omitted id at {name}")
+                    continue
+                request_id = value["id"]
+                joined = outstanding.pop(request_id, None)
+                if joined is None:
+                    correlation_errors.append(
+                        f"orphan/ambiguous response id {request_id!r} at {name} in session {session}"
+                    )
+                    continue
+                joined_calls.append((joined, (counter, name, raw, value)))
+        if outstanding:
+            correlation_errors.append(
+                f"archive ended with outstanding IDs {sorted(map(str, outstanding))} in session {session}"
+            )
+        if correlation_errors:
+            raise ValueError(f"{cohort}: session-aware JSON-RPC correlation failed: {correlation_errors[:8]}")
         occurrences = []
         unique_owners = {}
-        for response_name, response_raw, response in sorted(responses):
-            request_id = response.get("id")
-            joined = requests.get(request_id)
-            if not joined:
-                continue
-            request_name, request_raw, method = joined
+        for (session_id, request_counter, request_name, request_raw, method), (
+            response_counter,
+            response_name,
+            response_raw,
+            response,
+        ) in joined_calls:
             if method not in {"backend.search", "backend.graph"}:
                 continue
             for full_token in walk(response):
@@ -202,9 +255,12 @@ def collect(cohort: str, path: Path) -> tuple[list[dict], dict]:
                     "cohort": cohort,
                     "request_file": request_name,
                     "request_sha256": digest(request_raw),
-                    "request_id": request_id,
+                    "request_id": response["id"],
+                    "jsonrpc_session": session_id,
+                    "request_counter": request_counter,
                     "method": method,
                     "response_file": response_name,
+                    "response_counter": response_counter,
                     "response_sha256": digest(response_raw),
                     "full_token_sha256": digest(full_token.encode()),
                     "full_token_chars": len(full_token),
@@ -217,6 +273,7 @@ def collect(cohort: str, path: Path) -> tuple[list[dict], dict]:
                     "page_cursor_root_id": root_ids(header)[0],
                     "page_root_claim_canonical_bytes": root_canonical,
                     "certificate_claims": len(claims),
+                    "certificate_claim_tags": [claim["tag"] for claim in claims],
                     "bqpc_body_bytes_before": len(body),
                     "bqpc_body_bytes_after": len(new_body),
                     "bqpc_body_bytes_saved": len(body) - len(new_body),
@@ -233,9 +290,21 @@ def collect(cohort: str, path: Path) -> tuple[list[dict], dict]:
             "archive": str(path),
             "archive_sha256": archive_hash,
             "response_files": sum(name.endswith("-response.json") for name in names),
+            "jsonrpc_sessions": session,
+            "session_aware_pairs": len(joined_calls),
             "joined_owner_occurrences": len(occurrences),
             "unique_owner_tokens": len(unique_owners),
             "duplicate_occurrences": len(occurrences) - len(unique_owners),
+            "unique_owner_claim_tag_counts": {
+                str(tag): count
+                for tag, count in sorted(
+                    collections.Counter(
+                        tag
+                        for row in unique_owners.values()
+                        for tag in row["certificate_claim_tags"]
+                    ).items()
+                )
+            },
             "unique_totals": {
                 key: sum(row[key] for row in unique_owners.values())
                 for key in (
@@ -267,8 +336,10 @@ def main() -> None:
     (output / "summary.json").write_text(
         json.dumps(
             {
-                "scope": "retained backend.search/backend.graph owners, joined by JSON-RPC id",
-                "method_source": "request.params.name",
+                "scope": "retained backend.search/backend.graph owners, joined chronologically within initialize-delimited JSON-RPC sessions",
+                "method_source": "tools/call request.params.name; JSON-RPC method retained for other calls",
+                "correlation": "sort evidence/mcp-NNNNNN-{request,response}.json by numeric counter; initialize resets session; match exactly one outstanding request id; duplicate IDs and orphan responses fail closed",
+                "prior_global_id_join": "retained as evidence/pc4-page-root-cursor-20261020/legacy-global-id-join-invalidated.json; invalid because IDs recur across initialize-delimited sessions",
                 "unique_definition": "exact owner pc4 token bytes, SHA-256 keyed; repeated response appearances counted as duplicates",
                 "modified_mac": False,
                 "full_token_after_size": "estimate only: Python zlib level 6 plus unchanged expiry/MAC field lengths; no token/MAC forged",
