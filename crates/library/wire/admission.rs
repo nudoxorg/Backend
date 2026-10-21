@@ -1198,15 +1198,25 @@ pub fn admit_surface_reply(
             ));
         }
     }
-    if let (crate::SurfaceCommand::ProjectTree { root }, crate::SurfaceReply::ProjectTree(tree)) =
-        (command, reply)
-        && !tree.request_binding().is_some_and(|binding| {
-            binding.matches_requested_root(std::path::Path::new(root.as_str()))
-        })
-    {
-        return Err(ReplyAdmissionError::Protocol(
-            "project Tree observation does not match the exact requested directory".to_owned(),
-        ));
+    if let crate::SurfaceReply::ProjectTree(tree) = reply {
+        let (root, captured) = match command {
+            crate::SurfaceCommand::ProjectTree { root } => (root, false),
+            crate::SurfaceCommand::CapturedProjectTree { root } => (root, true),
+            _ => {
+                return Err(ReplyAdmissionError::Protocol(
+                    "project tree has another request family".to_owned(),
+                ));
+            }
+        };
+        if captured != matches!(&tree.source, crate::browse::TreeSource::CapturedSource { .. })
+            || !tree.request_binding().is_some_and(|binding| {
+                binding.matches_requested_root(std::path::Path::new(root.as_str()))
+            })
+        {
+            return Err(ReplyAdmissionError::Protocol(
+                "project tree reader or observation does not match the exact requested directory and mode".to_owned(),
+            ));
+        }
     }
     Ok(())
 }

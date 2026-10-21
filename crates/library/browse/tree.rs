@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 /// Wire schema of [`ProjectTree`].
-pub const PROJECT_TREE_SCHEMA: u16 = 9;
+pub const PROJECT_TREE_SCHEMA: u16 = 10;
 
 /// Wire schema of [`ProjectTreeRequestBindingV1`].
 pub const PROJECT_TREE_REQUEST_BINDING_SCHEMA: u16 = 1;
@@ -31,7 +31,8 @@ pub struct ProjectTreeRequestBindingV1 {
     pub schema: u16,
     /// Commitment to the exact directory string submitted by the caller.
     pub requested_root_digest: [u8; 32],
-    /// Commitment to Cargo's effective workspace root in this tree reply.
+    /// Commitment to the effective root in this reply. The historical Cargo
+    /// digest domain is retained for wire compatibility; it grants no capability.
     pub effective_workspace_root_digest: [u8; 32],
 }
 
@@ -124,7 +125,7 @@ impl ProjectTreeRequestBindingV1 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ProjectTreeObservationV1 {
-    /// Cargo or a lockfile supplied dependency facts without an owner-held
+    /// Captured membership, Cargo or a lockfile supplied display facts without an owner-held
     /// source observation (for example, a bounded cache could not retain it).
     DisplayOnly {
         /// Exact request and effective workspace commitments.
@@ -173,6 +174,13 @@ pub const MAX_TREE_PACKAGES: usize = 20_000;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "reader", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum TreeSource {
+    /// One bounded page of the selected Project's retained source membership.
+    /// This is independent of compiler publication and grants no Cargo source
+    /// capability. Its stateless continuation uses PackageSourceMembership.
+    CapturedSource {
+        /// Original typed inventory, including unavailable or stale selection.
+        membership: Box<crate::PackageSourceMembershipPageResultV1>,
+    },
     /// `cargo metadata`, resolved for this machine's target.
     Cargo {
         /// The target triple Cargo resolved for.
@@ -436,7 +444,7 @@ pub struct TreeHealth {
     pub affecting: Box<[TreeAdvisory]>,
 }
 
-/// A project's dependency tree.
+/// A project source inventory or an independently observed Cargo dependency tree.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectTree {
@@ -469,6 +477,45 @@ pub struct ProjectTree {
 }
 
 impl ProjectTree {
+    /// Builds a source-only tree from an already selected membership page.
+    /// No filesystem, package manager, dependency or compiler facts are read.
+    /// Returns None if the page names another root or is not a first page.
+    #[must_use]
+    pub fn from_captured_membership(
+        root: String,
+        membership: crate::PackageSourceMembershipPageResultV1,
+    ) -> Option<Self> {
+        let binding = ProjectTreeRequestBindingV1::for_paths(Path::new(&root), &root)?;
+        let tree = Self {
+            schema: PROJECT_TREE_SCHEMA,
+            source: TreeSource::CapturedSource {
+                membership: Box::new(membership),
+            },
+            name: Path::new(&root).file_name().map_or_else(
+                || root.clone(),
+                |name| name.to_string_lossy().into_owned(),
+            ),
+            root,
+            // Captured membership authorizes its own source routes, never the
+            // independently revalidated Cargo package observation routes.
+            observation: Some(ProjectTreeObservationV1::DisplayOnly { binding }),
+            members: Box::new([]),
+            packages: Box::new([]),
+            direct: Box::new([]),
+            twice: Box::new([]),
+            health: TreeHealth {
+                coverage: AdvisoryCoverage::Unknown,
+                freshness: FreshnessState::Unknown,
+                checked: 0,
+                of: 0,
+                affecting: Box::new([]),
+            },
+            locked_inactive: 0,
+            locked_inactive_coverage: LockedInactiveCoverage::Unavailable,
+        };
+        tree.has_admissible_shape().then_some(tree)
+    }
+
     /// Exact request/display identity, including display-only observations.
     #[must_use]
     pub fn request_binding(&self) -> Option<ProjectTreeRequestBindingV1> {
@@ -531,6 +578,34 @@ impl ProjectTree {
             })
         {
             return false;
+        }
+        if let TreeSource::CapturedSource { membership } = &self.source {
+            use crate::PackageSourceMembershipPageResultV1 as Membership;
+            let (package, first_page) = match membership.as_ref() {
+                Membership::Page { package, start_offset, .. } => (package, *start_offset == 0),
+                Membership::Stale { package, .. } | Membership::Unavailable { package, .. } => {
+                    (package, true)
+                }
+            };
+            return membership.has_admissible_shape()
+                && first_page
+                && package.as_str() == self.root
+                && self.name == Path::new(&self.root).file_name().map_or_else(
+                    || self.root.clone(),
+                    |name| name.to_string_lossy().into_owned(),
+                )
+                && matches!(self.observation, Some(ProjectTreeObservationV1::DisplayOnly { .. }))
+                && self.members.is_empty()
+                && self.packages.is_empty()
+                && self.direct.is_empty()
+                && self.twice.is_empty()
+                && self.health.affecting.is_empty()
+                && self.health.coverage == AdvisoryCoverage::Unknown
+                && self.health.freshness == FreshnessState::Unknown
+                && self.health.checked == 0
+                && self.health.of == 0
+                && self.locked_inactive == 0
+                && self.locked_inactive_coverage == LockedInactiveCoverage::Unavailable;
         }
         let mut references = BTreeMap::new();
         let mut displayed = BTreeSet::new();

@@ -773,6 +773,13 @@ mod tests {
         }
     }
 
+    #[test]
+    fn tree_request_modes_keep_cargo_public_and_captured_sources_out_of_the_cargo_lane() {
+        let root = ProductText::new("/tmp/captured-tree").expect("root");
+        assert!(BrowseLane::accepts(&SurfaceCommand::ProjectTree { root: root.clone() }));
+        assert!(!BrowseLane::accepts(&SurfaceCommand::CapturedProjectTree { root }));
+    }
+
     fn other_shard(command: &SurfaceCommand) -> SurfaceCommand {
         (0..100)
             .map(|index| tree(&format!("/tmp/browse-lane-other-{index}")))

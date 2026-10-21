@@ -17,6 +17,10 @@ use std::collections::BTreeMap;
 pub struct TreeReading {
     /// The project's name (`backend`).
     pub name: String,
+    /// Exact bounded captured file inventory and native continuation for a
+    /// source-tree view. A Cargo dependency view keeps this absent. GUI
+    /// renderers must use these file records instead of InventoryReading crates.
+    pub captured_sources: Option<Box<backend_library::PackageSourceMembershipPageResultV1>>,
     /// "Your 44 packages lean on 75 others directly, and 884 in all."
     pub lede: String,
     /// A truthful note about lockfile rows outside the current resolution.
@@ -129,6 +133,25 @@ pub struct TwiceReading {
 /// Reads a tree into sentences.
 #[must_use]
 pub fn read_tree(tree: &ProjectTree) -> TreeReading {
+    if let TreeSource::CapturedSource { membership } = &tree.source {
+        let lede = match membership.as_ref() {
+            backend_library::PackageSourceMembershipPageResultV1::Page { file_count, files, next, .. } =>
+                format!("{} captured source files; {} shown on this {} page.", count(*file_count as usize), count(files.len()), if next.is_some() { "partial" } else { "complete" }),
+            backend_library::PackageSourceMembershipPageResultV1::Stale { .. } =>
+                "The captured source selection changed; start a fresh tree read.".to_owned(),
+            backend_library::PackageSourceMembershipPageResultV1::Unavailable { reason, .. } =>
+                format!("Captured source inventory is unavailable: {reason:?}."),
+        };
+        return TreeReading {
+            name: tree.name.clone(), captured_sources: Some(membership.clone()),
+            lede, locked_inactive_note: None,
+            source_note: Some("Source inventory only. Compiler publication, dependencies and excluded-file reasons are separate facts.".to_owned()),
+            alerts: Box::new([]), twice_line: None, health: "Dependency advisory facts are not captured by this tree.".to_owned(),
+            roles: Box::new([]), inventory: Box::new([]),
+            inventory_note: "Only the selected captured source membership is represented; this is not a filesystem listing or a dependency resolution.".to_owned(),
+            twice_heading: None, twice: Box::new([]),
+        };
+    }
     let members = tree.members.len();
     let lede = match &tree.source {
         TreeSource::Lockfile {
@@ -138,6 +161,7 @@ pub fn read_tree(tree: &ProjectTree) -> TreeReading {
             "Cargo.lock lists {} package rows; workspace membership is unknown.",
             count(tree.packages.len()),
         ),
+        TreeSource::CapturedSource { .. } => "Captured source inventory.".to_owned(),
         TreeSource::Cargo { .. } => format!(
             "Your {} {} on {} {} directly, and {} in all.",
             count(members),
@@ -190,6 +214,7 @@ pub fn read_tree(tree: &ProjectTree) -> TreeReading {
         }
     };
     let source_note = match &tree.source {
+        TreeSource::CapturedSource { .. } => None,
         TreeSource::Cargo { .. } => None,
         TreeSource::Lockfile {
             reason,
@@ -254,6 +279,7 @@ pub fn read_tree(tree: &ProjectTree) -> TreeReading {
         })
         .collect();
     let inventory_note = match &tree.source {
+        TreeSource::CapturedSource { .. } => "Only selected captured source paths are represented.".to_owned(),
         TreeSource::Cargo { .. } => format!(
             "All {} external packages in this target/features resolution are listed. Locked but inactive packages are counted separately above; source files open only with a current exact receipt.",
             count(tree.packages.len()),
@@ -269,6 +295,7 @@ pub fn read_tree(tree: &ProjectTree) -> TreeReading {
     };
     TreeReading {
         name: tree.name.clone(),
+        captured_sources: None,
         lede,
         locked_inactive_note,
         source_note,
