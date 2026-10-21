@@ -8,7 +8,7 @@ use backend_library::interface::{
     CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl,
 };
 use backend_semantic::{
-    ir::{SourceCoverageManifest, SourceCoverageRow},
+    ir::{LinkKind, SemanticReader, SourceCoverageManifest, SourceCoverageRow},
     vocabulary::{LanguageProfile, Stage, TypeScriptSource},
 };
 use backend_store::journal::PublicationLimits;
@@ -53,12 +53,34 @@ impl Fixture {
         );
         fixture
     }
+    fn empty() -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "tsz-coverage-empty-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        Self {
+            root: root.canonicalize().unwrap(),
+            files: BTreeMap::new(),
+        }
+    }
     fn write(&self, path: &str, text: &str) {
         let path = self.root.join(path);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, text).unwrap();
     }
+    fn put(&mut self, path: &str, text: &str) {
+        self.files.insert(path.to_owned(), text.to_owned());
+        self.write(path, text);
+    }
     fn compile(&self) -> StagedSemanticPackage {
+        self.compile_profile(LanguageProfile::TypeScript(TypeScriptSource::TypeScript))
+    }
+    fn compile_profile(&self, profile: LanguageProfile) -> StagedSemanticPackage {
         let host = super::TypeScriptProjectHost::direct(
             None,
             super::ToolchainProbeLimits::new(
@@ -99,7 +121,7 @@ impl Fixture {
         let request = PackageCompileRequest::new(
             GenerateTarget {
                 correlation: CorrelationId(5012),
-                profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                profile,
                 stage: Stage::LowerIr,
             },
             PackageUrl::try_from("pkg:npm/angular-coverage50@1.0.0".to_owned()).unwrap(),
@@ -108,7 +130,13 @@ impl Fixture {
         let sources = self
             .files
             .iter()
-            .filter(|(path, _)| path.ends_with(".ts"))
+            .filter(|(path, _)| match profile {
+                LanguageProfile::TypeScript(TypeScriptSource::TypeScript) => {
+                    path.ends_with(".ts")
+                }
+                LanguageProfile::TypeScript(TypeScriptSource::Tsx) => path.ends_with(".tsx"),
+                _ => false,
+            })
             .map(|(path, text)| PackageSource::new(path, text).unwrap())
             .collect::<Vec<_>>();
 
@@ -179,6 +207,100 @@ fn linked_tsz_angular50_records_actual_config_and_exact_nine_scope_observations(
         !fixture.root.join("node_modules").exists(),
         "linked TSZ alone owns this observation"
     );
+}
+
+#[test]
+fn linked_tsz_tsx_cycle_is_an_exact_file_gap_while_navbar_and_caller_publish() {
+    let mut fixture = Fixture::empty();
+    fixture.put(
+        "tsconfig.json",
+        r#"{"compilerOptions":{"noLib":true,"types":[],"module":"ESNext","moduleResolution":"bundler","jsx":"preserve"},"files":["src/app/layout.tsx","src/app/page.tsx","src/components/NavBar.tsx"]}"#,
+    );
+    let recursive = "export type Recursive = { next: Recursive };\n";
+    let navbar = "export function NavBar() { return \"nav\"; }\n";
+    let page = "import { NavBar } from \"../components/NavBar\";\nexport function Page() { return NavBar(); }\n";
+    fixture.put("src/app/layout.tsx", recursive);
+    fixture.put("src/components/NavBar.tsx", navbar);
+    fixture.put("src/app/page.tsx", page);
+
+    let staged = fixture.compile_profile(LanguageProfile::TypeScript(TypeScriptSource::Tsx));
+    assert_eq!(staged.artifacts().len(), 2);
+    assert_eq!(
+        staged.input_witness().coverage(),
+        backend_version::Coverage::Partial,
+        "one refused TSX source must not claim complete profile coverage"
+    );
+    assert!(staged.artifacts().iter().any(|artifact| {
+        artifact.source().identity
+            == backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                navbar.as_bytes(),
+            )
+    }));
+    let page_ordinal = staged
+        .artifacts()
+        .iter()
+        .position(|artifact| {
+            artifact.source().identity
+                == backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                    page.as_bytes(),
+                )
+        })
+        .expect("the healthy caller keeps a semantic artifact");
+    assert!(!staged.artifacts().iter().any(|artifact| {
+        artifact.source().identity
+            == backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                recursive.as_bytes(),
+            )
+    }));
+
+    let retained_navbar_call = staged
+        .with_semantic_reader(page_ordinal, |reader, _| -> Result<bool, std::io::Error> {
+            let links = reader.canonical_links().collect::<Vec<_>>();
+            Ok(reader.link_occurrences().any(|(_, occurrence)| {
+                let Some(span) = occurrence.source else {
+                    return false;
+                };
+                let Some(name) = page
+                    .as_bytes()
+                    .get(span.start as usize..span.end as usize)
+                else {
+                    return false;
+                };
+                name == b"NavBar"
+                    && links.iter().any(|(id, link)| {
+                        *id == occurrence.link && link.kind == LinkKind::Calls
+                    })
+            }))
+        })
+        .expect("the healthy caller image reopens");
+    assert!(retained_navbar_call, "the exact NavBar call remains in Page");
+
+    let gap = staged
+        .coverage_gaps()
+        .iter()
+        .find(|gap| gap.relative_path() == "src/app/layout.tsx")
+        .expect("the recursive source is named as the failed file");
+    assert_eq!(gap.cause(), PackageSourceCoverageGapCause::SourceNotRepresentable);
+    assert_eq!(
+        gap.source().identity,
+        backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+            recursive.as_bytes(),
+        )
+    );
+    assert_eq!(gap.source().byte_len as usize, recursive.len());
+    let coverage = staged
+        .source_coverage()
+        .expect("source omission is authenticated")
+        .catalog()
+        .expect("coverage explanation fits");
+    assert_eq!((coverage.source_count(), coverage.completed()), (3, 2));
+    assert!(coverage.rows().iter().any(|row| {
+        matches!(row, SourceCoverageRow::Gap { path, source, byte_len, cause }
+            if path == "src/app/layout.tsx"
+                && *source == gap.source().identity
+                && *byte_len as usize == recursive.len()
+                && *cause == PackageSourceCoverageGapCause::SourceNotRepresentable)
+    }));
 }
 
 #[test]
