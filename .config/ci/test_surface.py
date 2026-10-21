@@ -1046,6 +1046,76 @@ class CIEvidenceTests(unittest.TestCase):
         self.assertIn("full detail retained", value)
 
 
+class SourceIdentityTimeoutTests(unittest.TestCase):
+    def test_actual_checkout_checks_all_tracked_changes_and_ignores_untracked(self):
+        import subprocess
+        import tempfile
+        import source_identity
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def git(*args):
+                return subprocess.run(["git", "-C", str(root), *args], check=True,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      text=True).stdout
+
+            git("init", "-q")
+            git("config", "user.name", "Source identity fixture")
+            git("config", "user.email", "source-identity-fixture@localhost")
+            tracked = root / "tracked.txt"
+            tracked.write_text("clean\n")
+            git("add", "tracked.txt")
+            git("commit", "-qm", "fixture")
+            source_sha = git("rev-parse", "HEAD").strip()
+
+            (root / "untracked.txt").write_text("not part of the tracked gate\n")
+            source_identity.verify_checkout(root, source_sha)
+
+            tracked.write_text("unstaged tracked change\n")
+            with self.assertRaisesRegex(ValueError, "clean tracked"):
+                source_identity.verify_checkout(root, source_sha)
+
+            git("checkout", "--", "tracked.txt")
+            tracked.write_text("staged tracked change\n")
+            git("add", "tracked.txt")
+            with self.assertRaisesRegex(ValueError, "clean tracked"):
+                source_identity.verify_checkout(root, source_sha)
+
+    def test_checkout_uses_full_sha_and_tracked_only_cleanliness_check(self):
+        from unittest.mock import call, patch
+        import source_identity
+
+        root = Path("/checkout")
+        source_sha = "a" * 40
+        with patch.object(source_identity.subprocess, "check_output",
+                          side_effect=[source_sha + "\n", ""]) as check_output:
+            source_identity.verify_checkout(root, source_sha)
+
+        self.assertEqual(check_output.call_args_list, [
+            call(["git", "-C", str(root), "rev-parse", "HEAD"], text=True, timeout=10),
+            call(["git", "-C", str(root), "status", "--porcelain",
+                  "--untracked-files=no"], text=True,
+                 timeout=source_identity.TRACKED_STATUS_TIMEOUT_SECONDS),
+        ])
+
+    def test_tracked_status_timeout_propagates_without_retry(self):
+        from unittest.mock import patch
+        import source_identity
+
+        source_sha = "b" * 40
+        timeout = source_identity.subprocess.TimeoutExpired(
+            ["git", "status"], source_identity.TRACKED_STATUS_TIMEOUT_SECONDS)
+        with patch.object(source_identity.subprocess, "check_output",
+                          side_effect=[source_sha, timeout]) as check_output:
+            with self.assertRaises(source_identity.subprocess.TimeoutExpired):
+                source_identity.verify_checkout(Path("/checkout"), source_sha)
+
+        self.assertEqual(check_output.call_count, 2)
+        self.assertEqual(check_output.call_args.kwargs["timeout"],
+                         source_identity.TRACKED_STATUS_TIMEOUT_SECONDS)
+
+
 class IncrementalCaseVerdictTests(unittest.TestCase):
     def test_completed_case_is_visible_before_later_case_aborts_without_final_packet(self):
         import argparse
