@@ -2632,15 +2632,31 @@ fn detail_for_fragment_failure(
 
 fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, bool) {
     if let PackageCompilerFailureCause::Lowering(PackageLoweringFaultFacts::FactRejected {
-        cause: PackageProjectionAdmissionFaultFacts::TypeProjectionCycle { type_id },
+        cause:
+            PackageProjectionAdmissionFaultFacts::TypeProjectionCycle {
+                type_id,
+                owner_span,
+                owner_name_span,
+            },
         ..
     }) = cause
     {
         // Retain the exact opaque checker handle already admitted in the closed
-        // fault facts. It distinguishes a TSZ handle cycle from a recursive
-        // binder reference without formatting checker/source payload text.
+        // fault facts and the source-bound owner declaration/name spans. These
+        // spans identify the declaration whose checker type was being
+        // projected, not the recursive type-use edge inside that declaration.
         let tag = cause.kind_tag().replace('_', " ");
-        let text = format!("lowering fault: {tag} (checker type id {type_id})");
+        let owner_span = owner_span.map_or_else(
+            || "owner declaration range unavailable".to_owned(),
+            |span| format!("owner declaration bytes {}..{}", span.start, span.end),
+        );
+        let owner_name_span = owner_name_span.map_or_else(
+            || "owner identifier range unavailable".to_owned(),
+            |span| format!("owner identifier bytes {}..{}", span.start, span.end),
+        );
+        let text = format!(
+            "lowering fault: {tag} (checker type id {type_id}; {owner_span}; {owner_name_span})"
+        );
         return sanitize_package_compiler_detail(&text, false);
     }
     if let PackageCompilerFailureCause::Lowering(PackageLoweringFaultFacts::FactRejected {
@@ -3603,6 +3619,13 @@ pub enum SurfaceCommand {
         /// Absolute project directory (any directory inside the workspace).
         root: ProductText,
     },
+    /// Read one bounded page of captured Project source paths. This request
+    /// never performs a current filesystem or Cargo dependency observation.
+    /// Its continuation uses the existing PackageSourceMembership request.
+    CapturedProjectTree {
+        /// Exact absolute local Project label in the selected source snapshot.
+        root: ProductText,
+    },
     /// Read one bounded UTF-8 file under a currently revalidated Cargo
     /// package source root, bound to its exact ProjectTree request.
     CargoPackageSourceFile {
@@ -3711,7 +3734,7 @@ impl SurfaceCommand {
             Self::Tree => CommandId::Tree,
             Self::TreeOpen { .. } => CommandId::TreeOpen,
             Self::TreeClose { .. } => CommandId::TreeClose,
-            Self::ProjectTree { .. } => CommandId::ProjectTree,
+            Self::ProjectTree { .. } | Self::CapturedProjectTree { .. } => CommandId::ProjectTree,
             Self::CargoPackageSourceFile { .. } => CommandId::CargoPackageSourceFile,
             Self::CargoPackageSourceInventory { .. } => CommandId::CargoPackageSourceInventory,
             Self::CargoPackageReadme { .. } => CommandId::CargoPackageReadme,
@@ -6422,7 +6445,17 @@ mod tests {
             PackageLoweringFaultFacts::FactRejected {
                 fact: 7,
                 name_len: 4,
-                cause: PackageProjectionAdmissionFaultFacts::TypeProjectionCycle { type_id: 42 },
+                cause: PackageProjectionAdmissionFaultFacts::TypeProjectionCycle {
+                    type_id: 42,
+                    owner_span: Some(backend_semantic::vocabulary::ProjectionSpan {
+                        start: 100,
+                        end: 180,
+                    }),
+                    owner_name_span: Some(backend_semantic::vocabulary::ProjectionSpan {
+                        start: 115,
+                        end: 125,
+                    }),
+                },
             },
         );
         let recursive = PackageCompilerFailureCause::Lowering(
@@ -6441,6 +6474,8 @@ mod tests {
         assert!(!recursive_truncated);
         assert!(cycle_detail.contains("type projection cycle"));
         assert!(cycle_detail.contains("checker type id 42"));
+        assert!(cycle_detail.contains("owner declaration bytes 100..180"));
+        assert!(cycle_detail.contains("owner identifier bytes 115..125"));
         assert!(!cycle_detail.contains("recursive reference"));
         assert!(recursive_detail.contains("recursive reference"));
         assert!(!recursive_detail.contains("checker type id"));

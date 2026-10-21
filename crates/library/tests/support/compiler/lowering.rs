@@ -3,6 +3,13 @@
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GoldenSourceSpan {
+    start: u32,
+    end: u32,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum GoldenLoweringCause {
     NoSupportedDeclaration,
@@ -307,7 +314,11 @@ pub(crate) enum GoldenProjectionAdmissionFault {
     TypeRowCapacity,
     ComputedRowCapacity,
     TypeProjectionDepthLimit { depth: u64, maximum: u64 },
-    TypeProjectionCycle { type_id: u32 },
+    TypeProjectionCycle {
+        type_id: u32,
+        owner_span: Option<GoldenSourceSpan>,
+        owner_name_span: Option<GoldenSourceSpan>,
+    },
     TypeProjectionRecursiveReference { distance: u32 },
     TypeProjectionWidth { actual: u64, maximum: u64 },
     OccurrenceOwner {
@@ -1847,9 +1858,21 @@ impl From<backend_semantic::vocabulary::ProjectionAdmissionFault> for GoldenProj
             ProjectionAdmissionFault::TypeProjectionDepthLimit { depth, maximum } => {
                 Self::TypeProjectionDepthLimit { depth, maximum }
             }
-            ProjectionAdmissionFault::TypeProjectionCycle { type_id } => {
-                Self::TypeProjectionCycle { type_id }
-            }
+            ProjectionAdmissionFault::TypeProjectionCycle {
+                type_id,
+                owner_span,
+                owner_name_span,
+            } => Self::TypeProjectionCycle {
+                type_id,
+                owner_span: owner_span.map(|span| GoldenSourceSpan {
+                    start: span.start,
+                    end: span.end,
+                }),
+                owner_name_span: owner_name_span.map(|span| GoldenSourceSpan {
+                    start: span.start,
+                    end: span.end,
+                }),
+            },
             ProjectionAdmissionFault::TypeProjectionRecursiveReference { distance } => {
                 Self::TypeProjectionRecursiveReference { distance }
             }

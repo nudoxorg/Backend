@@ -605,3 +605,17 @@ The answers-only refresh retains each existing performance suffix verbatim;
 current timing failures still fail. See
 `reviews/2026-10-15-coverage40-python-identities.json`. This is functional review,
 not accepted performance calibration or full T2 green.
+
+## TypeScript whole-project case (W2.3)
+
+`typescript-query-core` selects the pinned MIT `@tanstack/query-core@5.62.8`
+archive from `.config/nix/corpus-pins.json`. The Nix projection retains the
+complete tarball and checks its package manifest, the authored `QueryClient` and
+`CancelledError` source files, and license. CLI and MCP cases exercise search,
+outline, and package views through the existing surface harness. The case covers
+this published package, not the full TanStack monorepo. Each authored-symbol
+assertion requires the expected name and exact source path to be ready, so a
+same-named result from another file cannot satisfy the search. The case uses the
+existing direct TSZ default; `COMPILER_TYPESCRIPT_COMPILER` remains a separate
+oracle. Exact-head indexing,
+answers, and performance remain unvalidated by this source candidate.

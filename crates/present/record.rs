@@ -99,7 +99,15 @@ impl Record {
         let signature = row
             .signature
             .as_ref()
-            .map(|text| Signature::preview(text, language));
+            .and_then(|text| {
+                Signature::preview_declaration(
+                    text,
+                    language,
+                    row.kind,
+                    identity.name(),
+                    &row.excerpt,
+                )
+            });
         Self {
             identity,
             kind: row.kind,

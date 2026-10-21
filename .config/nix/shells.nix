@@ -406,6 +406,9 @@ let
       NUDOX_SURFACE_CSHARP_TINYIOC =
         toString
           (import ./surface-corpus.nix { inherit pkgs; }).csharp-tinyioc;
+      NUDOX_SURFACE_TYPESCRIPT_QUERY_CORE =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).typescript-query-core;
       # Product discovery selects java-25; the legacy corpus shell uses JDK 21.
       COMPILER_JAVA_COMPILER = "${pkgs.jdk25}/bin/javac";
       NUDOX_JAVAC = "${pkgs.jdk25}/bin/javac";

@@ -329,9 +329,21 @@ pub(crate) fn portable_admission(fault: FactFault) -> ProjectionAdmissionFault {
                 maximum: u64::from(maximum),
             }
         }
-        FactFault::TypeProjectionCycle { type_id } => {
-            ProjectionAdmissionFault::TypeProjectionCycle { type_id }
-        }
+        FactFault::TypeProjectionCycle {
+            type_id,
+            owner_span,
+            owner_name_span,
+        } => ProjectionAdmissionFault::TypeProjectionCycle {
+            type_id,
+            owner_span: owner_span.map(|span| ProjectionSpan {
+                start: span.start,
+                end: span.end,
+            }),
+            owner_name_span: owner_name_span.map(|span| ProjectionSpan {
+                start: span.start,
+                end: span.end,
+            }),
+        },
         FactFault::TypeProjectionRecursiveReference { distance } => {
             ProjectionAdmissionFault::TypeProjectionRecursiveReference { distance }
         }

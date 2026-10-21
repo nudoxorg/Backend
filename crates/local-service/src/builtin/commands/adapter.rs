@@ -608,6 +608,7 @@ fn answers_while_indexing(command: &Command) -> bool {
         | Command::SemanticShapes(_)
         | Command::Health
         | Command::Revision => true,
+        Command::OutlineOwnerWitnessCapability => true,
         Command::Surface(surface) => matches!(
             surface,
             S::Advisory { .. }
@@ -635,6 +636,7 @@ fn answers_while_indexing(command: &Command) -> bool {
                 | S::Projects
                 | S::Tree
                 | S::ProjectTree { .. }
+                | S::CapturedProjectTree { .. }
                 | S::CargoPackageSourceFile { .. }
                 | S::CargoPackageSourceInventory { .. }
                 | S::CargoPackageReadme { .. }
@@ -945,6 +947,53 @@ impl CommandAdapter {
         let owner = daemon.engine().daemon().library().cursor();
         let request = backend_engine::decode_command_dto_for_owner(body, owner)
             .map_err(|error| BuiltinModelError(format!("decode command DTO: {error}")))?;
+        let request = match (&request.command, request.certificate()) {
+            (
+                Command::OutlinePage { package, page },
+                Some(certificate),
+            ) if let Some(witness) = page.outline_witness() => {
+                let recipe_id = backend_library::encode_id(witness.recipe().as_bytes());
+                let mut preimages = certificate.claims.iter().filter_map(|claim| match claim {
+                    backend_library::WireClaim::KeyBytes {
+                        schema: backend_library::WireSchema::ViewRecipe,
+                        id,
+                        value,
+                    } if id == &recipe_id => Some(value.as_ref()),
+                    _ => None,
+                });
+                let preimage = preimages.next().ok_or_else(|| {
+                    BuiltinModelError("compact outline cursor omitted its recipe".to_owned())
+                })?;
+                if preimages.next().is_some() {
+                    return Err(BuiltinModelError(
+                        "compact outline cursor duplicated its recipe".to_owned(),
+                    ));
+                }
+                let library = daemon.engine().daemon().library();
+                let cursor = library
+                    .rehydrate_outline_cursor(
+                        *package,
+                        page.basis(),
+                        page.window(),
+                        witness,
+                        preimage,
+                    )
+                    .map_err(|error| {
+                        BuiltinModelError(format!("rehydrate outline cursor: {error}"))
+                    })?;
+                backend_library::CommandDto::new(
+                    request.request_id,
+                    Command::OutlinePage {
+                        package: *package,
+                        page: page.with_continuation(backend_library::PageContinuation::from_cursor(
+                            cursor,
+                        )),
+                    },
+                )
+                .with_certificate(certificate.clone())
+            }
+            _ => request,
+        };
         if let Command::Surface(backend_library::SurfaceCommand::IndexAwait { ticket }) =
             &request.command
         {
@@ -1188,6 +1237,20 @@ impl CommandAdapter {
                 };
             }
         }
+        if let Command::Surface(backend_library::SurfaceCommand::CapturedProjectTree { root }) =
+            &request.command
+        {
+            let snapshot = daemon.engine().daemon().owner().snapshot();
+            let reply = super::super::browse::captured_project_tree(&snapshot, root).map_or_else(
+                |error| {
+                    CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(error.to_string()))
+                },
+                |tree| {
+                    CommandReply::Surface(backend_library::SurfaceReply::ProjectTree(Box::new(tree)))
+                },
+            );
+            return Self::encode(daemon, request.request_id, (reply, None), None).map(Executed::Reply);
+        }
         if let Command::Surface(surface) = &request.command
             && BrowseLane::accepts(surface)
         {
@@ -1262,7 +1325,7 @@ impl CommandAdapter {
             self.retain_live_semantic_completion();
             return Ok(Executed::Deferred);
         }
-        self.execute_from(daemon, body, &origin)
+        self.execute_request_from(daemon, body, request, &origin)
             .map(Executed::Reply)
     }
 
@@ -4271,8 +4334,21 @@ impl CommandAdapter {
     fn spawn_index_scan(
         &mut self,
         indexing: &mut IndexJob,
-        work: IndexScanWork,
+        mut work: IndexScanWork,
     ) -> Result<(), BuiltinModelError> {
+        work.observation = work.observation.or_else(|| {
+            self.product_state
+                .workspace_path()
+                .ok()
+                .and_then(|path| {
+                    crate::builtin::index_work_observation::IndexWorkObservation::enabled(
+                        path,
+                        indexing.owner_ticket.clone(),
+                        indexing.operation_key,
+                        Arc::clone(&indexing.cancelled),
+                    )
+                })
+        });
         self.index_input_workers
             .reserve()
             .map_err(|error| BuiltinModelError(error.to_owned()))?;
@@ -4583,6 +4659,16 @@ impl CommandAdapter {
         let owner = daemon.engine().daemon().library().cursor();
         let request = backend_engine::decode_command_dto_for_owner(body, owner)
             .map_err(|error| BuiltinModelError(format!("decode command DTO: {error}")))?;
+        self.execute_request_from(daemon, body, request, origin)
+    }
+
+    fn execute_request_from(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        body: &[u8],
+        request: backend_library::CommandDto,
+        origin: &DeferredCommandOrigin,
+    ) -> Result<Vec<u8>, BuiltinModelError> {
         let short_control = self.can_answer_short_control(&request.command, origin);
         if answers_while_indexing(&request.command) && !short_control {
             return Err(BuiltinModelError(
@@ -5065,6 +5151,12 @@ impl CommandAdapter {
                 )?;
                 let command = Command::SemanticShapes(request);
                 Self::certify(daemon, &command, reply, certificate)
+            }
+            Command::OutlineOwnerWitnessCapability => {
+                // Answering this explicit read proves the connected peer
+                // implements the owner-rehydration continuation route. The
+                // standalone library deliberately refuses to make this claim.
+                self.standard(daemon, &Command::Revision, None)
             }
             Command::Surface(surface) => self.surface(daemon, surface, request_id),
             command => self.standard(daemon, &command, certificate),
@@ -6245,6 +6337,17 @@ impl CommandAdapter {
                             ))
                         },
                     )
+            }
+            backend_engine::SurfaceCommand::CapturedProjectTree { root } => {
+                let snapshot = daemon.engine().daemon().owner().snapshot();
+                super::super::browse::captured_project_tree(&snapshot, &root).map_or_else(
+                    |error| {
+                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error.to_string()))
+                    },
+                    |tree| {
+                        CommandReply::Surface(backend_engine::SurfaceReply::ProjectTree(Box::new(tree)))
+                    },
+                )
             }
             backend_engine::SurfaceCommand::CargoPackageSourceFile { request, path } => {
                 CommandReply::Surface(backend_engine::SurfaceReply::CargoPackageSourceFile(
@@ -9397,6 +9500,7 @@ mod tests {
             "int refused_name(void) { return 7; }\n",
         )
         .expect("C source");
+        let mut first_published_python_generation = None;
         for attempt in 0..2 {
             install_mixed_native_compiler(&mut fixture);
             let (adapter, daemon) = fixture.parts();
@@ -9439,6 +9543,26 @@ mod tests {
             assert_eq!(partial.source_capture.producer_package.as_str(), label);
             assert_eq!(partial.source_capture.profiles.len(), 2);
             assert_eq!(partial.refused_profiles.len(), 1);
+            let python_generation = partial
+                .source_capture
+                .profiles
+                .iter()
+                .find_map(|profile| match &profile.state {
+                    backend_library::IndexOperationSemanticProfileState::Published {
+                        generation,
+                        ..
+                    } if profile.profile.name() == Some("python") => Some(*generation),
+                    _ => None,
+                })
+                .expect("the useful Python generation remains selected");
+            if let Some(first_generation) = first_published_python_generation {
+                assert_eq!(
+                    python_generation, first_generation,
+                    "the cold retry carries forward the exact reused Python generation"
+                );
+            } else {
+                first_published_python_generation = Some(python_generation);
+            }
             let package_ref=backend_library::PackageReference::parse(label.clone()).expect("local");
             let discovered=package_profile::read(&daemon.engine().daemon().owner().snapshot(),&adapter.index_operations,&adapter.semantic_authority,&package_ref,None).expect("current unkeyed partial captures").expect("local");
             let backend_library::PackageCompilerOutcomes::Summary { source_capture,refusals,.. }=&discovered else { panic!("partial discovery") };

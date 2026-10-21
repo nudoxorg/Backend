@@ -852,6 +852,7 @@ impl ProductState {
             ),
             // The command adapter answers these before product state is asked.
             SurfaceCommand::ProjectTree { .. }
+            | SurfaceCommand::CapturedProjectTree { .. }
             | SurfaceCommand::PackageSourceMembership { .. }
             | SurfaceCommand::CargoPackageSourceFile { .. }
             | SurfaceCommand::CargoPackageSourceInventory { .. }
@@ -1884,7 +1885,9 @@ fn index_search_snapshot(
     discovery_search: Option<&DiscoverySearchIndex>,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"nudox.index-search.snapshot.v2\0");
+    // The local plane no longer promotes inherited project paths to ordinary
+    // substring evidence. A cursor from the previous policy cannot resume it.
+    hasher.update(b"nudox.index-search.snapshot.v3\0");
     hasher.update(&catalog_index.snapshot());
     hasher.update(&selected_catalog_snapshot);
     hasher.update(view.root().as_bytes());

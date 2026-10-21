@@ -1227,6 +1227,13 @@ pub enum PackageProjectionAdmissionFaultFacts {
     TypeProjectionCycle {
         /// Interned type handle that closes the cycle.
         type_id: u32,
+        /// Exact declaration span that owned this projection, when retained
+        /// by the language lowerer. This is not the recursive type-use edge.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner_span: Option<backend_semantic::vocabulary::ProjectionSpan>,
+        /// Exact identifier span of the owning declaration, when retained.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner_name_span: Option<backend_semantic::vocabulary::ProjectionSpan>,
     },
     /// A recursive type reference exceeds the supported reference distance.
     TypeProjectionRecursiveReference {
@@ -1800,7 +1807,15 @@ impl From<ProjectionAdmissionFault> for PackageProjectionAdmissionFaultFacts {
             F::TypeProjectionDepthLimit { depth, maximum } => {
                 Self::TypeProjectionDepthLimit { depth, maximum }
             }
-            F::TypeProjectionCycle { type_id } => Self::TypeProjectionCycle { type_id },
+            F::TypeProjectionCycle {
+                type_id,
+                owner_span,
+                owner_name_span,
+            } => Self::TypeProjectionCycle {
+                type_id,
+                owner_span,
+                owner_name_span,
+            },
             F::TypeProjectionRecursiveReference { distance } => {
                 Self::TypeProjectionRecursiveReference { distance }
             }
@@ -2294,8 +2309,16 @@ mod tests {
                 "type_projection_depth_limit",
             ),
             (
-                ProjectionAdmissionFault::TypeProjectionCycle { type_id: 12 },
-                PackageProjectionAdmissionFaultFacts::TypeProjectionCycle { type_id: 12 },
+                ProjectionAdmissionFault::TypeProjectionCycle {
+                    type_id: 12,
+                    owner_span: None,
+                    owner_name_span: None,
+                },
+                PackageProjectionAdmissionFaultFacts::TypeProjectionCycle {
+                    type_id: 12,
+                    owner_span: None,
+                    owner_name_span: None,
+                },
                 "lowering_projection_type_projection_cycle",
                 "type_projection_cycle",
             ),

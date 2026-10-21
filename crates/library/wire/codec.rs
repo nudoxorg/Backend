@@ -139,11 +139,14 @@ pub fn encode_command_body(request: &CommandDto) -> Result<Vec<u8>, String> {
     // Ordinary requests must survive the producer-certificate decoder before
     // an exact comparison. Comparing an envelope only with itself would let a
     // malformed canonical preimage ride along unchecked. Graph-query resumes
-    // are the deliberate exception: their commitments can only be reopened by
-    // the owner decoder. Catalog continuations retain the full canonical root.
+    // and the explicit untrusted outline-witness route are owner-only: their
+    // commitments are reopened only by the owner-aware decoder and Library.
     let owner_bound_resume = matches!(
         &request.command,
         crate::Command::GraphQuery(query) if query.page().continuation().is_some()
+    ) || matches!(
+        &request.command,
+        crate::Command::OutlinePage { page, .. } if page.outline_witness().is_some()
     );
     if !owner_bound_resume {
         let _: CommandDto = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;

@@ -358,6 +358,10 @@ impl Session {
                 Ok(true) => {
                     // Request numbering belongs to the connection.
                     self.next_request_id = 1;
+                    // The PC5 negotiation was bound to the retired stream;
+                    // the reopened peer must use strict full-proof PC4 until
+                    // a new Session explicitly probes it.
+                    self.outline_owner_witness_route = false;
                     return Ok(true);
                 }
                 Ok(false) => return Ok(false),

@@ -1793,6 +1793,9 @@ fn browse_entry_retained_bytes(
         .saturating_add(package_rows.capacity().saturating_mul(256))
         .saturating_add(watched_capacity.saturating_mul(size_of::<PathBuf>()));
     match &input.source {
+        TreeSource::CapturedSource { membership } => {
+            bytes = bytes.saturating_add(serde_json::to_vec(membership).map_or(0, |value| value.len()));
+        }
         TreeSource::Cargo { host } => bytes = bytes.saturating_add(host.capacity()),
         TreeSource::Lockfile { reason, .. } => bytes = bytes.saturating_add(reason.capacity()),
     }
@@ -9292,3 +9295,25 @@ fn witness(files: &[PathBuf]) -> [u8; 32] {
         .expect("source witness")
         .digest
 }
+
+/// Answers the exact submitted local root from one immutable owner snapshot.
+/// The existing membership reader retains its bounds, typed unavailable/stale
+/// states, and portable root/version cursor. Never canonicalize or walk a live
+/// directory here: its files may have changed since the selected capture.
+pub(super) fn captured_project_tree(
+    snapshot: &backend_engine::WorkspaceSnapshot,
+    root: &backend_library::ProductText,
+) -> Result<backend_library::browse::ProjectTree, super::BuiltinModelError> {
+    if !Path::new(root.as_str()).is_absolute() {
+        return Err(super::BuiltinModelError("project-tree needs an absolute project directory".to_owned()));
+    }
+    let package = backend_library::PackageReference::Local(root.clone());
+    let request = backend_library::PackageSourceMembershipPageRequestV1::first(package);
+    let page = super::commands::package_source_membership_page_from_snapshot(snapshot, &request)?;
+    backend_library::browse::ProjectTree::from_captured_membership(root.as_str().to_owned(), page)
+        .ok_or_else(|| super::BuiltinModelError("captured project-tree membership is malformed or belongs to another root".to_owned()))
+}
+
+#[cfg(test)]
+#[path = "browse/captured_tree_tests.rs"]
+mod captured_tree_tests;

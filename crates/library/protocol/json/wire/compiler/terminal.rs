@@ -1624,6 +1624,10 @@ enum ProjectionAdmissionFaultWire {
     },
     TypeProjectionCycle {
         type_id: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        owner_span: Option<backend_semantic::vocabulary::ProjectionSpan>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        owner_name_span: Option<backend_semantic::vocabulary::ProjectionSpan>,
     },
     TypeProjectionRecursiveReference {
         distance: u32,
