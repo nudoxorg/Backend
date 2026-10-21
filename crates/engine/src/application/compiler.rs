@@ -2423,6 +2423,27 @@ fn source_gap_cause(terminal: &CompilerTerminal) -> Option<PackageSourceCoverage
     }
 }
 
+/// TypeScript projects may retain siblings only when lowering or validating
+/// this source's own fragment failed. Authority failures can describe a broken
+/// source/project/session binding, so they must remain package refusals.
+fn typescript_source_gap_cause(
+    terminal: &CompilerTerminal,
+    expected_source: SourceAuthority,
+) -> Option<PackageSourceCoverageGapCause> {
+    let CompilerTerminal::Compile { attempted, cause } = terminal else {
+        return None;
+    };
+    if attempted.source != expected_source {
+        return None;
+    }
+    match cause {
+        CompilerCause::Lowering(_) | CompilerCause::FragmentFailure(_) => {
+            Some(PackageSourceCoverageGapCause::SourceNotRepresentable)
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod source_degradation_tests {
     use super::*;
@@ -2556,6 +2577,89 @@ mod source_degradation_tests {
             )
         );
         assert!(!refusal.to_string().contains("DeadlineExceeded"));
+    }
+    #[test]
+    fn typescript_gap_policy_requires_exact_source_and_local_lowering_or_fragment_failure() {
+        use PackageSourceCoverageGapCause as Gap;
+        use backend_library::interface::TypeScriptAuthorityFailureKind as TsFailure;
+        use backend_semantic::vocabulary::LoweringUnsupported;
+
+        let lowering = compile(CompilerCause::Lowering(
+            backend_library::interface::LoweringCause::new(
+                LoweringUnsupported::TypeScriptDeclarationForm,
+            ),
+        ));
+        assert_eq!(
+            typescript_source_gap_cause(&lowering, source()),
+            Some(Gap::SourceNotRepresentable)
+        );
+        let fragment = compile(CompilerCause::FragmentFailure(Box::new(
+            backend_library::interface::CompilerFragmentFailure::validate(
+                backend_semantic::ir::FragmentError::TruncatedHeader {
+                    required: 8,
+                    actual: 0,
+                },
+            ),
+        )));
+        assert_eq!(
+            typescript_source_gap_cause(&fragment, source()),
+            Some(Gap::SourceNotRepresentable)
+        );
+
+        let other_source = SourceAuthority {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"other source"),
+            byte_len: 12,
+        };
+        let wrong_source = CompilerTerminal::Compile {
+            attempted: backend_library::interface::CompilerAttempt {
+                source: other_source,
+                recipe: ContentId::from_canonical_bytes(b"recipe"),
+            },
+            cause: CompilerCause::Lowering(backend_library::interface::LoweringCause::new(
+                LoweringUnsupported::TypeScriptDeclarationForm,
+            )),
+        };
+        assert_eq!(typescript_source_gap_cause(&wrong_source, source()), None);
+
+        for failure in [
+            TsFailure::NativeSourceMismatch,
+            TsFailure::NativeProjectSessionMismatch,
+        ] {
+            let diagnostic = backend_library::interface::CompilerDiagnostic::from_native(
+                b"TypeScript authority binding failed",
+                b"TypeScript authority binding failed".len(),
+                false,
+            )
+            .expect("bounded diagnostic")
+            .with_typescript_failure(failure);
+            let terminal = compile(CompilerCause::Authority {
+                phase: backend_semantic::vocabulary::AuthorityPhase::Resolve,
+                class: AuthorityDiagnosticClass::Authority,
+                diagnostic: Some(diagnostic),
+            });
+            assert_eq!(
+                typescript_source_gap_cause(&terminal, source()),
+                None,
+                "{failure:?}"
+            );
+        }
+
+        let untyped_authority = compile(CompilerCause::Authority {
+            phase: backend_semantic::vocabulary::AuthorityPhase::Resolve,
+            class: AuthorityDiagnosticClass::Projection,
+            diagnostic: None,
+        });
+        assert_eq!(
+            typescript_source_gap_cause(&untyped_authority, source()),
+            None
+        );
+        assert_eq!(
+            typescript_source_gap_cause(
+                &compile(CompilerCause::DeadlineExceeded { diagnostic: None }),
+                source(),
+            ),
+            None
+        );
     }
 }
 
@@ -4322,6 +4426,27 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         python_source_status: None,
                         native_python_diagnostics: Box::new([]),
                     });
+                    continue;
+                }
+                Err(terminal)
+                    if target.profile.language()
+                        == backend_semantic::vocabulary::Language::TypeScript =>
+                {
+                    // Only failures proven to belong to this source's lowering
+                    // or fragment validation may leave its siblings publishable.
+                    // Source/project/session authority failures remain terminal.
+                    if typescript_source_gap_cause(&terminal, source_authority).is_none() {
+                        return Err(PackageSemanticError::Compile {
+                            path: source.relative_path.into(),
+                            terminal: Box::new(terminal),
+                        });
+                    }
+                    degraded.degrade(
+                        terminal,
+                        source.relative_path,
+                        source_authority,
+                        &mut coverage_gaps,
+                    )?;
                     continue;
                 }
                 Err(terminal) => {
