@@ -1434,22 +1434,29 @@ pub(crate) fn build_native_forest_inputs(
     // and remap the real reference edges when adding an independent leaf.
     let mut root = root;
     if project_set {
-        let mut ordered = nodes.into_iter().enumerate().collect::<Vec<_>>();
-        ordered.sort_by(|(_, left), (_, right)| {
-            left.config
-                .as_ref()
-                .unwrap()
-                .0
-                .cmp(&right.config.as_ref().unwrap().0)
-        });
+        let mut ordered = nodes
+            .into_iter()
+            .enumerate()
+            .map(|(old, node)| {
+                let config_path = node
+                    .config
+                    .as_ref()
+                    .map(|(path, _)| path.clone())
+                    .ok_or_else(|| {
+                        closure_mismatch("project set contains a node without a canonical config")
+                    })?;
+                Ok((old, config_path, node))
+            })
+            .collect::<Result<Vec<_>, TypeScriptProjectHostError>>()?;
+        ordered.sort_by(|(_, left_path, _), (_, right_path, _)| left_path.cmp(right_path));
         let mut remap = vec![0u32; ordered.len()];
-        for (new, (old, _)) in ordered.iter().enumerate() {
+        for (new, (old, _, _)) in ordered.iter().enumerate() {
             remap[*old] = new as u32;
         }
         root = remap[root as usize];
         nodes = ordered
             .into_iter()
-            .map(|(_, mut node)| {
+            .map(|(_, _, mut node)| {
                 for reference in &mut node.references {
                     *reference = remap[*reference as usize];
                 }
