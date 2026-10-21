@@ -57,6 +57,7 @@ VOLATILE_KEYS = {"elapsed_ms", "duration_ms", "timestamp", "started_at", "finish
 
 
 LOCALD_ENDPOINT_START_TIMEOUT_SECONDS = 30
+LOCALD_ENDPOINT_DIAGNOSTIC_SECONDS = 25
 LOCALD_ENDPOINT_START_POLL_SECONDS = 0.05
 LOCALD_STARTUP_CHECKPOINT_NAME = "owner-startup-active-v1.json"
 LOCALD_STARTUP_CHECKPOINT_MAX_BYTES = 4096
@@ -131,33 +132,131 @@ def _startup_checkpoint(workspace, pid):
     )
 
 
-def _endpoint_start_error(pid, return_code, waited, endpoint_present, checkpoint, tail):
+def _bounded_proc_text(path, limit=512):
+    try:
+        with open(path, "rb") as stream:
+            raw = stream.read(limit + 1)
+    except OSError as error:
+        return f"unsupported:{type(error).__name__}"
+    suffix = ":truncated" if len(raw) > limit else ""
+    return raw[:limit].decode("utf-8", errors="replace").strip() + suffix
+
+
+def _locald_process_diagnostic(pid, case_root, workspace_root, executable, *, proc_root=Path("/proc")):
+    """Bounded, path-filtered observation of one still-owned startup child."""
+    allowed_roots = []
+    for kind, path in (("case", case_root), ("workspace", workspace_root)):
+        try:
+            allowed_roots.append((kind, Path(path).resolve()))
+        except (OSError, RuntimeError):
+            allowed_roots.append((kind, None))
+    executable = None if executable is None else Path(executable)
+    try:
+        artifact_stat = executable.stat() if executable is not None else None
+        artifact_identity = (None if artifact_stat is None else
+                             {"device": artifact_stat.st_dev, "inode": artifact_stat.st_ino, "size": artifact_stat.st_size})
+        artifact_failure = "unavailable:no-argv-path" if executable is None else None
+    except OSError as error:
+        artifact_identity = None
+        artifact_failure = f"unsupported:{type(error).__name__}"
+    base = Path(proc_root) / str(pid)
+    try:
+        running_stat = os.stat(base / "exe")
+        running_identity = {"device": running_stat.st_dev, "inode": running_stat.st_ino, "size": running_stat.st_size}
+    except OSError as error:
+        running_identity = f"unsupported:{type(error).__name__}"
+    result = {"pid": pid, "artifact_executable_path": str(executable)[:512] if executable is not None else "unavailable:no-argv-path",
+              "artifact_executable_identity": artifact_identity if artifact_failure is None else artifact_failure,
+              "running_executable_identity": running_identity}
+    for name in ("stat", "wchan", "syscall", "io"):
+        result[name] = _bounded_proc_text(base / name)
+    descriptors = []
+    try:
+        with os.scandir(base / "fd") as entries:
+            names = []
+            truncated = False
+            for entry in entries:
+                if len(names) == 16:
+                    truncated = True
+                    break
+                names.append(entry.name)
+        names.sort(key=lambda value: int(value) if value.isdigit() else 10**9)
+    except OSError as error:
+        result["fd_paths"] = f"unsupported:{type(error).__name__}"
+    else:
+        for name in names:
+            try:
+                target = os.readlink(base / "fd" / name)
+            except OSError as error:
+                descriptors.append({"fd": name, "target": f"unsupported:{type(error).__name__}"})
+                continue
+            try:
+                target_stat = os.stat(base / "fd" / name)
+                is_executable = (isinstance(running_identity, dict) and
+                                 (target_stat.st_dev, target_stat.st_ino) ==
+                                 (running_identity["device"], running_identity["inode"]))
+            except OSError:
+                is_executable = False
+            if is_executable:
+                label = "executable"
+            else:
+                label = "filtered"
+                try:
+                    resolved = Path(target).resolve(strict=False)
+                    for kind, allowed_root in allowed_roots:
+                        if allowed_root is None:
+                            continue
+                        try:
+                            relative = resolved.relative_to(allowed_root)
+                        except ValueError:
+                            continue
+                        label = f"{kind}:" + str(relative)[:160]
+                        break
+                except (OSError, RuntimeError):
+                    pass
+            descriptors.append({"fd": name, "target": label})
+        result["fd_paths"] = descriptors
+        result["fd_paths_truncated"] = truncated
+    return json.dumps(result, sort_keys=True, separators=(",", ":"))
+
+
+def _endpoint_start_error(pid, return_code, waited, endpoint_present, checkpoint, tail, process_diagnostic=None):
     state = "running" if return_code is None else "exited"
     exit_code = "none" if return_code is None else str(return_code)
     endpoint = "present" if endpoint_present else "missing"
+    diagnostic = "" if process_diagnostic is None else f", process_diagnostic={process_diagnostic}"
     return RuntimeError(
         "backend-locald did not open its endpoint "
         f"(pid={pid}, state={state}, exit_code={exit_code}, "
-        f"waited={waited:.3f}s, endpoint={endpoint}, startup_checkpoint={checkpoint}):\n{tail}"
+        f"waited={waited:.3f}s, endpoint={endpoint}, startup_checkpoint={checkpoint}{diagnostic}):\n{tail}"
     )
 
 
 def _wait_for_endpoint(endpoint, process, workspace, tail, *, monotonic=time.monotonic, sleep=time.sleep):
     started = monotonic()
     deadline = started + LOCALD_ENDPOINT_START_TIMEOUT_SECONDS
+    diagnostic = None
     while not endpoint.exists():
         return_code = process.poll()
         if return_code is not None:
             now = monotonic()
             raise _endpoint_start_error(
                 process.pid, return_code, now - started, endpoint.exists(),
-                _startup_checkpoint(workspace, process.pid), tail()
+                _startup_checkpoint(workspace, process.pid), tail(), diagnostic
             )
         now = monotonic()
+        if diagnostic is None and now - started >= LOCALD_ENDPOINT_DIAGNOSTIC_SECONDS:
+            # Observe only this owned child, once, and only while it is still live.
+            if process.poll() is None:
+                process_args = getattr(process, "args", None)
+                executable = process_args[0] if isinstance(process_args, (list, tuple)) and process_args else None
+                diagnostic = _locald_process_diagnostic(
+                    process.pid, endpoint.parent, workspace, executable
+                )
         if now > deadline:
             raise _endpoint_start_error(
                 process.pid, None, now - started, endpoint.exists(),
-                _startup_checkpoint(workspace, process.pid), tail()
+                _startup_checkpoint(workspace, process.pid), tail(), diagnostic
             )
         sleep(LOCALD_ENDPOINT_START_POLL_SECONDS)
 
