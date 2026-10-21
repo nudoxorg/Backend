@@ -181,11 +181,12 @@ rec {
   ];
 
   typescript-query-core =
-    tarProject "typescript-query-core-5.62.8" "npm:@tanstack/query-core@5.62.8" [
-      "package.json"
-      "src/queryClient.ts"
-      "src/retryer.ts"
-      "LICENSE"
-    ];
+    tarProject "typescript-query-core-5.62.8" "npm:@tanstack/query-core@5.62.8"
+      [
+        "package.json"
+        "src/queryClient.ts"
+        "src/retryer.ts"
+        "LICENSE"
+      ];
 
 }
