@@ -9447,7 +9447,7 @@ mod tests {
                 .find_map(|profile| match &profile.state {
                     backend_library::IndexOperationSemanticProfileState::Published {
                         generation,
-                        ..,
+                        ..
                     } if profile.profile.name() == Some("python") => Some(*generation),
                     _ => None,
                 })
