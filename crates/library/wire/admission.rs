@@ -1111,6 +1111,16 @@ pub fn admit_surface_reply(
             None => {}
         }
     }
+    if let crate::SurfaceCommand::PackageCoverageCurrent { package, view_root } = command {
+        let crate::SurfaceReply::PackageCoverageCurrent(result) = reply else {
+            return Err(ReplyAdmissionError::Protocol(
+                "published package coverage reply changed shape".to_owned(),
+            ));
+        };
+        result
+            .admit_request(package, *view_root)
+            .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+    }
     if let crate::SurfaceCommand::PackageSourceMembership { request } = command {
         if !matches!(reply, crate::SurfaceReply::PackageSourceMembershipPage(page) if page.admits_request(request))
         {

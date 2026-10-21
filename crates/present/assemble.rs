@@ -22,8 +22,9 @@ use crate::outline::{OutlineEntry, OutlineTree, row_resolver};
 use crate::page::{
     Member, MemberGroup, Page, Prose, Relation, RelationGroup, Source, SourceSite, Truncation,
 };
-use crate::record::{Record, RecordList};
+use crate::project_coverage::ProjectCoverageEvidence;
 use crate::readiness::{PublishedFacts, gapped_lanes, project_readiness};
+use crate::record::{Record, RecordList};
 use crate::shelf::{LanguageCount, Readiness, Shelf, ShelfEntry};
 use crate::signature::Signature;
 use backend_library::{
@@ -291,13 +292,10 @@ pub fn record_list_from_rows(
 }
 
 fn summary_of(row: &Row) -> Option<String> {
-    let text = row
-        .document
-        .iter()
-        .find_map(|fragment| match fragment {
-            backend_library::Fragment::Text(text) => Some(text.clone()),
-            _ => None,
-        })?;
+    let text = row.document.iter().find_map(|fragment| match fragment {
+        backend_library::Fragment::Text(text) => Some(text.clone()),
+        _ => None,
+    })?;
     let first = text.lines().next().unwrap_or_default().trim().to_owned();
     (!first.is_empty() && first != row.label).then_some(first)
 }
@@ -339,6 +337,33 @@ pub fn shelf_from_snapshot_with_health(
     shelf_from_root_with_facts(&snapshot.root, revision, facts)
 }
 
+/// Builds the shelf with package-bound semantic coverage from current owner
+/// profile receipts. A receipt is used only for the exact view revision and
+/// package row it was read against; all other lanes remain workspace-only.
+pub(crate) fn shelf_from_snapshot_with_project_coverage(
+    snapshot: &ViewSnapshot,
+    revision: KeyTag,
+    health: &HealthReport,
+    project_coverage: &BTreeMap<backend_library::PackageKey, ProjectCoverageEvidence>,
+) -> Shelf {
+    let same_revision = health.revision().root() == snapshot.root.basis().root;
+    let facts = if same_revision {
+        PublishedFacts::from_health(health)
+    } else {
+        PublishedFacts::new(snapshot.root.coverage(), None)
+    };
+    let view_root = same_revision.then(|| health.revision().root());
+    let source_root = same_revision.then(|| *health.basis().root.as_bytes());
+    shelf_from_root_with_project_coverage(
+        &snapshot.root,
+        revision,
+        facts,
+        view_root,
+        source_root,
+        project_coverage,
+    )
+}
+
 /// Builds the shelf from one immutable view root.
 ///
 /// A project reaches the shelf two ways. Normally the owner publishes a
@@ -362,6 +387,17 @@ pub fn shelf_from_root_with_facts(
     revision: KeyTag,
     facts: PublishedFacts,
 ) -> Shelf {
+    shelf_from_root_with_project_coverage(root, revision, facts, None, None, &BTreeMap::new())
+}
+
+pub(crate) fn shelf_from_root_with_project_coverage(
+    root: &ViewRoot,
+    revision: KeyTag,
+    facts: PublishedFacts,
+    view_root: Option<backend_library::ViewStateRoot>,
+    source_root: Option<[u8; 32]>,
+    project_coverage: &BTreeMap<backend_library::PackageKey, ProjectCoverageEvidence>,
+) -> Shelf {
     let rows = root.rows();
     let counts = language_counts(rows);
     let sole_project = rows
@@ -372,7 +408,19 @@ pub fn shelf_from_root_with_facts(
     let mut entries = rows
         .iter()
         .filter(|row| matches!(row.id, RowId::Package(_)))
-        .map(|row| shelf_entry(row, &counts, &facts, sole_project))
+        .map(|row| {
+            let evidence = match (row.id, view_root, source_root) {
+                (RowId::Package(key), Some(view_root), Some(source_root)) if !sole_project => {
+                    project_coverage.get(&key).filter(|evidence| {
+                        backend_library::PackageReference::parse(row.label.clone()).is_ok_and(
+                            |package| evidence.matches(view_root, source_root, key, &package),
+                        )
+                    })
+                }
+                _ => None,
+            };
+            shelf_entry(row, &counts, &facts, sole_project, evidence)
+        })
         .collect::<Vec<_>>();
     synthesise_loose(&mut entries, &counts);
     entries.sort_by(|left, right| left.identity().name().cmp(right.identity().name()));
@@ -430,6 +478,7 @@ fn shelf_entry(
     counts: &BTreeMap<String, BTreeMap<Language, u64>>,
     facts: &PublishedFacts,
     sole_project: bool,
+    project_coverage: Option<&ProjectCoverageEvidence>,
 ) -> ShelfEntry {
     let identity = package_identity(row);
     let languages = identity
@@ -455,6 +504,8 @@ fn shelf_entry(
                     Vec::new()
                 }
             })
+    } else if let Some(evidence) = project_coverage.filter(|evidence| evidence.semantic_partial()) {
+        entry.with_partial_lanes(vec![backend_library::Lane::Semantic])
     } else {
         entry
     };
