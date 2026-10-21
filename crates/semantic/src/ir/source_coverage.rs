@@ -1,6 +1,7 @@
 //! Compiler-observed coverage facts. These explain omissions without granting completeness.
 use backend_version::{ContentId, Schema, SourceFactDomain};
 use serde::{Deserialize, Serialize};
+use std::mem::size_of;
 
 /// Independent finite observation-row recording allowance; never a semantic source limit.
 pub const MAX_SOURCE_COVERAGE_ROWS: usize = 16_384 + 256;
@@ -227,8 +228,8 @@ impl SourceCoverageManifest {
     }
     /// Exact owned row/vector/path storage charged by immutable residence.
     pub fn retained_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.rows.capacity() * std::mem::size_of::<SourceCoverageRow>()
+        size_of::<Self>()
+            + self.rows.capacity() * size_of::<SourceCoverageRow>()
             + self
                 .rows
                 .iter()
@@ -521,7 +522,7 @@ impl SourceCoverageObservation {
     }
     /// Owned immutable data charged by bounded residence.
     pub fn retained_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
+        size_of::<Self>()
             + self
                 .catalog()
                 .map_or(0, SourceCoverageManifest::retained_bytes)
