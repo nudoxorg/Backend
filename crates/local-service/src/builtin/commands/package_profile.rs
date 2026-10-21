@@ -782,6 +782,7 @@ mod tests {
             assert!(encoded.len() <= MAX_PACKAGE_COMPILER_COVERAGE_PAGE_BYTES);
             if first_page_rows.is_none() {
                 first_page_rows = Some(page.rows.len());
+                assert!(page.rows.len() > 1, "the first bounded page batches rows");
                 assert!(page.rows.len() < MAX_PACKAGE_COMPILER_COVERAGE_PAGE_ROWS);
                 assert!(page.next.is_some(), "26 entries need a continuation");
             }
