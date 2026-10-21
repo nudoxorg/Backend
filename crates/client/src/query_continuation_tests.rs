@@ -1292,12 +1292,12 @@ fn portable_query_compressible_long_proof_preserves_every_canonical_byte() {
     let text = "x".repeat(backend_library::MAX_COMMAND_TEXT);
     let owner = Arc::new(Mutex::new(owner_with_label(1, 4, 0, &text)));
     let requests = Arc::new(Mutex::new(vec![]));
-    let mut session = session(&owner, &requests);
-    let reply = session
+    let mut issuing = session(&owner, &requests);
+    let reply = issuing
         .names_page(&text, 3, None)
         .expect("admitted bounded long query");
     let next = page(&reply).next.expect("successor exists");
-    let exported = session.encode_query_continuation(PageContinuation::from_cursor(next));
+    let exported = issuing.encode_query_continuation(PageContinuation::from_cursor(next));
     let token = exported.expect("bounded full-root proof");
     assert!(token.starts_with("pc4-"));
     let body = decode_portable_body(&token).expect("bounded expansion");
@@ -1354,14 +1354,24 @@ fn portable_search_full_root_preserves_exact_witness_and_page_union() {
         .expect("canonical page root preimage remains present");
     let owner_cursor = owner.lock().expect("owner").cursor();
     assert_ne!(cursor.root(), owner_cursor.root());
-    let mut rootless_certificate = certificate.clone();
-    rootless_certificate.claims.retain(|claim| {
-        !matches!(claim, WireClaim::Root { schema: WireSchema::ViewRelation, id, .. } if id == &page_root_id)
-    });
-    let rootless_certificate = rootless_certificate.with_claim_once(WireClaim::RootCommitment {
+    let mut rootless_claims = certificate
+        .claims
+        .iter()
+        .filter(|claim| match claim {
+            WireClaim::Root {
+                schema: WireSchema::ViewRelation,
+                id,
+                ..
+            } => id.as_str() != page_root_id.as_str(),
+            _ => true,
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    rootless_claims.push(WireClaim::RootCommitment {
         schema: WireSchema::ViewRelation,
         id: page_root_id.clone(),
     });
+    let rootless_certificate = WireCertificate::from_claims(rootless_claims.into_boxed_slice());
     let rootless = CommandDto::new(original.request_id, original.command.clone())
         .with_certificate(rootless_certificate);
     let rootless_body = serde_json::to_vec(&rootless).expect("rootless envelope");
@@ -1453,15 +1463,15 @@ fn portable_search_full_root_preserves_exact_witness_and_page_union() {
             page(&actual).next.map(PageContinuation::from_cursor),
         )
         .expect("third page");
-    let mut union = page(&first).records.clone();
-    union.extend(page(&actual).records.clone());
-    union.extend(page(&third).records.clone());
+    let mut union = page(&first).rows().to_vec();
+    union.extend_from_slice(page(&actual).rows());
+    union.extend_from_slice(page(&third).rows());
     let all = session(&owner, &requests)
         .search_page("Thing", 200, None)
         .expect("single full page");
     assert_eq!(
         union,
-        page(&all).records,
+        page(&all).rows(),
         "portable page union equals full search"
     );
 }
