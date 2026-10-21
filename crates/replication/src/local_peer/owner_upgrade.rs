@@ -188,6 +188,33 @@ fn executable_metadata(meta: &std::fs::Metadata, uid: u32) -> bool {
         && meta.mode() & 0o111 != 0
         && meta.mode() & 0o6000 == 0
 }
+fn image_mode_problem(path: &Path, meta: &std::fs::Metadata, uid: u32) -> Option<String> {
+    if executable_metadata(meta, uid) {
+        return None;
+    }
+    let mode = meta.mode() & 0o7777;
+    let reason = if mode & 0o002 != 0 {
+        "is world-writable"
+    } else if mode & 0o020 != 0 {
+        "is group-writable"
+    } else if mode & 0o6000 != 0 {
+        "has setuid or setgid bits"
+    } else if mode & 0o111 == 0 {
+        "has no executable permission"
+    } else if ![0, uid].contains(&meta.uid()) {
+        "is owned by another user"
+    } else if !meta.is_file() {
+        "is not a regular file"
+    } else {
+        "has insecure permissions"
+    };
+    Some(format!(
+        "owner image {} {reason} (uid {}, gid {}, mode {mode:04o})",
+        path.display(),
+        meta.uid(),
+        meta.gid(),
+    ))
+}
 
 /// Held, named default ELF observation for one bounded owner-image handoff.
 /// This is not authority to signal a peer; the complete automatic-owner proof is separate.
@@ -303,6 +330,9 @@ impl AuthenticatedLocalPeer {
         let meta = file.metadata()?;
         let mut magic = [0; 4];
         file.read_exact(&mut magic)?;
+        if let Some(problem) = image_mode_problem(&path, &meta, self.effective_uid) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, problem));
+        }
         if !executable_metadata(&meta, self.effective_uid)
             || meta.nlink() == 0
             || !locald_image_name(&path, meta.nlink())
@@ -594,6 +624,31 @@ impl AuthenticatedLocalPeer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn group_write_refusal_names_selected_image_and_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let path = std::env::temp_dir().join(format!(
+            "nudox-owner-image-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test clock is after the Unix epoch")
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"fixture").expect("write image fixture");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o775))
+            .expect("set group-writable image mode");
+        let meta = std::fs::metadata(&path).expect("stat image fixture");
+        let detail = image_mode_problem(&path, &meta, meta.uid()).expect("775 is refused");
+        assert!(detail.contains(&path.display().to_string()));
+        assert!(detail.contains("group-writable"));
+        assert!(detail.contains(&format!("uid {}, gid {}", meta.uid(), meta.gid())));
+        assert!(detail.contains("mode 0775"));
+        std::fs::remove_file(path).expect("remove image fixture");
+    }
+
     #[test]
     fn deleted_locald_name_requires_kernel_zero_links_and_exact_original_basename() {
         assert!(locald_image_name(Path::new("/install/backend-locald"), 1));
