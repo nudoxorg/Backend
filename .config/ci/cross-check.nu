@@ -12,9 +12,19 @@ def split-targets [raw: string]: nothing -> list<string> {
 
 def ensure-fast-cache-cargo-home []: nothing -> nothing {
     let cache = $env.CI_FAST_CACHE_ROOT? | default ""
-    if ($cache | is-empty) { return }
     let home = $env.CARGO_HOME? | default ""
-    run-external "python3" ($env.FILE_PWD | path join "fast_cache.py") "--ensure-cargo-home" $cache $home
+    let result = if ($cache | is-empty) {
+        run-external "python3" ($env.FILE_PWD | path join "fast_cache.py") "--observe-cargo-home-parent" $home
+        | complete
+    } else {
+        run-external "python3" ($env.FILE_PWD | path join "fast_cache.py") "--ensure-cargo-home" $cache $home
+        | complete
+    }
+    if ($result.stdout | is-not-empty) { print $result.stdout }
+    if $result.exit_code != 0 {
+        print --stderr $result.stderr
+        error make {msg: "fast Cargo home check failed; refusing to invoke Cargo"}
+    }
 }
 
 # Compile-checks the whole workspace and all its targets for each configured

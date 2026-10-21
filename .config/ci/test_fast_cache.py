@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Filesystem safety controls for the CI cache's mount-preserving eviction."""
 from pathlib import Path
+from contextlib import redirect_stdout
+from io import StringIO
 import os
 import tempfile
 import unittest
 
-from fast_cache import clear_cache, ensure_cargo_home
+from fast_cache import clear_cache, ensure_cargo_home, observe_cargo_home_parent
 
 
 class FastCacheTest(unittest.TestCase):
@@ -51,6 +53,15 @@ class FastCacheTest(unittest.TestCase):
     def test_cargo_home_admission_refuses_filesystem_root(self):
         with self.assertRaises(ValueError):
             ensure_cargo_home('/', '/cargo-home')
+
+    def test_unconfigured_fast_cache_reports_missing_parent_without_creating_it(self):
+        with tempfile.TemporaryDirectory() as parent:
+            home = Path(parent) / 'absent' / 'cargo-home'
+            output = StringIO()
+            with redirect_stdout(output):
+                observe_cargo_home_parent(home)
+            self.assertIn('state=skipped reason=cache-root-unset parent=absent', output.getvalue())
+            self.assertFalse(home.parent.exists())
 
     def test_eviction_preserves_root_inode_and_removes_hidden_nested_outputs(self):
         with tempfile.TemporaryDirectory() as parent:

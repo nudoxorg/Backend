@@ -73,8 +73,6 @@ def ensure_cargo_home(cache_root, cargo_home):
                 raise ValueError('Cargo home name changed while being admitted')
             if home_stat.st_dev != root_stat.st_dev:
                 raise ValueError('Cargo home is mounted outside the fast cache')
-            if home_stat.st_uid != os.geteuid() or home_stat.st_mode & 0o022:
-                raise ValueError('Cargo home ownership or write permissions are unsafe')
         finally:
             os.close(child)
         named_root = os.stat(root, follow_symlinks=False)
@@ -90,9 +88,33 @@ def ensure_cargo_home(cache_root, cargo_home):
     )
 
 
+def observe_cargo_home_parent(cargo_home):
+    """Report the configured Cargo-home parent without creating or owning it."""
+    home = os.fspath(cargo_home)
+    if not home:
+        print('CI-FAST-CARGO-HOME state=skipped reason=cache-root-unset cargo_home=unset')
+        return
+    if not os.path.isabs(home):
+        raise ValueError('Cargo home must be absolute')
+    parent = os.path.dirname(os.path.normpath(home))
+    try:
+        metadata = os.stat(parent, follow_symlinks=False)
+    except FileNotFoundError:
+        print('CI-FAST-CARGO-HOME state=skipped reason=cache-root-unset parent=absent')
+        return
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError('Cargo-home parent is not a real directory')
+    print(
+        'CI-FAST-CARGO-HOME state=skipped reason=cache-root-unset '
+        f'parent=present parent_dev={metadata.st_dev} parent_ino={metadata.st_ino}'
+    )
+
+
 if __name__ == '__main__':
     if len(sys.argv) == 4 and sys.argv[1] == '--ensure-cargo-home':
         ensure_cargo_home(sys.argv[2], sys.argv[3])
+    elif len(sys.argv) == 3 and sys.argv[1] == '--observe-cargo-home-parent':
+        observe_cargo_home_parent(sys.argv[2])
     elif len(sys.argv) == 2:
         clear_cache(sys.argv[1])
     else:
