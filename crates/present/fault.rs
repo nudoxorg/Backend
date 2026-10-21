@@ -311,6 +311,11 @@ impl OwnerContext {
 pub enum Affordance {
     /// Run the same request again.
     Retry,
+    /// Run a narrowly scoped shell repair that was derived from a verified refusal.
+    ShellHint {
+        /// Exact, quoted shell command shown as guidance on CLI and MCP surfaces.
+        command: String,
+    },
     /// Inspect the owner already bound to the current surface.
     InspectOwner,
     /// Reach or start the exact CLI owner that a passive request could not reach.
@@ -431,6 +436,7 @@ impl Affordance {
         match self {
             Self::ViaRegisteredCall(original) => original.shell(),
             Self::Retry => Some("re-run the same command".to_owned()),
+            Self::ShellHint { command } => Some(command.clone()),
             Self::InspectOwner => crate::shell::command("health", &[]),
             Self::RecoverOwner { context } => Some(context.recovery_shell()),
             Self::ReadPackageGraphJson {
@@ -548,6 +554,7 @@ impl Affordance {
                 .tool_call()
                 .map(|call| crate::McpExposure::RegisteredCall.expose_call(call)),
             Self::Retry
+            | Self::ShellHint { .. }
             | Self::RecoverOwner { .. }
             | Self::ReadPackageGraphJson { .. }
             | Self::RecoverStartup { .. }
@@ -1262,14 +1269,35 @@ impl Fault {
                 ),
                 Affordance::Retry,
             ),
-            ClientError::OwnerUpdate { found, supported, detail } => (
-                FaultSlug::Protocol, CauseSlug::Unproven,
-                if found == supported {
+            ClientError::OwnerUpdate { found, supported, detail } => {
+                let message = if found == supported {
                     format!("NuDox owner build update: {detail}")
                 } else {
                     format!("NuDox owner update (version {found} → {supported}): {detail}")
-                }, Affordance::Retry,
-            ),
+                };
+                match owner_image_mode_repair(detail) {
+                    Some(Some(command)) => (
+                        FaultSlug::Protocol,
+                        CauseSlug::Unproven,
+                        format!(
+                            "{message}; remove the image's group/world write bit before retrying, or rebuild under umask 0022"
+                        ),
+                        Affordance::ShellHint { command },
+                    ),
+                    Some(None) => (
+                        FaultSlug::Protocol,
+                        CauseSlug::Unproven,
+                        format!("{message}; rebuild under umask 0022 before retrying"),
+                        Affordance::None,
+                    ),
+                    None => (
+                        FaultSlug::Protocol,
+                        CauseSlug::Unproven,
+                        message,
+                        Affordance::Retry,
+                    ),
+                }
+            },
             ClientError::Protocol(detail) => (
                 FaultSlug::Protocol,
                 CauseSlug::Unproven,
@@ -1385,6 +1413,72 @@ const fn lane_cause(reason: Reason) -> CauseSlug {
     }
 }
 
+/// Derives chmod guidance only from the exact verified owner-image mode diagnostic.
+/// `Some(None)` means the refusal is verified but the displayed path is not safe
+/// to render as a shell operand, so only the umask rebuild guidance is retained.
+fn owner_image_mode_repair(detail: &str) -> Option<Option<String>> {
+    const PREFIX: &str = "the installed default owner image could not be proven: owner image ";
+    const ENDING: &str = "); no command was submitted";
+    let diagnostic = detail.strip_prefix(PREFIX)?;
+    let world_separator = " is world-writable (uid ";
+    let group_separator = " is group-writable (uid ";
+    let (reason, separator) = match (
+        diagnostic.rfind(world_separator),
+        diagnostic.rfind(group_separator),
+    ) {
+        (Some(world), Some(group)) if world > group => ("world", world_separator),
+        (Some(_), None) => ("world", world_separator),
+        (None, Some(_)) => ("group", group_separator),
+        (Some(_), Some(_)) => ("group", group_separator),
+        (None, None) => return None,
+    };
+    let (path, metadata) = diagnostic.rsplit_once(separator)?;
+    let (uid, metadata) = metadata.split_once(", gid ")?;
+    let (gid, metadata) = metadata.split_once(", mode ")?;
+    let (mode, ending) = metadata.split_once(ENDING)?;
+    if !ending.is_empty()
+        || uid.is_empty()
+        || !uid.bytes().all(|byte| byte.is_ascii_digit())
+        || gid.is_empty()
+        || !gid.bytes().all(|byte| byte.is_ascii_digit())
+        || mode.len() != 4
+        || !mode.starts_with('0')
+        || !mode.bytes().all(|byte| (b'0'..=b'7').contains(&byte))
+    {
+        return None;
+    }
+    let mode = u32::from_str_radix(mode, 8).ok()?;
+    let group_write = mode & 0o020 != 0;
+    let world_write = mode & 0o002 != 0;
+    if (reason == "world" && !world_write)
+        || (reason == "group" && (world_write || !group_write))
+        || (!group_write && !world_write)
+    {
+        return None;
+    }
+    if path.is_empty()
+        || !std::path::Path::new(path).is_absolute()
+        || !std::path::Path::new(path)
+            .file_name()
+            .is_some_and(|name| name == "backend-locald")
+        || path
+            .chars()
+            .any(|character| character.is_control() || character == '\u{fffd}')
+    {
+        return Some(None);
+    }
+    let permissions = match (group_write, world_write) {
+        (true, true) => "go-w",
+        (true, false) => "g-w",
+        (false, true) => "o-w",
+        (false, false) => return None,
+    };
+    Some(Some(format!(
+        "chmod {permissions} -- {}",
+        crate::shell::quote_argument(path),
+    )))
+}
+
 fn lane_sentence(lane: Lane, reason: Reason) -> String {
     let lane = lane_name(lane);
     match reason {
@@ -1423,6 +1517,7 @@ mod owner_image_update_tests {
         );
         assert!(build.cause().sentence().contains("owner build update"));
         assert!(!build.cause().sentence().contains("version 38 → 38"));
+        assert_eq!(build.affordance(), &Affordance::Retry);
         let wire = Fault::from_client_error(
             &ClientError::OwnerUpdate {
                 found: 37,
@@ -1432,5 +1527,6 @@ mod owner_image_update_tests {
             Operand::Whole,
         );
         assert!(wire.cause().sentence().contains("version 37 → 38"));
+        assert_eq!(wire.affordance(), &Affordance::Retry);
     }
 }
