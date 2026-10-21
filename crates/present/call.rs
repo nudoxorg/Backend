@@ -220,7 +220,10 @@ fn take_json(
         return Ok(());
     }
     if spec.kind() == ArgumentKind::Flag {
-        if value.as_bool().unwrap_or(false) {
+        let enabled = value.as_bool().ok_or_else(|| {
+            Fault::usage(spec.name(), "a flag takes a JSON boolean")
+        })?;
+        if enabled {
             call.raise(spec.name());
         }
         return Ok(());
@@ -543,8 +546,12 @@ pub fn lower_with_opener(
             let root = path_or(invocation, project);
             let root = ProductText::new(root.as_str())
                 .map_err(|error| Fault::admission(error, Operand::Argument(root.clone())))?;
-            admit(&SurfaceCommand::ProjectTree { root })
-                .map(|command| Request::Surface(Box::new(command)))
+            let command = if invocation.flag("sources") {
+                SurfaceCommand::CapturedProjectTree { root }
+            } else {
+                SurfaceCommand::ProjectTree { root }
+            };
+            admit(&command).map(|command| Request::Surface(Box::new(command)))
         }
         CommandId::CargoPackageReadme => {
             let request = backend_library::CargoPackageReadmeRequestV1::for_requested_root(

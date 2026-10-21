@@ -2610,9 +2610,96 @@ fn fenced_source_text(contents: &str) -> String {
     format!("{fence}text\n{contents}\n{fence}")
 }
 
+fn captured_membership_view(
+    page: &backend_library::PackageSourceMembershipPageResultV1,
+) -> ProductView {
+    let view = match page {
+        backend_library::PackageSourceMembershipPageResultV1::Page {
+            package,
+            file_count,
+            files,
+            next,
+            exclusions,
+            ..
+        } => {
+            let mut rows = Vec::with_capacity(files.len().saturating_add(1));
+            rows.push(ProductRecord::new(
+                format!(
+                    "{} · {} selected source file(s)",
+                    package.as_str(),
+                    files.len()
+                ),
+                None,
+                vec![
+                    format!("Project frontier: {file_count} file(s) total"),
+                    format!("exclusions: {exclusions:?}"),
+                    format!(
+                        "continuation: {}",
+                        if next.is_some() {
+                            "available"
+                        } else {
+                            "complete"
+                        }
+                    ),
+                ],
+            ));
+            rows.extend(files.iter().map(|file| {
+                ProductRecord::new(
+                    file.path.clone(),
+                    Some(file.path.clone()),
+                    vec![
+                        format!("{:?}", file.language),
+                        format!(
+                            "InputContentSchema v1: {}",
+                            encode_id(&file.content_version)
+                        ),
+                        file.source_identity.map_or_else(
+                            || "SourceFactDomain: not recorded".to_owned(),
+                            |identity| {
+                                format!("SourceFactDomain: {}", encode_id(&identity))
+                            },
+                        ),
+                    ],
+                )
+            }));
+            ProductView::rows("package-source-membership", rows)
+        }
+        backend_library::PackageSourceMembershipPageResultV1::Stale { package, .. } => {
+            ProductView::scalar(
+                "package-source-membership",
+                format!(
+                    "The selected Project source root for {} changed. Start a fresh first page.",
+                    package.as_str()
+                ),
+            )
+        }
+        backend_library::PackageSourceMembershipPageResultV1::Unavailable {
+            package,
+            reason,
+        } => ProductView::scalar(
+            "package-source-membership",
+            format!(
+                "The selected source membership for {} is unavailable: {reason:?}.",
+                package.as_str()
+            ),
+        ),
+    };
+    view.with_package_source_membership_page(page.clone())
+}
+
 /// A project's tree: the lede, what affects it, each role, then each package
 /// that is here twice, in the same words the desktop's Library page uses.
 fn tree_view(tree: &backend_library::browse::ProjectTree) -> ProductView {
+    if let backend_library::browse::TreeSource::CapturedSource { membership } = &tree.source {
+        let mut view = captured_membership_view(membership);
+        view.heading = format!("project-tree · {}", tree.name);
+        let qualification = "Captured source paths only; compiler publication, dependency resolution and excluded-file reasons are separate facts.";
+        view.note = Some(view.note.map_or_else(
+            || qualification.to_owned(),
+            |note| format!("{note}\n{qualification}"),
+        ));
+        return view;
+    }
     let reading = crate::browse::read_tree(tree);
     let mut records = Vec::new();
     let mut tags = Vec::new();
