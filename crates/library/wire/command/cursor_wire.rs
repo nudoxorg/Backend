@@ -68,6 +68,45 @@ pub(crate) fn cursor_from_wire_against_owner(
     Ok(admitted)
 }
 
+/// Decodes a catalog-page cursor's digest-only predecessor root. Its root and
+/// version are not authoritative until the catalog query reconstructs the
+/// exact predecessor page from the admitted owner. Canonical recipe, version,
+/// branch and log preimages are still required from the certificate.
+pub(crate) fn cursor_from_wire_against_catalog_owner(
+    value: &CursorWire,
+    certificate: &WireCertificate,
+    owner: Cursor,
+) -> Result<Cursor, String> {
+    // Preserve the legacy standalone certificate path. A full Root carries
+    // its canonical preimage and must be checked by the ordinary root decoder;
+    // only the explicit RootCommitment spelling is owner-bound.
+    let admitted = if certificate.claims.iter().any(|claim| {
+        matches!(
+            claim,
+            crate::WireClaim::Root {
+                schema: WireSchema::ViewRelation,
+                ..
+            }
+        )
+    }) {
+        cursor_from_wire(value, certificate)?
+    } else {
+        cursor(value, certificate, |certificate, encoded| {
+            certificate
+                .root_commitment_bytes::<crate::ViewRelation>(WireSchema::ViewRelation, encoded)
+                .map(crate::ViewStateRoot::from_bytes)
+        })?
+    };
+    if admitted.branch() != owner.branch()
+        || admitted.log() != owner.log()
+        || admitted.schema() != owner.schema()
+        || admitted.sequence() > owner.sequence()
+    {
+        return Err("catalog query cursor does not match the owner frontier".to_owned());
+    }
+    Ok(admitted)
+}
+
 fn cursor(
     value: &CursorWire,
     certificate: &WireCertificate,
