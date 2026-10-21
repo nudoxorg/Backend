@@ -5441,8 +5441,20 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             {
                 continue;
             }
+            // Class/interface declaration merging crosses the IR's Record and
+            // Trait entity kinds, so `merged_declaration_parts` cannot group
+            // those parts under one owner. The exact TSZ binding still records
+            // the merged declarations; preserve that evidence by withholding
+            // a complete member inventory from either source declaration.
+            let checker_reports_merge = (kind.as_class().is_some()
+                || kind.as_ts_interface_declaration().is_some())
+                && self
+                    .tsz_bound_file
+                    .and_then(|file| native_tsz_symbol_at_identifier_span(file, name))
+                    .and_then(|symbol| self.tsz_binder?.symbols.get(symbol))
+                    .is_some_and(|symbol| symbol.declarations.len() > 1);
             let mut members = Vec::with_capacity(spans.len());
-            let mut complete = true;
+            let mut complete = !checker_reports_merge;
             for span in spans {
                 let Some(Some(member)) = declarations.get(&(span.start, span.end)) else {
                     complete = false;
@@ -12737,7 +12749,7 @@ mod lane_tests {
                     .authority
                     .members,
                 FactAvailability::Unavailable,
-                "parameter-property support cannot waive unsupported body or merge inventory"
+                "parameter-property support cannot waive unsupported body or merge inventory for {name:?}"
             );
             assert!(item.members().is_empty());
         }
