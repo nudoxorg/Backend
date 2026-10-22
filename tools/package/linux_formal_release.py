@@ -14,6 +14,8 @@ Nudox/resources/build-manifest.json, plus a sibling release-manifest.json.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -28,10 +30,12 @@ from linux_release_package import (
     MAX_NODE_LIBRARIES,
     MAX_NODE_LIBRARY_BYTES,
     admit_file_digest,
+    check_loader_policy,
     copy_admitted_file,
     elf_info,
     fail,
     ldd_dependencies,
+    parse_json_bytes,
     read_regular_bytes,
     require_tool,
     run,
@@ -43,7 +47,7 @@ PLATFORM = "linux-x64"
 TARGET = "x86_64-unknown-linux-gnu"
 ASSET = "nudox-linux-x64.tar.gz"
 EXECUTABLES = ("backend-desktop", "backend-cli", "backend-mcp", "backend-locald")
-MINIMUM_OS = "Linux (glibc)"
+MINIMUM_OS = "Linux glibc"
 
 
 def git(source: Path, *args: str) -> str:
@@ -51,28 +55,49 @@ def git(source: Path, *args: str) -> str:
 
 
 def load_t1_manifest(artifact_dir: Path) -> dict:
-    manifest = json.loads(read_regular_bytes(artifact_dir / "manifest.json", 16 * 1024 * 1024, "T1 artifact manifest"))
-    if manifest.get("schema") != 1 or manifest.get("target") != TARGET:
+    raw = read_regular_bytes(artifact_dir / "manifest.json", 16 * 1024 * 1024, "T1 artifact manifest")
+    manifest = parse_json_bytes(raw, "T1 artifact manifest")
+    revision = manifest.get("source_sha")
+    if (manifest.get("schema") != 1 or manifest.get("target") != TARGET
+            or not isinstance(revision, str) or len(revision) != 40
+            or any(character not in "0123456789abcdef" for character in revision)):
         fail("T1 artifact manifest has the wrong schema or target for linux-x64")
-    for name in EXECUTABLES:
-        if not (artifact_dir / "bin" / name).is_file():
-            fail(f"T1 artifact is missing {name}")
-    return manifest
+    ci_manifest = Path(__file__).resolve().parents[2] / ".config" / "ci" / "t1_artifacts.py"
+    spec = importlib.util.spec_from_file_location("nudox_t1_artifacts", ci_manifest)
+    if spec is None or spec.loader is None:
+        fail("cannot load the T1 artifact verifier")
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    try:
+        return verifier.verify(artifact_dir, revision, TARGET)
+    except (KeyError, OSError, TypeError, ValueError) as error:
+        fail(f"T1 artifact verification failed: {error}")
 
 
 def check_source(source: Path, revision: str) -> tuple[str, str, str]:
-    subprocess.run(["git", "-C", str(source), "merge-base", "--is-ancestor", revision, "HEAD"],
-                    check=True, timeout=30)
+    source = source.resolve(strict=True)
+    if git(source, "status", "--porcelain"):
+        fail("source checkout is dirty")
+    if git(source, "rev-parse", "HEAD") != revision:
+        fail("source checkout is not at the T1 artifact revision")
     tree = git(source, "rev-parse", f"{revision}^{{tree}}")
-    cargo_lock = sha256(source / "Cargo.lock")
-    pyproject = tomllib.loads((source / "Cargo.toml").read_text())
+    cargo_lock_bytes = subprocess.check_output(["git", "-C", str(source), "show", f"{revision}:Cargo.lock"], timeout=60)
+    cargo_lock = hashlib.sha256(cargo_lock_bytes).hexdigest()
+    cargo_toml = subprocess.check_output(["git", "-C", str(source), "show", f"{revision}:Cargo.toml"], text=True, timeout=60)
+    pyproject = tomllib.loads(cargo_toml)
     version = pyproject["workspace"]["package"]["version"]
+    check_loader_policy(source, revision)
     return tree, cargo_lock, version
 
 
-def portabilize(bin_dir: Path, names: tuple[str, ...], output: Path, patchelf: Path, readelf: Path, ldd: Path) -> tuple[list[dict], str]:
-    """Rewrite each executable's RPATH and bundle its non-glibc closure. Mirrors
-    linux_release_package.py's proven library-copy/patch loop; no new policy."""
+def require_rpath(patchelf: Path, binary: Path, expected: str) -> None:
+    if run([str(patchelf), "--print-rpath", str(binary)]) != expected:
+        fail(f"{binary.name} retains an unexpected runtime search path")
+
+
+def portabilize(bin_dir: Path, names: tuple[str, ...], output: Path, patchelf: Path, readelf: Path, ldd: Path,
+                expected_files: dict[str, dict]) -> tuple[list[dict], str]:
+    """Rewrite executable RPATHs and bundle the non-glibc shared-library closure."""
     root = output / "Nudox"
     (root / "bin").mkdir(mode=0o700, parents=True)
     (root / "lib").mkdir(mode=0o700)
@@ -83,6 +108,10 @@ def portabilize(bin_dir: Path, names: tuple[str, ...], output: Path, patchelf: P
         source_binary = (bin_dir / name).resolve(strict=True)
         packaged = root / "bin" / name
         digest_bytes, digest = admit_file_digest(source_binary, MAX_BINARY_BYTES)
+        recorded = expected_files.get(f"bin/{name}")
+        if (not isinstance(recorded, dict) or recorded.get("bytes") != digest_bytes
+                or recorded.get("sha256") != digest):
+            fail(f"{name} differs from the T1 artifact manifest")
         copy_admitted_file(source_binary, packaged, digest, digest_bytes, MAX_BINARY_BYTES)
         original = elf_info(readelf, packaged)
         if not original["interpreter"]:
@@ -112,11 +141,15 @@ def portabilize(bin_dir: Path, names: tuple[str, ...], output: Path, patchelf: P
         patched = elf_info(readelf, packaged)
         if patched["interpreter"] != INTERPRETER or patched["needed"] != original["needed"]:
             fail(f"patchelf changed the wrong ELF contract for {name}")
+        require_rpath(patchelf, packaged, "$ORIGIN/../lib")
+        packaged_bytes, packaged_digest = admit_file_digest(packaged, MAX_BINARY_BYTES)
         executables.append({
             "name": name,
             "packaged_path": f"bin/{name}",
-            "sha256": digest,
-            "bytes": digest_bytes,
+            "sha256": packaged_digest,
+            "bytes": packaged_bytes,
+            "t1_artifact_sha256": digest,
+            "t1_artifact_bytes": digest_bytes,
             "required_glibc_versions": patched["required_glibc_versions"],
         })
 
@@ -125,6 +158,7 @@ def portabilize(bin_dir: Path, names: tuple[str, ...], output: Path, patchelf: P
         copy_admitted_file(record["source_path"], packaged, record["source_sha256"], record["source_bytes"], 96 * 1024 * 1024)
         packaged.chmod(0o755)
         run([str(patchelf), "--set-rpath", "$ORIGIN", str(packaged)])
+        require_rpath(patchelf, packaged, "$ORIGIN")
         info = elf_info(readelf, packaged)
         record.update({"needed": info["needed"], "required_glibc_versions": info["required_glibc_versions"]})
 
@@ -146,7 +180,11 @@ def write_build_manifest(output: Path, revision: str, tree: str, cargo_lock: str
         "schema": 1,
         "source": {"git_revision": revision, "git_tree": tree, "cargo_lock_sha256": cargo_lock},
         "target": TARGET,
-        "executables": {e["name"]: {"path": e["packaged_path"], "sha256": e["sha256"], "bytes": e["bytes"]} for e in executables},
+        "executables": {e["name"]: {
+            "path": e["packaged_path"], "sha256": e["sha256"], "bytes": e["bytes"],
+            "t1_artifact_sha256": e["t1_artifact_sha256"],
+            "t1_artifact_bytes": e["t1_artifact_bytes"],
+        } for e in executables},
     }
     path = output / "Nudox" / "resources" / "build-manifest.json"
     path.parent.mkdir(mode=0o700, parents=True)
@@ -181,7 +219,8 @@ def main() -> int:
 
     output.mkdir(mode=0o700, parents=True)
     patchelf, readelf, ldd = require_tool(args.patchelf, "patchelf"), require_tool(args.readelf, "readelf"), require_tool(args.ldd, "ldd")
-    executables, minimum_glibc = portabilize(args.t1_artifact_dir / "bin", EXECUTABLES, output, patchelf, readelf, ldd)
+    expected_files = {item["path"]: item for item in t1_manifest["files"]}
+    executables, minimum_glibc = portabilize(args.t1_artifact_dir / "bin", EXECUTABLES, output, patchelf, readelf, ldd, expected_files)
     build_manifest_path = write_build_manifest(output, revision, tree, cargo_lock, executables)
     build_manifest_sha = sha256(build_manifest_path)
     archive = make_archive(output)
@@ -198,7 +237,7 @@ def main() -> int:
         "asset": ASSET,
         "sha256": archive_sha,
         "size_bytes": archive.stat().st_size,
-        "minimum_os": MINIMUM_OS,
+        "minimum_os": f"{MINIMUM_OS} {minimum_glibc}",
         "build_manifest_sha256": build_manifest_sha,
         "signed": False,
         "notarized": False,
