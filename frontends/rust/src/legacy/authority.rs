@@ -6343,19 +6343,19 @@ mod read_frontier_budget_tests {
         // Keep the shared bench file in the library, test, and bin requests
         // to exercise target ownership for non-root module files.
         let source_paths = [
-            PathBuf::from("bin/hyphen.rs"),
             PathBuf::from("benches/bench.rs"),
+            PathBuf::from("bin/hyphen.rs"),
             PathBuf::from("lib.rs"),
             PathBuf::from("test.rs"),
         ];
         let files = [
             RustWorkspaceFile {
                 relative_path: &source_paths[0],
-                source: std::str::from_utf8(hyphenated).expect("UTF-8 bin fixture"),
+                source: std::str::from_utf8(benchmark).expect("UTF-8 bench fixture"),
             },
             RustWorkspaceFile {
                 relative_path: &source_paths[1],
-                source: std::str::from_utf8(benchmark).expect("UTF-8 bench fixture"),
+                source: std::str::from_utf8(hyphenated).expect("UTF-8 bin fixture"),
             },
             RustWorkspaceFile {
                 relative_path: &source_paths[2],
