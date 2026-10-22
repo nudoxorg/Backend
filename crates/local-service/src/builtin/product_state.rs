@@ -4142,10 +4142,8 @@ mod tests {
                 completeness: DiscoveryCompleteness::CompleteThroughCursor,
                 facts: vec![DiscoveryFact {
                     source,
-                    coordinate: backend_engine::ProductPackageCoordinate::parse(
-                        "pkg:npm/react@19.1.0",
-                    )
-                    .expect("discovered package coordinate"),
+                    coordinate: ProductPackageCoordinate::parse("pkg:npm/react@19.1.0")
+                        .expect("discovered package coordinate"),
                     standing: DiscoveryStanding::Published,
                     observed_at: observed,
                     source_event: DiscoverySourceEvent::Snapshot,

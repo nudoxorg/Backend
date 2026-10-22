@@ -596,50 +596,43 @@ fn map_runtime_startup_error(
 
 /// The named package-profile tool treats `.` as the MCP session's selected
 /// project. Keep the generic `backend.surface` escape hatch source-exact.
-fn normalize_named_package_profile_dot(
-    request: Request,
-    project: &str,
-) -> Result<Request, Fault> {
+fn normalize_named_package_profile_dot(request: Request, project: &str) -> Result<Request, Fault> {
     let Request::Surface(command) = request else {
         return Ok(request);
     };
     let (label, compiler_outcome) = match *command {
-        backend_library::SurfaceCommand::PackageProfile {
-            package: backend_library::PackageReference::Local(label),
+        SurfaceCommand::PackageProfile {
+            package: PackageReference::Local(label),
             compiler_outcome,
         } if label.as_str() == "." => (label, compiler_outcome),
         other => return Ok(Request::Surface(Box::new(other))),
     };
     let selected = std::path::Path::new(project);
     if !selected.is_absolute() {
-        return Ok(Request::Surface(Box::new(
-            backend_library::SurfaceCommand::PackageProfile {
-                package: backend_library::PackageReference::Local(label),
-                compiler_outcome,
-            },
-        )));
+        return Ok(Request::Surface(Box::new(SurfaceCommand::PackageProfile {
+            package: PackageReference::Local(label),
+            compiler_outcome,
+        })));
     }
     let selected = backend_runtime::normalize_surface_path(selected);
     let Some(selected) = selected.to_str() else {
-        return Ok(Request::Surface(Box::new(
-            backend_library::SurfaceCommand::PackageProfile {
-                package: backend_library::PackageReference::Local(label),
-                compiler_outcome,
-            },
-        )));
+        return Ok(Request::Surface(Box::new(SurfaceCommand::PackageProfile {
+            package: PackageReference::Local(label),
+            compiler_outcome,
+        })));
     };
-    let package = backend_library::PackageReference::from_kind(
+    let package = PackageReference::from_kind(
         backend_library::PackageReferenceKind::Local,
         selected.to_owned(),
     )
     .map_err(|error| Fault::admission(error, backend_present::Operand::Argument(".".to_owned())))?;
-    let command = backend_library::SurfaceCommand::PackageProfile {
+    let command = SurfaceCommand::PackageProfile {
         package,
         compiler_outcome,
     };
-    command
-        .admit()
-        .map_err(|error| Fault::admission(error, backend_present::Operand::Argument(".".to_owned())))?;
+    command.admit().map_err(|error| {
+        Fault::admission(error, backend_present::Operand::Argument(".".to_owned()))
+    })?;
     Ok(Request::Surface(Box::new(command)))
 }
 

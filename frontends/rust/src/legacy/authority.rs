@@ -6320,8 +6320,8 @@ mod read_frontier_budget_tests {
         std::fs::write(root.join("test.rs"), test).expect("test harness target");
         std::fs::write(root.join("bin/hyphen.rs"), hyphenated).expect("hyphenated bin target");
         let tool = std::env::var_os("RUSTC")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from("rustc"));
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("rustc"));
         let toolchain = RustToolchain::discover(tool).expect("selected Rust toolchain");
         let cancelled = AtomicBool::new(false);
         let control = || RustAnalysisControl {

@@ -246,7 +246,7 @@ fn fixture(profile: LanguageProfile) -> Ir {
                 },
                 templates: builder.intern_type_parameters(&[]).expect("templates"),
                 includes: builder.intern_attributes(&[]).expect("includes"),
-                declared_name: crate::ir::SourceSpan::new(path, 2, 8),
+                declared_name: SourceSpan::new(path, 2, 8),
             };
             add_extension_at(
                 &mut builder,
@@ -442,7 +442,7 @@ fn clang_versioned_v2_wire_retains_captured_declared_name_file_and_bounds() {
     let legacy_key = super::wire::legacy_clang_extension_row_key(
         profile,
         version(7).identity(),
-        super::wire::CLANG_TAG,
+        wire::CLANG_TAG,
     );
     assert!(validate_record(kind, legacy_key, record.tag(), legacy_payload).is_ok());
     assert!(matches!(
