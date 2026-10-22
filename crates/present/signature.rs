@@ -211,7 +211,14 @@ impl Signature {
     /// [`Self::tokenize`], and source reads retain captured bytes independently.
     #[must_use]
     pub fn preview(text: &str, language: Language) -> Self {
-        let text = fold_unambiguous_layout_newlines(text);
+        let text = if matches!(
+            language,
+            Language::Rust | Language::Python | Language::Go | Language::TypeScript
+        ) {
+            display::fold_preview_layout_newlines(text, language)
+        } else {
+            fold_unambiguous_layout_newlines(text)
+        };
         let mut characters = Vec::with_capacity(PREVIEW_CHARACTERS + 1);
         let mut ellipsis_boundary = 0;
         let mut source = text.chars().peekable();
@@ -288,9 +295,8 @@ impl Signature {
     }
 }
 
-/// Fold physical layout only when this lightweight preview can prove it is
-/// outside quoted and commented source. The full signature lexer is
-/// intentionally not changed for this result-list formatting behavior.
+/// Preserve the original quote/comment-free folding path for languages whose
+/// source quoting rules this preview does not scan.
 fn fold_unambiguous_layout_newlines(text: &str) -> Cow<'_, str> {
     if text
         .chars()
@@ -782,6 +788,29 @@ mod display_tests {
             Signature::preview("const label = `one\ntwo`", Language::TypeScript).text(),
             "const label = `one\\ntwo`"
         );
+
+        let mixed = "export default function NavBar(\n  { title: 'home', label: \"two  words\" }\n)";
+        let mixed_before = mixed.to_owned();
+        assert_eq!(
+            Signature::preview(mixed, Language::TypeScript).text(),
+            "export default function NavBar( { title: 'home', label: \"two  words\" } )"
+        );
+        assert_eq!(mixed, mixed_before, "preview leaves captured source untouched");
+
+        let multiline_literal = "const label = \"first\n  second\";\nexport const ready = true";
+        let expected = "const label = \"first\\n  second\"; export const ready = true";
+        assert_eq!(
+            Signature::preview(multiline_literal, Language::TypeScript).text(),
+            expected
+        );
+        assert_eq!(
+            Signature::preview(
+                &multiline_literal.replace('\n', "\r\n"),
+                Language::TypeScript,
+            )
+            .text(),
+            expected
+        );
     }
 
     #[test]
@@ -895,6 +924,21 @@ mod display_tests {
                 Signature::preview(text, language).text(),
                 expected,
                 "{language}: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_language_layout_folding_keeps_quoted_content_visible() {
+        for language in [Language::Java, Language::CSharp] {
+            assert_eq!(
+                Signature::preview("void F(\n string value,\n)", language).text(),
+                "void F( string value, )"
+            );
+            assert_eq!(
+                Signature::preview("void F(\n string value = \"first\n  second\",\n)", language,)
+                    .text(),
+                "void F(\\n string value = \"first\\n  second\",\\n)"
             );
         }
     }
