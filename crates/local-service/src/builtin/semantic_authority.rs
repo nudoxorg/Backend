@@ -3332,7 +3332,7 @@ impl SemanticAuthority {
         let typescript_snapshot_member =
             if staged.profile().language() == backend_semantic::vocabulary::Language::TypeScript {
                 if let Some(bytes) = staged
-                    .typescript_snapshot_certificate(attempt.input_digest())
+                    .typescript_snapshot_certificate(*attempt.input_digest())
                     .filter(|bytes| {
                         payload_ids.len().checked_add(2).is_some_and(|members| {
                             members <= backend_extension_turso::MAX_COMPILER_PUBLICATION_MEMBER_IDS

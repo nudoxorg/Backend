@@ -490,7 +490,7 @@ pub(super) fn prepare_scan_source(
                 .or_else(|| {
                     let package_reference =
                         backend_engine::PackageReference::parse(label.clone()).ok()?;
-                    let semantic_coordinate = super::super::compiler_scope::semantic_coordinate(
+                    let semantic_coordinate = crate::builtin::compiler_scope::semantic_coordinate(
                         package, profile, coordinate,
                     )
                     .ok()?;
