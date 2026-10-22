@@ -6665,9 +6665,16 @@ fn package_authority_terminal(
                 projection.diagnostic.observed,
                 projection.diagnostic.truncated,
             );
-            let diagnostic = match rust_scope {
-                Some(scope) => diagnostic.with_rust_source_scope_failure(scope),
-                None => diagnostic,
+            let diagnostic = match (diagnostic, rust_scope) {
+                (Some(diagnostic), Some(scope)) => {
+                    Some(diagnostic.with_rust_source_scope_failure(scope))
+                }
+                (None, Some(scope)) => Some(
+                    backend_library::interface::CompilerDiagnostic::from_rust_source_scope_failure(
+                        scope,
+                    ),
+                ),
+                (diagnostic, None) => diagnostic,
             };
             compiler_attempt_terminal(
                 request,
