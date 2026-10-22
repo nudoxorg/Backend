@@ -307,6 +307,52 @@ fn compiler_selector_invalid_call_then_valid_and_typed_stale_keep_exact_request(
 }
 
 #[test]
+fn named_package_profile_dot_uses_the_selected_project_but_surface_json_stays_exact() {
+    let reply = SurfaceReply::PackageProfile {
+        latest: None,
+        versions: 0,
+        candidate_authority: None,
+        source_metadata: None,
+        compiler_outcomes: None,
+    };
+    let mut server = ready(Fake {
+        surface_reply: Some(reply.clone()),
+        ..Fake::default()
+    });
+    let named = call(
+        &mut server,
+        "backend.package_profile",
+        &json!({"package":"."}),
+    );
+    assert_eq!(named["isError"], false, "{named}");
+    assert!(matches!(
+        server.product.surface_commands.last(),
+        Some(SurfaceCommand::PackageProfile {
+            package: PackageReference::Local(label),
+            compiler_outcome: None,
+        }) if label.as_str() == PROJECT
+    ));
+
+    server.product.surface_reply = Some(reply);
+    let exact = call(
+        &mut server,
+        "backend.surface",
+        &json!({"command": {
+            "operation":"package-profile",
+            "package":{"kind":"local", "value":"."}
+        }}),
+    );
+    assert_eq!(exact["isError"], false, "{exact}");
+    assert!(matches!(
+        server.product.surface_commands.last(),
+        Some(SurfaceCommand::PackageProfile {
+            package: PackageReference::Local(label),
+            compiler_outcome: None,
+        }) if label.as_str() == "."
+    ), "the tagged surface escape hatch preserves its exact operand");
+}
+
+#[test]
 fn partial_coverage_pages_keep_complete_escaped_observations_inside_actual_cli_and_mcp_budgets()
 -> Result<(), String> {
     use backend_library::{PackageCompilerCoveragePage, PackageCompilerCoverageSelector};
