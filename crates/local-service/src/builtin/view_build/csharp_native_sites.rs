@@ -10,7 +10,6 @@ use backend_engine::application::DocumentationSession;
 use backend_engine::builtin::VerifiedNativeSource;
 use backend_semantic::ir::{
     DeclarationIdentity, ImageProvenance, SemanticCoreReader as _, SemanticImageView,
-    SemanticReader as _,
 };
 use backend_semantic::vocabulary::{LanguageProfile, NativeTool, Stage};
 use std::collections::{BTreeMap, BTreeSet};

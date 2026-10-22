@@ -3192,6 +3192,7 @@ fn scan_one(
                 project,
                 frontends,
                 python_version,
+                go_capture,
                 SourceUnavailableReason::Unparsed,
                 source_bytes,
             )
@@ -3230,6 +3231,7 @@ fn scan_one(
                 project,
                 frontends,
                 PythonVersion::Python314,
+                go_capture,
                 SourceUnavailableReason::Unparsed,
                 source_bytes,
             )
@@ -3266,6 +3268,7 @@ fn scan_one(
                 project,
                 frontends,
                 PythonVersion::Python314,
+                go_capture,
                 SourceUnavailableReason::Unparsed,
                 source_bytes,
             )
@@ -3681,7 +3684,6 @@ fn materialize_compiler_sources(
     Ok(admitted)
 }
 
-#[cfg(test)]
 /// Profiles that still have compiler input in this scan.
 ///
 /// The set is taken from every fresh and reused file, before unchanged
