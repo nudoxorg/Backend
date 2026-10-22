@@ -211,7 +211,14 @@ impl Signature {
     /// [`Self::tokenize`], and source reads retain captured bytes independently.
     #[must_use]
     pub fn preview(text: &str, language: Language) -> Self {
-        let text = display::fold_preview_layout_newlines(text, language);
+        let text = if matches!(
+            language,
+            Language::Rust | Language::Python | Language::Go | Language::TypeScript
+        ) {
+            display::fold_preview_layout_newlines(text, language)
+        } else {
+            fold_unambiguous_layout_newlines(text)
+        };
         let mut characters = Vec::with_capacity(PREVIEW_CHARACTERS + 1);
         let mut ellipsis_boundary = 0;
         let mut source = text.chars().peekable();
@@ -286,6 +293,49 @@ impl Signature {
                 .collect(),
         }
     }
+}
+
+/// Preserve the original quote/comment-free folding path for languages whose
+/// source quoting rules this preview does not scan.
+fn fold_unambiguous_layout_newlines(text: &str) -> Cow<'_, str> {
+    if text
+        .chars()
+        .any(|character| matches!(character, '"' | '\'' | '`' | '#'))
+        || text.contains("//")
+        || text.contains("/*")
+    {
+        return Cow::Borrowed(text);
+    }
+
+    let mut folded = String::with_capacity(text.len());
+    let mut source = text.chars().peekable();
+    while let Some(mut character) = source.next() {
+        if character == '\r' && source.next_if_eq(&'\n').is_some() {
+            character = '\n';
+        }
+        if character != '\n' {
+            folded.push(character);
+            continue;
+        }
+
+        while folded
+            .chars()
+            .next_back()
+            .is_some_and(|previous| matches!(previous, ' ' | '\t'))
+        {
+            folded.pop();
+        }
+        if !folded.ends_with(' ') {
+            folded.push(' ');
+        }
+        while source
+            .peek()
+            .is_some_and(|next| matches!(*next, ' ' | '\t'))
+        {
+            source.next();
+        }
+    }
+    Cow::Owned(folded)
 }
 
 fn display_line_endings(text: &str) -> Cow<'_, str> {
@@ -874,6 +924,21 @@ mod display_tests {
                 Signature::preview(text, language).text(),
                 expected,
                 "{language}: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_language_layout_folding_keeps_quoted_content_visible() {
+        for language in [Language::Java, Language::CSharp] {
+            assert_eq!(
+                Signature::preview("void F(\n string value,\n)", language).text(),
+                "void F( string value, )"
+            );
+            assert_eq!(
+                Signature::preview("void F(\n string value = \"first\n  second\",\n)", language,)
+                    .text(),
+                "void F(\\n string value = \"first\\n  second\",\\n)"
             );
         }
     }
