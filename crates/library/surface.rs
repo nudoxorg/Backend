@@ -7156,11 +7156,19 @@ mod tests {
         let wire = String::from_utf8(encoded.clone()).expect("JSON UTF-8");
         assert!(!wire.contains("/private"));
         assert!(!wire.contains("stderr"));
+        let align_detail = |wire: &mut serde_json::Value| {
+            let cause: PackageCompilerFailureCause =
+                serde_json::from_value(wire["cause"].clone()).expect("closed cause variant");
+            let (detail, truncated) = detail_for_package_cause(&cause);
+            wire["detail"] = serde_json::json!(detail);
+            wire["detail_truncated"] = serde_json::json!(truncated);
+        };
         for (field, invalid_count) in [("definition_count", 1), ("omitted_definition_count", 8)] {
             let mut malformed: serde_json::Value =
                 serde_json::from_slice(&encoded).expect("valid failure JSON");
             malformed["cause"]["fault"]["diagnostic"]["rust_source_scope_failure"][field] =
                 serde_json::json!(invalid_count);
+            align_detail(&mut malformed);
             let malformed = serde_json::to_vec(&malformed).expect("mutated failure JSON");
             assert!(
                 PackageCompilerFailure::decode_bounded_json(&malformed).is_err(),
@@ -7215,6 +7223,7 @@ mod tests {
             "omitted_definition_count": 3,
             "target_resolution": "exact_cargo_target",
         });
+        align_detail(&mut malformed_setup);
         let malformed_setup =
             serde_json::to_vec(&malformed_setup).expect("mutated setup failure JSON");
         assert!(
