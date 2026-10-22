@@ -10,6 +10,98 @@ spec.loader.exec_module(surface)
 
 
 class LocaldStartupDiagnosticTests(unittest.TestCase):
+    def test_process_context_binds_child_pid_namespace_boot_and_cgroup(self):
+        import json, tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            case = root / "case"
+            workspace = root / "workspace"
+            proc_root = root / "proc"
+            child = proc_root / "42"
+            observer = proc_root / "self"
+            case.mkdir()
+            workspace.mkdir()
+            (child / "ns").mkdir(parents=True)
+            (observer / "ns").mkdir(parents=True)
+            (child / "fd").mkdir()
+            (proc_root / "sys/kernel/random").mkdir(parents=True)
+            (proc_root / "ns").mkdir()
+            for name in ("pid-observer", "pid-child", "mnt-observer", "mnt-child"):
+                (proc_root / "ns" / name).write_text(name)
+            (observer / "ns/pid").symlink_to(proc_root / "ns/pid-observer")
+            (child / "ns/pid").symlink_to(proc_root / "ns/pid-child")
+            (observer / "ns/mnt").symlink_to(proc_root / "ns/mnt-observer")
+            (child / "ns/mnt").symlink_to(proc_root / "ns/mnt-child")
+            (observer / "status").write_text("Name:\tpytest\nNSpid:\t101 7\n")
+            (child / "status").write_text("Name:\tbackend-locald\nNSpid:\t202 42\n")
+            (observer / "cgroup").write_text("0::/fixture/task\n")
+            (child / "cgroup").write_text("0::/fixture/task/owner\n")
+            fields = ["S"] + ["1"] * 18 + ["987654321"]
+            (child / "stat").write_text("42 (backend-locald) " + " ".join(fields) + "\n")
+            (proc_root / "sys/kernel/random/boot_id").write_text("fixture-boot-id\n")
+
+            observed = json.loads(surface._locald_process_diagnostic(
+                42, case, workspace, None, proc_root=proc_root))
+            context = observed["process_context"]
+            self.assertEqual(context["child_pid"], 42)
+            self.assertEqual(context["observer_nspid"], [101, 7])
+            self.assertEqual(context["child_nspid"], [202, 42])
+            self.assertEqual(context["child_starttime_ticks"], 987654321)
+            self.assertEqual(context["boot_id"], "fixture-boot-id")
+            self.assertEqual(context["child_cgroup"], "0::/fixture/task/owner")
+            self.assertEqual(context["observer_cgroup"], "0::/fixture/task")
+            self.assertTrue(context["child_pid_namespace"]["target"].endswith("/ns/pid-child"))
+            self.assertTrue(context["observer_pid_namespace"]["target"].endswith("/ns/pid-observer"))
+            self.assertEqual(context["child_pid_namespace"]["inode"],
+                             (proc_root / "ns/pid-child").stat().st_ino)
+            self.assertNotIn("Name:", json.dumps(context))
+
+    def test_process_context_reports_missing_and_permission_limited_identity(self):
+        import json, tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            case = root / "case"
+            workspace = root / "workspace"
+            proc_root = root / "proc"
+            case.mkdir()
+            workspace.mkdir()
+
+            missing = json.loads(surface._locald_process_diagnostic(
+                42, case, workspace, None, proc_root=proc_root))["process_context"]
+            self.assertEqual(missing["child_pid_namespace"], "unsupported:FileNotFoundError")
+            self.assertEqual(missing["child_nspid"], "unsupported:FileNotFoundError")
+            self.assertEqual(missing["child_starttime_ticks"], "unsupported:FileNotFoundError")
+            self.assertEqual(missing["boot_id"], "unsupported:FileNotFoundError")
+
+            child = proc_root / "42"
+            (child / "ns").mkdir(parents=True)
+            (child / "status").write_text("NSpid:\t42\n")
+            (child / "cgroup").write_text("0::/fixture/task/owner\n")
+            fields = ["S"] + ["1"] * 18 + ["123"]
+            (child / "stat").write_text("42 (backend-locald) " + " ".join(fields) + "\n")
+            original_readlink = surface.os.readlink
+            original_open = open
+
+            def readlink(path, *args, **kwargs):
+                if str(path) == str(child / "ns/pid"):
+                    raise PermissionError("fixture denied")
+                return original_readlink(path, *args, **kwargs)
+
+            def read(path, *args, **kwargs):
+                if str(path) == str(child / "status"):
+                    raise PermissionError("fixture denied")
+                return original_open(path, *args, **kwargs)
+
+            with patch.object(surface.os, "readlink", side_effect=readlink), \
+                    patch("builtins.open", side_effect=read):
+                denied = json.loads(surface._locald_process_diagnostic(
+                    42, case, workspace, None, proc_root=proc_root))["process_context"]
+            self.assertEqual(denied["child_pid_namespace"], "unsupported:PermissionError")
+            self.assertEqual(denied["child_nspid"], "unsupported:PermissionError")
+            self.assertEqual(denied["child_starttime_ticks"], 123)
+            self.assertEqual(denied["child_cgroup"], "0::/fixture/task/owner")
+
     def test_process_observation_is_bounded_and_filters_non_case_descriptors(self):
         import json, tempfile
         with tempfile.TemporaryDirectory() as directory:

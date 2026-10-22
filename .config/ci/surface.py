@@ -61,6 +61,8 @@ LOCALD_ENDPOINT_DIAGNOSTIC_SECONDS = 25
 LOCALD_ENDPOINT_START_POLL_SECONDS = 0.05
 LOCALD_STARTUP_CHECKPOINT_NAME = "owner-startup-active-v1.json"
 LOCALD_STARTUP_CHECKPOINT_MAX_BYTES = 4096
+LOCALD_PROCESS_CONTEXT_STATUS_MAX_BYTES = 8192
+LOCALD_PROCESS_CONTEXT_CGROUP_MAX_BYTES = 4096
 
 
 def _startup_checkpoint(workspace, pid):
@@ -142,6 +144,66 @@ def _bounded_proc_text(path, limit=512):
     return raw[:limit].decode("utf-8", errors="replace").strip() + suffix
 
 
+def _proc_namespace_identity(path):
+    """Return bounded namespace link and inode identity, or an explicit error."""
+    try:
+        target = os.readlink(path)
+        info = os.stat(path)
+    except OSError as error:
+        return f"unsupported:{type(error).__name__}"
+    return {"target": target[:128], "device": info.st_dev, "inode": info.st_ino}
+
+
+def _proc_nspid(path):
+    """Read only NSpid from a bounded proc status snapshot."""
+    status = _bounded_proc_text(path, LOCALD_PROCESS_CONTEXT_STATUS_MAX_BYTES)
+    if status.startswith("unsupported:"):
+        return status
+    for line in status.splitlines():
+        if line.startswith("NSpid:"):
+            values = line.split(":", 1)[1].split()
+            if values and all(value.isdecimal() for value in values):
+                return [int(value) for value in values]
+            return "unsupported:malformed-NSpid"
+    return "unsupported:missing-NSpid"
+
+
+def _proc_starttime_ticks(stat_text):
+    """Parse Linux /proc/PID/stat field 22 from the already bounded stat text."""
+    if stat_text.startswith("unsupported:"):
+        return stat_text
+    try:
+        fields = stat_text.rsplit(")", 1)[1].split()
+        value = fields[19]  # fields begin at field 3 (state); starttime is field 22.
+        return int(value) if value.isdecimal() else "unsupported:malformed-starttime"
+    except (IndexError, ValueError):
+        return "unsupported:missing-starttime"
+
+
+def _locald_process_context(pid, base, proc_root):
+    """Bind the child PID to this proc/PID namespace and boot, with bounded reads."""
+    self_root = Path(proc_root) / "self"
+    status_path = base / "status"
+    cgroup_path = base / "cgroup"
+    self_status_path = self_root / "status"
+    self_cgroup_path = self_root / "cgroup"
+    stat_text = _bounded_proc_text(base / "stat")
+    return {
+        "observer_pid": os.getpid(),
+        "observer_nspid": _proc_nspid(self_status_path),
+        "observer_pid_namespace": _proc_namespace_identity(self_root / "ns" / "pid"),
+        "observer_mount_namespace": _proc_namespace_identity(self_root / "ns" / "mnt"),
+        "observer_cgroup": _bounded_proc_text(self_cgroup_path, LOCALD_PROCESS_CONTEXT_CGROUP_MAX_BYTES),
+        "child_pid": pid,
+        "child_nspid": _proc_nspid(status_path),
+        "child_starttime_ticks": _proc_starttime_ticks(stat_text),
+        "child_pid_namespace": _proc_namespace_identity(base / "ns" / "pid"),
+        "child_mount_namespace": _proc_namespace_identity(base / "ns" / "mnt"),
+        "child_cgroup": _bounded_proc_text(cgroup_path, LOCALD_PROCESS_CONTEXT_CGROUP_MAX_BYTES),
+        "boot_id": _bounded_proc_text(Path(proc_root) / "sys" / "kernel" / "random" / "boot_id", 128),
+    }
+
+
 def _locald_process_diagnostic(pid, case_root, workspace_root, executable, *, proc_root=Path("/proc")):
     """Bounded, path-filtered observation of one still-owned startup child."""
     allowed_roots = []
@@ -167,7 +229,8 @@ def _locald_process_diagnostic(pid, case_root, workspace_root, executable, *, pr
         running_identity = f"unsupported:{type(error).__name__}"
     result = {"pid": pid, "artifact_executable_path": str(executable)[:512] if executable is not None else "unavailable:no-argv-path",
               "artifact_executable_identity": artifact_identity if artifact_failure is None else artifact_failure,
-              "running_executable_identity": running_identity}
+              "running_executable_identity": running_identity,
+              "process_context": _locald_process_context(pid, base, proc_root)}
     for name in ("stat", "wchan", "syscall", "io"):
         result[name] = _bounded_proc_text(base / name)
     descriptors = []
