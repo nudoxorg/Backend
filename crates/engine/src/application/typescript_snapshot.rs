@@ -940,11 +940,8 @@ mod tests {
         fn owner(runtime_root: &Path) -> LocalCompilerClient {
             let host = TypeScriptProjectHost::direct(
                 None,
-                super::super::ToolchainProbeLimits::new(
-                    Duration::from_secs(5),
-                    NonZeroUsize::new(1024).unwrap(),
-                )
-                .unwrap(),
+                ToolchainProbeLimits::new(Duration::from_secs(5), NonZeroUsize::new(1024).unwrap())
+                    .unwrap(),
             );
             let configuration = LocalCompilerRuntimeConfiguration::new(
                 LocalCompilerRuntimePaths::new(

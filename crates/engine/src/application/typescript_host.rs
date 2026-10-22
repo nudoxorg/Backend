@@ -270,6 +270,7 @@ impl TypeScriptProjectInputs<'_> {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn load_source(
         &self,
         path: &Path,
@@ -1754,6 +1755,7 @@ impl TypeScriptProjectWitness {
 
     /// Encodes only the exhaustively represented native host witness. The caller must
     /// store these bytes in the authenticated selected-compiler publication member.
+    #[cfg(test)]
     pub(crate) fn encode_native_snapshot(&self) -> Option<Vec<u8>> {
         self.encode_native_snapshot_with_limit(64 * 1024 * 1024)
     }
@@ -2279,6 +2281,7 @@ impl TypeScriptProjectWitness {
         })
     }
 
+    #[cfg(test)]
     fn load_source(&self, path: &Path) -> Result<TypeScriptFileInput, TypeScriptProjectHostError> {
         if !path.is_absolute() {
             return Err(TypeScriptProjectHostError::SourceOutsideCapability {

@@ -101,7 +101,7 @@ struct PeerDto {
 }
 
 fn decode_path(path: String) -> Option<PathBuf> {
-    let path = super::snapshot_decode_path(path)?;
+    let path = snapshot_decode_path(path)?;
     (normalize_absolute_path(&path).as_ref() == Some(&path)
         && !path.as_os_str().as_encoded_bytes().contains(&0))
     .then_some(path)
@@ -257,6 +257,7 @@ fn decode_map<T, U>(
 impl TypeScriptResolverWitness {
     /// Preserves all nine observation maps, their counters and exact producer digest.
     /// No ambient read or reconstruction supplies missing rows during encoding.
+    #[cfg(test)]
     pub(crate) fn encode_native_snapshot(
         &self,
         host: &TypeScriptProjectWitness,
@@ -346,6 +347,7 @@ impl TypeScriptResolverWitness {
 
     /// Authenticated selected-generation bytes are mandatory. Structural and digest
     /// checks precede controlled current-host and complete filesystem revalidation.
+    #[cfg(test)]
     pub(crate) fn decode_native_snapshot(
         bytes: &[u8],
         host: &TypeScriptProjectWitness,
