@@ -555,6 +555,7 @@ pub struct PackageSourceSet<'source> {
     go_witness_deadline_phase: Option<&'static str>,
     python_environment:
         Option<&'source backend_frontend_python::legacy::checker::PythonEnvironmentInput>,
+    native_clang_candidate: bool,
 }
 
 impl<'source> PackageSourceSet<'source> {
@@ -628,7 +629,29 @@ impl<'source> PackageSourceSet<'source> {
             go_compile_deadline: None,
             go_witness_deadline_phase: None,
             python_environment: None,
+            native_clang_candidate: false,
         })
+    }
+
+    /// Marks this exact checked package frontier as compiler-only native Clang input.
+    /// The owned-runtime admission boundary requires selected-frontier permits before
+    /// calling this method; it is not available to public callers.
+    pub(crate) fn with_native_clang_candidate(mut self) -> Result<Self, PackageSourceSetError> {
+        if !matches!(
+            self.request.target.profile,
+            backend_semantic::vocabulary::LanguageProfile::C(_)
+                | backend_semantic::vocabulary::LanguageProfile::Cxx(_)
+        ) {
+            return Err(PackageSourceSetError::NativeClangProfileMismatch);
+        }
+        self.native_clang_candidate = true;
+        Ok(self)
+    }
+
+    /// Whether this package crossed the distinct checked native-candidate admission route.
+    #[must_use]
+    pub const fn is_native_clang_candidate(&self) -> bool {
+        self.native_clang_candidate
     }
 
     pub(super) fn with_python_raw_sources(
@@ -846,6 +869,12 @@ pub enum PackageSourceSetError {
     /// The decoded and raw frontiers did not describe the same exact bytes.
     #[error("decoded source differs from the retained raw Python frontier")]
     RawSourceMismatch,
+    /// The distinct native Clang candidate route was requested for a non-C/C++ profile.
+    #[error("native Clang source candidates require a C or C++ profile and UTF-8 bytes")]
+    NativeClangProfileMismatch,
+    /// The distinct native C# candidate route was requested for a non-C# profile.
+    #[error("native C# source candidates require a C# profile and UTF-8 bytes")]
+    NativeCSharpProfileMismatch,
     /// Package roots must have host-independent absolute identity.
     #[error("package source root is relative")]
     RelativeRoot,

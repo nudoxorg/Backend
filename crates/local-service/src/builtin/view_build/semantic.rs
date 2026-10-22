@@ -4,16 +4,18 @@ use super::super::{
     WorkspaceSnapshot,
 };
 use super::call_join::foreign_display_name;
+#[cfg(test)]
+use super::identity::semantic_coordinate;
 use super::identity::{
-    declaration_kind, external_semantic_coordinate, external_semantic_symbol,
+    declaration_family, declaration_kind, external_semantic_coordinate, external_semantic_symbol,
     semantic_identity, semantic_symbol,
 };
 use super::image_rows::{Charge, DuplicatePolicy, ProjectedImage, ProjectedRow};
 use super::kinds;
 use super::structural::{
     ProfileSourceIdentities, ProfileSourcePaths, StructuralDeclaration, StructuralParent,
-    StructuralProjectionPlan, profile_source_identities, profile_source_paths,
-    projected_source_capacity,
+    StructuralProjectionPlan, complete_declarations_for_file, native_frontier_freshness,
+    profile_source_identities, profile_source_paths, projected_source_capacity,
 };
 use super::{
     MAX_SEMANTIC_DOCUMENT_BYTES, MAX_SEMANTIC_SIGNATURE_BYTES, MAX_SEMANTIC_TYPE_DEPTH, STALE_NOTE,
@@ -32,8 +34,15 @@ use backend_semantic::ir::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
-#[cfg(test)]
-use super::identity::semantic_coordinate;
+use std::sync::OnceLock;
+
+static C_FRESHNESS_DIAGNOSTICS_ENABLED: OnceLock<bool> = OnceLock::new();
+
+fn c_freshness_diagnostics_enabled() -> bool {
+    *C_FRESHNESS_DIAGNOSTICS_ENABLED.get_or_init(|| {
+        std::env::var_os("NUDOX_DEBUG_C_FRESHNESS").is_some_and(|value| value == "1")
+    })
+}
 
 fn package_row_name(label: &str, workspace: &std::path::Path) -> Result<String, String> {
     super::super::local_manifest::indexed_package_row_name(label, workspace)
@@ -82,7 +91,14 @@ pub(crate) fn rows_for_indexed_sources(
     }
     let available = SourceAvailability::of(sources)?;
     let current_paths = profile_source_paths(sources)?;
-    let current_identities = profile_source_identities(sources)?;
+    let mut current_identities = profile_source_identities(sources)?;
+    let native_frontier = native_frontier_freshness(sources, &current_paths);
+    for (target, identities) in native_frontier.identities {
+        current_identities
+            .entry(target)
+            .or_default()
+            .extend(identities);
+    }
     let sites = StructuralSites::of(sources)?;
     let semantics = semantic_rows(
         snapshot,
@@ -90,6 +106,7 @@ pub(crate) fn rows_for_indexed_sources(
         &sources.projects,
         &current_paths,
         &current_identities,
+        &native_frontier.complete,
         &sites,
         &available,
         initial,
@@ -568,6 +585,7 @@ fn semantic_rows(
     projects: &BTreeMap<[u8; 32], IndexedProject>,
     current_paths: &ProfileSourcePaths,
     current_identities: &ProfileSourceIdentities,
+    native_frontier_complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
     sites: &StructuralSites<'_>,
     available: &SourceAvailability,
     initial: &ViewRoot,
@@ -632,8 +650,9 @@ fn semantic_rows(
             // The relation's typed order groups package references before
             // coordinates/profiles/history, including across page boundaries.
             // Only compact alias keys survive a completed package callback.
-            native_selections.advance(key, |package, selected|
-                native_aliases.record_selected(package, selected))?;
+            native_selections.advance(key, |package, selected| {
+                native_aliases.record_selected(package, selected)
+            })?;
             if !key.is_selected() {
                 continue;
             }
@@ -738,11 +757,113 @@ fn semantic_rows(
                 compiled_sources.insert(path.clone(), *identity);
             }
             let empty = BTreeSet::new();
-            let decision = freshness_decision(
+            let mut decision = freshness_decision(
                 &compiled_sources,
                 current_paths.get(&target).unwrap_or(&empty),
                 current_identities.get(&target),
             );
+            let native_frontier_is_complete = !matches!(
+                key.profile(),
+                backend_semantic::vocabulary::LanguageProfile::C(_)
+                    | backend_semantic::vocabulary::LanguageProfile::Cxx(_)
+                    | backend_semantic::vocabulary::LanguageProfile::CSharp(_)
+            ) || native_frontier_complete.contains(&target);
+            if !native_frontier_is_complete {
+                decision.stale_paths = current_paths.get(&target).cloned().unwrap_or_default();
+                decision.path_sets_differ = true;
+                decision.identity_decisive = false;
+                decision.identities = None;
+                if let Some(paths) = current_paths.get(&target) {
+                    for path in paths {
+                        targets
+                            .partial_artifacts
+                            .insert((target.0, target.1, path.clone()));
+                    }
+                }
+            }
+            if matches!(
+                key.profile(),
+                backend_semantic::vocabulary::LanguageProfile::C(_)
+            ) && !decision.stale_paths.is_empty()
+                && c_freshness_diagnostics_enabled()
+            {
+                let current_paths = current_paths.get(&target).unwrap_or(&empty);
+                let current_identities = current_identities.get(&target);
+                eprintln!(
+                    "NUDOX_C_FRESHNESS coordinate={:?} claim={:?} profile={:?} identity_decisive={} path_sets_differ={} stale_count={} compiled_count={} current_count={}",
+                    key.coordinate().as_str(),
+                    claim,
+                    key.profile(),
+                    decision.identity_decisive,
+                    decision.path_sets_differ,
+                    decision.stale_paths.len(),
+                    compiled_sources.len(),
+                    current_paths.len(),
+                );
+                for path in decision.stale_paths.iter().take(64) {
+                    let compiled = decision.compiled.get(path);
+                    let current = current_identities.and_then(|identities| identities.get(path));
+                    eprintln!(
+                        "NUDOX_C_FRESHNESS stale path={path:?} compiled={:?} current={:?}",
+                        compiled.map(|identity| identity.as_ref()),
+                        current.map(|identity| identity.as_ref()),
+                    );
+                }
+                if decision.stale_paths.len() > 64 {
+                    eprintln!(
+                        "NUDOX_C_FRESHNESS stale_paths_omitted={}",
+                        decision.stale_paths.len() - 64
+                    );
+                }
+                for image in opened.iter().take(64) {
+                    let (path, identity) = match image {
+                        super::image_rows::CompiledImage::Resident { path, identity, .. }
+                        | super::image_rows::CompiledImage::Opened { path, identity, .. } => {
+                            (path, identity)
+                        }
+                    };
+                    eprintln!(
+                        "NUDOX_C_FRESHNESS image path={path:?} identity={:?}",
+                        identity.as_ref(),
+                    );
+                }
+                if opened.len() > 64 {
+                    eprintln!("NUDOX_C_FRESHNESS images_omitted={}", opened.len() - 64);
+                }
+                for path in current_paths.iter().take(64) {
+                    let current = current_identities.and_then(|identities| identities.get(path));
+                    eprintln!(
+                        "NUDOX_C_FRESHNESS current path={path:?} identity={:?}",
+                        current.map(|identity| identity.as_ref()),
+                    );
+                }
+                if current_paths.len() > 64 {
+                    eprintln!(
+                        "NUDOX_C_FRESHNESS current_paths_omitted={}",
+                        current_paths.len() - 64
+                    );
+                }
+            }
+            let checked_native_frontier = if native_frontier_is_complete
+                && matches!(
+                    key.profile(),
+                    backend_semantic::vocabulary::LanguageProfile::C(_)
+                        | backend_semantic::vocabulary::LanguageProfile::Cxx(_)
+                        | backend_semantic::vocabulary::LanguageProfile::CSharp(_)
+                ) {
+                sites.sources.source_snapshot.as_ref().and_then(|snapshot| {
+                    snapshot
+                        .admit_native_frontier(
+                            *key.package_key().as_bytes(),
+                            key.profile(),
+                            current_paths.get(&target).unwrap_or(&empty),
+                        )
+                        .ok()
+                        .flatten()
+                })
+            } else {
+                None
+            };
             let mut image_groups = Vec::<(String, Vec<usize>)>::new();
             let mut ownership_complete = true;
             let mut group_by_path = BTreeMap::<String, usize>::new();
@@ -777,7 +898,8 @@ fn semantic_rows(
                 if matches!(
                     coverage,
                     backend_engine::builtin::SemanticPublicationCoverage::Partial(_)
-                ) {
+                ) || !native_frontier_is_complete
+                {
                     targets
                         .partial_artifacts
                         .insert((target.0, target.1, path.clone()));
@@ -789,22 +911,79 @@ fn semantic_rows(
                 // project-wide fact hydration.
                 let owned_site_declarations = if stale {
                     Vec::new()
-                } else if !matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::Go(_) | backend_semantic::vocabulary::LanguageProfile::TypeScript(_)) {
+                } else if !matches!(
+                    key.profile(),
+                    backend_semantic::vocabulary::LanguageProfile::Go(_)
+                        | backend_semantic::vocabulary::LanguageProfile::TypeScript(_)
+                ) {
                     // Other languages retain their established display-site
                     // fallback. Go and TypeScript require exact source identity.
                     sites.declarations(key.package_key().as_bytes(), &path)?
                 } else {
                     match decision.compiled.get(&path) {
-                        Some(source) if image_indices.iter().all(|index| {
-                            match &opened[*index] {
+                        Some(source)
+                            if image_indices.iter().all(|index| match &opened[*index] {
                                 super::image_rows::CompiledImage::Opened { identity, .. }
-                                | super::image_rows::CompiledImage::Resident { identity, .. } => identity == source,
-                            }
-                        }) => sites.declarations_of_source(key.package_key().as_bytes(), &path, *source)?,
+                                | super::image_rows::CompiledImage::Resident { identity, .. } => {
+                                    identity == source
+                                }
+                            }) =>
+                        {
+                            sites.declarations_of_source(
+                                key.package_key().as_bytes(),
+                                &path,
+                                *source,
+                            )?
+                        }
                         _ => Vec::new(),
                     }
                 };
                 let site_declarations = owned_site_declarations.iter().collect::<Vec<_>>();
+                let native_source = if stale {
+                    None
+                } else {
+                    if let Some((snapshot, frontier)) = sites
+                        .sources
+                        .source_snapshot
+                        .as_ref()
+                        .zip(checked_native_frontier.as_ref())
+                    {
+                        // Refuse the owned source allocation before hydration,
+                        // including when image provenance later yields no sites.
+                        if let Ok(index) =
+                            frontier.dispositions().binary_search_by(|(candidate, _)| {
+                                candidate.as_str().cmp(path.as_str())
+                            })
+                        {
+                            let byte_length = match &frontier.dispositions()[index].1 {
+                                backend_engine::builtin::NativePathDisposition::ClangMalformed {
+                                    byte_length, ..
+                                }
+                                | backend_engine::builtin::NativePathDisposition::CSharpMalformed {
+                                    byte_length, ..
+                                } => Some(*byte_length),
+                                _ => None,
+                            };
+                            if let Some(byte_length) = byte_length {
+                                if usize::try_from(byte_length)
+                                    .map_or(true, |length| length > remaining_bytes)
+                                {
+                                    return Err(BuiltinModelError(
+                                        "native source exceeds the rebuild byte bound".to_owned(),
+                                    ));
+                                }
+                            }
+                        }
+                        match key.profile() {
+                            backend_semantic::vocabulary::LanguageProfile::CSharp(_) => {
+                                snapshot.verified_native_csharp_source(frontier, &path).ok()
+                            }
+                            _ => snapshot.verified_native_source(frontier, &path).ok(),
+                        }
+                    } else {
+                        None
+                    }
+                };
                 for image_index in image_indices {
                     let image = &opened[image_index];
                     let mut sink = SemanticRowSink {
@@ -818,6 +997,7 @@ fn semantic_rows(
                         stale,
                         path: &path,
                         site_declarations: &site_declarations,
+                        native_source: native_source.as_ref(),
                     };
                     match image {
                         super::image_rows::CompiledImage::Opened { view, .. } => {
@@ -860,14 +1040,19 @@ fn semantic_rows(
             if matches!(
                 coverage,
                 backend_engine::builtin::SemanticPublicationCoverage::Complete
-            ) && ownership_complete && !incomplete_ownership.contains(&target) {
+            ) && ownership_complete
+                && native_frontier_is_complete
+                && !incomplete_ownership.contains(&target)
+            {
                 complete.insert(target);
             }
             if !ownership_complete {
                 incomplete_ownership.insert(target);
                 complete.remove(&target);
                 for path in compiled_sources.keys() {
-                    targets.partial_artifacts.insert((target.0, target.1, path.clone()));
+                    targets
+                        .partial_artifacts
+                        .insert((target.0, target.1, path.clone()));
                 }
             }
             if matches!(
@@ -894,8 +1079,8 @@ fn semantic_rows(
         if package_ended || (bounds.is_some() && page.next().is_none()) {
             // Explicit seeks use project-map order (hashed keys), not global
             // reference order. Finish this complete package before any seek.
-            native_selections.finish(|package, selected|
-                native_aliases.record_selected(package, selected))?;
+            native_selections
+                .finish(|package, selected| native_aliases.record_selected(package, selected))?;
             bound_index = bound_index.saturating_add(1);
             from = bounds
                 .as_ref()
@@ -908,8 +1093,8 @@ fn semantic_rows(
         };
         after = Some(next);
     }
-    native_selections.finish(|package, selected|
-        native_aliases.record_selected(package, selected))?;
+    native_selections
+        .finish(|package, selected| native_aliases.record_selected(package, selected))?;
     native_aliases.apply(&mut rows);
     Ok(SemanticRows {
         rows,
@@ -1076,6 +1261,51 @@ pub(super) struct SemanticRowSink<'a> {
     /// The structural declarations extracted from the same current bytes of
     /// [`Self::path`]; empty when the image is stale.
     pub(super) site_declarations: &'a [&'a backend_compile::SourceDeclaration],
+    /// Authenticated bytes from the same selected native-only frontier.
+    pub(super) native_source: Option<&'a backend_engine::builtin::VerifiedNativeSource>,
+}
+
+impl SemanticRowSink<'_> {
+    pub(super) fn native_projection(&self) -> Option<super::native_sites::NativeProjection<'_>> {
+        if self.stale {
+            return None;
+        }
+        self.native_source
+            .filter(|source| {
+                matches!(
+                    source.profile(),
+                    backend_semantic::vocabulary::LanguageProfile::C(_)
+                        | backend_semantic::vocabulary::LanguageProfile::Cxx(_)
+                )
+            })
+            .map(|source| super::native_sites::NativeProjection {
+                source,
+                max_sites: self.capacity.saturating_sub(self.rows.len()),
+                max_working_bytes: *self.remaining_bytes,
+            })
+    }
+
+    pub(super) fn native_csharp_projection(
+        &self,
+    ) -> Option<super::csharp_native_sites::NativeCSharpProjection<'_>> {
+        if self.stale {
+            return None;
+        }
+        self.native_source
+            .filter(|source| {
+                matches!(
+                    source.profile(),
+                    backend_semantic::vocabulary::LanguageProfile::CSharp(_)
+                )
+            })
+            .map(
+                |source| super::csharp_native_sites::NativeCSharpProjection {
+                    source,
+                    max_sites: self.capacity.saturating_sub(self.rows.len()),
+                    max_working_bytes: *self.remaining_bytes,
+                },
+            )
+    }
 }
 
 /// Structural declarations of every indexed file, keyed by owning project
@@ -1181,8 +1411,18 @@ pub(super) struct EntityKinds<'site> {
 impl EntityKinds<'_> {
     /// A singular compiler/syntax extent proves this source location even if
     /// the bounded excerpt cannot recover a larger enclosing source window.
-    pub(super) fn exact_location(&self, profile: backend_semantic::vocabulary::LanguageProfile, identity: DeclarationIdentity, path: &str) -> Option<backend_compile::SourceLocation> {
-        if !matches!(profile, backend_semantic::vocabulary::LanguageProfile::TypeScript(_)) { return None; }
+    pub(super) fn exact_location(
+        &self,
+        profile: backend_semantic::vocabulary::LanguageProfile,
+        identity: DeclarationIdentity,
+        path: &str,
+    ) -> Option<backend_compile::SourceLocation> {
+        if !matches!(
+            profile,
+            backend_semantic::vocabulary::LanguageProfile::TypeScript(_)
+        ) {
+            return None;
+        }
         self.exact.get(&identity)?;
         let site = self.sites.get(&identity)?;
         backend_compile::SourceLocation::new(path, site.line()).ok()
@@ -1269,7 +1509,7 @@ pub(super) fn entity_kinds_controlled<
         };
         pairing.push(kinds::PairingEntity {
             identity,
-            name: name.to_vec(),
+            name: semantic_source_name(profile, declaration_family(kind), name),
             holder,
             item: entity.entity.kind,
             kind,
@@ -1353,12 +1593,29 @@ pub(super) fn entity_kinds_controlled<
     } else {
         kinds::pair_sites(language, &pairing, declarations)
     };
-    super::super::check_search_preparation(cancelled, "semantic-kinds-complete")?;
     Ok(EntityKinds {
         derived,
         sites,
         exact,
     })
+}
+
+/// Java's semantic type names are qualified while its structural tags capture
+/// the declared identifier. Restrict this projection to Java's type family;
+/// the existing count and span checks below decide whether the simple name is
+/// unique enough to attach a source site.
+fn semantic_source_name(
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    family: u8,
+    name: &[u8],
+) -> Vec<u8> {
+    if profile.language() == backend_semantic::vocabulary::Language::Java
+        && family == 1
+        && let Ok(name) = std::str::from_utf8(name)
+    {
+        return name.rsplit('.').next().unwrap_or(name).as_bytes().to_vec();
+    }
+    name.to_vec()
 }
 
 pub(super) struct SemanticRowContent {
@@ -1381,19 +1638,74 @@ pub(super) fn project_image_rows(
     stale: bool,
     path: &str,
     site_declarations: &[&backend_compile::SourceDeclaration],
+    native: Option<super::native_sites::NativeProjection<'_>>,
+    native_csharp: Option<super::csharp_native_sites::NativeCSharpProjection<'_>>,
 ) -> Result<ProjectedImage, BuiltinModelError> {
     let session = DocumentationSession::new(image);
     let kinds = entity_kinds(profile, image, &session, site_declarations)?;
     let sites = &kinds.sites;
-    let locations = super::retained_locations::RetainedLocations::for_entities(profile, image, &session, site_declarations, &kinds.exact).map_err(BuiltinModelError)?;
+    let native_sites = if stale {
+        None
+    } else {
+        native
+            .filter(|proof| {
+                proof.source.relative_path() == path && proof.source.profile() == profile
+            })
+            .map(|proof| {
+                super::native_sites::prove_native_sites(
+                    image,
+                    project.package.to_bytes(),
+                    proof.source,
+                    proof.max_sites,
+                    proof.max_working_bytes,
+                )
+            })
+            .transpose()?
+    };
+    let native_csharp_sites = if stale {
+        None
+    } else {
+        native_csharp
+            .filter(|proof| {
+                proof.source.relative_path() == path && proof.source.profile() == profile
+            })
+            .map(|proof| {
+                super::csharp_native_sites::prove_native_csharp_sites(
+                    image,
+                    project.package.to_bytes(),
+                    proof,
+                )
+            })
+            .transpose()?
+    };
+    let temporary_bytes = native_sites
+        .as_ref()
+        .map_or(0, |sites| sites.working_bytes)
+        .saturating_add(
+            native_csharp_sites
+                .as_ref()
+                .map_or(0, |sites| sites.working_bytes),
+        );
+    let locations = super::retained_locations::RetainedLocations::for_entities(
+        profile,
+        image,
+        &session,
+        site_declarations,
+        &kinds.exact,
+    )
+    .map_err(BuiltinModelError)?;
     let mut placements = BTreeMap::new();
     let mut coordinates = super::identity::semantic_coordinates(
         &project.label,
         session.publication_entities().map(|entity| {
-            let entity = entity.map_err(|error| BuiltinModelError(format!("project semantic declaration: {error}")))?;
+            let entity = entity.map_err(|error| {
+                BuiltinModelError(format!("project semantic declaration: {error}"))
+            })?;
             let identity = entity.entity.version.identity();
             let placement = locations.place(image, &entity.entity);
-            let location = placement.as_ref().map(|placement| placement.location.clone())
+            let location = placement
+                .as_ref()
+                .map(|placement| placement.location.clone())
                 .or_else(|| kinds.exact_location(profile, identity, path));
             placements.insert(identity, placement);
             Ok((identity, entity.name, location))
@@ -1459,7 +1771,9 @@ pub(super) fn project_image_rows(
             .with_facts(facts);
         if let Some(site) = sites.get(&identity) {
             let excerpt_bytes = site.source_excerpt().text().map_or(0, str::len);
-            if placement.is_none() { charges.push(Charge::Sub(excerpt_bytes)); }
+            if placement.is_none() {
+                charges.push(Charge::Sub(excerpt_bytes));
+            }
             let location =
                 backend_compile::SourceLocation::new(path, site.line()).map_err(|error| {
                     BuiltinModelError(format!("semantic declaration source site: {error}"))
@@ -1470,7 +1784,9 @@ pub(super) fn project_image_rows(
         }
         if let Some(placement) = placement {
             charges.push(Charge::Sub(placement.excerpt.text().map_or(0, str::len)));
-            row = row.with_source(placement.location).with_excerpt(placement.excerpt);
+            row = row
+                .with_source(placement.location)
+                .with_excerpt(placement.excerpt);
         }
         // A reader's signature is the declaration as written. The semantic
         // type renders as canonical IR text (`function(parameters=[element(
@@ -1493,7 +1809,8 @@ pub(super) fn project_image_rows(
             if session.owns_declaration(&parent.entity) {
                 if !canonical_identities.contains(&parent_identity) {
                     return Err(BuiltinModelError(
-                        "project semantic parent is outside the canonical entity closure".to_owned(),
+                        "project semantic parent is outside the canonical entity closure"
+                            .to_owned(),
                     ));
                 }
                 row = row.with_parent(semantic_symbol(project.package, parent_identity));
@@ -1555,6 +1872,7 @@ pub(super) fn project_image_rows(
     Ok(ProjectedImage {
         rows: projected,
         ownership_complete: session.publication_ownership_available(),
+        temporary_bytes,
     })
 }
 
@@ -1575,6 +1893,8 @@ pub(super) fn append_image_rows(
         sink.stale,
         sink.path,
         sink.site_declarations,
+        sink.native_projection(),
+        sink.native_csharp_projection(),
     )?;
     super::image_rows::apply_projected_image(&projected, sink)
 }
@@ -1750,12 +2070,13 @@ pub(super) fn semantic_row_content<Reader: backend_semantic::ir::SemanticReader 
     let encoded_bytes = documentation_bytes
         .checked_add(signature.as_ref().map_or(0, String::len))
         .ok_or_else(|| BuiltinModelError("project semantic row byte count overflow".to_owned()))?;
-    // Preparation already traverses the complete canonical document with its
-    // count writer, admitting profile/availability/type-depth and exact size.
-    // The product exposes the written signature and documentation below, not
-    // that canonical encoding. Do not allocate and render the same encoding a
-    // second time merely to discard it. ByteWriter output-buffer checks belong
-    // to callers that actually request canonical bytes.
+    // Preparation has already walked and validated every selected semantic
+    // fact through the bounded CountWriter and supplied the exact encoded
+    // length. Search rows never expose this injective machine encoding: they
+    // use the readable signature and declaration documentation below. Writing
+    // it into a throwaway allocation repeated the full IR traversal for every
+    // declaration while retaining the allocation until this function returned.
+    // Keep the same type-depth and byte-size checks without materializing it.
     let mut document = Vec::with_capacity(documentation.len());
     let mut documentation_targets = Vec::new();
     for fragment in documentation {
@@ -1856,6 +2177,46 @@ mod tests {
     use super::publication_seek_bounds;
     use std::collections::BTreeMap;
     use std::sync::Arc;
+
+    #[test]
+    fn java_qualified_semantic_type_pairs_to_its_authored_simple_name() -> Result<(), String> {
+        use super::semantic_source_name;
+        use backend_compile::{DeclarationKind, SourceDeclaration};
+        use backend_semantic::ir::{
+            DeclarationFamilyId, DeclarationIdentity, ItemKind, VariantFingerprint,
+        };
+        use backend_semantic::vocabulary::{JavaRelease, Language, LanguageProfile};
+
+        let profile = LanguageProfile::Java(JavaRelease::Java25);
+        let name = semantic_source_name(profile, 1, b"javax.annotation.Nonnull");
+        let entity = super::kinds::PairingEntity {
+            identity: DeclarationIdentity {
+                family: DeclarationFamilyId::from_raw([1; 16]),
+                variant: VariantFingerprint::from_raw([1; 16]),
+            },
+            name,
+            holder: Vec::new(),
+            item: ItemKind::Record,
+            kind: DeclarationKind::Interface,
+            start: Some(10),
+        };
+        let declaration = SourceDeclaration::at_path(
+            "javax/annotation/Nonnull.java",
+            "Nonnull",
+            DeclarationKind::Interface,
+            10,
+            "public @interface Nonnull",
+            "",
+        )?;
+        let sites = super::kinds::pair_sites(Language::Java, &[entity], &[&declaration]);
+
+        assert_eq!(sites.len(), 1);
+        assert_eq!(
+            sites.values().next().map(|site| site.location().path()),
+            Some("javax/annotation/Nonnull.java")
+        );
+        Ok(())
+    }
 
     #[test]
     fn partial_artifacts_retain_structural_inventory_and_distinct_identities() -> Result<(), String>
@@ -2037,6 +2398,133 @@ mod tests {
             "package seek {range_median} ns was not 8× cheaper than a full publication walk \
              {page_median} ns"
         );
+    }
+
+    fn cpp_image_with_documentation(documentation: &str) -> Result<Vec<u8>, String> {
+        use backend_semantic::ir::{
+            BorrowedTree, ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass,
+            CorePayloadHash, DeclarationFamilyId, DocInput, EntityAuthorityFacts, EntityVersion,
+            FactAvailability, IrBuilder, ItemKind, LanguageExtensionInput, ParentageAuthority,
+            TreeItemInput, VariantFingerprint, Visibility, encode_full_semantic_image,
+            full_semantic_image_len,
+        };
+        use backend_semantic::vocabulary::{CxxStandard, LanguageProfile};
+
+        let profile = LanguageProfile::Cxx(CxxStandard::Cxx23);
+        let mut builder = IrBuilder::new();
+        builder
+            .set_language_profile(profile)
+            .map_err(|error| error.to_string())?;
+        let templates = builder
+            .intern_type_parameters(&[])
+            .map_err(|error| error.to_string())?;
+        let includes = builder
+            .intern_attributes(&[])
+            .map_err(|error| error.to_string())?;
+        let docs = [DocInput::Text(documentation)];
+        let item = [TreeItemInput {
+            name: b"xml_document",
+            anonymous_callable_anchor: None,
+            kind: ItemKind::Function,
+            visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                parentage: ParentageAuthority::Root,
+                documentation: FactAvailability::Captured,
+                visibility: FactAvailability::Captured,
+                language_extension: FactAvailability::Captured,
+                ..EntityAuthorityFacts::default()
+            },
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &docs,
+            attributes: &[],
+            source: None,
+            extension: Some(LanguageExtensionInput::Clang(&ClangFacts {
+                qualifiers: ClangQualifiers {
+                    is_const: false,
+                    is_volatile: false,
+                    is_restrict: false,
+                },
+                storage: ClangStorageClass::None,
+                layout: ClangLayout {
+                    size_bits: None,
+                    align_bits: None,
+                },
+                declared_name: None,
+                templates,
+                includes,
+            })),
+        }];
+        let versions = [EntityVersion {
+            family: DeclarationFamilyId::from_raw([1; 16]),
+            variant: VariantFingerprint::from_raw([2; 16]),
+            core_payload: CorePayloadHash::from_raw([3; 16]),
+        }];
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &item,
+                links: &[],
+            })
+            .map_err(|error| error.to_string())?;
+        let ir = builder.finish().map_err(|error| error.to_string())?;
+        let mut bytes = vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
+        encode_full_semantic_image(&ir, &mut bytes).map_err(|error| error.to_string())?;
+        Ok(bytes)
+    }
+
+    #[test]
+    fn cpp_search_row_checks_document_bounds_without_changing_visible_content() -> Result<(), String>
+    {
+        use super::*;
+        use backend_engine::application::DocumentationSession;
+        use backend_semantic::ir::EntityId;
+        use backend_semantic::vocabulary::{CxxStandard, LanguageProfile};
+
+        let profile = LanguageProfile::Cxx(CxxStandard::Cxx23);
+        let bytes = cpp_image_with_documentation("Pugixml declaration documentation")?;
+        let image = SemanticImageView::reopen(&bytes).map_err(|error| error.to_string())?;
+        let session = DocumentationSession::new(&image);
+        let entity = session
+            .entity(EntityId::new(0))
+            .map_err(|error| error.to_string())?;
+        let content = semantic_row_content(
+            profile,
+            &image,
+            &entity,
+            backend_engine::package_key("cpp-pugixml"),
+            [7; 32],
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(
+            document_text(&content.document),
+            "Pugixml declaration documentation"
+        );
+        assert_eq!(content.signature, None);
+
+        let oversized = "x".repeat(MAX_SEMANTIC_DOCUMENT_BYTES);
+        let bytes = cpp_image_with_documentation(&oversized)?;
+        let image = SemanticImageView::reopen(&bytes).map_err(|error| error.to_string())?;
+        let session = DocumentationSession::new(&image);
+        let entity = session
+            .entity(EntityId::new(0))
+            .map_err(|error| error.to_string())?;
+        let result = semantic_row_content(
+            profile,
+            &image,
+            &entity,
+            backend_engine::package_key("cpp-pugixml"),
+            [7; 32],
+        );
+        let error = match result {
+            Ok(_) => {
+                return Err("the existing canonical-document output bound was bypassed".to_owned());
+            }
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("exceeds its output bound"));
+        Ok(())
     }
 }
 

@@ -5009,7 +5009,12 @@ mod tests {
         );
 
         let invalid_utf8 = [0xf0, 0x9f, 0x8d, 0x89, 0xff];
-        let mut wire = Vec::from([0, 0, 0, 1, 0, 0, 0, 0, 5]);
+        let mut wire = Vec::from(1_u32.to_be_bytes());
+        wire.extend_from_slice(
+            &u32::try_from(invalid_utf8.len())
+                .expect("small atom")
+                .to_be_bytes(),
+        );
         wire.extend_from_slice(&invalid_utf8);
         let mut validator = declarations::CoreAttributesWireValidator::new();
         validator
@@ -5024,6 +5029,14 @@ mod tests {
         validator
             .finish()
             .expect("Core attribute grammar does not impose UTF-8");
+        let mut truncated = declarations::CoreAttributesWireValidator::new();
+        truncated
+            .write_all(&wire[..wire.len() - 1])
+            .expect("bounded prefix");
+        assert!(
+            truncated.finish().is_err(),
+            "length framing still rejects missing atom bytes"
+        );
     }
 
     #[test]

@@ -19,6 +19,7 @@ use crate::ir::{
 
 pub(super) const MAX_EXTENSION_DECLARATION_REFERENCES: usize = 1_000_000;
 const EXTENSION_KEY_DOMAIN: &[u8] = b"backend.semantic.ir.language-extension-row.v1\0";
+const CLANG_EXTENSION_KEY_DOMAIN: &[u8] = b"backend.semantic.ir.clang-extension-row.v2\0";
 pub(super) const TYPESCRIPT_TAG: u8 = 1;
 pub(super) const CSHARP_TAG: u8 = 2;
 pub(super) const GO_TAG: u8 = 3;
@@ -32,8 +33,30 @@ pub(super) fn extension_row_key(
     identity: DeclarationIdentity,
     role: u8,
 ) -> [u8; 32] {
+    let domain = if matches!(profile.language(), Language::Clang) {
+        CLANG_EXTENSION_KEY_DOMAIN
+    } else {
+        EXTENSION_KEY_DOMAIN
+    };
+    extension_row_key_with_domain(domain, profile, identity, role)
+}
+
+pub(super) fn legacy_clang_extension_row_key(
+    profile: LanguageProfile,
+    identity: DeclarationIdentity,
+    role: u8,
+) -> [u8; 32] {
+    extension_row_key_with_domain(EXTENSION_KEY_DOMAIN, profile, identity, role)
+}
+
+fn extension_row_key_with_domain(
+    domain: &[u8],
+    profile: LanguageProfile,
+    identity: DeclarationIdentity,
+    role: u8,
+) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(EXTENSION_KEY_DOMAIN);
+    hasher.update(domain);
     hasher.update(&<[u8; 2]>::from(profile));
     hasher.update(identity.family.as_bytes());
     hasher.update(identity.variant.as_bytes());
@@ -247,7 +270,8 @@ pub(super) fn encode_java<Reader: SemanticReader + ?Sized>(
     Ok(())
 }
 
-pub(super) fn encode_clang(
+pub(super) fn encode_clang<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
     plan: &TypedRecordPlan,
     facts: ClangFacts,
     out: &mut Vec<u8>,
@@ -268,6 +292,20 @@ pub(super) fn encode_clang(
         TypesRowDomainV2::AtomList,
         plan.atom_list_key(facts.includes)?,
     );
+    match facts.declared_name {
+        None => out.push(0),
+        Some(span) => {
+            out.push(1);
+            put_bytes(
+                out,
+                reader
+                    .atom(span.file())
+                    .ok_or(SemanticPlaneRecordError::ReaderReference)?,
+            )?;
+            out.extend_from_slice(&span.start().to_be_bytes());
+            out.extend_from_slice(&span.end().to_be_bytes());
+        }
+    }
     Ok(())
 }
 
@@ -475,6 +513,7 @@ fn parse_record_inner(
     }
     let mut references = [None; 5];
     let mut next_reference = 0_usize;
+    let mut legacy_clang_row = false;
     match tag {
         TYPESCRIPT_TAG => {
             read_reference(
@@ -667,13 +706,34 @@ fn parse_record_inner(
                 &mut references,
                 &mut next_reference,
             )?;
+            if cursor.is_empty() {
+                legacy_clang_row = true;
+            } else {
+                match cursor.u8()? {
+                    0 => {}
+                    1 => {
+                        let _file = cursor.bytes32()?;
+                        let start = cursor.u32()?;
+                        let end = cursor.u32()?;
+                        if start > end {
+                            return Err(SemanticPlaneRecordError::RowGrammar);
+                        }
+                    }
+                    _ => return Err(SemanticPlaneRecordError::RowGrammar),
+                }
+            }
         }
         _ => return Err(SemanticPlaneRecordError::RowGrammar),
     }
     if !cursor.is_empty() {
         return Err(SemanticPlaneRecordError::RowTrailingBytes);
     }
-    if extension_row_key(profile, identity, tag) != key {
+    let expected_key = if legacy_clang_row {
+        legacy_clang_extension_row_key(profile, identity, tag)
+    } else {
+        extension_row_key(profile, identity, tag)
+    };
+    if expected_key != key {
         return Err(SemanticPlaneRecordError::StableKeyMismatch);
     }
     Ok(ParsedExtensionRecord {

@@ -21,6 +21,10 @@ pub(crate) const SCHEMA_TYPED_NAMES: u16 = 4;
 /// Schema 5 authenticates producer publication roles at entity byte 33 while
 /// retaining schema 4 names and optional signature-carrier directories.
 pub(crate) const SCHEMA_PUBLICATION_ROLES: u16 = 5;
+/// Schema 6 appends the optional captured declared-name span to Clang facts.
+/// Older schemas retain their original extension grammar and reopen with no
+/// declared-name span.
+pub(crate) const SCHEMA_CLANG_DECLARED_NAMES: u16 = 6;
 /// The first 176 bytes are the same explicitly documented image
 /// authority/provenance cells as the subordinate core grammar.  The full
 /// directory begins immediately afterwards with its independent count.
@@ -180,6 +184,7 @@ impl FullDirectoryKind {
             SCHEMA_CARRIER_BINDINGS => Some(&Self::ALL_WITH_CARRIER_BINDINGS),
             SCHEMA_TYPED_NAMES => Some(&Self::ALL_WITH_CARRIER_BINDINGS),
             SCHEMA_PUBLICATION_ROLES => Some(&Self::ALL_WITH_CARRIER_BINDINGS),
+            SCHEMA_CLANG_DECLARED_NAMES => Some(&Self::ALL_WITH_CARRIER_BINDINGS),
             _ => None,
         }
     }
@@ -191,6 +196,7 @@ impl FullDirectoryKind {
             SCHEMA_CARRIER_BINDINGS => Some(29),
             SCHEMA_TYPED_NAMES => Some(29),
             SCHEMA_PUBLICATION_ROLES => Some(29),
+            SCHEMA_CLANG_DECLARED_NAMES => Some(29),
             _ => None,
         }
     }

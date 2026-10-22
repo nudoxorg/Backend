@@ -76,13 +76,15 @@ pub use self::embedding_provision::{
     remove_embedding_runtime,
 };
 pub use self::host::{
-    CapturedLocalHostEnvironment, PythonInterpreterHostAdmission,
-    InstalledRustInputs, InstalledRustSelectionSource, InstalledRustToolchain, InstalledToolPlace, find_installed_rust, installed_rust_system_locations,
-    ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError, LocalCompilerHost,
-    LocalCompilerHostError, LocalCompilerHostSelection, LocalCompilerHostSelectionIssue,
-    LocalCompilerHostSelectionSource, LocalHostDirectory, LocalHostDiscovery, LocalHostEnvironment,
-    LocalHostCargoHomeSelection, LocalHostPathKind, LocalHostPathRole, LocalHostVariable,
-    MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES, ProcessHostEnvironment, WorkspaceCompilerEnvironment,
+    CapturedLocalHostEnvironment, ClosedLocalHostEnvironmentSnapshot,
+    ClosedLocalHostEnvironmentSnapshotError, InstalledRustInputs, InstalledRustSelectionSource,
+    InstalledRustToolchain, InstalledToolPlace, LocalCompilerHost, LocalCompilerHostError,
+    LocalCompilerHostSelection, LocalCompilerHostSelectionIssue, LocalCompilerHostSelectionSource,
+    LocalHostCargoHomeSelection, LocalHostDirectory, LocalHostDiscovery, LocalHostEnvironment,
+    LocalHostPathKind, LocalHostPathRole, LocalHostVariable,
+    MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES, ProcessHostEnvironment,
+    PythonInterpreterHostAdmission, WorkspaceCompilerEnvironment, find_installed_rust,
+    installed_rust_system_locations,
 };
 pub use self::package_authority::{
     CSharpPackageAuthorityConfiguration, JavaPackageAuthorityConfiguration,
@@ -104,8 +106,8 @@ pub use self::runtime::{
     LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority,
     LocalRuntimeRustAuthorityFailure, LocalRuntimeRustToolchainSelection, LocalRuntimeToolchain,
     LocalRuntimeToolchainFacts, LocalRuntimeToolchainState, OwnedPackageSource,
-    OwnedPackageSourceSet, PackageSemanticRuntimeError, PyreflyToolchainIdentity,
-    TypeScriptSnapshotReuse,
+    OwnedPackageSourceAdmission, OwnedPackageSourceSet, PackageSemanticRuntimeError,
+    PyreflyToolchainIdentity, TypeScriptSnapshotReuse,
 };
 pub use self::terminal::{LocalCompilerOpenError, LocalCompilerPath};
 #[cfg(test)]
@@ -124,8 +126,8 @@ pub use self::toolchain_probe::{
     ToolchainProbeLimitError, ToolchainProbeLimits, ToolchainProbeLimitsView,
     ToolchainProbePrimary, ToolchainProbeStreamError,
 };
-pub(crate) use self::typescript_host::{TypeScriptProjectInvocationLease, is_module_tsc_script};
 pub use self::typescript_host::{TypeScriptProjectHost, TypeScriptProjectHostError};
+pub(crate) use self::typescript_host::{TypeScriptProjectInvocationLease, is_module_tsc_script};
 pub use self::unit_authority_v2::{
     AdmittedCompilationUnitV2, CapturedUnitMemberV2, CompilationUnitKindV2, CompilationUnitPlanV2,
     PortableOptionSnapshotV2, SelectedUnitSourceV2, SelectedUnitSourcesV2, UnitAuthorityV2Error,
