@@ -404,6 +404,14 @@ fn collect_input<'input, 'source>(
         cancelled,
     )
     .map_err(ClangCollectError::Authority)?;
+    project_authority(source, authority, facts)
+}
+
+fn project_authority<'scratch, 'source>(
+    source: &'source [u8],
+    authority: backend_frontend_clang::legacy::ClangFacts<'scratch>,
+    facts: &mut FactSet<'source>,
+) -> Result<(), ClangCollectError> {
     let mut projector = Projector::new(source, authority, facts);
     projector.select_representatives()?;
     projector.push_type_anchors()?;
@@ -978,7 +986,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 _ => fact,
             };
             let ordinal = push(self.facts, fact)?;
-            self.record_pushed(index, ordinal, declaration);
+            self.record_pushed(index, ordinal, declaration)?;
             if declaration.kind == DeclarationKind::Enumeration {
                 for candidate in 0..declarations.len() {
                     if self.representative.get(candidate).copied().flatten() != Some(candidate) {
@@ -1120,13 +1128,62 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
 
     /// Records one pushed declaration: its lane ordinal by declaration
     /// index and its USR identity for later nominal and owner resolution.
-    fn record_pushed(&mut self, index: usize, ordinal: u32, declaration: &DeclarationFact) {
+    fn record_pushed(
+        &mut self,
+        index: usize,
+        ordinal: u32,
+        declaration: &DeclarationFact,
+    ) -> Result<(), ClangCollectError> {
         if let Some(slot) = self.ordinals.get_mut(index) {
             *slot = Some(ordinal);
         }
         if let Some(identity) = declaration.identity {
             self.identities.push((identity, ordinal));
         }
+        if let Some(name) = declaration.name {
+            // The native projector always holds the actual entered bytes.
+            // Database and direct-authority callers need not allocate their
+            // FactSet through the request planner; absence is not an empty file.
+            let source_len = u32::try_from(self.source.len()).map_err(|_| {
+                lane_terminal(
+                    self.facts,
+                    0,
+                    FactFault::SourceSpan {
+                        entity: ordinal,
+                        start: name.start,
+                        end: name.end,
+                        source_len: u32::MAX,
+                    },
+                )
+            })?;
+            let valid = self
+                .facts
+                .primary_source_len
+                .is_none_or(|entered| entered == source_len)
+                && name.start < name.end
+                && declaration.span.start <= name.start
+                && name.end <= declaration.span.end
+                && name.end <= source_len;
+            if !valid || self.facts.name_spans.get_mut(ordinal as usize).is_none() {
+                return Err(lane_terminal(
+                    self.facts,
+                    0,
+                    FactFault::SourceSpan {
+                        entity: ordinal,
+                        start: name.start,
+                        end: name.end,
+                        source_len,
+                    },
+                ));
+            }
+            if let Some(slot) = self.facts.name_spans.get_mut(ordinal as usize) {
+                *slot = Some(crate::driver::types::SourceSpanFact {
+                    start: name.start,
+                    end: name.end,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// True when one declaration's authoritative owner is a function-like
@@ -1304,7 +1361,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             ))
             .with_extension(EmissionExtension::Clang(extension));
         let ordinal = push(self.facts, fact)?;
-        self.record_pushed(index, ordinal, declaration);
+        self.record_pushed(index, ordinal, declaration)?;
         Ok(())
     }
 
@@ -1333,7 +1390,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             .attach(SemanticFact::new(kind, name, constructor(kind)))
             .with_extension(EmissionExtension::Clang(extension));
         let ordinal = push(self.facts, fact)?;
-        self.record_pushed(index, ordinal, declaration);
+        self.record_pushed(index, ordinal, declaration)?;
         Ok(())
     }
 
@@ -1403,7 +1460,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             }
         };
         let ordinal = push(self.facts, fact)?;
-        self.record_pushed(index, ordinal, declaration);
+        self.record_pushed(index, ordinal, declaration)?;
         Ok(())
     }
 
@@ -1452,7 +1509,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             None => fact,
         };
         let ordinal = push(self.facts, fact)?;
-        self.record_pushed(index, ordinal, declaration);
+        self.record_pushed(index, ordinal, declaration)?;
         Ok(())
     }
 
@@ -1627,6 +1684,17 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     /// child width are omitted from the constructor payload; the constructor
     /// and child counts always agree.
     fn push_function(&mut self, index: usize) -> Result<(), ClangCollectError> {
+        self.push_function_with_template_start(index, 0)
+    }
+
+    /// Function templates are emitted in the declaration-anchor pass, where
+    /// their pooled template parameter start is already known. All executable
+    /// rows share the carrier/product/type framing below.
+    fn push_function_with_template_start(
+        &mut self,
+        index: usize,
+        template_start: u32,
+    ) -> Result<(), ClangCollectError> {
         let declarations = self.authority.declarations;
         let Some(declaration) = declarations.get(index) else {
             return Ok(());
@@ -1720,7 +1788,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 }
             };
             let ordinal = push(self.facts, fact)?;
-            self.record_pushed(*candidate, ordinal, parameter);
+            self.record_pushed(*candidate, ordinal, parameter)?;
             signature_children.push(ordinal);
         }
 
@@ -1803,7 +1871,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         for ordinal in &kept_children {
             let _ = projected.child(*ordinal, None);
         }
-        let extension = self.extension(declaration, 0)?;
+        let extension = self.extension(declaration, template_start)?;
         let fact = projected
             .attach(fact)
             .with_extension(EmissionExtension::Clang(extension));
@@ -1825,6 +1893,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                         | DeclarationKind::Method
                         | DeclarationKind::Constructor
                         | DeclarationKind::Destructor
+                        | DeclarationKind::Template
                 ) =>
             {
                 fact.with_identity_discriminator(identity.bytes)
@@ -1832,7 +1901,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             _ => fact,
         };
         let ordinal = push(self.facts, fact)?;
-        self.record_pushed(index, ordinal, declaration);
+        self.record_pushed(index, ordinal, declaration)?;
         // The synthetic result carrier is contained by its function exactly
         // like a real parameter. Binding the already-minted function ordinal
         // keeps the carriers of two same-named, same-return-typed overloads
@@ -2610,6 +2679,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             },
             templates: TypeParameterListId::new(template_start),
             includes,
+            declared_name: None,
         })
     }
 
@@ -2742,7 +2812,9 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 } = reference.target
                 {
                     if let Some(package_path) = self.authority.project_paths.get(slot as usize) {
-                        if PackageLineage::new(ECOSYSTEM, package_path.as_ref()).is_ok() {
+                        if let Ok(package_lineage) =
+                            PackageLineage::new(ECOSYSTEM, package_path.as_ref())
+                        {
                             let (name_bytes, site_span) = match reference.kind {
                                 ReferenceKind::Call => (
                                     member_call_callee_name(self.source, reference.span)
@@ -2768,36 +2840,39 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                                 ReferenceKind::Member => Some(EntityKind::Field),
                                 _ => unreachable!(),
                             };
-                            // Native implicit or macro-produced references can
-                            // retain a whole expression, including an empty
-                            // spelling or literal escapes. Package projection
-                            // requires a representable ForeignKey; otherwise keep
-                            // the proven file/USR target in the stable branch.
-                            if let Ok(name) = core::str::from_utf8(name_bytes)
-                                && ForeignKey::new(
-                                    ForeignOrigin::Universe {
-                                        ecosystem: ECOSYSTEM,
-                                    },
-                                    name,
-                                    name,
-                                    entity_kind,
-                                )
-                                .is_ok()
-                            {
-                                self.facts
-                                    .push_owned_package_occurrence(
-                                        owner,
-                                        ECOSYSTEM,
-                                        package_path.as_ref(),
+                            // Package keys require a source-backed spelling that
+                            // satisfies the canonical ForeignKey path contract. A
+                            // call extent may include escaped string arguments; that
+                            // is useful source evidence, but not a legal package path.
+                            // Keep such resolved refs on the stable USR/file target.
+                            if !name_bytes.is_empty() {
+                                if let Ok(name) = core::str::from_utf8(name_bytes) {
+                                    if ForeignKey::new(
+                                        ForeignOrigin::Package(package_lineage),
                                         name,
                                         name,
                                         entity_kind,
-                                        lane_reference_kind(reference.kind),
-                                        OccurrenceConfidence::Oracle,
-                                        span,
                                     )
-                                    .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
-                                continue;
+                                    .is_ok()
+                                    {
+                                        self.facts
+                                            .push_owned_package_occurrence(
+                                                owner,
+                                                ECOSYSTEM,
+                                                package_path.as_ref(),
+                                                name,
+                                                name,
+                                                entity_kind,
+                                                lane_reference_kind(reference.kind),
+                                                OccurrenceConfidence::Oracle,
+                                                span,
+                                            )
+                                            .map_err(|fault| {
+                                                lane_terminal(&self.facts, 0, fault)
+                                            })?;
+                                        continue;
+                                    }
+                                }
                             }
                         }
                     }
@@ -3607,19 +3682,21 @@ fn trim_ascii(bytes: &[u8]) -> &[u8] {
 mod tests {
     use core::sync::atomic::AtomicBool;
     use std::{
+        ffi::CString,
         fs,
         path::{Path, PathBuf},
         sync::atomic::{AtomicU32, Ordering},
     };
 
     use backend_frontend_clang::legacy::{
-        CollectError, IncludeFact, MAX_CLANG_DECLARATIONS, SourceSpan, SymbolIdentity,
+        ClangInput, ClangScratch, CollectError, IncludeFact, MAX_CLANG_DECLARATIONS, SourceSpan,
+        SymbolIdentity,
     };
     use backend_frontend_clang::{ClangAuthorityEnvironment, ClangProject};
     use backend_semantic::ir::{
         ClangStorageClass, DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind,
-        ForeignOrigin, FragmentView, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
-        SourceIdentity,
+        ForeignOrigin, FragmentView, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticReader,
+        SemanticTypeRecord, SemanticTypeTag, SourceIdentity,
     };
     use backend_semantic::vocabulary::{
         CStandard, CompileRecipeFact, LanguageProfile, NativeTool, Stage,
@@ -3754,34 +3831,17 @@ mod tests {
             &AtomicBool::new(false),
             &mut facts,
         )?;
-        let identity = SourceIdentity {
-            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source),
-            byte_len: u32::try_from(source.len()).map_err(|_| TestError::Tail)?,
-        };
-        let recipe = CompileRecipeFact::derive(
-            profile,
-            Stage::LowerIr,
-            NativeTool::Clang,
-            ContentId::<SourceFactDomain>::from_canonical_bytes(source),
-            ContentId::<ToolchainDomain>::from_canonical_bytes(b"clang-semantic-lane-toolchain"),
-        );
-        let mut output = vec![0xa5_u8; 65_536];
-        let length =
-            crate::driver::lower::admit(&facts, identity, recipe, recipe.profile, &mut output)
-                .map_err(|fault| TestError::Admission {
-                    label: "admission",
-                    fault,
-                })?
-                .len();
-        if !output[length..].iter().all(|byte| *byte == 0xa5) {
-            return Err(TestError::Tail);
-        }
-        output.truncate(length);
-        Ok(output)
+        encode_facts(profile, source, &facts)
     }
 
     fn owned_ir(source: &[u8]) -> Result<backend_semantic::ir::Ir, TestError> {
-        let profile = LanguageProfile::C(CStandard::C23);
+        owned_ir_with_profile(LanguageProfile::C(CStandard::C23), source)
+    }
+
+    fn owned_ir_with_profile(
+        profile: LanguageProfile,
+        source: &[u8],
+    ) -> Result<backend_semantic::ir::Ir, TestError> {
         let mut facts = FactSet::new();
         let environment = selected_clang_environment()?;
         collect(
@@ -4397,6 +4457,235 @@ mod tests {
         Ok(())
     }
 
+    /// Function templates use the same exact parameter/result carrier
+    /// bindings as ordinary functions, while retaining pooled template
+    /// parameters and distinct canonical identities for overloads.
+    #[test]
+    fn function_templates_preserve_signature_carriers_and_overloads() -> Result<(), TestError> {
+        let source = b"template<class T> void consume(T value) {}\ntemplate<class T> T echo(T value) { return value; }\ntemplate<typename T> static void generic_bool_ops_test(const T& obj) {}\ntemplate<class T> void choose(T value) {}\ntemplate<class T> void choose(T* value) {}\n";
+        let profile = LanguageProfile::Cxx(backend_semantic::vocabulary::CxxStandard::Cxx23);
+        let bytes = lower_with_profile(profile, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let consume = entity_of(&view, b"consume", EntityKind::Function)?;
+        let consume_row = row_for_entity(&view, consume)?;
+        if consume_row.record.tag != SemanticTypeTag::FunctionPointer
+            || consume_row.record.children.length != 1
+        {
+            return Err(TestError::Entity {
+                ordinal: consume.index(),
+            });
+        }
+        let consume_extension = clang_extension(&view, consume.index())?;
+        if pooled_type_parameter(&view, consume_extension.templates)? != b"T" {
+            return Err(TestError::Missing("consume template parameter T"));
+        }
+
+        let echo = entity_of(&view, b"echo", EntityKind::Function)?;
+        let echo_row = row_for_entity(&view, echo)?;
+        if echo_row.record.tag != SemanticTypeTag::FunctionPointer
+            || echo_row.record.payload1 != SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
+            || echo_row.record.children.length != 2
+        {
+            return Err(TestError::Entity {
+                ordinal: echo.index(),
+            });
+        }
+        let echo_extension = clang_extension(&view, echo.index())?;
+        if pooled_type_parameter(&view, echo_extension.templates)? != b"T" {
+            return Err(TestError::Missing("echo template parameter T"));
+        }
+
+        // This is the exact signature shape in the pinned pugixml 1.14
+        // tests/helpers.hpp helper: one const lvalue-reference parameter and
+        // a void result. Its carrier must preserve both wrappers around T.
+        let generic = entity_of(&view, b"generic_bool_ops_test", EntityKind::Function)?;
+        let generic_row = row_for_entity(&view, generic)?;
+        if generic_row.record.tag != SemanticTypeTag::FunctionPointer
+            || generic_row.record.children.length != 1
+            || generic_row.record.payload1 != 0
+            || !entity_rows(&view).contains(&(&b"obj"[..], EntityKind::Parameter))
+        {
+            return Err(TestError::Entity {
+                ordinal: generic.index(),
+            });
+        }
+        let generic_extension = clang_extension(&view, generic.index())?;
+        if pooled_type_parameter(&view, generic_extension.templates)? != b"T" {
+            return Err(TestError::Missing("generic helper template parameter T"));
+        }
+
+        let owned = owned_ir_with_profile(profile, source)?;
+        let function_ids: Vec<_> = owned
+            .items()
+            .filter(|item| {
+                item.name() == b"consume" && item.kind() == backend_semantic::ir::ItemKind::Function
+            })
+            .map(|item| item.id())
+            .collect();
+        let [consume_owner] = function_ids.as_slice() else {
+            return Err(TestError::Missing("unique consume function template"));
+        };
+        let bindings = match owned.signature_carrier_bindings(*consume_owner) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                bindings.collect::<Vec<_>>()
+            }
+            _ => return Err(TestError::Missing("consume signature carrier bindings")),
+        };
+        if bindings.len() != 1
+            || bindings[0].owner != *consume_owner
+            || bindings[0].role != backend_semantic::ir::SignatureCarrierBindingRole::Parameter
+            || bindings[0].position != 0
+        {
+            return Err(TestError::Missing("consume parameter slot binding"));
+        }
+
+        let generic_owners: Vec<_> = owned
+            .items()
+            .filter(|item| {
+                item.name() == b"generic_bool_ops_test"
+                    && item.kind() == backend_semantic::ir::ItemKind::Function
+            })
+            .collect();
+        let [generic_owner] = generic_owners.as_slice() else {
+            return Err(TestError::Missing("unique generic helper template"));
+        };
+        let bindings = match owned.signature_carrier_bindings(generic_owner.id()) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                bindings.collect::<Vec<_>>()
+            }
+            _ => return Err(TestError::Missing("generic helper signature bindings")),
+        };
+        if bindings.len() != 1
+            || bindings[0].owner != generic_owner.id()
+            || bindings[0].role != backend_semantic::ir::SignatureCarrierBindingRole::Parameter
+            || bindings[0].position != 0
+        {
+            return Err(TestError::Missing(
+                "generic helper single parameter binding",
+            ));
+        }
+        let rows = type_facts(&view)?;
+        let reference = row_for_entity(&view, bindings[0].carrier)?.record;
+        if reference.tag != SemanticTypeTag::Primitive
+            || reference.payload0 != super::SHAPE_CXX_LVALUE_REFERENCE
+            || reference.children.length != 1
+        {
+            return Err(TestError::Missing(
+                "generic helper lvalue-reference parameter",
+            ));
+        }
+        let reference_children = local_type_children(&view, reference)?;
+        let [qualified_id] = reference_children.as_slice() else {
+            return Err(TestError::Missing("generic helper reference target"));
+        };
+        let qualified = rows
+            .get(qualified_id.index())
+            .ok_or(TestError::Missing("generic helper qualified target row"))?
+            .record;
+        if qualified.tag != SemanticTypeTag::CQualified
+            || qualified.payload0 != 1
+            || qualified.children.length != 1
+        {
+            return Err(TestError::Missing("generic helper const-qualified T"));
+        }
+        let qualified_children = local_type_children(&view, qualified)?;
+        let [type_var_id] = qualified_children.as_slice() else {
+            return Err(TestError::Missing("generic helper const target"));
+        };
+        let type_var = rows
+            .get(type_var_id.index())
+            .ok_or(TestError::Missing("generic helper TypeVar row"))?
+            .record;
+        if type_var.tag != SemanticTypeTag::TypeVar || type_var.text != Some(&b"T"[..]) {
+            eprintln!(
+                "generic helper TypeVar: tag={:?}, text={:?}, carrier={:?}, fragment_owner={:?}, owned_owner={:?}",
+                type_var.tag,
+                type_var.text,
+                bindings[0].carrier,
+                generic,
+                generic_owner.id()
+            );
+            return Err(TestError::Missing("generic helper parameter TypeVar T"));
+        }
+
+        let echo_owners: Vec<_> = owned
+            .items()
+            .filter(|item| {
+                item.name() == b"echo" && item.kind() == backend_semantic::ir::ItemKind::Function
+            })
+            .collect();
+        let [echo_owner] = echo_owners.as_slice() else {
+            return Err(TestError::Missing("unique echo function template"));
+        };
+        let bindings = match owned.signature_carrier_bindings(echo_owner.id()) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                bindings.collect::<Vec<_>>()
+            }
+            _ => return Err(TestError::Missing("echo signature carrier bindings")),
+        };
+        if bindings.len() != 2
+            || bindings[0].owner != echo_owner.id()
+            || bindings[0].role != backend_semantic::ir::SignatureCarrierBindingRole::Parameter
+            || bindings[0].position != 0
+            || bindings[1].owner != echo_owner.id()
+            || bindings[1].role != backend_semantic::ir::SignatureCarrierBindingRole::Result
+            || bindings[1].position != 0
+        {
+            return Err(TestError::Missing("echo parameter and result bindings"));
+        }
+        let echo_parameter_row = row_for_entity(&view, bindings[0].carrier)?;
+        if echo_parameter_row.record.tag != SemanticTypeTag::TypeVar
+            || echo_parameter_row.record.text != Some(&b"T"[..])
+        {
+            return Err(TestError::Missing("function template parameter TypeVar"));
+        }
+
+        let choose_owners: Vec<_> = owned
+            .items()
+            .filter(|item| {
+                item.name() == b"choose" && item.kind() == backend_semantic::ir::ItemKind::Function
+            })
+            .map(|item| item.id())
+            .collect();
+        if choose_owners.len() != 2 || choose_owners[0] == choose_owners[1] {
+            return Err(TestError::Missing("distinct choose template overloads"));
+        }
+        let first_identity = owned
+            .item(choose_owners[0])
+            .ok_or(TestError::Missing("first choose overload"))?
+            .version()
+            .identity();
+        let second_identity = owned
+            .item(choose_owners[1])
+            .ok_or(TestError::Missing("second choose overload"))?
+            .version()
+            .identity();
+        if first_identity == second_identity {
+            return Err(TestError::Missing("canonical choose overload identities"));
+        }
+        let mut choose_carriers = Vec::new();
+        for owner in choose_owners {
+            let bindings = match owned.signature_carrier_bindings(owner) {
+                Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(
+                    bindings,
+                )) => bindings.collect::<Vec<_>>(),
+                _ => return Err(TestError::Missing("choose signature carrier bindings")),
+            };
+            if bindings.len() != 1
+                || bindings[0].owner != owner
+                || bindings[0].role != backend_semantic::ir::SignatureCarrierBindingRole::Parameter
+                || bindings[0].position != 0
+            {
+                return Err(TestError::Missing("choose overload parameter binding"));
+            }
+            choose_carriers.push(bindings[0].carrier);
+        }
+        if choose_carriers[0] == choose_carriers[1] {
+            return Err(TestError::Missing("overloads retain distinct carriers"));
+        }
+        Ok(())
+    }
+
     /// An anonymous struct becomes an AnonymousRecord(Struct) row whose
     /// named children are exactly its pushed field facts.
     #[test]
@@ -4942,6 +5231,208 @@ mod tests {
             return Err(TestError::Missing("header foreign call and printf stable"));
         }
         Ok(())
+    }
+
+    /// A foreign call reached through a macro must retain its USR/file identity
+    /// when the span is empty or includes an escaped literal that cannot form a
+    /// canonical package path.
+    #[test]
+    fn macro_foreign_call_keeps_stable_identity_for_invalid_package_spellings()
+    -> Result<(), TestError> {
+        let root = unique_temp_project()?;
+        let header = root.join("include").join("decl.h");
+        let entry = root.join("src").join("main.c");
+        let source = b"#include \"decl.h\"\n#define FOREIGN_CALL(text) declared_in_header(text)\nint use(void) { return FOREIGN_CALL(\"a\\xb0\") != 0; }\n";
+        fs::write(&header, b"int declared_in_header(const char *);\n")
+            .map_err(|_| TestError::Missing("header write"))?;
+        fs::write(&entry, source).map_err(|_| TestError::Missing("entry write"))?;
+        let database = format!(
+            "[{{\"directory\":\"{directory}\",\"file\":\"src/main.c\",\"arguments\":[\"cc\",\"-Iinclude\",\"-std=c11\",\"-c\",\"src/main.c\"]}}]",
+            directory = root.base.display(),
+        );
+        fs::write(root.join("compile_commands.json"), database)
+            .map_err(|_| TestError::Missing("database write"))?;
+
+        let project =
+            ClangProject::open(&root, &entry).map_err(|_| TestError::Missing("project open"))?;
+        for span_mode in [ForeignCallSpan::ZeroWidth, ForeignCallSpan::WholeInvocation] {
+            let (bytes, expected_target) =
+                lower_project_with_foreign_call(&project, source, span_mode)?;
+            let view = FragmentView::validate(&bytes)?;
+            let owner = entity_of(&view, b"use", EntityKind::Function)?;
+            if !occurrences(&view)?.iter().any(|row| {
+                row.owner == owner
+                    && row.occurrence.kind == backend_semantic::ir::ReferenceKind::FunctionCall
+                    && row.occurrence.target == expected_target
+            }) {
+                return Err(TestError::Missing(
+                    "stable foreign call occurrence through macro",
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    #[derive(Clone, Copy)]
+    enum ForeignCallSpan {
+        ZeroWidth,
+        WholeInvocation,
+    }
+
+    /// Collects real project authority, then adjusts the macro call span before
+    /// running production projection passes. The full invocation contains a
+    /// backslash and cannot be a canonical key path.
+    fn lower_project_with_foreign_call(
+        project: &ClangProject,
+        source: &[u8],
+        span_mode: ForeignCallSpan,
+    ) -> Result<(Vec<u8>, OccurrenceTarget<'static>), TestError> {
+        let file_name = CString::new(project.entry().to_string_lossy().as_bytes())
+            .map_err(|_| TestError::Missing("entry path"))?;
+        let directory = CString::new(project.root().to_string_lossy().as_bytes())
+            .map_err(|_| TestError::Missing("project root"))?;
+        let arguments = project.arguments();
+        let owned = arguments
+            .iter()
+            .map(|argument| CString::new(argument.as_bytes()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| TestError::Missing("project arguments"))?;
+        let borrowed = owned.iter().map(CString::as_c_str).collect::<Vec<_>>();
+        let input = ClangInput::from_database(&file_name, source, &borrowed, &directory)
+            .map_err(|_| TestError::Missing("database input"))?;
+
+        let mut declarations =
+            vec![super::empty_declaration(); super::declaration_slots(source.len())]
+                .into_boxed_slice();
+        let mut types =
+            vec![super::empty_type(); super::type_slots(source.len())].into_boxed_slice();
+        let mut type_edges =
+            vec![super::empty_type_edge(); super::type_edge_slots(source.len())].into_boxed_slice();
+        let mut references =
+            vec![super::empty_reference(); super::reference_slots(source.len())].into_boxed_slice();
+        let mut diagnostics =
+            vec![super::empty_diagnostic(); super::DIAGNOSTIC_SLOTS].into_boxed_slice();
+        let mut includes =
+            vec![super::empty_include(); super::include_slots(source.len())].into_boxed_slice();
+        let mut overrides = vec![super::empty_override(); super::OVERRIDE_SLOTS].into_boxed_slice();
+        let mut facts = FactSet::new();
+        let mut expected_target = None;
+
+        project
+            .environment()
+            .with_loaded_libclang(|| -> Result<(), TestError> {
+                let authority = super::collect_cancellable(
+                    input,
+                    ClangScratch {
+                        declarations: &mut declarations,
+                        types: &mut types,
+                        type_edges: &mut type_edges,
+                        references: &mut references,
+                        diagnostics: &mut diagnostics,
+                        includes: &mut includes,
+                        overrides: &mut overrides,
+                    },
+                    &AtomicBool::new(false),
+                )
+                .map_err(|error| TestError::Collect(ClangCollectError::Authority(error)))?;
+                let mut references = authority.references.to_vec();
+                let use_start = source
+                    .windows(b"FOREIGN_CALL".len())
+                    .rposition(|window| window == b"FOREIGN_CALL")
+                    .ok_or(TestError::Missing("macro invocation source range"))?;
+                let use_start = u32::try_from(use_start).map_err(|_| TestError::Tail)?;
+                let reference = references
+                    .iter_mut()
+                    .find(|reference| {
+                        reference.kind == super::ReferenceKind::Call
+                            && reference.owner.is_some()
+                            && matches!(
+                                reference.target,
+                                super::ReferenceTarget::Foreign { path: Some(_), .. }
+                            )
+                    })
+                    .ok_or(TestError::Missing(
+                        "owner-bound foreign call with project path",
+                    ))?;
+                let (identity, file) = match reference.target {
+                    super::ReferenceTarget::Foreign {
+                        identity,
+                        file: Some(file),
+                        path: Some(_),
+                    } => (identity, file),
+                    _ => return Err(TestError::Missing("foreign call file identity")),
+                };
+                expected_target = Some(super::stable_foreign_target(identity, file));
+                let span_end = match span_mode {
+                    ForeignCallSpan::ZeroWidth => use_start,
+                    ForeignCallSpan::WholeInvocation => {
+                        let tail = source.get(use_start as usize..).ok_or(TestError::Tail)?;
+                        let close = tail
+                            .iter()
+                            .position(|byte| *byte == b')')
+                            .ok_or(TestError::Missing("macro invocation closing delimiter"))?;
+                        use_start
+                            .checked_add(u32::try_from(close + 1).map_err(|_| TestError::Tail)?)
+                            .ok_or(TestError::Tail)?
+                    }
+                };
+                reference.span = SourceSpan {
+                    start: use_start,
+                    end: span_end,
+                };
+                let authority = backend_frontend_clang::legacy::ClangFacts {
+                    declarations: authority.declarations,
+                    types: authority.types,
+                    type_edges: authority.type_edges,
+                    references: &references,
+                    diagnostics: authority.diagnostics,
+                    includes: authority.includes,
+                    overrides: authority.overrides,
+                    project_paths: authority.project_paths,
+                };
+                super::project_authority(source, authority, &mut facts).map_err(TestError::Collect)
+            })
+            .map_err(|error| {
+                TestError::Collect(ClangCollectError::Authority(
+                    CollectError::ConfiguredLibrary(error),
+                ))
+            })??;
+        Ok((
+            encode_facts(LanguageProfile::C(CStandard::C11), source, &facts)?,
+            expected_target.ok_or(TestError::Missing("stable foreign target fixture"))?,
+        ))
+    }
+
+    fn encode_facts(
+        profile: LanguageProfile,
+        source: &[u8],
+        facts: &FactSet<'_>,
+    ) -> Result<Vec<u8>, TestError> {
+        let identity = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+            byte_len: u32::try_from(source.len()).map_err(|_| TestError::Tail)?,
+        };
+        let recipe = CompileRecipeFact::derive(
+            profile,
+            Stage::LowerIr,
+            NativeTool::Clang,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"clang-semantic-lane-toolchain"),
+        );
+        let mut output = vec![0xa5_u8; 65_536];
+        let length =
+            crate::driver::lower::admit(facts, identity, recipe, recipe.profile, &mut output)
+                .map_err(|fault| TestError::Admission {
+                    label: "admission",
+                    fault,
+                })?
+                .len();
+        if !output[length..].iter().all(|byte| *byte == 0xa5) {
+            return Err(TestError::Tail);
+        }
+        output.truncate(length);
+        Ok(output)
     }
 
     /// Allocates a unique temporary project directory and removes it on drop.

@@ -140,7 +140,10 @@ impl<'image> FullSemanticImagePlan<'image> {
                 entity.authority.publication != crate::ir::DeclarationPublicationRole::Unavailable
             })
         });
-        let schema = if has_publication_roles {
+        let has_clang_facts = !semantic.extensions.clang.order.is_empty();
+        let schema = if has_clang_facts {
+            super::wire::SCHEMA_CLANG_DECLARED_NAMES
+        } else if has_publication_roles {
             super::wire::SCHEMA_PUBLICATION_ROLES
         } else if has_anonymous_callable {
             super::wire::SCHEMA_TYPED_NAMES

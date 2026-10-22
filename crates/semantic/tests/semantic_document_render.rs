@@ -278,6 +278,7 @@ fn rich_clang() -> Result<Ir, backend_semantic::ir::BuildError> {
             },
             templates,
             includes,
+            declared_name: None,
         }),
     )?;
     builder.finish()
@@ -574,6 +575,7 @@ fn all_named_extension_planes_admit_their_static_document_dialect()
             },
             templates: clang_parameters,
             includes: clang_atoms,
+            declared_name: None,
         }),
     )?;
     let clang = clang_builder.finish()?;

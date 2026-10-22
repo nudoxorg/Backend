@@ -32,6 +32,7 @@ pub(crate) fn validate(
     value: &[u8],
     row: u32,
     counts: ExtensionCounts,
+    schema: u16,
 ) -> Result<(), FullSemanticImageFault> {
     match tag {
         0 => {
@@ -53,7 +54,11 @@ pub(crate) fn validate(
             let _ = java(value, row, counts)?;
         }
         6 => {
-            let _ = clang(value, row, counts)?;
+            let _ = if schema >= super::wire::SCHEMA_CLANG_DECLARED_NAMES {
+                clang_with_declared_name(value, row, counts)?
+            } else {
+                clang(value, row, counts)?
+            };
         }
         observed => {
             return Err(FullSemanticImageFault::Discriminant {
@@ -236,6 +241,23 @@ pub(crate) fn clang(
     row: u32,
     counts: ExtensionCounts,
 ) -> Result<ClangFacts, FullSemanticImageFault> {
+    clang_impl(value, row, counts, false)
+}
+
+pub(crate) fn clang_with_declared_name(
+    value: &[u8],
+    row: u32,
+    counts: ExtensionCounts,
+) -> Result<ClangFacts, FullSemanticImageFault> {
+    clang_impl(value, row, counts, true)
+}
+
+fn clang_impl(
+    value: &[u8],
+    row: u32,
+    counts: ExtensionCounts,
+    has_declared_name: bool,
+) -> Result<ClangFacts, FullSemanticImageFault> {
     let mut cursor = Cursor::new(value, row, 6)?;
     let qualifiers = ClangQualifiers {
         is_const: cursor.boolean()?,
@@ -257,6 +279,11 @@ pub(crate) fn clang(
     };
     let templates = TypeParameterListId::new(cursor.id(counts.typed.count(6), counts, 0)?);
     let includes = AtomListId::new(cursor.id(counts.typed.count(5), counts, 0)?);
+    let declared_name = if has_declared_name {
+        cursor.optional_source(counts)?
+    } else {
+        None
+    };
     cursor.finish()?;
     Ok(ClangFacts {
         qualifiers,
@@ -264,6 +291,7 @@ pub(crate) fn clang(
         layout,
         templates,
         includes,
+        declared_name,
     })
 }
 

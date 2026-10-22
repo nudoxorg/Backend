@@ -16,7 +16,10 @@ use core::{fmt, marker::PhantomData, ops::Deref};
 use crate::ir::{LanguageExtensionsView, SemanticImageAuthority};
 
 const MAGIC: [u8; 4] = *b"NXLE";
-const SCHEMA: u16 = 1;
+// Schema 2 appends the optional Clang declared-name source span. The schema-1
+// reader keeps its original Clang width and always returns `declared_name=None`.
+const SCHEMA_LEGACY: u16 = 1;
+const SCHEMA: u16 = 2;
 const PLANES: usize = 7;
 const PLANES_WIRE: u8 = 7;
 const HEADER: usize = 16;
@@ -62,7 +65,7 @@ impl LanguageExtensionDirectoryKind {
             Self::Rust => 24,
             Self::Python => 12,
             Self::Java => 16,
-            Self::Clang => 24,
+            Self::Clang => 36,
         }
     }
 
@@ -73,7 +76,23 @@ impl LanguageExtensionDirectoryKind {
             Self::Go => 44,
             Self::Rust => 24,
             Self::Java => 16,
-            Self::Clang => 24,
+            Self::Clang => 36,
+        }
+    }
+
+    const fn fact_bytes_for_schema(self, schema: u16) -> usize {
+        if matches!(self, Self::Clang) && schema == SCHEMA_LEGACY {
+            24
+        } else {
+            self.fact_bytes()
+        }
+    }
+
+    const fn fact_bytes_wire_for_schema(self, schema: u16) -> u32 {
+        if matches!(self, Self::Clang) && schema == SCHEMA_LEGACY {
+            24
+        } else {
+            self.fact_bytes_wire()
         }
     }
 
@@ -403,6 +422,8 @@ struct PlaneLayout {
     rows: u32,
     facts: u32,
     ordinal_bytes: usize,
+    schema: u16,
+    fact_width: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -425,6 +446,11 @@ pub trait LanguageExtensionWireFact: Copy + wire_fact_sealed::Sealed {
     #[doc(hidden)]
     /// Decodes one fact beginning at `offset`, returning `None` for an invalid range or value.
     fn decode(bytes: &[u8], offset: usize) -> Option<Self>;
+    #[doc(hidden)]
+    /// Schema-1 Clang rows predate native name-span proof and decode it as absent.
+    fn decode_legacy(bytes: &[u8], offset: usize) -> Option<Self> {
+        Self::decode(bytes, offset)
+    }
 }
 
 impl<'wire, Facts: LanguageExtensionWireFact> ReopenedLanguageExtensionColumn<'wire, Facts> {
@@ -462,19 +488,24 @@ impl<'wire, Facts: LanguageExtensionWireFact> ReopenedLanguageExtensionColumn<'w
             .checked_add(self.layout.ordinal_bytes)
             .and_then(|offset| {
                 ordinal
-                    .checked_mul(Facts::WIDTH)
+                    .checked_mul(self.layout.fact_width)
                     .and_then(|width| offset.checked_add(width))
             })
             .ok_or(LanguageExtensionReopenError::StructuralOverflow {
                 offset: self.layout.offset,
             })?;
-        Facts::decode(self.bytes, offset).map(Some).ok_or(
-            LanguageExtensionReopenError::DecodedFact {
+        let decoded = if self.layout.schema == SCHEMA_LEGACY {
+            Facts::decode_legacy(self.bytes, offset)
+        } else {
+            Facts::decode(self.bytes, offset)
+        };
+        decoded
+            .map(Some)
+            .ok_or(LanguageExtensionReopenError::DecodedFact {
                 row: entity.raw,
                 fact: u32::try_from(ordinal)
                     .map_err(|_| LanguageExtensionReopenError::StructuralOverflow { offset })?,
-            },
-        )
+            })
     }
 }
 
@@ -934,7 +965,7 @@ pub fn reopen_language_extension_section(
         return Err(LanguageExtensionReopenError::Magic { observed });
     }
     let observed_schema = get_u16(bytes, 4)?;
-    if observed_schema != SCHEMA {
+    if !matches!(observed_schema, SCHEMA_LEGACY | SCHEMA) {
         return Err(LanguageExtensionReopenError::Schema {
             observed: observed_schema,
         });
@@ -970,6 +1001,8 @@ pub fn reopen_language_extension_section(
         rows: 0,
         facts: 0,
         ordinal_bytes: 0,
+        schema: observed_schema,
+        fact_width: 0,
     };
     let mut layouts = [empty; PLANES];
     let directory_bytes = DIRECTORY
@@ -1036,7 +1069,7 @@ pub fn reopen_language_extension_section(
                 .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: directory })?
         };
         let exact = facts
-            .checked_mul(kind.fact_bytes_wire())
+            .checked_mul(kind.fact_bytes_wire_for_schema(observed_schema))
             .and_then(|f| ordinal_bytes.checked_add(f))
             .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: directory })?;
         if length != exact {
@@ -1105,7 +1138,7 @@ pub fn reopen_language_extension_section(
                 LanguageExtensionReopenError::StructuralOverflow { offset: directory }
             })?;
             let base = fact
-                .checked_mul(kind.fact_bytes())
+                .checked_mul(kind.fact_bytes_for_schema(observed_schema))
                 .and_then(|fact_offset| ordinal_bytes_usize.checked_add(fact_offset))
                 .and_then(|fact_offset| offset_usize.checked_add(fact_offset))
                 .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: directory })?;
@@ -1117,6 +1150,7 @@ pub fn reopen_language_extension_section(
                     LanguageExtensionReopenError::StructuralOverflow { offset: directory }
                 })?,
                 *bounds,
+                observed_schema,
             )?;
         }
         let layout = PlaneLayout {
@@ -1124,6 +1158,8 @@ pub fn reopen_language_extension_section(
             rows,
             facts,
             ordinal_bytes: ordinal_bytes_usize,
+            schema: observed_schema,
+            fact_width: kind.fact_bytes_for_schema(observed_schema),
         };
         let slot = layouts
             .get_mut(index)
@@ -1158,14 +1194,20 @@ pub(crate) fn reopen_validated_language_extension_section(
     authority: SemanticImageAuthority,
     entity_rows: u32,
 ) -> Result<ReopenedLanguageExtensionSection<'_>, LanguageExtensionReopenError> {
+    let schema = get_u16(bytes, 4)?;
+    if !matches!(schema, SCHEMA_LEGACY | SCHEMA) {
+        return Err(LanguageExtensionReopenError::Schema { observed: schema });
+    }
     let empty = PlaneLayout {
         offset: 0,
         rows: 0,
         facts: 0,
         ordinal_bytes: 0,
+        schema,
+        fact_width: 0,
     };
     let mut layouts = [empty; PLANES];
-    for (index, _) in LanguageExtensionDirectoryKind::ALL
+    for (index, kind) in LanguageExtensionDirectoryKind::ALL
         .iter()
         .copied()
         .enumerate()
@@ -1209,6 +1251,8 @@ pub(crate) fn reopen_validated_language_extension_section(
             rows,
             facts,
             ordinal_bytes,
+            schema,
+            fact_width: kind.fact_bytes_for_schema(schema),
         };
     }
     let [typescript, csharp, go, rust, python, java, clang] = layouts;
@@ -1403,8 +1447,52 @@ impl LanguageExtensionWireFact for crate::ir::JavaFacts {
 }
 impl wire_fact_sealed::Sealed for crate::ir::JavaFacts {}
 impl LanguageExtensionWireFact for crate::ir::ClangFacts {
-    const WIDTH: usize = 24;
+    const WIDTH: usize = 36;
     fn decode(bytes: &[u8], offset: usize) -> Option<Self> {
+        let qualifiers = read_word(bytes, offset)?;
+        if qualifiers & !7 != 0 {
+            return None;
+        }
+        let storage = match read_word(bytes, offset + 4)? {
+            0 => crate::ir::ClangStorageClass::None,
+            1 => crate::ir::ClangStorageClass::Auto,
+            2 => crate::ir::ClangStorageClass::Static,
+            3 => crate::ir::ClangStorageClass::Extern,
+            4 => crate::ir::ClangStorageClass::Register,
+            5 => crate::ir::ClangStorageClass::ThreadLocal,
+            _ => return None,
+        };
+        let align = read_word(bytes, offset + 12)?;
+        if align == 0 {
+            return None;
+        }
+        let file = read_word(bytes, offset + 24)?;
+        let declared_name = if file == NONE {
+            None
+        } else {
+            crate::ir::SourceSpan::new(
+                crate::ir::AtomId::new(file),
+                read_word(bytes, offset + 28)?,
+                read_word(bytes, offset + 32)?,
+            )
+        };
+        Some(Self {
+            qualifiers: crate::ir::ClangQualifiers {
+                is_const: qualifiers & 1 != 0,
+                is_volatile: qualifiers & 2 != 0,
+                is_restrict: qualifiers & 4 != 0,
+            },
+            storage,
+            layout: crate::ir::ClangLayout {
+                size_bits: optional_u32(read_word(bytes, offset + 8)?),
+                align_bits: optional_u32(align),
+            },
+            templates: crate::ir::TypeParameterListId::new(read_word(bytes, offset + 16)?),
+            includes: crate::ir::AtomListId::new(read_word(bytes, offset + 20)?),
+            declared_name,
+        })
+    }
+    fn decode_legacy(bytes: &[u8], offset: usize) -> Option<Self> {
         let qualifiers = read_word(bytes, offset)?;
         if qualifiers & !7 != 0 {
             return None;
@@ -1435,6 +1523,7 @@ impl LanguageExtensionWireFact for crate::ir::ClangFacts {
             },
             templates: crate::ir::TypeParameterListId::new(read_word(bytes, offset + 16)?),
             includes: crate::ir::AtomListId::new(read_word(bytes, offset + 20)?),
+            declared_name: None,
         })
     }
 }
@@ -1833,7 +1922,25 @@ fn encode_clang(
     word(output, base, 2, facts.layout.size_bits.unwrap_or(NONE))?;
     word(output, base, 3, facts.layout.align_bits.unwrap_or(NONE))?;
     word(output, base, 4, facts.templates.raw)?;
-    word(output, base, 5, facts.includes.raw)
+    word(output, base, 5, facts.includes.raw)?;
+    word(
+        output,
+        base,
+        6,
+        facts.declared_name.map_or(NONE, |span| span.file().raw),
+    )?;
+    word(
+        output,
+        base,
+        7,
+        facts.declared_name.map_or(0, crate::ir::SourceSpan::start),
+    )?;
+    word(
+        output,
+        base,
+        8,
+        facts.declared_name.map_or(0, crate::ir::SourceSpan::end),
+    )
 }
 
 fn validate_fact(
@@ -1842,6 +1949,7 @@ fn validate_fact(
     k: LanguageExtensionDirectoryKind,
     f: u32,
     n: LanguageExtensionCommonBounds,
+    schema: u16,
 ) -> Result<(), LanguageExtensionReopenError> {
     let w = |x: usize| {
         let offset = x
@@ -1931,6 +2039,27 @@ fn validate_fact(
         LanguageExtensionDirectoryKind::Clang => {
             check_type_parameters(w(4)?)?;
             check(w(5)?, n.atom_lists)?;
+            if schema != SCHEMA_LEGACY {
+                if w(6)? != NONE {
+                    check(w(6)?, n.atoms)?;
+                    if w(7)? > w(8)? {
+                        return Err(LanguageExtensionReopenError::FactEncoding {
+                            kind: k,
+                            fact: f,
+                            word: 8,
+                            observed: w(8)?,
+                        });
+                    }
+                } else if w(7)? != 0 || w(8)? != 0 {
+                    let (word, observed) = if w(7)? != 0 { (7, w(7)?) } else { (8, w(8)?) };
+                    return Err(LanguageExtensionReopenError::FactEncoding {
+                        kind: k,
+                        fact: f,
+                        word,
+                        observed,
+                    });
+                }
+            }
         }
     }
     let decoded = match k {
@@ -1942,6 +2071,9 @@ fn validate_fact(
         LanguageExtensionDirectoryKind::Rust => crate::ir::RustFacts::decode(i, b).is_some(),
         LanguageExtensionDirectoryKind::Python => crate::ir::PythonFacts::decode(i, b).is_some(),
         LanguageExtensionDirectoryKind::Java => crate::ir::JavaFacts::decode(i, b).is_some(),
+        LanguageExtensionDirectoryKind::Clang if schema == SCHEMA_LEGACY => {
+            crate::ir::ClangFacts::decode_legacy(i, b).is_some()
+        }
         LanguageExtensionDirectoryKind::Clang => crate::ir::ClangFacts::decode(i, b).is_some(),
     };
     if !decoded {

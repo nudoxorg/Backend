@@ -400,6 +400,7 @@ fn every_language_plane_round_trips_through_its_typed_column() {
         },
         templates: builder.intern_type_parameters(&[]).expect("templates"),
         includes: builder.intern_attributes(&[]).expect("includes"),
+        declared_name: None,
     };
     add_extension(&mut builder, LanguageExtensionInput::Clang(&clang));
     assert_typed_round_trip!(builder.finish().expect("Clang IR"), clang, clang);
@@ -664,6 +665,7 @@ fn current_clang_plane_extent_and_fact_decode() {
         },
         templates: builder.intern_type_parameters(&[]).expect("templates"),
         includes: builder.intern_attributes(&[]).expect("includes"),
+        declared_name: None,
     };
     add_extension(&mut builder, LanguageExtensionInput::Clang(&clang));
     let ir = builder.finish().expect("Clang IR");
@@ -674,8 +676,8 @@ fn current_clang_plane_extent_and_fact_decode() {
         ir.language_extension_common_bounds().expect("bounds"),
     )
     .expect("current schema");
-    // One four-byte entity ordinal plus one 24-byte Clang fact.
-    assert_eq!(bytes[152..156], 28_u32.to_le_bytes());
+    // One four-byte entity ordinal plus one 36-byte Clang fact.
+    assert_eq!(bytes[152..156], 40_u32.to_le_bytes());
     assert_eq!(section.clang.get(EntityId::new(0)), Ok(Some(clang)));
 }
 
@@ -700,6 +702,7 @@ fn extension_schema_rejects_each_unadmitted_version_cell() {
         },
         templates: builder.intern_type_parameters(&[]).expect("templates"),
         includes: builder.intern_attributes(&[]).expect("includes"),
+        declared_name: None,
     };
     add_extension(&mut builder, LanguageExtensionInput::Clang(&clang));
     let ir = builder.finish().expect("Clang IR");
