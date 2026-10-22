@@ -636,7 +636,7 @@ impl RustWorkspace {
         if matching.next().is_some() {
             return None;
         }
-        let root = target.source_path.strip_prefix(&self.root)?;
+        let root = target.source_path.strip_prefix(&self.root).ok()?;
         if !is_normalized_relative_path(root) {
             return None;
         }
