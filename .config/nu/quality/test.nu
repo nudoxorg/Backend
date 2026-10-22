@@ -246,7 +246,13 @@ def "main test pr" []: nothing -> record {
     # gate a PR. The semantic-history journey joins them: on the Linux worker
     # its real rust-analyzer publication reads back "rejected" with no daemon
     # diagnostic (builds 2411, 2469), and it needs its own investigation.
-    let deep_accuracy = "binary_id(/^backend-engine::.*(corpus|repro|snapshot|terminals|golden|fleet|lane|render|image|lifecycle|packaging|identity_regressions)/) or binary_id(/^backend-flow::(compiler|system)_corpus$/) or binary_id(/^backend-compatibility-tests::render_snapshot_corpus$/) or package(backend-performance-tests)"
+    # `pyrefly` is vendored (vendor/pyrefly_native_1_2), not NuDox source. Its
+    # own lsp_interaction suite assumes a Buck/Cargo-managed TEST_FILES_PATH
+    # our CI shell never sets, so every one of its tests panics at its own
+    # harness before exercising anything the suite was written to check
+    # ("TEST_FILES_PATH env var not set", vendor/.../util.rs:23) — not a
+    # NuDox regression, just the wrong harness assumption for how we build.
+    let deep_accuracy = "binary_id(/^backend-engine::.*(corpus|repro|snapshot|terminals|golden|fleet|lane|render|image|lifecycle|packaging|identity_regressions)/) or binary_id(/^backend-flow::(compiler|system)_corpus$/) or binary_id(/^backend-compatibility-tests::render_snapshot_corpus$/) or package(backend-performance-tests) or package(pyrefly)"
     let quarantined = pr-quarantine | each {|entry| $"\(($entry.filter)\)" }
     let quarantine = if ($quarantined | is-empty) { "" } else { $" and not \(($quarantined | str join ' or ')\)" }
     let filter = $"not \(($deep_accuracy)\)($quarantine) and not test\(real_package_inventory_keeps_source_provenance_and_closed_terminals\) and not test\(all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render\) and not test\(twenty_real_crates_compile_with_decoded_lanes\) and not test\(semantic_version_selection_is_exact_and_durable_across_restart\)"
