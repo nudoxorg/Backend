@@ -1660,6 +1660,15 @@ struct TypeScriptCompilerApiWitness {
 }
 
 impl TypeScriptProjectWitness {
+    /// Exact native host identity forwarded through admitted project inputs and
+    /// combined with ordered TSZ environments for project execution authority.
+    /// Compiler API selection and resource identities use a separate recipe.
+    pub(crate) fn native_project_fingerprint(&self) -> Option<[u8; 32]> {
+        (matches!(self.authority, TypeScriptWitnessAuthority::Native)
+            && self.resource_proof.is_none())
+        .then_some(self.fingerprint)
+    }
+
     pub(crate) fn native_project_root(&self) -> Option<&Path> {
         matches!(self.authority, TypeScriptWitnessAuthority::Native)
             .then_some(self.project_root.as_ref())
@@ -1673,6 +1682,7 @@ impl TypeScriptProjectWitness {
     /// Conservative payload and allocation accounting for the native-only cache.
     /// Native hosts retain no Compiler API invocation or resource-bundle payload.
     pub(crate) fn retained_native_bytes(&self) -> Option<usize> {
+        let loaded_source_files = self.loaded_source_files.lock().ok()?;
         if !matches!(self.authority, TypeScriptWitnessAuthority::Native)
             || self.resource_proof.is_some()
             || !self.typescript_files.is_empty()
@@ -1731,7 +1741,7 @@ impl TypeScriptProjectWitness {
                 .saturating_add(std::mem::size_of::<Box<Path>>())
                 .saturating_add(path_bytes(path));
         }
-        for (path, file) in self.loaded_source_files.lock().ok()?.iter() {
+        for (path, file) in loaded_source_files.iter() {
             // Charge both paths plus a conservative per-entry tree allocation.
             bytes = bytes
                 .saturating_add(1024)
@@ -6348,6 +6358,11 @@ mod tests {
         .unwrap();
         let host = TypeScriptProjectHost::direct(None, Fixture::limits());
         let baseline = host.admit(&fixture.0).unwrap().unwrap();
+        assert_eq!(
+            baseline.witness().native_project_fingerprint(),
+            Some(baseline.inputs().fingerprint),
+            "cold replay hashes the same host identity as native project execution"
+        );
         let mut full_steps = 0usize;
         let controlled = host
             .admit_controlled(&fixture.0, &mut || {

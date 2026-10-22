@@ -76,7 +76,7 @@ pub(crate) fn encode_staged_snapshot_certificate(
     let program_bytes = forest.encode_native_snapshot_with_limit(&host, program_budget)?;
     if program_bytes.len() != program_environments.len()
         || crate::application::typescript_program::native_program_execution_fingerprint(
-            host.fingerprint(),
+            host.native_project_fingerprint()?,
             program_environments.iter().copied().map(|environment| {
                 backend_frontend_typescript::TszEnvironmentFingerprint::from_sha256(environment)
             }),
@@ -145,7 +145,7 @@ pub(crate) fn restore_snapshot_certificate(
     if !host.is_native_for_root(root)
         || certificate.program_environments.len() != certificate.programs.len()
         || crate::application::typescript_program::native_program_execution_fingerprint(
-            host.fingerprint(),
+            host.native_project_fingerprint()?,
             certificate
                 .program_environments
                 .iter()
@@ -854,7 +854,9 @@ mod tests {
         );
         let project_authority =
             crate::application::typescript_program::native_program_execution_fingerprint(
-                host_witness.fingerprint(),
+                host_witness
+                    .native_project_fingerprint()
+                    .expect("native host identity matches admitted project inputs"),
                 program_environments.iter().copied().map(|environment| {
                     backend_frontend_typescript::TszEnvironmentFingerprint::from_sha256(environment)
                 }),
