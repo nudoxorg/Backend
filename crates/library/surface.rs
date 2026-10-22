@@ -2919,6 +2919,16 @@ fn authority_diagnostic_facts_are_valid(facts: &CompilerAuthorityDiagnosticFacts
                     crate::interface::TypeScriptAuthorityFailureKind::is_program_execution_failure,
                 )
         })
+        && facts
+            .rust_source_scope_failure
+            .is_none_or(|failure| match failure {
+                crate::interface::RustSourceScopeFailureKind::DetachedSource { .. } => true,
+                crate::interface::RustSourceScopeFailureKind::AmbiguousSourceOwner {
+                    definition_count,
+                    omitted_definition_count,
+                    ..
+                } => definition_count >= 2 && omitted_definition_count <= definition_count,
+            })
 }
 
 #[cfg(test)]
@@ -7146,6 +7156,17 @@ mod tests {
         let wire = String::from_utf8(encoded.clone()).expect("JSON UTF-8");
         assert!(!wire.contains("/private"));
         assert!(!wire.contains("stderr"));
+        for (field, invalid_count) in [("definition_count", 1), ("omitted_definition_count", 8)] {
+            let mut malformed: serde_json::Value =
+                serde_json::from_slice(&encoded).expect("valid failure JSON");
+            malformed["cause"]["fault"]["diagnostic"]["rust_source_scope_failure"][field] =
+                serde_json::json!(invalid_count);
+            let malformed = serde_json::to_vec(&malformed).expect("mutated failure JSON");
+            assert!(
+                PackageCompilerFailure::decode_bounded_json(&malformed).is_err(),
+                "authority decoder rejects impossible {field}"
+            );
+        }
         let reopened = PackageCompilerFailure::decode_bounded_json(&encoded)
             .expect("typed Rust diagnostic survives cold decoding");
         assert_eq!(reopened, failure);
@@ -7186,6 +7207,20 @@ mod tests {
                 .expect("Rust setup refusal");
         assert_eq!(setup.recipe_identity(), None);
         let setup_wire = setup.encode_bounded_json().expect("pre-recipe fact codec");
+        let mut malformed_setup: serde_json::Value =
+            serde_json::from_slice(&setup_wire).expect("valid setup failure JSON");
+        malformed_setup["cause"]["fault"]["diagnostic"]["rust_source_scope_failure"] = serde_json::json!({
+            "kind": "ambiguous_source_owner",
+            "definition_count": 2,
+            "omitted_definition_count": 3,
+            "target_resolution": "exact_cargo_target",
+        });
+        let malformed_setup =
+            serde_json::to_vec(&malformed_setup).expect("mutated setup failure JSON");
+        assert!(
+            PackageCompilerFailure::decode_bounded_json(&malformed_setup).is_err(),
+            "authority-admission decoder rejects omitted definitions exceeding total"
+        );
         let reopened_setup = PackageCompilerFailure::decode_bounded_json(&setup_wire)
             .expect("pre-recipe cold failure reader");
         let PackageCompilerFailureCause::AuthorityAdmission {
@@ -7202,6 +7237,30 @@ mod tests {
             })
         );
         assert!(reopened_setup.detail().contains("2 active roots observed"));
+
+        let zero_root_terminal = CompilerTerminal::AuthorityAdmission {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"zero roots"),
+                byte_len: 10,
+            },
+            language: backend_semantic::vocabulary::Language::Rust,
+            stage: backend_semantic::vocabulary::Stage::LowerIr,
+            phase: AuthorityPhase::Resolve,
+            class: AuthorityDiagnosticClass::SourceScope,
+            diagnostic: Some(CompilerDiagnostic::from_rust_source_scope_failure(
+                R::DetachedSource {
+                    active_hir_root_count: 0,
+                },
+            )),
+        };
+        let zero_root =
+            PackageCompilerFailure::from_package_terminal("src/no-root.rs", &zero_root_terminal)
+                .expect("zero-root refusal projection")
+                .expect("zero-root source scope refusal");
+        let zero_root_wire = zero_root
+            .encode_bounded_json()
+            .expect("zero detached roots remain a valid closed fact");
+        assert!(PackageCompilerFailure::decode_bounded_json(&zero_root_wire).is_ok());
 
         // Old causes retain their prior canonical shape: the new optional fact
         // is explicitly omitted when no typed Rust scope evidence exists.
