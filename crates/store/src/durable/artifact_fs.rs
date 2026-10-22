@@ -849,8 +849,8 @@ mod imp {
         name: &str,
         expected: &File,
     ) -> Result<(), StoreError> {
-        let staged = open_file_at(&directory.file, name, OFlags::RDONLY)?
-            .ok_or(StoreError::Corrupt)?;
+        let staged =
+            open_file_at(&directory.file, name, OFlags::RDONLY)?.ok_or(StoreError::Corrupt)?;
         let staged_metadata = staged.metadata().map_err(|error| io_error(&error))?;
         let expected_metadata = expected.metadata().map_err(|error| io_error(&error))?;
         if staged_metadata.dev() != expected_metadata.dev()
@@ -860,6 +860,54 @@ mod imp {
         }
         drop(staged);
         unlinkat(&directory.file, name, AtFlags::empty()).map_err(error)
+    }
+
+    // A successful publication intentionally gives the staged inode two names until
+    // the staging alias is removed. Do not use open_file_at here: it waits for
+    // nlink == 1, which only this unlink can make true. Verify both held names
+    // against the caller's descriptor and require the exact expected link count.
+    fn unlink_published_stage_file(
+        staging: &ArtifactDirectory,
+        staging_name: &str,
+        destination: &ArtifactDirectory,
+        destination_name: &str,
+        source: &File,
+    ) -> Result<(), StoreError> {
+        let staged = openat(
+            &staging.file,
+            staging_name,
+            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map(File::from)
+        .map_err(path_error)?;
+        let published = openat(
+            &destination.file,
+            destination_name,
+            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map(File::from)
+        .map_err(path_error)?;
+        let staged_metadata = staged.metadata().map_err(|error| io_error(&error))?;
+        let published_metadata = published.metadata().map_err(|error| io_error(&error))?;
+        let source_metadata = source.metadata().map_err(|error| io_error(&error))?;
+        let same_inode = |metadata: &std::fs::Metadata| {
+            metadata.dev() == source_metadata.dev() && metadata.ino() == source_metadata.ino()
+        };
+        if !staged_metadata.is_file()
+            || !published_metadata.is_file()
+            || !same_inode(&staged_metadata)
+            || !same_inode(&published_metadata)
+            || staged_metadata.nlink() != 2
+            || published_metadata.nlink() != 2
+            || source_metadata.nlink() != 2
+        {
+            return Err(StoreError::UnsafePath);
+        }
+        drop(published);
+        drop(staged);
+        unlinkat(&staging.file, staging_name, AtFlags::empty()).map_err(error)
     }
 
     pub(in crate::durable) fn link_stage_object(
@@ -897,7 +945,7 @@ mod imp {
                         "injected interruption after object link".to_owned(),
                     ));
                 }
-                unlink_stage_file(staging, staging_name, source)?;
+                unlink_published_stage_file(staging, staging_name, &objects, &name, source)?;
                 staging.sync_all()?;
                 linked_object_receipt(source, store, id).map(Some)
             }
@@ -957,8 +1005,10 @@ mod imp {
                     "injected interruption after closure link".to_owned(),
                 ));
             }
+            unlink_published_stage_file(staging, CLOSURE_TEMP_FILE, &closures, &name, &temp)?;
+        } else {
+            unlink_stage_file(staging, CLOSURE_TEMP_FILE, &temp)?;
         }
-        unlink_stage_file(staging, CLOSURE_TEMP_FILE, &temp)?;
         staging.sync_all()?;
         Ok(created)
     }
@@ -1017,6 +1067,202 @@ mod imp {
                 metadata.ctime(),
                 metadata.ctime_nsec(),
             )
+        }
+
+        fn publication_directories(store: &FileStore) -> (ArtifactDirectory, ArtifactDirectory) {
+            let root = ArtifactDirectory {
+                file: store_root(store).expect("open store root"),
+                path: store.root.clone(),
+            };
+            (
+                open_dir_at(&root, "nodes").expect("open staging fixture directory"),
+                store_dir(store, "objects").expect("open object directory"),
+            )
+        }
+
+        #[test]
+        fn published_stage_unlink_accepts_only_the_verified_two_link_transition() {
+            let fixture = Fixture::new(0o600);
+            let (staging, destination) = publication_directories(&fixture.store);
+            let mut source = create_stage_file(&staging, "stage.tmp").expect("stage file");
+            source.write_all(b"published bytes").expect("stage payload");
+            seal_immutable_file(&source).expect("seal staged inode");
+            let published_name = "publication-test.object";
+            linkat(
+                &staging.file,
+                "stage.tmp",
+                &destination.file,
+                published_name,
+                AtFlags::empty(),
+            )
+            .expect("create CAS hard link");
+            assert_eq!(source.metadata().expect("two-link inode").nlink(), 2);
+
+            unlink_published_stage_file(
+                &staging,
+                "stage.tmp",
+                &destination,
+                published_name,
+                &source,
+            )
+            .expect("remove only the verified staging alias");
+            assert!(
+                openat(
+                    &staging.file,
+                    "stage.tmp",
+                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+                .is_err()
+            );
+            let published = open_file_at(&destination.file, published_name, OFlags::RDONLY)
+                .expect("open one-link published object")
+                .expect("published object retained");
+            assert_eq!(published.metadata().expect("published metadata").nlink(), 1);
+        }
+
+        #[test]
+        fn published_stage_unlink_rejects_a_different_regular_inode() {
+            let fixture = Fixture::new(0o600);
+            let (staging, destination) = publication_directories(&fixture.store);
+            let mut published_source =
+                create_stage_file(&staging, "stage.tmp").expect("stage file");
+            published_source
+                .write_all(b"published bytes")
+                .expect("stage payload");
+            seal_immutable_file(&published_source).expect("seal staged inode");
+            let published_name = "publication-test.object";
+            linkat(
+                &staging.file,
+                "stage.tmp",
+                &destination.file,
+                published_name,
+                AtFlags::empty(),
+            )
+            .expect("create CAS hard link");
+
+            let mut foreign_source =
+                create_stage_file(&staging, "foreign.tmp").expect("foreign staged file");
+            foreign_source
+                .write_all(b"different inode")
+                .expect("foreign payload");
+            seal_immutable_file(&foreign_source).expect("seal foreign inode");
+            std::fs::hard_link(
+                fixture.store.root.join("nodes/foreign.tmp"),
+                fixture.store.root.join("foreign-link"),
+            )
+            .expect("give foreign descriptor the expected two-link count");
+            assert_eq!(
+                published_source
+                    .metadata()
+                    .expect("published links")
+                    .nlink(),
+                2
+            );
+            assert_eq!(foreign_source.metadata().expect("foreign links").nlink(), 2);
+
+            assert!(matches!(
+                unlink_published_stage_file(
+                    &staging,
+                    "stage.tmp",
+                    &destination,
+                    published_name,
+                    &foreign_source,
+                ),
+                Err(StoreError::UnsafePath)
+            ));
+            assert_eq!(
+                published_source
+                    .metadata()
+                    .expect("stage preserved")
+                    .nlink(),
+                2
+            );
+        }
+
+        #[test]
+        fn published_stage_unlink_rejects_a_replaced_symlink_name() {
+            let fixture = Fixture::new(0o600);
+            let (staging, destination) = publication_directories(&fixture.store);
+            let mut source = create_stage_file(&staging, "stage.tmp").expect("stage file");
+            source.write_all(b"published bytes").expect("stage payload");
+            seal_immutable_file(&source).expect("seal staged inode");
+            let published_name = "publication-test.object";
+            linkat(
+                &staging.file,
+                "stage.tmp",
+                &destination.file,
+                published_name,
+                AtFlags::empty(),
+            )
+            .expect("create CAS hard link");
+            unlinkat(&staging.file, "stage.tmp", AtFlags::empty())
+                .expect("remove original staging name");
+            std::os::unix::fs::symlink(
+                fixture.store.root.join("objects").join(published_name),
+                fixture.store.root.join("nodes/stage.tmp"),
+            )
+            .expect("replace stage name with symlink");
+            assert!(matches!(
+                unlink_published_stage_file(
+                    &staging,
+                    "stage.tmp",
+                    &destination,
+                    published_name,
+                    &source,
+                ),
+                Err(StoreError::UnsafePath)
+            ));
+            assert!(
+                std::fs::symlink_metadata(fixture.store.root.join("nodes/stage.tmp"))
+                    .expect("symlink remains untouched")
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(
+                open_file_at(&destination.file, published_name, OFlags::RDONLY)
+                    .expect("open retained publication")
+                    .expect("publication remains")
+                    .metadata()
+                    .expect("published metadata")
+                    .nlink(),
+                1
+            );
+        }
+
+        #[test]
+        fn published_stage_unlink_rejects_an_unrelated_third_link() {
+            let fixture = Fixture::new(0o600);
+            let (staging, destination) = publication_directories(&fixture.store);
+            let mut source = create_stage_file(&staging, "stage.tmp").expect("stage file");
+            source.write_all(b"published bytes").expect("stage payload");
+            seal_immutable_file(&source).expect("seal staged inode");
+            let published_name = "publication-test.object";
+            linkat(
+                &staging.file,
+                "stage.tmp",
+                &destination.file,
+                published_name,
+                AtFlags::empty(),
+            )
+            .expect("create CAS hard link");
+            std::fs::hard_link(
+                fixture.store.root.join("nodes/stage.tmp"),
+                fixture.store.root.join("external-link"),
+            )
+            .expect("create unrelated alias");
+            assert_eq!(source.metadata().expect("three-link inode").nlink(), 3);
+            assert!(matches!(
+                unlink_published_stage_file(
+                    &staging,
+                    "stage.tmp",
+                    &destination,
+                    published_name,
+                    &source,
+                ),
+                Err(StoreError::UnsafePath)
+            ));
+            assert_eq!(source.metadata().expect("still linked inode").nlink(), 3);
         }
 
         #[test]
