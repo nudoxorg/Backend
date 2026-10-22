@@ -735,8 +735,16 @@ fn capture_registry_archives_with_authority(
             continue;
         };
         let archive_limit = remaining_archive_bytes.min(MAX_CARGO_OBSERVATION_FILE_BYTES);
-        let Some(archive_len) = observation_file_len(&archive_path, archive_limit)? else {
-            continue;
+        let archive_len = match observation_file_len(&archive_path, archive_limit) {
+            Ok(Some(archive_len)) => archive_len,
+            Ok(None) => continue,
+            Err(_) => {
+                // Archive authority is optional. Preserve the legacy
+                // checksum-sidecar requirement when the cache entry cannot
+                // be inspected; still propagate cancellation or expiry.
+                observation_budget()?;
+                continue;
+            }
         };
         compressed_total = compressed_total.saturating_add(archive_len);
         let bytes = match read_observation_file(&archive_path, archive_limit) {
@@ -2897,7 +2905,8 @@ mod tests {
         // An archive that exceeds the remaining shared byte budget is not
         // read or treated as an authority. Metadata admission therefore keeps
         // the exact legacy checksum input required for this registry package.
-        let archive = registry_archive_fixture("equivalent-1.0.2/src/lib.rs", b"pub fn value() {}\n");
+        let archive =
+            registry_archive_fixture("equivalent-1.0.2/src/lib.rs", b"pub fn value() {}\n");
         std::fs::write(&archive_path, &archive).expect("bounded archive candidate");
         let checksum = checksum_hex(&archive);
         let over_budget = capture_registry_archives_with_authority(
@@ -2927,6 +2936,35 @@ mod tests {
             lockfile: None,
             manifest: None,
         };
+        assert!(require_required_paths_present(
+            &absent_sidecar,
+            &required,
+            CargoMetadataInputKind::RegistryChecksum,
+        )
+        .is_err());
+
+        // A non-file cache entry cannot supply authority either, but it also
+        // does not reject metadata when the extracted tree still has its
+        // existing required sidecar contract.
+        std::fs::remove_file(&archive_path).expect("remove archive candidate");
+        std::fs::create_dir(&archive_path).expect("non-file archive candidate");
+        let non_file = capture_registry_archives_with_authority(
+            &document,
+            Some(&registry_lock(&checksum)),
+            MAX_CARGO_OBSERVATION_TOTAL_BYTES,
+            true,
+            Some(&cargo_home),
+            true,
+        )
+        .expect("an uninspectable optional cache entry stays unverified");
+        assert!(non_file.accepted_roots.is_empty());
+        assert!(non_file.descriptors.is_empty());
+        assert!(non_file.witnesses.is_empty());
+        let required = required_registry_checksums_without_archive_authority(
+            document.inputs.required_registry_checksums.clone(),
+            &non_file.accepted_roots,
+        );
+        assert_eq!(required, vec![sidecar.clone()]);
         assert!(require_required_paths_present(
             &absent_sidecar,
             &required,
