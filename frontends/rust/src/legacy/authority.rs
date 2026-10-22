@@ -2438,16 +2438,15 @@ impl RustWorkspace {
                 });
             }
 
-            // Session preparation precedes lowering. Carry only the target
-            // admitted by the exact compilation-unit key, and apply it solely
-            // to that target's exact selected root. Other files keep the
-            // ordinary strict ambiguity behavior.
-            let target = admitted_target.filter(|target| {
-                selected
-                    .path
-                    .strip_prefix(&self.root)
-                    .is_ok_and(|relative| relative == target.root)
-            });
+            // Session preparation precedes lowering. A selected RustCrate
+            // target owns its reachable module files as well as its root, so
+            // use the exact admitted crate identity for every selected buffer.
+            // PackageRoot has no unit target; mirror lowering's exact
+            // metadata-root lookup for a uniquely declared target root only.
+            // Shared files with no exact target identity still follow the
+            // ordinary strict ambiguity refusal.
+            let target =
+                admitted_target.or_else(|| self.cargo_target_for_source_path(selected.path));
             let owner =
                 match self.source_owner_entry(selected_file_id, selected.path, target, control) {
                     Ok(owner) => owner.krate,
@@ -6339,11 +6338,36 @@ mod read_frontier_budget_tests {
             Err(RustAuthorityError::SessionSourcePath { .. })
         ));
 
-        // The production session prepares Rustdoc inputs before lowering gets
-        // the admitted target argument. A shared Cargo target root must still
-        // be selected from the admitted target during that preparation.
-        let source_paths = [PathBuf::from("benches/bench.rs")];
-        let key = RustWorkspaceSessionKey::new(
+        // The production session presents the full selected package frontier
+        // to documentation preload before lowering receives its unit target.
+        // Keep the shared bench file in the library, test, and bin requests
+        // to exercise target ownership for non-root module files.
+        let source_paths = [
+            PathBuf::from("bin/hyphen.rs"),
+            PathBuf::from("benches/bench.rs"),
+            PathBuf::from("lib.rs"),
+            PathBuf::from("test.rs"),
+        ];
+        let files = [
+            RustWorkspaceFile {
+                relative_path: &source_paths[0],
+                source: std::str::from_utf8(hyphenated).expect("UTF-8 bin fixture"),
+            },
+            RustWorkspaceFile {
+                relative_path: &source_paths[1],
+                source: std::str::from_utf8(benchmark).expect("UTF-8 bench fixture"),
+            },
+            RustWorkspaceFile {
+                relative_path: &source_paths[2],
+                source: std::str::from_utf8(library).expect("UTF-8 lib fixture"),
+            },
+            RustWorkspaceFile {
+                relative_path: &source_paths[3],
+                source: std::str::from_utf8(test).expect("UTF-8 test fixture"),
+            },
+        ];
+        let mut lane = RustWorkspaceSessionLane::default();
+        let package_root_key = RustWorkspaceSessionKey::new(
             &root,
             &toolchain,
             RustEdition::Rust2024,
@@ -6356,27 +6380,64 @@ mod read_frontier_budget_tests {
             [0x5a; 32],
             &source_paths,
         )
-        .expect("exact selected bench source key")
-        .with_cargo_target(admitted_bench)
-        .expect("exact admitted bench target identity");
-        let files = [RustWorkspaceFile {
-            relative_path: &source_paths[0],
-            source: std::str::from_utf8(benchmark).expect("UTF-8 bench fixture"),
-        }];
-        let mut lane = RustWorkspaceSessionLane::default();
-        let lease = lane
-            .begin(key, &files, control())
-            .expect("selected-frontier preparation resolves the exact bench owner");
-        lease
-            .workspace()
-            .analyze_source_for_target(
-                root.join("benches/bench.rs"),
-                benchmark,
-                admitted_bench,
-                control(),
-                |_| Ok(()),
+        .expect("full selected package source key");
+        lane.begin(package_root_key, &files, control())
+            .expect("PackageRoot preload mirrors unique exact Cargo-root selection");
+
+        for (target, source) in [
+            (
+                RustCargoTarget {
+                    name: "readiness_source_ownership",
+                    root: Path::new("lib.rs"),
+                },
+                library.as_slice(),
+            ),
+            (admitted_bench, benchmark.as_slice()),
+            (
+                RustCargoTarget {
+                    name: "ownership_test",
+                    root: Path::new("test.rs"),
+                },
+                test.as_slice(),
+            ),
+            (
+                RustCargoTarget {
+                    name: "ownership-hyphen",
+                    root: Path::new("bin/hyphen.rs"),
+                },
+                hyphenated.as_slice(),
+            ),
+        ] {
+            let key = RustWorkspaceSessionKey::new(
+                &root,
+                &toolchain,
+                RustEdition::Rust2024,
+                Stage::LowerIr,
+                RustFeatureControl::default(),
+                RustCargoMetadataPolicy::Offline,
+                None,
+                None,
+                None,
+                [0x5a; 32],
+                &source_paths,
             )
-            .expect("the admitted bench target remains usable after preparation");
+            .expect("full selected package source key")
+            .with_cargo_target(target)
+            .expect("target root belongs to the exact selected frontier");
+            let lease = lane
+                .begin(key, &files, control())
+                .expect("selected-frontier preparation resolves this unit's shared files");
+            lease
+                .workspace()
+                .analyze_source_for_target(
+                    root.join(target.root),
+                    source,
+                    target,
+                    control(),
+                    |_| Ok(()),
+                )
+                .expect("the admitted target remains usable after preparation");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
