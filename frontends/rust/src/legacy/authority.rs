@@ -6188,6 +6188,7 @@ mod read_frontier_budget_tests {
             RustWorkspaceSessionKey, RustWorkspaceSessionLane, SourceByteLimit, Stage,
         };
         use backend_semantic::vocabulary::RustEdition;
+        use std::path::{Path, PathBuf};
         use std::sync::atomic::AtomicBool;
         use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
