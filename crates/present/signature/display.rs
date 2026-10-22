@@ -515,6 +515,34 @@ pub(super) fn fold_preview_layout_newlines(text: &str, language: Language) -> Co
             continue;
         }
         let ch = rest.chars().next().expect("nonempty suffix");
+        let closes_signature = if language == Language::TypeScript && ch == ')' {
+            let after_close = &rest[ch.len_utf8()..];
+            after_close.trim_start().starts_with(':')
+                || after_close.trim_start().starts_with("=>")
+        } else {
+            false
+        };
+        if closes_signature {
+            // TypeScript permits a final comma in parameter lists. It is
+            // harmless source syntax, but looks like a duplicate argument
+            // separator in the compact, single-line preview. The scanner has
+            // already copied literals atomically, and comments/templates
+            // make this routine return the original text above, so only
+            // syntax bytes immediately before this closing paren are eligible.
+            let mut comma = output.len();
+            while comma > 0 {
+                let Some(previous) = output[..comma].chars().next_back() else {
+                    break;
+                };
+                if !matches!(previous, ' ' | '\t') {
+                    break;
+                }
+                comma -= previous.len_utf8();
+            }
+            if comma > 0 && output[..comma].ends_with(',') {
+                output.truncate(comma - 1);
+            }
+        }
         if ch == '\n' || rest.starts_with("\r\n") {
             at += if rest.starts_with("\r\n") { 2 } else { 1 };
             while output
