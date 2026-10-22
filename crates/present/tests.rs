@@ -2001,7 +2001,7 @@ fn empty_references_result_does_not_claim_that_its_target_is_absent() {
         );
         assert!(!rendered.contains("no row at this revision"), "{rendered}");
     }
-    let generic = ProductView::rows("search", Vec::new());
+    let generic = product_view(&backend_library::SurfaceReply::IndexSearch(Box::new([])));
     assert!(markdown::product(&generic).contains("no row at this revision"));
 }
 
