@@ -395,6 +395,7 @@ pub struct ProductView {
     package_graph_page: Option<backend_library::PackageGraphPage>,
     package_graph_request_authority: Option<backend_library::PackageGraphSourceAuthority>,
     semantic_data: Option<ProductSemanticData>,
+    references_result: bool,
     pub(crate) mcp_exposure: crate::McpExposure,
     package_discovery: Option<PackageDiscoveryProjection>,
 }
@@ -589,6 +590,12 @@ impl ProductView {
     #[must_use]
     pub fn heading(&self) -> &str {
         &self.heading
+    }
+
+    /// Whether this answer is the typed result of a reference query.
+    #[must_use]
+    pub const fn is_references_result(&self) -> bool {
+        self.references_result
     }
 
     /// Returns the records in reply order.
@@ -1112,6 +1119,11 @@ impl ProductView {
         self
     }
 
+    fn with_references_result(mut self) -> Self {
+        self.references_result = true;
+        self
+    }
+
     /// Records one product answer a surface assembled itself.
     ///
     /// An accepted intent is not a [`SurfaceReply`], but it is the same shape
@@ -1135,6 +1147,7 @@ impl ProductView {
             package_graph_page: None,
             package_graph_request_authority: None,
             semantic_data: None,
+            references_result: false,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1160,6 +1173,7 @@ impl ProductView {
             package_graph_page: None,
             package_graph_request_authority: None,
             semantic_data: None,
+            references_result: false,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1183,6 +1197,7 @@ impl ProductView {
             package_graph_page: None,
             package_graph_request_authority: None,
             semantic_data: None,
+            references_result: false,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1206,6 +1221,7 @@ impl ProductView {
             package_graph_page: None,
             package_graph_request_authority: None,
             semantic_data: None,
+            references_result: false,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1229,6 +1245,7 @@ impl ProductView {
             package_graph_page: None,
             package_graph_request_authority: None,
             semantic_data: None,
+            references_result: false,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1316,7 +1333,8 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::References { target, references } => ProductView::rows(
             format!("references to {}", target.as_str()).as_str(),
             references.iter().map(reference_row).collect(),
-        ),
+        )
+        .with_references_result(),
         SurfaceReply::Diff(records) => {
             ProductView::rows("diff", records.iter().map(diff_row).collect())
         }
