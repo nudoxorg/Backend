@@ -16,7 +16,7 @@ use super::{
     rustup_selection_paths, sccache_configuration_paths, selected_cargo_program,
     strict_observation_witness,
 };
-use crate::builtin::registry::archive_witness::CrateArchiveWitness;
+use crate::builtin::registry::archive_witness::{CrateArchiveWitness, CrateArchiveWitnessError};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
@@ -693,12 +693,33 @@ fn capture_registry_archives_with_authority(
     let Some(lockfile) = lockfile else {
         return Ok(pass);
     };
-    let locked = backend_library::browse::cargo_locked_packages(lockfile)
-        .map_err(|error| format!("Cargo lockfile package checksums are unavailable: {error}"))?;
+    let Ok(locked) = backend_library::browse::cargo_locked_packages(lockfile) else {
+        return Ok(pass);
+    };
+    candidates.sort_by(|(left, _), (right, _)| {
+        (
+            &left.package_root,
+            &left.name,
+            &left.version,
+            &left.source,
+        )
+            .cmp(&(
+                &right.package_root,
+                &right.name,
+                &right.version,
+                &right.source,
+            ))
+    });
     let mut compressed_total = 0_usize;
     let mut retained_total = 0_usize;
     for (package, archive_path) in candidates {
         observation_budget()?;
+        let remaining_archive_bytes = archive_budget.saturating_sub(compressed_total);
+        let remaining_witness_bytes = MAX_CARGO_REGISTRY_WITNESS_SET_BYTES
+            .saturating_sub(retained_total);
+        if remaining_archive_bytes == 0 || remaining_witness_bytes == 0 {
+            break;
+        }
         let matching = locked
             .iter()
             .filter(|entry| {
@@ -713,30 +734,44 @@ fn capture_registry_archives_with_authority(
         let Some(expected_checksum) = matching[0].checksum else {
             continue;
         };
-        let archive_limit = archive_budget.min(MAX_CARGO_OBSERVATION_FILE_BYTES);
+        let archive_limit = remaining_archive_bytes.min(MAX_CARGO_OBSERVATION_FILE_BYTES);
         let Some(archive_len) = observation_file_len(&archive_path, archive_limit)? else {
             continue;
         };
         compressed_total = compressed_total.saturating_add(archive_len);
-        if compressed_total > archive_budget {
-            return Err("Cargo registry archive set exceeds its byte limit".to_owned());
-        }
-        let bytes = read_observation_file(&archive_path, archive_limit)?
-            .ok_or_else(|| "locked Cargo registry archive is missing".to_owned())?;
-        if bytes.len() != archive_len {
-            return Err("Cargo registry archive changed while it was observed".to_owned());
-        }
+        let bytes = match read_observation_file(&archive_path, archive_limit) {
+            Ok(Some(bytes)) if bytes.len() == archive_len => bytes,
+            Ok(_) | Err(_) => {
+                // This optional archive proof is not available. The next
+                // owner-budget checkpoint still propagates cancellation or
+                // expiry; no source root is marked archive-verified.
+                observation_budget()?;
+                continue;
+            }
+        };
         let mut checkpoint = || observation_budget();
-        let witness_budget = MAX_CARGO_REGISTRY_WITNESS_SET_BYTES.saturating_sub(retained_total);
-        let witness = CrateArchiveWitness::capture_with_limit(
+        let witness = match CrateArchiveWitness::capture_with_limit(
             &package.name,
             &package.version,
             &bytes,
             expected_checksum,
-            witness_budget,
+            remaining_witness_bytes,
             &mut checkpoint,
-        )
-        .map_err(|error| format!("locked Cargo registry archive was rejected: {error:?}"))?;
+        ) {
+            Ok(witness) => witness,
+            Err(CrateArchiveWitnessError::ArchiveDigestMismatch) => {
+                return Err(format!(
+                    "Cargo registry archive for {} {} does not match its exact lockfile checksum",
+                    package.name, package.version
+                ));
+            }
+            Err(CrateArchiveWitnessError::Interrupted(reason)) => return Err(reason),
+            Err(CrateArchiveWitnessError::Bounds | CrateArchiveWitnessError::InvalidArchive) => {
+                // Unsupported or over-budget archives remain under the
+                // existing sidecar/input contract, without a witness.
+                continue;
+            }
+        };
         if !pass.accepted_roots.insert(package.package_root.clone()) {
             return Err("Cargo metadata repeated a registry source root".to_owned());
         }
@@ -788,8 +823,14 @@ fn observation_file_len(path: &Path, maximum: usize) -> Result<Option<usize>, St
     let metadata = file
         .metadata()
         .map_err(|error| format!("cannot inspect Cargo archive: {error}"))?;
-    if !metadata.is_file() || metadata.len() > maximum as u64 {
+    if !metadata.is_file() {
         return Err("Cargo registry archive is not a bounded regular file".to_owned());
+    }
+    if metadata.len() > maximum as u64 {
+        // Archive evidence is optional. If it cannot fit the remaining shared
+        // observation budget, leave this package on its existing sidecar path
+        // without reading or claiming authority for the archive.
+        return Ok(None);
     }
     usize::try_from(metadata.len())
         .map(Some)
@@ -2852,6 +2893,46 @@ mod tests {
             vec![sidecar],
             "unverified source storage does not bypass the existing sidecar observation"
         );
+
+        // An archive that exceeds the remaining shared byte budget is not
+        // read or treated as an authority. Metadata admission therefore keeps
+        // the exact legacy checksum input required for this registry package.
+        let archive = registry_archive_fixture("equivalent-1.0.2/src/lib.rs", b"pub fn value() {}\n");
+        std::fs::write(&archive_path, &archive).expect("bounded archive candidate");
+        let checksum = checksum_hex(&archive);
+        let over_budget = capture_registry_archives_with_authority(
+            &document,
+            Some(&registry_lock(&checksum)),
+            1,
+            true,
+            Some(&cargo_home),
+            true,
+        )
+        .expect("optional archive over budget stays unverified");
+        assert!(over_budget.accepted_roots.is_empty());
+        assert!(over_budget.descriptors.is_empty());
+        assert!(over_budget.witnesses.is_empty());
+
+        let sidecar = package_root.join(".cargo-checksum.json");
+        let required = required_registry_checksums_without_archive_authority(
+            document.inputs.required_registry_checksums.clone(),
+            &over_budget.accepted_roots,
+        );
+        assert_eq!(required, vec![sidecar.clone()]);
+        let absent_sidecar = InputObservation {
+            digest: [0; 32],
+            observed_bytes: 0,
+            missing_path_keys: [observation_path_key(&sidecar)].into_iter().collect(),
+            tool_witness_reuse: None,
+            lockfile: None,
+            manifest: None,
+        };
+        assert!(require_required_paths_present(
+            &absent_sidecar,
+            &required,
+            CargoMetadataInputKind::RegistryChecksum,
+        )
+        .is_err());
     }
 
     fn minimal_source_closure_fixture(
