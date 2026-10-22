@@ -44,28 +44,41 @@ impl Schema for ProductNativeFrontierRootSchema {
 pub enum ProductNativeFrontierRecord {
     /// Commits the exact sorted disposition set for one project/profile.
     Profile {
+        /// Stable digest of the owning project coordinate.
         project: [u8; 32],
+        /// Compiler profile whose complete source set this record commits.
         profile: LanguageProfile,
         /// Exact compiler package coordinate selected by the product indexer.
         /// `None` is retained only for non-compilable legacy/test manifests;
         /// native candidate permits require this owner binding.
         package_target: Option<PackageUrl>,
+        /// Number of normalized source paths represented by the manifest.
         path_count: u32,
+        /// Digest of the sorted path/disposition pairs in the manifest.
         disposition_digest: [u8; 32],
     },
     /// States how one supported source path participates in the profile.
     Path {
+        /// Stable digest of the owning project coordinate.
         project: [u8; 32],
+        /// Compiler profile containing this path.
         profile: LanguageProfile,
+        /// Normalized project-relative source path.
         path: String,
+        /// Exact structural, compiler-only, or refusal state for this path.
         disposition: NativePathDisposition,
     },
     /// One bounded piece of exact malformed-source bytes, selected by the same root.
     ContentChunk {
+        /// Stable digest of the owning project coordinate.
         project: [u8; 32],
+        /// Compiler profile containing the source file.
         profile: LanguageProfile,
+        /// Normalized project-relative path whose bytes are stored.
         path: String,
+        /// Zero-based ordinal of this chunk within the path's byte sequence.
         ordinal: u32,
+        /// Exact source bytes for this bounded chunk.
         bytes: Box<[u8]>,
     },
 }
@@ -76,23 +89,33 @@ pub enum ProductNativeFrontierRecord {
 pub enum NativePathDisposition {
     /// Structurally parsed path with exact bytes and source-fact identities.
     Structural {
+        /// Content-object digest for the exact source bytes.
         content: [u8; 32],
+        /// Identity of the corresponding structural source fact.
         source_identity: ContentId<SourceFactDomain>,
     },
     /// Valid UTF-8 bytes refused only by the explicit Clang malformed-source
     /// baseline result; this does not claim structural declarations.
     ClangMalformed {
+        /// Content-object digest for the exact source bytes.
         content: [u8; 32],
+        /// Identity of the source bytes retained for this disposition.
         source_identity: ContentId<SourceFactDomain>,
+        /// Exact source length in bytes.
         byte_length: u32,
+        /// Number of bounded content chunks retained for reconstruction.
         chunk_count: u32,
     },
     /// Valid UTF-8 bytes refused only by the explicit C# malformed-source
     /// baseline result; this does not claim structural declarations.
     CSharpMalformed {
+        /// Content-object digest for the exact source bytes.
         content: [u8; 32],
+        /// Identity of the source bytes retained for this disposition.
         source_identity: ContentId<SourceFactDomain>,
+        /// Exact source length in bytes.
         byte_length: u32,
+        /// Number of bounded content chunks retained for reconstruction.
         chunk_count: u32,
     },
     /// The path is accounted for, but is not eligible for native compilation.
@@ -103,9 +126,13 @@ pub enum NativePathDisposition {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativePathRefusal {
+    /// Source bytes were not valid UTF-8.
     InvalidUtf8,
+    /// The compiler refused the path for a reason other than malformed input.
     MalformedOther,
+    /// The source could not be read during capture.
     ReadUnavailable,
+    /// The source exceeded the configured native-source size ceiling.
     Oversized,
 }
 
@@ -630,7 +657,7 @@ pub fn admit_native_frontier(
     relation: &WorkspaceRelationHandle<ProductNativeFrontierRelation>,
     project: [u8; 32],
     profile: LanguageProfile,
-    current_paths: &std::collections::BTreeSet<String>,
+    current_paths: &BTreeSet<String>,
 ) -> Result<CheckedNativeFrontier, String> {
     let manifest = relation
         .lookup(&product_native_frontier_profile_key(project, profile))

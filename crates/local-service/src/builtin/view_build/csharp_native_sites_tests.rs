@@ -20,7 +20,6 @@ use backend_semantic::ir::{
 use backend_semantic::vocabulary::{CSharpVersion, LanguageProfile, NativeTool, Stage};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use std::collections::BTreeSet;
-use std::path::Path;
 use std::sync::Arc;
 
 const LABEL: &str = "pkg:cargo/csharp-native-site-fixture@1.0.0";
