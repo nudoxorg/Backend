@@ -403,6 +403,7 @@ pub struct PackageSource<'source> {
 
 /// Why one exact package source contributed provenance but no semantic artifact.
 pub use backend_semantic::ir::SourceCoverageGapCause as PackageSourceCoverageGapCause;
+pub use backend_semantic::ir::SourceCoverageGapDiagnostic;
 
 /// Exact source retained in the input frontier but omitted from semantic lowering.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -414,6 +415,7 @@ pub struct PackageSourceCoverageGap {
         Option<backend_frontend_python::legacy::checker::PythonProjectSourceStatus>,
     native_python_diagnostics:
         Box<[backend_frontend_python::legacy::checker::PythonProjectDiagnostic]>,
+    typescript_diagnostic: Option<backend_semantic::ir::SourceCoverageGapDiagnostic>,
 }
 
 impl PackageSourceCoverageGap {
@@ -431,6 +433,14 @@ impl PackageSourceCoverageGap {
         &self,
     ) -> &[backend_frontend_python::legacy::checker::PythonProjectDiagnostic] {
         &self.native_python_diagnostics
+    }
+
+    /// Exact owner context when TypeScript lowering observed a source-bound type cycle.
+    #[must_use]
+    pub fn typescript_diagnostic(
+        &self,
+    ) -> Option<&backend_semantic::ir::SourceCoverageGapDiagnostic> {
+        self.typescript_diagnostic.as_ref()
     }
 
     /// Returns the exact source identity and byte length committed by the package input frontier.
@@ -2334,6 +2344,17 @@ impl DegradedSources {
         source: SourceAuthority,
         gaps: &mut Vec<PackageSourceCoverageGap>,
     ) -> Result<(), PackageSemanticError> {
+        self.degrade_with_diagnostic(terminal, path, source, None, gaps)
+    }
+
+    fn degrade_with_diagnostic(
+        &mut self,
+        terminal: CompilerTerminal,
+        path: &str,
+        source: SourceAuthority,
+        typescript_diagnostic: Option<SourceCoverageGapDiagnostic>,
+        gaps: &mut Vec<PackageSourceCoverageGap>,
+    ) -> Result<(), PackageSemanticError> {
         let Some(cause) = source_gap_cause(&terminal) else {
             return Err(PackageSemanticError::Compile {
                 path: path.into(),
@@ -2347,7 +2368,7 @@ impl DegradedSources {
             "source degraded to a coverage gap; the rest of the package keeps its facts"
         );
         self.deadline_passed |= cause == PackageSourceCoverageGapCause::CompileDeadlineExceeded;
-        self.push_gap(path, source, cause, gaps);
+        self.push_gap(path, source, cause, typescript_diagnostic, gaps);
         self.first.get_or_insert_with(|| (path.into(), terminal));
         Ok(())
     }
@@ -2363,6 +2384,7 @@ impl DegradedSources {
             path,
             source,
             PackageSourceCoverageGapCause::CompileDeadlineExceeded,
+            None,
             gaps,
         );
     }
@@ -2372,6 +2394,7 @@ impl DegradedSources {
         path: &str,
         source: SourceAuthority,
         cause: PackageSourceCoverageGapCause,
+        typescript_diagnostic: Option<SourceCoverageGapDiagnostic>,
         gaps: &mut Vec<PackageSourceCoverageGap>,
     ) {
         gaps.push(PackageSourceCoverageGap {
@@ -2380,6 +2403,7 @@ impl DegradedSources {
             cause,
             python_source_status: None,
             native_python_diagnostics: Box::new([]),
+            typescript_diagnostic,
         });
     }
 
@@ -2421,6 +2445,86 @@ fn source_gap_cause(terminal: &CompilerTerminal) -> Option<PackageSourceCoverage
         // The work directory and the child process are shared by every source.
         CompilerCause::NativeWork(_) | CompilerCause::NativeIo { .. } => None,
     }
+}
+
+/// Projects the existing exact owner spans of a TSZ cycle into a bounded,
+/// source-bounded coverage diagnostic. The caller passes the exact bytes for
+/// the current compile input. These are owner coordinates;
+/// the TSZ handle is deliberately kept opaque and is never presented as a name.
+fn typescript_source_gap_diagnostic(
+    terminal: &CompilerTerminal,
+    source: &[u8],
+) -> Option<SourceCoverageGapDiagnostic> {
+    use backend_semantic::vocabulary::{
+        LoweringUnsupported, ProjectionAdmissionFault, ProjectionSpan,
+    };
+
+    let CompilerTerminal::Compile {
+        cause: CompilerCause::Lowering(lowering),
+        ..
+    } = terminal
+    else {
+        return None;
+    };
+    let LoweringUnsupported::FactRejected {
+        cause:
+            ProjectionAdmissionFault::TypeProjectionCycle {
+                type_id,
+                owner_span: Some(ProjectionSpan { start, end }),
+                owner_name_span:
+                    Some(ProjectionSpan {
+                        start: name_start,
+                        end: name_end,
+                    }),
+            },
+        ..
+    } = &**lowering
+    else {
+        return None;
+    };
+
+    let raw_source = std::str::from_utf8(source).ok()?;
+    let _owner = raw_source.get(usize::try_from(*start).ok()?..usize::try_from(*end).ok()?)?;
+    let owner_name = raw_source
+        .get(usize::try_from(*name_start).ok()?..usize::try_from(*name_end).ok()?)?;
+    if owner_name.is_empty()
+        || *start >= *end
+        || *name_start < *start
+        || *name_end > *end
+        || owner_name.len() != name_end.saturating_sub(*name_start) as usize
+        || owner_name.len() > 256
+        || owner_name.chars().any(char::is_control)
+    {
+        return None;
+    }
+    let prefix = raw_source.get(..usize::try_from(*start).ok()?)?;
+    let mut line = 1u32;
+    let mut column = 1u32;
+    let mut chars = prefix.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '\r' {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            line = line.checked_add(1)?;
+            column = 1;
+        } else if matches!(character, '\n' | '\u{2028}' | '\u{2029}') {
+            line = line.checked_add(1)?;
+            column = 1;
+        } else {
+            column = column.checked_add(1)?;
+        }
+    }
+    Some(SourceCoverageGapDiagnostic::TypeProjectionCycle {
+        type_id: *type_id,
+        owner_start: *start,
+        owner_end: *end,
+        owner_name_start: *name_start,
+        owner_name_end: *name_end,
+        line,
+        column,
+        owner_name: owner_name.to_owned(),
+    })
 }
 
 /// TypeScript projects may retain siblings only when lowering or validating
@@ -2660,6 +2764,173 @@ mod source_degradation_tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn tsz_cycle_gap_diagnostic_uses_only_validated_owner_source_spans() {
+        use backend_semantic::vocabulary::{
+            LoweringUnsupported, ProjectionAdmissionFault, ProjectionSpan,
+        };
+
+        let source = "  export type Layout = string;\n";
+        let start = 2;
+        let end = source.find('\n').expect("owner line") as u32;
+        let name_start = source.find("Layout").expect("owner name") as u32;
+        let name_end = name_start + "Layout".len() as u32;
+        let terminal = compile(CompilerCause::Lowering(
+            backend_library::interface::LoweringCause::new(
+                LoweringUnsupported::FactRejected {
+                    fact: 0,
+                    name_len: u64::from(name_end - name_start),
+                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                        type_id: 0xfeed,
+                        owner_span: Some(ProjectionSpan { start, end }),
+                        owner_name_span: Some(ProjectionSpan {
+                            start: name_start,
+                            end: name_end,
+                        }),
+                    },
+                },
+            ),
+        ));
+
+        assert!(matches!(
+            typescript_source_gap_diagnostic(&terminal, source.as_bytes()),
+            Some(SourceCoverageGapDiagnostic::TypeProjectionCycle {
+                type_id: 0xfeed,
+                owner_start: 2,
+                owner_end,
+                owner_name_start,
+                owner_name_end,
+                line: 1,
+                column: 3,
+                owner_name,
+            }) if owner_end == end && owner_name_start == name_start && owner_name_end == name_end && owner_name == "Layout"
+        ));
+        let out_of_bounds = compile(CompilerCause::Lowering(
+            backend_library::interface::LoweringCause::new(
+                LoweringUnsupported::FactRejected {
+                    fact: 0,
+                    name_len: u64::from(name_end - name_start),
+                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                        type_id: 0xfeed,
+                        owner_span: Some(ProjectionSpan {
+                            start,
+                            end: source.len() as u32 + 1,
+                        }),
+                        owner_name_span: Some(ProjectionSpan {
+                            start: name_start,
+                            end: name_end,
+                        }),
+                    },
+                },
+            ),
+        ));
+        assert!(typescript_source_gap_diagnostic(&out_of_bounds, source.as_bytes()).is_none());
+
+        let out_of_bounds_name = compile(CompilerCause::Lowering(
+            backend_library::interface::LoweringCause::new(
+                LoweringUnsupported::FactRejected {
+                    fact: 0,
+                    name_len: 1,
+                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                        type_id: 0xfeed,
+                        owner_span: Some(ProjectionSpan { start, end }),
+                        owner_name_span: Some(ProjectionSpan {
+                            start: source.len() as u32,
+                            end: source.len() as u32 + 1,
+                        }),
+                    },
+                },
+            ),
+        ));
+        assert!(typescript_source_gap_diagnostic(&out_of_bounds_name, source.as_bytes()).is_none());
+
+        let unicode_source = "  export type Layout = \"λ\";\n";
+        let lambda_byte = unicode_source.find('λ').expect("unicode fixture") as u32;
+        let invalid_utf8_name = compile(CompilerCause::Lowering(
+            backend_library::interface::LoweringCause::new(
+                LoweringUnsupported::FactRejected {
+                    fact: 0,
+                    name_len: 1,
+                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                        type_id: 0xfeed,
+                        owner_span: Some(ProjectionSpan {
+                            start,
+                            end: unicode_source.find('\n').expect("owner line") as u32,
+                        }),
+                        owner_name_span: Some(ProjectionSpan {
+                            start: lambda_byte + 1,
+                            end: lambda_byte + 2,
+                        }),
+                    },
+                },
+            ),
+        ));
+        assert!(
+            typescript_source_gap_diagnostic(&invalid_utf8_name, unicode_source.as_bytes())
+                .is_none()
+        );
+
+        let source_with_tail = format!("{source}extra");
+        let tail_start = source_with_tail.find("extra").expect("tail fixture") as u32;
+        let not_contained = compile(CompilerCause::Lowering(
+            backend_library::interface::LoweringCause::new(
+                LoweringUnsupported::FactRejected {
+                    fact: 0,
+                    name_len: 5,
+                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                        type_id: 0xfeed,
+                        owner_span: Some(ProjectionSpan { start, end }),
+                        owner_name_span: Some(ProjectionSpan {
+                            start: tail_start,
+                            end: tail_start + 5,
+                        }),
+                    },
+                },
+            ),
+        ));
+        assert!(
+            typescript_source_gap_diagnostic(&not_contained, source_with_tail.as_bytes()).is_none()
+        );
+    }
+
+    #[test]
+    fn tsz_cycle_gap_diagnostic_counts_ecmascript_line_terminators_and_scalar_columns() {
+        use backend_semantic::vocabulary::{
+            LoweringUnsupported, ProjectionAdmissionFault, ProjectionSpan,
+        };
+
+        let source = "α\r\nx\ry\u{2028}z\u{2029}  export type Layout = string;\n";
+        let start = source.find("export").expect("owner declaration") as u32;
+        let end = source.find('\n').expect("owner line") as u32;
+        let name_start = source.find("Layout").expect("owner name") as u32;
+        let name_end = name_start + "Layout".len() as u32;
+        let terminal = compile(CompilerCause::Lowering(
+            backend_library::interface::LoweringCause::new(
+                LoweringUnsupported::FactRejected {
+                    fact: 0,
+                    name_len: u64::from(name_end - name_start),
+                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                        type_id: 0xfeed,
+                        owner_span: Some(ProjectionSpan { start, end }),
+                        owner_name_span: Some(ProjectionSpan {
+                            start: name_start,
+                            end: name_end,
+                        }),
+                    },
+                },
+            ),
+        ));
+        assert!(matches!(
+            typescript_source_gap_diagnostic(&terminal, source.as_bytes()),
+            Some(SourceCoverageGapDiagnostic::TypeProjectionCycle {
+                line: 5,
+                column: 3,
+                owner_name,
+                ..
+            }) if owner_name == "Layout"
+        ));
     }
 }
 
@@ -3764,6 +4035,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         .filter(|diagnostic| diagnostic.relative_path.as_ref() == raw.relative_path)
                         .cloned()
                         .collect(),
+                    typescript_diagnostic: None,
                 });
             }
         }
@@ -4149,6 +4421,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         cause: PackageSourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
                         python_source_status: None,
                         native_python_diagnostics: Box::new([]),
+                        typescript_diagnostic: None,
                     });
                     continue;
                 }
@@ -4170,6 +4443,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             cause: PackageSourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted,
                             python_source_status: None,
                             native_python_diagnostics: Box::new([]),
+                            typescript_diagnostic: None,
                         });
                         continue;
                     }
@@ -4209,6 +4483,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             })
                             .cloned()
                             .collect(),
+                        typescript_diagnostic: None,
                     });
                     continue;
                 }
@@ -4377,6 +4652,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                                 PackageSourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted,
                             python_source_status: None,
                             native_python_diagnostics: Box::new([]),
+                            typescript_diagnostic: None,
                         });
                         continue;
                     }
@@ -4425,6 +4701,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         cause: PackageSourceCoverageGapCause::RustSourceOutsideActiveCargoTarget,
                         python_source_status: None,
                         native_python_diagnostics: Box::new([]),
+                        typescript_diagnostic: None,
                     });
                     continue;
                 }
@@ -4441,10 +4718,15 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             terminal: Box::new(terminal),
                         });
                     }
-                    degraded.degrade(
+                    let diagnostic = typescript_source_gap_diagnostic(
+                        &terminal,
+                        source.source.as_bytes(),
+                    );
+                    degraded.degrade_with_diagnostic(
                         terminal,
                         source.relative_path,
                         source_authority,
+                        diagnostic,
                         &mut coverage_gaps,
                     )?;
                     continue;
@@ -4888,6 +5170,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     source: *gap.source().identity.as_ref(),
                     byte_len: gap.source().byte_len,
                     cause: gap.cause(),
+                    diagnostic: gap.typescript_diagnostic().cloned(),
                 }));
                 SourceCoverageManifest::new(
                     *input.input_root(),

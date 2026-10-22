@@ -58,7 +58,82 @@ pub enum SourceCoverageRow {
         byte_len: u32,
         /// Producer-observed cause, distinct from a terminal profile failure.
         cause: SourceCoverageGapCause,
+        /// Exact TypeScript owner context for a source-local type-projection cycle.
+        /// Its offsets are into the source identity and byte length above; it
+        /// deliberately names the owner declaration, not the recursive edge.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        diagnostic: Option<SourceCoverageGapDiagnostic>,
     },
+}
+
+/// Bounded source context retained for one exact TSZ type-projection cycle.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum SourceCoverageGapDiagnostic {
+    /// A repeated native TSZ type handle while projecting the named owner.
+    TypeProjectionCycle {
+        /// Opaque TSZ handle payload; this is diagnostic identity, not a type name.
+        type_id: u32,
+        /// Exact owner declaration byte range in the captured source.
+        owner_start: u32,
+        /// Exclusive end of the owner declaration byte range.
+        owner_end: u32,
+        /// Exact owner identifier byte range in the captured source.
+        owner_name_start: u32,
+        /// Exclusive end of the owner identifier byte range.
+        owner_name_end: u32,
+        /// One-based line containing the owner declaration.
+        line: u32,
+        /// One-based Unicode-scalar column at the start of the owner declaration.
+        column: u32,
+        /// Exact identifier spelling sliced from the captured source.
+        owner_name: String,
+    },
+}
+
+impl SourceCoverageGapDiagnostic {
+    fn validate(&self, byte_len: u32) -> Result<(), &'static str> {
+        match self {
+            Self::TypeProjectionCycle {
+                owner_start,
+                owner_end,
+                owner_name_start,
+                owner_name_end,
+                line,
+                column,
+                owner_name,
+                ..
+            } if owner_start < owner_end
+                && owner_end <= &byte_len
+                && owner_start <= owner_name_start
+                && owner_name_start < owner_name_end
+                && owner_name_end <= owner_end
+                && *line > 0
+                && *column > 0
+                && !owner_name.is_empty()
+                && owner_name.len() <= 256
+                && owner_name_end - owner_name_start == owner_name.len() as u32
+                && !owner_name.chars().any(char::is_control) => Ok(()),
+            _ => Err("invalid TypeScript coverage diagnostic"),
+        }
+    }
+
+    /// Human-readable context that preserves the distinction between owner and cycle edge.
+    pub fn summary(&self) -> String {
+        match self {
+            Self::TypeProjectionCycle {
+                type_id,
+                line,
+                column,
+                owner_start,
+                owner_end,
+                owner_name,
+                ..
+            } => format!(
+                "owner declaration {owner_name:?} at {line}:{column} (bytes {owner_start}..{owner_end}); TSZ handle {type_id}"
+            ),
+        }
+    }
 }
 impl SourceCoverageRow {
     /// Exact normalized path, in the row's declared coordinate space.
@@ -109,6 +184,18 @@ impl SourceCoverageRow {
             .map_err(|_| "invalid coverage source identity")?;
         if matches!(self, Self::Configuration{environment,..} if *environment==[0;32]) {
             return Err("invalid coverage config environment");
+        }
+        if let Self::Gap {
+            byte_len,
+            cause,
+            diagnostic: Some(diagnostic),
+            ..
+        } = self
+        {
+            if *cause != SourceCoverageGapCause::SourceNotRepresentable {
+                return Err("coverage diagnostic requires a source representation gap");
+            }
+            diagnostic.validate(*byte_len)?;
         }
         Ok(())
     }
@@ -180,7 +267,15 @@ impl SourceCoverageManifest {
                     .checked_add(row.path().len())?
                     .checked_add(match row {
                         SourceCoverageRow::Configuration { .. } => 69,
-                        SourceCoverageRow::Gap { .. } => 42,
+                        SourceCoverageRow::Gap { diagnostic, .. } => {
+                            42 + diagnostic.as_ref().map_or(0, |diagnostic| match diagnostic {
+                                SourceCoverageGapDiagnostic::TypeProjectionCycle {
+                                    owner_name, ..
+                                } => {
+                                    32 + owner_name.len()
+                                }
+                            })
+                        }
                     })
             })
             .ok_or("coverage catalog length overflow")?;
@@ -238,6 +333,21 @@ impl SourceCoverageManifest {
                     | SourceCoverageRow::Gap { path, .. } => path.capacity(),
                 })
                 .sum::<usize>()
+            + self
+                .rows
+                .iter()
+                .map(|row| match row {
+                    SourceCoverageRow::Gap {
+                        diagnostic:
+                            Some(SourceCoverageGapDiagnostic::TypeProjectionCycle {
+                                owner_name,
+                                ..
+                            }),
+                        ..
+                    } => owner_name.capacity(),
+                    _ => 0,
+                })
+                .sum::<usize>()
     }
     /// Exact canonical typed-object payload.
     pub fn encode(&self) -> Vec<u8> {
@@ -250,7 +360,14 @@ impl SourceCoverageManifest {
         out.extend_from_slice(&self.completed.to_le_bytes());
         out.extend_from_slice(&(self.rows.len() as u32).to_le_bytes());
         for row in &self.rows {
-            out.push(row.key().0);
+            let row_tag = match row {
+                SourceCoverageRow::Gap {
+                    diagnostic: Some(_),
+                    ..
+                } => 2,
+                _ => row.key().0,
+            };
+            out.push(row_tag);
             out.extend_from_slice(&(row.path().len() as u32).to_le_bytes());
             out.extend_from_slice(row.path().as_bytes());
             match row {
@@ -266,11 +383,35 @@ impl SourceCoverageManifest {
                     source,
                     byte_len,
                     cause,
-                    ..
+                    diagnostic,
                 } => {
                     out.extend_from_slice(source);
                     out.extend_from_slice(&byte_len.to_le_bytes());
                     out.push(cause.tag());
+                    if let Some(diagnostic) = diagnostic {
+                        match diagnostic {
+                            SourceCoverageGapDiagnostic::TypeProjectionCycle {
+                                type_id,
+                                owner_start,
+                                owner_end,
+                                owner_name_start,
+                                owner_name_end,
+                                line,
+                                column,
+                                owner_name,
+                            } => {
+                                out.extend_from_slice(&type_id.to_le_bytes());
+                                out.extend_from_slice(&owner_start.to_le_bytes());
+                                out.extend_from_slice(&owner_end.to_le_bytes());
+                                out.extend_from_slice(&owner_name_start.to_le_bytes());
+                                out.extend_from_slice(&owner_name_end.to_le_bytes());
+                                out.extend_from_slice(&line.to_le_bytes());
+                                out.extend_from_slice(&column.to_le_bytes());
+                                out.extend_from_slice(&(owner_name.len() as u32).to_le_bytes());
+                                out.extend_from_slice(owner_name.as_bytes());
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -311,11 +452,39 @@ impl SourceCoverageManifest {
                     source,
                     environment: d.array()?,
                 },
-                1 => SourceCoverageRow::Gap {
+                1 | 2 => SourceCoverageRow::Gap {
                     path,
                     source,
                     byte_len: d.u32()?,
                     cause: SourceCoverageGapCause::from_tag(d.take(1)?[0])?,
+                    diagnostic: if tag == 2 {
+                        let type_id = d.u32()?;
+                        let owner_start = d.u32()?;
+                        let owner_end = d.u32()?;
+                        let owner_name_start = d.u32()?;
+                        let owner_name_end = d.u32()?;
+                        let line = d.u32()?;
+                        let column = d.u32()?;
+                        let name_len = d.u32()? as usize;
+                        if name_len > 256 {
+                            return Err("coverage diagnostic name capacity exceeded");
+                        }
+                        let owner_name = std::str::from_utf8(d.take(name_len)?)
+                            .map_err(|_| "coverage diagnostic name encoding")?
+                            .to_owned();
+                        Some(SourceCoverageGapDiagnostic::TypeProjectionCycle {
+                            type_id,
+                            owner_start,
+                            owner_end,
+                            owner_name_start,
+                            owner_name_end,
+                            line,
+                            column,
+                            owner_name,
+                        })
+                    } else {
+                        None
+                    },
                 },
                 _ => return Err("invalid coverage row tag"),
             });
@@ -712,14 +881,70 @@ mod tests {
                 source: source(b"spec"),
                 byte_len: 4,
                 cause: SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
+                diagnostic: None,
             },
             SourceCoverageRow::Gap {
                 path: "src/slow.ts".into(),
                 source: source(b"slow"),
                 byte_len: 4,
                 cause: SourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted,
+                diagnostic: None,
             },
         ]
+    }
+
+    #[test]
+    fn exact_tsz_cycle_owner_context_survives_coverage_wire_and_json() {
+        let source_text = "export default function Layout() {}\n";
+        let name_start = source_text.find("Layout").expect("fixture owner name") as u32;
+        let name_end = name_start + "Layout".len() as u32;
+        let row = SourceCoverageRow::Gap {
+            path: "src/app/layout.tsx".into(),
+            source: source(source_text.as_bytes()),
+            byte_len: source_text.len() as u32,
+            cause: SourceCoverageGapCause::SourceNotRepresentable,
+            diagnostic: Some(SourceCoverageGapDiagnostic::TypeProjectionCycle {
+                type_id: 0xfeed,
+                owner_start: 0,
+                owner_end: source_text.len() as u32 - 1,
+                owner_name_start: name_start,
+                owner_name_end: name_end,
+                line: 1,
+                column: 1,
+                owner_name: "Layout".into(),
+            }),
+        };
+        let catalog = SourceCoverageManifest::new([3; 32], [1, 1], [7; 32], 1, 0, vec![row])
+            .expect("exact source-bound diagnostic is admitted");
+        let wire = catalog.encode();
+        let decoded = SourceCoverageManifest::decode(&wire).expect("diagnostic wire round-trips");
+        assert_eq!(decoded, catalog);
+        let json = serde_json::to_string(&catalog.rows()[0]).expect("coverage JSON");
+        let projected: SourceCoverageRow =
+            serde_json::from_str(&json).expect("coverage diagnostic JSON round-trips");
+        assert_eq!(projected, catalog.rows()[0]);
+        let Some(SourceCoverageRow::Gap {
+            path,
+            diagnostic: Some(diagnostic),
+            ..
+        }) = decoded.rows().first()
+        else {
+            panic!("diagnostic remains attached to exact source gap")
+        };
+        assert_eq!(path, "src/app/layout.tsx");
+        assert!(diagnostic.summary().contains("owner declaration \"Layout\" at 1:1"));
+        assert!(diagnostic.summary().contains("bytes 0..35"));
+        assert!(!diagnostic.summary().contains("recursive edge"));
+
+        let mut truncated = wire.clone();
+        truncated.pop();
+        assert!(SourceCoverageManifest::decode(&truncated).is_err());
+
+        let mut invalid_name_end = wire;
+        let name_end_offset = 86 + 1 + 4 + "src/app/layout.tsx".len() + 32 + 4 + 1 + 4 + 4 + 4 + 4;
+        invalid_name_end[name_end_offset..name_end_offset + 4]
+            .copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(SourceCoverageManifest::decode(&invalid_name_end).is_err());
     }
     #[test]
     fn coverage_capacity_forecast_is_borrowed_complete_and_not_a_truncated_catalog() {
@@ -809,6 +1034,8 @@ mod tests {
         assert_eq!(tsx.profile(), [1, 1]);
         assert_ne!(tsx.identity(), value.identity());
         let bytes = value.encode();
+        let config_row_len = 1 + 4 + "tsconfig.app.json".len() + 32 + 32;
+        assert_eq!(bytes[86 + config_row_len], 1, "legacy gap rows keep tag 1");
         let cold =
             SourceCoverageManifest::decode(&bytes).expect("encoded coverage manifest decodes");
         assert_eq!(cold, value);

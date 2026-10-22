@@ -47,6 +47,7 @@ pub use self::compiler::{
     ActivatedSemanticPackage, EmbeddingProvisioningFailure, EmbeddingRequirement, LocalCompiler,
     MAX_PACKAGE_EMBEDDING_BYTES, PackageSemanticError, PackageSource, PackageSourceCoverageGap,
     PackageSourceCoverageGapCause, PackageSourceSet, PackageSourceSetError,
+    SourceCoverageGapDiagnostic,
     PublishedSemanticPackage, StagedEmbeddingStatus, StagedSemanticArtifact,
     StagedSemanticOutputObject, StagedSemanticPackage, StagedSemanticReaderError,
     StagedSemanticReaderMetrics, StagedTypedPlaneContentArtifact, StagedTypedPlaneContentError,

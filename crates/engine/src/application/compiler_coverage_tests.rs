@@ -180,7 +180,7 @@ fn linked_tsz_angular50_records_actual_config_and_exact_nine_scope_observations(
         .expect("complete explanation fits");
     assert_eq!((coverage.source_count(), coverage.completed()), (50, 41));
     assert_eq!(coverage.input_root(), staged.input_witness().input_root());
-    let gaps=coverage.rows().iter().filter_map(|row|match row {SourceCoverageRow::Gap{path,source,byte_len,cause}=>{
+    let gaps=coverage.rows().iter().filter_map(|row|match row {SourceCoverageRow::Gap{path,source,byte_len,cause,..}=>{
         let bytes=fixture.files[path].as_bytes();
         assert_eq!(*source,*backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(bytes).as_ref());
         assert_eq!(*byte_len as usize,bytes.len());
@@ -308,7 +308,7 @@ fn linked_tsz_tsx_cycle_is_an_exact_file_gap_while_navbar_and_caller_publish() {
         .expect("coverage explanation fits");
     assert_eq!((coverage.source_count(), coverage.completed()), (4, 3));
     assert!(coverage.rows().iter().any(|row| {
-        matches!(row, SourceCoverageRow::Gap { path, source, byte_len, cause }
+        matches!(row, SourceCoverageRow::Gap { path, source, byte_len, cause, .. }
             if path == "src/app/layout.tsx"
                 && source == gap.source().identity.as_ref()
                 && *byte_len as usize == layout.len()
