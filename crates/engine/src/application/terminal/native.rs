@@ -137,6 +137,17 @@ fn authority_terminal(
         }
         _ => diagnostic,
     };
+    let rust_scope = match failure {
+        crate::driver::AuthorityFailure::Rust { cause, .. } => rust_source_scope_failure(cause),
+        _ => None,
+    };
+    let diagnostic = match (diagnostic, rust_scope) {
+        (Some(diagnostic), Some(scope)) => Some(diagnostic.with_rust_source_scope_failure(scope)),
+        (None, Some(scope)) => Some(
+            backend_library::interface::CompilerDiagnostic::from_rust_source_scope_failure(scope),
+        ),
+        (diagnostic, None) => diagnostic,
+    };
     compile_from_driver(
         source,
         recipe,
@@ -146,6 +157,42 @@ fn authority_terminal(
             diagnostic,
         },
     )
+}
+
+fn rust_source_scope_failure(
+    cause: &backend_frontend_rust::legacy::RustAuthorityError,
+) -> Option<backend_library::interface::RustSourceScopeFailureKind> {
+    use backend_frontend_rust::legacy::{RustAuthorityError as E, RustCargoTargetResolution as R};
+    use backend_library::interface::{
+        RustSourceScopeFailureKind as F, RustTargetResolutionKind as T,
+    };
+    match cause {
+        E::DetachedSource {
+            active_hir_roots, ..
+        } => Some(F::DetachedSource {
+            active_hir_root_count: u64::try_from(active_hir_roots.package_crate_count).ok()?,
+        }),
+        E::AmbiguousSourceOwner {
+            definition_count,
+            omitted_owner_definitions,
+            target_resolution,
+            ..
+        } => Some(F::AmbiguousSourceOwner {
+            definition_count: u64::try_from(*definition_count).ok()?,
+            omitted_definition_count: u64::try_from(*omitted_owner_definitions).ok()?,
+            target_resolution: match target_resolution {
+                R::NotRequested => T::NotRequested,
+                R::MetadataUnavailable => T::MetadataUnavailable,
+                R::SelectedPackageUnavailable => T::SelectedPackageUnavailable,
+                R::ManifestMismatch => T::ManifestMismatch,
+                R::NoExactTarget => T::NoExactTarget,
+                R::DuplicateExactTarget => T::DuplicateExactTarget,
+                R::ExactCargoTarget => T::ExactCargoTarget,
+                R::ExplicitUnitTarget => T::ExplicitUnitTarget,
+            },
+        }),
+        _ => None,
+    }
 }
 
 const fn unsupported_stage(
@@ -337,11 +384,17 @@ const fn configured_tool(
 #[cfg(test)]
 mod tests {
     use crate::driver::{AuthorityDiagnostic, AuthorityFailure, CompileFailure};
+    use backend_frontend_rust::legacy::{
+        RustActiveHirRootInventory, RustAuthorityError, RustCargoTargetResolution,
+    };
     use backend_frontend_typescript::legacy::{AuthorityError, with_analysis};
     use backend_library::interface::{
         CompilerCause, CompilerFragmentFailure, CompilerFragmentFault, CompilerTerminal,
+        RustSourceScopeFailureKind, RustTargetResolutionKind,
     };
-    use backend_semantic::ir::{BuildError, EntityId, FragmentError, LayoutStep, PrepareError, WriteError};
+    use backend_semantic::ir::{
+        BuildError, EntityId, FragmentError, LayoutStep, PrepareError, WriteError,
+    };
     use backend_semantic::vocabulary::{
         AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, LanguageProfile, NativeTool,
         PythonVersion, Stage, TypeScriptSource,
@@ -521,6 +574,89 @@ mod tests {
             return Err(ProjectionError::FactOrdinal);
         }
         Ok(())
+    }
+
+    #[test]
+    fn rust_source_scope_facts_survive_failure_codec_without_native_paths() {
+        let (source, recipe) = source_and_recipe();
+        let failure = AuthorityFailure::Rust {
+            diagnostic: AuthorityDiagnostic::absent(),
+            cause: RustAuthorityError::AmbiguousSourceOwner {
+                path: "/private/workspace/src/lib.rs".into(),
+                definition_count: 4,
+                owner_root_sample: vec!["/private/workspace/src/lib.rs".into()].into_boxed_slice(),
+                omitted_owner_definitions: 2,
+                target_resolution: RustCargoTargetResolution::NoExactTarget,
+            },
+        };
+        let terminal = authority_terminal(source, recipe, &failure);
+        let CompilerTerminal::Compile {
+            cause:
+                CompilerCause::Authority {
+                    class: AuthorityDiagnosticClass::SourceScope,
+                    diagnostic: Some(diagnostic),
+                    ..
+                },
+            ..
+        } = &terminal
+        else {
+            panic!("Rust scope refusal remains typed through the terminal boundary");
+        };
+        assert_eq!(
+            diagnostic.rust_source_scope_failure,
+            Some(RustSourceScopeFailureKind::AmbiguousSourceOwner {
+                definition_count: 4,
+                omitted_definition_count: 2,
+                target_resolution: RustTargetResolutionKind::NoExactTarget,
+            })
+        );
+        assert_eq!(diagnostic.byte_len, 0, "no native output was supplied");
+
+        let failure =
+            backend_library::PackageCompilerFailure::from_package_terminal("src/lib.rs", &terminal)
+                .expect("bounded refusal projection")
+                .expect("Rust authority refusal");
+        let encoded = failure
+            .encode_bounded_json()
+            .expect("canonical bounded refusal");
+        let wire = String::from_utf8(encoded.clone()).expect("JSON UTF-8");
+        assert!(!wire.contains("/private/workspace"));
+        assert!(!wire.contains("native stderr"));
+        let reopened = backend_library::PackageCompilerFailure::decode_bounded_json(&encoded)
+            .expect("cold reader preserves closed Rust scope facts");
+        let backend_library::PackageCompilerFailureCause::Authority {
+            diagnostic: Some(facts),
+            ..
+        } = reopened.cause()
+        else {
+            panic!("Rust scope diagnostic is retained in the public failure");
+        };
+        assert_eq!(
+            facts.rust_source_scope_failure,
+            Some(RustSourceScopeFailureKind::AmbiguousSourceOwner {
+                definition_count: 4,
+                omitted_definition_count: 2,
+                target_resolution: RustTargetResolutionKind::NoExactTarget,
+            })
+        );
+        assert!(reopened.detail().contains("4 active owner definitions"));
+        assert!(reopened.detail().contains("no_exact_target"));
+        assert!(!reopened.detail().contains("/private/workspace"));
+
+        let detached = RustAuthorityError::DetachedSource {
+            path: "/private/workspace/src/detached.rs".into(),
+            active_hir_roots: RustActiveHirRootInventory {
+                package_crate_count: 3,
+                package_relative_roots: vec!["src/lib.rs".into()].into_boxed_slice(),
+                omitted_package_crates: 2,
+            },
+        };
+        assert_eq!(
+            super::rust_source_scope_failure(&detached),
+            Some(RustSourceScopeFailureKind::DetachedSource {
+                active_hir_root_count: 3,
+            })
+        );
     }
 
     #[derive(Debug, thiserror::Error)]

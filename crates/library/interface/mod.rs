@@ -46,12 +46,15 @@ pub use compiler::{
     NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage, NestedCompilerFaultFacts,
     OccurrenceFaultFacts, PrepareFaultKind, PublicationAuthority, PublicationCause,
     PublicationPhase, PythonAuthorityFailureKind, PythonConfigurationRefusalFacts,
-    SemanticDataFaultFacts, SemanticImageAccessError, SemanticImageAuthority,
-    SemanticImageSnapshot, SignatureCarrierFaultFacts, SourceAuthority, TypeNodeFaultFacts,
-    UnavailableCompiler, ValidateFaultKind, ValidationFaultFacts, WriteFaultKind,
+    RustSourceScopeFailureKind, RustTargetResolutionKind, SemanticDataFaultFacts,
+    SemanticImageAccessError, SemanticImageAuthority, SemanticImageSnapshot,
+    SignatureCarrierFaultFacts, SourceAuthority, TypeNodeFaultFacts, UnavailableCompiler,
+    ValidateFaultKind, ValidationFaultFacts, WriteFaultKind,
 };
 pub use compiler_go::GoAuthorityFailureKind;
-pub use compiler_typescript::{TypeScriptAuthorityFailureKind, TypeScriptStopPhase, TypeScriptStopSite};
+pub use compiler_typescript::{
+    TypeScriptAuthorityFailureKind, TypeScriptStopPhase, TypeScriptStopSite,
+};
 pub use compiler_typescript_admission::{
     TypeScriptCompilerAdmissionCause, TypeScriptCompilerAdmissionDetail,
     TypeScriptCompilerApiExport, TypeScriptCompilerPackageRole, TypeScriptCompilerVersion,
