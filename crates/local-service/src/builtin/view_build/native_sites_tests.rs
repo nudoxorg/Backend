@@ -455,7 +455,7 @@ fn native_site_proof_reaches_production_semantic_rows_without_a_structural_twin(
     .expect("stale semantic row projection");
     assert_eq!(
         stale.rows[0].row.source,
-        backend_engine::SourceAvailability::NotCaptured,
+        backend_library::SourceAvailability::NotCaptured,
     );
     assert_eq!(
         stale.rows[0].row.excerpt,
@@ -491,7 +491,7 @@ fn native_site_proof_reaches_production_semantic_rows_without_a_structural_twin(
     .expect("mismatched proof remains a conservative row projection");
     assert_eq!(
         refused.rows[0].row.source,
-        backend_engine::SourceAvailability::NotCaptured,
+        backend_library::SourceAvailability::NotCaptured,
     );
     assert_eq!(
         refused.rows[0].row.excerpt,

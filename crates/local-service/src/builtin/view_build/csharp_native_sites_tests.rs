@@ -453,7 +453,7 @@ fn csharp_site_proof_reaches_production_semantic_rows_without_a_structural_twin(
     .expect("stale C# semantic row projection");
     assert_eq!(
         stale.rows[0].row.source,
-        backend_engine::SourceAvailability::NotCaptured,
+        backend_library::SourceAvailability::NotCaptured,
     );
     assert_eq!(
         stale.rows[0].row.excerpt,
