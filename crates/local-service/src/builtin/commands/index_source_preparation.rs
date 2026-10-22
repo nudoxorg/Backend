@@ -785,7 +785,7 @@ pub(super) fn prepare_scan_source(
         changes,
         source_facts_changes,
         native_frontier_changes,
-        native_frontier: scan.native_frontier.clone(),
+        native_frontier,
         revision_fence: final_revision_fence,
         python_environment: scan.python_environment,
         cancellation,
