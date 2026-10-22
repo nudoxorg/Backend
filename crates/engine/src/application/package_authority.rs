@@ -171,6 +171,8 @@ pub struct PackageAuthorityRequest<'request, 'config> {
     pub source_path: &'request Path,
     /// Exact source bytes read by the package resolver.
     pub source: &'request [u8],
+    /// Exact captured Java siblings available to javac without becoming explicit image inputs.
+    pub java_sourcepath: &'request [JavaSource<'request>],
     /// Exact native compilation unit selected by the admitted package target.
     pub unit_key: &'request CompilationUnitKeyV2,
     /// Closed language profile that determines the one allowed authority.
@@ -972,15 +974,22 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                     name: relative,
                     bytes: request.source,
                 }];
+                let captured_sourcepath = request
+                    .java_sourcepath
+                    .iter()
+                    .copied()
+                    .filter(|dependency| dependency.name != relative)
+                    .collect::<Vec<_>>();
                 let mut image = Vec::new();
                 session
-                    .image(
+                    .image_with_captured_sourcepath(
                         configuration.toolchain,
                         HarnessRequest {
                             sources: &source,
                             classpath: configuration.classpath,
                             release: profile,
                         },
+                        &captured_sourcepath,
                         &mut image,
                     )
                     .map_err(PackageAuthorityError::JavaHarness)?;
@@ -1556,6 +1565,7 @@ mod tests {
             package_root: &root,
             source_path: &source_path,
             source,
+            java_sourcepath: &[],
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::Go(GoVersion::Go125),
             toolchain: ToolchainSelection::ResolvedNative(go_toolchain()),
@@ -1594,6 +1604,7 @@ mod tests {
             package_root: &root,
             source_path: &entry,
             source: b"int main(void) { return 0; }",
+            java_sourcepath: &[],
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::C(CStandard::C11),
             toolchain: ToolchainSelection::ResolvedNative(clang_toolchain()),
@@ -1622,6 +1633,7 @@ mod tests {
             package_root: Path::new("/packages/example"),
             source_path: Path::new("/packages/example/main.c"),
             source: b"int main(void) { return 0; }",
+            java_sourcepath: &[],
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::C(CStandard::C11),
             toolchain: ToolchainSelection::ResolvedNative(clang_toolchain()),
@@ -1651,6 +1663,7 @@ mod tests {
             package_root: Path::new("/packages/example"),
             source_path: Path::new("/packages/example/Library.cs"),
             source: b"public sealed class Library {}",
+            java_sourcepath: &[],
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
             toolchain: ToolchainSelection::ResolvedNative(csharp_toolchain()),

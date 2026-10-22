@@ -411,6 +411,59 @@ fn sibling_resolution_uses_discovered_maven_roots() -> TestResult {
 }
 
 #[test]
+fn captured_sibling_sourcepath_uses_exact_bytes_and_keeps_primary_binding() -> TestResult {
+    let (jdk, harness) = authority()?;
+    let app = b"package demo;\npublic final class App { public String value() { return Helper.value(); } }\n";
+    let module = b"module captured.sources { exports demo; }\n";
+    let helper = b"package demo;\npublic final class Helper { public static String value() { return \"captured\"; } }\n";
+    let sources = [JavaSource {
+        name: Path::new("demo/App.java"),
+        bytes: app,
+    }];
+    let captured = [
+        JavaSource {
+            name: Path::new("module-info.java"),
+            bytes: module,
+        },
+        JavaSource {
+            name: Path::new("demo/Helper.java"),
+            bytes: helper,
+        },
+    ];
+    let request = HarnessRequest {
+        sources: &sources,
+        classpath: &[],
+        release: JavaRelease::Java21,
+    };
+    let mut output = Vec::new();
+    harness.image_with_captured_sourcepath(&jdk, request, &captured, &mut output)?;
+    let image = JavaAuthorityImage::open(&output)?;
+    let mut digest = Sha256::new();
+    digest.update(app);
+    let expected: [u8; 32] = digest.finalize().into();
+    assert_eq!(image.source_digest(), expected);
+
+    let mut without_siblings = Vec::new();
+    let error = harness
+        .image_with_captured_sourcepath(&jdk, request, &[], &mut without_siblings)
+        .err()
+        .ok_or_else(|| io::Error::other("uncaptured sibling unexpectedly compiled"))?;
+    assert_eq!(
+        error.unavailable_cause(),
+        Some(UnavailableCause::Compilation)
+    );
+    let HarnessError::Command { stderr, .. } = &error else {
+        panic!("unexpected error: {error}")
+    };
+    assert!(
+        stderr.contains("Helper"),
+        "missing sibling diagnostic: {stderr}"
+    );
+    assert!(without_siblings.is_empty());
+    Ok(())
+}
+
+#[test]
 fn newer_record_fails_java8_explicitly_without_upgrade() -> TestResult {
     let (jdk, harness) = authority()?;
     let source = b"package legacy;\n\npublic record Point(int x, int y) {}\n";
