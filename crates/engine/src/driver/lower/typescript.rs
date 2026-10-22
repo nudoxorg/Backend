@@ -14227,6 +14227,97 @@ describe('suite', () => {\n\
     }
 
     #[test]
+    fn native_tsz_relative_and_path_alias_jsx_references_keep_exact_targets() -> Result<(), LaneError> {
+        let relative = "export const RelativeButton = () => <button />;\n";
+        let alias = "export const AliasButton = () => <button />;\n";
+        let caller = "import { RelativeButton } from '../components/RelativeButton';\nimport { AliasButton } from '@/components/AliasButton';\nexport default function Page() { return <><RelativeButton /><AliasButton /></>; }\n";
+        let resolutions = [
+            module_resolution(
+                "src/app/page.tsx",
+                "../components/RelativeButton",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "src/components/RelativeButton.tsx".to_owned(),
+                },
+            ),
+            module_resolution(
+                "src/app/page.tsx",
+                "@/components/AliasButton",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "src/components/AliasButton.tsx".to_owned(),
+                },
+            ),
+        ];
+        let authority = native_tsz_project_with_resolutions(
+            &[
+                ("src/components/RelativeButton.tsx", relative),
+                ("src/components/AliasButton.tsx", alias),
+                ("src/app/page.tsx", caller),
+            ],
+            &resolutions,
+        )?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("path-alias TSZ project"))?;
+        let facts = collect_native_tsz_file(project, "src/app/page.tsx", caller)?;
+        let expected = [
+            (
+                "RelativeButton",
+                "src/components/RelativeButton.tsx",
+                relative,
+            ),
+            ("AliasButton", "src/components/AliasButton.tsx", alias),
+        ];
+        let mut imports = [0_u8; 2];
+        let mut jsx_uses = [0_u8; 2];
+        for index in 0..facts.occurrence_len {
+            let occurrence = facts.occurrences[index];
+            if !matches!(occurrence.kind, ReferenceKind::Import | ReferenceKind::VariableUse) {
+                continue;
+            }
+            let owner = facts.occurrence_owners[index] as usize;
+            let owner_span = facts.provenance.source_spans()[owner]
+                .ok_or(LaneError::Missing("JSX occurrence owner span"))?;
+            let start = owner_span.start + occurrence.span.start;
+            let end = owner_span.start + occurrence.span.end;
+            let Some((ordinal, (name, target_path, target_source))) = expected
+                .iter()
+                .enumerate()
+                .find(|(_, (name, _, _))| caller.get(start as usize..end as usize) == Some(*name))
+            else {
+                continue;
+            };
+            let slot = facts.occurrence_source_coordinate_slot[index]
+                .ok_or(LaneError::Missing("component source coordinate"))?;
+            let coordinate = TypeScriptSourceCoordinate::decode(
+                &facts.foreign_source_coordinate_text[slot as usize],
+            )
+            .ok_or(LaneError::Missing("decodable component coordinate"))?;
+            assert_eq!(coordinate.path, *target_path);
+            assert_eq!(
+                coordinate.name_start as usize,
+                target_source
+                    .find(name)
+                    .ok_or(LaneError::Missing("target declaration name"))?,
+                "the reference must retain the exact target declaration identity"
+            );
+            match occurrence.kind {
+                ReferenceKind::Import => imports[ordinal] += 1,
+                ReferenceKind::VariableUse => jsx_uses[ordinal] += 1,
+                _ => unreachable!(),
+            }
+        }
+        assert_eq!(imports, [1, 1], "each import produces one exact target edge");
+        assert_eq!(
+            jsx_uses,
+            [1, 1],
+            "relative and aliased JSX reads both resolve once, without duplicate edges"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn native_tsz_occurrence_targets_reuse_only_their_exact_session_source() -> Result<(), LaneError> {
         let models = format!(
             "/* {} */\nexport const version = 1;\nexport function alpha(value: number): number {{ return value; }}\nexport class Box {{ value = 1; getValue(): number {{ return this.value; }} }}\n",

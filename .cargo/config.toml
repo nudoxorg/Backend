@@ -2,3 +2,20 @@
 # CARGO_BUILD_JOBS and the command-line --jobs/-j option override this default.
 [build]
 jobs = 2
+
+# Keep plain Cargo builds usable in shared/private-group worktrees. Rustc's
+# default GNU/Darwin compiler-driver linker is `cc`; this wrapper only adds
+# the group/world-write umask floor, then execs that same driver with all
+# linker arguments unchanged. `CARGO_TARGET_<triple>_LINKER` remains the
+# explicit per-target override.
+[target.x86_64-unknown-linux-gnu]
+linker = ".config/scripts/cargo-umask-linker.sh"
+
+[target.aarch64-unknown-linux-gnu]
+linker = ".config/scripts/cargo-umask-linker.sh"
+
+[target.x86_64-apple-darwin]
+linker = ".config/scripts/cargo-umask-linker.sh"
+
+[target.aarch64-apple-darwin]
+linker = ".config/scripts/cargo-umask-linker.sh"

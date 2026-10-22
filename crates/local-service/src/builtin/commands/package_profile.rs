@@ -653,6 +653,7 @@ mod tests {
                     source,
                     byte_len: 4,
                     cause: SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
+                    diagnostic: None,
                 })
                 .collect(),
         )
@@ -740,6 +741,7 @@ mod tests {
                 source,
                 byte_len: 4,
                 cause: SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
+                diagnostic: None,
             })
             .collect();
         let catalog =

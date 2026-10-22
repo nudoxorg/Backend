@@ -11685,6 +11685,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn compiler_outcome_discovery_does_not_select_an_unindexed_workspace_root() {
+        use backend_library::{
+            PackageCompilerOutcomes as Outcomes,
+            PackageCompilerOutcomesUnavailable as Unavailable,
+        };
+
+        let mut fixture = AdapterFixture::open(TempTree::new(), false);
+        let package = backend_library::PackageReference::parse(fixture.label.clone())
+            .expect("local path without a selected Project row");
+        let (adapter, daemon) = fixture.parts();
+        let outcomes = package_profile::read(
+            &daemon.engine().daemon().owner().snapshot(),
+            &adapter.index_operations,
+            &adapter.semantic_authority,
+            &package,
+            None,
+        )
+        .expect("read remains local and bounded")
+        .expect("local package outcome result");
+        assert!(matches!(
+            outcomes,
+            Outcomes::Unavailable {
+                reason: Unavailable::ProjectNotSelected,
+                ..
+            }
+        ));
+    }
+
     fn assert_current_compiler_outcomes(
         adapter: &CommandAdapter,
         daemon: &ProductDaemon,
