@@ -1122,6 +1122,65 @@ mod imp {
         }
 
         #[test]
+        fn published_stage_unlink_rejects_a_different_regular_inode() {
+            let fixture = Fixture::new(0o600);
+            let (staging, destination) = publication_directories(&fixture.store);
+            let mut published_source =
+                create_stage_file(&staging, "stage.tmp").expect("stage file");
+            published_source
+                .write_all(b"published bytes")
+                .expect("stage payload");
+            seal_immutable_file(&published_source).expect("seal staged inode");
+            let published_name = "publication-test.object";
+            linkat(
+                &staging.file,
+                "stage.tmp",
+                &destination.file,
+                published_name,
+                AtFlags::empty(),
+            )
+            .expect("create CAS hard link");
+
+            let mut foreign_source =
+                create_stage_file(&staging, "foreign.tmp").expect("foreign staged file");
+            foreign_source
+                .write_all(b"different inode")
+                .expect("foreign payload");
+            seal_immutable_file(&foreign_source).expect("seal foreign inode");
+            std::fs::hard_link(
+                fixture.store.root.join("nodes/foreign.tmp"),
+                fixture.store.root.join("foreign-link"),
+            )
+            .expect("give foreign descriptor the expected two-link count");
+            assert_eq!(
+                published_source
+                    .metadata()
+                    .expect("published links")
+                    .nlink(),
+                2
+            );
+            assert_eq!(foreign_source.metadata().expect("foreign links").nlink(), 2);
+
+            assert!(matches!(
+                unlink_published_stage_file(
+                    &staging,
+                    "stage.tmp",
+                    &destination,
+                    published_name,
+                    &foreign_source,
+                ),
+                Err(StoreError::UnsafePath)
+            ));
+            assert_eq!(
+                published_source
+                    .metadata()
+                    .expect("stage preserved")
+                    .nlink(),
+                2
+            );
+        }
+
+        #[test]
         fn published_stage_unlink_rejects_a_replaced_symlink_name() {
             let fixture = Fixture::new(0o600);
             let (staging, destination) = publication_directories(&fixture.store);
