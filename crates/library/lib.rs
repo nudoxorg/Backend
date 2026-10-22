@@ -184,7 +184,8 @@ pub use graph_query::{
 };
 pub use package_compiler_outcomes::{
     MAX_PACKAGE_COMPILER_COVERAGE_PAGE_BYTES, MAX_PACKAGE_COMPILER_COVERAGE_PAGE_ROWS,
-    PackageCompilerCoverage, PackageCompilerCoveragePage, PackageCompilerCoverageRow,
+    PackageCompilerCoverage, PackageCompilerCoverageGapCause,
+    PackageCompilerCoverageGapDiagnostic, PackageCompilerCoveragePage, PackageCompilerCoverageRow,
     PackageCompilerCoverageSelector, PackageCompilerDiagnostic, PackageCompilerOutcomeBasis,
     PackageCompilerOutcomeRead, PackageCompilerOutcomeSelector, PackageCompilerOutcomes,
     PackageCompilerOutcomesUnavailable, PackageCompilerProfileRefusal,

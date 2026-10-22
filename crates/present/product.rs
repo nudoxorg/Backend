@@ -2281,15 +2281,18 @@ fn forge_discovery_row(candidate: &backend_library::ForgeDiscoveryCandidate) -> 
 
 fn coverage_gap_label(
     path: &str,
-    cause: backend_semantic::ir::SourceCoverageGapCause,
-    diagnostic: Option<&backend_semantic::ir::SourceCoverageGapDiagnostic>,
+    cause: backend_library::PackageCompilerCoverageGapCause,
+    diagnostic: Option<&backend_library::PackageCompilerCoverageGapDiagnostic>,
 ) -> String {
     match diagnostic {
-        Some(diagnostic @ backend_semantic::ir::SourceCoverageGapDiagnostic::TypeProjectionCycle {
-            line,
-            column,
-            ..
-        }) => format!(
+        Some(
+            diagnostic
+                @ backend_library::PackageCompilerCoverageGapDiagnostic::TypeProjectionCycle {
+                    line,
+                    column,
+                    ..
+                },
+        ) => format!(
             "{}:{line}:{column}: {cause} (TSZ cycle owner context: {})",
             single_line(path),
             diagnostic.summary()
@@ -3804,20 +3807,21 @@ mod tests {
 
     #[test]
     fn coverage_gap_text_places_the_exact_owner_context_at_its_source_position() {
-        let diagnostic = backend_semantic::ir::SourceCoverageGapDiagnostic::TypeProjectionCycle {
-            type_id: 91,
-            owner_start: 80,
-            owner_end: 101,
-            owner_name_start: 90,
-            owner_name_end: 96,
-            line: 9,
-            column: 4,
-            owner_name: "Layout".into(),
-        };
+        let diagnostic =
+            backend_library::PackageCompilerCoverageGapDiagnostic::TypeProjectionCycle {
+                type_id: 91,
+                owner_start: 80,
+                owner_end: 101,
+                owner_name_start: 90,
+                owner_name_end: 96,
+                line: 9,
+                column: 4,
+                owner_name: "Layout".into(),
+            };
         assert_eq!(
             coverage_gap_label(
                 "src/app/layout.tsx",
-                backend_semantic::ir::SourceCoverageGapCause::SourceNotRepresentable,
+                backend_library::PackageCompilerCoverageGapCause::SourceNotRepresentable,
                 Some(&diagnostic),
             ),
             "src/app/layout.tsx:9:4: lowering cannot represent it (TSZ cycle owner context: owner declaration \"Layout\" at 9:4 (bytes 80..101); TSZ handle 91)"
