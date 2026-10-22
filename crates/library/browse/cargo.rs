@@ -1540,6 +1540,7 @@ struct Locked {
     name: String,
     version: String,
     source: Option<String>,
+    checksum: Option<[u8; 32]>,
     dependencies: Vec<String>,
 }
 
@@ -1555,6 +1556,9 @@ pub struct CargoLockedPackage {
     pub version: String,
     /// Cargo's original registry/git source, absent for path packages.
     pub source: Option<String>,
+    /// Exact SHA-256 committed by Cargo.lock, absent when no checksum was recorded.
+    /// Presence alone does not authenticate any archive or extracted file.
+    pub checksum: Option<[u8; 32]>,
 }
 
 /// Reads package tuples with the same parser and bounds used by Cargo browsing.
@@ -1569,9 +1573,32 @@ pub fn cargo_locked_packages(lockfile: &str) -> Result<Vec<CargoLockedPackage>, 
                 name: package.name,
                 version: package.version,
                 source: package.source,
+                checksum: package.checksum,
             })
             .collect()
     })
+}
+
+fn locked_checksum(text: &str) -> Result<[u8; 32], CargoTreeError> {
+    let invalid = || {
+        CargoTreeError::Lockfile(
+            "a package checksum is not a SHA-256 hexadecimal string".to_owned(),
+        )
+    };
+    if text.len() != 64 {
+        return Err(invalid());
+    }
+    let digit = |byte: u8| match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    };
+    let mut checksum = [0; 32];
+    for (output, pair) in checksum.iter_mut().zip(text.as_bytes().chunks_exact(2)) {
+        *output = digit(pair[0]).ok_or_else(invalid)? * 16 + digit(pair[1]).ok_or_else(invalid)?;
+    }
+    Ok(checksum)
 }
 
 fn locked_packages(lockfile: &str) -> Result<Vec<Locked>, CargoTreeError> {
@@ -1622,6 +1649,15 @@ fn locked_packages(lockfile: &str) -> Result<Vec<Locked>, CargoTreeError> {
                     ));
                 }
             };
+            let checksum = match package.get("checksum") {
+                None => None,
+                Some(toml::Value::String(checksum)) => Some(locked_checksum(checksum)?),
+                Some(_) => {
+                    return Err(CargoTreeError::Lockfile(
+                        "a package checksum is not a SHA-256 hexadecimal string".to_owned(),
+                    ));
+                }
+            };
             let dependencies = match package.get("dependencies") {
                 None => Vec::new(),
                 Some(dependencies) => {
@@ -1668,6 +1704,7 @@ fn locked_packages(lockfile: &str) -> Result<Vec<Locked>, CargoTreeError> {
                     CargoTreeError::Lockfile("a package has no version".to_owned())
                 })?,
                 source,
+                checksum,
                 dependencies,
             })
         })
