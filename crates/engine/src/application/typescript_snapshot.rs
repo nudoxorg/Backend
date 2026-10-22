@@ -10,9 +10,312 @@ use backend_semantic::vocabulary::LanguageProfile;
 use std::collections::VecDeque;
 
 const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
+const SNAPSHOT_CERTIFICATE_MAGIC: &[u8; 8] = b"TSZCOLD1";
+const MAX_SNAPSHOT_CERTIFICATE_BYTES: usize =
+    backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES;
+const MAX_SNAPSHOT_PROGRAMS: usize = 256;
 
 fn fits_retained_budget(host_bytes: usize, forest_bytes: usize) -> bool {
     host_bytes.saturating_add(forest_bytes) <= MAX_RETAINED_BYTES
+}
+
+struct SnapshotCertificate {
+    root: PathBuf,
+    profile: LanguageProfile,
+    input: [u8; 32],
+    binding: [u8; 32],
+    toolchain: [u8; 32],
+    // Runtime startup authority checked against the currently opened owner.
+    local_authority: [u8; 32],
+    // Project-specific authority sealed by the staged compiler and recomputed
+    // from the host fingerprint plus ordered native forest environments.
+    project_authority: [u8; 32],
+    environment: [u8; 32],
+    platform: [u8; 32],
+    program_environments: Vec<[u8; 32]>,
+    host: Vec<u8>,
+    programs: Vec<Vec<u8>>,
+}
+
+pub(crate) fn encode_staged_snapshot_certificate(
+    staged: &StagedSemanticPackage,
+    root: &Path,
+    input: [u8; 32],
+) -> Option<Vec<u8>> {
+    let (host, forest) = staged.typescript_snapshot_witness(root)?;
+    let identity = staged.plane_execution_identity()?;
+    if identity.profile() != staged.profile()
+        || identity.input_witness().input_root() != &input
+        || !matches!(staged.profile(), LanguageProfile::TypeScript(_))
+    {
+        return None;
+    }
+    let local_authority = staged.typescript_snapshot_runtime_local_authority()?;
+    let environments = staged.typescript_snapshot_program_environments()?;
+    if environments.is_empty() || environments.len() > MAX_SNAPSHOT_PROGRAMS {
+        return None;
+    }
+    let program_environments = environments.to_vec();
+    let project_authority = identity.local_authority_fingerprint();
+    let root_len = root.to_str()?.len();
+    let fixed_bytes = 8usize
+        .checked_add(4)?
+        .checked_add(root_len)?
+        .checked_add(2 + 32 * 7)?
+        .checked_add(4)?
+        .checked_add(program_environments.len().checked_mul(32)?)?
+        .checked_add(4 + 4)?;
+    let minimum_program_framing = program_environments.len().checked_mul(4)?;
+    let host_budget = MAX_SNAPSHOT_CERTIFICATE_BYTES
+        .checked_sub(fixed_bytes)?
+        .checked_sub(minimum_program_framing)?;
+    let host_bytes = host.encode_native_snapshot_with_limit(host_budget)?;
+    let program_budget = MAX_SNAPSHOT_CERTIFICATE_BYTES
+        .checked_sub(fixed_bytes)?
+        .checked_sub(host_bytes.len())?;
+    let program_bytes = forest.encode_native_snapshot_with_limit(&host, program_budget)?;
+    if program_bytes.len() != program_environments.len()
+        || crate::application::typescript_program::native_program_execution_fingerprint(
+            host.fingerprint(),
+            program_environments.iter().copied().map(|environment| {
+                backend_frontend_typescript::TszEnvironmentFingerprint::from_sha256(environment)
+            }),
+        ) != project_authority
+    {
+        return None;
+    }
+    let certificate = SnapshotCertificate {
+        root: root.to_path_buf(),
+        profile: staged.profile(),
+        input,
+        binding: *staged.binding_facts().identity.as_ref(),
+        toolchain: identity.toolchain_identity(),
+        local_authority,
+        project_authority,
+        environment: identity.environment_identity(),
+        platform: identity.target_platform_identity(),
+        program_environments,
+        host: host_bytes,
+        programs: program_bytes,
+    };
+    encode_snapshot_certificate(&certificate)
+}
+
+pub(crate) fn restore_snapshot_certificate(
+    client: &LocalCompilerClient,
+    root: &Path,
+    profile: LanguageProfile,
+    input: [u8; 32],
+    binding: [u8; 32],
+    bytes: &[u8],
+    cancelled: &AtomicBool,
+) -> Option<TypeScriptSnapshotReuse> {
+    if !client.is_ready() || cancelled.load(Ordering::Acquire) {
+        return None;
+    }
+    let capability = client.capabilities().for_profile(profile);
+    let current = (
+        capability.toolchain_identity()?,
+        capability.local_authority_fingerprint()?,
+        capability.environment_identity()?,
+        capability.target_platform_identity()?,
+    );
+    if capability.state() != crate::application::LocalCompilerCapabilityState::Ready
+        || capability.manifest().is_none()
+    {
+        return None;
+    }
+    let certificate = decode_snapshot_certificate(bytes)?;
+    if certificate.root != root
+        || certificate.profile != profile
+        || certificate.input != input
+        || certificate.binding != binding
+        || (
+            certificate.toolchain,
+            certificate.local_authority,
+            certificate.environment,
+            certificate.platform,
+        ) != current
+    {
+        return None;
+    }
+    let host = Arc::new(TypeScriptProjectWitness::decode_native_snapshot(
+        &certificate.host,
+    )?);
+    if !host.is_native_for_root(root)
+        || certificate.program_environments.len() != certificate.programs.len()
+        || crate::application::typescript_program::native_program_execution_fingerprint(
+            host.fingerprint(),
+            certificate
+                .program_environments
+                .iter()
+                .copied()
+                .map(|environment| {
+                    backend_frontend_typescript::TszEnvironmentFingerprint::from_sha256(environment)
+                }),
+        ) != certificate.project_authority
+    {
+        return None;
+    }
+    let mut active = || {
+        if !cancelled.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(crate::application::typescript_host::TypeScriptProjectHostError::CompilerProgramCancelled)
+        }
+    };
+    let forest = Arc::new(TypeScriptForestClosureWitness::decode_native_snapshot(
+        certificate.programs,
+        &host,
+        &mut active,
+    )?);
+    if cancelled.load(Ordering::Acquire) || !client.is_ready() {
+        return None;
+    }
+    let retained_bytes = host
+        .retained_native_bytes()?
+        .saturating_add(forest.retained_bytes());
+    if retained_bytes > MAX_RETAINED_BYTES {
+        return None;
+    }
+    let entry = Arc::new(Entry {
+        root: root.to_path_buf(),
+        profile,
+        input,
+        binding,
+        alive: Arc::clone(&client.shared.alive),
+        host,
+        forest,
+        retained_bytes,
+    });
+    Some(TypeScriptSnapshotReuse { entry })
+}
+
+fn encode_snapshot_certificate(certificate: &SnapshotCertificate) -> Option<Vec<u8>> {
+    let root = certificate.root.to_str()?.as_bytes();
+    if root.len() > u32::MAX as usize
+        || certificate.host.len() > u32::MAX as usize
+        || certificate.programs.is_empty()
+        || certificate.programs.len() > MAX_SNAPSHOT_PROGRAMS
+        || certificate.program_environments.len() > MAX_SNAPSHOT_PROGRAMS
+        || certificate.programs.len() != certificate.program_environments.len()
+    {
+        return None;
+    }
+    let total = 8usize
+        .checked_add(4)?
+        .checked_add(root.len())?
+        .checked_add(2 + 32 * 7 + 4 + certificate.program_environments.len().checked_mul(32)?)?
+        .checked_add(4)?
+        .checked_add(certificate.host.len())?
+        .checked_add(4)?
+        .checked_add(certificate.programs.iter().try_fold(0usize, |n, program| {
+            n.checked_add(4)?.checked_add(program.len())
+        })?)?;
+    if total > MAX_SNAPSHOT_CERTIFICATE_BYTES {
+        return None;
+    }
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(SNAPSHOT_CERTIFICATE_MAGIC);
+    out.extend_from_slice(&(root.len() as u32).to_le_bytes());
+    out.extend_from_slice(root);
+    out.extend_from_slice(&<[u8; 2]>::from(certificate.profile));
+    for digest in [
+        certificate.input,
+        certificate.binding,
+        certificate.toolchain,
+        certificate.local_authority,
+        certificate.project_authority,
+        certificate.environment,
+        certificate.platform,
+    ] {
+        out.extend_from_slice(&digest);
+    }
+    out.extend_from_slice(&(certificate.program_environments.len() as u32).to_le_bytes());
+    for environment in &certificate.program_environments {
+        out.extend_from_slice(environment);
+    }
+    out.extend_from_slice(&(certificate.host.len() as u32).to_le_bytes());
+    out.extend_from_slice(&certificate.host);
+    out.extend_from_slice(&(certificate.programs.len() as u32).to_le_bytes());
+    for program in &certificate.programs {
+        out.extend_from_slice(&u32::try_from(program.len()).ok()?.to_le_bytes());
+        out.extend_from_slice(program);
+    }
+    Some(out)
+}
+
+fn decode_snapshot_certificate(bytes: &[u8]) -> Option<SnapshotCertificate> {
+    if bytes.len() > MAX_SNAPSHOT_CERTIFICATE_BYTES
+        || bytes.len() < 8 + 4 + 2 + 32 * 7 + 4 + 4 + 4
+        || bytes.get(..8)? != SNAPSHOT_CERTIFICATE_MAGIC
+    {
+        return None;
+    }
+    let mut cursor = 8usize;
+    let mut take = |len: usize| -> Option<&[u8]> {
+        let end = cursor.checked_add(len)?;
+        let chunk = bytes.get(cursor..end)?;
+        cursor = end;
+        Some(chunk)
+    };
+    let root_len = u32::from_le_bytes(take(4)?.try_into().ok()?) as usize;
+    let root = PathBuf::from(std::str::from_utf8(take(root_len)?).ok()?);
+    if !root.is_absolute() || root.to_str().is_none() {
+        return None;
+    }
+    let profile_bytes: [u8; 2] = take(2)?.try_into().ok()?;
+    let profile = LanguageProfile::try_from(profile_bytes).ok()?;
+    if !matches!(profile, LanguageProfile::TypeScript(_)) {
+        return None;
+    }
+    let mut digest = || -> Option<[u8; 32]> { take(32)?.try_into().ok() };
+    let input = digest()?;
+    let binding = digest()?;
+    let toolchain = digest()?;
+    let local_authority = digest()?;
+    let project_authority = digest()?;
+    let environment = digest()?;
+    let platform = digest()?;
+    let environment_count = u32::from_le_bytes(take(4)?.try_into().ok()?) as usize;
+    if environment_count == 0 || environment_count > MAX_SNAPSHOT_PROGRAMS {
+        return None;
+    }
+    let mut program_environments = Vec::with_capacity(environment_count);
+    for _ in 0..environment_count {
+        program_environments.push(take(32)?.try_into().ok()?);
+    }
+    let host_len = u32::from_le_bytes(take(4)?.try_into().ok()?) as usize;
+    let host = take(host_len)?.to_vec();
+    let program_count = u32::from_le_bytes(take(4)?.try_into().ok()?) as usize;
+    if program_count == 0
+        || program_count > MAX_SNAPSHOT_PROGRAMS
+        || program_count != environment_count
+    {
+        return None;
+    }
+    let mut programs = Vec::with_capacity(program_count);
+    for _ in 0..program_count {
+        let len = u32::from_le_bytes(take(4)?.try_into().ok()?) as usize;
+        programs.push(take(len)?.to_vec());
+    }
+    if cursor != bytes.len() {
+        return None;
+    }
+    Some(SnapshotCertificate {
+        root,
+        profile,
+        input,
+        binding,
+        toolchain,
+        local_authority,
+        project_authority,
+        environment,
+        platform,
+        program_environments,
+        host,
+        programs,
+    })
 }
 
 #[derive(Default)]
@@ -50,10 +353,19 @@ impl TypeScriptSnapshotReuse {
                 && !cancelled.is_some_and(|flag| flag.load(Ordering::Acquire))
         };
         let mut control = || {
-            if active() { Ok(()) }
-            else { Err(crate::application::typescript_host::TypeScriptProjectHostError::CompilerProgramCancelled) }
+            if active() {
+                Ok(())
+            } else {
+                Err(crate::application::typescript_host::TypeScriptProjectHostError::CompilerProgramCancelled)
+            }
         };
-        active() && self.entry.forest.validate_current_controlled(&self.entry.host, &mut control).is_ok() && active()
+        active()
+            && self
+                .entry
+                .forest
+                .validate_current_controlled(&self.entry.host, &mut control)
+                .is_ok()
+            && active()
     }
 }
 
@@ -87,6 +399,42 @@ impl LocalCompilerClient {
             return None;
         }
         proof.is_current(Some(cancelled)).then_some(proof)
+    }
+
+    /// Reopens a certificate supplied only by the authenticated selected-generation
+    /// metadata path. Replayed proof is retained under the same bounded owner cache as
+    /// a freshly compiled witness.
+    pub fn restore_typescript_snapshot_certificate(
+        &self,
+        root: &Path,
+        profile: LanguageProfile,
+        input: [u8; 32],
+        binding: [u8; 32],
+        certificate: &backend_extension_turso::VerifiedTypeScriptSnapshotWitness,
+        cancelled: &AtomicBool,
+    ) -> Option<TypeScriptSnapshotReuse> {
+        let proof = restore_snapshot_certificate(
+            self,
+            root,
+            profile,
+            input,
+            binding,
+            certificate.as_bytes(),
+            cancelled,
+        )?;
+        let mut cache = self.shared.typescript_snapshot.lock().ok()?;
+        cache
+            .entries
+            .retain(|existing| existing.entry.root != root || existing.entry.profile != profile);
+        let mut total = cache.entries.iter().fold(0usize, |sum, existing| {
+            sum.saturating_add(existing.entry.retained_bytes)
+        });
+        while !fits_retained_budget(total, proof.entry.retained_bytes) {
+            let evicted = cache.entries.pop_front()?;
+            total = total.saturating_sub(evicted.entry.retained_bytes);
+        }
+        cache.entries.push_back(proof.clone());
+        Some(proof)
     }
 
     /// Remembers only an actual native compiler read closure for its exact selected output.
@@ -486,6 +834,94 @@ mod tests {
     }
 
     #[test]
+    fn native_snapshot_certificate_cold_decode_replays_complete_ledger_and_rejects_probes() {
+        let fixture = Fixture::new();
+        let staged = fixture.compile();
+        let input = *staged.input_witness().input_root();
+        let binding = *staged.binding_facts().identity.as_ref();
+        let (host_witness, forest_witness) = staged
+            .typescript_snapshot_witness(&fixture.0)
+            .expect("native fixture retains complete witnesses");
+        let program_environments = staged
+            .typescript_snapshot_program_environments()
+            .expect("staged forest retains ordered environments")
+            .to_vec();
+        assert!(host_witness.encode_native_snapshot_with_limit(1).is_none());
+        assert!(
+            forest_witness
+                .encode_native_snapshot_with_limit(&host_witness, 1)
+                .is_none()
+        );
+        let project_authority =
+            crate::application::typescript_program::native_program_execution_fingerprint(
+                host_witness.fingerprint(),
+                program_environments.iter().copied().map(|environment| {
+                    backend_frontend_typescript::TszEnvironmentFingerprint::from_sha256(environment)
+                }),
+            );
+        let bytes = encode_snapshot_certificate(&SnapshotCertificate {
+            root: fixture.0.clone(),
+            profile: profile(),
+            input,
+            binding,
+            toolchain: [1; 32],
+            local_authority: [2; 32],
+            project_authority,
+            environment: [3; 32],
+            platform: [4; 32],
+            program_environments,
+            host: host_witness
+                .encode_native_snapshot()
+                .expect("complete native host encodes"),
+            programs: forest_witness
+                .encode_native_snapshot(&host_witness)
+                .expect("complete native program forest encodes"),
+        })
+        .expect("complete bounded certificate encodes");
+        let parsed = decode_snapshot_certificate(&bytes).expect("strict certificate decode");
+        assert_eq!(parsed.root, fixture.0);
+        assert_eq!(parsed.profile, profile());
+        assert_eq!(parsed.input, input);
+        assert_eq!(parsed.binding, binding);
+        let host = Arc::new(
+            TypeScriptProjectWitness::decode_native_snapshot(&parsed.host)
+                .expect("complete native host rehydrates"),
+        );
+        let mut active = || Ok(());
+        let forest = TypeScriptForestClosureWitness::decode_native_snapshot(
+            parsed.programs,
+            &host,
+            &mut active,
+        )
+        .expect("all resolver observations replay before witness admission");
+        assert!(forest.validate_current(&host).is_ok());
+
+        fixture.write("base.json", r#"{"compilerOptions":{"strict":false}}"#);
+        let parsed = decode_snapshot_certificate(&bytes).expect("certificate stays well formed");
+        let host = Arc::new(
+            TypeScriptProjectWitness::decode_native_snapshot(&parsed.host)
+                .expect("host structure remains decodable"),
+        );
+        let mut active = || Ok(());
+        assert!(
+            TypeScriptForestClosureWitness::decode_native_snapshot(
+                parsed.programs,
+                &host,
+                &mut active,
+            )
+            .is_none(),
+            "cold replay rejects a changed config observation"
+        );
+
+        for corrupt in [&bytes[..8], &bytes[..bytes.len() - 1]] {
+            assert!(decode_snapshot_certificate(corrupt).is_none());
+        }
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(decode_snapshot_certificate(&trailing).is_none());
+    }
+
+    #[test]
     fn native_snapshot_replays_dependencies_config_globs_and_negative_reads_at_final_admission() {
         for mutation in [
             "source",
@@ -537,21 +973,34 @@ mod tests {
     }
 
     #[test]
-    fn native_snapshot_replay_cancellation_interrupts_observation_steps_without_admitting_partial_proof() {
+    fn native_snapshot_replay_cancellation_interrupts_observation_steps_without_admitting_partial_proof()
+     {
         let fixture = Fixture::new();
         let staged = fixture.compile();
         let (host, forest) = staged.typescript_snapshot_witness(&fixture.0).unwrap();
         let owner = client();
         let binding = *staged.binding_facts().identity.as_ref();
         owner.remember_typescript_snapshot(&fixture.0, [1; 32], binding, &staged);
-        let proof = owner.typescript_snapshot_reuse(&fixture.0, profile(), [1; 32], binding,
-            &AtomicBool::new(false)).expect("the real native read closure enters the owning cache");
+        let proof = owner
+            .typescript_snapshot_reuse(
+                &fixture.0,
+                profile(),
+                [1; 32],
+                binding,
+                &AtomicBool::new(false),
+            )
+            .expect("the real native read closure enters the owning cache");
         let mut complete_steps = 0usize;
-        forest.validate_current_controlled(&host, &mut || {
-            complete_steps += 1;
-            Ok(())
-        }).expect("actual retained native read ledger is initially current");
-        assert!(complete_steps > 4, "fixture exercises multiple actual filesystem replay steps");
+        forest
+            .validate_current_controlled(&host, &mut || {
+                complete_steps += 1;
+                Ok(())
+            })
+            .expect("actual retained native read ledger is initially current");
+        assert!(
+            complete_steps > 4,
+            "fixture exercises multiple actual filesystem replay steps"
+        );
         for stop_at in [2, complete_steps / 2, complete_steps - 1] {
             let cancelled = AtomicBool::new(false);
             let mut steps = 0usize;
@@ -563,16 +1012,34 @@ mod tests {
                 } else { Ok(()) }
             });
             assert!(matches!(result, Err(crate::application::typescript_host::TypeScriptProjectHostError::CompilerProgramCancelled)));
-            assert_eq!(steps, stop_at, "no later observation runs after cancellation");
-            assert!(!proof.is_current(Some(&cancelled)), "public replay observes the same actual cancellation flag");
-            assert!(proof.is_current(None), "cancellation does not mutate the owning cache's retained witness");
-            forest.validate_current(&host).expect("cancelled replay does not mutate retained proof");
+            assert_eq!(
+                steps, stop_at,
+                "no later observation runs after cancellation"
+            );
+            assert!(
+                !proof.is_current(Some(&cancelled)),
+                "public replay observes the same actual cancellation flag"
+            );
+            assert!(
+                proof.is_current(None),
+                "cancellation does not mutate the owning cache's retained witness"
+            );
+            forest
+                .validate_current(&host)
+                .expect("cancelled replay does not mutate retained proof");
         }
         owner.shared.alive.store(false, Ordering::Release);
-        assert!(!proof.is_current(None), "a retired actual owner cannot reuse its cached producer fence");
+        assert!(
+            !proof.is_current(None),
+            "a retired actual owner cannot reuse its cached producer fence"
+        );
         fixture.write("node_modules/dep/index.d.ts", "export const value: string;");
-        assert!(forest.validate_current_controlled(&host, &mut || Ok(())).is_err(),
-            "healthy controlled replay still refuses a changed actual dependency");
+        assert!(
+            forest
+                .validate_current_controlled(&host, &mut || Ok(()))
+                .is_err(),
+            "healthy controlled replay still refuses a changed actual dependency"
+        );
     }
 
     #[cfg(unix)]

@@ -341,6 +341,10 @@ fn stream_payload<S: Schema<Value = [u8]>>(
         .map_err(|error| BuiltinModelError(format!("finish semantic object stream: {error:?}")))
 }
 
+fn account_streamed_payload(total: &mut u64, bytes: &[u8]) {
+    *total = total.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+}
+
 fn artifact_budget() -> ArtifactBudget {
     ArtifactBudget::new(
         MAX_OBJECTS,
@@ -1323,19 +1327,33 @@ impl AdmittedCompilation {
             // Coverage is a typed payload member, not unrelated output. Admit
             // its exact object and compiler basis before the unchanged complete
             // payload-inventory comparison below.
-            let closure = store.open_closure(payload_pin.receipt().closure()).map_err(|error| {
-                BuiltinModelError(format!("open compiler coverage output closure: {error:?}"))
-            })?;
+            let closure = store
+                .open_closure(payload_pin.receipt().closure())
+                .map_err(|error| {
+                    BuiltinModelError(format!("open compiler coverage output closure: {error:?}"))
+                })?;
             let coverage = backend_extension_turso::reopen_source_coverage(&closure, &metadata)
                 .map_err(BuiltinModelError)?
-                .ok_or_else(|| BuiltinModelError("compiler coverage member was not admitted".to_owned()))?;
+                .ok_or_else(|| {
+                    BuiltinModelError("compiler coverage member was not admitted".to_owned())
+                })?;
             if coverage.input_root() != attempt.input_digest()
-                || coverage.profile() != <[u8; 2]>::from(key.profile()) {
-                return Err(BuiltinModelError("compiler coverage differs from its admitted attempt input/profile".to_owned()));
+                || coverage.profile() != <[u8; 2]>::from(key.profile())
+            {
+                return Err(BuiltinModelError(
+                    "compiler coverage differs from its admitted attempt input/profile".to_owned(),
+                ));
             }
-            let id = closure.admit_claim(UntrustedObjectId::from_bytes(*member.object_id()))
-                .map_err(|error| BuiltinModelError(format!("admit compiler coverage membership: {error:?}")))?
-                .ok_or_else(|| BuiltinModelError("compiler coverage is absent from its output closure".to_owned()))?;
+            let id = closure
+                .admit_claim(UntrustedObjectId::from_bytes(*member.object_id()))
+                .map_err(|error| {
+                    BuiltinModelError(format!("admit compiler coverage membership: {error:?}"))
+                })?
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "compiler coverage is absent from its output closure".to_owned(),
+                    )
+                })?;
             expected_members.insert(id);
         }
         let program_mappings = native_program.as_ref().map(|program| {
@@ -1807,7 +1825,8 @@ impl SemanticAuthority {
         &self,
         key: &ProductSemanticPublicationKey,
         expected: SemanticPublicationClaim,
-    ) -> Result<Option<Arc<backend_semantic::ir::SourceCoverageObservation>>, BuiltinModelError> {
+    ) -> Result<Option<Arc<backend_semantic::ir::SourceCoverageObservation>>, BuiltinModelError>
+    {
         let (claim, selected) = self.read_selected_pair(key)?;
         if claim != expected {
             return Err(BuiltinModelError(
@@ -1819,8 +1838,10 @@ impl SemanticAuthority {
             *expected.binding().identity.as_ref(),
         );
         self.source_coverage.get_or_load(cache_key, || {
-            let reopened = reopen_selected_compiler_metadata(&self.store, &selected)
-                .map_err(|e| BuiltinModelError(format!("reopen compiler coverage metadata: {e}")))?;
+            let reopened =
+                reopen_selected_compiler_metadata(&self.store, &selected).map_err(|e| {
+                    BuiltinModelError(format!("reopen compiler coverage metadata: {e}"))
+                })?;
             if reopened.metadata().binding_identity() != expected.binding().identity.as_ref() {
                 return Err(BuiltinModelError(
                     "compiler coverage generation mismatch".to_owned(),
@@ -1843,6 +1864,30 @@ impl SemanticAuthority {
             }
             Ok(coverage)
         })
+    }
+
+    /// Returns a certificate only from the exact selected generation and
+    /// binding currently named by the source scan. Any missing, stale, or
+    /// malformed member is a reuse miss.
+    pub(super) fn selected_typescript_snapshot_certificate(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        binding: [u8; 32],
+        input: [u8; 32],
+    ) -> Option<backend_extension_turso::VerifiedTypeScriptSnapshotWitness> {
+        let (claim, selected) = self.read_selected_pair(key).ok()?;
+        if *claim.binding().identity.as_ref() != binding
+            || selected.input_digest() != &input
+            || !matches!(key.profile(), LanguageProfile::TypeScript(_))
+        {
+            return None;
+        }
+        let reopened = reopen_selected_compiler_metadata(&self.store, &selected).ok()?;
+        if reopened.metadata().binding_identity() != &binding {
+            return None;
+        }
+        backend_extension_turso::reopen_selected_typescript_snapshot_witness(&self.store, &selected)
+            .ok()?
     }
 
     /// Resolves one product key from the selection admitted by the committed
@@ -3098,6 +3143,7 @@ impl SemanticAuthority {
             })?;
         let mut images = Vec::with_capacity(staged.artifacts().len());
         let mut payload_ids = BTreeSet::new();
+        let mut streamed_payload_bytes = 0u64;
         for (ordinal, artifact) in staged.artifacts().iter().enumerate() {
             let ordinal_u32 = u32::try_from(ordinal).map_err(|_| {
                 BuiltinModelError("semantic artifact ordinal exceeds u32".to_owned())
@@ -3112,6 +3158,7 @@ impl SemanticAuthority {
             let identity = *artifact.semantic_image().identity.as_ref();
             let object_id =
                 stream_payload::<CompilerImagePayloadSchema>(&mut builder, output.bytes())?;
+            account_streamed_payload(&mut streamed_payload_bytes, output.bytes());
             payload_ids.insert(object_id);
             let object = self
                 .store
@@ -3159,6 +3206,7 @@ impl SemanticAuthority {
             let manifest_object_id = stream_payload::<
                 backend_semantic::ir::VersionedPlaneManifestSchema,
             >(&mut builder, staged_plane.manifest_bytes())?;
+            account_streamed_payload(&mut streamed_payload_bytes, staged_plane.manifest_bytes());
             payload_ids.insert(manifest_object_id);
             let verified_manifest = self
                 .store
@@ -3177,6 +3225,7 @@ impl SemanticAuthority {
                     &mut builder,
                     segment.payload(),
                 )?;
+                account_streamed_payload(&mut streamed_payload_bytes, segment.payload());
                 payload_ids.insert(object_id);
                 let verified = self
                     .store
@@ -3216,6 +3265,7 @@ impl SemanticAuthority {
                     sources.as_bytes(),
                 )?
             };
+            account_streamed_payload(&mut streamed_payload_bytes, sources.as_bytes());
             payload_ids.insert(object_id);
             let verified = self
                 .store
@@ -3245,6 +3295,7 @@ impl SemanticAuthority {
             let bytes = coverage.encode();
             let object_id =
                 stream_payload::<backend_semantic::ir::SourceCoverageSchema>(&mut builder, &bytes)?;
+            account_streamed_payload(&mut streamed_payload_bytes, &bytes);
             payload_ids.insert(object_id);
             let verified = self
                 .store
@@ -3259,6 +3310,50 @@ impl SemanticAuthority {
         } else {
             None
         };
+        let typescript_snapshot_member =
+            if staged.profile().language() == backend_semantic::vocabulary::Language::TypeScript {
+                if let Some(bytes) = staged
+                    .typescript_snapshot_certificate(attempt.input_digest())
+                    .filter(|bytes| {
+                        payload_ids.len().checked_add(2).is_some_and(|members| {
+                            members <= backend_extension_turso::MAX_COMPILER_PUBLICATION_MEMBER_IDS
+                        }) && bytes.len() <= MAX_OBJECT_BYTES
+                            && u64::try_from(bytes.len()).is_ok_and(|length| {
+                                streamed_payload_bytes
+                                    .checked_add(length)
+                                    .is_some_and(|total| total <= MAX_PAYLOAD_BYTES)
+                            })
+                    })
+                {
+                    let object_id = stream_payload::<
+                        backend_semantic::ir::TypeScriptSnapshotWitnessSchema,
+                    >(&mut builder, &bytes)?;
+                    account_streamed_payload(&mut streamed_payload_bytes, &bytes);
+                    payload_ids.insert(object_id);
+                    let verified = self
+                        .store
+                        .verify_object_claim(UntrustedObjectId::from_bytes(*object_id.as_bytes()))
+                        .map_err(|error| {
+                            BuiltinModelError(format!(
+                                "verify TypeScript snapshot witness member: {error:?}"
+                            ))
+                        })?;
+                    Some(
+                    backend_extension_turso::CompilerTypeScriptSnapshotMember::from_verified_object(
+                        verified, &bytes,
+                    )
+                    .map_err(|error| {
+                        BuiltinModelError(format!(
+                            "admit TypeScript snapshot witness member: {error}"
+                        ))
+                    })?,
+                )
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
         let payload_pin = builder.seal_pinned().map_err(|error| {
             BuiltinModelError(format!("seal staged semantic output closure: {error:?}"))
@@ -3295,7 +3390,16 @@ impl SemanticAuthority {
                 })?;
         }
         if let Some(member) = coverage_member {
-            metadata = metadata.with_source_coverage(member).map_err(|e|BuiltinModelError(format!("bind compiler coverage: {e}")))?;
+            metadata = metadata
+                .with_source_coverage(member)
+                .map_err(|e| BuiltinModelError(format!("bind compiler coverage: {e}")))?;
+        }
+        if let Some(member) = typescript_snapshot_member {
+            metadata = metadata
+                .with_typescript_snapshot_witness(member)
+                .map_err(|error| {
+                    BuiltinModelError(format!("bind TypeScript snapshot witness: {error}"))
+                })?;
         }
         let claim =
             SemanticPublicationClaim::admit(staged.manifest_facts(), staged.binding_facts())

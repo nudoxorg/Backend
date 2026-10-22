@@ -116,6 +116,62 @@ pub(crate) struct TypeScriptProgramClosureWitness {
 }
 
 impl TypeScriptProgramClosureWitness {
+    /// Encodes the narrow native program form: the compiler API transcript must be the
+    /// exact empty/default shape emitted by the native TSZ producer.
+    pub(crate) fn encode_native_snapshot(
+        &self,
+        host: &super::typescript_host::TypeScriptProjectWitness,
+    ) -> Option<Vec<u8>> {
+        self.encode_native_snapshot_with_limit(
+            host,
+            backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES,
+        )
+    }
+
+    fn encode_native_snapshot_with_limit(
+        &self,
+        host: &super::typescript_host::TypeScriptProjectWitness,
+        max_bytes: usize,
+    ) -> Option<Vec<u8>> {
+        if !self.compiler_accesses.is_empty()
+            || !self.directory_views.is_empty()
+            || self.metrics != ProgramClosureMetrics::default()
+            || self.access_digest
+                != compiler_access_digest(&[], &[], ProgramClosureMetrics::default()).ok()?
+        {
+            return None;
+        }
+        self.resolver
+            .encode_native_snapshot_with_limit(host, max_bytes)
+    }
+
+    pub(crate) fn decode_native_snapshot(
+        bytes: &[u8],
+        host: &super::typescript_host::TypeScriptProjectWitness,
+        control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+    ) -> Option<Self> {
+        let current_host = host.validated_controlled(control).ok()?;
+        Self::decode_native_snapshot_with_validated_host(bytes, &current_host, control)
+    }
+
+    fn decode_native_snapshot_with_validated_host(
+        bytes: &[u8],
+        current_host: &super::typescript_host::ValidatedTypeScriptHost<'_>,
+        control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+    ) -> Option<Self> {
+        let resolver = super::typescript_host::TypeScriptResolverWitness::decode_native_snapshot_with_validated_host(
+            bytes, current_host, control,
+        )?;
+        let metrics = ProgramClosureMetrics::default();
+        Some(Self {
+            resolver,
+            compiler_accesses: Box::new([]),
+            directory_views: Box::new([]),
+            metrics,
+            access_digest: compiler_access_digest(&[], &[], metrics).ok()?,
+        })
+    }
+
     fn retained_bytes(&self) -> usize {
         self.resolver
             .retained_bytes()
@@ -1134,6 +1190,86 @@ pub(crate) enum TypeScriptForestSourceMembership {
 #[derive(Debug)]
 pub(crate) struct TypeScriptForestClosureWitness(pub(crate) Vec<TypeScriptProgramClosureWitness>);
 impl TypeScriptForestClosureWitness {
+    pub(crate) fn encode_native_snapshot(
+        &self,
+        host: &super::typescript_host::TypeScriptProjectWitness,
+    ) -> Option<Vec<Vec<u8>>> {
+        self.encode_native_snapshot_with_limit(
+            host,
+            backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES,
+        )
+    }
+
+    pub(crate) fn encode_native_snapshot_with_limit(
+        &self,
+        host: &super::typescript_host::TypeScriptProjectWitness,
+        max_serialized_bytes: usize,
+    ) -> Option<Vec<Vec<u8>>> {
+        let max_snapshot_bytes = backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES;
+        if self.0.is_empty() || self.0.len() > super::typescript_host::MAX_PROJECT_CONFIG_FILES {
+            return None;
+        }
+        if max_serialized_bytes > max_snapshot_bytes {
+            return None;
+        }
+        let retained = host
+            .retained_native_bytes()?
+            .checked_add(self.retained_bytes())?;
+        if retained > max_snapshot_bytes {
+            return None;
+        }
+        let mut encoded_bytes = 0usize;
+        let mut encoded = Vec::with_capacity(self.0.len());
+        for program in &self.0 {
+            let available = max_serialized_bytes
+                .checked_sub(encoded_bytes)?
+                .checked_sub(4)?;
+            let bytes = program.encode_native_snapshot_with_limit(host, available)?;
+            let framed_len = 4usize.checked_add(bytes.len())?;
+            encoded_bytes = encoded_bytes.checked_add(framed_len)?;
+            if encoded_bytes > max_serialized_bytes || bytes.len() > u32::MAX as usize {
+                return None;
+            }
+            encoded.push(bytes);
+        }
+        Some(encoded)
+    }
+
+    pub(crate) fn decode_native_snapshot(
+        programs: Vec<Vec<u8>>,
+        host: &super::typescript_host::TypeScriptProjectWitness,
+        control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+    ) -> Option<Self> {
+        if programs.is_empty() || programs.len() > super::typescript_host::MAX_PROJECT_CONFIG_FILES
+        {
+            return None;
+        }
+        let current_host = host.validated_controlled(control).ok()?;
+        let mut retained = host
+            .retained_native_bytes()?
+            .checked_add(std::mem::size_of::<Self>())?
+            .checked_add(retained_allocation_bytes(programs.len().checked_mul(
+                std::mem::size_of::<TypeScriptProgramClosureWitness>(),
+            )?))?;
+        if retained > backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES {
+            return None;
+        }
+        let mut restored = Vec::with_capacity(programs.len());
+        for program in &programs {
+            let leaf = TypeScriptProgramClosureWitness::decode_native_snapshot_with_validated_host(
+                program,
+                &current_host,
+                control,
+            )?;
+            retained = retained.checked_add(leaf.retained_bytes())?;
+            if retained > backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES {
+                return None;
+            }
+            restored.push(leaf);
+        }
+        Some(Self(restored))
+    }
+
     pub(crate) fn retained_bytes(&self) -> usize {
         std::mem::size_of::<Self>().saturating_add(retained_vec_bytes(
             &self.0,

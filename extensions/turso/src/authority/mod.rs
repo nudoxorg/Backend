@@ -32,11 +32,15 @@ mod snapshot_tests;
 use envelope::FileStoreCompilerPublicationVerifier;
 pub use envelope::{
     COMPILER_PUBLICATION_ENVELOPE_SCHEMA, COMPILER_PUBLICATION_METADATA_SCHEMA,
-    COMPILER_SEMANTIC_IMAGE_SCHEMA, CompilerEnvelopeError, CompilerImageMember,
-    CompilerProgramSourceMember, CompilerSourceCoverageMember, reopen_source_coverage, CompilerPublicationEnvelope, CompilerPublicationMetadata,
-    ReopenedCompilerImage, ReopenedCompilerMetadata, ReopenedCompilerPublication,
-    reopen_native_program_sources, reopen_selected_compiler_metadata,
-    reopen_selected_compiler_publication,
+    COMPILER_SEMANTIC_IMAGE_SCHEMA, COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA,
+    COMPILER_TYPESCRIPT_SNAPSHOT_WITNESS_SCHEMA, CompilerEnvelopeError, CompilerImageMember,
+    CompilerProgramSourceMember, CompilerPublicationEnvelope, CompilerPublicationMetadata,
+    CompilerSourceCoverageMember, CompilerTypeScriptSnapshotMember,
+    MAX_COMPILER_PUBLICATION_MEMBER_IDS, ReopenedCompilerImage, ReopenedCompilerMetadata,
+    ReopenedCompilerPublication, VerifiedTypeScriptSnapshotWitness, reopen_native_program_sources,
+    reopen_selected_compiler_metadata, reopen_selected_compiler_publication,
+    reopen_selected_typescript_snapshot_witness, reopen_source_coverage,
+    reopen_typescript_snapshot_witness,
 };
 pub use error::AuthorityError;
 pub use snapshot::{
