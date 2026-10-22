@@ -4915,7 +4915,6 @@ mod tests {
             RustWorkspaceSessionLane,
         };
         use std::path::Path;
-        use std::path::Path;
 
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -5098,6 +5097,7 @@ mod tests {
             RustCargoMetadataPolicy, RustWorkspaceFile, RustWorkspaceSessionKey,
             RustWorkspaceSessionLane,
         };
+        use std::path::Path;
 
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -5113,10 +5113,28 @@ mod tests {
         // 2018, Cargo's default automatic benchmark discovery, and no explicit
         // `autobenches` or `[[bench]]`. The source is a small fixture, not a
         // hash-exact copy of the captured 1.0.13 archive.
-        let manifest = "[package]\nname = \"ryu\"\nversion = \"1.0.13\"\nedition = \"2018\"\n\n[workspace]\n";
+        let manifest = concat!(
+            "[package]\n",
+            "name = \"ryu\"\n",
+            "version = \"1.0.13\"\n",
+            "edition = \"2018\"\n\n",
+            "[workspace]\n",
+        );
         fs::write(root.join("Cargo.toml"), manifest)?;
-        let bench = "pub fn format_sample(value: f64) -> String {\n    value.to_string()\n}\n\nfn main() {\n    std::hint::black_box(format_sample(1.25));\n}\n";
-        let library = "pub fn library_value() -> f64 { 1.0 }\n";
+        let bench = concat!(
+            "#[path = \"../shared.rs\"] mod shared;\n",
+            "pub fn format_sample(value: f64) -> String {\n",
+            "    shared::helper();\n",
+            "    value.to_string()\n",
+            "}\n\n",
+            "fn main() {\n",
+            "    std::hint::black_box(format_sample(1.25));\n",
+            "}\n",
+        );
+        let library = concat!(
+            "#[path = \"../shared.rs\"] mod shared;\n",
+            "pub fn library_value() -> f64 { shared::helper(); 1.0 }\n",
+        );
         let shared = "pub fn helper() {}\n";
         fs::write(root.join("benches/bench.rs"), bench)?;
         fs::write(root.join("src/lib.rs"), library)?;
@@ -5209,7 +5227,9 @@ mod tests {
         assert!(
             workspace
                 .cargo_target_for_source_path(root.join("src/lib.rs"))
-                .is_some_and(|target| target.name == "ryu" && target.root == Path::new("src/lib.rs")),
+                .is_some_and(|target| {
+                    target.name == "ryu" && target.root == Path::new("src/lib.rs")
+                }),
             "the neighboring library target must retain its own exact source-root identity"
         );
 
