@@ -121,7 +121,11 @@ fn validate_signature_carrier_roles(
 ) -> Result<(), FullSemanticImageFault> {
     if !matches!(
         layout.schema,
-        SCHEMA_CARRIER_ROLES | SCHEMA_CARRIER_BINDINGS | SCHEMA_TYPED_NAMES | super::wire::SCHEMA_PUBLICATION_ROLES
+        SCHEMA_CARRIER_ROLES
+            | SCHEMA_CARRIER_BINDINGS
+            | SCHEMA_TYPED_NAMES
+            | super::wire::SCHEMA_PUBLICATION_ROLES
+            | super::wire::SCHEMA_CLANG_DECLARED_NAMES
     ) || layout.entry(FullDirectoryKind::SignatureCarrierRoles).count == 0
     {
         return Ok(());
