@@ -80,6 +80,7 @@ impl CrateArchiveWitness {
     /// during archive/member hashing, decompression, and between tar members
     /// so the caller can apply its existing cancellation and owner-budget
     /// policy.
+    #[cfg(test)]
     pub(in crate::builtin) fn capture(
         crate_name: &str,
         version: &str,
@@ -314,7 +315,6 @@ fn parse_tar(
     let mut members = BTreeMap::new();
     let mut directories = BTreeSet::new();
     let mut source_bytes = 0usize;
-    let mut terminated = false;
     let mut working_bytes = archive_len
         .checked_add(bytes_capacity)
         .and_then(|bytes| bytes.checked_add(WITNESS_BASE_ACCOUNTING_BYTES))
@@ -343,7 +343,6 @@ fn parse_tar(
             {
                 return Err(CrateArchiveWitnessError::InvalidArchive);
             }
-            terminated = true;
             break;
         }
         strict_tar_octal(&header[148..156])?;
@@ -465,7 +464,7 @@ fn parse_tar(
             _ => return Err(CrateArchiveWitnessError::InvalidArchive),
         }
     }
-    if !terminated || members.is_empty() {
+    if members.is_empty() {
         return Err(CrateArchiveWitnessError::InvalidArchive);
     }
     Ok(members)

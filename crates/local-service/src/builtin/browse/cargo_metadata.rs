@@ -796,16 +796,6 @@ fn observation_file_len(path: &Path, maximum: usize) -> Result<Option<usize>, St
         .map_err(|_| "Cargo registry archive length exceeds the address bound".to_owned())
 }
 
-fn normal_registry_archive_path(
-    package: &RegistryMetadataPackage,
-) -> Result<Option<PathBuf>, String> {
-    let cargo_home = match cargo_home_directory() {
-        Ok(path) => path,
-        Err(_) => return Ok(None),
-    };
-    normal_registry_archive_path_under_home(package, &cargo_home)
-}
-
 fn normal_registry_archive_path_under_home(
     package: &RegistryMetadataPackage,
     cargo_home: &Path,

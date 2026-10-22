@@ -2226,6 +2226,7 @@ enum SelectedPackageReadme {
     },
 }
 
+#[cfg(test)]
 fn package_readme_manifest(
     package_root: &Path,
 ) -> Result<CargoPackageReadmeManifestV1, CargoPackageReadmeFailureV1> {
@@ -4150,8 +4151,9 @@ fn recognized_nix_parallel_cargo(
     // complete allowlisted body, permitting only that exact generator framing;
     // never trim whitespace or ignore a trailing shell statement. The direct
     // form remains supported for previously admitted unframed launchers.
-    let substitutions = match_nix_path_template(template, source)
-        .or_else(|| match_nix_path_template(template, source.strip_suffix(b"\n")?))?;
+    let substitutions = match_nix_path_template(template, source).or_else(|| {
+        match_nix_path_template(template, source.strip_suffix(b"\n")?)
+    })?;
     let cargo = substitutions.get("cargo")?.clone();
     let git = substitutions.get("git")?.clone();
     let sccache = substitutions.get("sccache")?;
@@ -6979,9 +6981,7 @@ mod tests {
             .and_then(Option::as_ref)
             .cloned()
             .expect("exact source-qualified path package row");
-        let binding = tree
-            .retained_request_binding()
-            .expect("exact project tree request");
+        let binding = tree.retained_request_binding().expect("exact project tree request");
         let readme = owner.package_readme(CargoPackageReadmeRequestV1::from_tree(package, binding));
         assert!(
             readme.has_admissible_shape(),
@@ -7081,9 +7081,7 @@ mod tests {
         assert!(changed_link);
         assert_eq!(alias.canonicalize().expect("updated request symlink"), b);
         assert_eq!(tree_a.root, a.to_string_lossy().into_owned());
-        let binding_a = tree_a
-            .retained_request_binding()
-            .expect("retained A request binding");
+        let binding_a = tree_a.retained_request_binding().expect("retained A request binding");
         assert_eq!(
             binding_a,
             backend_library::browse::ProjectTreeRequestBindingV1::for_paths(&alias, &tree_a.root)
@@ -7130,17 +7128,9 @@ mod tests {
             .project_tree(&alias, None)
             .expect("later request follows the changed symlink to B");
         assert_eq!(tree_b.root, b.to_string_lossy().into_owned());
-        let binding_b = tree_b
-            .retained_request_binding()
-            .expect("retained B request binding");
-        assert_eq!(
-            binding_a.requested_root_digest,
-            binding_b.requested_root_digest
-        );
-        assert_ne!(
-            binding_a.effective_workspace_root_digest,
-            binding_b.effective_workspace_root_digest
-        );
+        let binding_b = tree_b.retained_request_binding().expect("retained B request binding");
+        assert_eq!(binding_a.requested_root_digest, binding_b.requested_root_digest);
+        assert_ne!(binding_a.effective_workspace_root_digest, binding_b.effective_workspace_root_digest);
         assert!(matches!(
             owner.source_file(
                 request_a,
@@ -7393,8 +7383,7 @@ mod tests {
             .and_then(Option::as_ref)
             .cloned()
             .expect("Cargo's exact helper authority");
-        let request =
-            backend_library::CargoPackageSourceRequestV1::from_tree(package.clone(), binding);
+        let request = backend_library::CargoPackageSourceRequestV1::from_tree(package.clone(), binding);
         let path = CargoPackageSourcePathV1::new("src/lib.rs").expect("source path");
         assert!(matches!(
             owner.source_file(request.clone(), path.clone()),
@@ -7604,9 +7593,7 @@ mod tests {
         let tree_a = owner
             .project_tree(&a, None)
             .expect("real Cargo observation for workspace A");
-        let binding_a = tree_a
-            .retained_request_binding()
-            .expect("A request binding");
+        let binding_a = tree_a.retained_request_binding().expect("A request binding");
         let request_a = request_for(&owner, &a, "cache-shared", binding_a);
         let root_context_a = owner
             .bindings
@@ -7715,9 +7702,7 @@ mod tests {
         let refreshed_root = owner
             .project_tree(&a, None)
             .expect("re-admit the changed workspace context");
-        let binding_a = refreshed_root
-            .retained_request_binding()
-            .expect("refreshed A binding");
+        let binding_a = refreshed_root.retained_request_binding().expect("refreshed A binding");
         let request_a = request_for(&owner, &a, "cache-shared", binding_a);
         let refreshed_member = owner
             .project_tree(&member_root_a, None)
@@ -7766,9 +7751,7 @@ mod tests {
         let tree_b = owner
             .project_tree(&b, None)
             .expect("real Cargo observation for workspace B");
-        let binding_b = tree_b
-            .retained_request_binding()
-            .expect("B request binding");
+        let binding_b = tree_b.retained_request_binding().expect("B request binding");
         let request_b = request_for(&owner, &b, "cache-shared", binding_b);
         assert_ne!(
             request_a.package, request_b.package,
@@ -7912,9 +7895,7 @@ mod tests {
             let tree = owner
                 .project_tree(&requested, None)
                 .expect("real Cargo member request in workspace A");
-            let binding = tree
-                .retained_request_binding()
-                .expect("additional request binding");
+            let binding = tree.retained_request_binding().expect("additional request binding");
             assert_eq!(
                 binding.effective_workspace_root_digest,
                 binding_a.effective_workspace_root_digest
