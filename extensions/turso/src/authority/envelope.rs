@@ -1345,7 +1345,7 @@ pub fn reopen_selected_compiler_publication(
     envelope
         .validate_metadata(&metadata)
         .map_err(|error| error.to_string())?;
-    let _typescript_snapshot = reopen_typescript_snapshot_witness(&manifest, &metadata)?;
+    let _ = reopen_typescript_snapshot_witness_bounded(store, &manifest, &metadata)?;
     if selected.semantic_manifest_root().copied() != metadata.semantic_manifest_root().copied() {
         return Err("selected semantic-plane root differs from compiler metadata".to_owned());
     }
@@ -1429,7 +1429,6 @@ pub fn reopen_selected_compiler_metadata(
     envelope
         .validate_metadata(&metadata)
         .map_err(|error| error.to_string())?;
-    let _typescript_snapshot = reopen_typescript_snapshot_witness(&manifest, &metadata)?;
     if selected.semantic_manifest_root().copied() != metadata.semantic_manifest_root().copied() {
         return Err("selected semantic-plane root differs from compiler metadata".to_owned());
     }
@@ -1455,7 +1454,10 @@ pub fn reopen_selected_typescript_snapshot_witness(
     let manifest = store
         .open_closure_claim(ArtifactClosureClaim::from_bytes(*selected.closure_id()))
         .map_err(|error| format!("open selected TypeScript snapshot closure: {error:?}"))?;
-    reopen_typescript_snapshot_witness(&manifest, reopened.metadata())
+    if manifest.id().as_bytes() != selected.closure_id() {
+        return Err("selected TypeScript snapshot closure identity mismatch".to_owned());
+    }
+    reopen_typescript_snapshot_witness_bounded(store, &manifest, reopened.metadata())
         .map(|bytes| bytes.map(|bytes| VerifiedTypeScriptSnapshotWitness(bytes.into_boxed_slice())))
 }
 
@@ -1587,7 +1589,7 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
         {
             return Err("compiler coverage input differs from admitted attempt".to_owned());
         }
-        verify_semantic_image_members(&manifest, &observed_metadata)?;
+        verify_semantic_image_members(self.store, &manifest, &observed_metadata)?;
         verify_versioned_plane_members(&manifest, &observed_metadata)?;
         verify_exact_member_set(
             &manifest,
@@ -1754,6 +1756,14 @@ pub fn reopen_typescript_snapshot_witness(
     closure: &backend_store::DurableManifest,
     metadata: &CompilerPublicationMetadata,
 ) -> Result<Option<Vec<u8>>, String> {
+    reopen_typescript_snapshot_witness_shared(closure, metadata)
+        .map(|bytes| bytes.map(|bytes| bytes.as_ref().to_vec()))
+}
+
+fn reopen_typescript_snapshot_witness_shared(
+    closure: &backend_store::DurableManifest,
+    metadata: &CompilerPublicationMetadata,
+) -> Result<Option<std::sync::Arc<[u8]>>, String> {
     let Some(member) = metadata.typescript_snapshot_witness() else {
         return Ok(None);
     };
@@ -1777,7 +1787,51 @@ pub fn reopen_typescript_snapshot_witness(
     {
         return Err("TypeScript snapshot schema, identity, or extent mismatch".to_owned());
     }
-    Ok(Some(object.bytes().to_vec()))
+    Ok(Some(object.bytes_shared()))
+}
+
+/// Reads one selected ledger through the store's bounded verification stream.
+/// The closure membership is checked before opening the CAS payload, and the
+/// certificate-specific limit is enforced during the read, before allocation
+/// can grow beyond the authenticated declared extent.
+fn reopen_typescript_snapshot_witness_bounded(
+    store: &FileStore,
+    closure: &backend_store::DurableManifest,
+    metadata: &CompilerPublicationMetadata,
+) -> Result<Option<Vec<u8>>, String> {
+    let Some(member) = metadata.typescript_snapshot_witness() else {
+        return Ok(None);
+    };
+    let declared_len = usize::try_from(member.byte_length())
+        .map_err(|_| "TypeScript snapshot extent overflow".to_owned())?;
+    if declared_len == 0
+        || declared_len > backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES
+    {
+        return Err("TypeScript snapshot schema, identity, or extent mismatch".to_owned());
+    }
+    let claim = UntrustedObjectId::from_bytes(*member.object_id());
+    closure
+        .admit_claim(claim)
+        .map_err(|error| format!("admit TypeScript snapshot member: {error:?}"))?
+        .ok_or("TypeScript snapshot member absent from selected closure")?;
+
+    let mut bytes = Vec::new();
+    let verified = store
+        .write_verified_object_payload(claim, u64::from(member.byte_length()), &mut bytes)
+        .map_err(|error| format!("read selected TypeScript snapshot member: {error:?}"))?;
+    if verified.id().as_bytes() != member.object_id()
+        || verified.schema() != COMPILER_TYPESCRIPT_SNAPSHOT_WITNESS_SCHEMA
+        || verified.payload_len() != u64::from(member.byte_length())
+        || verified.key()
+            != ObjectKey::<backend_semantic::ir::TypeScriptSnapshotWitnessSchema>::from_value(
+                &bytes,
+            )
+            .as_bytes()
+        || bytes.len() != declared_len
+    {
+        return Err("TypeScript snapshot schema, identity, or extent mismatch".to_owned());
+    }
+    Ok(Some(bytes))
 }
 
 /// Reopens only the selected closure's exact program member and validates its identity.
@@ -1852,11 +1906,12 @@ fn verify_native_program_image(
 }
 
 fn verify_semantic_image_members(
+    store: &FileStore,
     manifest: &backend_store::DurableManifest,
     metadata: &CompilerPublicationMetadata,
 ) -> Result<(), String> {
     let _coverage = reopen_source_coverage(manifest, metadata)?;
-    let _typescript_snapshot = reopen_typescript_snapshot_witness(manifest, metadata)?;
+    let _ = reopen_typescript_snapshot_witness_bounded(store, manifest, metadata)?;
     let program = reopen_native_program_sources(manifest, metadata)?;
     let mappings = program.as_ref().map(|program| {
         program
@@ -3002,6 +3057,10 @@ mod tests {
             .unwrap()
             .byte_length += 1;
         assert!(reopen_typescript_snapshot_witness(&closure, &wrong_extent).is_err());
+        assert_eq!(
+            verify_semantic_image_members(&store, &closure, &wrong_extent).unwrap_err(),
+            "TypeScript snapshot schema, identity, or extent mismatch"
+        );
 
         let mut wrong_schema = reopened.clone();
         let wrong_bytes = b"foreign schema object";
@@ -3016,6 +3075,10 @@ mod tests {
             .expect("write foreign closure");
         let foreign_closure = store.open_closure(foreign_closure).expect("open foreign");
         assert!(reopen_typescript_snapshot_witness(&foreign_closure, &wrong_schema).is_err());
+        assert_eq!(
+            verify_semantic_image_members(&store, &foreign_closure, &wrong_schema).unwrap_err(),
+            "TypeScript snapshot schema, identity, or extent mismatch"
+        );
 
         let missing_closure = store
             .write_closure(&ClosureManifest::new(vec![member(b"other")]).expect("missing closure"))
@@ -3041,6 +3104,146 @@ mod tests {
         );
         drop(closure);
         drop(store);
+        std::fs::remove_dir_all(directory).expect("cleanup");
+    }
+
+    #[test]
+    fn selected_metadata_keeps_snapshot_payload_lazy_but_explicit_reopen_refuses_missing_bytes() {
+        use backend_semantic::ir::{
+            NativeProgramSource, NativeProgramSourceManifest, NativeProgramSourceManifestSchema,
+            SourceIdentity,
+        };
+
+        let directory = scratch_store();
+        let store = FileStore::open(&directory, 1024 * 1024).expect("open FileStore");
+        let (image, image_object) = compiler_image();
+        let sources = NativeProgramSourceManifest::from_sources(
+            ContentId::from_canonical_bytes(b"compiler"),
+            vec![NativeProgramSource {
+                program_path: "workspace/main.ts".into(),
+                package_path: Some("main.ts".into()),
+                source: SourceIdentity::from_bytes(b"export {}; ").expect("source"),
+            }],
+        )
+        .expect("program source manifest");
+        let program_object = TypedObject::from_value(
+            &ObjectKey::<NativeProgramSourceManifestSchema>::from_value(sources.as_bytes()),
+            sources.as_bytes(),
+        );
+        store.write_object(&program_object).expect("write program");
+        let program_member = CompilerProgramSourceMember::from_verified_object(
+            store
+                .verify_object_claim(UntrustedObjectId::from_bytes(
+                    *program_object.id().as_bytes(),
+                ))
+                .expect("verify program"),
+            &sources,
+        )
+        .expect("typed program member");
+
+        let certificate_bytes = b"authenticated cold replay certificate";
+        let certificate_object = TypedObject::from_value(
+            &ObjectKey::<backend_semantic::ir::TypeScriptSnapshotWitnessSchema>::from_value(
+                certificate_bytes,
+            ),
+            certificate_bytes,
+        );
+        store
+            .write_object(&certificate_object)
+            .expect("write certificate");
+        let certificate_member = CompilerTypeScriptSnapshotMember::from_verified_object(
+            store
+                .verify_object_claim(UntrustedObjectId::from_bytes(
+                    *certificate_object.id().as_bytes(),
+                ))
+                .expect("verify certificate"),
+            certificate_bytes,
+        )
+        .expect("typed certificate member");
+        let metadata = metadata(image)
+            .with_native_program_sources(program_member)
+            .expect("program metadata")
+            .with_typescript_snapshot_witness(certificate_member)
+            .expect("snapshot metadata");
+        let attempt = attempt();
+        let envelope =
+            CompilerPublicationEnvelope::new(&attempt, &metadata).expect("selected envelope");
+        let metadata_object = metadata.typed_object();
+        let envelope_object = envelope.typed_object();
+        let closure = ClosureManifest::new(vec![
+            image_object,
+            program_object,
+            certificate_object.clone(),
+            metadata_object,
+            envelope_object,
+        ])
+        .expect("complete selected closure");
+        let closure_id = store.write_closure(&closure).expect("persist closure");
+        let candidate = envelope
+            .candidate(attempt.clone(), *closure_id.as_bytes())
+            .expect("candidate");
+        let selected = selected_generation(&attempt, &candidate, 1);
+
+        let certificate_name = certificate_object
+            .id()
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let certificate_path = directory
+            .join("objects")
+            .join(format!("{certificate_name}.object"));
+        assert_eq!(
+            reopen_selected_typescript_snapshot_witness(&store, &selected)
+                .expect("read selected certificate")
+                .expect("certificate is present")
+                .as_bytes(),
+            certificate_bytes,
+        );
+        drop(store);
+
+        let original_payload = std::fs::read(&certificate_path).expect("read certificate CAS");
+        let mut certificate_permissions = std::fs::metadata(&certificate_path)
+            .expect("certificate metadata")
+            .permissions();
+        certificate_permissions.set_readonly(false);
+        std::fs::set_permissions(&certificate_path, certificate_permissions)
+            .expect("make test CAS writable");
+        std::fs::write(&certificate_path, b"corrupt CAS envelope")
+            .expect("corrupt optional certificate payload");
+        let corrupt_store = FileStore::open(&directory, 1024 * 1024).expect("reopen corrupt CAS");
+        reopen_selected_compiler_metadata(&corrupt_store, &selected)
+            .expect("metadata selection ignores optional payload corruption");
+        assert!(reopen_selected_typescript_snapshot_witness(&corrupt_store, &selected).is_err());
+        drop(corrupt_store);
+        let mut certificate_permissions = std::fs::metadata(&certificate_path)
+            .expect("corrupt certificate metadata")
+            .permissions();
+        certificate_permissions.set_readonly(false);
+        std::fs::set_permissions(&certificate_path, certificate_permissions)
+            .expect("make corrupt test CAS writable");
+        std::fs::write(&certificate_path, original_payload).expect("restore certificate CAS");
+        let mut certificate_permissions = std::fs::metadata(&certificate_path)
+            .expect("restored certificate metadata")
+            .permissions();
+        certificate_permissions.set_readonly(true);
+        std::fs::set_permissions(&certificate_path, certificate_permissions)
+            .expect("reseal test CAS");
+        let mut certificate_permissions = std::fs::metadata(&certificate_path)
+            .expect("resealed certificate metadata")
+            .permissions();
+        certificate_permissions.set_readonly(false);
+        std::fs::set_permissions(&certificate_path, certificate_permissions)
+            .expect("make test CAS removable");
+        std::fs::remove_file(&certificate_path)
+            .expect("simulate missing optional certificate payload");
+
+        let missing_store = FileStore::open(&directory, 1024 * 1024).expect("reopen missing CAS");
+        let reopened = reopen_selected_compiler_metadata(&missing_store, &selected)
+            .expect("metadata selection reads only the exact member inventory");
+        assert_eq!(reopened.metadata(), &metadata);
+        assert!(reopen_selected_typescript_snapshot_witness(&missing_store, &selected).is_err());
+        drop(missing_store);
         std::fs::remove_dir_all(directory).expect("cleanup");
     }
 
@@ -3150,7 +3353,7 @@ mod tests {
             .expect("reopen forest")
             .expect("present");
         assert_eq!(reopened, sources);
-        verify_semantic_image_members(&closure, &metadata)
+        verify_semantic_image_members(&store, &closure, &metadata)
             .expect("cold image binds exact program node");
         for bindings in [
             vec![],
@@ -3186,7 +3389,7 @@ mod tests {
                 .unwrap();
             let invalid_closure = store.open_closure(invalid_id).unwrap();
             assert!(
-                verify_semantic_image_members(&invalid_closure, &invalid_metadata).is_err(),
+                verify_semantic_image_members(&store, &invalid_closure, &invalid_metadata).is_err(),
                 "missing or mismatched image binding cannot reopen positive authority"
             );
         }

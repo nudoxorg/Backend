@@ -1539,7 +1539,7 @@ impl StagedSemanticPackage {
     pub fn typescript_snapshot_certificate(&self, input: [u8; 32]) -> Option<Vec<u8>> {
         let host = self.staged.typescript_witness.as_ref()?;
         let root = host.native_project_root()?;
-        super::typescript_snapshot::encode_staged_snapshot_certificate(self, root, input)
+        super::runtime::encode_staged_snapshot_certificate(self, root, input)
     }
 
     pub(crate) fn typescript_snapshot_witness(

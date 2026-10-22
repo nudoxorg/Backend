@@ -1878,12 +1878,9 @@ impl SemanticAuthority {
         let (claim, selected) = self.read_selected_pair(key).ok()?;
         if *claim.binding().identity.as_ref() != binding
             || selected.input_digest() != &input
+            || selected.target_root() != &binding
             || !matches!(key.profile(), LanguageProfile::TypeScript(_))
         {
-            return None;
-        }
-        let reopened = reopen_selected_compiler_metadata(&self.store, &selected).ok()?;
-        if reopened.metadata().binding_identity() != &binding {
             return None;
         }
         backend_extension_turso::reopen_selected_typescript_snapshot_witness(&self.store, &selected)
