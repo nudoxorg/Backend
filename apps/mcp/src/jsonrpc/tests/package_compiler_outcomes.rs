@@ -337,6 +337,7 @@ fn partial_coverage_pages_keep_complete_escaped_observations_inside_actual_cli_a
             .as_ref(),
         byte_len: 4,
         cause: SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
+        diagnostic: None,
     };
     let page = PackageCompilerCoveragePage {
         generation: selector.generation,

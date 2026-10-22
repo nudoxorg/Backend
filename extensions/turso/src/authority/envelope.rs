@@ -1509,6 +1509,7 @@ pub fn reopen_source_coverage(
             source,
             byte_len,
             cause: backend_semantic::ir::SourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted,
+            ..
         } = row
         {
             if !selected_sources.get(path.as_str()).is_some_and(|selected| {
@@ -2379,6 +2380,7 @@ mod tests {
                     .as_ref(),
                     byte_len: 4,
                     cause: SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
+                    diagnostic: None,
                 },
             ],
         )
