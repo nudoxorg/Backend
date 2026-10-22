@@ -1534,7 +1534,7 @@ mod tests {
 
     #[test]
     fn native_candidate_constructors_reject_a_permit_for_another_package_url() {
-        use crate::application::runtime::{OwnedPackageSource, OwnedPackageSourceSet};
+        use crate::application::{OwnedPackageSource, OwnedPackageSourceSet};
         use backend_library::interface::{CorrelationId, GenerateTarget, PackageCompileRequest};
         use backend_semantic::vocabulary::{CxxStandard, Stage};
         use std::path::PathBuf;
