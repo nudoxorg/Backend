@@ -8,15 +8,26 @@ use super::{
     CargoMetadataLockState, CargoToolSelection, CargoToolWitnessReuse, CoherentMetadata,
     InputObservation, MAX_CARGO_CONFIG_BYTES, MAX_CARGO_CONFIG_INPUTS, MAX_CARGO_METADATA_PACKAGES,
     MAX_CARGO_METADATA_TARGETS_PER_PACKAGE, MAX_CARGO_OBSERVATION_FILE_BYTES,
-    MAX_CARGO_OBSERVATION_PATHS, MAX_METADATA_BYTES, RequestedCargoManifest, basic_input_paths,
-    cargo_config_paths, cargo_config_relative_path_base, cargo_environment_witness,
-    cargo_tool_selection, metadata_tool_witness, observation_budget, observation_path_key,
-    preflight_selected_cargo_command, read_observation_file, requested_cargo_manifest, run,
-    run_with_default_rustc, run_with_default_rustc_and_overrides, rustup_selection_paths,
-    sccache_configuration_paths, selected_cargo_program, strict_observation_witness,
+    MAX_CARGO_OBSERVATION_PATHS, MAX_CARGO_OBSERVATION_TOTAL_BYTES, MAX_METADATA_BYTES,
+    RequestedCargoManifest, basic_input_paths, cargo_config_paths, cargo_config_relative_path_base,
+    cargo_environment_witness, cargo_tool_selection, metadata_tool_witness, observation_budget,
+    observation_path_key, preflight_selected_cargo_command, read_observation_file,
+    requested_cargo_manifest, run, run_with_default_rustc, run_with_default_rustc_and_overrides,
+    rustup_selection_paths, sccache_configuration_paths, selected_cargo_program,
+    strict_observation_witness,
 };
+use crate::builtin::registry::archive_witness::CrateArchiveWitness;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
+
+const MAX_CARGO_REGISTRY_WITNESS_SET_BYTES: usize = 64 * 1024 * 1024;
+
+/// A no-follow-observed archive-member table tied to one exact metadata source
+/// root. The browse cache retains this beside the tree and charges its memory.
+pub(super) struct RegistryArchiveWitness {
+    pub(super) package_root: PathBuf,
+    pub(super) witness: CrateArchiveWitness,
+}
 
 const MAX_LOCK_SOURCE_CLOSURE_DOCUMENTS: usize = 128;
 const MAX_LOCK_SOURCE_CLOSURE_BYTES: usize = 16 * 1024 * 1024;
@@ -114,6 +125,17 @@ fn coherent_metadata_with<R: Into<CargoMetadataRun>>(
         .clone();
     let before = observe(&discovery_workspace, &discovery_paths)?;
     observation_budget()?;
+    let first_archives = capture_registry_archives(
+        &requested.root,
+        &discovery_document,
+        discovery.lockfile.as_deref(),
+        MAX_CARGO_OBSERVATION_TOTAL_BYTES.saturating_sub(before.observed_bytes),
+        false,
+    )?;
+    let required_registry_checksums = required_registry_checksums_without_archive_authority(
+        required_registry_checksums,
+        &first_archives.accepted_roots,
+    );
     require_required_paths_present(
         &before,
         &required_manifests,
@@ -160,6 +182,13 @@ fn coherent_metadata_with<R: Into<CargoMetadataRun>>(
     }
     let after = observe(&effective_workspace, &watched)?;
     observation_budget()?;
+    let second_archives = capture_registry_archives(
+        &requested.root,
+        &observed_document,
+        observed.lockfile.as_deref(),
+        MAX_CARGO_OBSERVATION_TOTAL_BYTES.saturating_sub(after.observed_bytes),
+        true,
+    )?;
     require_required_paths_present(
         &after,
         &required_manifests,
@@ -176,11 +205,18 @@ fn coherent_metadata_with<R: Into<CargoMetadataRun>>(
             "Cargo manifests, lockfile, configuration, or tools changed during metadata".to_owned(),
         );
     }
+    if first_archives.descriptors != second_archives.descriptors {
+        return Err("Cargo registry archives changed during metadata".to_owned());
+    }
+    if first_archives.accepted_roots != second_archives.accepted_roots {
+        return Err("Cargo registry source storage changed during metadata".to_owned());
+    }
+    let file_witness = registry_archive_input_witness(after.digest, &second_archives.descriptors);
     let lock_origin_witness = lock_origin_witness_for_run(&observed)?;
     let metadata_witness = cargo_metadata_output_witness(&observed.metadata, &observed.host);
     let no_deps_witness = observed.no_deps_witness.unwrap_or([0; 32]);
     let input_witness = compose_cargo_input_witness(
-        after.digest,
+        file_witness,
         metadata_witness,
         lock_origin_witness,
         no_deps_witness,
@@ -190,13 +226,14 @@ fn coherent_metadata_with<R: Into<CargoMetadataRun>>(
         host: observed.host,
         workspace_root: effective_workspace,
         input_witness,
-        file_witness: after.digest,
+        file_witness,
         metadata_witness,
         lock_origin_witness,
         no_deps_witness,
         tool_witness_reuse: after.tool_witness_reuse,
         lockfile: observed.lockfile.or(after.lockfile),
         watched,
+        registry_archives: second_archives.witnesses,
     })
 }
 
@@ -218,9 +255,18 @@ struct CargoMetadataInputs {
     required_package_manifests: Vec<PathBuf>,
     registry_checksums: Vec<PathBuf>,
     required_registry_checksums: Vec<PathBuf>,
+    registry_packages: Vec<RegistryMetadataPackage>,
     target_sources: Vec<PathBuf>,
     package_roots: Vec<PathBuf>,
     local_dependency_roots: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RegistryMetadataPackage {
+    name: String,
+    version: String,
+    source: String,
+    package_root: PathBuf,
 }
 
 impl CargoMetadataDocument {
@@ -268,6 +314,7 @@ impl CargoMetadataDocument {
         let mut required_manifests = BTreeSet::new();
         let mut checksums = BTreeSet::new();
         let mut required_checksums = BTreeSet::new();
+        let mut registry_packages = Vec::new();
         let mut target_sources = BTreeSet::new();
         let mut package_roots = BTreeSet::new();
         let mut local_dependency_roots = BTreeSet::new();
@@ -322,13 +369,29 @@ impl CargoMetadataDocument {
                 }
             }
 
-            if package
+            if let Some(source) = package
                 .get("source")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|source| {
-                    source.starts_with("registry+") || source.starts_with("sparse+")
-                })
+                .filter(|source| source.starts_with("registry+") || source.starts_with("sparse+"))
             {
+                let name = package
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| "Cargo registry package omitted its name".to_owned())?;
+                let version = package
+                    .get("version")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|version| !version.is_empty())
+                    .ok_or_else(|| "Cargo registry package omitted its version".to_owned())?;
+                if input_is_resolved {
+                    registry_packages.push(RegistryMetadataPackage {
+                        name: name.to_owned(),
+                        version: version.to_owned(),
+                        source: source.to_owned(),
+                        package_root: package_root.to_path_buf(),
+                    });
+                }
                 let checksum = package_root.join(".cargo-checksum.json");
                 checksums.insert(checksum.clone());
                 if input_is_resolved {
@@ -366,6 +429,7 @@ impl CargoMetadataDocument {
                 required_package_manifests: required_manifests.into_iter().collect(),
                 registry_checksums: checksums.into_iter().collect(),
                 required_registry_checksums: required_checksums.into_iter().collect(),
+                registry_packages,
                 target_sources: target_sources.into_iter().collect(),
                 package_roots: package_roots.into_iter().collect(),
                 local_dependency_roots: local_dependency_roots.into_iter().collect(),
@@ -552,6 +616,315 @@ impl CargoMetadataInputs {
             .into_iter()
             .collect()
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RegistryArchiveDescriptor {
+    package_root: PathBuf,
+    archive_path: PathBuf,
+    archive_sha256: [u8; 32],
+    member_witness: [u8; 32],
+}
+
+struct RegistryArchivePass {
+    accepted_roots: BTreeSet<PathBuf>,
+    descriptors: Vec<RegistryArchiveDescriptor>,
+    witnesses: Vec<RegistryArchiveWitness>,
+}
+
+fn capture_registry_archives(
+    request_context: &Path,
+    document: &CargoMetadataDocument,
+    lockfile: Option<&str>,
+    archive_budget: usize,
+    retain: bool,
+) -> Result<RegistryArchivePass, String> {
+    let cargo_home = cargo_home_directory().ok();
+    let configuration_proven = source_configuration_proves_no_replacement(request_context)?;
+    capture_registry_archives_with_authority(
+        document,
+        lockfile,
+        archive_budget,
+        retain,
+        cargo_home.as_deref(),
+        configuration_proven,
+    )
+}
+
+fn capture_registry_archives_with_authority(
+    document: &CargoMetadataDocument,
+    lockfile: Option<&str>,
+    archive_budget: usize,
+    retain: bool,
+    cargo_home: Option<&Path>,
+    configuration_proven: bool,
+) -> Result<RegistryArchivePass, String> {
+    observation_budget()?;
+    let mut candidates = Vec::new();
+    for package in &document.inputs.registry_packages {
+        observation_budget()?;
+        // The filesystem path and effective config establish normal registry
+        // storage, regardless of whether this extraction also contains a
+        // sidecar. Archive-backed source routes always bind to member bytes.
+        if let Some(archive_path) = cargo_home
+            .map(|home| normal_registry_archive_path_under_home(package, home))
+            .transpose()?
+            .flatten()
+        {
+            candidates.push((package, archive_path));
+        }
+    }
+    let mut pass = RegistryArchivePass {
+        accepted_roots: BTreeSet::new(),
+        descriptors: Vec::new(),
+        witnesses: Vec::new(),
+    };
+    if candidates.is_empty() || !configuration_proven {
+        return Ok(pass);
+    }
+    if candidates.len() > MAX_CARGO_METADATA_PACKAGES {
+        return Err("Cargo registry archive set exceeds its package limit".to_owned());
+    }
+    // Archive integrity is an additional authority only when this exact
+    // registry package has a checksum in the observed lockfile. Keep legacy
+    // Git/path sources, checksum-less registry locks, and environments with
+    // no normal Cargo archive as unverified inputs; do not manufacture a
+    // checksum or turn their absence into a new source-authentication claim.
+    let Some(lockfile) = lockfile else {
+        return Ok(pass);
+    };
+    let locked = backend_library::browse::cargo_locked_packages(lockfile)
+        .map_err(|error| format!("Cargo lockfile package checksums are unavailable: {error}"))?;
+    let mut compressed_total = 0_usize;
+    let mut retained_total = 0_usize;
+    for (package, archive_path) in candidates {
+        observation_budget()?;
+        let matching = locked
+            .iter()
+            .filter(|entry| {
+                entry.name == package.name
+                    && entry.version == package.version
+                    && entry.source.as_deref() == Some(package.source.as_str())
+            })
+            .collect::<Vec<_>>();
+        if matching.len() != 1 {
+            continue;
+        }
+        let Some(expected_checksum) = matching[0].checksum else {
+            continue;
+        };
+        let archive_limit = archive_budget.min(MAX_CARGO_OBSERVATION_FILE_BYTES);
+        let Some(archive_len) = observation_file_len(&archive_path, archive_limit)? else {
+            continue;
+        };
+        compressed_total = compressed_total.saturating_add(archive_len);
+        if compressed_total > archive_budget {
+            return Err("Cargo registry archive set exceeds its byte limit".to_owned());
+        }
+        let bytes = read_observation_file(&archive_path, archive_limit)?
+            .ok_or_else(|| "locked Cargo registry archive is missing".to_owned())?;
+        if bytes.len() != archive_len {
+            return Err("Cargo registry archive changed while it was observed".to_owned());
+        }
+        let mut checkpoint = || observation_budget();
+        let witness_budget = MAX_CARGO_REGISTRY_WITNESS_SET_BYTES.saturating_sub(retained_total);
+        let witness = CrateArchiveWitness::capture_with_limit(
+            &package.name,
+            &package.version,
+            &bytes,
+            expected_checksum,
+            witness_budget,
+            &mut checkpoint,
+        )
+        .map_err(|error| format!("locked Cargo registry archive was rejected: {error:?}"))?;
+        if !pass.accepted_roots.insert(package.package_root.clone()) {
+            return Err("Cargo metadata repeated a registry source root".to_owned());
+        }
+        retained_total = retained_total.saturating_add(witness.retained_bytes());
+        if retained_total > MAX_CARGO_REGISTRY_WITNESS_SET_BYTES {
+            return Err(
+                "Cargo registry archive member witness set exceeds its byte limit".to_owned(),
+            );
+        }
+        pass.descriptors.push(RegistryArchiveDescriptor {
+            package_root: package.package_root.clone(),
+            archive_path,
+            archive_sha256: *witness.archive_sha256(),
+            member_witness: *witness.witness_hash(),
+        });
+        if retain {
+            pass.witnesses.push(RegistryArchiveWitness {
+                package_root: package.package_root.clone(),
+                witness,
+            });
+        }
+    }
+    pass.descriptors
+        .sort_by(|left, right| left.package_root.cmp(&right.package_root));
+    pass.witnesses
+        .sort_by(|left, right| left.package_root.cmp(&right.package_root));
+    Ok(pass)
+}
+
+fn observation_file_len(path: &Path, maximum: usize) -> Result<Option<usize>, String> {
+    observation_budget()?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Cargo registry archive path has no parent".to_owned())?;
+    let name = path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .ok_or_else(|| "Cargo registry archive path is not UTF-8".to_owned())?;
+    let directory = match super::DirectoryCapability::open_read_only_source(parent) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("cannot hold Cargo archive directory: {error}")),
+    };
+    let file = match directory.open_file_read(name) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("cannot open Cargo archive without links: {error}")),
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("cannot inspect Cargo archive: {error}"))?;
+    if !metadata.is_file() || metadata.len() > maximum as u64 {
+        return Err("Cargo registry archive is not a bounded regular file".to_owned());
+    }
+    usize::try_from(metadata.len())
+        .map(Some)
+        .map_err(|_| "Cargo registry archive length exceeds the address bound".to_owned())
+}
+
+fn normal_registry_archive_path(
+    package: &RegistryMetadataPackage,
+) -> Result<Option<PathBuf>, String> {
+    let cargo_home = match cargo_home_directory() {
+        Ok(path) => path,
+        Err(_) => return Ok(None),
+    };
+    normal_registry_archive_path_under_home(package, &cargo_home)
+}
+
+fn normal_registry_archive_path_under_home(
+    package: &RegistryMetadataPackage,
+    cargo_home: &Path,
+) -> Result<Option<PathBuf>, String> {
+    if cargo_home.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::CurDir | std::path::Component::ParentDir
+        )
+    }) || cargo_home.canonicalize().ok().as_deref() != Some(cargo_home)
+    {
+        return Ok(None);
+    }
+    let registry_src = cargo_home.join("registry/src");
+    let Ok(relative) = package.package_root.strip_prefix(&registry_src) else {
+        return Ok(None);
+    };
+    let mut components = relative.components();
+    let Some(std::path::Component::Normal(registry_id)) = components.next() else {
+        return Ok(None);
+    };
+    let Some(std::path::Component::Normal(release_dir)) = components.next() else {
+        return Ok(None);
+    };
+    let release_name = format!("{}-{}", package.name, package.version);
+    if components.next().is_some()
+        || registry_id.to_str().is_none_or(|id| id.is_empty())
+        || release_dir.to_str() != Some(release_name.as_str())
+        || !package.source.starts_with("registry+") && !package.source.starts_with("sparse+")
+    {
+        return Ok(None);
+    }
+    if super::DirectoryCapability::open_read_only_source(&package.package_root).is_err()
+        || package.package_root.canonicalize().ok().as_deref()
+            != Some(package.package_root.as_path())
+    {
+        return Ok(None);
+    }
+    let archive_name = format!("{}-{}.crate", package.name, package.version);
+    Ok(Some(
+        cargo_home
+            .join("registry/cache")
+            .join(registry_id)
+            .join(archive_name),
+    ))
+}
+
+fn source_configuration_proves_no_replacement(request_context: &Path) -> Result<bool, String> {
+    for (key, _) in std::env::vars_os() {
+        let key = key.to_string_lossy();
+        if key.starts_with("CARGO_SOURCE_") || key.starts_with("CARGO_REGISTRIES_") {
+            return Ok(false);
+        }
+    }
+    source_configuration_paths_prove_no_replacement(&cargo_config_paths(request_context)?)
+}
+
+fn source_configuration_paths_prove_no_replacement(paths: &[PathBuf]) -> Result<bool, String> {
+    for path in paths {
+        observation_budget()?;
+        if path.extension() == Some(std::ffi::OsStr::new("json")) {
+            let Some(bytes) = read_observation_file(&path, MAX_CARGO_CONFIG_BYTES)? else {
+                continue;
+            };
+            let document: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|_| "Cargo target JSON is malformed during source admission".to_owned())?;
+            if ["source", "replace", "paths", "patch", "registries"]
+                .iter()
+                .any(|key| document.get(key).is_some())
+            {
+                return Ok(false);
+            }
+            continue;
+        }
+        let Some(bytes) = read_observation_file(&path, MAX_CARGO_CONFIG_BYTES)? else {
+            continue;
+        };
+        let document: toml::Value = std::str::from_utf8(&bytes)
+            .map_err(|_| "Cargo config is not UTF-8 during registry source admission".to_owned())?
+            .parse()
+            .map_err(|_| "Cargo config is malformed during registry source admission".to_owned())?;
+        if ["source", "replace", "paths", "patch", "registries"]
+            .iter()
+            .any(|key| document.get(key).is_some())
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn registry_archive_input_witness(
+    base: [u8; 32],
+    descriptors: &[RegistryArchiveDescriptor],
+) -> [u8; 32] {
+    if descriptors.is_empty() {
+        return base;
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.cargo-registry-archive-input.v1\0");
+    hasher.update(&base);
+    hasher.update(&(descriptors.len() as u64).to_le_bytes());
+    for descriptor in descriptors {
+        update_metadata_path(&mut hasher, &descriptor.package_root);
+        update_metadata_path(&mut hasher, &descriptor.archive_path);
+        hasher.update(&descriptor.archive_sha256);
+        hasher.update(&descriptor.member_witness);
+    }
+    *hasher.finalize().as_bytes()
+}
+
+fn required_registry_checksums_without_archive_authority(
+    paths: Vec<PathBuf>,
+    archive_roots: &BTreeSet<PathBuf>,
+) -> Vec<PathBuf> {
+    paths
+        .into_iter()
+        .filter(|path| !archive_roots.contains(path.parent().unwrap_or(Path::new(""))))
+        .collect()
 }
 
 fn canonical_metadata_workspace(text: &str) -> Result<PathBuf, String> {
@@ -2228,6 +2601,269 @@ mod tests {
         )))
     }
 
+    fn registry_archive_fixture(path: &str, payload: &[u8]) -> Vec<u8> {
+        use flate2::{Compression, write::GzEncoder};
+        use std::io::Write;
+
+        let mut header = [0_u8; 512];
+        header[..path.len()].copy_from_slice(path.as_bytes());
+        header[100..108].copy_from_slice(b"0000644\0");
+        header[108..116].copy_from_slice(b"0000000\0");
+        header[116..124].copy_from_slice(b"0000000\0");
+        let size = format!("{:011o}\0", payload.len());
+        header[124..136].copy_from_slice(size.as_bytes());
+        header[136..148].copy_from_slice(b"00000000000\0");
+        header[148..156].fill(b' ');
+        header[156] = b'0';
+        header[257..263].copy_from_slice(b"ustar\0");
+        header[263..265].copy_from_slice(b"00");
+        let checksum: usize = header.iter().map(|byte| usize::from(*byte)).sum();
+        let checksum = format!("{:06o}\0 ", checksum);
+        header[148..156].copy_from_slice(checksum.as_bytes());
+
+        let mut tar = Vec::new();
+        tar.extend_from_slice(&header);
+        tar.extend_from_slice(payload);
+        let padding = (512 - payload.len() % 512) % 512;
+        tar.resize(tar.len() + padding, 0);
+        tar.resize(tar.len() + 1024, 0);
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&tar).expect("write archive tar");
+        encoder.finish().expect("finish archive gzip")
+    }
+
+    fn registry_document(package_root: &Path, sidecar: bool) -> CargoMetadataDocument {
+        let root = package_root.to_path_buf();
+        CargoMetadataDocument {
+            workspace_root: root.clone(),
+            workspace_members: BTreeSet::new(),
+            package_ids: Vec::new(),
+            inputs: CargoMetadataInputs {
+                package_manifests: vec![root.join("Cargo.toml")],
+                required_package_manifests: Vec::new(),
+                registry_checksums: sidecar
+                    .then(|| root.join(".cargo-checksum.json"))
+                    .into_iter()
+                    .collect(),
+                required_registry_checksums: sidecar
+                    .then(|| root.join(".cargo-checksum.json"))
+                    .into_iter()
+                    .collect(),
+                registry_packages: vec![RegistryMetadataPackage {
+                    name: "equivalent".to_owned(),
+                    version: "1.0.2".to_owned(),
+                    source: "registry+https://github.com/rust-lang/crates.io-index".to_owned(),
+                    package_root: root,
+                }],
+                target_sources: Vec::new(),
+                package_roots: Vec::new(),
+                local_dependency_roots: Vec::new(),
+            },
+        }
+    }
+
+    fn checksum_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(bytes);
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    fn registry_lock(checksum: &str) -> String {
+        format!(
+            "version = 4\n\n[[package]]\nname = \"equivalent\"\nversion = \"1.0.2\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"{checksum}\"\n"
+        )
+    }
+
+    fn registry_lock_without_checksum() -> String {
+        "version = 4\n\n[[package]]\nname = \"equivalent\"\nversion = \"1.0.2\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n"
+            .to_owned()
+    }
+
+    #[test]
+    fn normal_registry_archive_is_lock_bound_even_with_sidecar_and_changes_refuse() {
+        let scratch = scratch("backend-cargo-registry-archive-authority");
+        let cargo_home = scratch.0.join("cargo-home");
+        let package_root =
+            cargo_home.join("registry/src/index.crates.io-1949cf8c6b5b557f/equivalent-1.0.2");
+        let archive_path = cargo_home
+            .join("registry/cache/index.crates.io-1949cf8c6b5b557f/equivalent-1.0.2.crate");
+        std::fs::create_dir_all(&package_root).expect("registry package extraction");
+        std::fs::create_dir_all(archive_path.parent().expect("archive parent"))
+            .expect("registry archive cache");
+        let cargo_home = cargo_home.canonicalize().expect("canonical CARGO_HOME");
+        let package_root = package_root.canonicalize().expect("canonical package root");
+        std::fs::write(
+            package_root.join(".cargo-checksum.json"),
+            br#"{"files":{},"package":"fixture"}"#,
+        )
+        .expect("normal registry sidecar");
+        let archive = registry_archive_fixture(
+            "equivalent-1.0.2/src/lib.rs",
+            b"pub fn answer() -> u8 { 42 }\n",
+        );
+        std::fs::write(&archive_path, &archive).expect("registry cache archive");
+        let doc = registry_document(&package_root, true);
+        let lock = registry_lock(&checksum_hex(&archive));
+        let first = capture_registry_archives_with_authority(
+            &doc,
+            Some(&lock),
+            MAX_CARGO_OBSERVATION_TOTAL_BYTES,
+            false,
+            Some(&cargo_home),
+            true,
+        )
+        .expect("locked archive capture");
+        assert_eq!(first.accepted_roots, BTreeSet::from([package_root.clone()]));
+        assert!(first.descriptors.len() == 1);
+        assert!(first.witnesses.is_empty());
+        let sidecar = package_root.join(".cargo-checksum.json");
+        assert!(
+            required_registry_checksums_without_archive_authority(
+                vec![sidecar.clone()],
+                &first.accepted_roots,
+            )
+            .is_empty()
+        );
+        let replaced_config = capture_registry_archives_with_authority(
+            &doc,
+            Some(&lock),
+            MAX_CARGO_OBSERVATION_TOTAL_BYTES,
+            false,
+            Some(&cargo_home),
+            false,
+        )
+        .expect("ambiguous source configuration retains legacy sidecar admission");
+        assert!(replaced_config.accepted_roots.is_empty());
+        assert_eq!(
+            required_registry_checksums_without_archive_authority(
+                vec![sidecar.clone()],
+                &replaced_config.accepted_roots,
+            ),
+            vec![sidecar],
+        );
+
+        std::fs::write(
+            &archive_path,
+            registry_archive_fixture("equivalent-1.0.2/src/lib.rs", b"changed bytes\n"),
+        )
+        .expect("mutate cached archive between passes");
+        let second = capture_registry_archives_with_authority(
+            &doc,
+            Some(&lock),
+            MAX_CARGO_OBSERVATION_TOTAL_BYTES,
+            true,
+            Some(&cargo_home),
+            true,
+        );
+        assert!(
+            second.is_err(),
+            "changed archive must fail the exact lock checksum"
+        );
+    }
+
+    #[test]
+    fn directory_source_geometry_and_replacement_config_do_not_gain_archive_authority() {
+        let scratch = scratch("backend-cargo-directory-source-authority");
+        let cargo_home = scratch.0.join("cargo-home");
+        let vendor_root = scratch.0.join("vendor/equivalent-1.0.2");
+        std::fs::create_dir_all(&vendor_root).expect("vendor package root");
+        std::fs::create_dir_all(cargo_home.join("registry/cache")).expect("cache tree");
+        let cargo_home = cargo_home.canonicalize().expect("canonical CARGO_HOME");
+        let vendor_root = vendor_root.canonicalize().expect("canonical vendor root");
+        let doc = registry_document(&vendor_root, true);
+        let pass = capture_registry_archives_with_authority(
+            &doc,
+            Some(&registry_lock(&"00".repeat(32))),
+            MAX_CARGO_OBSERVATION_TOTAL_BYTES,
+            false,
+            Some(&cargo_home),
+            true,
+        )
+        .expect("directory source remains outside archive path classification");
+        assert!(pass.accepted_roots.is_empty());
+        assert!(pass.descriptors.is_empty());
+        let missing_sidecar = vendor_root.join(".cargo-checksum.json");
+        assert_eq!(
+            required_registry_checksums_without_archive_authority(
+                vec![missing_sidecar.clone()],
+                &pass.accepted_roots,
+            ),
+            vec![missing_sidecar],
+            "registry-origin directory sources keep the sidecar requirement even when it is missing"
+        );
+
+        let config = scratch.0.join("config.toml");
+        std::fs::write(
+            &config,
+            "[source.crates-io]\nreplace-with = \"vendored-sources\"\n[source.vendored-sources]\ndirectory = \"vendor\"\n",
+        )
+        .expect("replacement config");
+        assert!(
+            !source_configuration_paths_prove_no_replacement(&[config])
+                .expect("read bounded config")
+        );
+        assert!(
+            source_configuration_paths_prove_no_replacement(&[])
+                .expect("empty config closure has no replacement")
+        );
+    }
+
+    #[test]
+    fn checksumless_or_missing_registry_archives_remain_unverified() {
+        let scratch = scratch("backend-cargo-registry-archive-unverified");
+        let cargo_home = scratch.0.join("cargo-home");
+        let package_root =
+            cargo_home.join("registry/src/index.crates.io-1949cf8c6b5b557f/equivalent-1.0.2");
+        let archive_path = cargo_home
+            .join("registry/cache/index.crates.io-1949cf8c6b5b557f/equivalent-1.0.2.crate");
+        std::fs::create_dir_all(&package_root).expect("registry package extraction");
+        std::fs::create_dir_all(archive_path.parent().expect("archive parent"))
+            .expect("registry archive cache");
+        let cargo_home = cargo_home.canonicalize().expect("canonical Cargo home");
+        let package_root = package_root.canonicalize().expect("canonical package root");
+        let document = registry_document(&package_root, true);
+        let checksumless_lock = registry_lock_without_checksum();
+
+        let checksumless = capture_registry_archives_with_authority(
+            &document,
+            Some(&checksumless_lock),
+            MAX_CARGO_OBSERVATION_TOTAL_BYTES,
+            true,
+            Some(&cargo_home),
+            true,
+        )
+        .expect("a lock row without a checksum stays usable but unverified");
+        assert!(checksumless.accepted_roots.is_empty());
+        assert!(checksumless.descriptors.is_empty());
+        assert!(checksumless.witnesses.is_empty());
+
+        let missing_archive = capture_registry_archives_with_authority(
+            &document,
+            Some(&registry_lock(&"00".repeat(32))),
+            MAX_CARGO_OBSERVATION_TOTAL_BYTES,
+            true,
+            Some(&cargo_home),
+            true,
+        )
+        .expect("an absent optional cache archive stays unverified");
+        assert!(missing_archive.accepted_roots.is_empty());
+        assert!(missing_archive.descriptors.is_empty());
+        assert!(missing_archive.witnesses.is_empty());
+        let sidecar = package_root.join(".cargo-checksum.json");
+        assert_eq!(
+            required_registry_checksums_without_archive_authority(
+                vec![sidecar.clone()],
+                &missing_archive.accepted_roots,
+            ),
+            vec![sidecar],
+            "unverified source storage does not bypass the existing sidecar observation"
+        );
+    }
+
     fn minimal_source_closure_fixture(
         prefix: &str,
     ) -> (Scratch, PathBuf, RequestedCargoManifest, Vec<u8>) {
@@ -3294,6 +3930,7 @@ mod tests {
 
         let observation_with_missing = |path: &Path| InputObservation {
             digest: [0; 32],
+            observed_bytes: 0,
             missing_path_keys: BTreeSet::from([observation_path_key(path)]),
             tool_witness_reuse: None,
             lockfile: None,
