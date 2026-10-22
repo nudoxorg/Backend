@@ -53,6 +53,7 @@ pub(super) fn validate_extensions(
                 value,
                 fact,
                 counts,
+                layout.schema,
             )?;
         }
         let mut previous = None;
