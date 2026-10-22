@@ -1703,9 +1703,24 @@ pub(super) fn project_image_rows(
             })?;
             let identity = entity.entity.version.identity();
             let placement = locations.place(image, &entity.entity);
+            let native_line = native_sites
+                .as_ref()
+                .and_then(|sites| sites.get(&identity))
+                .map(|site| site.line)
+                .or_else(|| {
+                    native_csharp_sites
+                        .as_ref()
+                        .and_then(|sites| sites.get(&identity))
+                        .map(|site| site.line)
+                });
             let location = placement
                 .as_ref()
                 .map(|placement| placement.location.clone())
+                .or_else(|| {
+                    native_line.and_then(|line| {
+                        backend_compile::SourceLocation::new(path, line).ok()
+                    })
+                })
                 .or_else(|| kinds.exact_location(profile, identity, path));
             placements.insert(identity, placement);
             Ok((identity, entity.name, location))
@@ -1769,11 +1784,35 @@ pub(super) fn project_image_rows(
             .with_kind(kinds.kind_of(identity, entity.entity.kind))
             .with_document(document)
             .with_facts(facts);
-        if let Some(site) = sites.get(&identity) {
-            let excerpt_bytes = site.source_excerpt().text().map_or(0, str::len);
-            if placement.is_none() {
-                charges.push(Charge::Sub(excerpt_bytes));
-            }
+        if let Some(placement) = placement {
+            charges.push(Charge::Sub(placement.excerpt.text().map_or(0, str::len)));
+            row = row
+                .with_source(placement.location)
+                .with_excerpt(placement.excerpt);
+        } else if let Some(site) = native_sites
+            .as_ref()
+            .and_then(|sites| sites.get(&identity))
+        {
+            let excerpt = site.excerpt();
+            charges.push(Charge::Sub(excerpt.text().map_or(0, str::len)));
+            let location =
+                backend_compile::SourceLocation::new(path, site.line).map_err(|error| {
+                    BuiltinModelError(format!("native semantic declaration source site: {error}"))
+                })?;
+            row = row.with_source(location).with_excerpt(excerpt);
+        } else if let Some(site) = native_csharp_sites
+            .as_ref()
+            .and_then(|sites| sites.get(&identity))
+        {
+            let excerpt = site.excerpt();
+            charges.push(Charge::Sub(excerpt.text().map_or(0, str::len)));
+            let location =
+                backend_compile::SourceLocation::new(path, site.line).map_err(|error| {
+                    BuiltinModelError(format!("native C# semantic declaration source site: {error}"))
+                })?;
+            row = row.with_source(location).with_excerpt(excerpt);
+        } else if let Some(site) = sites.get(&identity) {
+            charges.push(Charge::Sub(site.source_excerpt().text().map_or(0, str::len)));
             let location =
                 backend_compile::SourceLocation::new(path, site.line()).map_err(|error| {
                     BuiltinModelError(format!("semantic declaration source site: {error}"))
@@ -1781,12 +1820,6 @@ pub(super) fn project_image_rows(
             row = row
                 .with_source(location)
                 .with_excerpt(site.source_excerpt().clone());
-        }
-        if let Some(placement) = placement {
-            charges.push(Charge::Sub(placement.excerpt.text().map_or(0, str::len)));
-            row = row
-                .with_source(placement.location)
-                .with_excerpt(placement.excerpt);
         }
         // A reader's signature is the declaration as written. The semantic
         // type renders as canonical IR text (`function(parameters=[element(

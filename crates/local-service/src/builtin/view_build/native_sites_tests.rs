@@ -397,6 +397,110 @@ fn native_sites_require_exact_declared_name_and_suppress_ambiguous_claimants() {
 }
 
 #[test]
+fn native_site_proof_reaches_production_semantic_rows_without_a_structural_twin() {
+    let (_workspace, source, project) = selected_native_source();
+    let image_bytes = image_for(
+        source.bytes(),
+        source.profile(),
+        &[(31, b"Widget", NAME_START, NAME_END)],
+    );
+    let image = SemanticImageView::reopen(&image_bytes).expect("captured semantic image");
+    let package = PackageKey::from_value(LABEL);
+    let indexed_project = super::super::IndexedProject {
+        package,
+        label: LABEL.to_owned(),
+        files: Arc::from([]),
+    };
+    let (base, _) = crate::builtin::initial_view().expect("initial view");
+    let projected = super::semantic::project_image_rows(
+        &image,
+        *blake3::hash(&image_bytes).as_bytes(),
+        &indexed_project,
+        source.profile(),
+        base.basis(),
+        false,
+        PATH,
+        &[],
+        Some(super::native_sites::NativeProjection {
+            source: &source,
+            max_sites: 8,
+            max_working_bytes: 32 * 1024,
+        }),
+        None,
+    )
+    .expect("production semantic row projection");
+    let row = projected.rows.first().expect("semantic declaration row");
+    let location = row.row.source.captured().expect("native source location");
+    assert_eq!(location.path(), PATH);
+    assert_eq!(location.start_line(), 1);
+    assert_eq!(row.row.label, format!("{LABEL}::{PATH}:1::Widget"));
+    assert_eq!(row.row.excerpt.text(), Some("struct Widget {};\n"));
+
+    let stale = super::semantic::project_image_rows(
+        &image,
+        *blake3::hash(&image_bytes).as_bytes(),
+        &indexed_project,
+        source.profile(),
+        base.basis(),
+        true,
+        PATH,
+        &[],
+        Some(super::native_sites::NativeProjection {
+            source: &source,
+            max_sites: 8,
+            max_working_bytes: 32 * 1024,
+        }),
+        None,
+    )
+    .expect("stale semantic row projection");
+    assert_eq!(
+        stale.rows[0].row.source,
+        backend_engine::SourceAvailability::NotCaptured,
+    );
+    assert_eq!(
+        stale.rows[0].row.excerpt,
+        backend_compile::SourceExcerpt::NotCaptured,
+    );
+
+    // The proof is tied to the exact captured image source. A same-name row
+    // with different source bytes keeps the ordinary missing-source fallback.
+    let other_source = b"struct WidgeX {};\nstruct Widget {};\n";
+    let mismatched_bytes = image_for(
+        other_source,
+        source.profile(),
+        &[(32, b"Widget", NAME_START, NAME_END)],
+    );
+    let mismatched =
+        SemanticImageView::reopen(&mismatched_bytes).expect("mismatched semantic image");
+    let refused = super::semantic::project_image_rows(
+        &mismatched,
+        *blake3::hash(&mismatched_bytes).as_bytes(),
+        &indexed_project,
+        source.profile(),
+        base.basis(),
+        false,
+        PATH,
+        &[],
+        Some(super::native_sites::NativeProjection {
+            source: &source,
+            max_sites: 8,
+            max_working_bytes: 32 * 1024,
+        }),
+        None,
+    )
+    .expect("mismatched proof remains a conservative row projection");
+    assert_eq!(
+        refused.rows[0].row.source,
+        backend_engine::SourceAvailability::NotCaptured,
+    );
+    assert_eq!(
+        refused.rows[0].row.excerpt,
+        backend_compile::SourceExcerpt::NotCaptured,
+    );
+    assert_eq!(project, package.to_bytes());
+}
+
+#[test]
 fn native_sites_reject_source_identity_project_and_profile_mismatch() {
     let (_workspace, source, project) = selected_native_source();
     let wrong_source = b"struct WidgeX {};\nstruct Widget {};\n";

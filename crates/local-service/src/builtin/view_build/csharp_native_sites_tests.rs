@@ -389,3 +389,75 @@ fn csharp_sites_require_exact_authority_and_refuse_ambiguous_or_over_budget_clai
             .is_err()
     );
 }
+
+#[test]
+fn csharp_site_proof_reaches_production_semantic_rows_without_a_structural_twin() {
+    let (_workspace, source, project) = selected_source();
+    let profile = source.profile();
+    let image_bytes = image_for(
+        source.bytes(),
+        profile,
+        NativeTool::CSharpCompiler,
+        PATH,
+        true,
+        &[(31, START, END)],
+    );
+    let image = SemanticImageView::reopen(&image_bytes).expect("captured C# image");
+    let package = PackageKey::from_value(LABEL);
+    let indexed_project = super::super::IndexedProject {
+        package,
+        label: LABEL.to_owned(),
+        files: Arc::from([]),
+    };
+    let (base, _) = crate::builtin::initial_view().expect("initial view");
+    let projected = super::semantic::project_image_rows(
+        &image,
+        *blake3::hash(&image_bytes).as_bytes(),
+        &indexed_project,
+        profile,
+        base.basis(),
+        false,
+        PATH,
+        &[],
+        None,
+        Some(NativeCSharpProjection {
+            source: &source,
+            max_sites: 8,
+            max_working_bytes: 32 * 1024,
+        }),
+    )
+    .expect("production semantic row projection");
+    let row = projected.rows.first().expect("semantic declaration row");
+    let location = row.row.source.captured().expect("native source location");
+    assert_eq!(location.path(), PATH);
+    assert_eq!(location.start_line(), 3);
+    assert_eq!(row.row.label, format!("{LABEL}::{PATH}:3::Widget"));
+    assert_eq!(row.row.excerpt.text(), Some("public class Widget {}\n"));
+
+    let stale = super::semantic::project_image_rows(
+        &image,
+        *blake3::hash(&image_bytes).as_bytes(),
+        &indexed_project,
+        profile,
+        base.basis(),
+        true,
+        PATH,
+        &[],
+        None,
+        Some(NativeCSharpProjection {
+            source: &source,
+            max_sites: 8,
+            max_working_bytes: 32 * 1024,
+        }),
+    )
+    .expect("stale C# semantic row projection");
+    assert_eq!(
+        stale.rows[0].row.source,
+        backend_engine::SourceAvailability::NotCaptured,
+    );
+    assert_eq!(
+        stale.rows[0].row.excerpt,
+        backend_compile::SourceExcerpt::NotCaptured,
+    );
+    assert_eq!(project, package.to_bytes());
+}
