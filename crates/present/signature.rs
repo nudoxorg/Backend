@@ -211,7 +211,7 @@ impl Signature {
     /// [`Self::tokenize`], and source reads retain captured bytes independently.
     #[must_use]
     pub fn preview(text: &str, language: Language) -> Self {
-        let text = fold_unambiguous_layout_newlines(text);
+        let text = display::fold_preview_layout_newlines(text, language);
         let mut characters = Vec::with_capacity(PREVIEW_CHARACTERS + 1);
         let mut ellipsis_boundary = 0;
         let mut source = text.chars().peekable();
@@ -286,50 +286,6 @@ impl Signature {
                 .collect(),
         }
     }
-}
-
-/// Fold physical layout only when this lightweight preview can prove it is
-/// outside quoted and commented source. The full signature lexer is
-/// intentionally not changed for this result-list formatting behavior.
-fn fold_unambiguous_layout_newlines(text: &str) -> Cow<'_, str> {
-    if text
-        .chars()
-        .any(|character| matches!(character, '"' | '\'' | '`' | '#'))
-        || text.contains("//")
-        || text.contains("/*")
-    {
-        return Cow::Borrowed(text);
-    }
-
-    let mut folded = String::with_capacity(text.len());
-    let mut source = text.chars().peekable();
-    while let Some(mut character) = source.next() {
-        if character == '\r' && source.next_if_eq(&'\n').is_some() {
-            character = '\n';
-        }
-        if character != '\n' {
-            folded.push(character);
-            continue;
-        }
-
-        while folded
-            .chars()
-            .next_back()
-            .is_some_and(|previous| matches!(previous, ' ' | '\t'))
-        {
-            folded.pop();
-        }
-        if !folded.ends_with(' ') {
-            folded.push(' ');
-        }
-        while source
-            .peek()
-            .is_some_and(|next| matches!(*next, ' ' | '\t'))
-        {
-            source.next();
-        }
-    }
-    Cow::Owned(folded)
 }
 
 fn display_line_endings(text: &str) -> Cow<'_, str> {
@@ -781,6 +737,29 @@ mod display_tests {
         assert_eq!(
             Signature::preview("const label = `one\ntwo`", Language::TypeScript).text(),
             "const label = `one\\ntwo`"
+        );
+
+        let mixed = "export default function NavBar(\n  { title: 'home', label: \"two  words\" }\n)";
+        let mixed_before = mixed.to_owned();
+        assert_eq!(
+            Signature::preview(mixed, Language::TypeScript).text(),
+            "export default function NavBar( { title: 'home', label: \"two  words\" } )"
+        );
+        assert_eq!(mixed, mixed_before, "preview leaves captured source untouched");
+
+        let multiline_literal = "const label = \"first\n  second\";\nexport const ready = true";
+        let expected = "const label = \"first\\n  second\"; export const ready = true";
+        assert_eq!(
+            Signature::preview(multiline_literal, Language::TypeScript).text(),
+            expected
+        );
+        assert_eq!(
+            Signature::preview(
+                &multiline_literal.replace('\n', "\r\n"),
+                Language::TypeScript,
+            )
+            .text(),
+            expected
         );
     }
 

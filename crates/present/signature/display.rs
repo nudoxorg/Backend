@@ -481,3 +481,71 @@ fn literal_end(text: &str, at: usize, language: Language) -> Option<usize> {
     }
     None
 }
+
+/// Fold only physical layout newlines outside source regions that this display
+/// scanner can prove are ordinary syntax. Quoted values are copied byte-for-
+/// byte; their physical controls are escaped later by the bounded preview.
+pub(super) fn fold_preview_layout_newlines(text: &str, language: Language) -> Cow<'_, str> {
+    if !matches!(
+        language,
+        Language::Rust | Language::Python | Language::Go | Language::TypeScript
+    ) || (language == Language::Python && (text.contains("\\\n") || text.contains("\\\r\n")))
+    {
+        return Cow::Borrowed(text);
+    }
+
+    let mut output = String::with_capacity(text.len());
+    let mut at = 0;
+    while at < text.len() {
+        let rest = &text[at..];
+        if rest.starts_with("//")
+            || rest.starts_with("/*")
+            || (language == Language::Python && rest.starts_with('#'))
+            || (language == Language::TypeScript
+                && (rest.starts_with('/') || rest.as_bytes().first() == Some(&0x60)))
+        {
+            return Cow::Borrowed(text);
+        }
+        let Some(span) = literal_end(text, at, language) else {
+            return Cow::Borrowed(text);
+        };
+        if span > at {
+            output.push_str(&text[at..span]);
+            at = span;
+            continue;
+        }
+        let ch = rest.chars().next().expect("nonempty suffix");
+        if ch == '\n' || rest.starts_with("\r\n") {
+            at += if rest.starts_with("\r\n") { 2 } else { 1 };
+            while output
+                .chars()
+                .next_back()
+                .is_some_and(|previous| matches!(previous, ' ' | '\t'))
+            {
+                output.pop();
+            }
+            if !output.ends_with(' ') {
+                output.push(' ');
+            }
+            while text[at..]
+                .chars()
+                .next()
+                .is_some_and(|next| matches!(next, ' ' | '\t'))
+            {
+                at += text[at..]
+                    .chars()
+                    .next()
+                    .expect("indentation exists")
+                    .len_utf8();
+            }
+        } else {
+            output.push(ch);
+            at += ch.len_utf8();
+        }
+    }
+    if output == text {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(output)
+    }
+}
