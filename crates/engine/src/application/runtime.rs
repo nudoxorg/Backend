@@ -314,11 +314,13 @@ impl OwnedPackageSourceSet {
         if permits.is_empty()
             || permits.iter().any(|permit| {
                 permit.profile() != request.target.profile
+                    || permit.package_target() != request.as_ref()
                     || permit.selected_root() != selected_frontier_root
                     || !sources.iter().any(|source| {
                         permit.admits(
                             selected_frontier_project,
                             selected_frontier_root,
+                            request.as_ref(),
                             &source.relative_path,
                             request.target.profile,
                             source.source_bytes(),
@@ -357,11 +359,13 @@ impl OwnedPackageSourceSet {
         if permits.is_empty()
             || permits.iter().any(|permit| {
                 permit.profile() != request.target.profile
+                    || permit.package_target() != request.as_ref()
                     || permit.selected_root() != selected_frontier_root
                     || !sources.iter().any(|source| {
                         permit.admits(
                             selected_frontier_project,
                             selected_frontier_root,
+                            request.as_ref(),
                             &source.relative_path,
                             request.target.profile,
                             source.source_bytes(),
@@ -5978,11 +5982,14 @@ fn run_lane(
                                     if request.native_clang_permits.is_empty()
                                         || request.native_clang_permits.iter().any(|permit| {
                                             permit.profile() != request.request.target.profile
+                                                || permit.package_target()
+                                                    != request.request.as_ref()
                                                 || permit.selected_root() != selected_frontier_root
                                                 || !request.sources.iter().any(|source| {
                                                     permit.admits(
                                                         selected_frontier_project,
                                                         selected_frontier_root,
+                                                        request.request.as_ref(),
                                                         &source.relative_path,
                                                         request.request.target.profile,
                                                         source.source_bytes(),
@@ -6009,11 +6016,14 @@ fn run_lane(
                                     if request.native_csharp_permits.is_empty()
                                         || request.native_csharp_permits.iter().any(|permit| {
                                             permit.profile() != request.request.target.profile
+                                                || permit.package_target()
+                                                    != request.request.as_ref()
                                                 || permit.selected_root() != selected_frontier_root
                                                 || !request.sources.iter().any(|source| {
                                                     permit.admits(
                                                         selected_frontier_project,
                                                         selected_frontier_root,
+                                                        request.request.as_ref(),
                                                         &source.relative_path,
                                                         request.request.target.profile,
                                                         source.source_bytes(),

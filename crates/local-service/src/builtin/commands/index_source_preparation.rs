@@ -623,14 +623,33 @@ pub(super) fn prepare_scan_source(
         &scan.files,
         &old_files,
     )?;
+    if package.to_bytes() != project_key {
+        return Err(BuiltinModelError(
+            "native frontier owner differs from the selected source project".to_owned(),
+        ));
+    }
+    let mut native_frontier = scan.native_frontier.clone();
+    for record in &mut native_frontier {
+        if let ProductNativeFrontierRecord::Profile {
+            project: owner,
+            profile,
+            package_target,
+            ..
+        } = record
+            && *owner == project_key
+        {
+            *package_target = Some(crate::builtin::compiler_scope::semantic_coordinate(
+                package, *profile, coordinate,
+            )?);
+        }
+    }
     let native_frontier_changes = prepare_native_frontier_changes_for_snapshot(
         base_snapshot,
         project_key,
-        &scan.native_frontier,
+        &native_frontier,
         &old_files,
         &relation,
     )?;
-    let native_frontier = scan.native_frontier.clone();
     // Retain only checked after-images and selected compiler handles. Decoded
     // scan rows and configuration/accounting payloads are not compiler authority.
     drop(scan.files);

@@ -5,7 +5,7 @@
 //! source facts or an available `ProductSourceRecord`.
 
 use crate::workspace::{WorkspaceRelationError, WorkspaceRelationHandle, WorkspaceSnapshot};
-use backend_semantic::vocabulary::LanguageProfile;
+use backend_semantic::vocabulary::{LanguageProfile, PackageUrl};
 use backend_store::TypedObject;
 use backend_version::{
     CanonicalRelation, ContentId, ObjectKey, Relation, RelationDecodeError, Schema, SchemaIdentity,
@@ -13,7 +13,7 @@ use backend_version::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-const MAGIC: &[u8; 4] = b"PNF1";
+const MAGIC: &[u8; 4] = b"PNF2";
 const ROOT_KEY: [u8; 32] = [0x4e; 32];
 const MAX_PATH_BYTES: usize = 4096;
 /// Small relation values keep each retained content piece inside existing row budgets.
@@ -31,7 +31,7 @@ pub struct ProductNativeFrontierRootSchema;
 impl Schema for ProductNativeFrontierRootSchema {
     const DOMAIN: u8 = 0x97;
     const TYPE: u16 = 11;
-    const VERSION: u8 = 1;
+    const VERSION: u8 = 2;
     type Value = [u8; 32];
 
     fn encode(value: &Self::Value, output: &mut Vec<u8>) {
@@ -46,6 +46,10 @@ pub enum ProductNativeFrontierRecord {
     Profile {
         project: [u8; 32],
         profile: LanguageProfile,
+        /// Exact compiler package coordinate selected by the product indexer.
+        /// `None` is retained only for non-compilable legacy/test manifests;
+        /// native candidate permits require this owner binding.
+        package_target: Option<PackageUrl>,
         path_count: u32,
         disposition_digest: [u8; 32],
     },
@@ -112,6 +116,7 @@ pub struct CheckedNativeFrontier {
     project: [u8; 32],
     profile: LanguageProfile,
     root: [u8; 32],
+    package_target: Option<PackageUrl>,
     dispositions: Vec<(String, NativePathDisposition)>,
 }
 
@@ -122,6 +127,7 @@ pub struct NativeClangCandidatePermit {
     project: [u8; 32],
     selected_root: [u8; 32],
     profile: LanguageProfile,
+    package_target: PackageUrl,
     path: String,
     content: [u8; 32],
     source_identity: ContentId<SourceFactDomain>,
@@ -134,6 +140,7 @@ pub struct NativeCSharpCandidatePermit {
     project: [u8; 32],
     selected_root: [u8; 32],
     profile: LanguageProfile,
+    package_target: PackageUrl,
     path: String,
     content: [u8; 32],
     source_identity: ContentId<SourceFactDomain>,
@@ -158,16 +165,24 @@ impl NativeClangCandidatePermit {
         self.selected_root
     }
 
+    /// Exact compiler package coordinate bound to the selected product frontier.
+    #[must_use]
+    pub const fn package_target(&self) -> &PackageUrl {
+        &self.package_target
+    }
+
     pub(crate) fn admits(
         &self,
         project: [u8; 32],
         selected_root: [u8; 32],
+        package_target: &PackageUrl,
         relative_path: &str,
         profile: LanguageProfile,
         bytes: &[u8],
     ) -> bool {
         project == self.project
             && selected_root == self.selected_root
+            && package_target == &self.package_target
             && relative_path == self.path
             && profile == self.profile
             && backend_compile::typed_of::<backend_compile::InputContentSchema>(bytes).to_bytes()
@@ -195,16 +210,24 @@ impl NativeCSharpCandidatePermit {
         self.selected_root
     }
 
+    /// Exact compiler package coordinate bound to the selected product frontier.
+    #[must_use]
+    pub const fn package_target(&self) -> &PackageUrl {
+        &self.package_target
+    }
+
     pub(crate) fn admits(
         &self,
         project: [u8; 32],
         selected_root: [u8; 32],
+        package_target: &PackageUrl,
         relative_path: &str,
         profile: LanguageProfile,
         bytes: &[u8],
     ) -> bool {
         project == self.project
             && selected_root == self.selected_root
+            && package_target == &self.package_target
             && relative_path == self.path
             && profile == self.profile
             && backend_compile::typed_of::<backend_compile::InputContentSchema>(bytes).to_bytes()
@@ -246,6 +269,7 @@ impl CheckedNativeFrontier {
     /// Structural and refused dispositions never produce a permit.
     #[must_use]
     pub fn candidate_permit(&self, path: &str) -> Option<NativeClangCandidatePermit> {
+        let package_target = self.package_target.clone()?;
         if !matches!(
             self.profile,
             LanguageProfile::C(_) | LanguageProfile::Cxx(_)
@@ -268,6 +292,7 @@ impl CheckedNativeFrontier {
             project: self.project,
             selected_root: self.root,
             profile: self.profile,
+            package_target,
             path: path.to_owned(),
             content,
             source_identity,
@@ -278,6 +303,7 @@ impl CheckedNativeFrontier {
     /// Structural and refused dispositions never produce a permit.
     #[must_use]
     pub fn csharp_candidate_permit(&self, path: &str) -> Option<NativeCSharpCandidatePermit> {
+        let package_target = self.package_target.clone()?;
         if !matches!(self.profile, LanguageProfile::CSharp(_)) {
             return None;
         }
@@ -297,6 +323,7 @@ impl CheckedNativeFrontier {
             project: self.project,
             selected_root: self.root,
             profile: self.profile,
+            package_target,
             path: path.to_owned(),
             content,
             source_identity,
@@ -559,6 +586,7 @@ pub fn build_native_frontier_records_with_content(
         ProductNativeFrontierRecord::Profile {
             project,
             profile,
+            package_target: None,
             path_count,
             disposition_digest,
         },
@@ -611,6 +639,7 @@ pub fn admit_native_frontier(
     let ProductNativeFrontierRecord::Profile {
         project: manifest_project,
         profile: manifest_profile,
+        package_target,
         path_count,
         disposition_digest,
     } = manifest
@@ -694,6 +723,7 @@ pub fn admit_native_frontier(
         project,
         profile,
         root: *relation.root().as_bytes(),
+        package_target,
         dispositions,
     })
 }
@@ -808,7 +838,7 @@ fn encode_disposition(disposition: NativePathDisposition, mut push: impl FnMut(&
 impl Relation for ProductNativeFrontierRelation {
     const DOMAIN: u8 = 0x97;
     const TYPE: u16 = 10;
-    const VERSION: u8 = 1;
+    const VERSION: u8 = 2;
     type Key = [u8; 32];
     type Value = ProductNativeFrontierRecord;
 
@@ -822,12 +852,26 @@ impl Relation for ProductNativeFrontierRelation {
             ProductNativeFrontierRecord::Profile {
                 project,
                 profile,
+                package_target,
                 path_count,
                 disposition_digest,
             } => {
                 output.push(1);
                 output.extend_from_slice(project);
                 output.extend_from_slice(&<[u8; 2]>::from(*profile));
+                match package_target {
+                    Some(package_target) => {
+                        output.push(1);
+                        let bytes = package_target.as_str().as_bytes();
+                        output.extend_from_slice(
+                            &u32::try_from(bytes.len())
+                                .expect("PackageUrl is bounded to u32 bytes")
+                                .to_be_bytes(),
+                        );
+                        output.extend_from_slice(bytes);
+                    }
+                    None => output.push(0),
+                }
                 output.extend_from_slice(&path_count.to_be_bytes());
                 output.extend_from_slice(disposition_digest);
             }
@@ -887,12 +931,28 @@ fn decode_record(bytes: &[u8]) -> Result<ProductNativeFrontierRecord, ()> {
     let profile = LanguageProfile::try_from(profile_code).map_err(|_| ())?;
     let record = match tag {
         1 => {
+            let package_target = match take(bytes, &mut cursor, 1)?[0] {
+                0 => None,
+                1 => {
+                    let length = u32::from_be_bytes(
+                        take(bytes, &mut cursor, 4)?.try_into().map_err(|_| ())?,
+                    ) as usize;
+                    if length > backend_semantic::vocabulary::MAX_PACKAGE_URL_BYTES {
+                        return Err(());
+                    }
+                    let text =
+                        std::str::from_utf8(take(bytes, &mut cursor, length)?).map_err(|_| ())?;
+                    Some(PackageUrl::parse(text.to_owned()).map_err(|_| ())?)
+                }
+                _ => return Err(()),
+            };
             let path_count =
                 u32::from_be_bytes(take(bytes, &mut cursor, 4)?.try_into().map_err(|_| ())?);
             let disposition_digest = take(bytes, &mut cursor, 32)?.try_into().map_err(|_| ())?;
             ProductNativeFrontierRecord::Profile {
                 project,
                 profile,
+                package_target,
                 path_count,
                 disposition_digest,
             }
@@ -1047,11 +1107,14 @@ mod tests {
     fn native_frontier_records_round_trip_exact_profile_and_disposition() {
         let project = [0x37; 32];
         let profile = LanguageProfile::Cxx(CxxStandard::Cxx23);
+        let package_target =
+            PackageUrl::parse("pkg:cargo/native-frontier-round-trip@1.0.0".to_owned()).unwrap();
         let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(b"captured bytes");
         let records = [
             ProductNativeFrontierRecord::Profile {
                 project,
                 profile,
+                package_target: Some(package_target),
                 path_count: 2,
                 disposition_digest: [0x62; 32],
             },
@@ -1258,6 +1321,7 @@ mod tests {
             ProductNativeFrontierRecord::Profile {
                 project,
                 profile,
+                package_target: None,
                 path_count: count,
                 disposition_digest: digest,
             }
@@ -1305,10 +1369,13 @@ mod tests {
         let root = [0x42; 32];
         let profile = LanguageProfile::C(CStandard::C23);
         let bytes = b"int x = 1;";
+        let package_target =
+            PackageUrl::parse("pkg:cargo/native-owner-a@1.0.0".to_owned()).unwrap();
         let frontier = CheckedNativeFrontier {
             project,
             profile,
             root,
+            package_target: Some(package_target.clone()),
             dispositions: vec![(
                 "src/x.c".to_owned(),
                 NativePathDisposition::ClangMalformed {
@@ -1325,17 +1392,34 @@ mod tests {
         let permit = frontier
             .candidate_permit("src/x.c")
             .expect("malformed permit");
-        assert!(permit.admits(project, root, "src/x.c", profile, bytes));
-        assert!(!permit.admits([0x32; 32], root, "src/x.c", profile, bytes));
-        assert!(!permit.admits(project, [0x43; 32], "src/x.c", profile, bytes));
+        assert!(permit.admits(project, root, &package_target, "src/x.c", profile, bytes));
+        assert!(!permit.admits([0x32; 32], root, &package_target, "src/x.c", profile, bytes));
+        assert!(!permit.admits(
+            project,
+            [0x43; 32],
+            &package_target,
+            "src/x.c",
+            profile,
+            bytes
+        ));
+        let other_target = PackageUrl::parse("pkg:cargo/native-owner-b@1.0.0".to_owned()).unwrap();
+        assert!(!permit.admits(project, root, &other_target, "src/x.c", profile, bytes));
         assert!(!permit.admits(
             project,
             root,
+            &package_target,
             "src/x.c",
             LanguageProfile::C(CStandard::C17),
             bytes
         ));
-        assert!(!permit.admits(project, root, "src/x.c", profile, b"int x = 2;"));
+        assert!(!permit.admits(
+            project,
+            root,
+            &package_target,
+            "src/x.c",
+            profile,
+            b"int x = 2;"
+        ));
     }
 
     #[test]
@@ -1347,10 +1431,13 @@ mod tests {
         let content =
             backend_compile::typed_of::<backend_compile::InputContentSchema>(bytes).to_bytes();
         let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(bytes);
+        let package_target =
+            PackageUrl::parse("pkg:cargo/native-owner-cs-a@1.0.0".to_owned()).unwrap();
         let frontier = CheckedNativeFrontier {
             project,
             profile,
             root,
+            package_target: Some(package_target.clone()),
             dispositions: vec![(
                 "src/a.cs".to_owned(),
                 NativePathDisposition::CSharpMalformed {
@@ -1367,24 +1454,50 @@ mod tests {
         assert_eq!(permit.path(), "src/a.cs");
         assert_eq!(permit.profile(), profile);
         assert_eq!(permit.selected_root(), root);
-        assert!(permit.admits(project, root, "src/a.cs", profile, bytes));
-        assert!(!permit.admits([0x72; 32], root, "src/a.cs", profile, bytes));
-        assert!(!permit.admits(project, [0x83; 32], "src/a.cs", profile, bytes));
-        assert!(!permit.admits(project, root, "src/b.cs", profile, bytes));
+        assert!(permit.admits(project, root, &package_target, "src/a.cs", profile, bytes));
+        assert!(!permit.admits(
+            [0x72; 32],
+            root,
+            &package_target,
+            "src/a.cs",
+            profile,
+            bytes
+        ));
+        assert!(!permit.admits(
+            project,
+            [0x83; 32],
+            &package_target,
+            "src/a.cs",
+            profile,
+            bytes
+        ));
+        assert!(!permit.admits(project, root, &package_target, "src/b.cs", profile, bytes));
+        let other_target =
+            PackageUrl::parse("pkg:cargo/native-owner-cs-b@1.0.0".to_owned()).unwrap();
+        assert!(!permit.admits(project, root, &other_target, "src/a.cs", profile, bytes));
         assert!(!permit.admits(
             project,
             root,
+            &package_target,
             "src/a.cs",
             LanguageProfile::CSharp(CSharpVersion::CSharp13),
             bytes
         ));
-        assert!(!permit.admits(project, root, "src/a.cs", profile, b"class B {"));
+        assert!(!permit.admits(
+            project,
+            root,
+            &package_target,
+            "src/a.cs",
+            profile,
+            b"class B {"
+        ));
         assert!(frontier.candidate_permit("src/a.cs").is_none());
 
         let wrong_language = CheckedNativeFrontier {
             project,
             profile: LanguageProfile::C(CStandard::C23),
             root,
+            package_target: Some(package_target),
             dispositions: vec![(
                 "src/a.cs".to_owned(),
                 NativePathDisposition::CSharpMalformed {
@@ -1396,6 +1509,162 @@ mod tests {
             )],
         };
         assert!(wrong_language.csharp_candidate_permit("src/a.cs").is_none());
+    }
+
+    #[test]
+    fn native_candidate_constructors_reject_a_permit_for_another_package_url() {
+        use crate::application::runtime::{OwnedPackageSource, OwnedPackageSourceSet};
+        use backend_library::interface::{CorrelationId, GenerateTarget, PackageCompileRequest};
+        use backend_semantic::vocabulary::{CxxStandard, Stage};
+        use std::path::PathBuf;
+
+        let project = [0xa1; 32];
+        let root = [0xb2; 32];
+        let source_root = PathBuf::from(std::env::temp_dir());
+        let source = "class Broken {\n";
+
+        let csharp_profile = LanguageProfile::CSharp(CSharpVersion::CSharp14);
+        let csharp_target =
+            PackageUrl::parse("pkg:cargo/permit-owner-cs-a@1.0.0".to_owned()).unwrap();
+        let csharp_frontier = CheckedNativeFrontier {
+            project,
+            profile: csharp_profile,
+            root,
+            package_target: Some(csharp_target.clone()),
+            dispositions: vec![(
+                "src/broken.cs".to_owned(),
+                NativePathDisposition::CSharpMalformed {
+                    content: backend_compile::typed_of::<backend_compile::InputContentSchema>(
+                        source.as_bytes(),
+                    )
+                    .to_bytes(),
+                    source_identity: ContentId::<SourceFactDomain>::from_canonical_bytes(
+                        source.as_bytes(),
+                    ),
+                    byte_length: source.len() as u32,
+                    chunk_count: 1,
+                },
+            )],
+        };
+        let csharp_permit = csharp_frontier
+            .csharp_candidate_permit("src/broken.cs")
+            .unwrap();
+        let csharp_request = |url: PackageUrl| {
+            PackageCompileRequest::new(
+                GenerateTarget {
+                    correlation: CorrelationId(0x51),
+                    profile: csharp_profile,
+                    stage: Stage::LowerIr,
+                },
+                url,
+            )
+            .unwrap()
+        };
+        assert!(
+            OwnedPackageSourceSet::new_native_csharp_candidate(
+                csharp_request(csharp_target),
+                source_root.clone(),
+                vec![OwnedPackageSource::new("src/broken.cs", source).unwrap()].into_boxed_slice(),
+                project,
+                root,
+                vec![csharp_permit.clone()].into_boxed_slice(),
+            )
+            .is_ok()
+        );
+        let csharp_request_b = csharp_request(
+            PackageUrl::parse("pkg:cargo/permit-owner-cs-b@1.0.0".to_owned()).unwrap(),
+        );
+        assert!(!csharp_permit.admits(
+            project,
+            root,
+            csharp_request_b.as_ref(),
+            "src/broken.cs",
+            csharp_profile,
+            source.as_bytes(),
+        ));
+        assert!(matches!(
+            OwnedPackageSourceSet::new_native_csharp_candidate(
+                csharp_request_b,
+                source_root.clone(),
+                vec![OwnedPackageSource::new("src/broken.cs", source).unwrap()].into_boxed_slice(),
+                project,
+                root,
+                vec![csharp_permit].into_boxed_slice(),
+            ),
+            Err(crate::application::PackageSourceSetError::NativeCSharpProfileMismatch)
+        ));
+
+        let clang_profile = LanguageProfile::Cxx(CxxStandard::Cxx23);
+        let clang_target =
+            PackageUrl::parse("pkg:cargo/permit-owner-cxx-a@1.0.0".to_owned()).unwrap();
+        let clang_source = "class Broken {\n";
+        let clang_frontier = CheckedNativeFrontier {
+            project,
+            profile: clang_profile,
+            root,
+            package_target: Some(clang_target.clone()),
+            dispositions: vec![(
+                "src/broken.cpp".to_owned(),
+                NativePathDisposition::ClangMalformed {
+                    content: backend_compile::typed_of::<backend_compile::InputContentSchema>(
+                        clang_source.as_bytes(),
+                    )
+                    .to_bytes(),
+                    source_identity: ContentId::<SourceFactDomain>::from_canonical_bytes(
+                        clang_source.as_bytes(),
+                    ),
+                    byte_length: clang_source.len() as u32,
+                    chunk_count: 1,
+                },
+            )],
+        };
+        let clang_permit = clang_frontier.candidate_permit("src/broken.cpp").unwrap();
+        let clang_request = |url: PackageUrl| {
+            PackageCompileRequest::new(
+                GenerateTarget {
+                    correlation: CorrelationId(0x52),
+                    profile: clang_profile,
+                    stage: Stage::LowerIr,
+                },
+                url,
+            )
+            .unwrap()
+        };
+        assert!(
+            OwnedPackageSourceSet::new_native_clang_candidate(
+                clang_request(clang_target),
+                source_root.clone(),
+                vec![OwnedPackageSource::new("src/broken.cpp", clang_source).unwrap()]
+                    .into_boxed_slice(),
+                project,
+                root,
+                vec![clang_permit.clone()].into_boxed_slice(),
+            )
+            .is_ok()
+        );
+        let clang_request_b = clang_request(
+            PackageUrl::parse("pkg:cargo/permit-owner-cxx-b@1.0.0".to_owned()).unwrap(),
+        );
+        assert!(!clang_permit.admits(
+            project,
+            root,
+            clang_request_b.as_ref(),
+            "src/broken.cpp",
+            clang_profile,
+            clang_source.as_bytes(),
+        ));
+        assert!(matches!(
+            OwnedPackageSourceSet::new_native_clang_candidate(
+                clang_request_b,
+                source_root,
+                vec![OwnedPackageSource::new("src/broken.cpp", clang_source).unwrap()]
+                    .into_boxed_slice(),
+                project,
+                root,
+                vec![clang_permit].into_boxed_slice(),
+            ),
+            Err(crate::application::PackageSourceSetError::NativeClangProfileMismatch)
+        ));
     }
 
     #[test]

@@ -4809,6 +4809,7 @@ mod persisted_intent_tests {
             profile: backend_semantic::vocabulary::LanguageProfile::Rust(
                 backend_semantic::vocabulary::RustEdition::Rust2024,
             ),
+            package_target: None,
             path_count: 0,
             disposition_digest: [7; 32],
         };
