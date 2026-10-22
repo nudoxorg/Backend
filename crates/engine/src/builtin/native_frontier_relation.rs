@@ -942,7 +942,11 @@ fn decode_record(bytes: &[u8]) -> Result<ProductNativeFrontierRecord, ()> {
                     }
                     let text =
                         std::str::from_utf8(take(bytes, &mut cursor, length)?).map_err(|_| ())?;
-                    Some(PackageUrl::parse(text.to_owned()).map_err(|_| ())?)
+                    let package_target = PackageUrl::parse(text.to_owned()).map_err(|_| ())?;
+                    if package_target.package_type().language() != profile.language() {
+                        return Err(());
+                    }
+                    Some(package_target)
                 }
                 _ => return Err(()),
             };
@@ -1108,7 +1112,7 @@ mod tests {
         let project = [0x37; 32];
         let profile = LanguageProfile::Cxx(CxxStandard::Cxx23);
         let package_target =
-            PackageUrl::parse("pkg:cargo/native-frontier-round-trip@1.0.0".to_owned()).unwrap();
+            PackageUrl::parse("pkg:generic/native-frontier-round-trip@1.0.0".to_owned()).unwrap();
         let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(b"captured bytes");
         let records = [
             ProductNativeFrontierRecord::Profile {
@@ -1158,6 +1162,19 @@ mod tests {
                 Ok(record)
             );
         }
+
+        let invalid_target =
+            PackageUrl::parse("pkg:nuget/native-frontier-wrong-language@1.0.0".to_owned()).unwrap();
+        let invalid_record = ProductNativeFrontierRecord::Profile {
+            project,
+            profile,
+            package_target: Some(invalid_target),
+            path_count: 0,
+            disposition_digest: [0; 32],
+        };
+        let mut encoded = Vec::new();
+        ProductNativeFrontierRelation::encode_value(&invalid_record, &mut encoded);
+        assert!(decode_record(&encoded).is_err());
         assert_eq!(
             LanguageProfile::try_from(<[u8; 2]>::from(LanguageProfile::C(CStandard::C23))),
             Ok(LanguageProfile::C(CStandard::C23))
@@ -1370,7 +1387,7 @@ mod tests {
         let profile = LanguageProfile::C(CStandard::C23);
         let bytes = b"int x = 1;";
         let package_target =
-            PackageUrl::parse("pkg:cargo/native-owner-a@1.0.0".to_owned()).unwrap();
+            PackageUrl::parse("pkg:generic/native-owner-a@1.0.0".to_owned()).unwrap();
         let frontier = CheckedNativeFrontier {
             project,
             profile,
@@ -1402,7 +1419,8 @@ mod tests {
             profile,
             bytes
         ));
-        let other_target = PackageUrl::parse("pkg:cargo/native-owner-b@1.0.0".to_owned()).unwrap();
+        let other_target =
+            PackageUrl::parse("pkg:generic/native-owner-b@1.0.0".to_owned()).unwrap();
         assert!(!permit.admits(project, root, &other_target, "src/x.c", profile, bytes));
         assert!(!permit.admits(
             project,
@@ -1432,7 +1450,7 @@ mod tests {
             backend_compile::typed_of::<backend_compile::InputContentSchema>(bytes).to_bytes();
         let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(bytes);
         let package_target =
-            PackageUrl::parse("pkg:cargo/native-owner-cs-a@1.0.0".to_owned()).unwrap();
+            PackageUrl::parse("pkg:nuget/native-owner-cs-a@1.0.0".to_owned()).unwrap();
         let frontier = CheckedNativeFrontier {
             project,
             profile,
@@ -1473,7 +1491,7 @@ mod tests {
         ));
         assert!(!permit.admits(project, root, &package_target, "src/b.cs", profile, bytes));
         let other_target =
-            PackageUrl::parse("pkg:cargo/native-owner-cs-b@1.0.0".to_owned()).unwrap();
+            PackageUrl::parse("pkg:nuget/native-owner-cs-b@1.0.0".to_owned()).unwrap();
         assert!(!permit.admits(project, root, &other_target, "src/a.cs", profile, bytes));
         assert!(!permit.admits(
             project,
@@ -1497,7 +1515,10 @@ mod tests {
             project,
             profile: LanguageProfile::C(CStandard::C23),
             root,
-            package_target: Some(package_target),
+            package_target: Some(
+                PackageUrl::parse("pkg:generic/native-owner-cs-wrong-profile@1.0.0".to_owned())
+                    .unwrap(),
+            ),
             dispositions: vec![(
                 "src/a.cs".to_owned(),
                 NativePathDisposition::CSharpMalformed {
@@ -1525,7 +1546,7 @@ mod tests {
 
         let csharp_profile = LanguageProfile::CSharp(CSharpVersion::CSharp14);
         let csharp_target =
-            PackageUrl::parse("pkg:cargo/permit-owner-cs-a@1.0.0".to_owned()).unwrap();
+            PackageUrl::parse("pkg:nuget/permit-owner-cs-a@1.0.0".to_owned()).unwrap();
         let csharp_frontier = CheckedNativeFrontier {
             project,
             profile: csharp_profile,
@@ -1572,7 +1593,7 @@ mod tests {
             .is_ok()
         );
         let csharp_request_b = csharp_request(
-            PackageUrl::parse("pkg:cargo/permit-owner-cs-b@1.0.0".to_owned()).unwrap(),
+            PackageUrl::parse("pkg:nuget/permit-owner-cs-b@1.0.0".to_owned()).unwrap(),
         );
         assert!(!csharp_permit.admits(
             project,
@@ -1596,7 +1617,7 @@ mod tests {
 
         let clang_profile = LanguageProfile::Cxx(CxxStandard::Cxx23);
         let clang_target =
-            PackageUrl::parse("pkg:cargo/permit-owner-cxx-a@1.0.0".to_owned()).unwrap();
+            PackageUrl::parse("pkg:generic/permit-owner-cxx-a@1.0.0".to_owned()).unwrap();
         let clang_source = "class Broken {\n";
         let clang_frontier = CheckedNativeFrontier {
             project,
@@ -1643,7 +1664,7 @@ mod tests {
             .is_ok()
         );
         let clang_request_b = clang_request(
-            PackageUrl::parse("pkg:cargo/permit-owner-cxx-b@1.0.0".to_owned()).unwrap(),
+            PackageUrl::parse("pkg:generic/permit-owner-cxx-b@1.0.0".to_owned()).unwrap(),
         );
         assert!(!clang_permit.admits(
             project,
