@@ -28,9 +28,9 @@ use backend_compile::{
 use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_frontend_python::legacy::checker::CheckerError as PythonCheckerError;
 use backend_frontend_rust::legacy::{
-    RustAnalysisControl, RustAuthorityError, RustWorkspaceEditorBufferObserver, RustWorkspaceFile,
-    RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey, RustWorkspaceSessionLane,
-    RustWorkspaceSessionLease,
+    RustAnalysisControl, RustAuthorityError, RustCargoTarget, RustWorkspaceEditorBufferObserver,
+    RustWorkspaceFile, RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey,
+    RustWorkspaceSessionLane, RustWorkspaceSessionLease,
 };
 use backend_frontend_typescript::legacy::TypeScriptInvocationModeV1;
 use backend_frontend_typescript::{TszFileWorkPolicy, TszProject, TszProjectCheckerExecution};
@@ -3919,6 +3919,16 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     *package.package_target.target().as_ref(),
                     &source_paths,
                 )
+                .and_then(|key| match package.package_target.unit_key() {
+                    CompilationUnitKeyV2::RustCrate { name, root } => {
+                        key.with_cargo_target(RustCargoTarget {
+                            name: name.as_ref(),
+                            root: Path::new(root.as_ref()),
+                        })
+                    }
+                    CompilationUnitKeyV2::PackageRoot => Ok(key),
+                    _ => unreachable!("Rust package authority validates its compilation-unit key"),
+                })
                 .map_err(|cause| {
                     package_authority_terminal(
                         package.package_target.target(),

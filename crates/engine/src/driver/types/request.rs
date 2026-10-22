@@ -258,6 +258,8 @@ pub enum SemanticAuthorityInput<'source> {
         workspace: &'source backend_frontend_rust::legacy::RustWorkspace,
         /// Exact package source selected from the admitted source frontier.
         source_path: &'source Path,
+        /// Exact admitted Cargo target identity, absent only for package-root units.
+        target: Option<backend_frontend_rust::legacy::RustCargoTarget<'source>>,
         /// Per-source byte bound checked before HIR lowering.
         maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit,
     },

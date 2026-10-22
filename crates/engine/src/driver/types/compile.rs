@@ -274,6 +274,7 @@ enum EnteredAuthority<'source> {
     RustWorkspace {
         workspace: &'source backend_frontend_rust::legacy::RustWorkspace,
         source_path: &'source std::path::Path,
+        target: Option<backend_frontend_rust::legacy::RustCargoTarget<'source>>,
         maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit,
     },
     Go {
@@ -511,6 +512,7 @@ impl RustSpec {
     fn collect_workspace<'source, 'cancel, 'diagnostic>(
         workspace: &'source backend_frontend_rust::legacy::RustWorkspace,
         source_path: &'source std::path::Path,
+        target: Option<backend_frontend_rust::legacy::RustCargoTarget<'source>>,
         maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit,
         prepared: &PreparedCompile<'source, 'cancel>,
         diagnostic_output: Option<&'diagnostic mut [u8]>,
@@ -522,6 +524,7 @@ impl RustSpec {
         lower::rust::collect_workspace(
             workspace,
             source_path,
+            target,
             maximum_source_bytes,
             prepared.permit.control(),
             prepared.lease.bytes(),
@@ -796,11 +799,13 @@ fn enter_authority<'source, 'diagnostic>(
             SemanticAuthorityInput::RustWorkspace {
                 workspace,
                 source_path,
+                target,
                 maximum_source_bytes,
             },
         ) => Ok(EnteredAuthority::RustWorkspace {
             workspace,
             source_path,
+            target,
             maximum_source_bytes,
         }),
         (LanguageProfile::Rust(_), SemanticAuthorityInput::None) => Err(required()),
@@ -876,11 +881,13 @@ fn emit_facts<'source, 'cancel, 'diagnostic>(
         EnteredAuthority::RustWorkspace {
             workspace,
             source_path,
+            target,
             maximum_source_bytes,
             ..
         } => RustSpec::collect_workspace(
             workspace,
             source_path,
+            *target,
             *maximum_source_bytes,
             prepared,
             diagnostic_output,
