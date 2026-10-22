@@ -403,6 +403,9 @@ impl Harness {
     ) -> Result<(), HarnessError> {
         output.clear();
         let first = request.sources.first().ok_or(HarnessError::NoSources)?;
+        if !use_environment_corpus {
+            validate_captured_source_names(request.sources, captured_siblings)?;
+        }
         let discovered = (if use_environment_corpus {
             super::sourcepath::merged_source_roots(sourcepath, corpus)
         } else {
@@ -709,6 +712,42 @@ fn validate_name(path: &Path) -> Result<(), HarnessError> {
     Ok(())
 }
 
+fn validate_captured_source_names(
+    requested: &[JavaSource<'_>],
+    captured_siblings: &[JavaSource<'_>],
+) -> Result<(), HarnessError> {
+    let mut names = BTreeSet::new();
+    for source in requested.iter().chain(captured_siblings) {
+        validate_name(source.name)?;
+        if source
+            .name
+            .to_string_lossy()
+            .split(|character| character == '/' || character == '\\')
+            .any(|component| component == ".")
+        {
+            return Err(HarnessError::InvalidSourceName {
+                path: source.name.to_owned(),
+            });
+        }
+        let normalized =
+            source
+                .name
+                .components()
+                .fold(PathBuf::new(), |mut normalized, component| {
+                    if let Component::Normal(part) = component {
+                        normalized.push(part);
+                    }
+                    normalized
+                });
+        if !names.insert(normalized) {
+            return Err(HarnessError::DuplicateSourceName {
+                path: source.name.to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// `Some` when every `error:` line is a missing package or a symbol that
 /// follows from one. `None` when there is no missing package, or when any
 /// other `error:` is present.
@@ -1001,7 +1040,7 @@ mod plan_tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{JavaSource, module_plan};
+    use super::{HarnessError, JavaSource, module_plan, validate_captured_source_names};
     use crate::legacy::JavaRelease;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -1040,6 +1079,28 @@ mod plan_tests {
 
     fn source(name: &'static Path, bytes: &'static [u8]) -> JavaSource<'static> {
         JavaSource { name, bytes }
+    }
+
+    #[test]
+    fn captured_source_names_reject_dot_components_traversal_and_aliases() {
+        let primary = [source(Path::new("./demo/App.java"), b"package demo;\n")];
+        assert!(matches!(
+            validate_captured_source_names(&primary, &[]),
+            Err(HarnessError::InvalidSourceName { .. })
+        ));
+
+        let primary = [source(Path::new("demo/App.java"), b"package demo;\n")];
+        let alias = [source(Path::new("demo//App.java"), b"different bytes")];
+        assert!(matches!(
+            validate_captured_source_names(&primary, &alias),
+            Err(HarnessError::DuplicateSourceName { .. })
+        ));
+
+        let traversal = [source(Path::new("../outside.java"), b"class Outside {}")];
+        assert!(matches!(
+            validate_captured_source_names(&traversal, &[]),
+            Err(HarnessError::InvalidSourceName { .. })
+        ));
     }
 
     #[test]
