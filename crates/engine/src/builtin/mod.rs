@@ -8,6 +8,7 @@
 mod authority;
 mod file_facts_relation;
 mod manifest;
+mod native_frontier_relation;
 mod output;
 mod profile;
 mod relation;
@@ -35,6 +36,16 @@ pub use manifest::{
     product_dependency_manifest, product_read_manifest, semantic_execution_input_basis,
     semantic_execution_input_basis_from_snapshot, semantic_execution_input_manifest,
     semantic_execution_input_manifest_from_snapshot,
+};
+pub use native_frontier_relation::{
+    CheckedNativeFrontier, MAX_NATIVE_SOURCE_BYTES, NATIVE_SOURCE_CHUNK_BYTES,
+    NativeCSharpCandidatePermit, NativeClangCandidatePermit, NativePathDisposition,
+    NativePathRefusal, ProductNativeFrontierRecord, ProductNativeFrontierRelation,
+    ProductNativeFrontierRootSchema, admit_native_frontier, build_native_frontier_records,
+    build_native_frontier_records_with_content, product_native_frontier_chunk_key,
+    product_native_frontier_digest, product_native_frontier_path_key,
+    product_native_frontier_profile_key, product_native_frontier_record_key,
+    product_native_frontier_relation, product_native_frontier_root_object,
 };
 pub use output::{
     PRODUCT_OUTPUT_BODY_BYTES, ProductProjection, ProductProjectionBuilder,
