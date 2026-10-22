@@ -639,8 +639,7 @@ impl<'source> PackageSourceSet<'source> {
     pub(crate) fn with_native_clang_candidate(mut self) -> Result<Self, PackageSourceSetError> {
         if !matches!(
             self.request.target.profile,
-            backend_semantic::vocabulary::LanguageProfile::C(_)
-                | backend_semantic::vocabulary::LanguageProfile::Cxx(_)
+            LanguageProfile::C(_) | LanguageProfile::Cxx(_)
         ) {
             return Err(PackageSourceSetError::NativeClangProfileMismatch);
         }

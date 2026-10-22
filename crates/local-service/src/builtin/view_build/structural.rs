@@ -941,7 +941,7 @@ pub(super) fn native_frontier_freshness(
             if file.project != *project
                 || file.path != path
                 || file.language != profile.language()
-                || super::super::ingest::source_profile(std::path::Path::new(path))
+                || super::super::ingest::source_profile(Path::new(path))
                     .ok()
                     .flatten()
                     != Some(*profile)

@@ -13,7 +13,7 @@ use backend_compile::{
 };
 use backend_engine::builtin::{
     NATIVE_SOURCE_CHUNK_BYTES, NativePathDisposition, NativePathRefusal,
-    ProductNativeFrontierRecord, ProductNativeFrontierRelation, build_native_frontier_records,
+    ProductNativeFrontierRecord, ProductNativeFrontierRelation,
     build_native_frontier_records_with_content,
 };
 use backend_engine::{
@@ -269,10 +269,6 @@ pub(super) struct NativeCandidateProfiles {
 impl NativeCandidateProfiles {
     pub(super) fn contains(&self, profile: &LanguageProfile) -> bool {
         self.clang.contains(profile) || self.csharp.contains(profile)
-    }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.clang.is_empty() && self.csharp.is_empty()
     }
 }
 

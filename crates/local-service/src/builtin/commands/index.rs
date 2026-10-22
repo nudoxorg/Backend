@@ -24,12 +24,14 @@ use backend_engine::builtin::{
     PartialSemanticCoverage, ProductNativeFrontierRecord, ProductNativeFrontierRelation,
     ProductSemanticCaptureOutcome, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
     ProductSourceFileFactsRecord, ProductSourceFileFactsRelation, ProductSourceFileFactsUpdate,
-    SemanticPublicationClaim, SemanticPublicationCoverage, SemanticPublicationSelection,
-    SemanticPublicationVersion, SemanticSourceCapture, product_source_file_facts_record_key,
+    SemanticPublicationClaim, SemanticPublicationCoverage, SemanticPublicationVersion,
+    SemanticSourceCapture, product_source_file_facts_record_key,
     product_source_file_facts_relation, product_source_file_facts_row_keys,
     semantic_capture_relation,
 };
 use backend_engine::{Relation, WorkspaceSnapshot};
+#[cfg(test)]
+use backend_engine::builtin::SemanticPublicationSelection;
 use backend_extension_turso::SourceObservationReceipt;
 use backend_frontend_python::legacy::checker::{
     PythonEnvironmentCapture, PythonEnvironmentInput, PythonProjectControl,

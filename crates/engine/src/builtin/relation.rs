@@ -3084,26 +3084,37 @@ impl fmt::Debug for VerifiedNativeSource {
 }
 
 impl VerifiedNativeSource {
+    /// Exact UTF-8 source bytes retained by the selected native frontier.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
+
+    /// Normalized package-relative path bound to these source bytes.
     #[must_use]
     pub fn relative_path(&self) -> &str {
         &self.relative_path
     }
+
+    /// Compiler profile selected for this source frontier.
     #[must_use]
     pub const fn profile(&self) -> LanguageProfile {
         self.profile
     }
+
+    /// Exact source identity recomputed from the retained bytes.
     #[must_use]
     pub const fn source_identity(&self) -> ContentId<SourceFactDomain> {
         self.source_identity
     }
+
+    /// Content digest admitted by the native frontier record.
     #[must_use]
     pub const fn content_digest(&self) -> [u8; 32] {
         self.content_digest
     }
+
+    /// Product project identity that owns this source frontier.
     #[must_use]
     pub const fn project(&self) -> [u8; 32] {
         self.project
