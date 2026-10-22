@@ -477,14 +477,40 @@ pub(super) fn prepare_scan_source(
             coordinate,
             profile,
         )?;
+        let input = semantic_input_digest(&scan, profile);
         let proof = binding.and_then(|binding| {
-            compiler.typescript_snapshot_reuse(
-                source_root,
-                profile,
-                semantic_input_digest(&scan, profile),
-                binding,
-                cancellation.as_ref(),
-            )
+            compiler
+                .typescript_snapshot_reuse(
+                    source_root,
+                    profile,
+                    input,
+                    binding,
+                    cancellation.as_ref(),
+                )
+                .or_else(|| {
+                    let package_reference =
+                        backend_engine::PackageReference::parse(label.clone()).ok()?;
+                    let semantic_coordinate = super::super::compiler_scope::semantic_coordinate(
+                        package, profile, coordinate,
+                    )
+                    .ok()?;
+                    let key = ProductSemanticPublicationKey::new(
+                        package_reference,
+                        semantic_coordinate,
+                        profile,
+                    )
+                    .ok()?;
+                    let bytes = semantic_authority
+                        .selected_typescript_snapshot_certificate(&key, binding, input)?;
+                    compiler.restore_typescript_snapshot_certificate(
+                        source_root,
+                        profile,
+                        input,
+                        binding,
+                        &bytes,
+                        cancellation.as_ref(),
+                    )
+                })
         });
         if let Some(proof) = proof {
             typescript_reused_profiles.insert(profile);

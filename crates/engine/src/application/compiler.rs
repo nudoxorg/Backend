@@ -1554,6 +1554,22 @@ mod typescript_snapshot_outcome_tests {
 }
 
 impl StagedSemanticPackage {
+    pub(crate) const fn typescript_snapshot_runtime_local_authority(&self) -> Option<[u8; 32]> {
+        self.staged.typescript_runtime_local_authority
+    }
+
+    pub(crate) fn typescript_snapshot_program_environments(&self) -> Option<&[[u8; 32]]> {
+        self.staged.typescript_program_environments.as_deref()
+    }
+
+    /// Encodes a bounded native TypeScript read witness for storage only in the
+    /// authenticated metadata member of this staged publication.
+    pub fn typescript_snapshot_certificate(&self, input: [u8; 32]) -> Option<Vec<u8>> {
+        let host = self.staged.typescript_witness.as_ref()?;
+        let root = host.native_project_root()?;
+        super::runtime::encode_staged_snapshot_certificate(self, root, input)
+    }
+
     pub(crate) fn typescript_snapshot_witness(
         &self,
         root: &Path,
@@ -3069,6 +3085,8 @@ pub(crate) struct StagedPackageCompilation {
     input: SemanticInputWitness,
     execution_identity: Option<LocalCompilerExecutionIdentity>,
     plane_execution_identity: Option<LocalCompilerPlaneExecutionIdentity>,
+    typescript_runtime_local_authority: Option<[u8; 32]>,
+    typescript_program_environments: Option<Vec<[u8; 32]>>,
     cargo_workspace_facts: Option<std::sync::Arc<RustCargoWorkspaceFactsV1>>,
     typescript_witness:
         Option<std::sync::Arc<crate::application::typescript_host::TypeScriptProjectWitness>>,
@@ -3498,6 +3516,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut persist_configured_programs = false;
         let mut independent_project_set = false;
         let mut typescript_project_execution_fingerprint = None;
+        let mut typescript_program_environments = None;
         if let Some(project) = typescript_project.as_ref() {
             let inputs = project.inputs();
             let package_sources = package.compilation_sources().collect::<Vec<_>>();
@@ -3528,6 +3547,13 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     )),
                 }
             })?;
+            typescript_program_environments = Some(
+                forest
+                    .nodes
+                    .iter()
+                    .map(|node| *node.native.options.environment.as_bytes())
+                    .collect(),
+            );
             typescript_project_execution_fingerprint = Some(
                 crate::application::typescript_program::native_program_execution_fingerprint(
                     inputs.fingerprint,
@@ -5080,6 +5106,16 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 )
             })
         });
+        let typescript_runtime_local_authority = if typescript_project.is_some() {
+            execution_identity
+                .map(LocalCompilerExecutionIdentity::local_authority_fingerprint)
+                .or_else(|| {
+                    plane_execution_seed
+                        .map(|seed| seed.bind_input(input).local_authority_fingerprint())
+                })
+        } else {
+            None
+        };
         let (execution_identity, plane_execution_seed) = if typescript_project.is_some() {
             let project = project_plane_seed.ok_or(PackageSemanticError::Capacity {
                 lane: "admitted TypeScript project runtime identity",
@@ -5242,6 +5278,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             execution_identity,
             plane_execution_identity: rust_plane_execution_identity
                 .or_else(|| plane_execution_seed.map(|seed| seed.bind_input(input))),
+            typescript_runtime_local_authority,
+            typescript_program_environments,
             cargo_workspace_facts: rust_workspace_lease.as_ref().and_then(|lease| {
                 lease
                     .workspace()

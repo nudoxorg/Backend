@@ -33,6 +33,7 @@ backend-frontend-python = { path = "../../frontends/python" }
 backend-frontend-rust = { path = "../../frontends/rust" }
 backend-frontend-typescript = { path = "../../frontends/typescript" }
 backend-extension-qdrant = { path = "../../extensions/qdrant" }
+backend-extension-turso = { path = "../../extensions/turso" }
 backend-extension-tantivy = { path = "../../extensions/tantivy" }
 backend-extension-trustfall = { path = "../../extensions/trustfall" }
 arrayvec.workspace = true

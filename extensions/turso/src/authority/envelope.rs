@@ -38,8 +38,11 @@ const METADATA_MAGIC: &[u8] = b"BACKEND_COMPILER_PUBLICATION_METADATA\0";
 const METADATA_VERSION: u16 = 4;
 const PROGRAM_METADATA_VERSION: u16 = 5;
 const COVERAGE_METADATA_VERSION: u16 = 6;
+const TYPESCRIPT_SNAPSHOT_METADATA_VERSION: u16 = 7;
 const MAX_PROFILE_BYTES: usize = 256;
-const MAX_MEMBER_IDS: usize = 100_000;
+/// Maximum number of members in one authenticated compiler publication closure.
+pub const MAX_COMPILER_PUBLICATION_MEMBER_IDS: usize = 100_000;
+const MAX_MEMBER_IDS: usize = MAX_COMPILER_PUBLICATION_MEMBER_IDS;
 const MAX_MANIFEST_BYTES: usize =
     SEMANTIC_MANIFEST_HEADER_BYTES + MAX_MEMBER_IDS * SEMANTIC_MANIFEST_ENTRY_BYTES;
 const PACK_DOMAIN: &[u8] = b"backend.turso.compiler-inner-pack.v1\0";
@@ -67,9 +70,68 @@ pub(super) const COMPILER_PROGRAM_METADATA_SCHEMA: SchemaIdentity =
 /// Metadata with an authenticated compiler-observed coverage member.
 pub(super) const COMPILER_COVERAGE_METADATA_SCHEMA: SchemaIdentity =
     SchemaIdentity::new(0x7a, 0xc002, 6);
+/// Metadata with a generation-bound TypeScript read-closure certificate.
+pub const COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA: SchemaIdentity =
+    SchemaIdentity::new(0x7a, 0xc002, 7);
 /// Schema of the canonical immutable coverage catalog.
 pub(super) const COMPILER_SOURCE_COVERAGE_SCHEMA: SchemaIdentity =
     SchemaIdentity::new(0x7a, 0xc00a, 1);
+/// Schema of the bounded TypeScript snapshot certificate payload.
+pub const COMPILER_TYPESCRIPT_SNAPSHOT_WITNESS_SCHEMA: SchemaIdentity =
+    SchemaIdentity::new(0x7a, 0xc00b, 1);
+
+/// Opaque certificate bytes admitted from selected metadata and closure membership.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedTypeScriptSnapshotWitness(Box<[u8]>);
+
+impl VerifiedTypeScriptSnapshotWitness {
+    /// Exact bytes whose typed object and selected-closure membership were verified.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+/// Bounded pointer to a complete TypeScript compiler observation ledger.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompilerTypeScriptSnapshotMember {
+    object_id: AuthorityHash,
+    byte_length: u32,
+}
+
+impl CompilerTypeScriptSnapshotMember {
+    /// Admits a verified typed ledger object of the exact declared extent.
+    pub fn from_verified_object(
+        object: VerifiedObjectEnvelope,
+        bytes: &[u8],
+    ) -> Result<Self, CompilerEnvelopeError> {
+        let key =
+            ObjectKey::<backend_semantic::ir::TypeScriptSnapshotWitnessSchema>::from_value(bytes);
+        if object.schema() != COMPILER_TYPESCRIPT_SNAPSHOT_WITNESS_SCHEMA
+            || object.key() != key.as_bytes()
+            || object.payload_len() != bytes.len() as u64
+            || bytes.is_empty()
+            || bytes.len() > backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES
+        {
+            return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness);
+        }
+        Ok(Self {
+            object_id: *object.id().as_bytes(),
+            byte_length: u32::try_from(bytes.len())
+                .map_err(|_| CompilerEnvelopeError::TypeScriptSnapshotWitness)?,
+        })
+    }
+
+    /// Exact immutable object identity.
+    pub const fn object_id(&self) -> &AuthorityHash {
+        &self.object_id
+    }
+
+    /// Exact serialized ledger extent.
+    pub const fn byte_length(&self) -> u32 {
+        self.byte_length
+    }
+}
 
 /// A bounded pointer to compiler-observed coverage, stored once in the selected closure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -329,6 +391,7 @@ pub struct CompilerPublicationMetadata {
     semantic_catalog_root: Option<AuthorityHash>,
     native_program_sources: Option<CompilerProgramSourceMember>,
     source_coverage: Option<CompilerSourceCoverageMember>,
+    typescript_snapshot: Option<CompilerTypeScriptSnapshotMember>,
 }
 
 impl CompilerPublicationMetadata {
@@ -424,6 +487,7 @@ impl CompilerPublicationMetadata {
             versioned_planes,
             native_program_sources: None,
             source_coverage: None,
+            typescript_snapshot: None,
         })
     }
 
@@ -446,17 +510,54 @@ impl CompilerPublicationMetadata {
     }
 
     /// Attaches the exact compiler coverage object before publication is committed.
-    pub fn with_source_coverage(mut self, member: CompilerSourceCoverageMember) -> Result<Self, CompilerEnvelopeError> {
-        if self.native_program_sources.is_none() {return Err(CompilerEnvelopeError::SourceCoverage);}
-        if self.source_coverage.is_some() || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS { return Err(CompilerEnvelopeError::MemberCount); }
-        self.source_coverage = Some(member); Ok(self)
+    pub fn with_source_coverage(
+        mut self,
+        member: CompilerSourceCoverageMember,
+    ) -> Result<Self, CompilerEnvelopeError> {
+        if self.native_program_sources.is_none() {
+            return Err(CompilerEnvelopeError::SourceCoverage);
+        }
+        if self.source_coverage.is_some() || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS {
+            return Err(CompilerEnvelopeError::MemberCount);
+        }
+        self.source_coverage = Some(member);
+        Ok(self)
     }
     /// Legacy metadata records no coverage explanations.
-    pub const fn source_coverage(&self) -> Option<&CompilerSourceCoverageMember> { self.source_coverage.as_ref() }
+    pub const fn source_coverage(&self) -> Option<&CompilerSourceCoverageMember> {
+        self.source_coverage.as_ref()
+    }
+
+    /// Adds the complete cold-replay certificate for this exact native program generation.
+    pub fn with_typescript_snapshot_witness(
+        mut self,
+        member: CompilerTypeScriptSnapshotMember,
+    ) -> Result<Self, CompilerEnvelopeError> {
+        if self.native_program_sources.is_none()
+            || self.typescript_snapshot.is_some()
+            || member.byte_length == 0
+            || member.byte_length as usize
+                > backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES
+            || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS
+        {
+            return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness);
+        }
+        self.typescript_snapshot = Some(member);
+        Ok(self)
+    }
+
+    /// Optional complete native TypeScript read-closure certificate.
+    #[must_use]
+    pub const fn typescript_snapshot_witness(&self) -> Option<&CompilerTypeScriptSnapshotMember> {
+        self.typescript_snapshot.as_ref()
+    }
 
     fn schema(&self) -> SchemaIdentity {
-        if self.source_coverage.is_some() { COMPILER_COVERAGE_METADATA_SCHEMA }
-        else if self.native_program_sources.is_some() {
+        if self.typescript_snapshot.is_some() {
+            COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA
+        } else if self.source_coverage.is_some() {
+            COMPILER_COVERAGE_METADATA_SCHEMA
+        } else if self.native_program_sources.is_some() {
             COMPILER_PROGRAM_METADATA_SCHEMA
         } else {
             COMPILER_PUBLICATION_METADATA_SCHEMA
@@ -563,7 +664,9 @@ impl CompilerPublicationMetadata {
         );
         output.extend_from_slice(METADATA_MAGIC);
         output.extend_from_slice(
-            &if self.source_coverage.is_some() {
+            &if self.typescript_snapshot.is_some() {
+                TYPESCRIPT_SNAPSHOT_METADATA_VERSION
+            } else if self.source_coverage.is_some() {
                 COVERAGE_METADATA_VERSION
             } else if self.native_program_sources.is_some() {
                 PROGRAM_METADATA_VERSION
@@ -594,14 +697,37 @@ impl CompilerPublicationMetadata {
                 output.extend_from_slice(&bytes);
             }
         }
-        if self.source_coverage.is_some() { output.push(u8::from(self.native_program_sources.is_some())); }
-        if let Some(member) = self.native_program_sources {
-            output.extend_from_slice(&member.object_id);
-            output.extend_from_slice(&member.program);
-            output.extend_from_slice(&member.byte_length.to_le_bytes());
-        }
-        if let Some(member) = self.source_coverage {
-            output.extend_from_slice(&member.object_id); output.extend_from_slice(&member.identity); output.extend_from_slice(&member.byte_length.to_le_bytes());
+        if self.typescript_snapshot.is_some() {
+            output.push(u8::from(self.native_program_sources.is_some()));
+            if let Some(member) = self.native_program_sources {
+                output.extend_from_slice(&member.object_id);
+                output.extend_from_slice(&member.program);
+                output.extend_from_slice(&member.byte_length.to_le_bytes());
+            }
+            output.push(u8::from(self.source_coverage.is_some()));
+            if let Some(member) = self.source_coverage {
+                output.extend_from_slice(&member.object_id);
+                output.extend_from_slice(&member.identity);
+                output.extend_from_slice(&member.byte_length.to_le_bytes());
+            }
+            if let Some(member) = self.typescript_snapshot {
+                output.extend_from_slice(&member.object_id);
+                output.extend_from_slice(&member.byte_length.to_le_bytes());
+            }
+        } else {
+            if self.source_coverage.is_some() {
+                output.push(u8::from(self.native_program_sources.is_some()));
+            }
+            if let Some(member) = self.native_program_sources {
+                output.extend_from_slice(&member.object_id);
+                output.extend_from_slice(&member.program);
+                output.extend_from_slice(&member.byte_length.to_le_bytes());
+            }
+            if let Some(member) = self.source_coverage {
+                output.extend_from_slice(&member.object_id);
+                output.extend_from_slice(&member.identity);
+                output.extend_from_slice(&member.byte_length.to_le_bytes());
+            }
         }
         output
     }
@@ -609,8 +735,12 @@ impl CompilerPublicationMetadata {
     /// Returns the typed FileStore metadata object.
     #[must_use]
     pub fn typed_object(&self) -> TypedObject {
-        if self.source_coverage.is_some() {
-            let key = ObjectKey::<CompilerCoverageMetadataSchema>::from_value(self); TypedObject::from_value(&key, self)
+        if self.typescript_snapshot.is_some() {
+            let key = ObjectKey::<CompilerTypeScriptSnapshotMetadataSchema>::from_value(self);
+            TypedObject::from_value(&key, self)
+        } else if self.source_coverage.is_some() {
+            let key = ObjectKey::<CompilerCoverageMetadataSchema>::from_value(self);
+            TypedObject::from_value(&key, self)
         } else if self.native_program_sources.is_some() {
             let key = ObjectKey::<CompilerProgramMetadataSchema>::from_value(self);
             TypedObject::from_value(&key, self)
@@ -638,7 +768,13 @@ impl CompilerPublicationMetadata {
             return Err(CompilerEnvelopeError::MetadataMagic);
         }
         let version = input.u16()?;
-        if !matches!(version, METADATA_VERSION | PROGRAM_METADATA_VERSION | COVERAGE_METADATA_VERSION) {
+        if !matches!(
+            version,
+            METADATA_VERSION
+                | PROGRAM_METADATA_VERSION
+                | COVERAGE_METADATA_VERSION
+                | TYPESCRIPT_SNAPSHOT_METADATA_VERSION
+        ) {
             return Err(CompilerEnvelopeError::MetadataVersion);
         }
         let manifest_length =
@@ -676,9 +812,18 @@ impl CompilerPublicationMetadata {
             }
             _ => return Err(CompilerEnvelopeError::VersionedPlaneMetadata),
         };
-        let has_program = if version == COVERAGE_METADATA_VERSION {
-            match input.u8()? {0=>false,1=>true,_=>return Err(CompilerEnvelopeError::NativeProgramSources)}
-        } else { version == PROGRAM_METADATA_VERSION };
+        let has_program = if matches!(
+            version,
+            COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION
+        ) {
+            match input.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(CompilerEnvelopeError::NativeProgramSources),
+            }
+        } else {
+            version == PROGRAM_METADATA_VERSION
+        };
         let native_program_sources = if has_program {
             let member = CompilerProgramSourceMember {
                 object_id: input.array::<32>()?,
@@ -695,11 +840,45 @@ impl CompilerPublicationMetadata {
         } else {
             None
         };
-        let source_coverage = if version == COVERAGE_METADATA_VERSION {
-            let member = CompilerSourceCoverageMember {object_id:input.array::<32>()?, identity:input.array::<32>()?, byte_length:input.u32()?};
-            if member.byte_length == 0 || member.byte_length as usize > backend_semantic::ir::MAX_SOURCE_COVERAGE_BYTES {return Err(CompilerEnvelopeError::SourceCoverage);}
+        let has_coverage = match version {
+            COVERAGE_METADATA_VERSION => true,
+            TYPESCRIPT_SNAPSHOT_METADATA_VERSION => match input.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(CompilerEnvelopeError::SourceCoverage),
+            },
+            _ => false,
+        };
+        let source_coverage = if has_coverage {
+            let member = CompilerSourceCoverageMember {
+                object_id: input.array::<32>()?,
+                identity: input.array::<32>()?,
+                byte_length: input.u32()?,
+            };
+            if member.byte_length == 0
+                || member.byte_length as usize > backend_semantic::ir::MAX_SOURCE_COVERAGE_BYTES
+            {
+                return Err(CompilerEnvelopeError::SourceCoverage);
+            }
             Some(member)
-        } else {None};
+        } else {
+            None
+        };
+        let typescript_snapshot = if version == TYPESCRIPT_SNAPSHOT_METADATA_VERSION {
+            let member = CompilerTypeScriptSnapshotMember {
+                object_id: input.array::<32>()?,
+                byte_length: input.u32()?,
+            };
+            if member.byte_length == 0
+                || member.byte_length as usize
+                    > backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES
+            {
+                return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness);
+            }
+            Some(member)
+        } else {
+            None
+        };
         if !input.is_empty() {
             return Err(CompilerEnvelopeError::TrailingBytes);
         }
@@ -718,7 +897,12 @@ impl CompilerPublicationMetadata {
         if let Some(member) = native_program_sources {
             metadata = metadata.with_native_program_sources(member)?;
         }
-        if let Some(member) = source_coverage { metadata = metadata.with_source_coverage(member)?; }
+        if let Some(member) = source_coverage {
+            metadata = metadata.with_source_coverage(member)?;
+        }
+        if let Some(member) = typescript_snapshot {
+            metadata = metadata.with_typescript_snapshot_witness(member)?;
+        }
         if metadata.canonical_bytes() != bytes {
             return Err(CompilerEnvelopeError::NonCanonical);
         }
@@ -1144,7 +1328,10 @@ pub fn reopen_selected_compiler_publication(
         .ok_or_else(|| "selected compiler metadata disappeared from its closure".to_owned())?;
     if !matches!(
         metadata_object.schema(),
-        COMPILER_PUBLICATION_METADATA_SCHEMA | COMPILER_PROGRAM_METADATA_SCHEMA | COMPILER_COVERAGE_METADATA_SCHEMA
+        COMPILER_PUBLICATION_METADATA_SCHEMA
+            | COMPILER_PROGRAM_METADATA_SCHEMA
+            | COMPILER_COVERAGE_METADATA_SCHEMA
+            | COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA
     ) {
         return Err("selected compiler metadata has the wrong schema".to_owned());
     }
@@ -1158,10 +1345,14 @@ pub fn reopen_selected_compiler_publication(
     envelope
         .validate_metadata(&metadata)
         .map_err(|error| error.to_string())?;
+    let _ = reopen_typescript_snapshot_witness_bounded(store, &manifest, &metadata)?;
     if selected.semantic_manifest_root().copied() != metadata.semantic_manifest_root().copied() {
         return Err("selected semantic-plane root differs from compiler metadata".to_owned());
     }
-    if reopen_source_coverage(&manifest,&metadata)?.as_ref().is_some_and(|coverage|coverage.input_root()!=selected.input_digest()) {
+    if reopen_source_coverage(&manifest, &metadata)?
+        .as_ref()
+        .is_some_and(|coverage| coverage.input_root() != selected.input_digest())
+    {
         return Err("compiler coverage input differs from selected attempt".to_owned());
     }
     let images = copy_semantic_image_members(&manifest, &metadata)?;
@@ -1221,7 +1412,10 @@ pub fn reopen_selected_compiler_metadata(
         .ok_or_else(|| "selected compiler metadata disappeared from its closure".to_owned())?;
     if !matches!(
         metadata_object.schema(),
-        COMPILER_PUBLICATION_METADATA_SCHEMA | COMPILER_PROGRAM_METADATA_SCHEMA | COMPILER_COVERAGE_METADATA_SCHEMA
+        COMPILER_PUBLICATION_METADATA_SCHEMA
+            | COMPILER_PROGRAM_METADATA_SCHEMA
+            | COMPILER_COVERAGE_METADATA_SCHEMA
+            | COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA
     ) {
         return Err("selected compiler metadata has the wrong schema".to_owned());
     }
@@ -1248,6 +1442,23 @@ pub fn reopen_selected_compiler_metadata(
         u64::try_from(count).map_err(|_| "selected compiler closure count overflow".to_owned())?,
     )?;
     Ok(ReopenedCompilerMetadata { envelope, metadata })
+}
+
+/// Reopens the cold TypeScript witness only from the selected immutable
+/// generation's authenticated metadata and exact closure.
+pub fn reopen_selected_typescript_snapshot_witness(
+    store: &FileStore,
+    selected: &SelectedGeneration,
+) -> Result<Option<VerifiedTypeScriptSnapshotWitness>, String> {
+    let reopened = reopen_selected_compiler_metadata(store, selected)?;
+    let manifest = store
+        .open_closure_claim(ArtifactClosureClaim::from_bytes(*selected.closure_id()))
+        .map_err(|error| format!("open selected TypeScript snapshot closure: {error:?}"))?;
+    if manifest.id().as_bytes() != selected.closure_id() {
+        return Err("selected TypeScript snapshot closure identity mismatch".to_owned());
+    }
+    reopen_typescript_snapshot_witness_bounded(store, &manifest, reopened.metadata())
+        .map(|bytes| bytes.map(|bytes| VerifiedTypeScriptSnapshotWitness(bytes.into_boxed_slice())))
 }
 
 /// Exact envelope and typed metadata reopened without loading output payloads.
@@ -1353,7 +1564,10 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
             })?;
         if !matches!(
             metadata_object.schema(),
-            COMPILER_PUBLICATION_METADATA_SCHEMA | COMPILER_PROGRAM_METADATA_SCHEMA | COMPILER_COVERAGE_METADATA_SCHEMA
+            COMPILER_PUBLICATION_METADATA_SCHEMA
+                | COMPILER_PROGRAM_METADATA_SCHEMA
+                | COMPILER_COVERAGE_METADATA_SCHEMA
+                | COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA
         ) {
             return Err("compiler metadata object has the wrong schema".to_owned());
         }
@@ -1369,10 +1583,13 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
                 "reopened compiler metadata differs from the exact envelope pack".to_owned(),
             );
         }
-        if reopen_source_coverage(&manifest,&observed_metadata)?.as_ref().is_some_and(|coverage|coverage.input_root()!=observed.input_digest()) {
+        if reopen_source_coverage(&manifest, &observed_metadata)?
+            .as_ref()
+            .is_some_and(|coverage| coverage.input_root() != observed.input_digest())
+        {
             return Err("compiler coverage input differs from admitted attempt".to_owned());
         }
-        verify_semantic_image_members(&manifest, &observed_metadata)?;
+        verify_semantic_image_members(self.store, &manifest, &observed_metadata)?;
         verify_versioned_plane_members(&manifest, &observed_metadata)?;
         verify_exact_member_set(
             &manifest,
@@ -1394,7 +1611,12 @@ fn metadata_member_ids(metadata: &CompilerPublicationMetadata) -> Vec<AuthorityH
     if let Some(member) = metadata.native_program_sources() {
         members.push(*member.object_id());
     }
-    if let Some(member) = metadata.source_coverage() { members.push(*member.object_id()); }
+    if let Some(member) = metadata.source_coverage() {
+        members.push(*member.object_id());
+    }
+    if let Some(member) = metadata.typescript_snapshot_witness() {
+        members.push(*member.object_id());
+    }
     members.extend(metadata.images.iter().map(|image| image.object_id));
     if let Some(planes) = &metadata.versioned_planes {
         members.extend(
@@ -1454,76 +1676,178 @@ pub fn reopen_source_coverage(
     if coverage.program() != &program.membership_identity() {
         return Err("compiler coverage program identity mismatch".to_owned());
     }
-    if let Some(catalog)=coverage.catalog() {
-    if let Some((_, nodes)) = program.nodes() {
-        let expected = nodes
-            .iter()
-            .map(|node| {
-                (
-                    node.config_path.as_str(),
-                    *node.config.as_ref(),
-                    node.environment,
-                )
-            })
-            .collect::<Vec<_>>();
-        let observed = catalog
-            .rows()
-            .iter()
-            .filter_map(|row| match row {
-                backend_semantic::ir::SourceCoverageRow::Configuration {
-                    path,
-                    source,
-                    environment,
-                } => Some((path.as_str(), *source, *environment)),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        if observed != expected {
+    if let Some(catalog) = coverage.catalog() {
+        if let Some((_, nodes)) = program.nodes() {
+            let expected = nodes
+                .iter()
+                .map(|node| {
+                    (
+                        node.config_path.as_str(),
+                        *node.config.as_ref(),
+                        node.environment,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let observed = catalog
+                .rows()
+                .iter()
+                .filter_map(|row| match row {
+                    backend_semantic::ir::SourceCoverageRow::Configuration {
+                        path,
+                        source,
+                        environment,
+                    } => Some((path.as_str(), *source, *environment)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if observed != expected {
+                return Err(
+                    "compiler coverage configuration differs from native program forest".to_owned(),
+                );
+            }
+        } else if catalog.rows().iter().any(|row| {
+            matches!(
+                row,
+                backend_semantic::ir::SourceCoverageRow::Configuration { .. }
+            )
+        }) {
             return Err(
-                "compiler coverage configuration differs from native program forest".to_owned(),
+                "single inferred program cannot authenticate a configured coverage row".to_owned(),
             );
         }
-    } else if catalog.rows().iter().any(|row| {
-        matches!(
-            row,
-            backend_semantic::ir::SourceCoverageRow::Configuration { .. }
-        )
-    }) {
-        return Err(
-            "single inferred program cannot authenticate a configured coverage row".to_owned(),
-        );
-    }
-    let selected_sources = program
-        .sources()
-        .filter_map(|source| source.package_path.map(|path| (path, source.source)))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    for row in catalog.rows() {
-        if let backend_semantic::ir::SourceCoverageRow::Gap{path,cause:backend_semantic::ir::SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,..}=row
+        let selected_sources = program
+            .sources()
+            .filter_map(|source| source.package_path.map(|path| (path, source.source)))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        for row in catalog.rows() {
+            if let backend_semantic::ir::SourceCoverageRow::Gap{path,cause:backend_semantic::ir::SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,..}=row
             && selected_sources.contains_key(path.as_str()) {
                 return Err("configured exclusion is present in actual native program".to_owned());
             }
-    }
-    for row in catalog.rows() {
-        if let backend_semantic::ir::SourceCoverageRow::Gap {
-            path,
-            source,
-            byte_len,
-            cause: backend_semantic::ir::SourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted,
-            ..
-        } = row
-        {
-            if !selected_sources.get(path.as_str()).is_some_and(|selected| {
-                selected.identity.as_ref() == source && selected.byte_len == *byte_len
-            }) {
-                return Err(
-                    "TypeScript work-budget gap is outside its exact bound native source"
-                        .to_owned(),
-                );
+        }
+        for row in catalog.rows() {
+            if let backend_semantic::ir::SourceCoverageRow::Gap {
+                path,
+                source,
+                byte_len,
+                cause:
+                    backend_semantic::ir::SourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted,
+                ..
+            } = row
+            {
+                if !selected_sources.get(path.as_str()).is_some_and(|selected| {
+                    selected.identity.as_ref() == source && selected.byte_len == *byte_len
+                }) {
+                    return Err(
+                        "TypeScript work-budget gap is outside its exact bound native source"
+                            .to_owned(),
+                    );
+                }
             }
         }
     }
-    }
     Ok(Some(coverage))
+}
+
+/// Reopens the selected closure's complete TypeScript observation certificate.
+/// The returned bytes remain untrusted until the engine decodes the versioned
+/// record and replays every host and program validator.
+pub fn reopen_typescript_snapshot_witness(
+    closure: &backend_store::DurableManifest,
+    metadata: &CompilerPublicationMetadata,
+) -> Result<Option<Vec<u8>>, String> {
+    reopen_typescript_snapshot_witness_shared(closure, metadata)
+        .map(|bytes| bytes.map(|bytes| bytes.as_ref().to_vec()))
+}
+
+fn reopen_typescript_snapshot_witness_shared(
+    closure: &backend_store::DurableManifest,
+    metadata: &CompilerPublicationMetadata,
+) -> Result<Option<std::sync::Arc<[u8]>>, String> {
+    let Some(member) = metadata.typescript_snapshot_witness() else {
+        return Ok(None);
+    };
+    let id = closure
+        .admit_claim(UntrustedObjectId::from_bytes(*member.object_id()))
+        .map_err(|error| format!("admit TypeScript snapshot member: {error:?}"))?
+        .ok_or("TypeScript snapshot member absent from selected closure")?;
+    let object = closure
+        .get(id)
+        .map_err(|error| format!("read TypeScript snapshot member: {error:?}"))?
+        .ok_or("TypeScript snapshot member disappeared")?;
+    if object.schema() != COMPILER_TYPESCRIPT_SNAPSHOT_WITNESS_SCHEMA
+        || object.bytes().len() != member.byte_length() as usize
+        || object.bytes().is_empty()
+        || object.bytes().len() > backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES
+        || object.key()
+            != ObjectKey::<backend_semantic::ir::TypeScriptSnapshotWitnessSchema>::from_value(
+                object.bytes(),
+            )
+            .as_bytes()
+    {
+        return Err("TypeScript snapshot schema, identity, or extent mismatch".to_owned());
+    }
+    Ok(Some(object.bytes_shared()))
+}
+
+/// Reads one selected ledger through the store's bounded verification stream.
+/// The closure membership is checked before opening the CAS payload, and the
+/// certificate-specific limit is enforced during the read, before allocation
+/// can grow beyond the authenticated declared extent.
+fn reopen_typescript_snapshot_witness_bounded(
+    store: &FileStore,
+    closure: &backend_store::DurableManifest,
+    metadata: &CompilerPublicationMetadata,
+) -> Result<Option<Vec<u8>>, String> {
+    let Some(member) = metadata.typescript_snapshot_witness() else {
+        return Ok(None);
+    };
+    let declared_len = usize::try_from(member.byte_length())
+        .map_err(|_| "TypeScript snapshot extent overflow".to_owned())?;
+    if declared_len == 0
+        || declared_len > backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES
+    {
+        return Err("TypeScript snapshot schema, identity, or extent mismatch".to_owned());
+    }
+    let claim = UntrustedObjectId::from_bytes(*member.object_id());
+    closure
+        .admit_claim(claim)
+        .map_err(|error| format!("admit TypeScript snapshot member: {error:?}"))?
+        .ok_or("TypeScript snapshot member absent from selected closure")?;
+
+    let mut bytes = Vec::new();
+    let verified = store
+        .write_verified_object_payload(claim, u64::from(member.byte_length()), &mut bytes)
+        .map_err(|error| format!("read selected TypeScript snapshot member: {error:?}"))?;
+    if verified.id().as_bytes() != member.object_id()
+        || verified.schema() != COMPILER_TYPESCRIPT_SNAPSHOT_WITNESS_SCHEMA
+        || verified.payload_len() != u64::from(member.byte_length())
+        || verified.key()
+            != ObjectKey::<backend_semantic::ir::TypeScriptSnapshotWitnessSchema>::from_value(
+                &bytes,
+            )
+            .as_bytes()
+        || bytes.len() != declared_len
+    {
+        return Err("TypeScript snapshot schema, identity, or extent mismatch".to_owned());
+    }
+    Ok(Some(bytes))
+}
+
+/// Checks an optional ledger's exact typed object and closure membership under
+/// the certificate byte limit. This validates storage only; it grants no
+/// selected-generation capability or current filesystem authority.
+///
+/// # Errors
+/// Returns an error if a declared member is absent, corrupt, or differs in
+/// schema, typed key, identity, or extent from the publication metadata.
+pub fn verify_typescript_snapshot_witness_member(
+    store: &FileStore,
+    closure: &backend_store::DurableManifest,
+    metadata: &CompilerPublicationMetadata,
+) -> Result<(), String> {
+    let _ = reopen_typescript_snapshot_witness_bounded(store, closure, metadata)?;
+    Ok(())
 }
 
 /// Reopens only the selected closure's exact program member and validates its identity.
@@ -1566,9 +1890,7 @@ fn verify_native_program_image(
     program: Option<&backend_semantic::ir::NativeProgramSources>,
     mappings: Option<&std::collections::BTreeMap<&str, backend_semantic::ir::SourceIdentity>>,
 ) -> Result<(), String> {
-    use backend_semantic::ir::{
-        ImageProvenance, SemanticCoreReader, SemanticImageView,
-    };
+    use backend_semantic::ir::{ImageProvenance, SemanticCoreReader, SemanticImageView};
     let Some(program) = program else {
         return Ok(());
     };
@@ -1600,10 +1922,12 @@ fn verify_native_program_image(
 }
 
 fn verify_semantic_image_members(
+    store: &FileStore,
     manifest: &backend_store::DurableManifest,
     metadata: &CompilerPublicationMetadata,
 ) -> Result<(), String> {
     let _coverage = reopen_source_coverage(manifest, metadata)?;
+    let _ = reopen_typescript_snapshot_witness_bounded(store, manifest, metadata)?;
     let program = reopen_native_program_sources(manifest, metadata)?;
     let mappings = program.as_ref().map(|program| {
         program
@@ -1931,6 +2255,8 @@ pub enum CompilerEnvelopeError {
     NativeProgramSources,
     /// The compiler coverage catalog is malformed or not exactly bound.
     SourceCoverage,
+    /// A TypeScript snapshot certificate is malformed, oversized, or misbound.
+    TypeScriptSnapshotWitness,
     /// The canonical versioned-plane metadata is invalid.
     VersionedPlane(VersionedPlaneError),
 }
@@ -2104,6 +2430,17 @@ impl Schema for CompilerCoverageMetadataSchema {
     type Value = CompilerPublicationMetadata;
     fn encode(value: &Self::Value, out: &mut Vec<u8>) {
         out.extend_from_slice(&value.canonical_bytes());
+    }
+}
+
+struct CompilerTypeScriptSnapshotMetadataSchema;
+impl Schema for CompilerTypeScriptSnapshotMetadataSchema {
+    const DOMAIN: u8 = 0x7a;
+    const TYPE: u16 = 0xc002;
+    const VERSION: u8 = 7;
+    type Value = CompilerPublicationMetadata;
+    fn encode(value: &Self::Value, output: &mut Vec<u8>) {
+        output.extend_from_slice(&value.canonical_bytes());
     }
 }
 
@@ -2385,7 +2722,8 @@ mod tests {
             ],
         )
         .unwrap();
-        let coverage = backend_semantic::ir::SourceCoverageObservation::from_catalog(coverage).unwrap();
+        let coverage =
+            backend_semantic::ir::SourceCoverageObservation::from_catalog(coverage).unwrap();
         let bytes = coverage.encode();
         let object = TypedObject::from_value(
             &ObjectKey::<SourceCoverageSchema>::from_value(bytes.as_slice()),
@@ -2394,14 +2732,21 @@ mod tests {
         let directory = scratch_store();
         let store = FileStore::open(&directory, 1024 * 1024).unwrap();
         let receipt = store
-            .write_closure(&ClosureManifest::new(vec![program_object.clone(), object.clone()]).unwrap())
+            .write_closure(
+                &ClosureManifest::new(vec![program_object.clone(), object.clone()]).unwrap(),
+            )
             .unwrap();
         let verified = store
             .verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes()))
             .unwrap();
-        let member = CompilerSourceCoverageMember::from_verified_object(verified, &coverage).unwrap();
-        assert_eq!(legacy.clone().with_source_coverage(member),Err(CompilerEnvelopeError::SourceCoverage),"coverage needs authenticated native program authority before canonicalization");
-    let program_verified = store
+        let member =
+            CompilerSourceCoverageMember::from_verified_object(verified, &coverage).unwrap();
+        assert_eq!(
+            legacy.clone().with_source_coverage(member),
+            Err(CompilerEnvelopeError::SourceCoverage),
+            "coverage needs authenticated native program authority before canonicalization"
+        );
+        let program_verified = store
             .verify_object_claim(UntrustedObjectId::from_bytes(
                 *program_object.id().as_bytes(),
             ))
@@ -2440,25 +2785,55 @@ mod tests {
         );
         // Publication-boundary capacity control: this is authenticated retained
         // evidence, not a claim that the native resolver compiled >16k inputs.
-        for reason in [backend_semantic::ir::SourceCoverageCapacityReason::RowCount,backend_semantic::ir::SourceCoverageCapacityReason::EncodedBytes] {
-            let capacity=backend_semantic::ir::SourceCoverageObservation::not_recorded_capacity([3;32],[1,0],program.membership_identity(),20_001,1,reason).unwrap();
-            let bytes=capacity.encode();
-            let object=TypedObject::from_value(&ObjectKey::<SourceCoverageSchema>::from_value(bytes.as_slice()),bytes.as_slice());
-            let receipt=store.write_closure(&ClosureManifest::new(vec![program_object.clone(),object.clone()]).unwrap()).unwrap();
-            let verified=store.verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes())).unwrap();
-            let mut unavailable=current.clone();
-            unavailable.source_coverage=Some(CompilerSourceCoverageMember::from_verified_object(verified,&capacity).unwrap());
-            let encoded=unavailable.canonical_bytes();
-            let cold_store=FileStore::open(&directory,1024*1024).unwrap();
-            let closure=cold_store.open_closure(receipt).unwrap();
-            let cold=reopen_source_coverage(&closure,&CompilerPublicationMetadata::decode(&encoded).unwrap()).unwrap().unwrap();
-            assert_eq!(cold,capacity);
-            assert_eq!(cold.capacity_reason(),Some(reason));
-            assert_eq!((cold.source_count(),cold.completed()),(20_001,1));
-            assert!(cold.catalog().is_none(),"cold reopen cannot invent a cause catalog");
-            let mut forged=unavailable;
-            forged.source_coverage.as_mut().unwrap().identity[0]^=1;
-            assert!(reopen_source_coverage(&closure,&forged).is_err());
+        for reason in [
+            backend_semantic::ir::SourceCoverageCapacityReason::RowCount,
+            backend_semantic::ir::SourceCoverageCapacityReason::EncodedBytes,
+        ] {
+            let capacity = backend_semantic::ir::SourceCoverageObservation::not_recorded_capacity(
+                [3; 32],
+                [1, 0],
+                program.membership_identity(),
+                20_001,
+                1,
+                reason,
+            )
+            .unwrap();
+            let bytes = capacity.encode();
+            let object = TypedObject::from_value(
+                &ObjectKey::<SourceCoverageSchema>::from_value(bytes.as_slice()),
+                bytes.as_slice(),
+            );
+            let receipt = store
+                .write_closure(
+                    &ClosureManifest::new(vec![program_object.clone(), object.clone()]).unwrap(),
+                )
+                .unwrap();
+            let verified = store
+                .verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes()))
+                .unwrap();
+            let mut unavailable = current.clone();
+            unavailable.source_coverage = Some(
+                CompilerSourceCoverageMember::from_verified_object(verified, &capacity).unwrap(),
+            );
+            let encoded = unavailable.canonical_bytes();
+            let cold_store = FileStore::open(&directory, 1024 * 1024).unwrap();
+            let closure = cold_store.open_closure(receipt).unwrap();
+            let cold = reopen_source_coverage(
+                &closure,
+                &CompilerPublicationMetadata::decode(&encoded).unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(cold, capacity);
+            assert_eq!(cold.capacity_reason(), Some(reason));
+            assert_eq!((cold.source_count(), cold.completed()), (20_001, 1));
+            assert!(
+                cold.catalog().is_none(),
+                "cold reopen cannot invent a cause catalog"
+            );
+            let mut forged = unavailable;
+            forged.source_coverage.as_mut().unwrap().identity[0] ^= 1;
+            assert!(reopen_source_coverage(&closure, &forged).is_err());
         }
         let mut wrong = current.clone();
         wrong.source_coverage.as_mut().unwrap().identity[0] ^= 1;
@@ -2480,10 +2855,11 @@ mod tests {
                     let SourceCoverageRow::Configuration { source, .. } = &mut rows[0] else {
                         unreachable!()
                     };
-                    *source = *ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
-                        b"different config",
-                    )
-                    .as_ref();
+                    *source =
+                        *ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                            b"different config",
+                        )
+                        .as_ref();
                 }
                 2 => {
                     let SourceCoverageRow::Configuration { environment, .. } = &mut rows[0] else {
@@ -2505,8 +2881,10 @@ mod tests {
                     *cause = SourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted;
                 }
             }
-            let forged = SourceCoverageManifest::new([3; 32], [1, 0], program_id, 2, 1, rows).unwrap();
-            let forged = backend_semantic::ir::SourceCoverageObservation::from_catalog(forged).unwrap();
+            let forged =
+                SourceCoverageManifest::new([3; 32], [1, 0], program_id, 2, 1, rows).unwrap();
+            let forged =
+                backend_semantic::ir::SourceCoverageObservation::from_catalog(forged).unwrap();
             let bytes = forged.encode();
             let object = TypedObject::from_value(
                 &ObjectKey::<SourceCoverageSchema>::from_value(bytes.as_slice()),
@@ -2521,8 +2899,9 @@ mod tests {
                 .verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes()))
                 .unwrap();
             let mut wrong = current.clone();
-            wrong.source_coverage =
-                Some(CompilerSourceCoverageMember::from_verified_object(verified, &forged).unwrap());
+            wrong.source_coverage = Some(
+                CompilerSourceCoverageMember::from_verified_object(verified, &forged).unwrap(),
+            );
             let closure = store.open_closure(id).unwrap();
             assert!(
                 reopen_source_coverage(&closure, &wrong).is_err(),
@@ -2628,12 +3007,259 @@ mod tests {
             Err(CompilerEnvelopeError::NativeProgramSources)
         );
         let mut future = bytes;
-        future[METADATA_MAGIC.len()..METADATA_MAGIC.len() + 2].copy_from_slice(&7u16.to_le_bytes());
+        future[METADATA_MAGIC.len()..METADATA_MAGIC.len() + 2].copy_from_slice(&8u16.to_le_bytes());
         assert_eq!(
             CompilerPublicationMetadata::decode(&future),
             Err(CompilerEnvelopeError::MetadataVersion)
         );
         drop(store);
+        std::fs::remove_dir_all(directory).expect("cleanup");
+    }
+
+    #[test]
+    fn typescript_snapshot_metadata_v7_round_trips_and_reopens_the_typed_ledger() {
+        let (image, _) = compiler_image();
+        let program = CompilerProgramSourceMember {
+            object_id: [0x11; 32],
+            program: [0x22; 32],
+            byte_length: 8,
+        };
+        let legacy = metadata(image)
+            .with_native_program_sources(program)
+            .expect("native program member");
+        let witness_bytes = b"versioned complete TS ledger";
+        let witness_object = TypedObject::from_value(
+            &ObjectKey::<backend_semantic::ir::TypeScriptSnapshotWitnessSchema>::from_value(
+                witness_bytes,
+            ),
+            witness_bytes,
+        );
+        let directory = scratch_store();
+        let store = FileStore::open(&directory, 1024 * 1024).expect("CAS");
+        store.write_object(&witness_object).expect("write witness");
+        let verified = store
+            .verify_object_claim(UntrustedObjectId::from_bytes(
+                *witness_object.id().as_bytes(),
+            ))
+            .expect("verified witness");
+        let witness =
+            CompilerTypeScriptSnapshotMember::from_verified_object(verified, witness_bytes)
+                .expect("typed bounded witness");
+        let current = legacy
+            .with_typescript_snapshot_witness(witness)
+            .expect("attach cold certificate");
+        let bytes = current.canonical_bytes();
+        let reopened = CompilerPublicationMetadata::decode(&bytes).expect("v7 metadata");
+        assert_eq!(reopened, current);
+        assert_eq!(
+            reopened.typed_object().schema(),
+            COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA
+        );
+        assert!(metadata_member_ids(&reopened).contains(witness.object_id()));
+        let closure_id = store
+            .write_closure(&ClosureManifest::new(vec![witness_object]).expect("closure"))
+            .expect("write closure");
+        let closure = store.open_closure(closure_id).expect("reopen closure");
+        assert_eq!(
+            reopen_typescript_snapshot_witness(&closure, &reopened)
+                .expect("validate typed member")
+                .as_deref(),
+            Some(witness_bytes.as_slice()),
+        );
+        let mut wrong_extent = reopened.clone();
+        wrong_extent
+            .typescript_snapshot
+            .as_mut()
+            .unwrap()
+            .byte_length += 1;
+        assert!(reopen_typescript_snapshot_witness(&closure, &wrong_extent).is_err());
+        assert_eq!(
+            verify_semantic_image_members(&store, &closure, &wrong_extent).unwrap_err(),
+            "TypeScript snapshot schema, identity, or extent mismatch"
+        );
+
+        let mut wrong_schema = reopened.clone();
+        let wrong_bytes = b"foreign schema object";
+        let wrong_object = member(wrong_bytes);
+        store
+            .write_object(&wrong_object)
+            .expect("write foreign schema");
+        wrong_schema.typescript_snapshot.as_mut().unwrap().object_id =
+            *wrong_object.id().as_bytes();
+        let foreign_closure = store
+            .write_closure(&ClosureManifest::new(vec![wrong_object]).expect("foreign closure"))
+            .expect("write foreign closure");
+        let foreign_closure = store.open_closure(foreign_closure).expect("open foreign");
+        assert!(reopen_typescript_snapshot_witness(&foreign_closure, &wrong_schema).is_err());
+        assert_eq!(
+            verify_semantic_image_members(&store, &foreign_closure, &wrong_schema).unwrap_err(),
+            "TypeScript snapshot schema, identity, or extent mismatch"
+        );
+
+        let missing_closure = store
+            .write_closure(&ClosureManifest::new(vec![member(b"other")]).expect("missing closure"))
+            .expect("write missing closure");
+        let missing_closure = store.open_closure(missing_closure).expect("open missing");
+        assert!(reopen_typescript_snapshot_witness(&missing_closure, &reopened).is_err());
+
+        let with_coverage = metadata(compiler_image().0)
+            .with_native_program_sources(program)
+            .expect("program")
+            .with_source_coverage(CompilerSourceCoverageMember {
+                object_id: [0x33; 32],
+                identity: [0x44; 32],
+                byte_length: 1,
+            })
+            .expect("coverage")
+            .with_typescript_snapshot_witness(witness)
+            .expect("snapshot");
+        assert_eq!(
+            CompilerPublicationMetadata::decode(&with_coverage.canonical_bytes())
+                .expect("v7 coverage metadata"),
+            with_coverage,
+        );
+        drop(closure);
+        drop(store);
+        std::fs::remove_dir_all(directory).expect("cleanup");
+    }
+
+    #[test]
+    fn selected_metadata_keeps_snapshot_payload_lazy_but_explicit_reopen_refuses_missing_bytes() {
+        use backend_semantic::ir::{
+            NativeProgramSource, NativeProgramSourceManifest, NativeProgramSourceManifestSchema,
+            SourceIdentity,
+        };
+
+        let directory = scratch_store();
+        let store = FileStore::open(&directory, 1024 * 1024).expect("open FileStore");
+        let (image, image_object) = compiler_image();
+        let sources = NativeProgramSourceManifest::from_sources(
+            ContentId::from_canonical_bytes(b"compiler"),
+            vec![NativeProgramSource {
+                program_path: "workspace/main.ts".into(),
+                package_path: Some("main.ts".into()),
+                source: SourceIdentity::from_bytes(b"export {}; ").expect("source"),
+            }],
+        )
+        .expect("program source manifest");
+        let program_object = TypedObject::from_value(
+            &ObjectKey::<NativeProgramSourceManifestSchema>::from_value(sources.as_bytes()),
+            sources.as_bytes(),
+        );
+        store.write_object(&program_object).expect("write program");
+        let program_member = CompilerProgramSourceMember::from_verified_object(
+            store
+                .verify_object_claim(UntrustedObjectId::from_bytes(
+                    *program_object.id().as_bytes(),
+                ))
+                .expect("verify program"),
+            &sources,
+        )
+        .expect("typed program member");
+
+        let certificate_bytes = b"authenticated cold replay certificate";
+        let certificate_object = TypedObject::from_value(
+            &ObjectKey::<backend_semantic::ir::TypeScriptSnapshotWitnessSchema>::from_value(
+                certificate_bytes,
+            ),
+            certificate_bytes,
+        );
+        store
+            .write_object(&certificate_object)
+            .expect("write certificate");
+        let certificate_member = CompilerTypeScriptSnapshotMember::from_verified_object(
+            store
+                .verify_object_claim(UntrustedObjectId::from_bytes(
+                    *certificate_object.id().as_bytes(),
+                ))
+                .expect("verify certificate"),
+            certificate_bytes,
+        )
+        .expect("typed certificate member");
+        let metadata = metadata(image)
+            .with_native_program_sources(program_member)
+            .expect("program metadata")
+            .with_typescript_snapshot_witness(certificate_member)
+            .expect("snapshot metadata");
+        let attempt = attempt();
+        let envelope =
+            CompilerPublicationEnvelope::new(&attempt, &metadata).expect("selected envelope");
+        let metadata_object = metadata.typed_object();
+        let envelope_object = envelope.typed_object();
+        let closure = ClosureManifest::new(vec![
+            image_object,
+            program_object,
+            certificate_object.clone(),
+            metadata_object,
+            envelope_object,
+        ])
+        .expect("complete selected closure");
+        let closure_id = store.write_closure(&closure).expect("persist closure");
+        let candidate = envelope
+            .candidate(attempt.clone(), *closure_id.as_bytes())
+            .expect("candidate");
+        let selected = selected_generation(&attempt, &candidate, 1);
+
+        let certificate_name = certificate_object
+            .id()
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let certificate_path = directory
+            .join("objects")
+            .join(format!("{certificate_name}.object"));
+        assert_eq!(
+            reopen_selected_typescript_snapshot_witness(&store, &selected)
+                .expect("read selected certificate")
+                .expect("certificate is present")
+                .as_bytes(),
+            certificate_bytes,
+        );
+        drop(store);
+
+        let original_payload = std::fs::read(&certificate_path).expect("read certificate CAS");
+        let mut certificate_permissions = std::fs::metadata(&certificate_path)
+            .expect("certificate metadata")
+            .permissions();
+        certificate_permissions.set_readonly(false);
+        std::fs::set_permissions(&certificate_path, certificate_permissions)
+            .expect("make test CAS writable");
+        std::fs::write(&certificate_path, b"corrupt CAS envelope")
+            .expect("corrupt optional certificate payload");
+        let corrupt_store = FileStore::open(&directory, 1024 * 1024).expect("reopen corrupt CAS");
+        reopen_selected_compiler_metadata(&corrupt_store, &selected)
+            .expect("metadata selection ignores optional payload corruption");
+        assert!(reopen_selected_typescript_snapshot_witness(&corrupt_store, &selected).is_err());
+        drop(corrupt_store);
+        let mut certificate_permissions = std::fs::metadata(&certificate_path)
+            .expect("corrupt certificate metadata")
+            .permissions();
+        certificate_permissions.set_readonly(false);
+        std::fs::set_permissions(&certificate_path, certificate_permissions)
+            .expect("make corrupt test CAS writable");
+        std::fs::write(&certificate_path, original_payload).expect("restore certificate CAS");
+        let mut certificate_permissions = std::fs::metadata(&certificate_path)
+            .expect("restored certificate metadata")
+            .permissions();
+        certificate_permissions.set_readonly(true);
+        std::fs::set_permissions(&certificate_path, certificate_permissions)
+            .expect("reseal test CAS");
+        let mut certificate_permissions = std::fs::metadata(&certificate_path)
+            .expect("resealed certificate metadata")
+            .permissions();
+        certificate_permissions.set_readonly(false);
+        std::fs::set_permissions(&certificate_path, certificate_permissions)
+            .expect("make test CAS removable");
+        std::fs::remove_file(&certificate_path)
+            .expect("simulate missing optional certificate payload");
+
+        let missing_store = FileStore::open(&directory, 1024 * 1024).expect("reopen missing CAS");
+        let reopened = reopen_selected_compiler_metadata(&missing_store, &selected)
+            .expect("metadata selection reads only the exact member inventory");
+        assert_eq!(reopened.metadata(), &metadata);
+        assert!(reopen_selected_typescript_snapshot_witness(&missing_store, &selected).is_err());
+        drop(missing_store);
         std::fs::remove_dir_all(directory).expect("cleanup");
     }
 
@@ -2743,7 +3369,7 @@ mod tests {
             .expect("reopen forest")
             .expect("present");
         assert_eq!(reopened, sources);
-        verify_semantic_image_members(&closure, &metadata)
+        verify_semantic_image_members(&store, &closure, &metadata)
             .expect("cold image binds exact program node");
         for bindings in [
             vec![],
@@ -2779,7 +3405,7 @@ mod tests {
                 .unwrap();
             let invalid_closure = store.open_closure(invalid_id).unwrap();
             assert!(
-                verify_semantic_image_members(&invalid_closure, &invalid_metadata).is_err(),
+                verify_semantic_image_members(&store, &invalid_closure, &invalid_metadata).is_err(),
                 "missing or mismatched image binding cannot reopen positive authority"
             );
         }
@@ -2791,8 +3417,7 @@ mod tests {
         assert_eq!(owners["src/app.ts"], app.program());
         assert_eq!(owners["vite.config.ts"], config.program());
         assert_ne!(owners["src/app.ts"], owners["vite.config.ts"]);
-        let unrelated =
-            ClosureManifest::new(vec![self::member(b"unrelated")]).expect("unrelated");
+        let unrelated = ClosureManifest::new(vec![self::member(b"unrelated")]).expect("unrelated");
         let unrelated_id = store.write_closure(&unrelated).expect("write unrelated");
         let unrelated = store.open_closure(unrelated_id).expect("open unrelated");
         assert!(reopen_native_program_sources(&unrelated, &metadata).is_err());

@@ -7,6 +7,7 @@
 mod typescript_snapshot;
 use typescript_snapshot::TypeScriptSnapshotCache;
 pub use typescript_snapshot::TypeScriptSnapshotReuse;
+pub(crate) use typescript_snapshot::encode_staged_snapshot_certificate;
 
 use std::{
     collections::HashMap,
