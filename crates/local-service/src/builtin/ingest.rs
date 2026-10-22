@@ -3149,10 +3149,13 @@ fn scan_one(
         .analyze(Path::new(&relative), source.as_bytes())
     {
         Ok(analyzed) => analyzed,
-        Err(_)
+        Err(error)
             if matches!(
                 profile,
                 LanguageProfile::Python(_) | LanguageProfile::C(_) | LanguageProfile::Cxx(_)
+            ) && !matches!(
+                &error,
+                SyntaxError::MalformedSource(SourceLanguage::Clang)
             ) =>
         {
             // Browsing keeps the truthful Unparsed row. A structural grammar
@@ -6870,13 +6873,16 @@ mod robustness_tests {
     /// preprocessing, but the structural grammar rejects it. The real pugixml
     /// header was dropped here before libclang could observe its declarations.
     #[test]
-    fn cpp_declaration_macros_keep_exact_compiler_frontier() -> Result<(), String> {
+    fn cpp_declaration_macros_use_exact_native_candidate_frontier() -> Result<(), String> {
         let scratch = scratch("cpp-macro-frontier")?;
         let source: &[u8] = b"#define PUGIXML_CLASS\nnamespace pugi {\nclass PUGIXML_CLASS xml_document {};\nstruct PUGIXML_CLASS xml_parse_result { int status; };\n}\n";
         let path = "pugixml.hpp";
         fs::write(scratch.0.join(path), source).map_err(|e| e.to_string())?;
         let frontend = backend_frontend_clang::syntax_frontend().map_err(|e| e.to_string())?;
-        assert!(frontend.analyze(Path::new(path), source).is_err());
+        assert!(matches!(
+            frontend.analyze(Path::new(path), source),
+            Err(SyntaxError::MalformedSource(SourceLanguage::Clang))
+        ));
         let first = scan(&scratch)?;
         assert_eq!(
             retention_of(&first, path),
@@ -6894,9 +6900,13 @@ mod robustness_tests {
             &reusable,
         )?;
         for snapshot in [first, second] {
-            assert_eq!(snapshot.compiler_sources.len(), 1);
+            assert!(
+                snapshot.compiler_sources.is_empty(),
+                "a Clang malformed candidate must not fall through the ordinary compiler-source lane"
+            );
             assert!(snapshot.reused_compiler_files.is_empty());
-            let handle = &snapshot.compiler_sources[0];
+            assert_eq!(snapshot.native_clang_candidates.len(), 1);
+            let handle = &snapshot.native_clang_candidates[0];
             assert_eq!(handle.relative_path, path);
             assert!(matches!(handle.profile, LanguageProfile::Cxx(_)));
             assert_eq!(
@@ -6907,16 +6917,36 @@ mod robustness_tests {
                 handle.source_fact_identity,
                 SourceFactIdentity::from_canonical_bytes(source)
             );
-            let admitted = admit_compiler_sources_for_scan(
-                &scratch.0,
-                &snapshot.revision_fence,
-                snapshot.compiler_sources,
-                snapshot.reused_compiler_files,
-                snapshot.source_admission_policy,
-                None,
-            )?;
-            assert_eq!(admitted.len(), 1);
-            assert_eq!(admitted[0].source, source);
+            assert_eq!(handle.source_bytes.as_deref(), Some(source));
+            let expected_byte_length =
+                u32::try_from(source.len()).map_err(|error| error.to_string())?;
+            let expected_chunk_count = u32::try_from(
+                source.len().div_ceil(NATIVE_SOURCE_CHUNK_BYTES),
+            )
+            .map_err(|error| error.to_string())?;
+            assert!(
+                snapshot.native_frontier.iter().any(|record| matches!(
+                    record,
+                    ProductNativeFrontierRecord::Path {
+                        project,
+                        profile: candidate_profile,
+                        path: candidate_path,
+                        disposition: NativePathDisposition::ClangMalformed {
+                            content,
+                            source_identity,
+                            byte_length,
+                            chunk_count,
+                        },
+                    } if *project == [8; 32]
+                        && candidate_profile == &handle.profile
+                        && candidate_path.as_str() == path
+                        && content == &handle.content
+                        && source_identity == &handle.source_fact_identity
+                        && *byte_length == expected_byte_length
+                        && *chunk_count == expected_chunk_count
+                )),
+                "the frontier must commit this exact path, profile, content, source identity, and chunk geometry"
+            );
         }
         Ok(())
     }
