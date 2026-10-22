@@ -1510,8 +1510,8 @@ impl RustWorkspaceSessionKey {
     /// Carries the exact admitted Cargo crate target into session preparation.
     ///
     /// This identity is supplied by the validated compilation-unit key; it is
-    /// not inferred from package metadata. The target applies only to its
-    /// exact root source path during ownership and documentation preparation.
+    /// not inferred from package metadata. Its exact root identifies the HIR
+    /// crate used to scope all selected files in that crate's source frontier.
     pub fn with_cargo_target(
         mut self,
         target: RustCargoTarget<'_>,
