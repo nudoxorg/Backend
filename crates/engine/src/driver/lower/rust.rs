@@ -75,9 +75,9 @@ use std::{collections::HashMap, path::Path, vec::Vec};
 
 use backend_frontend_rust::legacy::{
     ByteSpan, ModuleDeclaration, RustAnalysisControl, RustAuthority, RustAuthorityError,
-    RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess, RustProject,
-    RustWorkspace, SemanticKind, SourceByteLimit, SourceOrigin, ra_ap_hir, ra_ap_ide_db,
-    ra_ap_syntax,
+    RustCargoTarget, RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess,
+    RustProject, RustWorkspace, SemanticKind, SourceByteLimit, SourceOrigin, ra_ap_hir,
+    ra_ap_ide_db, ra_ap_syntax,
 };
 use backend_semantic::ir::{
     AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ExternalEntityRef,
@@ -180,13 +180,27 @@ pub(crate) fn collect<'source>(
 pub(crate) fn collect_workspace<'source>(
     workspace: &RustWorkspace,
     source_path: &Path,
+    target: Option<RustCargoTarget<'_>>,
     maximum_source_bytes: SourceByteLimit,
     control: CompileControl<'_>,
     source: &'source [u8],
     facts: &mut FactSet<'source>,
 ) -> Result<(), RustCollectError> {
-    workspace
-        .analyze_source(
+    let target = target.or_else(|| workspace.cargo_target_for_source_path(source_path));
+    let analysis = if let Some(target) = target {
+        workspace.analyze_source_for_target(
+            source_path,
+            source,
+            target,
+            RustAnalysisControl {
+                cancelled: control.cancelled,
+                maximum_source_bytes,
+                deadline: control.deadline,
+            },
+            |authority| collect_authority(authority, source, facts),
+        )
+    } else {
+        workspace.analyze_source(
             source_path,
             source,
             RustAnalysisControl {
@@ -196,7 +210,8 @@ pub(crate) fn collect_workspace<'source>(
             },
             |authority| collect_authority(authority, source, facts),
         )
-        .map_err(map_collect_error)
+    };
+    analysis.map_err(map_collect_error)
 }
 
 fn collect_authority<'analysis, 'source>(
@@ -4818,6 +4833,7 @@ mod tests {
                 collect_workspace(
                     lease.workspace(),
                     &root.join("crates/core/main.rs"),
+                    None,
                     SourceByteLimit::from(8_192),
                     CompileControl {
                         cancelled: &cancelled,

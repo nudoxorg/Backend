@@ -1343,6 +1343,46 @@ mod tests {
     }
 
     #[test]
+    fn rust_crate_target_recipe_keeps_hyphenated_name_bytes_exact() {
+        let name = "ownership-hyphen";
+        let root = "bin/hyphen.rs";
+        let hyphenated = CompilationUnitKeyV2::RustCrate {
+            name: name.into(),
+            root: root.into(),
+        };
+        let underscored = CompilationUnitKeyV2::RustCrate {
+            name: name.replace('-', "_").into(),
+            root: root.into(),
+        };
+
+        let mut expected_unit_wire = vec![2];
+        expected_unit_wire.extend_from_slice(
+            &u16::try_from(name.len())
+                .expect("small target name")
+                .to_be_bytes(),
+        );
+        expected_unit_wire.extend_from_slice(name.as_bytes());
+        expected_unit_wire.extend_from_slice(
+            &u16::try_from(root.len())
+                .expect("small target root")
+                .to_be_bytes(),
+        );
+        expected_unit_wire.extend_from_slice(root.as_bytes());
+        assert_eq!(hyphenated.encode(), Ok(expected_unit_wire));
+
+        let package = package("pkg:cargo/workspace@1.0.0");
+        let hyphenated_target =
+            CompilerPackageTargetV2::new(package.clone(), hyphenated).expect("hyphenated key");
+        let underscored_target =
+            CompilerPackageTargetV2::new(package, underscored).expect("underscored key");
+        assert_ne!(
+            hyphenated_target.target(),
+            underscored_target.target(),
+            "canonical HIR spelling must not rewrite the admitted unit recipe"
+        );
+    }
+
+    #[test]
     fn target_unit_keys_preserve_two_cells_in_one_package_and_reject_package_swap() {
         let workspace_package = package("pkg:cargo/workspace@1.0.0");
         let lib =
