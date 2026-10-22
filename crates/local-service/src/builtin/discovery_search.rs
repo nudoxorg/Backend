@@ -26,7 +26,7 @@ use tantivy::query::{
     BooleanQuery, ConstScoreQuery, EmptyQuery, EnableScoring, FuzzyTermQuery, Occur, PhraseQuery,
     Query, RangeQuery, RegexQuery, TermQuery, Weight,
 };
-use tantivy::schema::{FAST, Field, IndexRecordOption, STRING, Schema, TEXT};
+use tantivy::schema::{FAST, Field, IndexRecordOption, STRING, Schema, SchemaBuilder, TEXT};
 use tantivy::{Index, IndexReader, IndexWriter, Order, TantivyDocument, Term};
 
 #[path = "discovery_search/release_projection.rs"]
@@ -52,7 +52,7 @@ const MAX_LINEAGE_FACET_VALUES: usize = 16_384;
 const SEARCH_PROJECTION_DIRECTORY: &str = "v1";
 const SEARCH_PROJECTION_MANIFEST: &str = "selected-root-v1";
 const SEARCH_PROJECTION_ROOT_LEASE: &str = ".backend-root-reader.lock";
-const SEARCH_PROJECTION_SCHEMA: &[u8] = b"backend-discovery-tantivy-v2\0";
+const SEARCH_PROJECTION_SCHEMA: &[u8] = b"backend-discovery-tantivy-v4\0";
 const MAX_RETAINED_SEARCH_PROJECTIONS: usize = 4;
 const MAX_SEARCH_PROJECTION_FILES: usize = 196_608;
 const MAX_SEARCH_PROJECTION_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
@@ -1198,7 +1198,10 @@ pub(crate) struct LineageSearchIndex {
     aggregates: BTreeMap<LineageKey, LineageAccumulator>,
     release_to_lineage: BTreeMap<String, LineageKey>,
     coordinate_lineages: BTreeMap<String, BTreeMap<String, (LineageKey, usize)>>,
+    oversized_lineages: BTreeSet<String>,
     facet_postings: BTreeMap<LineageFacetField, BTreeMap<String, BTreeSet<String>>>,
+    #[cfg(test)]
+    facet_value_limit: usize,
     fingerprint_xor: [u8; 32],
     document_count: usize,
 }
@@ -1232,7 +1235,10 @@ impl LineageSearchIndex {
             aggregates: BTreeMap::new(),
             release_to_lineage: BTreeMap::new(),
             coordinate_lineages: BTreeMap::new(),
+            oversized_lineages: BTreeSet::new(),
             facet_postings: BTreeMap::new(),
+            #[cfg(test)]
+            facet_value_limit: MAX_LINEAGE_FACET_VALUES,
             fingerprint_xor: [0; 32],
             document_count: 0,
         })
@@ -1444,6 +1450,46 @@ impl LineageSearchIndex {
         )
     }
 
+    /// Visits only lineages whose full coordinate set is larger than the
+    /// bounded lineage document. The caller checks each candidate against the
+    /// full release projection, which already indexes every coordinate.
+    fn visit_oversized_lineages(
+        &self,
+        ecosystem: Option<RegistryEcosystem>,
+        after_sort_key: Option<&str>,
+        mut visit: impl FnMut(&str, &LineageKey) -> Result<bool, String>,
+    ) -> Result<usize, String> {
+        let lower = after_sort_key.map_or_else(
+            || Bound::Included(String::new()),
+            |after| Bound::Excluded(after.to_owned()),
+        );
+        let mut visited = 0_usize;
+        for sort_key in self.oversized_lineages.range((lower, Bound::Unbounded)) {
+            visited = visited.saturating_add(1);
+            let Some(key) = self.inner.keys.get(sort_key) else {
+                continue;
+            };
+            if ecosystem.is_some_and(|expected| key.ecosystem != expected) {
+                continue;
+            }
+            if visit(sort_key, key)? {
+                break;
+            }
+        }
+        Ok(visited)
+    }
+
+    fn facet_value_limit(&self) -> usize {
+        #[cfg(test)]
+        {
+            self.facet_value_limit
+        }
+        #[cfg(not(test))]
+        {
+            MAX_LINEAGE_FACET_VALUES
+        }
+    }
+
     fn exact_facet_lineages(
         &self,
         field: LineageFacetField,
@@ -1490,27 +1536,27 @@ impl LineageSearchIndex {
         &self,
         field: LineageFacetField,
         tokens: &[String],
-        query: &str,
         expected: SearchMatchEvidence,
         ecosystem: Option<RegistryEcosystem>,
         after_sort_key: Option<&str>,
         limit: usize,
-    ) -> (usize, Vec<(String, LineageKey)>) {
+        mut evidence_for: impl FnMut(&str, &LineageKey) -> Result<Option<SearchMatchEvidence>, String>,
+    ) -> Result<(usize, Vec<(String, LineageKey)>), String> {
         if tokens.is_empty() || limit == 0 {
-            return (0, Vec::new());
+            return Ok((0, Vec::new()));
         }
         let Some(values) = self.facet_postings.get(&field) else {
-            return (0, Vec::new());
+            return Ok((0, Vec::new()));
         };
         let Some(rarest) = tokens
             .iter()
             .filter_map(|token| values.get(token))
             .min_by_key(|postings| postings.len())
         else {
-            return (0, Vec::new());
+            return Ok((0, Vec::new()));
         };
         if tokens.iter().any(|token| !values.contains_key(token)) {
-            return (0, Vec::new());
+            return Ok((0, Vec::new()));
         }
         let lower = after_sort_key.map_or_else(
             || Bound::Included(String::new()),
@@ -1538,7 +1584,7 @@ impl LineageSearchIndex {
                 LineageFacetField::Coordinate | LineageFacetField::AliasValue => continue,
             };
             if tokens.iter().all(|token| counts.contains_key(token))
-                && self.best_evidence_for_lineage(key, query) == Some(expected)
+                && evidence_for(sort_key, key)? == Some(expected)
             {
                 hits.push((sort_key.clone(), key.clone()));
                 if hits.len() == limit {
@@ -1546,7 +1592,7 @@ impl LineageSearchIndex {
                 }
             }
         }
-        (visited, hits)
+        Ok((visited, hits))
     }
 
     fn prefix_facet_lineages(
@@ -1624,6 +1670,7 @@ impl LineageSearchIndex {
         }
         let aggregate = self.aggregates.get(key)?;
         let name = normalize(lineage_search_name(key.ecosystem, &key.lineage));
+        let facet_value_limit = self.facet_value_limit();
 
         if aggregate.coordinates.contains_key(&query) {
             return Some(SearchMatchEvidence::ExactCoordinate);
@@ -1657,7 +1704,7 @@ impl LineageSearchIndex {
             || aggregate
                 .coordinates
                 .keys()
-                .take(MAX_LINEAGE_FACET_VALUES)
+                .take(facet_value_limit)
                 .any(|coordinate| coordinate.contains(&query))
         {
             return Some(SearchMatchEvidence::Substring);
@@ -1706,9 +1753,20 @@ impl LineageSearchIndex {
 
     fn refresh_lineage(&mut self, key: &LineageKey) -> Result<(), String> {
         let group_sort_key = lineage_sort_key(key);
+        let facet_value_limit = self.facet_value_limit();
         if !self.releases.contains_key(key) {
+            self.oversized_lineages.remove(&group_sort_key);
             self.inner.remove_document(&group_sort_key);
             return Ok(());
+        }
+        if self
+            .aggregates
+            .get(key)
+            .is_some_and(|aggregate| aggregate.coordinates.len() > facet_value_limit)
+        {
+            self.oversized_lineages.insert(group_sort_key.clone());
+        } else {
+            self.oversized_lineages.remove(&group_sort_key);
         }
         let aggregate = self
             .aggregates
@@ -1717,17 +1775,17 @@ impl LineageSearchIndex {
         let coordinate_refs = aggregate
             .coordinates
             .keys()
-            .take(MAX_LINEAGE_FACET_VALUES)
+            .take(facet_value_limit)
             .map(String::as_str)
             .collect();
-        let aliases = facet_from_counts(&aggregate.aliases);
-        let keywords = facet_from_counts(&aggregate.keywords);
-        let descriptions = facet_from_counts(&aggregate.descriptions);
-        let advisories = facet_from_counts(&aggregate.advisories);
+        let aliases = facet_from_counts(&aggregate.aliases, facet_value_limit);
+        let keywords = facet_from_counts(&aggregate.keywords, facet_value_limit);
+        let descriptions = facet_from_counts(&aggregate.descriptions, facet_value_limit);
+        let advisories = facet_from_counts(&aggregate.advisories, facet_value_limit);
         let generic = aggregate
             .generic
             .keys()
-            .take(MAX_LINEAGE_FACET_VALUES)
+            .take(facet_value_limit)
             .map(String::as_str)
             .collect();
         let search_text = SearchDocumentText {
@@ -1738,6 +1796,8 @@ impl LineageSearchIndex {
             advisories,
             generic,
             substring_generic: false,
+            coordinate_substring: CoordinateSubstringPolicy::Include,
+            local_source_path: None,
             lineage_group: None,
             standing: SearchStandingEvidence::Unknown,
         };
@@ -1867,11 +1927,14 @@ fn versioned_release_facet(
     )))
 }
 
-fn facet_from_counts<'a>(counts: &'a BTreeMap<String, usize>) -> SearchTextFacet<'a> {
+fn facet_from_counts<'a>(
+    counts: &'a BTreeMap<String, usize>,
+    facet_value_limit: usize,
+) -> SearchTextFacet<'a> {
     SearchTextFacet::Known(
         counts
             .keys()
-            .take(MAX_LINEAGE_FACET_VALUES)
+            .take(facet_value_limit)
             .map(String::as_str)
             .collect(),
     )
@@ -2710,10 +2773,21 @@ impl DiscoverySearchIndex {
             .prepare_search_query(normalized_query.clone());
         let prepared_release_query = self.inner.prepare_search_query(normalized_query.clone());
         let empty_release_query = self.inner.prepare_search_query(String::new());
-        let page = prepared_lineage_query.page_filtered(
+        let mut evidence_resolver = LineageEvidenceResolver {
+            lineages: &self.lineages,
+            release_query: &prepared_release_query,
+            query: &normalized_query,
+            ecosystem: request.ecosystem,
+            cache: BTreeMap::new(),
+            cache_limit: limit.saturating_add(1).saturating_mul(SEARCH_TIERS.len()),
+            posting_candidates: 0,
+            documents_visited: 0,
+        };
+        let page = prepared_lineage_query.page_filtered_with_resolver(
             limit.saturating_add(1),
             request.ecosystem.map(RegistryEcosystem::as_str),
             continuation.as_ref(),
+            |sort_key, key, tier| evidence_resolver.accepts_indexed_tier(sort_key, key, tier),
         )?;
         let mut posting_candidates = page.posting_candidates;
         let mut index_documents_visited = page.posting_candidates;
@@ -2852,12 +2926,12 @@ impl DiscoverySearchIndex {
                 let candidates = self.lineages.token_facet_lineages(
                     field,
                     &query_tokens,
-                    &normalized_query,
                     evidence,
                     request.ecosystem,
                     after.as_deref(),
                     limit.saturating_add(1),
-                );
+                    |sort_key, key| evidence_resolver.best_evidence(sort_key, key),
+                )?;
                 merge_lineage_candidates(
                     &mut ranked_hits,
                     candidates,
@@ -2867,6 +2941,66 @@ impl DiscoverySearchIndex {
                 );
             }
         }
+
+        // The lineage document stores only a bounded coordinate prefix. Check
+        // the set of lineages whose coordinate variants exceed it
+        // against the existing release index to retain substring parity.
+        let substring_tier = SearchTier::Substring as u8;
+        if !normalized_query.is_empty() && tier_is_live(substring_tier) {
+            let after = after_for_tier(substring_tier);
+            let earlier_tier_count = ranked_hits
+                .values()
+                .filter(|hit| hit.evidence.rank() < substring_tier)
+                .count();
+            let needed_substring_hits = limit.saturating_add(1).saturating_sub(earlier_tier_count);
+            let mut substring_keys = ranked_hits
+                .iter()
+                .filter(|(_, hit)| hit.evidence.rank() == substring_tier)
+                .map(|(sort_key, _)| sort_key.clone())
+                .collect::<BTreeSet<_>>();
+            let visited = self.lineages.visit_oversized_lineages(
+                request.ecosystem,
+                after.as_deref(),
+                |sort_key, key| {
+                    if needed_substring_hits == 0 {
+                        return Ok(true);
+                    }
+                    if substring_keys
+                        .iter()
+                        .nth(needed_substring_hits.saturating_sub(1))
+                        .is_some_and(|boundary| sort_key > boundary.as_str())
+                    {
+                        return Ok(true);
+                    }
+                    if ranked_hits
+                        .get(sort_key)
+                        .is_some_and(|hit| hit.evidence.rank() <= substring_tier)
+                    {
+                        return Ok(false);
+                    }
+                    if evidence_resolver.best_evidence(sort_key, key)?
+                        != Some(SearchMatchEvidence::Substring)
+                    {
+                        return Ok(false);
+                    }
+                    merge_lineage_candidate(
+                        &mut ranked_hits,
+                        sort_key.to_owned(),
+                        key.clone(),
+                        SearchMatchEvidence::Substring,
+                    );
+                    substring_keys.insert(sort_key.to_owned());
+                    Ok(false)
+                },
+            )?;
+            posting_candidates = posting_candidates.saturating_add(visited);
+            index_documents_visited = index_documents_visited.saturating_add(visited);
+        }
+
+        posting_candidates =
+            posting_candidates.saturating_add(evidence_resolver.posting_candidates);
+        index_documents_visited =
+            index_documents_visited.saturating_add(evidence_resolver.documents_visited);
 
         let mut ranked_hits = ranked_hits.into_iter().collect::<Vec<_>>();
         ranked_hits.sort_by(|(left_key, left), (right_key, right)| {
@@ -2882,7 +3016,7 @@ impl DiscoverySearchIndex {
             .map(|(sort_key, hit)| (hit, sort_key))
             .collect::<Vec<_>>();
         let mut groups = Vec::with_capacity(selected.len());
-        let mut facet_releases_examined = 0_usize;
+        let mut facet_releases_examined = evidence_resolver.documents_visited;
         let mut facet_term_keys_scanned = 0_usize;
 
         for (hit, _) in selected {
@@ -3119,13 +3253,14 @@ impl LocalDeclarationSearchIndex {
             return Ok(());
         }
         let name = row.label.rsplit("::").next().unwrap_or(&row.label);
-        let content = local_search_content(row);
-        inner.replace_document(
+        inner.remove_document(&identity);
+        inner.insert_document(
             identity,
             row.id,
             row.label.as_str(),
             name,
-            content.iter().copied(),
+            local_search_text(row),
+            None,
             local_sort_key(row.id, row.label.as_str()),
         )
     }
@@ -3159,13 +3294,15 @@ impl LocalDeclarationSearchIndex {
                 continue;
             }
             let name = row.label.rsplit("::").next().unwrap_or(&row.label);
-            let content = local_search_content(row);
-            inner.add_document(
+            let sort_key = local_sort_key(row.id, row.label.as_str());
+            inner.insert_document(
+                row.id.stable_key(),
                 row.id,
                 row.label.as_str(),
                 name,
-                content.iter().copied(),
-                local_sort_key(row.id, row.label.as_str()),
+                local_search_text(row),
+                None,
+                sort_key,
             )?;
         }
         check("local-declaration-before-commit")?;
@@ -3201,6 +3338,16 @@ fn local_search_content(row: &Row) -> Vec<&str> {
     content
 }
 
+fn local_search_text(row: &Row) -> SearchDocumentText<'_> {
+    SearchDocumentText {
+        generic: local_search_content(row),
+        substring_generic: true,
+        coordinate_substring: CoordinateSubstringPolicy::LocalDeclarationFields,
+        local_source_path: row.source.captured().map(|location| location.path()),
+        ..SearchDocumentText::default()
+    }
+}
+
 pub(super) struct TextSearchIndex<K> {
     _index: Index,
     writer: Option<IndexWriter>,
@@ -3214,9 +3361,8 @@ pub(super) struct TextSearchIndex<K> {
     searchable_keyword: Field,
     searchable_description: Field,
     searchable_advisory: Field,
-    substring_unigram: Field,
-    substring_bigram: Field,
-    substring_trigram: Field,
+    substring: SubstringFields,
+    local_source_path: SubstringFields,
     document_identity: Field,
     lineage_group: Field,
     sort_key: Field,
@@ -3225,7 +3371,40 @@ pub(super) struct TextSearchIndex<K> {
     identities: BTreeMap<String, String>,
     standings: BTreeMap<String, SearchStandingEvidence>,
     substring_values: BTreeMap<String, Vec<String>>,
+    local_source_paths: BTreeMap<String, String>,
     dirty: bool,
+}
+
+/// Positional Unicode grams shared by prose and separately admitted source paths.
+/// Queries use postings rather than scanning the path term dictionary.
+struct SubstringFields {
+    unigram: Field,
+    bigram: Field,
+    trigram: Field,
+}
+
+impl SubstringFields {
+    fn new(schema: &mut SchemaBuilder, prefix: &str) -> Self {
+        Self {
+            unigram: schema.add_text_field(&format!("{prefix}_unigram"), TEXT),
+            bigram: schema.add_text_field(&format!("{prefix}_bigram"), TEXT),
+            trigram: schema.add_text_field(&format!("{prefix}_trigram"), TEXT),
+        }
+    }
+
+    fn add<'a>(
+        &self,
+        document: &mut TantivyDocument,
+        values: impl Iterator<Item = &'a str> + Clone,
+    ) {
+        document.add_text(self.unigram, combined_gram_stream::<1>(values.clone()));
+        document.add_text(self.bigram, combined_gram_stream::<2>(values.clone()));
+        document.add_text(self.trigram, combined_gram_stream::<3>(values));
+    }
+
+    fn query(&self, needle: &str) -> Box<dyn Query> {
+        substring_query(self.unigram, self.bigram, self.trigram, needle)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -3249,6 +3428,78 @@ struct PreparedSearchQuery<'index, K> {
     needle: String,
     tier_queries: [OnceCell<Arc<dyn Query>>; SEARCH_TIERS.len()],
     ranked_tiers: [OnceCell<Arc<dyn Query>>; SEARCH_TIERS.len()],
+}
+
+/// Resolves a candidate lineage's best query tier once per grouped-search
+/// request. Oversized lineages use the release projection when the bounded
+/// lineage facets cannot prove whether a substring match is earlier.
+struct LineageEvidenceResolver<'lineages, 'query, 'index> {
+    lineages: &'lineages LineageSearchIndex,
+    release_query: &'query PreparedSearchQuery<'index, DiscoverySearchKey>,
+    query: &'query str,
+    ecosystem: Option<RegistryEcosystem>,
+    cache: BTreeMap<String, Option<SearchMatchEvidence>>,
+    cache_limit: usize,
+    posting_candidates: usize,
+    documents_visited: usize,
+}
+
+impl LineageEvidenceResolver<'_, '_, '_> {
+    fn best_evidence(
+        &mut self,
+        sort_key: &str,
+        key: &LineageKey,
+    ) -> Result<Option<SearchMatchEvidence>, String> {
+        if !self.lineages.oversized_lineages.contains(sort_key) {
+            return Ok(self.lineages.best_evidence_for_lineage(key, self.query));
+        }
+        if let Some(cached) = self.cache.get(sort_key) {
+            return Ok(*cached);
+        }
+        let bounded = self.lineages.best_evidence_for_lineage(key, self.query);
+        let resolved = if self.query.is_empty()
+            || bounded.is_some_and(|evidence| evidence.rank() <= SearchTier::Substring as u8)
+        {
+            bounded
+        } else {
+            let release_page = self.release_query.page_in_group(
+                1,
+                self.ecosystem.map(RegistryEcosystem::as_str),
+                sort_key,
+                None,
+            )?;
+            self.posting_candidates = self
+                .posting_candidates
+                .saturating_add(release_page.posting_candidates);
+            self.documents_visited = self
+                .documents_visited
+                .saturating_add(release_page.posting_candidates);
+            let release_evidence = release_page.hits.first().map(|hit| hit.evidence);
+            match (bounded, release_evidence) {
+                (Some(bounded), Some(release)) if release.rank() < bounded.rank() => Some(release),
+                (Some(bounded), _) => Some(bounded),
+                (None, release) => release,
+            }
+        };
+        if self.cache.len() < self.cache_limit {
+            self.cache.insert(sort_key.to_owned(), resolved);
+        }
+        Ok(resolved)
+    }
+
+    fn accepts_indexed_tier(
+        &mut self,
+        sort_key: &str,
+        key: &LineageKey,
+        tier: u8,
+    ) -> Result<bool, String> {
+        let evidence = self.best_evidence(sort_key, key)?;
+        Ok(evidence.is_some_and(|evidence| evidence.rank() == tier)
+            // The lineage aggregate does not compute fuzzy evidence. Keep
+            // genuine Tantivy fuzzy-only candidates unless stronger indexed
+            // evidence proves they belong to an earlier tier.
+            || (evidence.is_none() && tier >= SearchTier::FuzzyName as u8))
+    }
 }
 
 /// Cheaply clones a prepared Tantivy query node into request-specific trees.
@@ -3315,6 +3566,23 @@ impl<'index, K: Clone> PreparedSearchQuery<'index, K> {
         self.page_filtered_in_group(limit, ecosystem, None, continuation)
     }
 
+    fn page_filtered_with_resolver(
+        &self,
+        limit: usize,
+        ecosystem: Option<&str>,
+        continuation: Option<&SearchContinuation>,
+        include_candidate: impl FnMut(&str, &K, u8) -> Result<bool, String>,
+    ) -> Result<IndexedSearchPage<K>, String> {
+        TextSearchIndex::<K>::page_filtered_in_group_prepared_with_resolver(
+            self,
+            limit,
+            ecosystem,
+            None,
+            continuation,
+            include_candidate,
+        )
+    }
+
     fn page_in_group(
         &self,
         limit: usize,
@@ -3353,6 +3621,13 @@ impl<'index, K: Clone> PreparedSearchQuery<'index, K> {
     }
 }
 
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+pub(super) enum CoordinateSubstringPolicy {
+    #[default]
+    Include,
+    LocalDeclarationFields,
+}
+
 #[derive(Default)]
 pub(super) struct SearchDocumentText<'a> {
     /// Additional exact/prefix coordinate values on a grouped lineage doc.
@@ -3362,6 +3637,11 @@ pub(super) struct SearchDocumentText<'a> {
     /// Whether legacy free-text content should participate in substring rank.
     /// Typed metadata and forge pins use token matching instead.
     pub(super) substring_generic: bool,
+    /// Local declaration terms come from typed name/content/source fields.
+    /// Full coordinates always remain available for exact/prefix lookup.
+    pub(super) coordinate_substring: CoordinateSubstringPolicy,
+    /// Compiler-captured package-relative source path; never split from labels.
+    pub(super) local_source_path: Option<&'a str>,
     pub(super) aliases: SearchTextFacet<'a>,
     pub(super) keywords: SearchTextFacet<'a>,
     pub(super) descriptions: SearchTextFacet<'a>,
@@ -4659,6 +4939,8 @@ fn discovery_search_text(metadata: &DiscoveryMetadata) -> SearchDocumentText<'_>
         coordinate_variants: Vec::new(),
         generic,
         substring_generic: false,
+        coordinate_substring: CoordinateSubstringPolicy::Include,
+        local_source_path: None,
         aliases: search_text_facet(&metadata.aliases, aliases),
         keywords,
         descriptions,
@@ -4837,12 +5119,11 @@ impl<K: Clone> TextSearchIndex<K> {
         let searchable_description = schema.add_text_field("searchable_description", TEXT);
         let searchable_advisory = schema.add_text_field("searchable_advisory", TEXT);
         let lineage_group = schema.add_text_field("lineage_group", STRING);
-        let substring_unigram = schema.add_text_field("substring_unigram", TEXT);
-        let substring_bigram = schema.add_text_field("substring_bigram", TEXT);
-        let substring_trigram = schema.add_text_field("substring_trigram", TEXT);
+        let substring = SubstringFields::new(&mut schema, "substring");
         let document_identity = schema.add_text_field("document_identity", STRING);
         let sort_key = schema.add_text_field(SORT_KEY_FIELD, FAST);
         let pagination_key = schema.add_text_field("pagination_key", STRING);
+        let local_source_path = SubstringFields::new(&mut schema, "local_source_path");
         let schema = schema.build();
         let index = match mode {
             SearchIndexMode::Memory => Index::create_in_ram(schema.clone()),
@@ -4881,10 +5162,9 @@ impl<K: Clone> TextSearchIndex<K> {
             searchable_keyword,
             searchable_description,
             searchable_advisory,
+            local_source_path,
             lineage_group,
-            substring_unigram,
-            substring_bigram,
-            substring_trigram,
+            substring,
             document_identity,
             sort_key,
             pagination_key,
@@ -4892,6 +5172,7 @@ impl<K: Clone> TextSearchIndex<K> {
             identities: BTreeMap::new(),
             standings: BTreeMap::new(),
             substring_values: BTreeMap::new(),
+            local_source_paths: BTreeMap::new(),
             dirty: false,
         })
     }
@@ -5052,8 +5333,11 @@ impl<K: Clone> TextSearchIndex<K> {
         let name = normalize(name);
         let standing = search_text.standing;
         let generic = search_text.generic;
-        let mut substring_fields = vec![coordinate.as_str()];
-        substring_fields.extend(search_text.coordinate_variants.iter().copied());
+        let mut substring_fields = Vec::new();
+        if search_text.coordinate_substring == CoordinateSubstringPolicy::Include {
+            substring_fields.push(coordinate.as_str());
+            substring_fields.extend(search_text.coordinate_variants.iter().copied());
+        }
         substring_fields.push(name.as_str());
         if search_text.substring_generic {
             substring_fields.extend(generic.iter().copied());
@@ -5063,6 +5347,12 @@ impl<K: Clone> TextSearchIndex<K> {
             .map(|field| normalize(field))
             .collect::<Vec<_>>();
         let mut document = TantivyDocument::default();
+        if let Some(path) = search_text.local_source_path {
+            let path = normalize(path);
+            self.local_source_path
+                .add(&mut document, std::iter::once(path.as_str()));
+            self.local_source_paths.insert(sort_key.clone(), path);
+        }
         document.add_text(self.exact_coordinate, coordinate.as_str());
         for coordinate in &search_text.coordinate_variants {
             let coordinate = normalize(coordinate);
@@ -5099,18 +5389,8 @@ impl<K: Clone> TextSearchIndex<K> {
         document.add_text(self.document_identity, identity.as_str());
         document.add_text(self.sort_key, sort_key.as_str());
         document.add_text(self.pagination_key, sort_key.as_str());
-        document.add_text(
-            self.substring_unigram,
-            combined_gram_stream::<1>(substring_values.iter().map(String::as_str)).as_str(),
-        );
-        document.add_text(
-            self.substring_bigram,
-            combined_gram_stream::<2>(substring_values.iter().map(String::as_str)).as_str(),
-        );
-        document.add_text(
-            self.substring_trigram,
-            combined_gram_stream::<3>(substring_values.iter().map(String::as_str)).as_str(),
-        );
+        self.substring
+            .add(&mut document, substring_values.iter().map(String::as_str));
         substring_values.retain(|field| !field.is_empty());
         self.dirty = true;
         if let Some(writer) = self.writer.as_mut() {
@@ -5138,6 +5418,7 @@ impl<K: Clone> TextSearchIndex<K> {
         self.keys.remove(&sort_key);
         self.standings.remove(&sort_key);
         self.substring_values.remove(&sort_key);
+        self.local_source_paths.remove(&sort_key);
         self.dirty = self.writer.is_some();
     }
 
@@ -5145,6 +5426,11 @@ impl<K: Clone> TextSearchIndex<K> {
         self.substring_values
             .get(sort_key)
             .is_some_and(|values| values.iter().any(|value| value.contains(needle)))
+            || (local_source_path_intent(needle)
+                && self
+                    .local_source_paths
+                    .get(sort_key)
+                    .is_some_and(|path| path.contains(needle)))
     }
 
     pub(super) fn commit(&mut self) -> Result<(), String> {
@@ -5233,6 +5519,24 @@ impl<K: Clone> TextSearchIndex<K> {
         ecosystem: Option<&str>,
         lineage_group: Option<&str>,
         continuation: Option<&SearchContinuation>,
+    ) -> Result<IndexedSearchPage<K>, String> {
+        Self::page_filtered_in_group_prepared_with_resolver(
+            prepared,
+            limit,
+            ecosystem,
+            lineage_group,
+            continuation,
+            |_, _, _| Ok(true),
+        )
+    }
+
+    fn page_filtered_in_group_prepared_with_resolver(
+        prepared: &PreparedSearchQuery<'_, K>,
+        limit: usize,
+        ecosystem: Option<&str>,
+        lineage_group: Option<&str>,
+        continuation: Option<&SearchContinuation>,
+        mut include_candidate: impl FnMut(&str, &K, u8) -> Result<bool, String>,
     ) -> Result<IndexedSearchPage<K>, String> {
         let index = prepared.index;
         let limit = limit.min(MAX_INTERNAL_SEARCH_PAGE_SIZE);
@@ -5396,23 +5700,23 @@ impl<K: Clone> TextSearchIndex<K> {
                 posting_candidates = posting_candidates.saturating_add(candidates);
                 let fetched_count = fetched.len();
                 let last_fetched = fetched.last().map(|(_, sort_key, _, _)| sort_key.clone());
-                if tier_index > SearchTier::Substring as usize {
-                    selected.extend(
-                        fetched.into_iter().filter(|(_, sort_key, _, _)| {
-                            !index.contains_substring(sort_key, needle)
-                        }),
-                    );
-                    if selected.len() >= limit.saturating_add(1) || fetched_count < remaining {
-                        break;
+                for (candidate_tier, sort_key, key, standing) in fetched {
+                    if tier_index > SearchTier::Substring as usize
+                        && index.contains_substring(&sort_key, needle)
+                    {
+                        continue;
                     }
-                    let Some(last_fetched) = last_fetched else {
-                        break;
-                    };
-                    after_sort_key = Some(last_fetched);
-                    continue;
+                    if include_candidate(&sort_key, &key, candidate_tier)? {
+                        selected.push((candidate_tier, sort_key, key, standing));
+                    }
                 }
-                selected.extend(fetched);
-                break;
+                if selected.len() >= limit.saturating_add(1) || fetched_count < remaining {
+                    break;
+                }
+                let Some(last_fetched) = last_fetched else {
+                    break;
+                };
+                after_sort_key = Some(last_fetched);
             }
             if selected.len() >= limit.saturating_add(1) {
                 break;
@@ -5434,12 +5738,17 @@ impl<K: Clone> TextSearchIndex<K> {
             SearchTier::PrefixCoordinate => prefix_query(self.exact_coordinate, needle),
             SearchTier::PrefixName => prefix_query(self.exact_name, needle),
             SearchTier::PrefixAlias => prefix_query(self.exact_alias, needle),
-            SearchTier::Substring => substring_query(
-                self.substring_unigram,
-                self.substring_bigram,
-                self.substring_trigram,
-                needle,
-            ),
+            SearchTier::Substring => {
+                let text = self.substring.query(needle);
+                if !local_source_path_intent(needle) {
+                    return text;
+                }
+                let path = self.local_source_path.query(needle);
+                Box::new(BooleanQuery::new(vec![
+                    (Occur::Should, text),
+                    (Occur::Should, path),
+                ]))
+            }
             SearchTier::AliasTerms => searchable_content_query(self.searchable_alias, needle),
             SearchTier::KeywordTerms => searchable_content_query(self.searchable_keyword, needle),
             SearchTier::AdvisoryTerms => searchable_content_query(self.searchable_advisory, needle),
@@ -5629,6 +5938,12 @@ fn searchable_content_query(field: Field, value: &str) -> Box<dyn Query> {
         Box::new(BooleanQuery::new(clauses)),
         1.0,
     ))
+}
+
+fn local_source_path_intent(needle: &str) -> bool {
+    needle
+        .chars()
+        .any(|character| matches!(character, '/' | '\\' | '.'))
 }
 
 fn regex_prefix_pattern(value: &str) -> String {
@@ -6348,19 +6663,34 @@ mod tests {
     }
 
     fn build_discovery_search_projection(entries: &[DiscoverySearchKey]) -> DiscoverySearchIndex {
+        build_discovery_search_projection_with_facet_limit(entries, MAX_LINEAGE_FACET_VALUES)
+    }
+
+    fn build_discovery_search_projection_with_facet_limit(
+        entries: &[DiscoverySearchKey],
+        facet_value_limit: usize,
+    ) -> DiscoverySearchIndex {
         let metadata = entries
             .iter()
             .cloned()
             .map(|key| (key, DiscoveryMetadata::default()))
             .collect::<Vec<_>>();
-        build_discovery_projection_with_metadata(&metadata)
+        build_discovery_projection_with_metadata_and_facet_limit(&metadata, facet_value_limit)
     }
 
     fn build_discovery_projection_with_metadata(
         entries: &[(DiscoverySearchKey, DiscoveryMetadata)],
     ) -> DiscoverySearchIndex {
+        build_discovery_projection_with_metadata_and_facet_limit(entries, MAX_LINEAGE_FACET_VALUES)
+    }
+
+    fn build_discovery_projection_with_metadata_and_facet_limit(
+        entries: &[(DiscoverySearchKey, DiscoveryMetadata)],
+        facet_value_limit: usize,
+    ) -> DiscoverySearchIndex {
         let mut inner = TextSearchIndex::new().expect("release index");
         let mut lineages = LineageSearchIndex::new().expect("lineage index");
+        lineages.facet_value_limit = facet_value_limit;
         let mut changes = Vec::new();
         for (key, metadata) in entries {
             let coordinate = key.coordinate.as_str();
@@ -7759,6 +8089,226 @@ mod tests {
         assert_eq!(
             page.groups[0].release_match_scope,
             ReleaseMatchScope::ReleaseMatches
+        );
+    }
+
+    #[test]
+    fn grouped_search_finds_tail_substrings_and_clears_overflow_after_delete() {
+        let cargo = source(RegistryEcosystem::Cargo, "https://index.crates.io");
+        const TEST_FACET_VALUE_LIMIT: usize = 2;
+        let mut entries = vec![key(cargo, "pkg:cargo/ample@9999.9.9")];
+        for lineage in ["widget", "widget-a", "widget-b"] {
+            for version in ["1.0.0", "1.0.1", "9999.9.9"] {
+                entries.push(key(cargo, &format!("pkg:cargo/{lineage}@{version}")));
+            }
+        }
+        let mut index =
+            build_discovery_search_projection_with_facet_limit(&entries, TEST_FACET_VALUE_LIMIT);
+        assert_eq!(index.lineages.oversized_lineages.len(), 3);
+        let request = DiscoverySearchRequest {
+            text: "9999.9.",
+            ecosystem: Some(RegistryEcosystem::Cargo),
+        };
+
+        let first = index
+            .search_groups_after(request, 1, None)
+            .expect("first tail substring page");
+        assert_eq!(first.groups.len(), 1);
+        assert_eq!(first.groups[0].lineage, "ample");
+        assert_eq!(first.groups[0].evidence, SearchMatchEvidence::Substring);
+        assert_eq!(first.groups[0].matched_releases.len(), 1);
+        assert_eq!(
+            first.groups[0].matched_releases[0].coordinate.as_str(),
+            "pkg:cargo/ample@9999.9.9"
+        );
+        let first_cursor = first.next_cursor.expect("lookahead for remaining lineages");
+        let second = index
+            .search_groups_after(request, 1, Some(&first_cursor))
+            .expect("second tail substring page");
+        assert_eq!(second.groups.len(), 1);
+        assert_eq!(second.groups[0].lineage, "widget");
+        assert_eq!(second.groups[0].evidence, SearchMatchEvidence::Substring);
+        assert_eq!(second.groups[0].matched_releases.len(), 1);
+        assert_eq!(
+            second.groups[0].matched_releases[0].coordinate.as_str(),
+            "pkg:cargo/widget@9999.9.9"
+        );
+        let second_cursor = second.next_cursor.expect("lookahead for final lineage");
+        let third = index
+            .search_groups_after(request, 1, Some(&second_cursor))
+            .expect("third tail substring page");
+        assert_eq!(third.groups.len(), 1);
+        assert_eq!(third.groups[0].lineage, "widget-a");
+        assert_eq!(third.groups[0].matched_releases.len(), 1);
+        assert_eq!(
+            third.groups[0].matched_releases[0].coordinate.as_str(),
+            "pkg:cargo/widget-a@9999.9.9"
+        );
+        let third_cursor = third.next_cursor.expect("lookahead for final lineage");
+        let fourth = index
+            .search_groups_after(request, 1, Some(&third_cursor))
+            .expect("final tail substring page");
+        assert_eq!(fourth.groups.len(), 1);
+        assert_eq!(fourth.groups[0].lineage, "widget-b");
+        assert_eq!(fourth.groups[0].matched_releases.len(), 1);
+        assert_eq!(
+            fourth.groups[0].matched_releases[0].coordinate.as_str(),
+            "pkg:cargo/widget-b@9999.9.9"
+        );
+        assert!(fourth.next_cursor.is_none());
+
+        let removed_key = key(cargo, "pkg:cargo/widget-b@9999.9.9");
+        let removed_identity =
+            discovery_sort_key(&removed_key.source, removed_key.coordinate.as_str());
+        index.inner.remove_document(&removed_identity);
+        index.inner.commit().expect("commit release delete");
+        index
+            .lineages
+            .remove_batch([removed_identity])
+            .expect("remove lineage release");
+        index.lineages.commit().expect("commit lineage delete");
+        let removed_lineage = discovery_lineage_key(
+            &removed_key.source,
+            RegistryEcosystem::Cargo,
+            &removed_key.lineage,
+        );
+        assert!(
+            !index
+                .lineages
+                .oversized_lineages
+                .contains(&lineage_sort_key(&removed_lineage)),
+            "a lineage at the bound should leave the overflow set"
+        );
+
+        let remaining = index
+            .search_groups(request, 8)
+            .expect("tail substring results after delete");
+        assert_eq!(
+            remaining
+                .groups
+                .iter()
+                .map(|group| group.lineage.as_str())
+                .collect::<Vec<_>>(),
+            ["ample", "widget", "widget-a"]
+        );
+    }
+
+    #[test]
+    fn grouped_search_keeps_tail_substring_rank_across_keyword_cursors() {
+        let cargo = source(RegistryEcosystem::Cargo, "https://index.crates.io");
+        const TEST_FACET_VALUE_LIMIT: usize = 2;
+        let mut entries = Vec::new();
+        for lineage in ["widget", "widget-a", "widget-b"] {
+            for version in ["1.0.0", "1.0.1", "9999.9.9"] {
+                let metadata = if version == "9999.9.9" {
+                    DiscoveryMetadata {
+                        keywords: DiscoveryFacet::Known(vec!["9999 9".to_owned()]),
+                        ..DiscoveryMetadata::default()
+                    }
+                } else {
+                    DiscoveryMetadata::default()
+                };
+                entries.push((
+                    key(cargo, &format!("pkg:cargo/{lineage}@{version}")),
+                    metadata,
+                ));
+            }
+        }
+        for lineage in ["alpha", "beta"] {
+            entries.push((
+                key(cargo, &format!("pkg:cargo/{lineage}@1.0.0")),
+                DiscoveryMetadata {
+                    keywords: DiscoveryFacet::Known(vec!["9999 9".to_owned()]),
+                    ..DiscoveryMetadata::default()
+                },
+            ));
+        }
+        let index = build_discovery_projection_with_metadata_and_facet_limit(
+            &entries,
+            TEST_FACET_VALUE_LIMIT,
+        );
+        let request = DiscoverySearchRequest {
+            text: "9999.9.",
+            ecosystem: Some(RegistryEcosystem::Cargo),
+        };
+        let expected = [
+            ("widget", SearchMatchEvidence::Substring),
+            ("widget-a", SearchMatchEvidence::Substring),
+            ("widget-b", SearchMatchEvidence::Substring),
+            ("alpha", SearchMatchEvidence::KeywordTerms),
+            ("beta", SearchMatchEvidence::KeywordTerms),
+        ];
+        let mut cursor = None;
+        for (expected_lineage, expected_evidence) in expected {
+            let page = index
+                .search_groups_after(request, 1, cursor.as_ref())
+                .expect("continued grouped search with weaker keyword matches");
+            assert_eq!(page.groups.len(), 1);
+            assert_eq!(page.groups[0].lineage, expected_lineage);
+            assert_eq!(page.groups[0].evidence, expected_evidence);
+            cursor = page.next_cursor;
+        }
+        assert!(
+            cursor.is_none(),
+            "all unique ranked groups should be consumed"
+        );
+    }
+
+    #[test]
+    fn grouped_search_does_not_resurface_overflow_alias_at_prefix_name_tier() {
+        let cargo = source(RegistryEcosystem::Cargo, "https://index.crates.io");
+        const TEST_FACET_VALUE_LIMIT: usize = 2;
+        let metadata = || DiscoveryMetadata {
+            aliases: DiscoveryFacet::Known(vec![
+                "alpha".to_owned(),
+                "beta".to_owned(),
+                "widget".to_owned(),
+            ]),
+            ..DiscoveryMetadata::default()
+        };
+        let mut entries = Vec::new();
+        for lineage in ["widget-long", "widget-z"] {
+            for version in ["1.0.0", "1.0.1", "1.0.2"] {
+                entries.push((
+                    key(cargo, &format!("pkg:cargo/{lineage}@{version}")),
+                    metadata(),
+                ));
+            }
+        }
+        for lineage in ["widget-small", "widget-tiny"] {
+            entries.push((
+                key(cargo, &format!("pkg:cargo/{lineage}@1.0.0")),
+                metadata(),
+            ));
+        }
+        let index = build_discovery_projection_with_metadata_and_facet_limit(
+            &entries,
+            TEST_FACET_VALUE_LIMIT,
+        );
+        assert_eq!(index.lineages.oversized_lineages.len(), 2);
+        let request = DiscoverySearchRequest {
+            text: "widget",
+            ecosystem: Some(RegistryEcosystem::Cargo),
+        };
+
+        let mut cursor = None;
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            let page = index
+                .search_groups_after(request, 1, cursor.as_ref())
+                .expect("continued exact-alias search");
+            assert_eq!(page.groups.len(), 1);
+            assert_eq!(page.groups[0].evidence, SearchMatchEvidence::ExactAlias);
+            seen.push(page.groups[0].lineage.clone());
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(cursor.is_none(), "all alias groups should be consumed");
+        assert_eq!(
+            seen,
+            ["widget-long", "widget-small", "widget-tiny", "widget-z"]
         );
     }
 
@@ -9304,6 +9854,401 @@ mod tests {
             hit_keys(index.page("newneedle", 8).expect("incremental result").hits),
             hit_keys(cold.page("newneedle", 8).expect("cold result").hits)
         );
+    }
+
+    #[test]
+    fn httpie_local_name_search_does_not_expand_the_inherited_project_path() {
+        let (base, _) = super::super::initial_view().expect("initial view");
+        let project = "/root/sol61-python-go-acceptance-20261013/sources/httpie";
+        let parser = format!("{project}::semantic::parser::HTTPieArgumentParser");
+        let imported = format!("{project}::external::symbol:imported::httpie");
+        let parse_args = format!("{project}::semantic::parse-args::parse_args");
+        let mut labels = vec![parser.clone(), imported.clone(), parse_args.clone()];
+        labels.extend(
+            (0..256).map(|at| format!("{project}::external::symbol:{at:064x}::sleep_{at}")),
+        );
+        let mut changes = labels
+            .iter()
+            .map(|label| {
+                let mut row = Row::new(
+                    RowId::Symbol(backend_engine::symbol_key(label)),
+                    base.basis(),
+                    label,
+                );
+                if label == &parse_args {
+                    row = row.with_source(
+                        backend_library::SourceLocation::new("httpie/cli/argparser.py", 151)
+                            .expect("typed HTTPie source"),
+                    );
+                }
+                RowChange::Upsert(Box::new(row))
+            })
+            .collect::<Vec<_>>();
+        changes.sort_by_key(RowChange::id);
+        let prepared = base
+            .prepare(
+                ViewDelta::Patch {
+                    changes: changes.into(),
+                },
+                super::super::test_builtin_view_capability().expect("view capability"),
+            )
+            .expect("prepare HTTPie declarations");
+        let (view, _) = base.commit(prepared).expect("commit HTTPie declarations");
+        let mut local = LocalDeclarationSearchIndex::default();
+        local.sync(&view).expect("local name projection");
+        let first = local
+            .page_after("httpie", 1, None)
+            .expect("first name page");
+        assert!(
+            first.posting_candidates < 16,
+            "project path cannot expand posting work"
+        );
+        let second = local
+            .page_after("httpie", 1, first.next_cursor.as_ref())
+            .expect("second name page");
+        assert!(second.next_cursor.is_none());
+        let selected = first
+            .hits
+            .into_iter()
+            .chain(second.hits)
+            .map(|hit| hit.key)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            selected,
+            BTreeSet::from([
+                RowId::Symbol(backend_engine::symbol_key(&parser)),
+                RowId::Symbol(backend_engine::symbol_key(&imported)),
+            ])
+        );
+        assert_eq!(
+            hit_keys(local.page("parse_args", 8).expect("declaration name").hits),
+            [RowId::Symbol(backend_engine::symbol_key(&parse_args))]
+        );
+        assert_eq!(
+            hit_keys(
+                local
+                    .page("httpie/cli/argparser.py", 8)
+                    .expect("explicit typed source path")
+                    .hits
+            ),
+            [RowId::Symbol(backend_engine::symbol_key(&parse_args))]
+        );
+        for coordinate in &labels {
+            assert_eq!(
+                hit_keys(local.page(coordinate, 8).expect("exact coordinate").hits).first(),
+                Some(&RowId::Symbol(backend_engine::symbol_key(coordinate)))
+            );
+        }
+        let prefix = format!("{project}::semantic::");
+        assert_eq!(
+            local
+                .page(&prefix, 8)
+                .expect("explicit coordinate prefix")
+                .hits
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn local_search_keeps_structural_file_paths_without_checkout_path_fanout() {
+        let (base, _) = super::super::initial_view().expect("initial view");
+        let project = "/tmp/work::checkout/repo";
+        let path = "cli/arg::parser.py";
+        let file_coordinate = format!("{project}::{path}:151::parse_args");
+        let other_coordinate = format!("{project}::other/native.py:10::sleep");
+        let file_id = RowId::Symbol(backend_engine::symbol_key(&file_coordinate));
+        let other_id = RowId::Symbol(backend_engine::symbol_key(&other_coordinate));
+        let mut changes = vec![
+            RowChange::Upsert(Box::new(
+                Row::new(file_id, base.basis(), &file_coordinate).with_source(
+                    backend_library::SourceLocation::new(path, 151).expect("typed file source"),
+                ),
+            )),
+            RowChange::Upsert(Box::new(
+                Row::new(other_id, base.basis(), &other_coordinate).with_source(
+                    backend_library::SourceLocation::new("other/native.py", 10)
+                        .expect("other typed source"),
+                ),
+            )),
+        ];
+        changes.sort_by_key(RowChange::id);
+        let prepared = base
+            .prepare(
+                ViewDelta::Patch {
+                    changes: changes.into(),
+                },
+                super::super::test_builtin_view_capability().expect("view capability"),
+            )
+            .expect("prepare structural file coordinates");
+        let (view, _) = base
+            .commit(prepared)
+            .expect("commit structural coordinates");
+        let mut local = LocalDeclarationSearchIndex::default();
+        local.sync(&view).expect("local path projection");
+        for query in [
+            "cli/arg::parser.py",
+            "arg::parser.py",
+            "parser.py",
+            "parse_args",
+        ] {
+            assert_eq!(
+                hit_keys(local.page(query, 8).expect("local path/name query").hits),
+                [file_id],
+                "{query}"
+            );
+        }
+        assert!(
+            local
+                .page("checkout", 8)
+                .expect("checkout name")
+                .hits
+                .is_empty()
+        );
+        assert_eq!(
+            hit_keys(
+                local
+                    .page(&file_coordinate, 8)
+                    .expect("full exact address")
+                    .hits
+            ),
+            [file_id]
+        );
+        assert_eq!(
+            hit_keys(
+                local
+                    .page(&format!("{project}::cli/"), 8)
+                    .expect("full address prefix")
+                    .hits
+            ),
+            [file_id]
+        );
+    }
+
+    #[test]
+    fn typed_local_source_paths_keep_spaces_unicode_and_control_characters() {
+        let (base, _) = super::super::initial_view().expect("initial view");
+        let project = "/tmp/work::checkout/repo";
+        let paths = [
+            "my file.py",
+            "src/path with space/module.ts",
+            "src/資料/δ.py",
+            "src/path\twith-tab.py",
+            "src/path\nwith-newline.py",
+            "src/earlier.py\nlater/data.go",
+        ];
+        let mut changes = Vec::new();
+        let mut expected = Vec::new();
+        for (at, path) in paths.iter().enumerate() {
+            let coordinate = format!("{project}::{path}:1::fixture_{at}");
+            let id = RowId::Symbol(backend_engine::symbol_key(&coordinate));
+            let location =
+                backend_library::SourceLocation::new(*path, 1).expect("legal captured source path");
+            changes.push(RowChange::Upsert(Box::new(
+                Row::new(id, base.basis(), coordinate).with_source(location),
+            )));
+            expected.push(id);
+        }
+        changes.sort_by_key(RowChange::id);
+        let prepared = base
+            .prepare(
+                ViewDelta::Patch {
+                    changes: changes.into(),
+                },
+                super::super::test_builtin_view_capability().expect("view capability"),
+            )
+            .expect("prepare legal path fixtures");
+        let (view, _) = base.commit(prepared).expect("commit legal path fixtures");
+        let mut local = LocalDeclarationSearchIndex::default();
+        local.sync(&view).expect("typed local path projection");
+        for (path, id) in paths.iter().zip(expected.iter().copied()) {
+            let page = local
+                .page_after(path, 1, None)
+                .expect("complete explicit file query");
+            assert_eq!(hit_keys(page.hits), [id], "{path:?}");
+            assert!(page.next_cursor.is_none(), "{path:?}");
+        }
+        for (query, at) in [
+            ("file.py", 0),
+            ("space/module.ts", 1),
+            ("δ.py", 2),
+            ("with-tab.py", 3),
+            ("with-newline.py", 4),
+            ("path\nwith-newline.py", 4),
+            ("earlier.py", 5),
+            ("data.go", 5),
+            ("earlier.py\nlater", 5),
+        ] {
+            let page = local
+                .page_after(query, 1, None)
+                .expect("source path substring across control characters");
+            assert_eq!(hit_keys(page.hits), [expected[at]], "{query:?}");
+            assert!(page.next_cursor.is_none(), "{query:?}");
+        }
+        assert!(
+            local
+                .page("checkout", 8)
+                .expect("inherited label query")
+                .hits
+                .is_empty()
+        );
+        assert!(
+            local
+                .page("path with space", 8)
+                .expect("plain prose query")
+                .hits
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn cold_local_projection_updates_renames_and_removes_in_one_writer() {
+        fn page_union(index: &LocalDeclarationSearchIndex, query: &str) -> Vec<RowId> {
+            let mut cursor = None;
+            let mut keys = Vec::new();
+            for _ in 0..8 {
+                let page = index
+                    .page_after(query, 1, cursor.as_ref())
+                    .expect("bounded local page");
+                keys.extend(hit_keys(page.hits));
+                cursor = page.next_cursor;
+                if cursor.is_none() {
+                    assert_eq!(
+                        keys.len(),
+                        keys.iter().copied().collect::<BTreeSet<_>>().len(),
+                        "duplicate row in complete page union: {query}"
+                    );
+                    return keys;
+                }
+            }
+            panic!("fixture page walk did not complete: {query}");
+        }
+
+        fn assert_cold_parity(local: &LocalDeclarationSearchIndex, view: &ViewRoot) {
+            let mut cold = LocalDeclarationSearchIndex::default();
+            cold.sync(view).expect("cold comparison projection");
+            for query in [
+                "before",
+                "renamed",
+                "oldneedle",
+                "newneedle",
+                "finalneedle",
+                "keeper",
+                "fixture::before",
+                "fixture::renamed",
+                "old/file::name.py",
+                "renamed/new.py",
+                "fixture::",
+                "",
+            ] {
+                assert_eq!(
+                    page_union(local, query),
+                    page_union(&cold, query),
+                    "complete incremental/cold page parity: {query}"
+                );
+            }
+        }
+
+        let (base, _) = super::super::initial_view().expect("initial view");
+        let capability = super::super::test_builtin_view_capability().expect("view capability");
+        let id = RowId::Symbol(backend_engine::symbol_key("fixture::before"));
+        let keeper_id = RowId::Symbol(backend_engine::symbol_key("fixture::keeper"));
+        let mut changes = vec![
+            RowChange::Upsert(Box::new(
+                Row::new(id, base.basis(), "fixture::before")
+                    .with_signature("oldneedle")
+                    .with_source(
+                        backend_library::SourceLocation::new("old/file::name.py", 1)
+                            .expect("old typed source"),
+                    ),
+            )),
+            RowChange::Upsert(Box::new(Row::new(
+                keeper_id,
+                base.basis(),
+                "fixture::keeper",
+            ))),
+        ];
+        changes.sort_by_key(RowChange::id);
+        let prepared = base
+            .prepare(
+                ViewDelta::Patch {
+                    changes: changes.into(),
+                },
+                capability.clone(),
+            )
+            .expect("prepare populated cold view");
+        let (view_one, _) = base.commit(prepared).expect("commit populated cold view");
+        let mut local = LocalDeclarationSearchIndex::default();
+        local.sync(&view_one).expect("populated cold projection");
+        let writer = local.index_identity().expect("cold writer identity");
+        assert_cold_parity(&local, &view_one);
+        assert_eq!(page_union(&local, "oldneedle"), [id]);
+        assert_eq!(page_union(&local, "old/file::name.py"), [id]);
+        assert_eq!(page_union(&local, "").len(), 2);
+
+        let replacement = Row::new(id, view_one.basis(), "fixture::before")
+            .with_signature("newneedle")
+            .with_source(
+                backend_library::SourceLocation::new("old/file::name.py", 1)
+                    .expect("same typed source"),
+            );
+        let prepared = view_one
+            .prepare(ViewDelta::Upsert { row: replacement }, capability.clone())
+            .expect("prepare same-label update");
+        let (view_two, same_label) = view_one.commit(prepared).expect("commit same-label update");
+        local
+            .apply_committed_deltas(&[same_label])
+            .expect("replace a cold-populated document identity");
+        local
+            .sync(&view_two)
+            .expect("updated projection is current");
+        assert_eq!(local.index_identity(), Some(writer));
+        assert!(page_union(&local, "oldneedle").is_empty());
+        assert_eq!(page_union(&local, "newneedle"), [id]);
+        assert_cold_parity(&local, &view_two);
+
+        let renamed = Row::new(id, view_two.basis(), "fixture::renamed")
+            .with_signature("finalneedle")
+            .with_source(
+                backend_library::SourceLocation::new("renamed/new.py", 2)
+                    .expect("renamed typed source"),
+            );
+        let prepared = view_two
+            .prepare(ViewDelta::Upsert { row: renamed }, capability.clone())
+            .expect("prepare same-identity rename");
+        let (view_three, rename) = view_two.commit(prepared).expect("commit rename");
+        local
+            .apply_committed_deltas(&[rename])
+            .expect("rename cold-populated document");
+        local
+            .sync(&view_three)
+            .expect("renamed projection is current");
+        assert_eq!(local.index_identity(), Some(writer));
+        assert!(page_union(&local, "before").is_empty());
+        assert!(page_union(&local, "newneedle").is_empty());
+        assert_eq!(page_union(&local, "renamed"), [id]);
+        assert_eq!(page_union(&local, "finalneedle"), [id]);
+        assert!(page_union(&local, "old/file::name.py").is_empty());
+        assert_eq!(page_union(&local, "renamed/new.py"), [id]);
+        assert_eq!(page_union(&local, "").len(), 2);
+        assert_cold_parity(&local, &view_three);
+
+        let prepared = view_three
+            .prepare(ViewDelta::Remove { id }, capability)
+            .expect("prepare renamed row removal");
+        let (view_four, remove) = view_three.commit(prepared).expect("commit removal");
+        local
+            .apply_committed_deltas(&[remove])
+            .expect("remove cold-populated document");
+        local
+            .sync(&view_four)
+            .expect("removed projection is current");
+        assert_eq!(local.index_identity(), Some(writer));
+        assert!(page_union(&local, "renamed").is_empty());
+        assert!(page_union(&local, "finalneedle").is_empty());
+        assert!(page_union(&local, "renamed/new.py").is_empty());
+        assert_eq!(page_union(&local, ""), [keeper_id]);
+        assert_cold_parity(&local, &view_four);
     }
 
     #[test]

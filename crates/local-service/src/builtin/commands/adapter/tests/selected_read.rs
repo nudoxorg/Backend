@@ -5,8 +5,8 @@
 
 use super::*;
 use backend_library::{
-    CommandDto, CommandReply, DeclarationReadExtent, ProductText, Row, RowId, SourceExcerpt,
-    SurfaceCommand, SurfaceReply,
+    Command, CommandDto, CommandReply, DeclarationReadExtent, PageTerminal, ProductText, Row,
+    RowId, SourceExcerpt, SurfaceCommand, SurfaceReply,
 };
 
 fn read_request(id: u64, labels: &[&str]) -> CommandDto {
@@ -48,6 +48,404 @@ fn align_fixture_sql(adapter: &mut CommandAdapter, daemon: &ProductDaemon) {
         daemon,
     )
     .expect("align real SQL to checked fixture view before refusal controls");
+}
+
+#[test]
+fn local_owner_explicitly_answers_outline_witness_route_probe_with_revision() {
+    let mut fixture = AdapterFixture::new();
+    let request = CommandDto::new(u64::MAX - 1, Command::OutlineOwnerWitnessCapability);
+    let (adapter, daemon) = fixture.parts();
+    let body = backend_library::encode_command_body(&request).expect("probe request encoding");
+    let bytes = adapter
+        .execute(daemon, &body)
+        .expect("local product owner answers capability probe");
+    let reply = backend_library::decode_reply_body(&bytes).expect("actual owner reply decode");
+    backend_library::admit_reply(&request, &reply).expect("correlated owner capability reply");
+    assert!(matches!(reply.reply, CommandReply::Revision(_)));
+}
+
+#[test]
+fn local_adapter_rehydrates_pc5_outline_witness_before_library_dispatch() {
+    let mut fixture = AdapterFixture::new();
+    let package = fixture.package;
+    let mut rows = (0..11)
+        .map(|index| {
+            let symbol =
+                backend_library::symbol_key(&format!("{}::outline::{index}", fixture.label));
+            backend_library::Row::in_package(
+                backend_library::RowId::Symbol(symbol),
+                fixture
+                    .daemon
+                    .as_ref()
+                    .expect("owner")
+                    .engine()
+                    .daemon()
+                    .library()
+                    .view()
+                    .basis(),
+                package,
+                format!("{}::outline::{index}", fixture.label),
+            )
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.id);
+    let mut expected = rows.iter().map(|row| row.id).collect::<Vec<_>>();
+    expected.sort_unstable();
+    fixture.publish_rows(rows);
+
+    let (first, page_certificate, revision_certificate, owner_root, owner_cursor, limit) = {
+        let (adapter, daemon) = fixture.parts();
+        let root = daemon.engine().daemon().library().revision_root();
+        let limit = backend_library::QueryLimit::new(4).expect("small test page");
+        let request = CommandDto::new(
+            1201,
+            Command::OutlinePage {
+                package,
+                page: backend_library::PageRequest::new(root, limit),
+            },
+        );
+        let bytes = backend_library::encode_command_body(&request).expect("first page request");
+        let response = adapter
+            .execute(daemon, &bytes)
+            .expect("first page from adapter");
+        let decoded = backend_library::decode_reply_body(&response).expect("first page reply");
+        backend_library::admit_reply(&request, &decoded).expect("first page correlation");
+        let page_certificate = decoded.certificate().expect("page proof").clone();
+        let CommandReply::ProjectionPage(page) = decoded.reply else {
+            panic!("first outline page");
+        };
+        let PageTerminal::More(_) = page.terminal else {
+            panic!("first outline page has a continuation");
+        };
+        let revision_request = CommandDto::new(1202, Command::Revision);
+        let revision_bytes =
+            backend_library::encode_command_body(&revision_request).expect("revision request");
+        let revision_response = adapter
+            .execute(daemon, &revision_bytes)
+            .expect("revision from same local owner");
+        let revision =
+            backend_library::decode_reply_body(&revision_response).expect("revision reply");
+        backend_library::admit_reply(&revision_request, &revision).expect("revision correlation");
+        let revision_certificate = revision.certificate().expect("revision proof").clone();
+        let CommandReply::Revision(receipt) = revision.reply else {
+            panic!("owner revision receipt");
+        };
+        (
+            page,
+            page_certificate,
+            revision_certificate,
+            daemon.engine().daemon().library().revision_root(),
+            receipt.cursor(),
+            limit,
+        )
+    };
+
+    let PageTerminal::More(continuation) = first.terminal else {
+        unreachable!("checked above")
+    };
+    let cursor = continuation.cursor();
+    let mut page_root = [0_u8; 32];
+    page_root.copy_from_slice(cursor.root().as_bytes());
+    let witness = backend_library::OutlineCursorWitness::new_untrusted(
+        cursor.recipe(),
+        cursor.version(),
+        cursor.branch(),
+        cursor.log(),
+        cursor.schema(),
+        page_root,
+        cursor.sequence(),
+        cursor.query_offset(),
+        cursor.query_position().predecessor(),
+    )
+    .expect("untrusted witness retains valid cursor position");
+    let page_root_id = backend_library::encode_id(&page_root);
+    let recipe_id = backend_library::encode_id(cursor.recipe().as_bytes());
+    let mut certificate = revision_certificate.clone();
+    for claim in &page_certificate.claims {
+        let keep = match claim {
+            backend_library::WireClaim::Root { schema, id, .. }
+                if *schema == backend_library::WireSchema::ViewRelation && id == &page_root_id =>
+            {
+                certificate =
+                    certificate.with_claim_once(backend_library::WireClaim::RootCommitment {
+                        schema: *schema,
+                        id: id.clone(),
+                    });
+                false
+            }
+            backend_library::WireClaim::RootCommitment { schema, id }
+                if *schema == backend_library::WireSchema::ViewRelation && id == &page_root_id =>
+            {
+                certificate = certificate.with_claim_once(claim.clone());
+                false
+            }
+            backend_library::WireClaim::KeyBytes {
+                schema: backend_library::WireSchema::ViewRecipe,
+                id,
+                ..
+            } if id == &recipe_id => true,
+            backend_library::WireClaim::Version {
+                schema: backend_library::WireSchema::ViewVersion,
+                id,
+                ..
+            } if id == &backend_library::encode_id(cursor.version().as_bytes()) => true,
+            backend_library::WireClaim::Key {
+                schema: backend_library::WireSchema::Branch,
+                id,
+                ..
+            } if id == &backend_library::encode_id(cursor.branch().as_bytes()) => true,
+            backend_library::WireClaim::Key {
+                schema: backend_library::WireSchema::Log,
+                id,
+                ..
+            } if id == &backend_library::encode_id(cursor.log().as_bytes()) => true,
+            backend_library::WireClaim::Key {
+                schema: backend_library::WireSchema::Package,
+                id,
+                ..
+            } if id == &backend_library::encode_id(package.as_bytes()) => true,
+            backend_library::WireClaim::Cursor { .. } => true,
+            _ => false,
+        };
+        if keep {
+            certificate = certificate.with_claim_once(claim.clone());
+        }
+    }
+    assert_ne!(
+        backend_library::encode_id(owner_root.as_bytes()),
+        page_root_id,
+        "the page witness must not alias the current owner root"
+    );
+    let request = CommandDto::new(
+        1203,
+        Command::OutlinePage {
+            package,
+            page: backend_library::PageRequest::new(owner_root, limit)
+                .with_outline_witness(witness),
+        },
+    )
+    .with_certificate(certificate);
+    let request_certificate = request.certificate().expect("combined owner/page proof");
+    let owner_cursor_id = backend_library::encode_id(owner_cursor.root().as_bytes());
+    assert_eq!(
+        request_certificate
+            .claims
+            .iter()
+            .filter(|claim| matches!(claim, backend_library::WireClaim::Cursor { .. }))
+            .count(),
+        2,
+        "PC5 preserves separate owner and page-continuation cursor claims"
+    );
+    let page_only_claims = request_certificate
+        .claims
+        .iter()
+        .filter(|claim| {
+            !matches!(claim, backend_library::WireClaim::Cursor { root, .. } if root == &owner_cursor_id)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let portable_token_request = CommandDto::new(1208, request.command.clone()).with_certificate(
+        backend_library::WireCertificate::from_claims(page_only_claims.into_boxed_slice()),
+    );
+    let portable_token_body =
+        backend_library::encode_binary_certificate_command(&portable_token_request)
+            .expect("page-only PC5 portable token body");
+    assert!(
+        backend_library::decode_command_body_for_owner(&portable_token_body, owner_cursor).is_ok(),
+        "PC5 token import accepts exactly its page cursor before fresh owner proof is added"
+    );
+    let mut tampered_claims = request_certificate.claims.to_vec();
+    let owner_claim = tampered_claims
+        .iter_mut()
+        .find(|claim| matches!(claim, backend_library::WireClaim::Cursor { root, .. } if root == &owner_cursor_id))
+        .expect("retained owner cursor claim");
+    if let backend_library::WireClaim::Cursor { sequence, .. } = owner_claim {
+        *sequence ^= 1;
+    }
+    let tampered_request = CommandDto::new(1204, request.command.clone()).with_certificate(
+        backend_library::WireCertificate::from_claims(tampered_claims.into_boxed_slice()),
+    );
+    let tampered_body = serde_json::to_vec(&tampered_request).expect("tampered request wire body");
+    assert!(
+        backend_library::decode_command_body_for_owner(&tampered_body, owner_cursor).is_err(),
+        "owner cursor mismatch must be rejected before execution"
+    );
+    let page_claim_index = request_certificate
+        .claims
+        .iter()
+        .position(|claim| {
+            matches!(claim, backend_library::WireClaim::Cursor { root, .. } if root == &page_root_id)
+        })
+        .expect("retained page cursor claim");
+    let mut duplicate_claims = request_certificate.claims.to_vec();
+    duplicate_claims.push(duplicate_claims[page_claim_index].clone());
+    let duplicate_request = CommandDto::new(1206, request.command.clone()).with_certificate(
+        backend_library::WireCertificate::from_claims(duplicate_claims.into_boxed_slice()),
+    );
+    let duplicate_body = serde_json::to_vec(&duplicate_request).expect("duplicate claim body");
+    assert!(
+        backend_library::decode_command_body_for_owner(&duplicate_body, owner_cursor).is_err(),
+        "duplicate page cursor claims must be rejected"
+    );
+    let mut mismatched_page_claims = request_certificate.claims.to_vec();
+    let page_claim = &mut mismatched_page_claims[page_claim_index];
+    if let backend_library::WireClaim::Cursor { root, .. } = page_claim {
+        *root = owner_cursor_id.clone();
+    }
+    let mismatched_page_request = CommandDto::new(1207, request.command.clone()).with_certificate(
+        backend_library::WireCertificate::from_claims(mismatched_page_claims.into_boxed_slice()),
+    );
+    let mismatched_page_body =
+        serde_json::to_vec(&mismatched_page_request).expect("mismatched page claim body");
+    assert!(
+        backend_library::decode_command_body_for_owner(&mismatched_page_body, owner_cursor)
+            .is_err(),
+        "page cursor must match the exact outline witness"
+    );
+    let body = backend_library::encode_command_body(&request)
+        .expect("closed owner-bound PC5 wire request");
+    let (adapter, daemon) = fixture.parts();
+    let ticket = 1203;
+    let executed = adapter
+        .execute_or_defer(daemon, &body, ticket)
+        .expect("owner rehydrates witness before dispatch");
+    let Executed::Reply(bytes) = executed else {
+        panic!("outline continuation is a read and must reply immediately");
+    };
+    let decoded = backend_library::decode_reply_body(&bytes).expect("continued page reply");
+    backend_library::admit_reply(&request, &decoded).expect("continued page admission");
+    let second_page_certificate = decoded.certificate().expect("second page proof").clone();
+    let CommandReply::ProjectionPage(second) = decoded.reply else {
+        panic!("continued outline page");
+    };
+    let PageTerminal::More(second_continuation) = second.terminal else {
+        panic!("second outline page has a continuation");
+    };
+    let second_cursor = second_continuation.cursor();
+    let mut second_page_root = [0_u8; 32];
+    second_page_root.copy_from_slice(second_cursor.root().as_bytes());
+    let second_witness = backend_library::OutlineCursorWitness::new_untrusted(
+        second_cursor.recipe(),
+        second_cursor.version(),
+        second_cursor.branch(),
+        second_cursor.log(),
+        second_cursor.schema(),
+        second_page_root,
+        second_cursor.sequence(),
+        second_cursor.query_offset(),
+        second_cursor.query_position().predecessor(),
+    )
+    .expect("second untrusted witness retains valid cursor position");
+    let second_page_root_id = backend_library::encode_id(&second_page_root);
+    let second_recipe_id = backend_library::encode_id(second_cursor.recipe().as_bytes());
+    let mut third_certificate = revision_certificate;
+    for claim in &second_page_certificate.claims {
+        let keep = match claim {
+            backend_library::WireClaim::Root { schema, id, .. }
+                if *schema == backend_library::WireSchema::ViewRelation
+                    && id == &second_page_root_id =>
+            {
+                third_certificate = third_certificate.with_claim_once(
+                    backend_library::WireClaim::RootCommitment {
+                        schema: *schema,
+                        id: id.clone(),
+                    },
+                );
+                false
+            }
+            backend_library::WireClaim::RootCommitment { schema, id }
+                if *schema == backend_library::WireSchema::ViewRelation
+                    && id == &second_page_root_id =>
+            {
+                third_certificate = third_certificate.with_claim_once(claim.clone());
+                false
+            }
+            backend_library::WireClaim::KeyBytes {
+                schema: backend_library::WireSchema::ViewRecipe,
+                id,
+                ..
+            } if id == &second_recipe_id => true,
+            backend_library::WireClaim::Version {
+                schema: backend_library::WireSchema::ViewVersion,
+                id,
+                ..
+            } if id == &backend_library::encode_id(second_cursor.version().as_bytes()) => true,
+            backend_library::WireClaim::Key {
+                schema: backend_library::WireSchema::Branch,
+                id,
+                ..
+            } if id == &backend_library::encode_id(second_cursor.branch().as_bytes()) => true,
+            backend_library::WireClaim::Key {
+                schema: backend_library::WireSchema::Log,
+                id,
+                ..
+            } if id == &backend_library::encode_id(second_cursor.log().as_bytes()) => true,
+            backend_library::WireClaim::Key {
+                schema: backend_library::WireSchema::Package,
+                id,
+                ..
+            } if id == &backend_library::encode_id(package.as_bytes()) => true,
+            backend_library::WireClaim::Cursor {
+                recipe,
+                version,
+                branch,
+                log,
+                schema,
+                root,
+                sequence,
+            } if recipe == &second_recipe_id
+                && version == &backend_library::encode_id(second_cursor.version().as_bytes())
+                && branch == &backend_library::encode_id(second_cursor.branch().as_bytes())
+                && log == &backend_library::encode_id(second_cursor.log().as_bytes())
+                && *schema == second_cursor.schema()
+                && root == &second_page_root_id
+                && *sequence == second_cursor.sequence() => true,
+            _ => false,
+        };
+        if keep {
+            third_certificate = third_certificate.with_claim_once(claim.clone());
+        }
+    }
+    assert_ne!(
+        backend_library::encode_id(owner_root.as_bytes()),
+        second_page_root_id,
+        "the second page witness must not alias the current owner root"
+    );
+    let third_request = CommandDto::new(
+        1205,
+        Command::OutlinePage {
+            package,
+            page: backend_library::PageRequest::new(owner_root, limit)
+                .with_outline_witness(second_witness),
+        },
+    )
+    .with_certificate(third_certificate);
+    let third_body = backend_library::encode_command_body(&third_request)
+        .expect("second compact witness request roundtrip");
+    let (adapter, daemon) = fixture.parts();
+    let third_executed = adapter
+        .execute_or_defer(daemon, &third_body, 1205)
+        .expect("second owner rehydration before library dispatch");
+    let Executed::Reply(third_bytes) = third_executed else {
+        panic!("third outline page is an immediate read");
+    };
+    let third_reply = backend_library::decode_reply_body(&third_bytes).expect("third page reply");
+    backend_library::admit_reply(&third_request, &third_reply).expect("third page correlation");
+    let CommandReply::ProjectionPage(third) = third_reply.reply else {
+        panic!("third outline page");
+    };
+    assert_eq!(third.terminal, PageTerminal::Complete);
+    let mut ids = first
+        .snapshot
+        .root
+        .rows()
+        .iter()
+        .map(|row| row.id)
+        .collect::<Vec<_>>();
+    ids.extend(second.snapshot.root.rows().iter().map(|row| row.id));
+    ids.extend(third.snapshot.root.rows().iter().map(|row| row.id));
+    ids.sort_unstable();
+    assert_eq!(ids, expected, "wire page union retains every outline row");
 }
 
 #[test]

@@ -275,12 +275,202 @@ impl Write for ProofBudget {
 }
 
 impl Session {
+    pub(super) fn outline_witness_request(
+        &mut self,
+        coordinate: &str,
+        window: backend_library::QueryWindow,
+        token: &str,
+    ) -> Result<(Command, WireCertificate), ClientError> {
+        if !token.starts_with("pc5-") {
+            return Err(ClientError::Protocol(
+                "outline witness route requires a pc5 token".to_owned(),
+            ));
+        }
+        let body = decode_portable_body(token)?;
+        let revision = self.revision()?;
+        let owner = revision.cursor();
+        let imported = backend_library::decode_command_body_for_owner(&body, owner)
+            .map_err(ClientError::Protocol)?;
+        if imported.request_id != 1 {
+            return Err(ClientError::Protocol(
+                "portable outline request id is not normalized".to_owned(),
+            ));
+        }
+        let certificate = imported.certificate().ok_or_else(|| {
+            ClientError::Protocol("outline witness omitted its certificate".to_owned())
+        })?;
+        let Command::OutlinePage { package, page } = &imported.command else {
+            return Err(ClientError::Protocol(
+                "pc5 token is not an outline page".to_owned(),
+            ));
+        };
+        if *package != package_key(coordinate)
+            || page.basis() != revision.root
+            || page.window().issued() != window.issued()
+            || page.continuation().is_some()
+        {
+            return Err(ClientError::StaleCursor);
+        }
+        let witness = page.outline_witness().ok_or_else(|| {
+            ClientError::Protocol("pc5 outline request omitted its untrusted witness".to_owned())
+        })?;
+        if scope(certificate)? != scope(&revision.certificate)? {
+            return Err(ClientError::StaleCursor);
+        }
+        let recipe_id = encode_id(witness.recipe().as_bytes());
+        let mut recipes = certificate.claims.iter().filter_map(|claim| match claim {
+            WireClaim::KeyBytes {
+                schema: WireSchema::ViewRecipe,
+                id,
+                value,
+            } if id == &recipe_id => Some(value.as_ref()),
+            _ => None,
+        });
+        let recipe_preimage = recipes.next().ok_or_else(|| {
+            ClientError::Protocol("outline witness omitted its canonical recipe".to_owned())
+        })?;
+        if recipes.next().is_some()
+            || backend_library::QueryPageRecipe::outline_window_witness_predecessor(
+                revision.root,
+                *package,
+                window,
+                witness,
+                recipe_preimage,
+            )
+            .is_none()
+        {
+            return Err(ClientError::StaleCursor);
+        }
+
+        let owner_root = encode_id(revision.root.as_bytes());
+        let page_root = encode_id(&witness.root_commitment());
+        if owner_root == page_root {
+            return Err(ClientError::Protocol(
+                "outline witness root must be distinct from its owner root".to_owned(),
+            ));
+        }
+        let mut owner_roots = 0;
+        let mut page_roots = 0;
+        let mut coverage = 0;
+        let mut recipe_claims = 0;
+        let mut cursor_claims = 0;
+        for claim in &certificate.claims {
+            match claim {
+                WireClaim::RootCommitment {
+                    schema: WireSchema::ViewRelation,
+                    id,
+                } if id == &owner_root => owner_roots += 1,
+                WireClaim::RootCommitment {
+                    schema: WireSchema::ViewRelation,
+                    id,
+                } if id == &page_root => page_roots += 1,
+                WireClaim::Coverage { .. } => coverage += 1,
+                WireClaim::KeyBytes {
+                    schema: WireSchema::ViewRecipe,
+                    id,
+                    ..
+                } if id == &recipe_id => recipe_claims += 1,
+                WireClaim::Version {
+                    schema: WireSchema::ViewVersion,
+                    id,
+                    ..
+                } if id == &encode_id(witness.version().as_bytes()) => {}
+                WireClaim::Key {
+                    schema: WireSchema::Branch,
+                    id,
+                    ..
+                } if id == &encode_id(witness.branch().as_bytes()) => {}
+                WireClaim::Key {
+                    schema: WireSchema::Log,
+                    id,
+                    ..
+                } if id == &encode_id(witness.log().as_bytes()) => {}
+                WireClaim::Key {
+                    schema: WireSchema::Package,
+                    id,
+                    ..
+                } if id == &encode_id(package.as_bytes()) => {}
+                WireClaim::Cursor {
+                    recipe,
+                    version,
+                    branch,
+                    log,
+                    schema,
+                    root,
+                    sequence,
+                } if recipe == &recipe_id
+                    && version == &encode_id(witness.version().as_bytes())
+                    && branch == &encode_id(witness.branch().as_bytes())
+                    && log == &encode_id(witness.log().as_bytes())
+                    && *schema == witness.schema()
+                    && root == &page_root
+                    && *sequence == witness.sequence() => cursor_claims += 1,
+                _ => {
+                    return Err(ClientError::Protocol(
+                        "outline witness contains an unrelated proof claim".to_owned(),
+                    ));
+                }
+            }
+        }
+        if owner_roots != 1 || page_roots != 1 || coverage != 1 || recipe_claims != 1 || cursor_claims != 1 {
+            return Err(ClientError::Protocol(
+                "outline witness proof claims are incomplete or duplicated".to_owned(),
+            ));
+        }
+        let mut fresh = revision.certificate;
+        for claim in &certificate.claims {
+            if matches!(claim, WireClaim::RootCommitment { schema: WireSchema::ViewRelation, id } if id == &page_root)
+                || matches!(claim, WireClaim::Cursor { .. })
+                || matches!(claim, WireClaim::KeyBytes { schema: WireSchema::ViewRecipe, id, .. } if id == &recipe_id)
+                || matches!(claim, WireClaim::Version { schema: WireSchema::ViewVersion, id, .. } if id == &encode_id(witness.version().as_bytes()))
+                || matches!(claim, WireClaim::Key { schema: WireSchema::Branch, id, .. } if id == &encode_id(witness.branch().as_bytes()))
+                || matches!(claim, WireClaim::Key { schema: WireSchema::Log, id, .. } if id == &encode_id(witness.log().as_bytes()))
+                || matches!(claim, WireClaim::Key { schema: WireSchema::Package, id, .. } if id == &encode_id(package.as_bytes()))
+            {
+                fresh = fresh.with_claim_once(claim.clone());
+            }
+        }
+        let page = page
+            .with_window(window)
+            .ok_or_else(|| ClientError::StaleCursor)?
+            .with_outline_witness(witness);
+        Ok((Command::OutlinePage { package: *package, page }, fresh))
+    }
+
     /// Whether this admitted cursor carries a portable query command.
     #[must_use]
     pub fn has_portable_query_continuation(&self, continuation: PageContinuation) -> bool {
         self.continuations
             .get(&continuation.cursor())
             .is_some_and(|retained| retained.next_request.is_some())
+    }
+
+    /// Whether the retained continuation is an outline command eligible for
+    /// the owner-side digest-witness route.
+    #[must_use]
+    pub fn has_outline_query_continuation(&self, continuation: PageContinuation) -> bool {
+        self.continuations
+            .get(&continuation.cursor())
+            .and_then(|retained| retained.next_request.as_ref())
+            .is_some_and(|request| matches!(&request.command, Command::OutlinePage { .. }))
+    }
+
+    /// Whether a retained outline request fits the closed PC5 witness grammar.
+    /// A false result is only an eligibility decision; callers can still use
+    /// the ordinary strict full-proof PC4 exporter for this retained request.
+    #[must_use]
+    pub fn outline_query_continuation_compact_eligible(
+        &self,
+        continuation: PageContinuation,
+    ) -> bool {
+        self.continuations
+            .get(&continuation.cursor())
+            .and_then(|retained| retained.next_request.as_ref())
+            .is_some_and(|request| {
+                request.request_id == 1
+                    && matches!(&request.command, Command::OutlinePage { .. })
+                    && full_root_catalog_continuation_shape(request)
+            })
     }
     /// Exports the exact next command admitted from a bounded query page.
     /// No session map or file must survive in the receiving process.
@@ -318,6 +508,62 @@ impl Session {
         let body = backend_library::encode_binary_certificate_command(&full_root)
             .map_err(ClientError::Protocol)?;
         encode_portable_proof(&body, "pc4-")
+    }
+
+    /// Exports a bounded outline continuation for the explicit owner-side
+    /// predecessor-rehydration route. Other portable/standalone tokens keep
+    /// their existing full-root PC4 encoding.
+    pub fn encode_outline_query_continuation(
+        &self,
+        continuation: PageContinuation,
+    ) -> Result<String, ClientError> {
+        let request = self
+            .continuations
+            .get(&continuation.cursor())
+            .and_then(|retained| retained.next_request.as_ref())
+            .ok_or_else(|| {
+                ClientError::Protocol(
+                    "outline continuation was not issued by this session".to_owned(),
+                )
+            })?;
+        if request.request_id != 1
+            || !matches!(&request.command, Command::OutlinePage { .. })
+            || !full_root_catalog_continuation_shape(request)
+        {
+            return Err(ClientError::Protocol(
+                "outline continuation does not match the compact witness grammar".to_owned(),
+            ));
+        }
+        let mut budget = ProofBudget {
+            bytes: 0,
+            refused: false,
+        };
+        serde_json::to_writer(&mut budget, request).map_err(|error| {
+            if budget.refused {
+                ClientError::Transport(ReplicationError::MessageTooLarge)
+            } else {
+                ClientError::Protocol(error.to_string())
+            }
+        })?;
+        backend_library::encode_command_body(request).map_err(ClientError::Protocol)?;
+        let cursor = continuation_cursor(&request.command).ok_or_else(|| {
+            ClientError::Protocol("outline token omitted its page cursor".to_owned())
+        })?;
+        let certificate = request
+            .certificate()
+            .ok_or_else(|| ClientError::Protocol("outline token omitted its certificate".to_owned()))?;
+        let compact = certificate
+            .replace_root_preimage_with_commitment(
+                WireSchema::ViewRelation,
+                &encode_id(cursor.root().as_bytes()),
+            )
+            .ok_or_else(|| {
+                ClientError::Protocol("outline token root commitment shape is ambiguous".to_owned())
+            })?;
+        let request = CommandDto::new(1, request.command.clone()).with_certificate(compact);
+        let body = backend_library::encode_binary_certificate_command(&request)
+            .map_err(ClientError::Protocol)?;
+        encode_portable_proof(&body, "pc5-")
     }
 
     pub(super) fn retain_portable_query(
@@ -428,7 +674,7 @@ impl Session {
             }
         }
         for claim in &certificate.claims {
-            if claim_describes_cursor(claim, cursor) {
+            if claim_describes_cursor(claim, cursor) || cursor_claim_matches(claim, cursor) {
                 proof = proof.with_claim_once(claim.clone());
             }
         }
@@ -973,9 +1219,10 @@ fn decode_portable_body(token: &str) -> Result<Vec<u8>, ClientError> {
         return decode_hex(encoded)
             .ok_or_else(|| ClientError::Protocol("malformed query token".to_owned()));
     }
-    let binary = token.starts_with("pc4-");
+    let binary = token.starts_with("pc4-") || token.starts_with("pc5-");
     let encoded = token
-        .strip_prefix("pc4-")
+        .strip_prefix("pc5-")
+        .or_else(|| token.strip_prefix("pc4-"))
         .or_else(|| token.strip_prefix("pc3-"))
         .ok_or_else(|| ClientError::Protocol("unknown query token version".to_owned()))?;
     let compressed = URL_SAFE_NO_PAD

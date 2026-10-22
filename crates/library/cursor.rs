@@ -4,7 +4,7 @@ use crate::canonical::{
     BranchKey, Frontier, LogKey, ViewRecipeId, ViewStateRoot, ViewVersion, branch_key, log_key,
     view_key, view_state_root, view_version,
 };
-use crate::{CommittedViewDelta, ViewRoot};
+use crate::{CommittedViewDelta, QueryWindow, ViewRoot};
 
 /// Product schema version carried by cursors created by this crate.
 pub const CURSOR_SCHEMA: u16 = crate::canonical::PROTOCOL_SCHEMA;
@@ -33,6 +33,102 @@ pub struct Cursor {
     root: ViewStateRoot,
     sequence: u64,
     query_position: crate::QueryPosition,
+}
+
+/// Untrusted metadata for an outline-page continuation whose root is carried
+/// only as a commitment. This value is deliberately not a [`Cursor`]: the
+/// root becomes usable only after the owning [`crate::Library`] reconstructs
+/// the exact predecessor page and checks this commitment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OutlineCursorWitness {
+    recipe: ViewRecipeId,
+    version: ViewVersion,
+    branch: BranchKey,
+    log: LogKey,
+    schema: u16,
+    root_commitment: [u8; 32],
+    sequence: u64,
+    position: crate::QueryPosition,
+}
+
+impl OutlineCursorWitness {
+    /// Retains typed, certificate-admitted identities with an explicitly
+    /// untrusted page-root digest. Windowed positions retain their exact
+    /// predecessor delivery contract.
+    pub fn new_untrusted(
+        recipe: ViewRecipeId,
+        version: ViewVersion,
+        branch: BranchKey,
+        log: LogKey,
+        schema: u16,
+        root_commitment: [u8; 32],
+        sequence: u64,
+        query_offset: u64,
+        predecessor: Option<QueryWindow>,
+    ) -> Option<Self> {
+        let position = match predecessor {
+            Some(window) => crate::QueryPosition::windowed(query_offset, window)?,
+            None => crate::QueryPosition::legacy(query_offset),
+        };
+        Some(Self {
+            recipe,
+            version,
+            branch,
+            log,
+            schema,
+            root_commitment,
+            sequence,
+            position,
+        })
+    }
+
+    /// Recipe identity claimed by the untrusted witness.
+    #[must_use]
+    pub const fn recipe(self) -> ViewRecipeId {
+        self.recipe
+    }
+
+    /// Version identity claimed by the untrusted witness.
+    #[must_use]
+    pub const fn version(self) -> ViewVersion {
+        self.version
+    }
+
+    /// Branch identity claimed by the untrusted witness.
+    #[must_use]
+    pub const fn branch(self) -> BranchKey {
+        self.branch
+    }
+
+    /// Log identity claimed by the untrusted witness.
+    #[must_use]
+    pub const fn log(self) -> LogKey {
+        self.log
+    }
+
+    /// Schema version claimed by the untrusted witness.
+    #[must_use]
+    pub const fn schema(self) -> u16 {
+        self.schema
+    }
+
+    /// Raw commitment only; this is never converted to [`ViewStateRoot`].
+    #[must_use]
+    pub const fn root_commitment(self) -> [u8; 32] {
+        self.root_commitment
+    }
+
+    /// Sequence claimed by the untrusted witness.
+    #[must_use]
+    pub const fn sequence(self) -> u64 {
+        self.sequence
+    }
+
+    /// Exact query offset and predecessor span.
+    #[must_use]
+    pub const fn query_position(self) -> crate::QueryPosition {
+        self.position
+    }
 }
 
 impl Cursor {

@@ -5,7 +5,7 @@ use crate::arrangement::ArrangementPage;
 use crate::{
     Cursor, Document, DocumentQuery, Freshness, Frontier, GraphNeighborhoodQuery, GraphRelation,
     LibraryError, NameQuery, Outline, OutlineExtent, OutlineNode, OutlineQuery, PackageKey,
-    PageRequest, PageTerminal, ProjectionPage, Query, QueryLimit, QueryWindow,
+    OutlineCursorWitness, PageRequest, PageTerminal, ProjectionPage, Query, QueryLimit, QueryWindow,
     RankedSearchSnapshot, ReadManifest, Row, RowId, SymbolKey, ViewRecipeId, ViewRevision,
     ViewRoot, ViewSnapshot, ViewStateRoot, view_identity_bytes,
 };
@@ -260,6 +260,28 @@ impl QueryPageRecipe {
         (expected.canonical_preimage() == preimage && expected.identity() == cursor.recipe()).then_some(expected)
     }
 
+    /// Rehashes an outline predecessor's complete recipe without promoting
+    /// its page-root commitment. Its order digest is only a witness: the
+    /// owning [`Library`] must still reconstruct the ordered rows before use.
+    #[must_use]
+    pub fn outline_window_witness_predecessor(
+        root: ViewStateRoot,
+        package: PackageKey,
+        window: QueryWindow,
+        witness: crate::OutlineCursorWitness,
+        preimage: &[u8],
+    ) -> Option<Self> {
+        let previous = window.predecessor(witness.query_position())?;
+        let start = witness
+            .query_position()
+            .offset()
+            .checked_sub(u64::from(previous.delivery().get()))?;
+        let digest: [u8; 32] = preimage.get(preimage.len().checked_sub(32)?..)?.try_into().ok()?;
+        let expected = Self::outline_window_digest(root, package, previous, start, digest);
+        (expected.canonical_preimage() == preimage && expected.identity() == witness.recipe())
+            .then_some(expected)
+    }
+
     fn new(
         kind: QueryPageKind,
         text: &str,
@@ -389,6 +411,111 @@ impl Library {
         self.projection_page(recipe_bytes, &result, start, limit)
     }
 
+    /// Reconstructs the exact prior outline page named by a digest-only
+    /// witness. The supplied root commitment remains untrusted until this
+    /// method has fetched the predecessor rows and rebuilt their canonical
+    /// `ViewRoot` at the current durable basis.
+    ///
+    /// # Errors
+    /// Refuses a stale basis, changed recipe/window/order, foreign frontier,
+    /// missing predecessor rows, or a root/version commitment mismatch.
+    pub fn rehydrate_outline_cursor(
+        &self,
+        package: PackageKey,
+        basis: ViewRevision,
+        window: QueryWindow,
+        witness: OutlineCursorWitness,
+        recipe_preimage: &[u8],
+    ) -> Result<Cursor, LibraryError> {
+        self.check_basis(basis)?;
+        if !self.arrangement.has_package(package)
+            || witness.branch() != self.cursor.branch()
+            || witness.log() != self.cursor.log()
+            || witness.schema() != self.cursor.schema()
+            || witness.sequence() > self.cursor.sequence()
+        {
+            return Err(LibraryError::CursorMismatch);
+        }
+        let previous_window = window
+            .predecessor(witness.query_position())
+            .ok_or(LibraryError::CursorMismatch)?;
+        let page_size = usize::from(previous_window.delivery().get());
+        let offset = usize::try_from(witness.query_position().offset())
+            .map_err(|_| LibraryError::CursorMismatch)?;
+        let start = offset.checked_sub(page_size).ok_or(LibraryError::CursorMismatch)?;
+        let predecessor = self.arrangement.outline_page(
+            package,
+            start,
+            page_size,
+            |id| self.view.row_ref(id),
+            &self.work,
+        );
+        if predecessor.ids.len() != page_size {
+            return Err(LibraryError::CursorMismatch);
+        }
+        let symbols = predecessor
+            .ids
+            .iter()
+            .filter_map(|id| match id {
+                RowId::Symbol(symbol) => Some(*symbol),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let order = crate::OutlinePageOrder::new(start as u64, symbols)
+            .map_err(LibraryError::InvalidQuery)?;
+        let recipe = QueryPageRecipe::outline_window(
+            self.revision_root(),
+            package,
+            previous_window,
+            &order,
+        );
+        if recipe.identity() != witness.recipe()
+            || recipe.canonical_preimage() != recipe_preimage
+        {
+            return Err(LibraryError::CursorMismatch);
+        }
+
+        let single_package = self.arrangement.package_count() == 1;
+        let rows = predecessor
+            .ids
+            .iter()
+            .filter_map(|&id| {
+                self.view.row(id).map(|mut row| {
+                    if single_package && row.package.is_none() {
+                        row.package = Some(package);
+                    }
+                    row
+                })
+            })
+            .collect::<Vec<_>>();
+        if rows.len() != page_size {
+            return Err(LibraryError::CursorMismatch);
+        }
+        let snapshot = self.snapshot_with_recipe(recipe.identity(), rows, None, None)?;
+        let root = &snapshot.root;
+        if root.root().as_bytes() != &witness.root_commitment()
+            || root.version() != witness.version()
+            || root.recipe() != witness.recipe()
+            || root.frontier().branch != witness.branch()
+            || root.frontier().log != witness.log()
+            || root.frontier().schema != witness.schema()
+        {
+            return Err(LibraryError::CursorMismatch);
+        }
+        Ok(Cursor::for_view(
+            root.recipe(),
+            root.version(),
+            Frontier::new(
+                witness.branch(),
+                witness.log(),
+                witness.schema(),
+                root.root(),
+                witness.sequence(),
+            ),
+        )
+        .with_query_position(witness.query_position()))
+    }
+
     /// Reads package outline membership as one bounded flat row page.
     ///
     /// # Errors
@@ -402,6 +529,9 @@ impl Library {
         package: PackageKey,
         page: PageRequest,
     ) -> Result<ProjectionPage, LibraryError> {
+        if page.outline_witness().is_some() {
+            return Err(LibraryError::CursorMismatch);
+        }
         self.check_basis(page.basis())?;
         if !self.arrangement.has_package(package) {
             return Err(LibraryError::NotFound);

@@ -1216,8 +1216,12 @@ pub const GRAMMARS: [CommandGrammar; 54] = [
             ArgumentKind::ProjectPath,
             "Project directory; defaults to the active project.",
         )],
-        options: &[],
-        when: "Use to see what a project depends on and why: the role of each direct dependency, the path to any package, which crates are here twice, and which advisories affect it.",
+        options: &[ArgumentSpec::optional(
+            "sources",
+            ArgumentKind::Flag,
+            "Read captured source paths instead of the current Cargo dependency tree.",
+        )],
+        when: "Use by default for the current Cargo dependency tree, advisories and source bindings. Use --sources for captured source paths in any supported language; continue that inventory with package-source-membership and its returned root, version and cursor.",
     },
     CommandGrammar {
         name: "advisory-refresh",

@@ -777,6 +777,55 @@
           "arguments": {}
         }
       ]
+    },
+    {
+      "name": "typescript-query-core",
+      "project_env": "NUDOX_SURFACE_TYPESCRIPT_QUERY_CORE",
+      "upstream": "npm:@tanstack/query-core@5.62.8",
+      "languages": [
+        "typescript"
+      ],
+      "index_mode": "wait",
+      "authored_symbols": {
+        "QueryClient": "src/queryClient.ts",
+        "CancelledError": "src/retryer.ts"
+      },
+      "cli": [
+        [
+          "search",
+          "QueryClient"
+        ],
+        [
+          "search",
+          "CancelledError"
+        ],
+        [
+          "outline"
+        ],
+        [
+          "packages"
+        ]
+      ],
+      "mcp": [
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "QueryClient",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "CancelledError",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.outline",
+          "arguments": {}
+        }
+      ]
     }
   ]
 }

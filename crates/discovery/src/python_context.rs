@@ -371,7 +371,7 @@ mod tests {
         let mut context = PythonSourceContext::default();
         context
             .add_captured_environment_root(Path::new("local/py3"))
-            .unwrap();
+            .expect("capture the fixture Python environment root");
         assert!(context.is_environment_member(Path::new("local/py3/package/source.py")));
         assert!(!context.is_environment_member(Path::new("local/py30/source.py")));
         assert!(!context.is_environment_member(Path::new("local/project.py")));

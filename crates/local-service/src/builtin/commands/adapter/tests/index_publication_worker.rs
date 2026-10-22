@@ -938,6 +938,200 @@ fn assert_python_published(status: &backend_library::IndexOperationStatus) {
     );
 }
 
+fn python_generation(status: &backend_library::IndexOperationStatus) -> [u8; 32] {
+    status
+        .source_capture
+        .as_ref()
+        .expect("operation source capture")
+        .profiles()
+        .iter()
+        .find_map(|profile| match profile.state {
+            backend_library::IndexOperationSemanticProfileState::Published {
+                generation, ..
+            } if profile.profile.name() == Some("python") => Some(generation),
+            _ => None,
+        })
+        .expect("published Python generation")
+}
+
+fn run_native_reuse_only_operation(
+    fixture: &mut AdapterFixture,
+    label: &str,
+    seed: u8,
+) -> backend_library::IndexOperationStatus {
+    let operation = backend_library::IndexOperationKey::from_bytes([seed; 32]).expect("operation");
+    let reference = backend_library::PackageReference::parse(label.to_owned()).expect("package");
+    let (adapter, daemon) = fixture.parts();
+    assert!(matches!(
+        adapter.start_index_operation(
+            daemon,
+            operation,
+            reference,
+            CompileExecutionIntent::Interactive,
+            u64::from(seed),
+        ),
+        Ok(Executed::Reply(_))
+    ));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while adapter.indexing.is_some() {
+        assert!(Instant::now() < deadline, "reuse-only operation completes");
+        assert!(
+            !matches!(
+                adapter.indexing.as_ref().map(|job| &job.work),
+                Some(IndexJobWork::Compiling { .. })
+            ),
+            "an exact current capture must not submit compiler work"
+        );
+        adapter.poll_deferred(daemon);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let observation = adapter
+        .resolve_index_operation(daemon, operation, None)
+        .expect("checked terminal operation");
+    let backend_library::IndexOperationObservation::Known(status) = observation else {
+        panic!("known operation")
+    };
+    assert_python_published(&status);
+    status
+}
+
+fn run_native_cold_revalidation_operation(
+    fixture: &mut AdapterFixture,
+    label: &str,
+    seed: u8,
+) -> backend_library::IndexOperationStatus {
+    let operation = backend_library::IndexOperationKey::from_bytes([seed; 32]).expect("operation");
+    let reference = backend_library::PackageReference::parse(label.to_owned()).expect("package");
+    let (adapter, daemon) = fixture.parts();
+    assert!(matches!(
+        adapter.start_index_operation(
+            daemon,
+            operation,
+            reference,
+            CompileExecutionIntent::Interactive,
+            u64::from(seed),
+        ),
+        Ok(Executed::Reply(_))
+    ));
+    let ticket = adapter
+        .indexing
+        .as_ref()
+        .expect("cold source admission starts a fresh operation")
+        .owner_ticket
+        .clone();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while adapter.indexing.is_some() {
+        assert!(Instant::now() < deadline, "cold revalidation completes");
+        adapter.poll_deferred(daemon);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let starts = adapter
+        .index_progress
+        .iter()
+        .filter(|event| event.ticket == ticket)
+        .filter_map(|event| match &event.kind {
+            backend_library::IndexJobProgressKind::ProfileStarted {
+                profile,
+                ordinal,
+                total,
+            } => Some((profile.name().expect("profile"), *ordinal, *total)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        starts,
+        vec![("python", 1, 1)],
+        "the cold owner revalidates with exactly one ticket-bound Python compile"
+    );
+    let observation = adapter
+        .resolve_index_operation(daemon, operation, None)
+        .expect("checked cold terminal operation");
+    let backend_library::IndexOperationObservation::Known(status) = observation else {
+        panic!("known operation")
+    };
+    assert_python_published(&status);
+    status
+}
+
+fn assert_current_profile_receipt(
+    fixture: &mut AdapterFixture,
+    label: &str,
+    status: &backend_library::IndexOperationStatus,
+) {
+    let (adapter, daemon) = fixture.parts();
+    let package = backend_library::PackageReference::parse(label.to_owned()).expect("package");
+    let current = package_profile::read(
+        &daemon.engine().daemon().owner().snapshot(),
+        &adapter.index_operations,
+        &adapter.semantic_authority,
+        &package,
+        None,
+    )
+    .expect("current package profile")
+    .expect("local package profile");
+    let backend_library::PackageCompilerOutcomes::Summary { source_capture, .. } = current else {
+        panic!("current package profile must be a summary")
+    };
+    let receipt = status
+        .source_capture
+        .as_ref()
+        .expect("operation capture receipt");
+    assert_eq!(source_capture.profiles.as_ref(), receipt.profiles());
+}
+
+#[test]
+fn index_publication_worker_cold_revalidates_then_warm_reuse_refreshes_current_capture_without_compile() {
+    let mut fixture = native_fixture();
+    let label = fixture.label.clone();
+    let first = keyed_status(
+        &mut fixture,
+        backend_library::IndexOperationKey::from_bytes([0xb1; 32]).expect("first operation"),
+    );
+    let first_generation = python_generation(&first);
+    let warm = run_native_reuse_only_operation(&mut fixture, &label, 0xb7);
+    assert_eq!(python_generation(&warm), first_generation);
+    assert_current_profile_receipt(&mut fixture, &label, &warm);
+
+    let view_journal = fixture
+        .root
+        .0
+        .join("workspace/native-publication-view.journal");
+    fixture = fixture.reopen_with_view_journal(Some(view_journal));
+    install_mixed_native_compiler(&mut fixture);
+    // Compiler-session witnesses are process-local, so a reopened owner must
+    // revalidate by compiling. Compile-free reuse is not asserted across this
+    // boundary; the next same-session operation must reuse the new selection.
+    let cold = run_native_cold_revalidation_operation(&mut fixture, &label, 0xb8);
+    assert_current_profile_receipt(&mut fixture, &label, &cold);
+    let cold_generation = python_generation(&cold);
+    let revalidated_warm = run_native_reuse_only_operation(&mut fixture, &label, 0xba);
+    assert_eq!(python_generation(&revalidated_warm), cold_generation);
+    assert_current_profile_receipt(&mut fixture, &label, &revalidated_warm);
+
+    fs::write(
+        Path::new(&label).join("panel.c"),
+        "int unavailable_sdk(int value) { return value + 2; }\n",
+    )
+    .expect("genuine missing-SDK profile source");
+    let partial = run_mixed_native_operation(&mut fixture, &label, 0xb9);
+    let backend_library::IndexOperationState::PartiallyPublished {
+        receipt: _,
+        refused_profiles,
+    } = &partial.state
+    else {
+        panic!("the reused Python generation and refused C profile form a typed partial terminal: {partial:?}");
+    };
+    assert_eq!(refused_profiles.len(), 1);
+    assert_eq!(refused_profiles[0].profile.name().expect("profile"), "c");
+    assert!(refused_profiles[0]
+        .compiler_failure
+        .as_ref()
+        .expect("source-bound compiler refusal")
+        .requires_tool_configuration());
+    assert_eq!(python_generation(&partial), cold_generation);
+    assert_current_profile_receipt(&mut fixture, &label, &partial);
+}
+
 fn native_dispatch(
     fixture: &mut AdapterFixture,
     partial: bool,

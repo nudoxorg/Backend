@@ -989,6 +989,7 @@ pub struct PageRequest {
     basis: ViewRevision,
     window: crate::QueryWindow,
     continuation: Option<PageContinuation>,
+    outline_witness: Option<crate::OutlineCursorWitness>,
 }
 
 impl PageRequest {
@@ -999,6 +1000,7 @@ impl PageRequest {
             basis: basis.into(),
             window: crate::QueryWindow::fixed(limit),
             continuation: None,
+            outline_witness: None,
         }
     }
 
@@ -1006,6 +1008,17 @@ impl PageRequest {
     #[must_use]
     pub const fn with_continuation(mut self, continuation: PageContinuation) -> Self {
         self.continuation = Some(continuation);
+        self.outline_witness = None;
+        self
+    }
+
+    /// Continues an outline query with metadata that remains untrusted until
+    /// the owner rebuilds the exact predecessor page. Other page families
+    /// reject this witness during command admission.
+    #[must_use]
+    pub const fn with_outline_witness(mut self, witness: crate::OutlineCursorWitness) -> Self {
+        self.continuation = None;
+        self.outline_witness = Some(witness);
         self
     }
 
@@ -1041,6 +1054,13 @@ impl PageRequest {
     #[must_use]
     pub const fn continuation(self) -> Option<PageContinuation> {
         self.continuation
+    }
+
+    /// Returns the untrusted outline witness, when this request came through
+    /// the explicit owner-rehydration path.
+    #[must_use]
+    pub const fn outline_witness(self) -> Option<crate::OutlineCursorWitness> {
+        self.outline_witness
     }
 }
 
@@ -1235,6 +1255,12 @@ pub enum Command {
     Health,
     /// Read a constant-size revision and subscription cursor.
     Revision,
+    /// Read-only protocol capability probe for owner-rehydrated outline resumes.
+    ///
+    /// This command is answered only by the local product owner. It shares the
+    /// `Revision` reply shape so a new client can distinguish a supporting peer
+    /// from an older same-DTO owner without changing the ordinary health reply.
+    OutlineOwnerWitnessCapability,
 }
 
 impl Command {
@@ -1258,7 +1284,7 @@ impl Command {
             Self::SemanticShapes(_) => CommandId::SemanticShapes,
             Self::Surface(command) => command.id(),
             Self::Health => CommandId::Health,
-            Self::Revision => CommandId::Revision,
+            Self::Revision | Self::OutlineOwnerWitnessCapability => CommandId::Revision,
         }
     }
 

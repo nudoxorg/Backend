@@ -20,7 +20,7 @@ use std::fmt;
 const POLICY_VERSION: &[u8] = b"nudox.local-source-admission.v4\0";
 const MAX_CONFIGURED_SOURCE_BYTES: usize = 4 * 1024 * 1024 * 1024;
 const MAX_CONFIGURED_RECORDS: usize = 500_000;
-const MAX_SCAN_WORKERS: usize = 8;
+pub(super) const MAX_SCAN_WORKERS: usize = 8;
 
 const MAX_FILE_ENV: &str = "NUDOX_SOURCE_MAX_FILE_BYTES";
 const PROJECT_ENV: &str = "NUDOX_SOURCE_MAX_PROJECT_BYTES";

@@ -313,6 +313,23 @@ pub fn discover_project(project: Option<PathBuf>) -> Result<PathBuf, RuntimeErro
     )
 }
 
+/// Resolves the default owner context from one selected existing folder.
+///
+/// Uses the same Git-root/nearest-manifest rule as no-override CLI/MCP
+/// discovery, without reading or changing the process working directory or
+/// selecting durable state. An explicit `PROJECT_ENV` value is not consulted.
+///
+/// # Errors
+/// Refuses a relative, absent, or non-directory starting path.
+pub fn discover_project_from_directory(start: &Path) -> Result<PathBuf, RuntimeError> {
+    if !start.is_absolute() || !start.is_dir() {
+        return Err(RuntimeError::InvalidPath(
+            "project discovery requires an absolute existing directory",
+        ));
+    }
+    Ok(normalize_identity(&project_root_from(start)))
+}
+
 fn select_project(
     project: Option<PathBuf>,
     environment: Option<PathBuf>,
@@ -731,11 +748,23 @@ fn normalize_identity(path: &Path) -> PathBuf {
     }
 }
 
-/// Returns a stable per-project data path beneath the supplied application
-/// state root. The project path is hashed after normalization so the directory
-/// name does not disclose checkout paths and distinct projects do not share
-/// indexes or authority databases.
-fn default_workspace_path(project: &Path, state_root: &Path) -> PathBuf {
+/// Returns the existing default project-workspace parent without creating state.
+/// This captures the same platform state location used by CLI and MCP discovery.
+/// Explicit workspace and endpoint overrides are not consulted.
+///
+/// # Errors
+/// Returns the platform profile discovery error when no user state root exists.
+pub fn default_project_workspaces_directory() -> Result<PathBuf, RuntimeError> {
+    Ok(application_state_root()?
+        .path()
+        .join(APPLICATION_DIRECTORY)
+        .join(PROJECTS_DIRECTORY))
+}
+
+/// Derives one project's default workspace beneath an already selected parent.
+/// This is a path identity calculation, not authority or publication evidence.
+#[must_use]
+pub fn default_project_workspace_in(project: &Path, projects: &Path) -> PathBuf {
     let project = normalize_identity(project);
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"backend.runtime.project-state.v1\0");
@@ -746,10 +775,14 @@ fn default_workspace_path(project: &Path, state_root: &Path) -> PathBuf {
         use std::fmt::Write as _;
         let _ = write!(key, "{byte:02x}");
     }
-    state_root
-        .join(APPLICATION_DIRECTORY)
-        .join(PROJECTS_DIRECTORY)
-        .join(key)
+    projects.join(key)
+}
+
+fn default_workspace_path(project: &Path, state_root: &Path) -> PathBuf {
+    default_project_workspace_in(
+        project,
+        &state_root.join(APPLICATION_DIRECTORY).join(PROJECTS_DIRECTORY),
+    )
 }
 
 /// Selects the operating system's per-user durable state directory without
@@ -1872,6 +1905,22 @@ mod tests {
     }
 
     #[test]
+    fn saved_workspace_parent_uses_the_same_platform_state_and_project_hash() {
+        let state = application_state_root().expect("platform state");
+        let parent = default_project_workspaces_directory().expect("saved workspace parent");
+        assert_eq!(
+            parent,
+            state.path().join(APPLICATION_DIRECTORY).join(PROJECTS_DIRECTORY)
+        );
+        let project = test_directory("saved-workspace-hash-only");
+        assert_eq!(
+            default_project_workspace_in(&project, &parent),
+            default_workspace_path(&project, &state.path()),
+            "GUI candidates must use the CLI/MCP state root and unchanged default hash"
+        );
+    }
+
+    #[test]
     fn default_project_state_is_stable_and_isolated_under_app_data() {
         let root = test_directory("app-data-project-state");
         let state = root.join("state");
@@ -1926,7 +1975,7 @@ mod tests {
                     fs::set_permissions(&root, fs::Permissions::from_mode(home_mode))
                         .expect("home mode");
                     assert_eq!(
-                        fs::read_dir(&root).unwrap().count(),
+                        fs::read_dir(&root).expect("read the fixture directory entries").count(),
                         0,
                         "genuinely empty home"
                     );
@@ -1937,7 +1986,7 @@ mod tests {
                             parent.push(name);
                             fs::create_dir(&parent).expect("existing conventional parent");
                             fs::set_permissions(&parent, fs::Permissions::from_mode(0o755))
-                                .unwrap();
+                                .expect("set the fixture directory permissions");
                         }
                     }
                     // Discovery freezes canonical data identity even through macOS /var aliases.
@@ -1957,24 +2006,24 @@ mod tests {
                         .expect("first-run default state and authority");
                     paths.initialize().expect("reopen same state");
                     assert!(data.is_dir());
-                    assert_eq!(fs::metadata(paths.authority_secret()).unwrap().len(), 32);
-                    assert_eq!(fs::metadata(&root).unwrap().mode() & 0o777, home_mode);
+                    assert_eq!(fs::metadata(paths.authority_secret()).expect("read the fixture authority secret metadata").len(), 32);
+                    assert_eq!(fs::metadata(&root).expect("read the fixture directory metadata").mode() & 0o777, home_mode);
                     let mut parent = root.clone();
                     for name in suffix {
                         parent.push(name);
                         assert_eq!(
-                            fs::metadata(&parent).unwrap().mode() & 0o777,
+                            fs::metadata(&parent).expect("read the fixture directory metadata").mode() & 0o777,
                             if existing { 0o755 } else { 0o700 }
                         );
                     }
                     assert_eq!(
                         fs::metadata(state.path().join(APPLICATION_DIRECTORY))
-                            .unwrap()
+                            .expect("read the fixture directory metadata")
                             .mode()
                             & 0o777,
                         0o700
                     );
-                    fs::remove_dir_all(&root).unwrap();
+                    fs::remove_dir_all(&root).expect("remove the fixture directory");
                 }
             }
         }
@@ -1989,8 +2038,8 @@ mod tests {
             &[".local", "state"][..],
         ] {
             let home = test_directory("legacy-default-home");
-            fs::create_dir(&home).unwrap();
-            fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::create_dir(&home).expect("create the fixture directory");
+            fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
             let state = ApplicationStateRoot::new(home.clone(), suffix);
             let data = normalize_identity(&default_workspace_path(
                 &home.join("project"),
@@ -2006,39 +2055,39 @@ mod tests {
             paths
                 .initialize()
                 .expect("empty HOME creates private default state");
-            let credential = fs::read(paths.authority_secret()).unwrap();
-            let credential_inode = fs::metadata(paths.authority_secret()).unwrap().ino();
+            let credential = fs::read(paths.authority_secret()).expect("read the fixture authority secret");
+            let credential_inode = fs::metadata(paths.authority_secret()).expect("read the fixture authority secret metadata").ino();
             let endpoint = paths.endpoint().to_path_buf();
             let application = state.path().join(APPLICATION_DIRECTORY);
             let projects = application.join(PROJECTS_DIRECTORY);
-            fs::write(data.join("kept-index"), b"historical index bytes").unwrap();
+            fs::write(data.join("kept-index"), b"historical index bytes").expect("write the retained fixture file");
             let unrelated = projects.join("reader-state");
-            fs::create_dir(&unrelated).unwrap();
-            fs::set_permissions(&unrelated, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::create_dir(&unrelated).expect("create the fixture directory");
+            fs::set_permissions(&unrelated, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
             for path in [&application, &projects, &data] {
-                fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+                fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
             }
             for _ in 0..2 {
                 paths
                     .initialize()
                     .expect("cold reopen repairs only captured application state");
                 for path in [&application, &projects, &data] {
-                    assert_eq!(fs::metadata(path).unwrap().mode() & 0o777, 0o700);
+                    assert_eq!(fs::metadata(path).expect("read the fixture directory metadata").mode() & 0o777, 0o700);
                 }
-                assert_eq!(fs::read(paths.authority_secret()).unwrap(), credential);
+                assert_eq!(fs::read(paths.authority_secret()).expect("read the fixture authority secret"), credential);
                 assert_eq!(
-                    fs::metadata(paths.authority_secret()).unwrap().ino(),
+                    fs::metadata(paths.authority_secret()).expect("read the fixture authority secret metadata").ino(),
                     credential_inode
                 );
                 assert_eq!(paths.endpoint(), endpoint);
                 assert_eq!(
-                    fs::read(data.join("kept-index")).unwrap(),
+                    fs::read(data.join("kept-index")).expect("read the retained fixture file"),
                     b"historical index bytes"
                 );
-                assert_eq!(fs::metadata(&unrelated).unwrap().mode() & 0o777, 0o755);
-                assert_eq!(fs::metadata(&home).unwrap().mode() & 0o777, 0o755);
+                assert_eq!(fs::metadata(&unrelated).expect("read the fixture directory metadata").mode() & 0o777, 0o755);
+                assert_eq!(fs::metadata(&home).expect("read the fixture directory metadata").mode() & 0o777, 0o755);
             }
-            fs::remove_dir_all(home).unwrap();
+            fs::remove_dir_all(home).expect("remove the fixture directory");
         }
     }
 
@@ -2048,45 +2097,45 @@ mod tests {
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
         for component in 0..3 {
             let home = test_directory("default-owned-link");
-            fs::create_dir(&home).unwrap();
-            fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::create_dir(&home).expect("create the fixture directory");
+            fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
             let state = ApplicationStateRoot::new(home.clone(), &[]);
             let data = normalize_identity(&default_workspace_path(
                 &home.join("project"),
                 &state.path(),
             ));
-            initialize_default_state(&state, &data).unwrap();
+            initialize_default_state(&state, &data).expect("initialize the fixture default state");
             let app = home.join(APPLICATION_DIRECTORY);
             let projects = app.join(PROJECTS_DIRECTORY);
             let blocked = [&app, &projects, &data][component].to_path_buf();
             let target = home.join("outside");
-            fs::rename(&blocked, &target).unwrap();
-            fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
-            fs::write(target.join("kept"), b"outside bytes").unwrap();
-            symlink(&target, &blocked).unwrap();
+            fs::rename(&blocked, &target).expect("move the fixture directory aside");
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
+            fs::write(target.join("kept"), b"outside bytes").expect("write the retained fixture file");
+            symlink(&target, &blocked).expect("create the fixture symlink");
             assert!(initialize_default_state(&state, &data).is_err());
-            assert_eq!(fs::metadata(&target).unwrap().mode() & 0o777, 0o755);
-            assert_eq!(fs::read(target.join("kept")).unwrap(), b"outside bytes");
-            fs::remove_dir_all(home).unwrap();
+            assert_eq!(fs::metadata(&target).expect("read the fixture directory metadata").mode() & 0o777, 0o755);
+            assert_eq!(fs::read(target.join("kept")).expect("read the retained fixture file"), b"outside bytes");
+            fs::remove_dir_all(home).expect("remove the fixture directory");
         }
         if rustix::process::geteuid().is_root() {
             let home = test_directory("default-owned-foreign");
-            fs::create_dir(&home).unwrap();
-            fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::create_dir(&home).expect("create the fixture directory");
+            fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
             let state = ApplicationStateRoot::new(home.clone(), &[]);
             let data = normalize_identity(&default_workspace_path(
                 &home.join("project"),
                 &state.path(),
             ));
             let app = home.join(APPLICATION_DIRECTORY);
-            fs::create_dir(&app).unwrap();
-            fs::set_permissions(&app, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::create_dir(&app).expect("create the fixture directory");
+            fs::set_permissions(&app, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
             rustix::fs::chown(&app, Some(rustix::fs::Uid::from_raw(1)), None)
                 .expect("foreign-owner fixture");
             assert!(initialize_default_state(&state, &data).is_err());
-            assert_eq!(fs::metadata(&app).unwrap().mode() & 0o777, 0o755);
+            assert_eq!(fs::metadata(&app).expect("read the fixture directory metadata").mode() & 0o777, 0o755);
             assert!(!data.exists());
-            fs::remove_dir_all(home).unwrap();
+            fs::remove_dir_all(home).expect("remove the fixture directory");
         }
     }
 
@@ -2097,59 +2146,59 @@ mod tests {
         for blocker in ["file", "link", "writable"] {
             for component in [0, 1] {
                 let root = test_directory(&format!("default-state-blocker-{blocker}-{component}"));
-                fs::create_dir(&root).unwrap();
-                fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+                fs::create_dir(&root).expect("create the fixture directory");
+                fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
                 let state =
                     ApplicationStateRoot::new(root.clone(), &["Library", "Application Support"]);
                 let blocked = if component == 0 {
                     root.join("Library")
                 } else {
                     let parent = root.join("Library");
-                    fs::create_dir(&parent).unwrap();
-                    fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+                    fs::create_dir(&parent).expect("create the fixture directory");
+                    fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).expect("set the fixture directory permissions");
                     parent.join("Application Support")
                 };
                 let outside = root.join("outside");
                 match blocker {
-                    "file" => fs::write(&blocked, "retained blocker").unwrap(),
+                    "file" => fs::write(&blocked, "retained blocker").expect("write the retained fixture file"),
                     "link" => {
-                        fs::create_dir(&outside).unwrap();
-                        symlink(&outside, &blocked).unwrap();
+                        fs::create_dir(&outside).expect("create the fixture directory");
+                        symlink(&outside, &blocked).expect("create the fixture symlink");
                     }
                     _ => {
-                        fs::create_dir(&blocked).unwrap();
-                        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o775)).unwrap();
+                        fs::create_dir(&blocked).expect("create the fixture directory");
+                        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o775)).expect("set the fixture directory permissions");
                     }
                 }
                 let data = default_workspace_path(&root.join("project"), &state.path());
                 assert!(initialize_default_state(&state, &data).is_err());
                 assert!(!data.exists());
-                assert_eq!(fs::metadata(&root).unwrap().mode() & 0o777, 0o755);
+                assert_eq!(fs::metadata(&root).expect("read the fixture directory metadata").mode() & 0o777, 0o755);
                 match blocker {
-                    "file" => assert_eq!(fs::read_to_string(&blocked).unwrap(), "retained blocker"),
+                    "file" => assert_eq!(fs::read_to_string(&blocked).expect("read the retained fixture blocker"), "retained blocker"),
                     "link" => {
                         assert!(
                             fs::symlink_metadata(&blocked)
-                                .unwrap()
+                                .expect("inspect the refused fixture symlink")
                                 .file_type()
                                 .is_symlink()
                         );
-                        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+                        assert_eq!(fs::read_dir(&outside).expect("read the fixture directory entries").count(), 0);
                     }
-                    _ => assert_eq!(fs::metadata(&blocked).unwrap().mode() & 0o777, 0o775),
+                    _ => assert_eq!(fs::metadata(&blocked).expect("read the fixture directory metadata").mode() & 0o777, 0o775),
                 }
-                fs::remove_dir_all(&root).unwrap();
+                fs::remove_dir_all(&root).expect("remove the fixture directory");
             }
         }
         let root = test_directory("default-state-public-anchor-writable");
-        fs::create_dir(&root).unwrap();
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o775)).unwrap();
+        fs::create_dir(&root).expect("create the fixture directory");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o775)).expect("set the fixture directory permissions");
         let state = ApplicationStateRoot::new(root.clone(), &[".local", "state"]);
         let data = default_workspace_path(&root.join("project"), &state.path());
         assert!(initialize_default_state(&state, &data).is_err());
-        assert_eq!(fs::metadata(&root).unwrap().mode() & 0o777, 0o775);
-        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
-        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(fs::metadata(&root).expect("read the fixture directory metadata").mode() & 0o777, 0o775);
+        assert_eq!(fs::read_dir(&root).expect("read the fixture directory entries").count(), 0);
+        fs::remove_dir_all(&root).expect("remove the fixture directory");
     }
 
     #[test]
@@ -2262,6 +2311,18 @@ mod tests {
         let selected =
             select_project(None, None, || Ok(nested.clone())).expect("default project selection");
         assert_eq!(selected, normalize_identity(&root));
+        let unchanged_cwd = std::env::current_dir().expect("current directory");
+        assert_eq!(
+            discover_project_from_directory(&nested).expect("picker owner from selected folder"),
+            selected,
+            "the picker owner and no-override CLI cwd use the same root resolver"
+        );
+        assert_eq!(std::env::current_dir().expect("unchanged cwd"), unchanged_cwd);
+        assert!(discover_project_from_directory(Path::new("relative-folder")).is_err());
+        assert!(discover_project_from_directory(&root.join("missing-folder")).is_err());
+        let not_directory = root.join("a-file");
+        fs::write(&not_directory, b"not a directory").expect("file fixture");
+        assert!(discover_project_from_directory(&not_directory).is_err());
         let unreadable_cwd = || Err(std::io::Error::other("current directory unavailable"));
         assert_eq!(
             select_project(None, Some(nested.clone()), unreadable_cwd)
