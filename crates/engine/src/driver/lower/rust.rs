@@ -5108,6 +5108,7 @@ mod tests {
         let _guard = FixtureRoot(root.clone());
         fs::create_dir_all(root.join("benches"))?;
         fs::create_dir_all(root.join("src"))?;
+        let root = fs::canonicalize(&root)?;
 
         // This matches the relevant public Ryu 1.0.13 Cargo shape: Edition
         // 2018, Cargo's default automatic benchmark discovery, and no explicit
@@ -5284,6 +5285,7 @@ mod tests {
             ),
             "a non-target sibling must retain the typed exact-target refusal, got {refusal:?}"
         );
+        lease.commit();
         Ok(())
     }
 
