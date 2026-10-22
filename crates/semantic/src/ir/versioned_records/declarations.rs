@@ -913,7 +913,11 @@ fn parse_core_jumbo_row(
         .and_then(|size| size.checked_add(2 + 1))
         .and_then(|size| size.checked_add(parent_bytes))
         .and_then(|size| size.checked_add(parentage_bytes))
-        .and_then(|size| size.checked_add(8 + u64::from(publication) + members.byte_length() + attributes.byte_length()))
+        .and_then(|size| {
+            size.checked_add(
+                8 + u64::from(publication) + members.byte_length() + attributes.byte_length(),
+            )
+        })
         .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
     let jumbo_framed_bytes = u64::try_from(super::HEADER_BYTES + super::RECORD_HEADER_BYTES)
         .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?
@@ -930,7 +934,9 @@ fn parse_core_jumbo_row(
         .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?
         .checked_add(32 + 1 + 4)
         .and_then(|size| size.checked_add(name_length))
-        .and_then(|size| size.checked_add(2 + 1 + parent_bytes + parentage_bytes + 8 + u64::from(publication)))
+        .and_then(|size| {
+            size.checked_add(2 + 1 + parent_bytes + parentage_bytes + 8 + u64::from(publication))
+        })
         .and_then(|size| size.checked_add(JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES as u64 * 2))
         .ok_or(SemanticPlaneRecordError::RowTooLarge)?;
     if name_is_descriptor == (inline_name_framed_bytes <= maximum) {
@@ -1160,10 +1166,13 @@ fn encode_core_row_with_jumbo<Reader: SemanticReader + ?Sized>(
         |push| visit_core_attribute_wire_parts(reader, row, push),
     )?;
     out.extend_from_slice(&descriptor.encode_wire());
-    Ok(core_publication_tag(match row.name {
-        crate::ir::ItemName::Named(_) => CORE_JUMBO_TAG,
-        crate::ir::ItemName::AnonymousCallable(_) => CORE_ANONYMOUS_CALLABLE_JUMBO_TAG,
-    }, row.authority.publication))
+    Ok(core_publication_tag(
+        match row.name {
+            crate::ir::ItemName::Named(_) => CORE_JUMBO_TAG,
+            crate::ir::ItemName::AnonymousCallable(_) => CORE_ANONYMOUS_CALLABLE_JUMBO_TAG,
+        },
+        row.authority.publication,
+    ))
 }
 
 fn core_jumbo_framed_bytes(
@@ -1184,7 +1193,17 @@ fn core_jumbo_framed_bytes(
     };
     u64::try_from(super::HEADER_BYTES + super::RECORD_HEADER_BYTES)
         .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?
-        .checked_add(32 + name_bytes + 2 + 1 + parent_bytes + parentage_bytes + 8 + u64::from(row.authority.publication != crate::ir::DeclarationPublicationRole::Unavailable))
+        .checked_add(
+            32 + name_bytes
+                + 2
+                + 1
+                + parent_bytes
+                + parentage_bytes
+                + 8
+                + u64::from(
+                    row.authority.publication != crate::ir::DeclarationPublicationRole::Unavailable,
+                ),
+        )
         .and_then(|bytes| bytes.checked_add(JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES as u64 * 2))
         .ok_or(SemanticPlaneRecordError::RowTooLarge)
 }
@@ -1206,7 +1225,18 @@ fn core_inline_framed_bytes<Reader: SemanticReader + ?Sized>(
         .map_err(|_| SemanticPlaneRecordError::RowTooLarge)?
         .checked_add(32 + 4)
         .and_then(|bytes| bytes.checked_add(u64::try_from(name.len()).ok()?))
-        .and_then(|bytes| bytes.checked_add(2 + 1 + 8 + 4 + 4 + u64::from(row.authority.publication != crate::ir::DeclarationPublicationRole::Unavailable)))
+        .and_then(|bytes| {
+            bytes.checked_add(
+                2 + 1
+                    + 8
+                    + 4
+                    + 4
+                    + u64::from(
+                        row.authority.publication
+                            != crate::ir::DeclarationPublicationRole::Unavailable,
+                    ),
+            )
+        })
         .and_then(|bytes| bytes.checked_add(if row.parent.is_some() { 33 } else { 1 }))
         .and_then(|bytes| {
             bytes.checked_add(match row.authority.parentage {

@@ -75,6 +75,7 @@ use std::{
 };
 use thiserror::Error;
 
+use backend_frontend_java::legacy::harness::JavaSource;
 use backend_replication::{
     ProducedSemanticTypedPlaneContentV3, SemanticTypedPlaneBoundaryPoliciesV3,
     produce_semantic_typed_plane_content_v3,
@@ -555,6 +556,7 @@ pub struct PackageSourceSet<'source> {
     go_witness_deadline_phase: Option<&'static str>,
     python_environment:
         Option<&'source backend_frontend_python::legacy::checker::PythonEnvironmentInput>,
+    native_clang_candidate: bool,
 }
 
 impl<'source> PackageSourceSet<'source> {
@@ -628,7 +630,29 @@ impl<'source> PackageSourceSet<'source> {
             go_compile_deadline: None,
             go_witness_deadline_phase: None,
             python_environment: None,
+            native_clang_candidate: false,
         })
+    }
+
+    /// Marks this exact checked package frontier as compiler-only native Clang input.
+    /// The owned-runtime admission boundary requires selected-frontier permits before
+    /// calling this method; it is not available to public callers.
+    pub(crate) fn with_native_clang_candidate(mut self) -> Result<Self, PackageSourceSetError> {
+        if !matches!(
+            self.request.target.profile,
+            backend_semantic::vocabulary::LanguageProfile::C(_)
+                | backend_semantic::vocabulary::LanguageProfile::Cxx(_)
+        ) {
+            return Err(PackageSourceSetError::NativeClangProfileMismatch);
+        }
+        self.native_clang_candidate = true;
+        Ok(self)
+    }
+
+    /// Whether this package crossed the distinct checked native-candidate admission route.
+    #[must_use]
+    pub const fn is_native_clang_candidate(&self) -> bool {
+        self.native_clang_candidate
     }
 
     pub(super) fn with_python_raw_sources(
@@ -846,6 +870,12 @@ pub enum PackageSourceSetError {
     /// The decoded and raw frontiers did not describe the same exact bytes.
     #[error("decoded source differs from the retained raw Python frontier")]
     RawSourceMismatch,
+    /// The distinct native Clang candidate route was requested for a non-C/C++ profile.
+    #[error("native Clang source candidates require a C or C++ profile and UTF-8 bytes")]
+    NativeClangProfileMismatch,
+    /// The distinct native C# candidate route was requested for a non-C# profile.
+    #[error("native C# source candidates require a C# profile and UTF-8 bytes")]
+    NativeCSharpProfileMismatch,
     /// Package roots must have host-independent absolute identity.
     #[error("package source root is relative")]
     RelativeRoot,
@@ -2922,6 +2952,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             package_root: &resolved.package_root,
             source_path: &resolved.source_path,
             source: &resolved.bytes,
+            java_sourcepath: &[],
             unit_key: &unit_key,
             profile: application_request.profile,
             toolchain,
@@ -3533,6 +3564,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         package_root: package.package_root,
                         source_path: &first_source_path,
                         source: first_source.source.as_bytes(),
+                        java_sourcepath: &[],
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
                         toolchain,
@@ -3986,6 +4018,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         package_root: package.package_root,
                         source_path: &source_path,
                         source: first_source.source.as_bytes(),
+                        java_sourcepath: &[],
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
                         toolchain,
@@ -4051,6 +4084,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         package_root: package.package_root,
                         source_path: &go_first_source_path,
                         source: first_source.source.as_bytes(),
+                        java_sourcepath: &[],
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
                         toolchain,
@@ -4227,6 +4261,21 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     }
                 })?;
             let source_path = package.package_root.join(source.relative_path);
+            let java_sourcepath = if matches!(
+                target.profile,
+                backend_semantic::vocabulary::LanguageProfile::Java(_)
+            ) {
+                package
+                    .compilation_sources()
+                    .filter(|captured| captured.relative_path() != source.relative_path)
+                    .map(|captured| JavaSource {
+                        name: Path::new(captured.relative_path()),
+                        bytes: captured.source().as_bytes(),
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
             let go_owner = match go_authority.as_mut() {
                 Some(go) => match go.owner(&source_path) {
                     Ok(owner) => Some(owner),
@@ -4261,6 +4310,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             package_root: package.package_root,
                             source_path: &source_path,
                             source: source.source.as_bytes(),
+                            java_sourcepath: &java_sourcepath,
                             unit_key: package.package_target.unit_key(),
                             profile: target.profile,
                             toolchain,

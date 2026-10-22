@@ -5,6 +5,10 @@ use super::file_facts_relation::{
     ProductSourceFileFactsAdmission, ProductSourceFileFactsLookup, ProductSourceFileFactsRecord,
     admit_product_source_file_facts, product_source_file_facts_relation,
 };
+use super::native_frontier_relation::{
+    CheckedNativeFrontier, NativePathDisposition, ProductNativeFrontierRelation,
+    admit_native_frontier, product_native_frontier_relation, reconstruct_content,
+};
 use crate::workspace::{TransitionWork, WorkspaceRelationHandle, WorkspaceSnapshot};
 pub use backend_compile::{
     Container, DeclarationKind, SourceDeclaration, SourceLanguage, SourceLocation,
@@ -3046,10 +3050,64 @@ pub struct ProductSourceSnapshot {
     relation: WorkspaceRelationHandle<ProductSourceRelation>,
     source_facts:
         Option<WorkspaceRelationHandle<super::file_facts_relation::ProductSourceFileFactsRelation>>,
+    native_frontier: Option<WorkspaceRelationHandle<ProductNativeFrontierRelation>>,
     manifest: Arc<[u8]>,
     authority: [u8; backend_version::ID_BYTES],
     delta: ProductSourceDeltaFacts,
     retention: ProductSourceRetentionFacts,
+}
+
+/// Exact malformed Clang source bytes recovered from the selected native
+/// frontier and revalidated against both content identity domains.
+#[derive(Eq, PartialEq)]
+pub struct VerifiedNativeSource {
+    project: [u8; 32],
+    profile: LanguageProfile,
+    relative_path: String,
+    source_identity: ContentId<SourceFactDomain>,
+    content_digest: [u8; 32],
+    bytes: Box<[u8]>,
+}
+
+impl fmt::Debug for VerifiedNativeSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VerifiedNativeSource")
+            .field("project", &self.project)
+            .field("profile", &self.profile)
+            .field("relative_path", &self.relative_path)
+            .field("source_identity", &self.source_identity)
+            .field("content_digest", &self.content_digest)
+            .field("byte_length", &self.bytes.len())
+            .finish()
+    }
+}
+
+impl VerifiedNativeSource {
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    #[must_use]
+    pub fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+    #[must_use]
+    pub const fn profile(&self) -> LanguageProfile {
+        self.profile
+    }
+    #[must_use]
+    pub const fn source_identity(&self) -> ContentId<SourceFactDomain> {
+        self.source_identity
+    }
+    #[must_use]
+    pub const fn content_digest(&self) -> [u8; 32] {
+        self.content_digest
+    }
+    #[must_use]
+    pub const fn project(&self) -> [u8; 32] {
+        self.project
+    }
 }
 
 impl ProductSourceSnapshot {
@@ -3068,6 +3126,8 @@ impl ProductSourceSnapshot {
             .map_err(|error| error.to_string())?;
         let source_facts =
             product_source_file_facts_relation(snapshot).map_err(|error| error.to_string())?;
+        let native_frontier =
+            product_native_frontier_relation(snapshot).map_err(|error| error.to_string())?;
         let relation_root = relation.root_node().map_err(|error| error.to_string())?;
         let (base, target) = snapshot
             .transition_relation_roots::<ProductSourceRelation>()
@@ -3082,6 +3142,7 @@ impl ProductSourceSnapshot {
             transition: ProductSourceTransition { base, target },
             relation,
             source_facts,
+            native_frontier,
             manifest: Arc::from(snapshot.manifest().encode().into_boxed_slice()),
             authority: *snapshot.manifest().authority(),
             delta: ProductSourceDeltaFacts::from_transition(snapshot.transition_work()),
@@ -3115,6 +3176,124 @@ impl ProductSourceSnapshot {
     #[must_use]
     pub const fn relation(&self) -> &WorkspaceRelationHandle<ProductSourceRelation> {
         &self.relation
+    }
+
+    /// Checks the complete persisted native frontier against the current
+    /// normalized paths. Absence is unavailable and never falls back to a
+    /// path-only freshness decision.
+    pub fn admit_native_frontier(
+        &self,
+        project: [u8; 32],
+        profile: LanguageProfile,
+        current_paths: &std::collections::BTreeSet<String>,
+    ) -> Result<Option<CheckedNativeFrontier>, String> {
+        let Some(relation) = &self.native_frontier else {
+            return Ok(None);
+        };
+        admit_native_frontier(relation, project, profile, current_paths).map(Some)
+    }
+
+    /// Reconstructs exact malformed-source bytes only from the same selected,
+    /// complete frontier that issued `frontier`.
+    pub fn verified_native_source(
+        &self,
+        frontier: &CheckedNativeFrontier,
+        path: &str,
+    ) -> Result<VerifiedNativeSource, String> {
+        let (project, profile) = frontier.owner();
+        let Some(relation) = &self.native_frontier else {
+            return Err("selected workspace has no native frontier".to_owned());
+        };
+        if frontier.selected_root() != *relation.root().as_bytes() {
+            return Err("native frontier is not the selected workspace frontier".to_owned());
+        }
+        let disposition = frontier
+            .dispositions()
+            .iter()
+            .find(|(candidate, _)| candidate == path)
+            .map(|(_, disposition)| *disposition)
+            .ok_or_else(|| "native source path is outside the checked frontier".to_owned())?;
+        let NativePathDisposition::ClangMalformed {
+            content,
+            source_identity,
+            byte_length,
+            chunk_count,
+        } = disposition
+        else {
+            return Err("native source path is not a malformed-source candidate".to_owned());
+        };
+        let bytes =
+            reconstruct_content(relation, project, profile, path, byte_length, chunk_count)?;
+        if backend_compile::typed_of::<backend_compile::InputContentSchema>(&bytes).to_bytes()
+            != content
+            || ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes) != source_identity
+            || std::str::from_utf8(&bytes).is_err()
+        {
+            return Err(
+                "selected native source bytes failed content identity validation".to_owned(),
+            );
+        }
+        Ok(VerifiedNativeSource {
+            project,
+            profile,
+            relative_path: path.to_owned(),
+            source_identity,
+            content_digest: content,
+            bytes: bytes.into_boxed_slice(),
+        })
+    }
+
+    /// Reconstructs exact malformed C# bytes only from the same selected,
+    /// complete frontier that issued `frontier`.
+    pub fn verified_native_csharp_source(
+        &self,
+        frontier: &CheckedNativeFrontier,
+        path: &str,
+    ) -> Result<VerifiedNativeSource, String> {
+        let (project, profile) = frontier.owner();
+        if !matches!(profile, LanguageProfile::CSharp(_)) {
+            return Err("native C# source frontier has a non-C# profile".to_owned());
+        }
+        let Some(relation) = &self.native_frontier else {
+            return Err("selected workspace has no native frontier".to_owned());
+        };
+        if frontier.selected_root() != *relation.root().as_bytes() {
+            return Err("native frontier is not the selected workspace frontier".to_owned());
+        }
+        let disposition = frontier
+            .dispositions()
+            .iter()
+            .find(|(candidate, _)| candidate == path)
+            .map(|(_, disposition)| *disposition)
+            .ok_or_else(|| "native C# source path is outside the checked frontier".to_owned())?;
+        let NativePathDisposition::CSharpMalformed {
+            content,
+            source_identity,
+            byte_length,
+            chunk_count,
+        } = disposition
+        else {
+            return Err("native C# source path is not a malformed-source candidate".to_owned());
+        };
+        let bytes =
+            reconstruct_content(relation, project, profile, path, byte_length, chunk_count)?;
+        if backend_compile::typed_of::<backend_compile::InputContentSchema>(&bytes).to_bytes()
+            != content
+            || ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes) != source_identity
+            || std::str::from_utf8(&bytes).is_err()
+        {
+            return Err(
+                "selected native C# source bytes failed content identity validation".to_owned(),
+            );
+        }
+        Ok(VerifiedNativeSource {
+            project,
+            profile,
+            relative_path: path.to_owned(),
+            source_identity,
+            content_digest: content,
+            bytes: bytes.into_boxed_slice(),
+        })
     }
 
     /// Admits complete structural facts for one exact file row from the

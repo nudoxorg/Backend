@@ -432,11 +432,6 @@ pub fn select_unit_sources_from_workspace_tree_v2(
     if kind != CompilationUnitKindV2::PackageRoot && key_language != profile.language() {
         return Err(UnitAuthorityV2Error::ProfileKeyMismatch);
     }
-    let language = if kind == CompilationUnitKindV2::PackageRoot {
-        profile.language()
-    } else {
-        key_language
-    };
     let scope = match (kind, key, described_scope) {
         (
             CompilationUnitKindV2::ClangTranslationUnit,
@@ -484,7 +479,7 @@ pub fn select_unit_sources_from_workspace_tree_v2(
         }
         if *role == CompilerWorkspaceFileRoleV2::Source
             && unit_source_candidate_in_scope(kind, path, scope)
-            && is_language_source(kind, language, path)
+            && is_language_profile_source(kind, profile, path)
         {
             sources.push(SelectedUnitSourceV2 {
                 relative_path: path.clone(),
@@ -1058,7 +1053,9 @@ fn is_language_source(kind: CompilationUnitKindV2, language: Language, path: &st
             Language::Go => has_extension(path, &["go"]),
             Language::Java => has_extension(path, &["java"]),
             Language::CSharp => has_extension(path, &["cs"]),
-            Language::Clang => has_extension(path, &["c", "cc", "cpp", "cxx"]),
+            Language::Clang => {
+                has_extension(path, &["c", "cc", "cpp", "cxx", "h", "hh", "hpp", "hxx"])
+            }
         },
         CompilationUnitKindV2::RustCrate => has_extension(path, &["rs"]),
         CompilationUnitKindV2::TypeScriptProgram => has_extension(
@@ -1070,9 +1067,28 @@ fn is_language_source(kind: CompilationUnitKindV2, language: Language, path: &st
         CompilationUnitKindV2::JavaSourceSet => has_extension(path, &["java"]),
         CompilationUnitKindV2::CSharpProject => has_extension(path, &["cs"]),
         CompilationUnitKindV2::ClangTranslationUnit => {
-            has_extension(path, &["c", "cc", "cpp", "cxx"])
+            has_extension(path, &["c", "cc", "cpp", "cxx", "h", "hh", "hpp", "hxx"])
         }
     }
+}
+
+fn is_language_profile_source(
+    kind: CompilationUnitKindV2,
+    profile: LanguageProfile,
+    path: &str,
+) -> bool {
+    if kind == CompilationUnitKindV2::ClangTranslationUnit
+        || matches!(kind, CompilationUnitKindV2::PackageRoot)
+    {
+        match path.rsplit_once('.').map(|(_, extension)| extension) {
+            Some("h") => return matches!(profile, LanguageProfile::C(_)),
+            Some("hh" | "hpp" | "hxx") => {
+                return matches!(profile, LanguageProfile::Cxx(_));
+            }
+            _ => {}
+        }
+    }
+    is_language_source(kind, profile.language(), path)
 }
 
 fn has_extension(path: &str, extensions: &[&str]) -> bool {
@@ -1084,7 +1100,7 @@ fn is_python_source(path: &str) -> bool {
     has_extension(path, &["py", "pyi"])
 }
 fn is_cxx_source(path: &str) -> bool {
-    has_extension(path, &["cc", "cpp", "cxx"])
+    has_extension(path, &["cc", "cpp", "cxx", "hh", "hpp", "hxx"])
 }
 
 fn digest_key(key: &CompilationUnitKeyV2) -> Result<[u8; 32], UnitAuthorityV2Error> {
@@ -1239,8 +1255,8 @@ mod tests {
         CompilerWorkspaceFileRoleV2,
     };
     use backend_semantic::vocabulary::{
-        CStandard, GoVersion, JavaRelease, Language, LanguageProfile, NativeTool, PackageUrl,
-        PythonVersion, Stage, TypeScriptSource,
+        CStandard, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile, NativeTool,
+        PackageUrl, PythonVersion, Stage, TypeScriptSource,
     };
     use backend_version::{ContentId, ToolchainDomain};
 
@@ -1306,6 +1322,8 @@ mod tests {
             ("native/mod.rs", Source, [13; 32], 12),
             ("native/main.c", Source, [14; 32], 20),
             ("native/other.c", Source, [15; 32], 21),
+            ("native/public.h", Source, [21; 32], 23),
+            ("native/public.hpp", Source, [22; 32], 27),
             ("dotnet/app.csproj", Configuration, [16; 32], 12),
             ("dotnet/Program.cs", Source, [17; 32], 19),
             ("dotnet/Extra.cs", Source, [18; 32], 16),
@@ -1613,6 +1631,50 @@ mod tests {
         .expect("one exact Clang translation unit selected");
         assert_eq!(clang.sources().len(), 1);
         assert_eq!(clang.sources()[0].relative_path(), "native/main.c");
+
+        let c_header = select_unit_sources_from_workspace_tree_v2(
+            &target(CompilationUnitKeyV2::ClangTranslationUnit {
+                is_cxx: false,
+                source_path: "native/public.h".into(),
+            }),
+            LanguageProfile::C(CStandard::C23),
+            Stage::LowerIr,
+            &tree,
+        )
+        .expect("C header can be selected as its own local main source");
+        assert_eq!(c_header.sources().len(), 1);
+        assert_eq!(c_header.sources()[0].relative_path(), "native/public.h");
+
+        let cxx_header = select_unit_sources_from_workspace_tree_v2(
+            &target(CompilationUnitKeyV2::ClangTranslationUnit {
+                is_cxx: true,
+                source_path: "native/public.hpp".into(),
+            }),
+            LanguageProfile::Cxx(CxxStandard::Cxx23),
+            Stage::LowerIr,
+            &tree,
+        )
+        .expect("C++ header can be selected as its own local main source");
+        assert_eq!(cxx_header.sources().len(), 1);
+        assert_eq!(cxx_header.sources()[0].relative_path(), "native/public.hpp");
+        assert_eq!(
+            select_unit_sources_from_workspace_tree_v2(
+                &target(CompilationUnitKeyV2::ClangTranslationUnit {
+                    is_cxx: true,
+                    source_path: "native/public.hpp".into(),
+                }),
+                LanguageProfile::C(CStandard::C23),
+                Stage::LowerIr,
+                &tree,
+            ),
+            Err(UnitAuthorityV2Error::MissingLanguageSource),
+            "a C++ header is not a candidate under a C profile"
+        );
+        assert_eq!(
+            unit_remote_closure_requirement_v2(CompilationUnitKindV2::ClangTranslationUnit),
+            Some(UnsupportedClosureRequirementV2::ClangIncludeClosure),
+            "selecting a local header does not prove a portable include closure"
+        );
 
         let rust = select_unit_sources_from_workspace_tree_v2(
             &target(CompilationUnitKeyV2::RustCrate {

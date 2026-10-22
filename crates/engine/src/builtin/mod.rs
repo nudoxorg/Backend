@@ -69,7 +69,7 @@ pub use relation::{
     ProductSourceMembershipPageRef, ProductSourceProjectUpdate, ProductSourceRecord,
     ProductSourceRelation, ProductSourceRetentionFacts, ProductSourceSnapshot,
     ProductSourceTransition, RetainedDeclarations, SourceDeclaration, SourceLanguage,
-    SourceLocation, SourceUnavailableReason, legacy_product_source_file_key,
+    SourceLocation, SourceUnavailableReason, VerifiedNativeSource, legacy_product_source_file_key,
     product_source_file_key, product_source_membership_page_key,
 };
 pub use semantic_capture_relation::{
