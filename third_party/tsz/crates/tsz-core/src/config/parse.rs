@@ -134,6 +134,11 @@ pub struct RemovedOptionNotice {
 #[derive(Default)]
 pub struct ParsedTsConfig {
     pub config: TsConfig,
+    /// Directory of the config file that supplied the effective `paths`
+    /// mapping. `baseUrl`, when present, continues to take precedence during
+    /// module resolution. This provenance must survive `extends` merging so
+    /// paths without `baseUrl` remain relative to their declaring config.
+    pub paths_base_path: Option<std::path::PathBuf>,
     pub diagnostics: Vec<Diagnostic>,
     /// Removed-option notices pending the `extends`-merge decision. Direct
     /// (non-`extends`-aware) consumers get them flushed by
@@ -1470,6 +1475,7 @@ pub fn parse_tsconfig_with_diagnostics_deferred(
 
     Ok(ParsedTsConfig {
         config,
+        paths_base_path: None,
         diagnostics,
         pending_removed_option_notices,
         explicit_compiler_option_keys,
