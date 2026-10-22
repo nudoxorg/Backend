@@ -203,15 +203,15 @@ mod tests {
     #[test]
     fn oversized_search_reply_preserves_the_request_basis() {
         let (stream, mut peer) = backend_replication::LocalStream::pair().expect("pair");
+        let length = u32::try_from(crate::MAX_FRAME + 1).expect("frame length");
+        peer.write_all(&length.to_be_bytes())
+            .expect("oversized header");
+        peer.write_all(b"unconsumed body bytes")
+            .expect("body prefix");
+        peer.set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("bounded closed-socket check");
         let server = std::thread::spawn(move || {
             let _request = read_body(&mut peer).expect("search request");
-            let length = u32::try_from(crate::MAX_FRAME + 1).expect("frame length");
-            peer.write_all(&length.to_be_bytes())
-                .expect("oversized header");
-            peer.write_all(b"unconsumed body bytes")
-                .expect("body prefix");
-            peer.set_read_timeout(Some(Duration::from_secs(1)))
-                .expect("bounded closed-socket check");
             let mut byte = [0];
             assert_eq!(peer.read(&mut byte).expect("shutdown notification"), 0);
         });
