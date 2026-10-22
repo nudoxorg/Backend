@@ -193,7 +193,7 @@ pub(super) fn prove_native_csharp_sites<'source>(
         let Some(slice) = source.bytes().get(start..end) else {
             continue;
         };
-        let declaration = std::str::from_utf8(slice).map_err(|_| {
+        std::str::from_utf8(slice).map_err(|_| {
             BuiltinModelError("native C# declaration boundary lost UTF-8 authority".to_owned())
         })?;
         sites.insert(
