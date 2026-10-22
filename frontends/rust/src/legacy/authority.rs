@@ -3071,7 +3071,9 @@ impl RustWorkspace {
         self.preload_documentation_inputs(
             &documentation_sources,
             control,
-            key.cargo_target.as_ref().map(RustCargoTargetIdentity::borrowed),
+            key.cargo_target
+                .as_ref()
+                .map(RustCargoTargetIdentity::borrowed),
             observer.as_mut().map(|observer| &mut **observer),
             read_frontier_summary,
         )?;
