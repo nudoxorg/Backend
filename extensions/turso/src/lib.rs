@@ -52,6 +52,7 @@ pub use authority::{
     VersionedPlaneSegmentSchema, reopen_native_program_sources, reopen_selected_compiler_metadata,
     reopen_selected_compiler_publication, reopen_selected_typescript_snapshot_witness,
     reopen_source_coverage, reopen_typescript_snapshot_witness,
+    verify_typescript_snapshot_witness_member,
 };
 pub use error::ProjectionError;
 pub use graph::{

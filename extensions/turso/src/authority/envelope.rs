@@ -1834,6 +1834,22 @@ fn reopen_typescript_snapshot_witness_bounded(
     Ok(Some(bytes))
 }
 
+/// Checks an optional ledger's exact typed object and closure membership under
+/// the certificate byte limit. This validates storage only; it grants no
+/// selected-generation capability or current filesystem authority.
+///
+/// # Errors
+/// Returns an error if a declared member is absent, corrupt, or differs in
+/// schema, typed key, identity, or extent from the publication metadata.
+pub fn verify_typescript_snapshot_witness_member(
+    store: &FileStore,
+    closure: &backend_store::DurableManifest,
+    metadata: &CompilerPublicationMetadata,
+) -> Result<(), String> {
+    let _ = reopen_typescript_snapshot_witness_bounded(store, closure, metadata)?;
+    Ok(())
+}
+
 /// Reopens only the selected closure's exact program member and validates its identity.
 pub fn reopen_native_program_sources(
     closure: &backend_store::DurableManifest,

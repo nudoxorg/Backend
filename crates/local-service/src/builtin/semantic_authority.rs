@@ -1356,6 +1356,28 @@ impl AdmittedCompilation {
                 })?;
             expected_members.insert(id);
         }
+        if let Some(member) = metadata.typescript_snapshot_witness() {
+            // The optional accelerator is a declared compiler payload member.
+            // Admit its exact typed storage without minting reuse authority;
+            // selected-generation admission and filesystem replay happen later.
+            let id = payload_index
+                .admit_claim(UntrustedObjectId::from_bytes(*member.object_id()))
+                .map_err(|error| {
+                    BuiltinModelError(format!("admit TypeScript snapshot membership: {error:?}"))
+                })?
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "TypeScript snapshot is absent from its output closure".to_owned(),
+                    )
+                })?;
+            backend_extension_turso::verify_typescript_snapshot_witness_member(
+                store,
+                &payload_index,
+                &metadata,
+            )
+            .map_err(BuiltinModelError)?;
+            expected_members.insert(id);
+        }
         let program_mappings = native_program.as_ref().map(|program| {
             program
                 .sources()
@@ -5018,6 +5040,106 @@ mod tests {
             SelectedSemanticPublicationKey::new(&generation).err(),
             Some("semantic freshness requires a selected publication key")
         );
+    }
+
+    #[test]
+    fn native_staged_publication_admits_the_exported_snapshot_payload_member() {
+        use backend_engine::application::{
+            LocalCompilerCapabilityState, LocalCompilerHost, LocalHostDiscovery,
+            LocalHostEnvironment, LocalHostVariable, OwnedPackageSource, OwnedPackageSourceSet,
+        };
+        use backend_library::interface::{CorrelationId, GenerateTarget, PackageCompileRequest};
+        use backend_semantic::vocabulary::TypeScriptSource;
+        use std::ffi::OsString;
+
+        struct DirectHost(PathBuf);
+        impl LocalHostEnvironment for DirectHost {
+            fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
+                (variable == LocalHostVariable::NudoxDataRoot)
+                    .then(|| self.0.clone().into_os_string())
+            }
+
+            fn search_path(&self) -> Option<OsString> {
+                Some(OsString::new())
+            }
+        }
+
+        const SOURCE: &str = "export const answer: number = 42;";
+        let workspace = ScratchWorkspace::new();
+        let package_root = workspace.0.join("package");
+        std::fs::create_dir_all(package_root.join("src")).expect("create native source root");
+        std::fs::write(package_root.join("src/main.ts"), SOURCE).expect("write native source");
+        std::fs::write(
+            package_root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"noLib":true,"types":[]},"files":["src/main.ts"]}"#,
+        )
+        .expect("write native configured root");
+        let package_root = package_root.canonicalize().expect("canonical package root");
+        let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+        let coordinate = PackageUrl::parse("pkg:npm/snapshot-member-fixture@1.0.0".to_owned())
+            .expect("admit package coordinate");
+        let client = LocalCompilerHost::new(
+            DirectHost(workspace.0.join("compiler")),
+            LocalHostDiscovery::ExplicitOnly,
+        )
+        .open()
+        .expect("open linked native compiler without ambient executables");
+        assert_eq!(
+            client.capabilities().for_profile(profile).state(),
+            LocalCompilerCapabilityState::Ready,
+        );
+        let request = PackageCompileRequest::new(
+            GenerateTarget {
+                correlation: CorrelationId(74),
+                profile,
+                stage: Stage::LowerIr,
+            },
+            coordinate.clone(),
+        )
+        .expect("native package request");
+        let staged = client
+            .compile_package_sources_staged(
+                OwnedPackageSourceSet::new(
+                    request,
+                    package_root,
+                    vec![OwnedPackageSource::new("src/main.ts", SOURCE).expect("native source")]
+                        .into_boxed_slice(),
+                )
+                .expect("native package frontier"),
+            )
+            .expect("stage actual native compiler output");
+        let input = *staged.input_witness().input_root();
+        let certificate = staged
+            .typescript_snapshot_certificate(input)
+            .expect("actual staged exporter emits the optional member");
+        let key = ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::Purl(coordinate.clone()),
+            coordinate,
+            profile,
+        )
+        .expect("native publication key");
+        let mut authority = SemanticAuthority::open(&workspace.0).expect("semantic authority");
+        let observation = authority
+            .observe(&key, input, 1)
+            .expect("observe exact input");
+        let attempt = authority
+            .begin_candidate_attempt(&key, &observation)
+            .expect("begin exact compiler attempt");
+        let (_, selected) = authority
+            .publish_staged(&key, attempt, &staged, |_| Ok(()))
+            .expect("real admission counts the declared accelerator in the exact payload set");
+        let reopened = reopen_selected_compiler_metadata(&authority.store, &selected)
+            .expect("selected metadata remains lazy");
+        assert!(reopened.metadata().typescript_snapshot_witness().is_some());
+        let selected_certificate =
+            backend_extension_turso::reopen_selected_typescript_snapshot_witness(
+                &authority.store,
+                &selected,
+            )
+            .expect("exact selected closure admits its typed member")
+            .expect("selected optional member is present");
+        assert_eq!(selected_certificate.as_bytes(), certificate.as_slice());
+        drop(client);
     }
 
     #[test]
