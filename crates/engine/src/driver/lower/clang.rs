@@ -3695,7 +3695,7 @@ mod tests {
     use backend_frontend_clang::{ClangAuthorityEnvironment, ClangProject};
     use backend_semantic::ir::{
         ClangStorageClass, DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind,
-        ForeignOrigin, FragmentView, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticReader,
+        ForeignOrigin, FragmentView, NominalRef, OccurrenceTarget, PrimitiveShape,
         SemanticTypeRecord, SemanticTypeTag, SourceIdentity,
     };
     use backend_semantic::vocabulary::{

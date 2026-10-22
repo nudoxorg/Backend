@@ -1455,14 +1455,14 @@ pub enum PackageAuthorityError {
 mod tests {
     #[test]
     fn rust_crate_authority_forwards_exact_cargo_target_name_and_root() {
-        let key = super::CompilationUnitKeyV2::RustCrate {
+        let key = CompilationUnitKeyV2::RustCrate {
             name: "ryu-bench".into(),
             root: "benches/bench.rs".into(),
         };
-        let target = super::rust_cargo_target(&key).expect("crate key carries target identity");
+        let target = rust_cargo_target(&key).expect("crate key carries target identity");
         assert_eq!(target.name, "ryu-bench");
         assert_eq!(target.root, std::path::Path::new("benches/bench.rs"));
-        assert!(super::rust_cargo_target(&super::CompilationUnitKeyV2::PackageRoot).is_none());
+        assert!(rust_cargo_target(&CompilationUnitKeyV2::PackageRoot).is_none());
     }
 
     #[test]

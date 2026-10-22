@@ -416,7 +416,7 @@ pub struct PackageSourceCoverageGap {
         Option<backend_frontend_python::legacy::checker::PythonProjectSourceStatus>,
     native_python_diagnostics:
         Box<[backend_frontend_python::legacy::checker::PythonProjectDiagnostic]>,
-    typescript_diagnostic: Option<backend_semantic::ir::SourceCoverageGapDiagnostic>,
+    typescript_diagnostic: Option<SourceCoverageGapDiagnostic>,
 }
 
 impl PackageSourceCoverageGap {
@@ -438,9 +438,7 @@ impl PackageSourceCoverageGap {
 
     /// Exact owner context when TypeScript lowering observed a source-bound type cycle.
     #[must_use]
-    pub fn typescript_diagnostic(
-        &self,
-    ) -> Option<&backend_semantic::ir::SourceCoverageGapDiagnostic> {
+    pub fn typescript_diagnostic(&self) -> Option<&SourceCoverageGapDiagnostic> {
         self.typescript_diagnostic.as_ref()
     }
 
@@ -4571,10 +4569,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     }
                 })?;
             let source_path = package.package_root.join(source.relative_path);
-            let java_sourcepath = if matches!(
-                target.profile,
-                backend_semantic::vocabulary::LanguageProfile::Java(_)
-            ) {
+            let java_sourcepath = if matches!(target.profile, LanguageProfile::Java(_)) {
                 package
                     .compilation_sources()
                     .filter(|captured| captured.relative_path() != source.relative_path)
