@@ -305,7 +305,7 @@ pub(crate) fn collect<'source>(
     facts: &mut FactSet<'source>,
 ) -> Result<(), ClangCollectError> {
     match project {
-        Some(project) => collect_project(profile, project, source, cancelled, facts),
+        Some(project) => collect_project(project, source, cancelled, facts),
         None => {
             let input =
                 ClangInput::from_profile(c"nudox-input", source, profile).map_err(|_| {
@@ -324,7 +324,6 @@ pub(crate) fn collect<'source>(
 /// arguments and package working directory, then lowers its include and
 /// reference closure through the same canonical lane.
 fn collect_project<'source>(
-    profile: LanguageProfile,
     project: &ClangProject,
     source: &'source [u8],
     cancelled: &AtomicBool,
@@ -339,7 +338,7 @@ fn collect_project<'source>(
         CString::new(project.entry().to_string_lossy().as_bytes()).map_err(|_| invalid())?;
     let directory =
         CString::new(project.root().to_string_lossy().as_bytes()).map_err(|_| invalid())?;
-    let arguments = project.arguments_for_profile(profile);
+    let arguments = project.arguments();
     let owned = arguments
         .iter()
         .map(|argument| CString::new(argument.as_bytes()))
