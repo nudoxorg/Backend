@@ -1104,11 +1104,13 @@ pub(crate) fn rust_authority_diagnostic<'diagnostic>(
         RustError::AmbiguousSourceOwner {
             definition_count,
             owner_root_sample,
+            target_resolution,
             ..
         } => {
             let _ = write!(
                 message,
-                "Rust scope=ambiguous_source_owner; active owner definitions={definition_count}; roots=[",
+                "Rust scope=ambiguous_source_owner; target_resolution={}; active owner definitions={definition_count}; roots=[",
+                target_resolution.diagnostic_label(),
             );
             write_bounded_rust_owner_roots(
                 &mut message,
@@ -1954,6 +1956,8 @@ mod lifecycle_tests {
                 definition_count: 5,
                 owner_root_sample: ambiguous_roots.clone(),
                 omitted_owner_definitions: 2,
+                target_resolution:
+                    backend_frontend_rust::legacy::RustCargoTargetResolution::NotRequested,
             }),
         );
         let CompileFailure::Authority {
@@ -1972,6 +1976,7 @@ mod lifecycle_tests {
             .expect("the bounded ASCII ambiguous diagnostic is UTF-8");
         assert!(ambiguous_text.starts_with("Rust scope=ambiguous_source_owner;"));
         assert!(ambiguous_text.contains("active owner definitions=5"));
+        assert!(ambiguous_text.contains("target_resolution=not_requested"));
         assert!(ambiguous_text.contains("src/lib.rs, build.rs"));
         assert!(ambiguous_text.contains("(+3 owner definitions not shown)"));
         assert!(!ambiguous_text.contains("detached_source"));
@@ -1983,6 +1988,7 @@ mod lifecycle_tests {
                     definition_count,
                     owner_root_sample,
                     omitted_owner_definitions,
+                    target_resolution,
                 },
             ..
         } = ambiguous_failure
@@ -1993,6 +1999,10 @@ mod lifecycle_tests {
         assert_eq!(definition_count, 5);
         assert_eq!(owner_root_sample, ambiguous_roots);
         assert_eq!(omitted_owner_definitions, 2);
+        assert_eq!(
+            target_resolution,
+            backend_frontend_rust::legacy::RustCargoTargetResolution::NotRequested
+        );
     }
 
     #[test]
@@ -2009,6 +2019,8 @@ mod lifecycle_tests {
             ]
             .into_boxed_slice(),
             omitted_owner_definitions: usize::MAX - 2,
+            target_resolution:
+                backend_frontend_rust::legacy::RustCargoTargetResolution::MetadataUnavailable,
         };
         let mut bounded = [0; 128];
         let bounded_capacity = bounded.len();
@@ -2019,6 +2031,7 @@ mod lifecycle_tests {
         let text = std::str::from_utf8(diagnostic.primary)
             .expect("bounded owner-root prefixes preserve UTF-8 boundaries");
         assert!(text.starts_with("Rust scope=ambiguous_source_owner;"));
+        assert!(text.contains("target_resolution=metadata_unavailable"));
         assert!(!text.contains("/private"));
 
         let mut complete = [0; MAX_NATIVE_DIAGNOSTIC_BYTES];

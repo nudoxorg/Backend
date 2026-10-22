@@ -186,7 +186,6 @@ pub(crate) fn collect_workspace<'source>(
     source: &'source [u8],
     facts: &mut FactSet<'source>,
 ) -> Result<(), RustCollectError> {
-    let target = target.or_else(|| workspace.cargo_target_for_source_path(source_path));
     let analysis = if let Some(target) = target {
         workspace.analyze_source_for_target(
             source_path,
@@ -200,7 +199,7 @@ pub(crate) fn collect_workspace<'source>(
             |authority| collect_authority(authority, source, facts),
         )
     } else {
-        workspace.analyze_source(
+        workspace.analyze_source_with_cargo_target_fallback(
             source_path,
             source,
             RustAnalysisControl {
@@ -5075,7 +5074,11 @@ mod tests {
                     &mut shared_facts,
                 ),
                 Err(RustCollectError::Authority(
-                    RustAuthorityError::AmbiguousSourceOwner { .. }
+                    RustAuthorityError::AmbiguousSourceOwner {
+                        target_resolution:
+                            backend_frontend_rust::legacy::RustCargoTargetResolution::NoExactTarget,
+                        ..
+                    }
                 ))
             ),
             "an unmatched shared module must retain the typed ambiguity refusal"

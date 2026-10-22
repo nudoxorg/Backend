@@ -524,6 +524,49 @@ pub struct RustCargoTarget<'target> {
     pub root: &'target Path,
 }
 
+/// Bounded reason that package-root analysis did or did not select an exact
+/// Cargo target from the already admitted metadata snapshot.
+///
+/// This carries no source bytes, environment values, or absolute paths. It is
+/// included only when ambiguity remains, so a refusal can distinguish missing
+/// target evidence from multiple HIR owners even after exact target selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RustCargoTargetResolution {
+    /// The caller requested unscoped analysis and did not ask for metadata fallback.
+    NotRequested,
+    /// Complete bounded Cargo metadata facts were not retained for this workspace.
+    MetadataUnavailable,
+    /// Metadata did not identify one selected package in the admitted workspace.
+    SelectedPackageUnavailable,
+    /// The selected package manifest did not equal the workspace-root manifest.
+    ManifestMismatch,
+    /// No unique declared Cargo target had this exact source root.
+    NoExactTarget,
+    /// More than one declared Cargo target had this exact source root.
+    DuplicateExactTarget,
+    /// One exact target root and name were selected from Cargo metadata.
+    ExactCargoTarget,
+    /// An exact target name and root were supplied by the admitted unit key.
+    ExplicitUnitTarget,
+}
+
+impl RustCargoTargetResolution {
+    /// Short fixed label for bounded diagnostics; does not include path data.
+    #[must_use]
+    pub const fn diagnostic_label(self) -> &'static str {
+        match self {
+            Self::NotRequested => "not_requested",
+            Self::MetadataUnavailable => "metadata_unavailable",
+            Self::SelectedPackageUnavailable => "selected_package_unavailable",
+            Self::ManifestMismatch => "manifest_mismatch",
+            Self::NoExactTarget => "no_exact_target",
+            Self::DuplicateExactTarget => "duplicate_exact_target",
+            Self::ExactCargoTarget => "exact_cargo_target",
+            Self::ExplicitUnitTarget => "explicit_unit_target",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RustCargoTargetIdentity {
     name: Box<str>,
@@ -592,58 +635,75 @@ impl RustWorkspace {
         &self,
         source_path: impl AsRef<Path>,
     ) -> Option<RustCargoTarget<'_>> {
-        let facts = self.cargo_workspace_facts.as_deref()?;
-        let package_id = facts.selected_package_id.as_deref()?;
-        let package = facts
+        self.cargo_target_lookup_for_source_path(source_path.as_ref())
+            .0
+    }
+
+    fn cargo_target_lookup_for_source_path<'workspace>(
+        &'workspace self,
+        source_path: &Path,
+    ) -> (
+        Option<RustCargoTarget<'workspace>>,
+        RustCargoTargetResolution,
+    ) {
+        let Some(facts) = self.cargo_workspace_facts.as_deref() else {
+            return (None, RustCargoTargetResolution::MetadataUnavailable);
+        };
+        let Some(package_id) = facts.selected_package_id.as_deref() else {
+            return (None, RustCargoTargetResolution::SelectedPackageUnavailable);
+        };
+        let Some(package) = facts
             .workspace_packages
             .iter()
-            .find(|package| package.package_id.as_ref() == package_id)?;
-        if package.manifest_path != self.root.join("Cargo.toml") {
-            return None;
-        }
-        let source_path = source_path.as_ref();
-        let selected = if source_path.is_absolute() {
-            source_path
-        } else {
-            // Keep the joined path temporary alive only for the exact lookup.
-            return self.cargo_target_for_relative_source_path(source_path, package);
+            .find(|package| package.package_id.as_ref() == package_id)
+        else {
+            return (None, RustCargoTargetResolution::SelectedPackageUnavailable);
         };
-        self.cargo_target_for_absolute_source_path(selected, package)
-    }
-
-    fn cargo_target_for_relative_source_path<'workspace>(
-        &'workspace self,
-        relative: &Path,
-        package: &'workspace backend_compile::RustCargoWorkspacePackageFactV1,
-    ) -> Option<RustCargoTarget<'workspace>> {
-        if !is_normalized_relative_path(relative) {
-            return None;
+        if package.manifest_path != self.root.join("Cargo.toml") {
+            return (None, RustCargoTargetResolution::ManifestMismatch);
         }
-        let selected = self.root.join(relative);
-        self.cargo_target_for_absolute_source_path(&selected, package)
+        let selected = if source_path.is_absolute() {
+            source_path.to_path_buf()
+        } else {
+            if !is_normalized_relative_path(source_path) {
+                return (None, RustCargoTargetResolution::NoExactTarget);
+            }
+            self.root.join(source_path)
+        };
+        self.cargo_target_lookup_for_absolute_source_path(&selected, package)
     }
 
-    fn cargo_target_for_absolute_source_path<'workspace>(
+    fn cargo_target_lookup_for_absolute_source_path<'workspace>(
         &'workspace self,
         selected: &Path,
         package: &'workspace backend_compile::RustCargoWorkspacePackageFactV1,
-    ) -> Option<RustCargoTarget<'workspace>> {
+    ) -> (
+        Option<RustCargoTarget<'workspace>>,
+        RustCargoTargetResolution,
+    ) {
         let mut matching = package
             .targets
             .iter()
             .filter(|target| target.source_path == selected);
-        let target = matching.next()?;
+        let Some(target) = matching.next() else {
+            return (None, RustCargoTargetResolution::NoExactTarget);
+        };
         if matching.next().is_some() {
-            return None;
+            return (None, RustCargoTargetResolution::DuplicateExactTarget);
         }
-        let root = target.source_path.strip_prefix(&self.root).ok()?;
+        let Ok(root) = target.source_path.strip_prefix(&self.root) else {
+            return (None, RustCargoTargetResolution::NoExactTarget);
+        };
         if !is_normalized_relative_path(root) {
-            return None;
+            return (None, RustCargoTargetResolution::NoExactTarget);
         }
-        Some(RustCargoTarget {
-            name: target.name.as_ref(),
-            root,
-        })
+        (
+            Some(RustCargoTarget {
+                name: target.name.as_ref(),
+                root,
+            }),
+            RustCargoTargetResolution::ExactCargoTarget,
+        )
     }
 
     fn build_source_ownership_index(
@@ -835,6 +895,7 @@ impl RustWorkspace {
         file_id: FileId,
         path: &Path,
         target: Option<RustCargoTarget<'_>>,
+        target_resolution: RustCargoTargetResolution,
         control: RustAnalysisControl<'_>,
     ) -> Result<RustSourceOwnershipEntry, RustAuthorityError> {
         control.check()?;
@@ -886,6 +947,7 @@ impl RustWorkspace {
                     definition_count,
                     owner_root_sample: owner_root_sample.into_boxed_slice(),
                     omitted_owner_definitions,
+                    target_resolution,
                 })
             }
             (_, None) => unreachable!("a selected Rust source owner has a definition count"),
@@ -2215,7 +2277,14 @@ impl RustWorkspace {
             RustAuthority<'analysis>,
         ) -> Result<Output, RustAuthorityError>,
     ) -> Result<Output, RustAuthorityError> {
-        self.analyze_source_with_target(source_path, source, None, control, lower)
+        self.analyze_source_with_target(
+            source_path,
+            source,
+            None,
+            RustCargoTargetResolution::NotRequested,
+            control,
+            lower,
+        )
     }
 
     /// Runs one exact source transaction scoped to an admitted Cargo target.
@@ -2233,7 +2302,31 @@ impl RustWorkspace {
             RustAuthority<'analysis>,
         ) -> Result<Output, RustAuthorityError>,
     ) -> Result<Output, RustAuthorityError> {
-        self.analyze_source_with_target(source_path, source, Some(target), control, lower)
+        self.analyze_source_with_target(
+            source_path,
+            source,
+            Some(target),
+            RustCargoTargetResolution::ExplicitUnitTarget,
+            control,
+            lower,
+        )
+    }
+
+    /// Runs source analysis using only the exact target root in admitted Cargo
+    /// metadata when one uniquely names this source path. An absent or
+    /// ambiguous metadata target remains unscoped and can still be refused by
+    /// the ordinary HIR ownership check.
+    pub fn analyze_source_with_cargo_target_fallback<Output>(
+        &self,
+        source_path: impl AsRef<Path>,
+        source: &[u8],
+        control: RustAnalysisControl<'_>,
+        lower: impl for<'analysis> FnOnce(
+            RustAuthority<'analysis>,
+        ) -> Result<Output, RustAuthorityError>,
+    ) -> Result<Output, RustAuthorityError> {
+        let (target, resolution) = self.cargo_target_lookup_for_source_path(source_path.as_ref());
+        self.analyze_source_with_target(source_path, source, target, resolution, control, lower)
     }
 
     fn analyze_source_with_target<Output>(
@@ -2241,6 +2334,7 @@ impl RustWorkspace {
         source_path: impl AsRef<Path>,
         source: &[u8],
         target: Option<RustCargoTarget<'_>>,
+        target_resolution: RustCargoTargetResolution,
         control: RustAnalysisControl<'_>,
         lower: impl for<'analysis> FnOnce(
             RustAuthority<'analysis>,
@@ -2352,7 +2446,8 @@ impl RustWorkspace {
         // VFS presence alone does not establish active Cargo ownership. The
         // retained DefMap index was built from this exact loaded graph before
         // the workspace was shared, after any selected source overlays.
-        let owner = self.source_owner_entry(file_id, &source_path, target, control)?;
+        let owner =
+            self.source_owner_entry(file_id, &source_path, target, target_resolution, control)?;
         let source_scope = owner.scope;
         let owner = owner.krate;
         let observed_edition = owner.edition(&self.database);
@@ -2445,20 +2540,27 @@ impl RustWorkspace {
             // metadata-root lookup for a uniquely declared target root only.
             // Shared files with no exact target identity still follow the
             // ordinary strict ambiguity refusal.
-            let target =
-                admitted_target.or_else(|| self.cargo_target_for_source_path(selected.path));
-            let owner =
-                match self.source_owner_entry(selected_file_id, selected.path, target, control) {
-                    Ok(owner) => owner.krate,
-                    // The selected compiler frontier can contain cfg-inactive Rust
-                    // files. They still receive exact VFS/source binding above, but
-                    // only active Cargo-owned files have a crate cfg context from
-                    // which Rustdoc include attributes can be expanded. Skipping
-                    // this preload does not grant source ownership: analyze_source
-                    // continues to reject a detached file.
-                    Err(RustAuthorityError::DetachedSource { .. }) => continue,
-                    Err(error) => return Err(error),
-                };
+            let (target, target_resolution) = match admitted_target {
+                Some(target) => (Some(target), RustCargoTargetResolution::ExplicitUnitTarget),
+                None => self.cargo_target_lookup_for_source_path(selected.path),
+            };
+            let owner = match self.source_owner_entry(
+                selected_file_id,
+                selected.path,
+                target,
+                target_resolution,
+                control,
+            ) {
+                Ok(owner) => owner.krate,
+                // The selected compiler frontier can contain cfg-inactive Rust
+                // files. They still receive exact VFS/source binding above, but
+                // only active Cargo-owned files have a crate cfg context from
+                // which Rustdoc include attributes can be expanded. Skipping
+                // this preload does not grant source ownership: analyze_source
+                // continues to reject a detached file.
+                Err(RustAuthorityError::DetachedSource { .. }) => continue,
+                Err(error) => return Err(error),
+            };
             let semantics = Semantics::new(&self.database);
             let edition = owner.edition(&self.database);
             let source_file = EditionedFileId::new(&self.database, selected_file_id, edition);
@@ -5549,7 +5651,7 @@ pub enum RustAuthorityError {
     SourceOwnershipIndexUnavailable,
     /// The same physical source is defined in multiple active Cargo crate contexts.
     #[error(
-        "selected Rust source has {definition_count} active module definitions: {path}; owner roots: {owner_root_sample:?} ({omitted_owner_definitions} definitions omitted)"
+        "selected Rust source has {definition_count} active module definitions: {path}; Cargo target resolution: {target_resolution:?}; owner roots: {owner_root_sample:?} ({omitted_owner_definitions} definitions omitted)"
     )]
     AmbiguousSourceOwner {
         /// Exact selected package source with multiple active owners.
@@ -5560,6 +5662,8 @@ pub enum RustAuthorityError {
         owner_root_sample: Box<[PathBuf]>,
         /// Number of owning module definitions omitted after filling the sample.
         omitted_owner_definitions: usize,
+        /// Bounded account of exact Cargo target evidence available at selection.
+        target_resolution: RustCargoTargetResolution,
     },
     /// The selected file exists in the package VFS but is outside all active Cargo targets.
     #[error(
