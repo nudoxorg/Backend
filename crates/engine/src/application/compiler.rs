@@ -6295,9 +6295,10 @@ fn package_authority_terminal(
                 projection.diagnostic.observed,
                 projection.diagnostic.truncated,
             );
-            let diagnostic = rust_scope.map_or(diagnostic, |scope| {
-                diagnostic.with_rust_source_scope_failure(scope)
-            });
+            let diagnostic = match rust_scope {
+                Some(scope) => diagnostic.with_rust_source_scope_failure(scope),
+                None => diagnostic,
+            };
             compiler_attempt_terminal(
                 request,
                 source,
