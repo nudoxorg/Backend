@@ -1509,24 +1509,24 @@ mod owner_image_update_tests {
     fn owner_image_mismatch_keeps_actionable_fault_without_wire_version_fiction() {
         let build = Fault::from_client_error(
             &ClientError::OwnerUpdate {
-                found: 38,
-                supported: 38,
+                found: 39,
+                supported: 39,
                 detail: "installed default owner image changed; no command was submitted".into(),
             },
             Operand::Whole,
         );
         assert!(build.cause().sentence().contains("owner build update"));
-        assert!(!build.cause().sentence().contains("version 38 → 38"));
+        assert!(!build.cause().sentence().contains("version 39 → 39"));
         assert_eq!(build.affordance(), &Affordance::Retry);
         let wire = Fault::from_client_error(
             &ClientError::OwnerUpdate {
-                found: 37,
-                supported: 38,
+                found: 38,
+                supported: 39,
                 detail: "old wire owner".into(),
             },
             Operand::Whole,
         );
-        assert!(wire.cause().sentence().contains("version 37 → 38"));
+        assert!(wire.cause().sentence().contains("version 38 → 39"));
         assert_eq!(wire.affordance(), &Affordance::Retry);
     }
 }

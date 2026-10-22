@@ -1,7 +1,7 @@
 //! The maintained grammar of checked BVIEWJ01 version-3 journal frames.
 //!
 //! Snapshot rows, bases, certificates and compact transition records
-//! use the current DTO contract and the maintained historical envelopes 21–37.
+//! use the current DTO contract and the maintained historical envelopes 21–38.
 //! Versions 26–30 change only live command/reply fields/failures; window fields occur
 //! only on positive-offset query cursors, never persisted owner cursors. View rows, snapshot certificates
 //! and compact events remain unchanged. Every snapshot and event still passes current strict proof admission.
@@ -23,8 +23,8 @@
 //! DTO36 adds only live compiler profile-refusal progress; persisted snapshot/
 //! compact-event grammar, roots and certificates are unchanged from DTO35.
 //! DTO37 adds live bounded multirow compiler coverage pages; DTO38 adds an
-//! owner-bound published-view coverage read. Persisted snapshots/events remain
-//! unchanged from DTO35.
+//! owner-bound published-view coverage read; DTO39 adds a live typed Rust
+//! compiler refusal fact. Persisted snapshots/events remain unchanged from DTO35.
 
 use super::DTO_VERSION;
 use crate::{CommittedViewDelta, CoverageCapability, Cursor, ViewDto, ViewRoot};
@@ -33,7 +33,7 @@ use crate::{CommittedViewDelta, CoverageCapability, Cursor, ViewDto, ViewRoot};
 // Review snapshot/event fields and historical compatibility before moving
 // this fence, or introduce a new journal grammar for incompatible fields.
 const _: () = assert!(
-    DTO_VERSION == 38,
+    DTO_VERSION == 39,
     "review persisted view journal compatibility before accepting a new DTO version"
 );
 
@@ -73,13 +73,13 @@ impl JournalViewGrammarV3 {
             || matches!(
                 version,
                 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36
-                    | 37
+                    | 37 | 38
             )
         {
             Ok(())
         } else {
             Err(format!(
-                "unsupported persisted view envelope version {version}; journal grammar 3 reads current {DTO_VERSION} and historical 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36 and 37"
+                "unsupported persisted view envelope version {version}; journal grammar 3 reads current {DTO_VERSION} and historical 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37 and 38"
             ))
         }
     }

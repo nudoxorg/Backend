@@ -28,9 +28,9 @@ use backend_compile::{
 use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_frontend_python::legacy::checker::CheckerError as PythonCheckerError;
 use backend_frontend_rust::legacy::{
-    RustAnalysisControl, RustAuthorityError, RustWorkspaceEditorBufferObserver, RustWorkspaceFile,
-    RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey, RustWorkspaceSessionLane,
-    RustWorkspaceSessionLease,
+    RustAnalysisControl, RustAuthorityError, RustCargoTarget, RustWorkspaceEditorBufferObserver,
+    RustWorkspaceFile, RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey,
+    RustWorkspaceSessionLane, RustWorkspaceSessionLease,
 };
 use backend_frontend_typescript::legacy::TypeScriptInvocationModeV1;
 use backend_frontend_typescript::{TszFileWorkPolicy, TszProject, TszProjectCheckerExecution};
@@ -3919,6 +3919,16 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     *package.package_target.target().as_ref(),
                     &source_paths,
                 )
+                .and_then(|key| match package.package_target.unit_key() {
+                    CompilationUnitKeyV2::RustCrate { name, root } => {
+                        key.with_cargo_target(RustCargoTarget {
+                            name: name.as_ref(),
+                            root: Path::new(root.as_ref()),
+                        })
+                    }
+                    CompilationUnitKeyV2::PackageRoot => Ok(key),
+                    _ => unreachable!("Rust package authority validates its compilation-unit key"),
+                })
                 .map_err(|cause| {
                     package_authority_terminal(
                         package.package_target.target(),
@@ -6277,6 +6287,7 @@ fn package_authority_terminal(
             let mut diagnostic_bytes =
                 [0; backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES];
             let diagnostic = rust_authority_diagnostic(Some(&mut diagnostic_bytes), &cause, false);
+            let rust_scope = crate::application::terminal::rust_source_scope_failure(&cause);
             let failure = AuthorityFailure::Rust { diagnostic, cause };
             let projection = failure.projection();
             let diagnostic = backend_library::interface::CompilerDiagnostic::from_native(
@@ -6284,6 +6295,10 @@ fn package_authority_terminal(
                 projection.diagnostic.observed,
                 projection.diagnostic.truncated,
             );
+            let diagnostic = match rust_scope {
+                Some(scope) => diagnostic.with_rust_source_scope_failure(scope),
+                None => diagnostic,
+            };
             compiler_attempt_terminal(
                 request,
                 source,
@@ -8178,12 +8193,12 @@ mod tests {
                     diagnostic: Some(diagnostic),
                 },
             ..
-        } = terminal
+        } = &terminal
         else {
             panic!("Rust package refusal must keep its concrete authority projection");
         };
-        assert_eq!(phase, AuthorityPhase::Resolve);
-        assert_eq!(class, AuthorityDiagnosticClass::SourceScope);
+        assert_eq!(*phase, AuthorityPhase::Resolve);
+        assert_eq!(*class, AuthorityDiagnosticClass::SourceScope);
         assert!(!diagnostic.truncated);
         let message = &diagnostic.bytes[..diagnostic.byte_len];
         assert!(message.starts_with(
@@ -8194,6 +8209,37 @@ mod tests {
                 .windows(b"/cache/".len())
                 .any(|window| window == b"/cache/")
         );
+
+        let failure = backend_library::PackageCompilerFailure::from_package_terminal(
+            "src/detached.rs",
+            &terminal,
+        )
+        .expect("bounded package failure")
+        .expect("Rust package refusal");
+        let encoded = failure
+            .encode_bounded_json()
+            .expect("bounded canonical package failure");
+        let wire = String::from_utf8(encoded.clone()).expect("failure JSON is UTF-8");
+        assert!(!wire.contains("/cache/toml-0.8.23"));
+        let reopened = backend_library::PackageCompilerFailure::decode_bounded_json(&encoded)
+            .expect("typed package diagnostic survives bounded roundtrip");
+        let backend_library::PackageCompilerFailureCause::Authority {
+            diagnostic: Some(facts),
+            ..
+        } = reopened.cause()
+        else {
+            panic!("Rust package failure retains its typed scope diagnostic");
+        };
+        assert_eq!(
+            facts.rust_source_scope_failure,
+            Some(
+                backend_library::interface::RustSourceScopeFailureKind::DetachedSource {
+                    active_hir_root_count: 4,
+                }
+            )
+        );
+        assert!(reopened.detail().contains("4 active roots observed"));
+        assert!(!reopened.detail().contains("/cache/toml-0.8.23"));
     }
 
     #[test]

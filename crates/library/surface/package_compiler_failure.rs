@@ -278,15 +278,38 @@ impl PackageCompilerFailureCause {
                 ..
             } => failure.kind_tag(),
             Self::Authority {
-                diagnostic: Some(CompilerAuthorityDiagnosticFacts { go_failure: Some(failure), .. }),
+                diagnostic:
+                    Some(CompilerAuthorityDiagnosticFacts {
+                        go_failure: Some(failure),
+                        ..
+                    }),
                 ..
             }
             | Self::AuthorityAdmission {
-                diagnostic: Some(CompilerAuthorityDiagnosticFacts { go_failure: Some(failure), .. }),
+                diagnostic:
+                    Some(CompilerAuthorityDiagnosticFacts {
+                        go_failure: Some(failure),
+                        ..
+                    }),
                 ..
             } => failure.kind_tag(),
-            Self::Authority { class, .. }
-            | Self::AuthorityAdmission { class, .. } => match class {
+            Self::Authority {
+                diagnostic:
+                    Some(CompilerAuthorityDiagnosticFacts {
+                        rust_source_scope_failure: Some(_),
+                        ..
+                    }),
+                ..
+            }
+            | Self::AuthorityAdmission {
+                diagnostic:
+                    Some(CompilerAuthorityDiagnosticFacts {
+                        rust_source_scope_failure: Some(_),
+                        ..
+                    }),
+                ..
+            } => "rust_source_scope_failure",
+            Self::Authority { class, .. } | Self::AuthorityAdmission { class, .. } => match class {
                 AuthorityClassFact::Syntax => "authority_syntax",
                 AuthorityClassFact::Binding => "authority_binding",
                 AuthorityClassFact::SourceScope => "authority_source_scope",
@@ -488,6 +511,9 @@ pub struct CompilerAuthorityDiagnosticFacts {
     /// Exact Go dependency-admission cause; native diagnostic text stays local.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub go_failure: Option<crate::interface::GoAuthorityFailureKind>,
+    /// Exact path-free Rust source-scope kind and bounded authority counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rust_source_scope_failure: Option<crate::interface::RustSourceScopeFailureKind>,
 }
 
 /// Closed compact-lowering cause, with exact TypeScript projection operands
@@ -2193,6 +2219,7 @@ pub(crate) fn package_failure_from_terminal(
                         typescript_admission: diagnostic.typescript_admission.clone(),
                         typescript_cause: diagnostic.typescript_cause.clone(),
                         go_failure: diagnostic.go_failure,
+                        rust_source_scope_failure: diagnostic.rust_source_scope_failure,
                     }
                 }),
             },
@@ -2239,6 +2266,7 @@ pub(crate) fn package_failure_from_terminal(
                         typescript_admission: diagnostic.typescript_admission.clone(),
                         typescript_cause: diagnostic.typescript_cause.clone(),
                         go_failure: diagnostic.go_failure,
+                        rust_source_scope_failure: diagnostic.rust_source_scope_failure,
                     }
                 }),
             },

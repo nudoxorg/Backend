@@ -19,7 +19,7 @@ fn typescript_admission_current_dto_refuses_old28_before_populated_fact_shape()
 -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(
         super::DTO_VERSION,
-        35,
+        39,
         "coverage and populated TypeScript causes require the current matched cohort"
     );
     let detail = TypeScriptCompilerAdmissionDetail::new(
@@ -45,6 +45,7 @@ fn typescript_admission_current_dto_refuses_old28_before_populated_fact_shape()
         typescript_admission: Some(detail),
         typescript_cause: None,
         go_failure: None,
+        rust_source_scope_failure: None,
     };
     let populated = serde_json::to_value(&facts)?;
     assert_eq!(
@@ -184,13 +185,14 @@ fn plain_facts() -> CompilerAuthorityDiagnosticFacts {
         typescript_admission: None,
         typescript_cause: None,
         go_failure: None,
+        rust_source_scope_failure: None,
     }
 }
 
 #[test]
 fn typescript_stop_site_current_cohort_refuses_dto30_before_the_strict_field()
 -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(super::DTO_VERSION, 38);
+    assert_eq!(super::DTO_VERSION, 39);
     let mut facts = plain_facts();
     facts.typescript_failure = Some(
         crate::interface::TypeScriptAuthorityFailureKind::NativeProjectCheckWorkBudgetExhausted,
@@ -228,7 +230,7 @@ fn native_resolution_dto32_refuses_dto31_before_closed_failure_kinds()
         AuthorityDiagnosticClass, AuthorityPhase, CompilerDiagnostic, CompilerTerminal,
         SourceAuthority, TypeScriptAuthorityFailureKind as F,
     };
-    assert_eq!(super::DTO_VERSION, 38);
+    assert_eq!(super::DTO_VERSION, 39);
     for kind in [
         F::NativeSessionModuleResolution,
         F::NativeModuleInvalidReference,
@@ -269,7 +271,7 @@ fn native_resolution_dto32_refuses_dto31_before_closed_failure_kinds()
             super::super::codec::check_version_header_against(&bytes, "reply", 31),
             "DTO31 peer must reject the new enum cohort first",
         )?;
-        assert!(old_peer.contains("reply DTO version 38"));
+        assert!(old_peer.contains("reply DTO version 39"));
         assert!(old_peer.contains("this build supports 31"));
         assert!(old_peer.contains("same build"));
         assert!(!old_peer.contains("unknown variant"));
@@ -282,8 +284,64 @@ fn native_resolution_dto32_refuses_dto31_before_closed_failure_kinds()
             "DTO31 relabelled live envelope must be refused",
         )?;
         assert!(error.contains("reply DTO version 31"));
-        assert!(error.contains("this build supports 38"));
+        assert!(error.contains("this build supports 39"));
         assert!(!error.contains("unknown variant"));
     }
     Ok(())
+}
+
+#[test]
+fn rust_scope_dto39_refuses_dto38_before_the_new_failure_fact() {
+    use crate::interface::{
+        AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,
+        CompilerDiagnostic, CompilerTerminal, RustSourceScopeFailureKind as R,
+        RustTargetResolutionKind as T, SourceAuthority,
+    };
+    use backend_version::{CompileRecipeDomain, ContentId, SourceFactDomain};
+
+    let failure = crate::PackageCompilerFailure::from_package_terminal(
+        "src/lib.rs",
+        &CompilerTerminal::Compile {
+            attempted: CompilerAttempt {
+                source: SourceAuthority {
+                    identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"rust source"),
+                    byte_len: 11,
+                },
+                recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"rust recipe"),
+            },
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::Resolve,
+                class: AuthorityDiagnosticClass::SourceScope,
+                diagnostic: Some(CompilerDiagnostic::from_rust_source_scope_failure(
+                    R::AmbiguousSourceOwner {
+                        definition_count: 2,
+                        omitted_definition_count: 0,
+                        target_resolution: T::NoExactTarget,
+                    },
+                )),
+            },
+        },
+    )
+    .expect("bounded refusal projection")
+    .expect("Rust authority refusal");
+    let reply = crate::ReplyDto::new(
+        41,
+        crate::CommandReply::Failed(crate::CommandFailure::CompilerRefused {
+            detail: failure.detail().to_owned(),
+            failure,
+        }),
+    );
+    let mut wire = serde_json::to_value(reply).expect("current typed reply");
+    let current = serde_json::to_vec(&wire).expect("current wire bytes");
+    let old_peer = super::super::codec::check_version_header_against(&current, "reply", 38)
+        .expect_err("DTO38 refuses the new typed Rust fact before body parsing");
+    assert!(old_peer.contains("reply DTO version 39"));
+    assert!(old_peer.contains("this build supports 38"));
+    wire["version"] = serde_json::json!(38);
+    let error =
+        crate::decode_reply_body(&serde_json::to_vec(&wire).expect("previous cohort envelope"))
+            .expect_err("current decoder refuses relabelled DTO38 before payload shape");
+    assert!(error.contains("reply DTO version 38"));
+    assert!(error.contains("this build supports 39"));
+    assert!(!error.contains("unknown field"));
 }

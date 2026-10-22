@@ -72,7 +72,8 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current matched-client transport cohort. Version 37 allows bounded multirow
+/// Current matched-client transport cohort. Version 39 adds a closed, path-free
+/// Rust source-scope refusal fact. Version 37 allows bounded multirow
 /// compiler-coverage pages. Version 36 adds typed per-profile compiler-refusal
 /// progress. Version 35 adds separate source-selection
 /// observations to live health replies. Version 34 adds the bounded, recipe-bound
@@ -83,4 +84,4 @@ pub(crate) use reply_coverage::{
 /// `Gapped` coverage and compiler details, and version 30 catalog windows and
 /// predecessor spans remain strict; live peers must upgrade together.
 /// The view journal container stays version 3 and retains historical bytes.
-pub const DTO_VERSION: u16 = 38;
+pub const DTO_VERSION: u16 = 39;
