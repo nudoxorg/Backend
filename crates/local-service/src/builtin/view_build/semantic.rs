@@ -14,9 +14,11 @@ use super::image_rows::{Charge, DuplicatePolicy, ProjectedImage, ProjectedRow};
 use super::kinds;
 use super::structural::{
     ProfileSourceIdentities, ProfileSourcePaths, StructuralDeclaration, StructuralParent,
-    StructuralProjectionPlan, complete_declarations_for_file, native_frontier_freshness,
-    profile_source_identities, profile_source_paths, projected_source_capacity,
+    StructuralProjectionPlan, native_frontier_freshness, profile_source_identities,
+    profile_source_paths, projected_source_capacity,
 };
+#[cfg(test)]
+use super::structural::complete_declarations_for_file;
 use super::{
     MAX_SEMANTIC_DOCUMENT_BYTES, MAX_SEMANTIC_SIGNATURE_BYTES, MAX_SEMANTIC_TYPE_DEPTH, STALE_NOTE,
     SourceAvailability, semantic_profile_is_complete,

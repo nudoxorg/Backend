@@ -2,10 +2,9 @@
 //! snapshot. Every source read, relation walk and candidate SQL runs on the
 //! existing owned publication worker, never the listener's control turn.
 use super::*;
-use backend_engine::Relation;
 use backend_engine::builtin::{
-    NativeClangCandidatePermit, NativePathDisposition, ProductNativeFrontierRelation,
-    product_native_frontier_path_key, product_native_frontier_profile_key,
+    NativeClangCandidatePermit, NativePathDisposition, product_native_frontier_path_key,
+    product_native_frontier_profile_key,
     product_native_frontier_record_key, product_native_frontier_relation,
 };
 
@@ -815,7 +814,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
         changes,
         mut source_facts_changes,
         mut native_frontier_changes,
-        native_frontier,
+        native_frontier: _,
         revision_fence,
         python_environment,
         cancellation,
@@ -841,21 +840,11 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
                     && native_frontier_changes.is_empty()
                 {
                     None
-                } else if source_facts_changes.is_empty() {
-                    let mut intent =
-                        BuiltinIntent::index_with_semantics(package, &label, changes, Vec::new())?;
-                    if !native_frontier_changes.is_empty() {
-                        intent = intent
-                            .with_native_frontier(std::mem::take(&mut native_frontier_changes))?;
-                    }
-                    Some(intent)
                 } else {
-                    let mut intent = BuiltinIntent::index_with_source_facts(
+                    let mut intent = reused_profiles_intent(
                         package,
                         &label,
                         changes,
-                        Vec::new(),
-                        Vec::new(),
                         std::mem::take(&mut source_facts_changes),
                     )?;
                     if !native_frontier_changes.is_empty() {
