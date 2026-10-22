@@ -159,7 +159,7 @@ fn authority_terminal(
     )
 }
 
-fn rust_source_scope_failure(
+pub(crate) fn rust_source_scope_failure(
     cause: &backend_frontend_rust::legacy::RustAuthorityError,
 ) -> Option<backend_library::interface::RustSourceScopeFailureKind> {
     use backend_frontend_rust::legacy::{RustAuthorityError as E, RustCargoTargetResolution as R};

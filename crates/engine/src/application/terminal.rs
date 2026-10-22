@@ -10,7 +10,7 @@ mod publication;
 use thiserror::Error;
 
 pub(crate) use common::source_authority;
-pub(crate) use native::compile_terminal;
+pub(crate) use native::{compile_terminal, rust_source_scope_failure};
 pub(crate) use publication::{
     semantic_artifact_terminal, semantic_publication_terminal, semantic_reopen_absent,
     semantic_reopen_cardinality, semantic_reopen_terminal,
