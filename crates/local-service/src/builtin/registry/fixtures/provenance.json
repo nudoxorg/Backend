@@ -1,0 +1,15 @@
+{
+  "archive_file": "equivalent-1.0.2.crate",
+  "archive_sha256": "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f",
+  "cargo_registry_package": {
+    "name": "equivalent",
+    "version": "1.0.2",
+    "source": "crates.io"
+  },
+  "upstream_repository": "https://github.com/indexmap-rs/equivalent",
+  "upstream_commit": "44cdd44f8b8ebb5f9ae096c7550a5e74ffb7d6ae",
+  "license": "Apache-2.0 OR MIT",
+  "member_sha256": {
+    "src/lib.rs": "1dd84363f561b30b1da713486c6b583900353e62c569d7ba1dd84eb2c04f1a14"
+  }
+}
