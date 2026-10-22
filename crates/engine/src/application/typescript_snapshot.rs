@@ -922,6 +922,205 @@ mod tests {
     }
 
     #[test]
+    fn native_runtime_staged_exporter_emits_replayable_certificate_and_misses_changed_inputs() {
+        use crate::application::{
+            LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths, LocalCompilerScratch,
+            LocalCompilerTimeout, LocalRuntimePackageAuthority, LocalRuntimeToolchain,
+            OwnedPackageSource, OwnedPackageSourceSet,
+        };
+        use backend_library::interface::{
+            CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl,
+        };
+        use backend_semantic::vocabulary::Stage;
+        use backend_store::journal::PublicationLimits;
+        use std::num::NonZeroUsize;
+
+        fn owner(runtime_root: &Path) -> LocalCompilerClient {
+            let host = TypeScriptProjectHost::direct(
+                None,
+                super::super::ToolchainProbeLimits::new(
+                    Duration::from_secs(5),
+                    NonZeroUsize::new(1024).unwrap(),
+                )
+                .unwrap(),
+            );
+            let configuration = LocalCompilerRuntimeConfiguration::new(
+                LocalCompilerRuntimePaths::new(
+                    runtime_root.join("artifacts"),
+                    runtime_root.join("journal"),
+                    runtime_root.join("native-work"),
+                )
+                .unwrap(),
+                vec![LocalRuntimeToolchain::compiled_native_typescript()].into_boxed_slice(),
+                Box::new([]),
+                LocalRuntimePackageAuthority::default(),
+                LocalCompilerTimeout::new(Duration::from_secs(60)).unwrap(),
+                PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN).unwrap(),
+                LocalCompilerScratch::with_fragment_capacity(
+                    NonZeroUsize::new(16 * 1024 * 1024).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .with_typescript_project_host(host);
+            LocalCompilerClient::start(configuration).expect("Ready linked TSZ owner")
+        }
+
+        fn package(root: &Path) -> OwnedPackageSourceSet {
+            let profile = profile();
+            let request = PackageCompileRequest::new(
+                GenerateTarget {
+                    correlation: CorrelationId(0x71),
+                    profile,
+                    stage: Stage::LowerIr,
+                },
+                PackageUrl::try_from("pkg:npm/staged-snapshot-fixture@1.0.0".to_owned()).unwrap(),
+            )
+            .unwrap();
+            OwnedPackageSourceSet::new(
+                request,
+                root.to_path_buf(),
+                vec![OwnedPackageSource::new("src/main.ts", MAIN).unwrap()].into_boxed_slice(),
+            )
+            .unwrap()
+        }
+
+        let fixture = Fixture::new();
+        const CONFIG: &str = r#"{"extends":"./base.json","compilerOptions":{"noLib":true,"types":[],"moduleResolution":"Bundler","module":"ESNext"},"files":["src/main.ts"]}"#;
+        fixture.write("tsconfig.json", CONFIG);
+        let runtime_root = fixture.0.join(".runtime-data");
+        fs::create_dir(&runtime_root).expect("create isolated owner storage");
+        let producer = owner(&runtime_root);
+        assert_eq!(
+            producer.capabilities().for_profile(profile()).state(),
+            crate::application::LocalCompilerCapabilityState::Ready,
+            "the exporter is exercised only under an actually admitted linked-native capability"
+        );
+        let staged = producer
+            .compile_package_sources_staged(package(&fixture.0))
+            .expect("native TSZ staged compilation");
+        let input = *staged.input_witness().input_root();
+        let binding = *staged.binding_facts().identity.as_ref();
+        let program = staged
+            .native_program_sources()
+            .expect("compiler-issued program source forest");
+        let (_, nodes) = program.nodes().expect("configured program forest");
+        let project_authority = staged
+            .plane_execution_identity()
+            .expect("native staged execution identity")
+            .local_authority_fingerprint();
+        let certificate_bytes = staged
+            .typescript_snapshot_certificate(input)
+            .expect("production staged exporter accepts exact native identity");
+        let mut changed_input = input;
+        changed_input[0] ^= 1;
+        assert!(
+            staged
+                .typescript_snapshot_certificate(changed_input)
+                .is_none(),
+            "the production exporter refuses a substituted input root"
+        );
+        let certificate = decode_snapshot_certificate(&certificate_bytes)
+            .expect("strictly decode exported certificate");
+        let capability = producer.capabilities().for_profile(profile());
+        assert_eq!(certificate.root, fixture.0);
+        assert_eq!(certificate.profile, profile());
+        assert_eq!(certificate.input, input);
+        assert_eq!(certificate.binding, binding);
+        assert_eq!(certificate.project_authority, project_authority);
+        assert_eq!(
+            certificate.toolchain,
+            capability.toolchain_identity().unwrap()
+        );
+        assert_eq!(
+            certificate.local_authority,
+            capability.local_authority_fingerprint().unwrap()
+        );
+        assert_eq!(
+            certificate.environment,
+            capability.environment_identity().unwrap()
+        );
+        assert_eq!(
+            certificate.platform,
+            capability.target_platform_identity().unwrap()
+        );
+        assert_eq!(
+            certificate.program_environments,
+            nodes
+                .iter()
+                .map(|node| node.environment)
+                .collect::<Vec<_>>(),
+            "exporter preserves the exact configured forest environment order"
+        );
+        assert!(!certificate.programs.is_empty());
+        drop(staged);
+        drop(producer);
+
+        let fresh = owner(&runtime_root);
+        let cancelled = AtomicBool::new(false);
+        let restored = restore_snapshot_certificate(
+            &fresh,
+            &fixture.0,
+            profile(),
+            input,
+            binding,
+            &certificate_bytes,
+            &cancelled,
+        )
+        .expect("fresh Ready owner replays the production export");
+        assert!(restored.is_current(None));
+
+        fixture.write(
+            "tsconfig.json",
+            r#"{"extends":"./base.json","compilerOptions":{"noLib":true,"types":[],"moduleResolution":"Bundler","module":"ESNext","strict":true},"files":["src/main.ts"]}"#,
+        );
+        assert!(
+            restore_snapshot_certificate(
+                &fresh,
+                &fixture.0,
+                profile(),
+                input,
+                binding,
+                &certificate_bytes,
+                &cancelled,
+            )
+            .is_none(),
+            "changed project configuration rejects the exported ledger"
+        );
+        fixture.write("tsconfig.json", CONFIG);
+        fixture.write("node_modules/dep/index.d.ts", "export const value: string;");
+        assert!(
+            restore_snapshot_certificate(
+                &fresh,
+                &fixture.0,
+                profile(),
+                input,
+                binding,
+                &certificate_bytes,
+                &cancelled,
+            )
+            .is_none(),
+            "changed dependency bytes reject the exported ledger"
+        );
+        fixture.write("node_modules/dep/index.d.ts", "export const value: number;");
+        fixture.write("src/missing.ts", "export interface Missing {}");
+        assert!(
+            restore_snapshot_certificate(
+                &fresh,
+                &fixture.0,
+                profile(),
+                input,
+                binding,
+                &certificate_bytes,
+                &cancelled,
+            )
+            .is_none(),
+            "a formerly negative resolver lookup becoming present rejects reuse"
+        );
+        drop(fresh);
+    }
+
+    #[test]
     fn native_snapshot_replays_dependencies_config_globs_and_negative_reads_at_final_admission() {
         for mutation in [
             "source",
