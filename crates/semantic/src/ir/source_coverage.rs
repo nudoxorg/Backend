@@ -384,6 +384,7 @@ impl SourceCoverageManifest {
                     byte_len,
                     cause,
                     diagnostic,
+                    ..
                 } => {
                     out.extend_from_slice(source);
                     out.extend_from_slice(&byte_len.to_le_bytes());
