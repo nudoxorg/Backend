@@ -64,6 +64,8 @@ pub(in crate::builtin) fn image_publication_rows_for_test(
         false,
         path,
         &[],
+        None,
+        None,
     )?;
     Ok(projected
         .rows

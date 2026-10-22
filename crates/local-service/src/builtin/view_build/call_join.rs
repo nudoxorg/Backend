@@ -2246,6 +2246,8 @@ mod tsz_source_coordinate_tests {
                             false,
                             path,
                             &[],
+                            None,
+                            None,
                         )
                         .map_err(|error| error.to_string())?
                         .rows

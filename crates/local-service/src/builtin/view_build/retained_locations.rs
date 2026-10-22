@@ -627,6 +627,8 @@ mod cold_projection_tests {
             false,
             path,
             &sites,
+            None,
+            None,
         )
         .map_err(|e| e.to_string())?;
         assert_eq!(
