@@ -524,6 +524,21 @@ pub struct RustCargoTarget<'target> {
     pub root: &'target Path,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RustCargoTargetIdentity {
+    name: Box<str>,
+    root: Box<Path>,
+}
+
+impl RustCargoTargetIdentity {
+    fn borrowed(&self) -> RustCargoTarget<'_> {
+        RustCargoTarget {
+            name: &self.name,
+            root: &self.root,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct RustSourceOwnershipEntry {
     krate: ra_ap_hir::Crate,
@@ -1307,6 +1322,7 @@ pub struct RustWorkspaceSessionKey {
     environment_identity: Option<[u8; 32]>,
     local_authority_identity: Option<[u8; 32]>,
     package_target_identity: [u8; 32],
+    cargo_target: Option<RustCargoTargetIdentity>,
     environment_policy: &'static str,
     source_paths: Box<[PathBuf]>,
     canonical_source_paths: Box<[PathBuf]>,
@@ -1478,6 +1494,7 @@ impl RustWorkspaceSessionKey {
             environment_identity,
             local_authority_identity,
             package_target_identity,
+            cargo_target: None,
             environment_policy: crate::legacy::RUST_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1,
             source_paths: source_paths.to_vec().into_boxed_slice(),
             canonical_source_paths: canonical_source_paths.into_boxed_slice(),
@@ -1488,6 +1505,33 @@ impl RustWorkspaceSessionKey {
     #[must_use]
     pub fn source_paths(&self) -> &[PathBuf] {
         &self.source_paths
+    }
+
+    /// Carries the exact admitted Cargo crate target into session preparation.
+    ///
+    /// This identity is supplied by the validated compilation-unit key; it is
+    /// not inferred from package metadata. The target applies only to its
+    /// exact root source path during ownership and documentation preparation.
+    pub fn with_cargo_target(
+        mut self,
+        target: RustCargoTarget<'_>,
+    ) -> Result<Self, RustAuthorityError> {
+        if target.name.is_empty()
+            || !is_normalized_relative_path(target.root)
+            || !self
+                .source_paths
+                .iter()
+                .any(|path| path.as_path() == target.root)
+        {
+            return Err(RustAuthorityError::SessionSourcePath {
+                path: target.root.to_path_buf(),
+            });
+        }
+        self.cargo_target = Some(RustCargoTargetIdentity {
+            name: target.name.into(),
+            root: target.root.to_path_buf().into_boxed_path(),
+        });
+        Ok(self)
     }
 }
 
@@ -1928,6 +1972,7 @@ impl RustProject {
             }],
             control,
             None,
+            None,
             &mut read_frontier_summary,
         )?;
         workspace.analyze_source(&self.source_path, &source, control, lower)
@@ -2343,6 +2388,7 @@ impl RustWorkspace {
         &mut self,
         sources: &[DocumentationSource<'_>],
         control: RustAnalysisControl<'_>,
+        admitted_target: Option<RustCargoTarget<'_>>,
         mut observer: Option<&mut RustWorkspaceSessionObserver<'_>>,
         read_frontier_summary: &mut RustWorkspaceReadFrontierSummary,
     ) -> Result<(), RustAuthorityError> {
@@ -2392,8 +2438,18 @@ impl RustWorkspace {
                 });
             }
 
+            // Session preparation precedes lowering. Carry only the target
+            // admitted by the exact compilation-unit key, and apply it solely
+            // to that target's exact selected root. Other files keep the
+            // ordinary strict ambiguity behavior.
+            let target = admitted_target.filter(|target| {
+                selected
+                    .path
+                    .strip_prefix(&self.root)
+                    .is_ok_and(|relative| relative == target.root)
+            });
             let owner =
-                match self.source_owner_entry(selected_file_id, selected.path, None, control) {
+                match self.source_owner_entry(selected_file_id, selected.path, target, control) {
                     Ok(owner) => owner.krate,
                     // The selected compiler frontier can contain cfg-inactive Rust
                     // files. They still receive exact VFS/source binding above, but
@@ -3015,6 +3071,7 @@ impl RustWorkspace {
         self.preload_documentation_inputs(
             &documentation_sources,
             control,
+            key.cargo_target.as_ref().map(RustCargoTargetIdentity::borrowed),
             observer.as_mut().map(|observer| &mut **observer),
             read_frontier_summary,
         )?;
@@ -6126,7 +6183,8 @@ mod read_frontier_budget_tests {
     fn declared_cargo_target_selects_its_root_without_hiding_shared_test_owners() {
         use super::{
             RustAnalysisControl, RustAuthorityError, RustCargoMetadataPolicy, RustCargoTarget,
-            RustFeatureControl, RustToolchain, RustWorkspace, SourceByteLimit,
+            RustFeatureControl, RustToolchain, RustWorkspace, RustWorkspaceFile,
+            RustWorkspaceSessionKey, RustWorkspaceSessionLane, SourceByteLimit, Stage,
         };
         use backend_semantic::vocabulary::RustEdition;
         use std::sync::atomic::AtomicBool;
@@ -6278,6 +6336,45 @@ mod read_frontier_budget_tests {
             ),
             Err(RustAuthorityError::SessionSourcePath { .. })
         ));
+
+        // The production session prepares Rustdoc inputs before lowering gets
+        // the admitted target argument. A shared Cargo target root must still
+        // be selected from the admitted target during that preparation.
+        let source_paths = [PathBuf::from("benches/bench.rs")];
+        let key = RustWorkspaceSessionKey::new(
+            &root,
+            &toolchain,
+            RustEdition::Rust2024,
+            Stage::LowerIr,
+            RustFeatureControl::default(),
+            RustCargoMetadataPolicy::Offline,
+            None,
+            None,
+            None,
+            [0x5a; 32],
+            &source_paths,
+        )
+        .expect("exact selected bench source key")
+        .with_cargo_target(admitted_bench)
+        .expect("exact admitted bench target identity");
+        let files = [RustWorkspaceFile {
+            relative_path: &source_paths[0],
+            source: std::str::from_utf8(benchmark).expect("UTF-8 bench fixture"),
+        }];
+        let mut lane = RustWorkspaceSessionLane::default();
+        let lease = lane
+            .begin(key, &files, control())
+            .expect("selected-frontier preparation resolves the exact bench owner");
+        lease
+            .workspace()
+            .analyze_source_for_target(
+                root.join("benches/bench.rs"),
+                benchmark,
+                admitted_bench,
+                control(),
+                |_| Ok(()),
+            )
+            .expect("the admitted bench target remains usable after preparation");
         let _ = std::fs::remove_dir_all(&root);
     }
 
