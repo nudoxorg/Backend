@@ -1,0 +1,180 @@
+{
+  "acceptance": "Fresh exact-head official T2 comparison is required; this review does not constitute a green verdict.",
+  "answer_review": [
+    "Weighted and DoChan retain authored semaphore/semaphore.go:28 and singleflight/singleflight.go:121 sites. Related benchmark/test declarations are real source.",
+    "CLI and MCP source guards, bounded prefixes and live continuation checks were exercised before candidate emission. Exact answers repeat in a separate frozen-artifact run.",
+    "Shelf counts are observed native row counts, including semantic carriers; changed counts are not treated as counts of authored Go declarations. No count, identity, coverage or continuation field was normalized away.",
+    "Native semantic coverage remains tied to the published receipt. Embedding semantic search remains unavailable/unconfigured."
+  ],
+  "case": "go-sync",
+  "evidence": {
+    "initial_build": 1807,
+    "initial_global_build": 594865,
+    "initial_source_sha": "ee8d0c27be6bf9f58e1f88ae525b123c50d49ee3",
+    "repeat_answers_equal": true,
+    "repeat_artifact_manifest_sha256": "ef72be73ed53be65418dcd3953bbf701632843e0486d6e7b85d2bab7e4f65dfc",
+    "repeat_build": 596340,
+    "repeat_scope": "diagnostic-only frozen-artifact replay; no official T2 verdict or performance acceptance",
+    "repeat_source_sha": "ad0cde8367f4f3beb373c5f9a613302075d2d404"
+  },
+  "normalization": "No normalizer or public assertion changed.",
+  "outline": {
+    "observations": "All outline names matched independently parsed source identifiers, real source filenames for module rows, or positional _1/_2 signature carriers. Go lowering documents unnamed parameter/result carriers explicitly. This checks visible names and source anchors; it does not independently reconstruct semantic IDs or every compiler-generated row.",
+    "page_evidence_sha256": "514d6755a5202d26902f2c8e1d6e09e21b06c246705da2856d13aaca6068da91",
+    "pages": 12,
+    "terminal_extent": "complete",
+    "unique_visible_rows": 371
+  },
+  "performance": {
+    "action": "Original performance suffix retained byte-for-byte; no new baseline or guard adopted. Diagnostic replay is not performance acceptance.",
+    "preserved_suffix_sha256": "b96e7f082d551a9ae251a612612d84513f950b7d2a9aec85e781b451f93b6ddf"
+  },
+  "reviewer": "Codex / GPT-6.1, 2026-10-23",
+  "schema": 1,
+  "scope": "Explicit answer-only review of queried source sites and complete diagnostic outline; original performance bytes preserved.",
+  "source": {
+    "coordinate": "golang:golang.org/x/sync@v0.11.0",
+    "files_sha256": {
+      "errgroup/errgroup.go": "900855c9b794934f2f0482340ec9939075425fea1a3adff2b18293f877e95101",
+      "errgroup/errgroup_example_md5all_test.go": "2640ab81cc3fde6995ab9d751fd8347b5a133e28934ddd65b81f1f1375f19093",
+      "errgroup/errgroup_test.go": "d4e6ce4211188c18e948148f261745606aa7423f3c4215a7712d0d2c081b59e3",
+      "errgroup/go120.go": "55e4414a328b990e04a502c967416cfa90bc1a8f015936c730e9eb4fc908b178",
+      "errgroup/go120_test.go": "6452702defab726ef329bcff22603c52bff40c4a2d23520c5b51258ed7b3fcba",
+      "errgroup/pre_go120.go": "504e4c1ba3440409371050259dfa6630f17882ed78eda881ef05da4234f610e4",
+      "semaphore/semaphore.go": "c36737088c3a0f8404a813ebd113b472ac819090b241d57f121fe9b40ec2e2af",
+      "semaphore/semaphore_bench_test.go": "51f020b32d030e4963262b76be68ebc6a9877d1bf70418a0163336851f0ad393",
+      "semaphore/semaphore_example_test.go": "7e00fd84cb54ed114dbefa225d37a41a5cc228df82eff8a5397644a225660885",
+      "semaphore/semaphore_test.go": "640c2521e2e4393f4ca127e080199aa52ce7b8792d375a8bc5cd0758f8cfd6fc",
+      "singleflight/singleflight.go": "3ab234a431a14594f1bc46e76d9d35928fa18d05947801e167df1015834719a8",
+      "singleflight/singleflight_test.go": "1635e9114a1597fad55ceb4cc7f58f4170cf371f40a65b8fb55f8bc1159f6276",
+      "syncmap/map.go": "b56b0d009241f7ac1d9482b62cfbfbac57cf931137715dd7a94ed1e870c7324b",
+      "syncmap/map_bench_test.go": "8186ca9ff8b8d2ab8cd20a571c88636b2b9f1dbc9a72bb4f40d241ef73f64da6",
+      "syncmap/map_reference_test.go": "589e5797685b210a67138d800def54162083c52d5677a449b1b3661ee970c78a",
+      "syncmap/map_test.go": "47f5e34c4c2747254f98ac0df724fbe85c435d0cb30f1dac7d0e6fff917891ea"
+    },
+    "method": "Verified pinned zip SHA-256; independently parsed every Go file with go/parser and go/ast. Exact queried anchors checked by name, file and line.",
+    "verified_archive_hash": "sha256-CQaoAmIXpOMcMOpfwlFPGPwTSAxi/mv656V+fOAxPek="
+  },
+  "verified_source_anchors": [
+    [
+      "cli search DoChan",
+      "DoChan",
+      "singleflight/singleflight.go",
+      121
+    ],
+    [
+      "cli search Weighted",
+      "Weighted",
+      "semaphore/semaphore.go",
+      28
+    ],
+    [
+      "cli search Weighted",
+      "weighted",
+      "semaphore/semaphore_bench_test.go",
+      17
+    ],
+    [
+      "cli search Weighted",
+      "semChan",
+      "semaphore/semaphore_bench_test.go",
+      25
+    ],
+    [
+      "cli search Weighted",
+      "NewWeighted",
+      "semaphore/semaphore.go",
+      21
+    ],
+    [
+      "cli search Weighted",
+      "TestWeighted",
+      "semaphore/semaphore_test.go",
+      29
+    ],
+    [
+      "cli search Weighted",
+      "HammerWeighted",
+      "semaphore/semaphore_test.go",
+      21
+    ],
+    [
+      "cli search Weighted",
+      "TestWeightedPanic",
+      "semaphore/semaphore_test.go",
+      47
+    ],
+    [
+      "cli search Weighted",
+      "TestWeightedAcquire",
+      "semaphore/semaphore_test.go",
+      83
+    ],
+    [
+      "cli search Weighted",
+      "TestWeightedTryAcquire",
+      "semaphore/semaphore_test.go",
+      59
+    ],
+    [
+      "cli search Weighted",
+      "TestWeightedAcquireCanceled",
+      "semaphore/semaphore_test.go",
+      204
+    ],
+    [
+      "cli search Weighted",
+      "TestWeightedDoesntBlockIfTooBig",
+      "semaphore/semaphore_test.go",
+      113
+    ],
+    [
+      "cli search Weighted",
+      "w",
+      "semaphore/semaphore_bench_test.go",
+      116
+    ],
+    [
+      "backend.search",
+      "Weighted",
+      "semaphore/semaphore.go",
+      28
+    ],
+    [
+      "backend.search",
+      "weighted",
+      "semaphore/semaphore_bench_test.go",
+      17
+    ],
+    [
+      "backend.search",
+      "semChan",
+      "semaphore/semaphore_bench_test.go",
+      25
+    ],
+    [
+      "backend.search",
+      "DoChan",
+      "singleflight/singleflight.go",
+      121
+    ],
+    [
+      "backend.outline",
+      "Release",
+      "semaphore/semaphore_bench_test.go",
+      20
+    ],
+    [
+      "backend.outline",
+      "TryAcquire",
+      "semaphore/semaphore_bench_test.go",
+      19
+    ],
+    [
+      "backend.outline",
+      "Acquire",
+      "semaphore/semaphore_bench_test.go",
+      18
+    ]
+  ]
+}

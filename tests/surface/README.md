@@ -59,8 +59,9 @@ Reported case wall time measures execution, excluding time waiting for a worker.
 In CI, after acquiring the pinned runtime/tool shell and before starting cases,
 the runner drains pending writes on the task filesystem with Linux `sync -f`.
 This is infrastructure setup, reported as `CI-TIMING ... filesystem-drain`, and
-remains inside the overall T2 deadline. It prevents bulk runtime-import journal
-writes from consuming the first owner's 30-second startup budget. Product fsync
+remains inside the overall T2 deadline. It attempts to clear runtime-import journal writes before the first owner's
+30-second startup budget. Build1840 exceeded the drain bound, so this has not
+resolved shared-filesystem contention. Product fsync
 calls, startup bounds, snapshots and performance limits remain unchanged.
 A failed or timed-out drain fails the run; it cannot produce a passing case.
 
@@ -640,3 +641,14 @@ See reviews/2026-10-23-c-rxi-map-initial-linux.json for scope and evidence.
 The first Linux sample (add2.47s, CPU2.37s, RSS335836KiB) seeds this new case's
 baseline; no existing baseline or tolerance changes. Fresh exact-head CI
 comparison is still required; this review alone is not a passing T2 verdict.
+
+### Go answer reviews (W2, 2026-10-23)
+
+The UUID and Sync answer-only updates retain every byte of their existing
+performance sections. Exact answers from Linux T2/1807 repeat in diagnostic
+build596340 using the frozen ad0cde836 T1 artifact. Independent Go AST review
+checked all queried source anchors and every name across the complete diagnostic
+outlines (455 UUID rows, 371 Sync rows), including real module filenames and
+documented positional signature carriers. These are source/result reviews;
+official exact-head T2 and its unchanged performance guards still must pass.
+See the two dated Go review JSON files for provenance and scope.
