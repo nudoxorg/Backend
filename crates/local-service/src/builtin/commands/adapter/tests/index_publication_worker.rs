@@ -1253,18 +1253,30 @@ fn install_installed_rust_compiler(fixture: &mut AdapterFixture) {
     )
     .open()
     .expect("actual installed Rust compiler and Cargo selection");
+    let profile = backend_semantic::vocabulary::LanguageProfile::Rust(
+        backend_semantic::vocabulary::RustEdition::Rust2021,
+    );
+    // Host startup deliberately probes installed executables asynchronously.
+    // Wait for this exact profile's probe before asserting its admission state.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let capability = loop {
+        let capability = compiler.capabilities().for_profile(profile);
+        if capability.state() != backend_engine::application::LocalCompilerCapabilityState::Probing {
+            break capability;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the installed Rust probe must finish: {capability:?}",
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
     assert!(
         matches!(
-            compiler
-                .capabilities()
-                .for_profile(backend_semantic::vocabulary::LanguageProfile::Rust(
-                    backend_semantic::vocabulary::RustEdition::Rust2021,
-                ))
-                .state(),
+            capability.state(),
             backend_engine::application::LocalCompilerCapabilityState::Ready
                 | backend_engine::application::LocalCompilerCapabilityState::Deferred
         ),
-        "the installed Rust pair is admitted now or deferred to the first request",
+        "the installed Rust pair is admitted now or deferred to the first request: {capability:?}",
     );
     fixture.adapter.as_mut().expect("adapter").compiler = compiler;
 }
