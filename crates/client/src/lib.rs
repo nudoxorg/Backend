@@ -223,7 +223,7 @@ pub const MAX_EVENTS: usize = backend_library::MAX_SUBSCRIPTION_EVENTS;
 /// One closed failure type shared by all command clients.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClientError {
-    /// An older local owner could not complete a safe pre-command handoff.
+    /// An incompatible or unproven local owner could not be safely used before command submission.
     OwnerUpdate {
         /// Wire version actually observed from the correlated health probe.
         found: u16,

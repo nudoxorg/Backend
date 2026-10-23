@@ -43,6 +43,14 @@ fn update_error(found: u16, detail: impl Into<String>) -> ClientError {
     }
 }
 
+fn incompatible_version_detail(found: u16, supported: u16) -> &'static str {
+    if found > supported {
+        "the connected NuDox owner is newer than this client; update and restart this client with a matching build; no command was submitted"
+    } else {
+        "restart the previous NuDox owner, then retry the original command; no command was submitted"
+    }
+}
+
 fn peer_reports_outline_witness_route(
     transport: &mut UnixCommandTransport,
     deadline: Instant,
@@ -259,7 +267,7 @@ impl Session {
                     if same_version {
                         "the running owner differs from the installed default image; restart the previous owner, then retry; no command was submitted"
                     } else {
-                        "restart the previous NuDox owner, then retry the original command; no command was submitted"
+                        incompatible_version_detail(found, backend_library::DTO_VERSION)
                     },
                 ));
             }
@@ -450,6 +458,31 @@ mod tests {
         ));
         assert!(!error.is_connection_lost());
         assert!(error.to_string().contains("no command was submitted"));
+    }
+
+    #[test]
+    fn health_version_direction_selects_the_matching_peer_recovery_hint() {
+        let found = backend_library::DTO_VERSION + 1;
+        let health = format!(
+            r#"{{"version":{found},"request_id":{PROBE_ID},"reply":{{"kind":"error","data":{{"message":"health probe"}}}}}}"#
+        );
+        let found = version(health.as_bytes()).expect("correlated owner health version");
+        let supported = backend_library::DTO_VERSION;
+        assert!(found > supported);
+        let detail = incompatible_version_detail(found, supported);
+        assert!(detail.contains("owner is newer than this client"));
+        assert!(detail.contains("update and restart this client"));
+        assert!(!detail.contains("restart the previous NuDox owner"));
+        let error = update_error(found, detail);
+        assert!(matches!(
+            &error,
+            ClientError::OwnerUpdate { found: observed, supported: actual, .. }
+                if *observed == found && *actual == supported
+        ));
+        assert!(error.to_string().contains(&format!("version {found} → {supported}")));
+        assert!(error.to_string().contains("no command was submitted"));
+
+        assert!(incompatible_version_detail(38, 39).contains("restart the previous NuDox owner"));
     }
 
     #[test]
