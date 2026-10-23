@@ -302,7 +302,7 @@ mod json_value_import_tests {
             .map(|&declaration| {
                 program
                     .declaration_arenas
-                    .get(&(*error_id, declaration))
+                    .get(&(error_id, declaration))
                     .map_or(0, |arenas| arenas.len())
             })
             .sum();
@@ -330,7 +330,7 @@ mod json_value_import_tests {
                 .map(|&declaration| {
                     binder
                         .declaration_arenas
-                        .get(&(*error_id, declaration))
+                        .get(&(error_id, declaration))
                         .map_or(0, |arenas| arenas.len())
                 })
                 .sum();
