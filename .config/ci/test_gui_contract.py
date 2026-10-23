@@ -50,6 +50,28 @@ class GuiAdmissionTests(unittest.TestCase):
             require_navigation_breadcrumb(
                 stale_window, 'Q TOMLDecodeError', 'project', 'TOMLDecodeError')
 
+    def test_long_symbol_breadcrumb_allows_one_ocr_character_error(self):
+        for observed in (
+            'TOMLDecodeErrox',
+            'TOMLDecodeErrxor',
+            'TOMLDecodeErro',
+        ):
+            with self.subTest(observed=observed):
+                require_navigation_breadcrumb(
+                    'opened declaration page', f'project {observed}',
+                    'project', 'TOMLDecodeError')
+
+    def test_symbol_breadcrumb_refuses_two_ocr_character_errors(self):
+        with self.assertRaisesRegex(RuntimeError, 'breadcrumb'):
+            require_navigation_breadcrumb(
+                'opened declaration page', 'project TOMLDecodeErrxy',
+                'project', 'TOMLDecodeError')
+
+    def test_short_symbol_breadcrumb_does_not_use_fuzzy_matching(self):
+        with self.assertRaisesRegex(RuntimeError, 'breadcrumb'):
+            require_navigation_breadcrumb(
+                'opened declaration page', 'project Buffex', 'project', 'Buffer')
+
     def test_retained_row_is_retried_before_return(self):
         now = [0.0]
         captures = iter([
