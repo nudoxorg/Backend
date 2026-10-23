@@ -1,0 +1,38 @@
+{
+  "accepted_answer_paths": [
+    "cli outline/json/page/source_root",
+    "cli packages/json/revision",
+    "mcp/calls/2/reply/structuredContent/page/source_root"
+  ],
+  "artifact_manifest_sha256": "3223c6ab4ad4c78ab7cfc0c2a0d745456dd132dcc9a20636e0e852062edb171b",
+  "excluded_diagnostic": {
+    "build": 607719,
+    "observation_enabled": true,
+    "package_rows": 3177,
+    "reason": "Diagnostic observation conditions differ from normal T2; not accepted as golden evidence.",
+    "root": "ed6873d869b46071a341914764166e9c4695b4ad0215674ad79bbf645ce1360d"
+  },
+  "new_root": "107c84847833a969cb0322b9fecab2ee80950c188fe94159b1227576f13a1750",
+  "normal_t2_build": 607800,
+  "old_root": "f47925c3d765b13bcfed59b6a8e5ba748e9bd391550d82739dc26074597a0df5",
+  "reason": "Resolver witness v3 binds directory purpose and filters irrelevant regular entries in nonmodule observations. resolver_witness digest feeds sealed.digest, direct-tsz-program environment and configured program execution identity, changing the derived source root. Normal build snapshot diff contains exactly the three listed fields.",
+  "required_before_merge": "A normal full T2 on the final exact head must independently match these values and all original correctness/performance checks.",
+  "reviewers": [
+    "Codex / GPT-6",
+    "Codex sub-agent / GPT-6.1-sol"
+  ],
+  "source_review_paths": [
+    "crates/engine/src/application/typescript_host.rs:resolver_witness",
+    "crates/engine/src/application/typescript_program/direct.rs:build_direct_inputs_for_config",
+    "crates/engine/src/application/compiler.rs:typescript_project_execution_fingerprint"
+  ],
+  "source_sha": "c7bce85f60db1986fc14ed575e5613d6cdc136cd",
+  "task": "W2",
+  "unchanged": {
+    "other_answers": true,
+    "package_rows": 3175,
+    "performance_baseline": true,
+    "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
+    "tolerances_deadlines_coverage": true
+  }
+}
