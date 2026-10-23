@@ -1257,6 +1257,27 @@ def _emit_continuation_page(evidence: list, transport: str, tool: str,
             receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False), flush=True)
 
 
+
+def continuation_report_references(evidence: list[dict]) -> list[dict]:
+    """Index every full SURFACE-CONTINUATION-PAGE log record by its exact hash.
+
+    DTOs remain in the case record and log. The bounded CI verdict packet must
+    not duplicate them: one real-project walk can exceed its entire byte cap.
+    """
+    references = []
+    for receipt in evidence:
+        encoded = json.dumps(receipt, sort_keys=True, separators=(",", ":"),
+                             ensure_ascii=False).encode("utf-8")
+        references.append({
+            "transport": receipt["transport"],
+            "tool": receipt["tool"],
+            "page": receipt["page"],
+            "receipt_sha256": hashlib.sha256(encoded).hexdigest(),
+            "receipt_bytes": len(encoded),
+        })
+    return references
+
+
 def walk_outline_pages(first: dict, fetch_page, published_root: str,
                        max_pages: int = 256, timeout: float = 60.0,
                        deadline: float | None = None, on_page=None) -> tuple[int, int]:
@@ -2145,7 +2166,7 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
                 return
             entry.update(record["performance"])
             if args.ci_report and record.get("continuation_evidence"):
-                entry["continuation_evidence"] = record["continuation_evidence"]
+                entry["continuation_evidence"] = continuation_report_references(record["continuation_evidence"])
             if case.get("kind") == "cli-contract":
                 entry["state"] = "passed"
                 report[case["name"]] = record["performance"]
