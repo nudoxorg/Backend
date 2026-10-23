@@ -726,7 +726,9 @@ fn fetch_nuget_registration(
     let root: serde_json::Value =
         serde_json::from_slice(&registration_bytes).map_err(|_| DiscoveryStoreError::Decode)?;
     let root_object = root.as_object().ok_or(DiscoveryStoreError::Decode)?;
-    if root_object.get("@id").and_then(serde_json::Value::as_str) != Some(registration_index_url) {
+    if root_object.get("@id").and_then(serde_json::Value::as_str)
+        != Some(registration_index_url.as_str())
+    {
         return Err(DiscoveryStoreError::Corrupt);
     }
 
