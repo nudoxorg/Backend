@@ -708,3 +708,14 @@ source-content evidence. The original performance suffix remains byte-for-byte
 unchanged.1844's intermittent GUI source-content failure remains unresolved and
 the full content guard/deadline remains enabled; accepting truthful1851answers
 does not count as fixing that failure or as an official green comparison.
+
+### Polyglot methods and retained GUI failure pixels (W2, 2026-10-23)
+
+Official1862 polyglot answers match frozen981 diagnostic597289 exactly.
+All10queried authored declaration/method sites match the seven tiny fixtures;
+independent compiler/syntax AST checks and semantic-carrier qualifications are
+recorded in the dated review. Existing performance bytes remain unchanged.
+The diagnostic had different TS environment overrides, so equality was checked
+against the actual official answer before adopting this candidate.
+GUI failures now retain bounded already-captured native pixels and OCR in
+CI-GUI-FAILURE; they neither extend the deadline nor replace the original error.

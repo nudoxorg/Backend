@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import base64
+import json
 import os
 from pathlib import Path
 import re
@@ -22,6 +24,24 @@ def require_visible(text: str, expected: list[str]) -> None:
     missing = [value for value in expected if ' '.join(value.casefold().split()) not in normalized]
     if missing:
         raise RuntimeError('GUI window is missing visible source: ' + ', '.join(missing))
+
+
+def emit_failure_evidence(root: Path, error: Exception) -> None:
+    """Retain the already observed window without extending the GUI deadline."""
+    try:
+        packet = {"observer": "owned native X11 window pixels, English OCR", "error": str(error)[:2048], "captures": []}
+        for name in ("search-result.png", "opened-result.png", "window.png"):
+            path = root / name
+            if path.is_file() and path.stat().st_size <= 512 * 1024:
+                data = path.read_bytes()
+                packet["captures"].append({"name": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "png_base64": base64.b64encode(data).decode("ascii")})
+        text = root / "window.txt"
+        if text.is_file() and text.stat().st_size <= 32768:
+            packet["last_ocr"] = text.read_text(errors="replace")
+        print("CI-GUI-FAILURE " + json.dumps(packet, sort_keys=True), flush=True)
+    except Exception as evidence_error:
+        # Evidence cannot replace the original product/harness failure.
+        print("CI-GUI-FAILURE evidence unavailable: " + str(evidence_error)[:512], flush=True)
 
 
 def product_usage(pid: int) -> dict:
@@ -172,6 +192,9 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
         usage['seconds'] = {'gui read project': round(time.monotonic() - started, 2)}
         return ({'project': spec['project_name'], 'symbol': spec['query'],
                  'visible_source': spec['visible_source'], 'quit_exit': 0}, usage, evidence)
+    except Exception as error:
+        emit_failure_evidence(root, error)
+        raise
     finally:
         if app is not None:
             process_custody.stop(app)

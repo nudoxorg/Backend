@@ -1,6 +1,6 @@
 """A real window/query alone must not be accepted as the GUI source-page proof."""
 import unittest
-from gui_contract import require_visible
+from gui_contract import require_visible, emit_failure_evidence
 import surface
 
 
@@ -28,6 +28,38 @@ class GuiAdmissionTests(unittest.TestCase):
         failures = surface.regressions(baseline, measured)
         self.assertTrue(any('gui_peak_rss_kib' in item for item in failures))
         self.assertTrue(any('gui_cpu_seconds' in item for item in failures))
+
+
+class GuiFailureEvidenceTests(unittest.TestCase):
+    def test_failure_retains_exact_observed_pixels_and_ocr_with_bounds(self):
+        import base64, contextlib, hashlib, io, json, tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = b"observed pixels"
+            (root / "window.png").write_bytes(data)
+            (root / "opened-result.png").write_bytes(b"x" * (512 * 1024 + 1))
+            (root / "window.txt").write_text("Search failed: publication reset exceeded its time budget")
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                emit_failure_evidence(root, RuntimeError("source content missing"))
+            packet = json.loads(output.getvalue().split(" ", 1)[1])
+            self.assertEqual(len(packet["captures"]), 1)
+            image = packet["captures"][0]
+            self.assertEqual(base64.b64decode(image["png_base64"]), data)
+            self.assertEqual(image["sha256"], hashlib.sha256(data).hexdigest())
+            self.assertIn("publication reset", packet["last_ocr"])
+
+    def test_evidence_failure_preserves_the_original_failure(self):
+        import contextlib, io, tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory, patch.object(Path, "is_file", side_effect=OSError("evidence unavailable")), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, "original content failure"):
+                try:
+                    raise RuntimeError("original content failure")
+                except Exception as error:
+                    emit_failure_evidence(Path(directory), error)
+                    raise
 
 
 if __name__ == '__main__':
