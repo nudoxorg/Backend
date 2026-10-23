@@ -678,3 +678,12 @@ queried sites against the verified crate and an independent Rust AST, and
 checks generated benchmark/test names against actual pinned-rustc macro
 expansion. The dated review distinguishes source declarations from compiler
 carriers. Original performance bytes remain unchanged; fresh T2 is required.
+
+### Polyglot method-kind contract (W2, 2026-10-23)
+
+Diagnostic596768 on frozen4fdf93137 returns `language` as a C++ method at
+`src/main.cpp:4` and Java method at`src/Duke.java:2`, exactly matching the
+authored fixtures. The bounded-search precondition now requires `method`;
+its former `function` filter rejected both real methods. The two required
+source paths/languages, exact lowercase name and all ranking/completeness,
+continuation and live-health guards remain in place.

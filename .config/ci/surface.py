@@ -1002,7 +1002,7 @@ def run_live_contracts(owner: Owner, project: Path, config: dict, published_root
     methods = {
         (row.get("identity", {}).get("path"), row.get("language"))
         for row in reference.get("records", [])
-        if row.get("identity", {}).get("name") == "language" and row.get("kind") == "function"
+        if row.get("identity", {}).get("name") == "language" and row.get("kind") == "method"
     }
     if not {("src/Duke.java", "java"), ("src/main.cpp", "cpp")}.issubset(methods):
         raise RuntimeError(f"bounded search: reference lost authored Java/C++ language methods: {methods}")
