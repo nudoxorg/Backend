@@ -4,12 +4,18 @@
 
 use super::*;
 use backend_engine::registry::{PackageCoordinate, admit_registry_coordinate};
-use backend_library::{ProductText, RegistryPackageDiscoveryObservation};
+use backend_library::{DiscoveryAdvisory, ProductText, RegistryPackageDiscoveryObservation};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_CACHE_OBJECTS: usize = 32;
 const MAX_CACHE_ENCODED_BYTES: usize = 64 * 1024 * 1024;
-const PARSER_IDENTITY: &str = "exact-registry-package-metadata-v4";
+const PARSER_IDENTITY: &str = "exact-registry-package-metadata-v5";
+const MAX_NUGET_SERVICE_INDEX_BYTES: usize = 1024 * 1024;
+const MAX_NUGET_REGISTRATION_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_NUGET_REGISTRATION_TOTAL_BYTES: usize = 16 * 1024 * 1024;
+const MAX_NUGET_REGISTRATION_PAGES: usize = 128;
+const MAX_NUGET_REGISTRATION_DEPTH: usize = 16;
+const MAX_NUGET_REGISTRATION_LEAVES: usize = 8192;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum ExactVersionPresence {
@@ -51,6 +57,11 @@ enum ObjectResponse {
     },
     Unchanged,
     Missing {
+        proof: [u8; 32],
+    },
+    Nuget {
+        releases: Vec<DiscoveryReleaseObservation>,
+        complete: bool,
         proof: [u8; 32],
     },
 }
@@ -124,13 +135,28 @@ impl PreparedPackageMetadata {
                 .as_ref()
                 .and_then(|cached| cached.etag.as_deref());
             let fetch_started = Instant::now();
-            let response = fetch_object(
-                &self.key.endpoint,
-                self.maximum,
-                || cancelled() || self.cancelled.load(Ordering::Acquire),
-                &remaining_budget,
-                etag,
-            );
+            let response = if self.ecosystem == RegistryEcosystem::Nuget {
+                // A NuGet point observation is a linked service-index and
+                // registration-page transcript. Conditional validation of
+                // only one link would not validate the whole proof, so this
+                // path uses the bounded freshness cache but fetches the chain
+                // unconditionally after expiry.
+                fetch_nuget_registration(
+                    &self.key.endpoint,
+                    &self.name,
+                    &self.package,
+                    || cancelled() || self.cancelled.load(Ordering::Acquire),
+                    &remaining_budget,
+                )
+            } else {
+                fetch_object(
+                    &self.key.endpoint,
+                    self.maximum,
+                    || cancelled() || self.cancelled.load(Ordering::Acquire),
+                    &remaining_budget,
+                    etag,
+                )
+            };
             trace_metadata(
                 self.request_id,
                 "fetch",
@@ -161,6 +187,11 @@ impl PreparedPackageMetadata {
                         )
                     }
                     ObjectResponse::Missing { proof } => (Vec::new(), true, proof, None),
+                    ObjectResponse::Nuget {
+                        releases,
+                        complete,
+                        proof,
+                    } => (releases, complete, proof, None),
                 })
             })();
             trace_metadata(
@@ -270,6 +301,10 @@ impl DiscoveryGateway {
                     1024 * 1024,
                 )
             }
+            RegistryEcosystem::Nuget => (
+                nuget_service_index_url(endpoint.as_str()),
+                MAX_NUGET_SERVICE_INDEX_BYTES,
+            ),
             _ => {
                 return Err(unavailable(
                     None,
@@ -635,6 +670,581 @@ fn go_proxy_escape(value: &str) -> String {
         .collect()
 }
 
+/// Fetches NuGet point metadata only through the selected source's V3 service
+/// index. The full per-package registration is walked under strict aggregate
+/// bounds so only a fully traversed registration can establish exact absence.
+fn fetch_nuget_registration(
+    service_index_url: &str,
+    package_name: &str,
+    package: &PackageCoordinate,
+    cancelled: impl Fn() -> bool,
+    remaining_budget: impl Fn() -> Duration,
+) -> Result<ObjectResponse, DiscoveryStoreError> {
+    let service_index = fetch_object(
+        service_index_url,
+        MAX_NUGET_SERVICE_INDEX_BYTES,
+        &cancelled,
+        &remaining_budget,
+        None,
+    )?;
+    let ObjectResponse::Modified {
+        bytes: service_bytes,
+        ..
+    } = service_index
+    else {
+        // A missing or not-modified service index is not evidence that a
+        // package is absent. In particular, do not fall back to nuget.org.
+        return Err(DiscoveryStoreError::Corrupt);
+    };
+    let registration_base = nuget_registration_base(&service_bytes, service_index_url)?;
+    let registration_index_url = format!(
+        "{}/{}/index.json",
+        registration_base.trim_end_matches('/'),
+        package_name.to_ascii_lowercase()
+    );
+    require_nuget_resource_url(&registration_index_url, &registration_base)?;
+    require_nuget_path_under(&registration_index_url, &registration_base)?;
+
+    let registration = fetch_nuget_document(
+        &registration_index_url,
+        MAX_NUGET_REGISTRATION_DOCUMENT_BYTES,
+        &cancelled,
+        &remaining_budget,
+    )?;
+    let registration_bytes = match registration {
+        ObjectResponse::Modified { bytes, .. } => bytes,
+        ObjectResponse::Missing { proof } => {
+            return Ok(ObjectResponse::Missing {
+                proof: nuget_proof(&service_bytes, &registration_index_url, &proof),
+            });
+        }
+        ObjectResponse::Unchanged | ObjectResponse::Nuget { .. } => {
+            return Err(DiscoveryStoreError::Corrupt);
+        }
+    };
+
+    let root: serde_json::Value =
+        serde_json::from_slice(&registration_bytes).map_err(|_| DiscoveryStoreError::Decode)?;
+    let root_object = root.as_object().ok_or(DiscoveryStoreError::Decode)?;
+    if root_object
+        .get("@id")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|id| id != registration_index_url)
+    {
+        return Err(DiscoveryStoreError::Corrupt);
+    }
+
+    let mut proof = blake3::Hasher::new();
+    proof.update(b"backend.nuget.registration-point.v1\0");
+    nuget_hash_part(&mut proof, service_index_url.as_bytes());
+    nuget_hash_part(&mut proof, &service_bytes);
+    nuget_hash_part(&mut proof, registration_index_url.as_bytes());
+    nuget_hash_part(&mut proof, &registration_bytes);
+
+    let items = root_object
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(DiscoveryStoreError::Decode)?;
+    if root_object
+        .get("count")
+        .and_then(serde_json::Value::as_u64)
+        .is_some_and(|count| usize::try_from(count).ok() != Some(items.len()))
+    {
+        return Err(DiscoveryStoreError::Corrupt);
+    }
+    let mut leaves = Vec::new();
+    let mut visited_pages = BTreeSet::new();
+    let mut total_bytes = service_bytes
+        .len()
+        .checked_add(registration_bytes.len())
+        .ok_or(DiscoveryStoreError::Bounds)?;
+    collect_nuget_registration_items(
+        items,
+        &registration_index_url,
+        &registration_base,
+        &mut visited_pages,
+        &mut leaves,
+        &mut total_bytes,
+        &mut proof,
+        0,
+        &cancelled,
+        &remaining_budget,
+    )?;
+    if leaves.len() > MAX_NUGET_REGISTRATION_LEAVES {
+        return Err(DiscoveryStoreError::Bounds);
+    }
+    let proof = *proof.finalize().as_bytes();
+    let (releases, exact_complete) =
+        parse_nuget_registration_observation(&leaves, package_name, package, proof)?;
+    Ok(ObjectResponse::Nuget {
+        releases,
+        complete: exact_complete,
+        proof,
+    })
+}
+
+fn collect_nuget_registration_items(
+    items: &[serde_json::Value],
+    registration_index_url: &str,
+    registration_base: &str,
+    visited_pages: &mut BTreeSet<String>,
+    leaves: &mut Vec<serde_json::Value>,
+    total_bytes: &mut usize,
+    proof: &mut blake3::Hasher,
+    depth: usize,
+    cancelled: &impl Fn() -> bool,
+    remaining_budget: &impl Fn() -> Duration,
+) -> Result<(), DiscoveryStoreError> {
+    if depth > MAX_NUGET_REGISTRATION_DEPTH {
+        return Err(DiscoveryStoreError::Bounds);
+    }
+    for item in items {
+        if cancelled() {
+            return Err(DiscoveryStoreError::Cancelled);
+        }
+        if leaves.len() >= MAX_NUGET_REGISTRATION_LEAVES {
+            return Err(DiscoveryStoreError::Bounds);
+        }
+        let object = item.as_object().ok_or(DiscoveryStoreError::Decode)?;
+        if object.contains_key("catalogEntry") {
+            leaves.push(item.clone());
+            continue;
+        }
+        if let Some(inline) = object.get("items").and_then(serde_json::Value::as_array) {
+            if let Some(count) = object.get("count").and_then(serde_json::Value::as_u64)
+                && usize::try_from(count).ok() != Some(inline.len())
+            {
+                return Err(DiscoveryStoreError::Corrupt);
+            }
+            collect_nuget_registration_items(
+                inline,
+                registration_index_url,
+                registration_base,
+                visited_pages,
+                leaves,
+                total_bytes,
+                proof,
+                depth + 1,
+                cancelled,
+                remaining_budget,
+            )?;
+            continue;
+        }
+
+        let page_url = object
+            .get("@id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(DiscoveryStoreError::Decode)?;
+        require_nuget_resource_url(page_url, registration_base)?;
+        require_nuget_path_under(page_url, registration_base)?;
+        if !visited_pages.insert(page_url.to_owned()) {
+            return Err(DiscoveryStoreError::Corrupt);
+        }
+        if visited_pages.len() > MAX_NUGET_REGISTRATION_PAGES {
+            return Err(DiscoveryStoreError::Bounds);
+        }
+        let page_response = fetch_nuget_document(
+            page_url,
+            MAX_NUGET_REGISTRATION_DOCUMENT_BYTES,
+            cancelled,
+            remaining_budget,
+        )?;
+        let ObjectResponse::Modified { bytes, .. } = page_response else {
+            // A missing page cannot establish package absence.
+            return Err(DiscoveryStoreError::Corrupt);
+        };
+        *total_bytes = total_bytes
+            .checked_add(bytes.len())
+            .filter(|size| *size <= MAX_NUGET_REGISTRATION_TOTAL_BYTES)
+            .ok_or(DiscoveryStoreError::Bounds)?;
+        nuget_hash_part(proof, page_url.as_bytes());
+        nuget_hash_part(proof, &bytes);
+        let page: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|_| DiscoveryStoreError::Decode)?;
+        let page_object = page.as_object().ok_or(DiscoveryStoreError::Decode)?;
+        if page_object
+            .get("@id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|id| id != page_url)
+            || page_object
+                .get("parent")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|parent| parent != registration_index_url)
+        {
+            return Err(DiscoveryStoreError::Corrupt);
+        }
+        let page_items = page_object
+            .get("items")
+            .and_then(serde_json::Value::as_array)
+            .ok_or(DiscoveryStoreError::Decode)?;
+        if page_object
+            .get("count")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|count| usize::try_from(count).ok() != Some(page_items.len()))
+        {
+            return Err(DiscoveryStoreError::Corrupt);
+        }
+        collect_nuget_registration_items(
+            page_items,
+            registration_index_url,
+            registration_base,
+            visited_pages,
+            leaves,
+            total_bytes,
+            proof,
+            depth + 1,
+            cancelled,
+            remaining_budget,
+        )?;
+    }
+    Ok(())
+}
+
+fn parse_nuget_registration_observation(
+    leaves: &[serde_json::Value],
+    package_name: &str,
+    package: &PackageCoordinate,
+    proof: [u8; 32],
+) -> Result<(Vec<DiscoveryReleaseObservation>, bool), DiscoveryStoreError> {
+    if leaves.len() > MAX_NUGET_REGISTRATION_LEAVES {
+        return Err(DiscoveryStoreError::Bounds);
+    }
+    let admitted = admit_registry_coordinate(package).map_err(|_| DiscoveryStoreError::Decode)?;
+    let wanted_version =
+        normalize_nuget_version(admitted.version().as_str()).ok_or(DiscoveryStoreError::Decode)?;
+    let mut selected = None;
+    let mut seen_versions = BTreeSet::new();
+    let mut complete = true;
+    for leaf in leaves {
+        let Some(entry) = leaf
+            .get("catalogEntry")
+            .and_then(serde_json::Value::as_object)
+        else {
+            complete = false;
+            continue;
+        };
+        let (Some(id), Some(version)) = (
+            entry.get("id").and_then(serde_json::Value::as_str),
+            entry.get("version").and_then(serde_json::Value::as_str),
+        ) else {
+            complete = false;
+            continue;
+        };
+        if !id.eq_ignore_ascii_case(package_name) {
+            return Err(DiscoveryStoreError::Corrupt);
+        }
+        let Some(normalized_version) = normalize_nuget_version(version) else {
+            complete = false;
+            continue;
+        };
+        if !seen_versions.insert(normalized_version.clone()) {
+            return Err(DiscoveryStoreError::Corrupt);
+        }
+        if normalized_version != wanted_version {
+            continue;
+        }
+        let Some(listed) = entry.get("listed").and_then(serde_json::Value::as_bool) else {
+            complete = false;
+            continue;
+        };
+        let standing = if listed {
+            DiscoveryStanding::Published
+        } else {
+            DiscoveryStanding::Yanked
+        };
+        let mut metadata = DiscoveryMetadata::default();
+        metadata.aliases = DiscoveryFacet::Absent;
+        metadata.description = nuget_text_facet(entry, "description");
+        metadata.keywords = nuget_tags_facet(entry);
+        metadata.license = nuget_text_facet(entry, "licenseExpression");
+        metadata.published_at = nuget_text_facet(entry, "published");
+        metadata.deprecation = nuget_deprecation_facet(entry);
+        metadata.yanked = DiscoveryFacet::Known(!listed);
+        metadata.advisories = nuget_advisories_facet(entry)?;
+        metadata.downloads = entry
+            .get("downloads")
+            .and_then(serde_json::Value::as_u64)
+            .map_or(DiscoveryFacet::Unknown, DiscoveryFacet::Known);
+        metadata.admit().map_err(|_| DiscoveryStoreError::Decode)?;
+        if selected.is_some() {
+            return Err(DiscoveryStoreError::Corrupt);
+        }
+        selected = Some(DiscoveryReleaseObservation {
+            coordinate: package.clone(),
+            standing,
+            source_event_time: None,
+            proof,
+            metadata,
+        });
+    }
+    Ok((selected.into_iter().collect(), complete))
+}
+
+fn nuget_text_facet(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> DiscoveryFacet<String> {
+    match object.get(key) {
+        Some(serde_json::Value::String(value)) if value.len() <= 4096 && !value.contains('\0') => {
+            DiscoveryFacet::Known(value.clone())
+        }
+        Some(serde_json::Value::Null) => DiscoveryFacet::Absent,
+        Some(serde_json::Value::String(_)) => DiscoveryFacet::Unknown,
+        Some(_) | None => DiscoveryFacet::Unknown,
+    }
+}
+
+fn nuget_tags_facet(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> DiscoveryFacet<Vec<String>> {
+    match object.get("tags") {
+        Some(serde_json::Value::String(value)) if value.len() <= 32 * 1024 => {
+            let tags = value
+                .split_ascii_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            (tags.len() <= 128)
+                .then_some(DiscoveryFacet::Known(tags))
+                .unwrap_or(DiscoveryFacet::Unknown)
+        }
+        Some(serde_json::Value::Null) => DiscoveryFacet::Absent,
+        Some(serde_json::Value::String(_)) => DiscoveryFacet::Unknown,
+        Some(_) | None => DiscoveryFacet::Unknown,
+    }
+}
+
+fn nuget_deprecation_facet(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> DiscoveryFacet<String> {
+    match object.get("deprecation") {
+        Some(serde_json::Value::Null) => DiscoveryFacet::Absent,
+        Some(serde_json::Value::Object(deprecation)) => match deprecation.get("message") {
+            Some(serde_json::Value::String(message))
+                if message.len() <= 4096 && !message.contains('\0') =>
+            {
+                DiscoveryFacet::Known(message.clone())
+            }
+            _ => DiscoveryFacet::Unknown,
+        },
+        Some(_) | None => DiscoveryFacet::Unknown,
+    }
+}
+
+fn nuget_advisories_facet(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<DiscoveryFacet<Vec<DiscoveryAdvisory>>, DiscoveryStoreError> {
+    let Some(value) = object.get("vulnerabilities") else {
+        return Ok(DiscoveryFacet::Unknown);
+    };
+    if value.is_null() {
+        return Ok(DiscoveryFacet::Unknown);
+    }
+    let Some(values) = value.as_array() else {
+        return Err(DiscoveryStoreError::Decode);
+    };
+    if values.len() > 128 {
+        return Err(DiscoveryStoreError::Bounds);
+    }
+    let mut advisories = Vec::with_capacity(values.len());
+    for value in values {
+        let advisory = value.as_object().ok_or(DiscoveryStoreError::Decode)?;
+        let url = advisory
+            .get("advisoryUrl")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 256)
+            .ok_or(DiscoveryStoreError::Decode)?;
+        let severity = match advisory.get("severity") {
+            Some(serde_json::Value::String(value))
+                if matches!(value.as_str(), "0" | "1" | "2" | "3") =>
+            {
+                value.clone()
+            }
+            Some(serde_json::Value::Number(value))
+                if value.as_u64().is_some_and(|value| value <= 3) =>
+            {
+                value.to_string()
+            }
+            _ => return Err(DiscoveryStoreError::Decode),
+        };
+        advisories.push(DiscoveryAdvisory {
+            id: url.to_owned(),
+            aliases: DiscoveryFacet::Absent,
+            summary: DiscoveryFacet::Unknown,
+            severity: DiscoveryFacet::Known(severity),
+            fixed_in: DiscoveryFacet::Unknown,
+        });
+    }
+    Ok(DiscoveryFacet::Known(advisories))
+}
+
+fn normalize_nuget_version(value: &str) -> Option<String> {
+    let (version, _metadata) = value
+        .split_once('+')
+        .map_or((value, None), |(v, m)| (v, Some(m)));
+    let (core, prerelease) = version
+        .split_once('-')
+        .map_or((version, None), |(v, p)| (v, Some(p)));
+    if let Some(metadata) = _metadata
+        && (metadata.is_empty()
+            || !metadata
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-')))
+    {
+        return None;
+    }
+    let components = core.split('.').collect::<Vec<_>>();
+    if components.is_empty() || components.len() > 4 {
+        return None;
+    }
+    let mut numbers = components
+        .iter()
+        .map(|component| {
+            component
+                .parse::<u64>()
+                .ok()
+                .map(|number| number.to_string())
+        })
+        .collect::<Option<Vec<_>>>()?;
+    while numbers.len() < 3 {
+        numbers.push("0".to_owned());
+    }
+    if numbers.len() == 4 && numbers[3] == "0" {
+        numbers.pop();
+    }
+    let mut normalized = numbers.join(".");
+    if let Some(prerelease) = prerelease {
+        if prerelease.is_empty()
+            || !prerelease
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+        {
+            return None;
+        }
+        normalized.push('-');
+        normalized.push_str(&prerelease.to_ascii_lowercase());
+    }
+    Some(normalized)
+}
+
+fn nuget_service_index_url(endpoint: &str) -> String {
+    if endpoint.ends_with("/index.json") {
+        endpoint.to_owned()
+    } else if endpoint.ends_with("/v3") {
+        format!("{endpoint}/index.json")
+    } else {
+        format!("{}/v3/index.json", endpoint.trim_end_matches('/'))
+    }
+}
+
+fn nuget_registration_base(
+    bytes: &[u8],
+    service_index_url: &str,
+) -> Result<String, DiscoveryStoreError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| DiscoveryStoreError::Decode)?;
+    let resources = value
+        .get("resources")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(DiscoveryStoreError::Decode)?;
+    let mut registration = None;
+    for resource in resources {
+        let Some(id) = resource.get("@id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let types = match resource.get("@type") {
+            Some(serde_json::Value::String(value)) => vec![value.as_str()],
+            Some(serde_json::Value::Array(values)) => values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect(),
+            _ => continue,
+        };
+        if types
+            .iter()
+            .any(|value| *value == "RegistrationsBaseUrl/3.6.0")
+        {
+            require_nuget_resource_url(id, service_index_url)?;
+            if registration.replace(id.to_owned()).is_some() {
+                return Err(DiscoveryStoreError::Corrupt);
+            }
+        }
+    }
+    registration.ok_or(DiscoveryStoreError::Corrupt)
+}
+
+fn require_nuget_resource_url(resource: &str, parent: &str) -> Result<(), DiscoveryStoreError> {
+    let resource_uri = resource
+        .parse::<ureq::http::Uri>()
+        .map_err(|_| DiscoveryStoreError::Corrupt)?;
+    let parent_uri = parent
+        .parse::<ureq::http::Uri>()
+        .map_err(|_| DiscoveryStoreError::Corrupt)?;
+    let (
+        Some(resource_scheme),
+        Some(resource_authority),
+        Some(parent_scheme),
+        Some(parent_authority),
+    ) = (
+        resource_uri.scheme_str(),
+        resource_uri.authority(),
+        parent_uri.scheme_str(),
+        parent_uri.authority(),
+    )
+    else {
+        return Err(DiscoveryStoreError::Corrupt);
+    };
+    let same_authority = resource_authority
+        .host()
+        .eq_ignore_ascii_case(parent_authority.host())
+        && resource_authority.port_u16() == parent_authority.port_u16();
+    let safe_scheme = resource_scheme == "https"
+        || (resource_scheme == "http"
+            && resource_authority
+                .host()
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback()));
+    if !safe_scheme
+        || resource_scheme != parent_scheme
+        || !same_authority
+        || resource_authority.as_str().contains('@')
+        || resource_uri.query().is_some()
+        || resource_uri.path().is_empty()
+        || resource.contains('#')
+    {
+        return Err(DiscoveryStoreError::Corrupt);
+    }
+    Ok(())
+}
+
+fn require_nuget_path_under(resource: &str, base: &str) -> Result<(), DiscoveryStoreError> {
+    let resource_uri = resource
+        .parse::<ureq::http::Uri>()
+        .map_err(|_| DiscoveryStoreError::Corrupt)?;
+    let base_uri = base
+        .parse::<ureq::http::Uri>()
+        .map_err(|_| DiscoveryStoreError::Corrupt)?;
+    let base_path = base_uri.path().trim_end_matches('/');
+    let expected_prefix = format!("{base_path}/");
+    if !resource_uri.path().starts_with(&expected_prefix) {
+        return Err(DiscoveryStoreError::Corrupt);
+    }
+    Ok(())
+}
+
+fn nuget_hash_part(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    hasher.update(&(bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
+fn nuget_proof(service_index: &[u8], registration_url: &str, missing: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.nuget.registration-absence.v1\0");
+    nuget_hash_part(&mut hasher, service_index);
+    nuget_hash_part(&mut hasher, registration_url.as_bytes());
+    hasher.update(missing);
+    *hasher.finalize().as_bytes()
+}
+
 fn parse_object(
     ecosystem: RegistryEcosystem,
     bytes: &[u8],
@@ -765,6 +1375,26 @@ fn fetch_object(
     remaining_budget: impl Fn() -> Duration,
     etag: Option<&str>,
 ) -> Result<ObjectResponse, DiscoveryStoreError> {
+    fetch_object_with_encoding(url, maximum, cancelled, remaining_budget, etag, "identity")
+}
+
+fn fetch_nuget_document(
+    url: &str,
+    maximum: usize,
+    cancelled: impl Fn() -> bool,
+    remaining_budget: impl Fn() -> Duration,
+) -> Result<ObjectResponse, DiscoveryStoreError> {
+    fetch_object_with_encoding(url, maximum, cancelled, remaining_budget, None, "gzip")
+}
+
+fn fetch_object_with_encoding(
+    url: &str,
+    maximum: usize,
+    cancelled: impl Fn() -> bool,
+    remaining_budget: impl Fn() -> Duration,
+    etag: Option<&str>,
+    accept_encoding: &str,
+) -> Result<ObjectResponse, DiscoveryStoreError> {
     if cancelled() {
         return Err(DiscoveryStoreError::Cancelled);
     }
@@ -777,7 +1407,7 @@ fn fetch_object(
     let mut request = agent
         .get(url)
         .header("accept", "application/json")
-        .header("accept-encoding", "identity")
+        .header("accept-encoding", accept_encoding)
         .header("user-agent", "backend-index-compiler-discovery/1");
     if let Some(etag) = etag {
         request = request.header("if-none-match", etag);
@@ -867,9 +1497,214 @@ mod tests {
     }
 
     #[test]
+    fn nuget_point_metadata_uses_configured_registration_and_normalizes_versions() {
+        let (endpoint, worker) = nuget_server(|address| {
+            let registration = format!("http://{address}/private/v3/registration/");
+            let root_url = format!("{registration}demo/index.json");
+            vec![
+                (
+                    "200 OK".to_owned(),
+                    format!(
+                        r#"{{"resources":[{{"@id":"{registration}","@type":["RegistrationsBaseUrl/3.6.0"]}}]}}"#
+                    ),
+                ),
+                (
+                    "200 OK".to_owned(),
+                    format!(
+                        r#"{{"@id":"{root_url}","count":1,"items":[{{"catalogEntry":{{"id":"DEMO","version":"1.0.0.0+build42","listed":true,"published":"2026-10-20T00:00:00Z","downloads":12,"description":"exact package"}}}}]}}"#
+                    ),
+                ),
+            ]
+        });
+        let mut owner = gateway(endpoint);
+        let package = PackageCoordinate::parse("pkg:nuget/demo@1.0")
+            .expect("canonical pinned NuGet coordinate");
+        assert!(owner.observe_package(&package).is_none());
+        let fact = owner
+            .store
+            .facts()
+            .map(|(_, fact)| fact.clone())
+            .find(|fact| fact.coordinate == package)
+            .expect("admitted exact version fact");
+        assert_eq!(fact.standing, DiscoveryStanding::Published);
+        assert_eq!(fact.metadata.downloads, DiscoveryFacet::Known(12));
+        let requests = worker.join().expect("NuGet fixture worker");
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("GET /v3/index.json "));
+        assert!(requests[1].starts_with("GET /private/v3/registration/demo/index.json "));
+        assert!(
+            requests[1]
+                .to_ascii_lowercase()
+                .contains("accept-encoding: gzip")
+        );
+    }
+
+    #[test]
+    fn nuget_private_source_404_is_distinct_from_incomplete_registration() {
+        let (endpoint, worker) = nuget_server(|address| {
+            let registration = format!("http://{address}/private/registration/");
+            vec![
+                (
+                    "200 OK".to_owned(),
+                    format!(
+                        r#"{{"resources":[{{"@id":"{registration}","@type":"RegistrationsBaseUrl/3.6.0"}}]}}"#
+                    ),
+                ),
+                ("404 Not Found".to_owned(), "not found".to_owned()),
+            ]
+        });
+        let mut owner = gateway(endpoint);
+        let package = PackageCoordinate::parse("pkg:nuget/internal.widget@2.0.0")
+            .expect("private package coordinate");
+        assert!(matches!(
+            owner.observe_package(&package),
+            Some(RegistryPackageDiscoveryObservation::Missing { .. })
+        ));
+        let requests = worker.join().expect("NuGet fixture worker");
+        assert_eq!(requests.len(), 2, "no public registry fallback request");
+        assert!(requests[0].starts_with("GET /v3/index.json "));
+        assert!(requests[1].starts_with("GET /private/registration/internal.widget/index.json "));
+    }
+
+    #[test]
+    fn nuget_registration_page_mismatch_cannot_prove_absence() {
+        let (endpoint, worker) = nuget_server(|address| {
+            let registration = format!("http://{address}/registration/");
+            let root_url = format!("{registration}demo/index.json");
+            let page_url = format!("{registration}demo/page-0.json");
+            vec![
+                (
+                    "200 OK".to_owned(),
+                    format!(
+                        r#"{{"resources":[{{"@id":"{registration}","@type":"RegistrationsBaseUrl/3.6.0"}}]}}"#
+                    ),
+                ),
+                (
+                    "200 OK".to_owned(),
+                    format!(
+                        r#"{{"@id":"{root_url}","count":1,"items":[{{"@id":"{page_url}","count":1,"lower":"1.0.0","upper":"1.0.0"}}]}}"#
+                    ),
+                ),
+                (
+                    "200 OK".to_owned(),
+                    format!(
+                        r#"{{"@id":"{page_url}","parent":"{root_url}","count":1,"items":[{{"catalogEntry":{{"id":"some-other-package","version":"1.0.0","listed":true}}}}]}}"#
+                    ),
+                ),
+            ]
+        });
+        let mut owner = gateway(endpoint);
+        let package =
+            PackageCoordinate::parse("pkg:nuget/demo@2.0.0").expect("NuGet package coordinate");
+        assert!(matches!(
+            owner.observe_package(&package),
+            Some(RegistryPackageDiscoveryObservation::Unavailable { .. })
+        ));
+        assert_eq!(worker.join().expect("NuGet fixture worker").len(), 3);
+    }
+
+    #[test]
+    fn nuget_matching_leaf_without_required_standing_is_incomplete_not_missing() {
+        let (endpoint, worker) = nuget_server(|address| {
+            let registration = format!("http://{address}/registration/");
+            let root_url = format!("{registration}demo/index.json");
+            vec![
+                (
+                    "200 OK".to_owned(),
+                    format!(
+                        r#"{{"resources":[{{"@id":"{registration}","@type":"RegistrationsBaseUrl/3.6.0"}}]}}"#
+                    ),
+                ),
+                (
+                    "200 OK".to_owned(),
+                    format!(
+                        r#"{{"@id":"{root_url}","count":1,"items":[{{"catalogEntry":{{"id":"Demo","version":"2.1.0"}}}}]}}"#
+                    ),
+                ),
+            ]
+        });
+        let mut owner = gateway(endpoint);
+        let package =
+            PackageCoordinate::parse("pkg:nuget/demo@2.1.0").expect("NuGet package coordinate");
+        assert!(matches!(
+            owner.observe_package(&package),
+            Some(RegistryPackageDiscoveryObservation::Unavailable { .. })
+        ));
+        assert!(owner.store.facts().next().is_none());
+        assert_eq!(worker.join().expect("NuGet fixture worker").len(), 2);
+    }
+
+    #[test]
+    fn nuget_other_registered_version_is_exact_absence_not_version_aliasing() {
+        let (endpoint, worker) = nuget_server(|address| {
+            let registration = format!("http://{address}/registration/");
+            let root_url = format!("{registration}demo/index.json");
+            vec![
+                (
+                    "200 OK".to_owned(),
+                    format!(
+                        r#"{{"resources":[{{"@id":"{registration}","@type":"RegistrationsBaseUrl/3.6.0"}}]}}"#
+                    ),
+                ),
+                (
+                    "200 OK".to_owned(),
+                    format!(
+                        r#"{{"@id":"{root_url}","count":1,"items":[{{"catalogEntry":{{"id":"demo","version":"1.0.1","listed":true}}}}]}}"#
+                    ),
+                ),
+            ]
+        });
+        let mut owner = gateway(endpoint);
+        let package =
+            PackageCoordinate::parse("pkg:nuget/demo@1.0.0").expect("NuGet package coordinate");
+        assert!(matches!(
+            owner.observe_package(&package),
+            Some(RegistryPackageDiscoveryObservation::Missing { .. })
+        ));
+        assert!(owner.store.facts().next().is_none());
+        assert_eq!(worker.join().expect("NuGet fixture worker").len(), 2);
+    }
+
+    #[test]
+    fn nuget_registration_links_cannot_escape_the_configured_origin() {
+        let (endpoint, worker) = nuget_server(|_address| {
+            vec![(
+                "200 OK".to_owned(),
+                r#"{"resources":[{"@id":"https://api.nuget.org/v3/registration/","@type":"RegistrationsBaseUrl/3.6.0"}]}"#.to_owned(),
+            )]
+        });
+        let mut owner = gateway(endpoint);
+        let package =
+            PackageCoordinate::parse("pkg:nuget/demo@1.0.0").expect("NuGet package coordinate");
+        assert!(matches!(
+            owner.observe_package(&package),
+            Some(RegistryPackageDiscoveryObservation::Unavailable { .. })
+        ));
+        assert!(owner.store.facts().next().is_none());
+        assert_eq!(worker.join().expect("NuGet fixture worker").len(), 1);
+    }
+
+    #[test]
+    fn nuget_version_normalization_matches_documented_core_build_and_prerelease_rules() {
+        assert_eq!(normalize_nuget_version("1.00"), Some("1.0.0".to_owned()));
+        assert_eq!(
+            normalize_nuget_version("1.0.0.0+githash"),
+            Some("1.0.0".to_owned())
+        );
+        assert_eq!(
+            normalize_nuget_version("1.0.0-Alpha.1"),
+            Some("1.0.0-alpha.1".to_owned())
+        );
+        assert_eq!(normalize_nuget_version("1..0"), None);
+        assert_eq!(normalize_nuget_version("1.0.0+"), None);
+    }
+
+    #[test]
     fn expired_metadata_budget_does_not_issue_a_get() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
-        listener.set_nonblocking(true).expect("nonblocking listener");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
         let url = format!(
             "http://{}/metadata",
             listener.local_addr().expect("loopback address")
@@ -880,6 +1715,17 @@ mod tests {
             listener.accept(),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock
         ));
+    }
+
+    #[test]
+    fn metadata_body_bound_is_enforced_for_http_response_bytes() {
+        let (endpoint, server) = server(vec![("200 OK", "123456789")]);
+        let url = format!("{}/bounded", endpoint.as_str());
+        assert!(matches!(
+            fetch_object(&url, 8, || false, || REQUEST_TIMEOUT, None),
+            Err(DiscoveryStoreError::Bounds)
+        ));
+        assert_eq!(server.join().expect("bounded fixture").len(), 1);
     }
 
     fn server(
@@ -923,6 +1769,56 @@ mod tests {
                 }
                 requests.push(String::from_utf8(request).expect("HTTP request"));
                 write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nETag: \"requests-v1\"\r\nConnection: close\r\n\r\n{body}", body.len()).expect("response");
+            }
+            requests
+        });
+        (endpoint, worker)
+    }
+
+    fn nuget_server(
+        responses: impl FnOnce(&str) -> Vec<(String, String)>,
+    ) -> (RegistryEndpoint, JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("NuGet listener");
+        listener
+            .set_nonblocking(true)
+            .expect("bounded NuGet accept");
+        let address = listener.local_addr().expect("NuGet address").to_string();
+        let endpoint = RegistryEndpoint::new(RegistryEcosystem::Nuget, format!("http://{address}"))
+            .expect("loopback NuGet source");
+        let responses = responses(&address);
+        let worker = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (status, body) in responses {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let (mut stream, _) = loop {
+                    match listener.accept() {
+                        Ok(connection) => break connection,
+                        Err(error)
+                            if error.kind() == io::ErrorKind::WouldBlock
+                                && Instant::now() < deadline =>
+                        {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("bounded NuGet fixture accept: {error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("NuGet fixture read deadline");
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).expect("NuGet request");
+                    request.push(byte[0]);
+                    assert!(request.len() < 16 * 1024);
+                }
+                requests.push(String::from_utf8(request).expect("HTTP request UTF-8"));
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .expect("NuGet response headers/body");
             }
             requests
         });
