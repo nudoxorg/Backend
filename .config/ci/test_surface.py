@@ -30,8 +30,11 @@ class NativeTypeScriptOwnerEnvironmentTests(unittest.TestCase):
     def test_search_preparation_diagnostics_require_exact_ci_report_opt_in(self):
         self.assertFalse(surface._preparation_diagnostic_opt_in(None, "1"))
         provenance = {"source_sha": "a" * 40}
-        self.assertTrue(surface._preparation_diagnostic_opt_in(provenance, None))
+        self.assertFalse(surface._preparation_diagnostic_opt_in(provenance, None))
+        self.assertFalse(surface._preparation_diagnostic_opt_in(provenance, "yes"))
+        self.assertTrue(surface._preparation_diagnostic_opt_in(provenance, "1"))
         self.assertTrue(surface._preparation_diagnostic_opt_in(provenance, "true"))
+        self.assertTrue(surface._preparation_diagnostic_opt_in(provenance, "TRUE"))
         self.assertFalse(surface._preparation_diagnostic_opt_in(provenance, "0"))
 
 
@@ -127,6 +130,11 @@ class SearchPreparationReceiptTests(unittest.TestCase):
             retired = surface.capture_search_preparation_diagnostic(owner, {
                 "source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}, {})
             self.assertEqual(retired["reason"], "owner-not-live")
+
+    def test_diagnostic_emission_failure_cannot_change_the_case_verdict(self):
+        from unittest.mock import patch
+        with patch.object(surface.json, "dumps", side_effect=TypeError("diagnostic only")):
+            surface.emit_search_preparation_diagnostic({"state": "captured"}, "fixture")
 
     def test_receipt_without_observation_only_authority_is_refused(self):
         import tempfile

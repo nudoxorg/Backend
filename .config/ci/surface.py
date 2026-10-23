@@ -427,10 +427,11 @@ def _finish_diagnostics(diagnostics: dict) -> None:
 
 
 def _preparation_diagnostic_opt_in(provenance: dict | None, value: str | None = None) -> bool:
-    """CI evidence opts in; explicit zero disables the worker receipt."""
+    """Enable diagnostic worker receipts only for an explicit CI request."""
     if value is None:
         value = os.environ.get(SEARCH_PREPARATION_DIAGNOSTICS_ENV)
-    return provenance is not None and value != "0"
+    return (provenance is not None and isinstance(value, str)
+            and value.casefold() in {"1", "true"})
 
 
 def _diagnostic_hex(value: object, length: int = 64) -> bool:
@@ -624,11 +625,15 @@ def capture_search_preparation_diagnostic(owner, provenance: dict, answer_conten
 
 
 def emit_search_preparation_diagnostic(diagnostic: dict, case_name: str) -> None:
-    packet = {"schema": 1, "case": case_name, **diagnostic}
-    encoded = json.dumps(packet, sort_keys=True, separators=(",", ":"))
-    if len(encoded.encode("utf-8")) <= SEARCH_PREPARATION_DIAGNOSTIC_LIMIT:
-        with OUTPUT_LOCK:
-            print("SURFACE-SEARCH-PREPARATION " + encoded, flush=True)
+    try:
+        packet = {"schema": 1, "case": case_name, **diagnostic}
+        encoded = json.dumps(packet, sort_keys=True, separators=(",", ":"))
+        if len(encoded.encode("utf-8")) <= SEARCH_PREPARATION_DIAGNOSTIC_LIMIT:
+            with OUTPUT_LOCK:
+                print("SURFACE-SEARCH-PREPARATION " + encoded, flush=True)
+    except (OSError, TypeError, ValueError):
+        # Observation-only evidence must never replace the product verdict.
+        pass
 
 
 def stable(value):
