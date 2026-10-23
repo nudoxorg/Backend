@@ -687,3 +687,24 @@ authored fixtures. The bounded-search precondition now requires `method`;
 its former `function` filter rejected both real methods. The two required
 source paths/languages, exact lowercase name and all ranking/completeness,
 continuation and live-health guards remain in place.
+
+### Corrected C-family stability and xxhash reviews (W2, 2026-10-23)
+
+Fixed artifact9819cef0c produces identical C++ answers across two diagnostic
+597028runs and officialT2/1851. The first C++ golden uses1851's actual baseline;
+26source-backed sites were independently checked with Clang ASTs. The C-map
+followup changes only three derived root/revision fields after corrected macro
+storage facts; all other answer fields and original performance bytes match.
+xxhash answers also repeat exactly; eleven source anchors and all visible names
+were independently checked against the verified Go module. The xxhash baseline
+is retained byte-for-byte. Dated reviews record scope and proof; fresh official
+exact-head comparison remains required.
+
+### Tomli answer and GUI content review (W2, 2026-10-23)
+
+The dated Tomli review checks all5visible source anchors against an independent
+AST from the verified pinned archive and records1851's actual GUI pixel/OCR
+source-content evidence. The original performance suffix remains byte-for-byte
+unchanged.1844's intermittent GUI source-content failure remains unresolved and
+the full content guard/deadline remains enabled; accepting truthful1851answers
+does not count as fixing that failure or as an official green comparison.

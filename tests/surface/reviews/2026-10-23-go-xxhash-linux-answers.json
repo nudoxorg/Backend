@@ -1,0 +1,116 @@
+{
+  "acceptance": "Fresh official exact-head comparison required; not a green verdict.",
+  "answer_review": [
+    "Digest is the authored struct atxxhash.go:29; Sum64String the authored function atxxhash_unsafe.go:38. Constructors, reset methods, assembly declarations and benchmark/test helpers match all11visible source anchors.",
+    "Every visible outline name matches the independent source AST or a real source module filename, documented positional _1/_2 signature carrier, or project root. Native carrier rows are not counted as separate authored declarations.",
+    "CLI outline changes from200row prefix to25row bounded prefix with actual validated continuation and page/semantic provenance. Preserve exact order, children, identities, source coordinates, counts, coverage, budgets and semantic-search-unavailable metadata.",
+    "Existing authored-symbol/native complete coverage and actual CLI/MCP continuation assertions passed before both candidates were emitted; fixed-artifact repetition matches official answers exactly. No normalizer or assertion changed.",
+    "Review covers visible prefixes and queried sites, not independent reconstruction of all stored compiler rows/hashes or every later page."
+  ],
+  "case": "go-xxhash",
+  "evidence": {
+    "answers_equal": true,
+    "artifact_manifest_sha256": "be60188f3f39c66c101dd918ea88249683c0193046be998ad69d6e06415fe863",
+    "diagnostic_build": 597028,
+    "diagnostic_scope": "diagnostic-only frozen-artifact post-Clang-fix replay; no official T2 verdict or performance acceptance",
+    "official_build": 1851,
+    "official_global_build": 596839,
+    "source_sha": "9819cef0cb1a0ced34a7392f103f871d0f7dbace"
+  },
+  "performance": {
+    "action": "Previous performance JSON suffix retained byte-for-byte; no candidate baseline, ratio or floor adopted.",
+    "preserved_suffix_sha256": "1fe73e5f3da3fad0db8498d020bba3191b38802fccf63911a5407d76c08cec0d"
+  },
+  "reviewer": "Codex / GPT-6.1, 2026-10-23",
+  "schema": 1,
+  "scope": "Explicit answer-only review against independently parsed pinned Go source; previous performance bytes retained.",
+  "source": {
+    "coordinate": "golang:github.com/cespare/xxhash/v2@v2.3.0",
+    "files_sha256": {
+      "bench_test.go": "0803f3c2a20a2195f6b6728945adabd5715d4a1d1aa5380c66ecc2140f8d13c9",
+      "dynamic/dynamic_test.go": "b426d8b2a4fe3680e14e4e915f121b6dfd26fbb55d001afd2d56b71be858bdbe",
+      "dynamic/plugin.go": "d63088dac7436e763cceb01a932f65fe3238f6438862e3ccaa2133a1d2d8306d",
+      "xxhash.go": "cc024316c7e49696f5705195951e49a8d24b612e2f95bec41ee4cd71990b78f9",
+      "xxhash_asm.go": "f5a64edc8b76317c95879329a0f3b358773fe3b529b8b88206012c9379145fc7",
+      "xxhash_other.go": "850a8d36bac7866042fa96965223a61ade436973280fb4ce537058b05ceaea17",
+      "xxhash_safe.go": "2a6c69e79401099ffa84eb89032b89e96a76310dc6595e79a49ced1ce1747848",
+      "xxhash_test.go": "09625f5007f6574dbc86782e9e2ce5955cffbfcc67fd4f918cbdf40b160e3d42",
+      "xxhash_unsafe.go": "b164ad04d24b0d1f5fbde666ae3806f4f33a23044359f63162aed343bcc97eb3",
+      "xxhash_unsafe_test.go": "eb3b5b04b7315c9508a7674a66363f5efff02c0020db1015b7c86b1dc2c077bb",
+      "xxhsum/xxhsum.go": "c966b085a91b033d1319d02153b27c2b62fa667eb0ca2ca0bef17c5c27a27625"
+    },
+    "hash": "sha256-FFomzcfEnbVmAXuAfEmJ7n993rVpQj6cuZ+ZX6w2IdM=",
+    "kind": "gomod",
+    "lane": "go",
+    "method": "Verified pinned module zip SHA-256, read queried declarations and independently parsed allGo sources using go/parser/go/ast.",
+    "url": "https://proxy.golang.org/github.com/cespare/xxhash/v2/@v/v2.3.0.zip"
+  },
+  "verified_source_anchors": [
+    [
+      "BenchmarkDigestBytes",
+      "bench_test.go",
+      46,
+      true
+    ],
+    [
+      "BenchmarkDigestString",
+      "bench_test.go",
+      63,
+      true
+    ],
+    [
+      "Digest",
+      "xxhash.go",
+      29,
+      true
+    ],
+    [
+      "New",
+      "xxhash.go",
+      40,
+      true
+    ],
+    [
+      "NewWithSeed",
+      "xxhash.go",
+      45,
+      true
+    ],
+    [
+      "Reset",
+      "xxhash.go",
+      53,
+      true
+    ],
+    [
+      "ResetWithSeed",
+      "xxhash.go",
+      59,
+      true
+    ],
+    [
+      "Sum64",
+      "xxhash_asm.go",
+      12,
+      true
+    ],
+    [
+      "Sum64String",
+      "xxhash_unsafe.go",
+      38,
+      true
+    ],
+    [
+      "testDigest",
+      "xxhash_test.go",
+      58,
+      true
+    ],
+    [
+      "writeBlocks",
+      "xxhash_asm.go",
+      15,
+      true
+    ]
+  ]
+}

@@ -1,0 +1,239 @@
+{
+  "acceptance": "Fresh exact-head official T2 comparison with this reviewed baseline and unchanged guards remains required; this review is not a green verdict.",
+  "answer_review": [
+    "xml_document is the authored class atpugixml.hpp:1039, xml_parse_result the authored structure at1017. Constructors, destructor, assignments, loading/buffer/reset/document_element methods and internal xml_document_struct have their exact header/implementation sites independently checked.",
+    "Source-backed query rows retain26distinct authored site anchors. Related matches include real test macro invocations and native method signatures. Pathless externals retain their exact image-scoped semantic IDs; no fake source location is assigned.",
+    "A same-name variable child can be a non-void function result carrier (documented Clang lowering), not another authored declaration. Review distinguishes explicit source sites from semantic carriers and written macro forms.",
+    "Earlier repeated pre-fix artifact runs differed because PUGIXML_HEADER_ONLY macro storage was queried through a declaration-only native API. Binary comparison isolated only Clang extension facts/bindings. Fix9819cef0c excludes preprocessing cursors from that API; deterministic boundary and native static/extern controls pass locally, and two actual fixed Linux repeats plus official1851 now match exactly. No unstable candidate was accepted.",
+    "All complete-native/source/transport assertions and actual offered-cursor consumption ran before candidate emission. Preserve ordering, coordinates/identities, coverage, page provenance and exact wire budgets. No normalizer or assertion changed.",
+    "Independent review covers visible prefixes and exact query sites, not independent enumeration of every compiler row/hash or every later page."
+  ],
+  "case": "cpp-pugixml",
+  "evidence": {
+    "artifact_manifest_sha256": "be60188f3f39c66c101dd918ea88249683c0193046be998ad69d6e06415fe863",
+    "diagnostic_build": 597028,
+    "diagnostic_scope": "diagnostic-only frozen-artifact post-Clang-fix replay; no official T2 verdict or performance acceptance",
+    "frozen_answers_equal": true,
+    "frozen_repeats": 2,
+    "official_answers_equal": true,
+    "official_build": 1851,
+    "official_global_build": 596839,
+    "source_sha": "9819cef0cb1a0ced34a7392f103f871d0f7dbace"
+  },
+  "performance": {
+    "action": "Initial baseline from official1851, after the product fix; no earlier C++ golden existed. Both separate frozen diagnostic measurements are recorded for context, not substituted to fit limits.",
+    "initial": {
+      "cpu_seconds": 78.27,
+      "peak_rss_kib": 3039100,
+      "seconds": {
+        "cli add": 40.58,
+        "cli outline": 0.49,
+        "cli packages": 0.39,
+        "cli search xml_document": 23.05,
+        "cli search xml_parse_result": 0.24,
+        "mcp": 0.69
+      }
+    },
+    "repeat1": {
+      "cpu_seconds": 76.35,
+      "peak_rss_kib": 3011180,
+      "seconds": {
+        "cli add": 44.7,
+        "cli outline": 0.48,
+        "cli packages": 0.39,
+        "cli search xml_document": 22.3,
+        "cli search xml_parse_result": 0.22,
+        "mcp": 0.7
+      }
+    },
+    "repeat2": {
+      "cpu_seconds": 76.91,
+      "peak_rss_kib": 2982984,
+      "seconds": {
+        "cli add": 40.11,
+        "cli outline": 0.49,
+        "cli packages": 0.38,
+        "cli search xml_document": 22.22,
+        "cli search xml_parse_result": 0.21,
+        "mcp": 0.72
+      }
+    }
+  },
+  "reviewer": "Codex / GPT-6.1, 2026-10-23",
+  "schema": 1,
+  "scope": "First reviewed Linux C++ golden after fixing nondeterministic macro storage facts and proving frozen-artifact repeatability.",
+  "source": {
+    "coordinate": "pugixml",
+    "hash": "sha256-YQ+YN1QktWFHVKbzSkka292q7AdOkERXfZZRYOwQPS4=",
+    "independent_ast_sha256": {
+      "document": "612cb40ad24adea0b53eb4ec17be38c23779a65b1e6aff42e49b6dc65afad173",
+      "result": "e4eff4fb0fa2f53142e7cf6f0b24efb8efd6c08c38b0bbef850716de4d66467d"
+    },
+    "kind": "tarball",
+    "lane": "clang",
+    "method": "Verified pinned archive SHA-256; independently parsed pugixml.hpp with Apple clang++17 AST JSON, and filtered actual pugixml.cpp ASTs for xml_document and xml_parse_result. All26visible source-backed query anchors match AST declaration names and lines. Read pinned authored declarations. All visible prefix names also occur verbatim in the complete pinned C-family source tree; that spelling check is not a semantic reconstruction.",
+    "queried_files_sha256": {
+      "src/pugixml.cpp": "9a9e1cf3afee5d70da7d9aa9eb1bfaba9752467f0f5e2dd8fca18cc80aeb57f9",
+      "src/pugixml.hpp": "68ca7eac371875363257c85eea74e8e3d0a2d16e478d6685e140a9217bee36b4"
+    },
+    "url": "https://github.com/zeux/pugixml/archive/v1.14.tar.gz"
+  },
+  "verified_source_anchors": [
+    [
+      "_move",
+      "src/pugixml.hpp",
+      1052,
+      true
+    ],
+    [
+      "append_buffer",
+      "src/pugixml.hpp",
+      618,
+      true
+    ],
+    [
+      "document_element",
+      "src/pugixml.hpp",
+      1114,
+      true
+    ],
+    [
+      "load",
+      "src/pugixml.hpp",
+      1080,
+      true
+    ],
+    [
+      "load_buffer",
+      "src/pugixml.hpp",
+      1090,
+      true
+    ],
+    [
+      "load_buffer_inplace",
+      "src/pugixml.hpp",
+      1094,
+      true
+    ],
+    [
+      "load_buffer_inplace_own",
+      "src/pugixml.hpp",
+      1098,
+      true
+    ],
+    [
+      "load_file",
+      "src/pugixml.hpp",
+      1086,
+      true
+    ],
+    [
+      "load_file",
+      "src/pugixml.hpp",
+      1087,
+      true
+    ],
+    [
+      "load_string",
+      "src/pugixml.hpp",
+      1083,
+      true
+    ],
+    [
+      "operator=",
+      "src/pugixml.hpp",
+      1048,
+      true
+    ],
+    [
+      "operator=",
+      "src/pugixml.hpp",
+      1064,
+      true
+    ],
+    [
+      "reset",
+      "src/pugixml.hpp",
+      1071,
+      true
+    ],
+    [
+      "xml_document",
+      "src/pugixml.cpp",
+      7135,
+      true
+    ],
+    [
+      "xml_document",
+      "src/pugixml.cpp",
+      7146,
+      true
+    ],
+    [
+      "xml_document",
+      "src/pugixml.hpp",
+      1039,
+      true
+    ],
+    [
+      "xml_document",
+      "src/pugixml.hpp",
+      1047,
+      true
+    ],
+    [
+      "xml_document",
+      "src/pugixml.hpp",
+      1056,
+      true
+    ],
+    [
+      "xml_document",
+      "src/pugixml.hpp",
+      1063,
+      true
+    ],
+    [
+      "xml_document_struct",
+      "src/pugixml.cpp",
+      1157,
+      true
+    ],
+    [
+      "xml_document_struct",
+      "src/pugixml.cpp",
+      1159,
+      true
+    ],
+    [
+      "xml_parse_result",
+      "src/pugixml.cpp",
+      7095,
+      true
+    ],
+    [
+      "xml_parse_result",
+      "src/pugixml.hpp",
+      1017,
+      true
+    ],
+    [
+      "xml_parse_result",
+      "src/pugixml.hpp",
+      1029,
+      true
+    ],
+    [
+      "~xml_document",
+      "src/pugixml.cpp",
+      7140,
+      true
+    ],
+    [
+      "~xml_document",
+      "src/pugixml.hpp",
+      1059,
+      true
+    ]
+  ]
+}

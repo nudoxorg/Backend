@@ -51,7 +51,7 @@
           "schema": 3,
           "sequence": 2,
           "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-          "source_root": "acf88692e9ba1df6cfb321eda1c36b7c872c3c67cbc7541a2150af9834d95575"
+          "source_root": "b61f56ad422fe32d11b838d5322394b60a2f7285cd841ee1d30786fcb42c5700"
         },
         "roots": [
           {
@@ -1171,7 +1171,7 @@
           }
         ],
         "readiness": "ready",
-        "revision": "acf88692",
+        "revision": "b61f56ad",
         "rows": 148
       }
     },
@@ -1254,7 +1254,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/map.c:111 › map_deinit_"
+              "trail": "project \u203a src/map.c:111 \u203a map_deinit_"
             },
             "kind": "function",
             "language": "c",
@@ -1308,7 +1308,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project › src/map.h:62 › map_deinit_"
+              "trail": "project \u203a src/map.h:62 \u203a map_deinit_"
             },
             "kind": "function",
             "language": "c",
@@ -1362,7 +1362,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project › src/map.h:37 › map_deinit"
+              "trail": "project \u203a src/map.h:37 \u203a map_deinit"
             },
             "kind": "macro",
             "language": "c",
@@ -1455,7 +1455,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project › src/map.h:63 › map_get_"
+              "trail": "project \u203a src/map.h:63 \u203a map_get_"
             },
             "kind": "function",
             "language": "c",
@@ -1509,7 +1509,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/map.c:127 › map_get_"
+              "trail": "project \u203a src/map.c:127 \u203a map_get_"
             },
             "kind": "function",
             "language": "c",
@@ -1563,7 +1563,7 @@
                 ]
               },
               "shape": "declaration",
-              "trail": "project › src/map.h:41 › map_get"
+              "trail": "project \u203a src/map.h:41 \u203a map_get"
             },
             "kind": "macro",
             "language": "c",
@@ -1617,7 +1617,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/map.c:95 › map_getref"
+              "trail": "project \u203a src/map.c:95 \u203a map_getref"
             },
             "kind": "function",
             "language": "c",
@@ -1657,7 +1657,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `map_deinit_` · function · c\n  `/tmp/nudox-surface/c-rxi-map/project::semantic::1fd2f978b16343b6d71b4a934c967ad4d03d06efab850986eb66947fa1c29909::map_deinit_`\n• `map_deinit_` · function · c\n  `/tmp/nudox-surface/c-rxi-map/project::src/map.h:62::map_deinit_`\n• `map_deinit` · macro · c\n  `/tmp/nudox-surface/c-rxi-map/project::src/map.h:37::map_deinit`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `map_deinit_` \u00b7 function \u00b7 c\n  `/tmp/nudox-surface/c-rxi-map/project::semantic::1fd2f978b16343b6d71b4a934c967ad4d03d06efab850986eb66947fa1c29909::map_deinit_`\n\u2022 `map_deinit_` \u00b7 function \u00b7 c\n  `/tmp/nudox-surface/c-rxi-map/project::src/map.h:62::map_deinit_`\n\u2022 `map_deinit` \u00b7 macro \u00b7 c\n  `/tmp/nudox-surface/c-rxi-map/project::src/map.h:37::map_deinit`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],
@@ -1739,7 +1739,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project › src/map.c:111 › map_deinit_"
+                    "trail": "project \u203a src/map.c:111 \u203a map_deinit_"
                   },
                   "kind": "function",
                   "language": "c",
@@ -1793,7 +1793,7 @@
                       ]
                     },
                     "shape": "declaration",
-                    "trail": "project › src/map.h:62 › map_deinit_"
+                    "trail": "project \u203a src/map.h:62 \u203a map_deinit_"
                   },
                   "kind": "function",
                   "language": "c",
@@ -1847,7 +1847,7 @@
                       ]
                     },
                     "shape": "declaration",
-                    "trail": "project › src/map.h:37 › map_deinit"
+                    "trail": "project \u203a src/map.h:37 \u203a map_deinit"
                   },
                   "kind": "macro",
                   "language": "c",
@@ -1886,7 +1886,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `map_get_` · function · c\n  `/tmp/nudox-surface/c-rxi-map/project::src/map.h:63::map_get_`\n• `map_get_` · function · c\n  `/tmp/nudox-surface/c-rxi-map/project::semantic::a2646a2cca32f7bb2a5ba71f67cd13e3dfc27d5b2f78128067ce6fbb7a3bc064::map_get_`\n• `map_get` · macro · c\n  `/tmp/nudox-surface/c-rxi-map/project::src/map.h:41::map_get`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `map_get_` \u00b7 function \u00b7 c\n  `/tmp/nudox-surface/c-rxi-map/project::src/map.h:63::map_get_`\n\u2022 `map_get_` \u00b7 function \u00b7 c\n  `/tmp/nudox-surface/c-rxi-map/project::semantic::a2646a2cca32f7bb2a5ba71f67cd13e3dfc27d5b2f78128067ce6fbb7a3bc064::map_get_`\n\u2022 `map_get` \u00b7 macro \u00b7 c\n  `/tmp/nudox-surface/c-rxi-map/project::src/map.h:41::map_get`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
                 "type": "text"
               }
             ],
@@ -1976,7 +1976,7 @@
                       ]
                     },
                     "shape": "declaration",
-                    "trail": "project › src/map.h:63 › map_get_"
+                    "trail": "project \u203a src/map.h:63 \u203a map_get_"
                   },
                   "kind": "function",
                   "language": "c",
@@ -2030,7 +2030,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project › src/map.c:127 › map_get_"
+                    "trail": "project \u203a src/map.c:127 \u203a map_get_"
                   },
                   "kind": "function",
                   "language": "c",
@@ -2084,7 +2084,7 @@
                       ]
                     },
                     "shape": "declaration",
-                    "trail": "project › src/map.h:41 › map_get"
+                    "trail": "project \u203a src/map.h:41 \u203a map_get"
                   },
                   "kind": "macro",
                   "language": "c",
@@ -2120,7 +2120,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/c-rxi-map/project`\n\n▣ map_node_t  `src/map.c:12 › map_node_t`\n  · value  `src/map.c:14 › value`\n  · next  `src/map.c:15 › next`\n  · hash  `src/map.c:13 › hash`\n▣ map_node_t  `src/map.h:15 › map_node_t`\nƒ map_resize  `src/map.c:58 › map_resize`\n  ▫ map_resize  `map_resize`\n  ▫ nbuckets  `nbuckets`\n  ▫ m  `m`\nƒ map_addnode  `src/map.c:51 › map_addnode`\n  ▫ m  `m`\n  ▫ node  `node`\nƒ map_deinit_  `src/map.c:111 › map_deinit_`\n  ▫ m  `m`\nƒ map_getref  `src/map.c:95 › map_getref`\n  ▫ map_getref  `map_getref`\n  ▫ m  `m`\n  ▫ key  `key`\nƒ map_set_  `src/map.c:133 › map_set_`\n  ▫ value  `value`\n  ▫ m  `m`\n  ▫ vsize  `vsize`\n  ▫ map_set_  `map_set_`\n  ▫ key  `key`\nƒ map_get_  `src/map.c:127 › map_get_`\n  ▫ m  `m`\n  ▫ key  `key`\n  ▫ map_get_  `map_get_`\nƒ map_newnode  `src/map.c:30 › map_newnode`\n  ▫ map_newnode  `map_newnode`\n  ▫ value  `value`\n  ▫ vsize  `vsize`\n  ▫ key  `key`\nƒ map_bucketidx  `src/map.c:44 › map_bucketidx`\n  ▫ map_bucketidx  `map_bucketidx`\n  ▫ m  `m`\n  ▫ hash  `hash`\nƒ map_iter_  `src/map.c:171 › map_iter_`\n  ▫ map_iter_  `map_iter_`\nƒ map_remove_  `src/map.c:159 › map_remove_`\n  ▫ key  `key`\n  ▫ m  `m`\nƒ map_next_  `src/map.c:179 › map_next_`\n  ▫ iter  `iter`\n  ▫ m  `m`\n  ▫ map_next_  `map_next_`\nƒ map_hash  `src/map.c:21 › map_hash`\n  ▫ map_hash  `map_hash`\n  ▫ str  `str`\nτ map_str_t  `src/map.h:71 › map_str_t`\n50 declaration(s) · truncated\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/c-rxi-map/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/c-rxi-map/project`\n\n\u25a3 map_node_t  `src/map.c:12 \u203a map_node_t`\n  \u00b7 value  `src/map.c:14 \u203a value`\n  \u00b7 next  `src/map.c:15 \u203a next`\n  \u00b7 hash  `src/map.c:13 \u203a hash`\n\u25a3 map_node_t  `src/map.h:15 \u203a map_node_t`\n\u0192 map_resize  `src/map.c:58 \u203a map_resize`\n  \u25ab map_resize  `map_resize`\n  \u25ab nbuckets  `nbuckets`\n  \u25ab m  `m`\n\u0192 map_addnode  `src/map.c:51 \u203a map_addnode`\n  \u25ab m  `m`\n  \u25ab node  `node`\n\u0192 map_deinit_  `src/map.c:111 \u203a map_deinit_`\n  \u25ab m  `m`\n\u0192 map_getref  `src/map.c:95 \u203a map_getref`\n  \u25ab map_getref  `map_getref`\n  \u25ab m  `m`\n  \u25ab key  `key`\n\u0192 map_set_  `src/map.c:133 \u203a map_set_`\n  \u25ab value  `value`\n  \u25ab m  `m`\n  \u25ab vsize  `vsize`\n  \u25ab map_set_  `map_set_`\n  \u25ab key  `key`\n\u0192 map_get_  `src/map.c:127 \u203a map_get_`\n  \u25ab m  `m`\n  \u25ab key  `key`\n  \u25ab map_get_  `map_get_`\n\u0192 map_newnode  `src/map.c:30 \u203a map_newnode`\n  \u25ab map_newnode  `map_newnode`\n  \u25ab value  `value`\n  \u25ab vsize  `vsize`\n  \u25ab key  `key`\n\u0192 map_bucketidx  `src/map.c:44 \u203a map_bucketidx`\n  \u25ab map_bucketidx  `map_bucketidx`\n  \u25ab m  `m`\n  \u25ab hash  `hash`\n\u0192 map_iter_  `src/map.c:171 \u203a map_iter_`\n  \u25ab map_iter_  `map_iter_`\n\u0192 map_remove_  `src/map.c:159 \u203a map_remove_`\n  \u25ab key  `key`\n  \u25ab m  `m`\n\u0192 map_next_  `src/map.c:179 \u203a map_next_`\n  \u25ab iter  `iter`\n  \u25ab m  `m`\n  \u25ab map_next_  `map_next_`\n\u0192 map_hash  `src/map.c:21 \u203a map_hash`\n  \u25ab map_hash  `map_hash`\n  \u25ab str  `str`\n\u03c4 map_str_t  `src/map.h:71 \u203a map_str_t`\n50 declaration(s) \u00b7 truncated\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/c-rxi-map/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
                 "type": "text"
               }
             ],
@@ -2171,7 +2171,7 @@
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "acf88692e9ba1df6cfb321eda1c36b7c872c3c67cbc7541a2150af9834d95575"
+                "source_root": "b61f56ad422fe32d11b838d5322394b60a2f7285cd841ee1d30786fcb42c5700"
               },
               "roots": [
                 {

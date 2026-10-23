@@ -1,0 +1,100 @@
+{
+  "acceptance": "Fresh exact-head official snapshot/performance/GUI comparison required; no green or GUI-flake-resolution claim.",
+  "answer_review": [
+    "TOMLDecodeError is the authored class inheritingValueError atsrc/tomli/_parser.py:71; loads is the authored function at142. __init__.py:8 genuinely re-exports both. DEPRECATED_DEFAULT at66 is a real constant. All5distinct source anchors match the independent AST.",
+    "All visible native outline names occur in source except package/module roots project/tomli. Source guards and complete native/transport/actual continuation checks ran before emission. Semantic carriers/rows are not claimed as extra authored declarations.",
+    "Updated bounded outline retains live-validated continuation, semantic IDs, exact page/source provenance, ordering, children, counts and wire accounting. No normalizer or public assertion changed.",
+    "The GUI answer records actual published desktop source content, not typed search text: existing OCR check separately requires classTOMLDecodeError andValueError after opening and peeling its source, then publicQuit succeeds. Source AST independently confirms the required class and inheritance.",
+    "Official1844 had a real GUI source-content failure while1851completed this check. This golden update does not fix or hide that intermittent failure; the same GUI content assertions and120second bound remain enabled. A fresh exact-head official rerun remains necessary."
+  ],
+  "case": "python-tomli",
+  "evidence": {
+    "artifact_manifest_sha256": "be60188f3f39c66c101dd918ea88249683c0193046be998ad69d6e06415fe863",
+    "gui": [
+      {
+        "artifact_manifest_sha256": "be60188f3f39c66c101dd918ea88249683c0193046be998ad69d6e06415fe863",
+        "observer": "owned native X11 window pixels, English OCR",
+        "project": "project",
+        "screenshot": "/tmp/nudox-surface/python-tomli/gui/window.png",
+        "screenshot_sha256": "d4d487443c1467a1a68f57e65c2c8c758bdd6cb1c35f4336cb0389b76b0ff3b0",
+        "source_filename": "_parser.py",
+        "source_sha": "9819cef0cb1a0ced34a7392f103f871d0f7dbace",
+        "visible_source": [
+          "class TOMLDecodeError",
+          "ValueError"
+        ]
+      }
+    ],
+    "official_build": 1851,
+    "official_global_build": 596839,
+    "source_sha": "9819cef0cb1a0ced34a7392f103f871d0f7dbace"
+  },
+  "performance": {
+    "action": "Previous performance JSON suffix retained byte-for-byte. Existing baseline has no GUI timing/CPU/RSS entries; no existing guard or baseline changed, no new GUI performance acceptance claimed.",
+    "observed1851": {
+      "cpu_seconds": 3.86,
+      "gui_cpu_seconds": 30.5,
+      "gui_peak_rss_kib": 416560,
+      "peak_rss_kib": 336888,
+      "seconds": {
+        "cli add": 4.51,
+        "cli outline": 0.45,
+        "cli packages": 0.39,
+        "cli search TOMLDecodeError": 0.21,
+        "cli search loads": 0.21,
+        "gui read project": 16.67,
+        "mcp": 0.63
+      }
+    },
+    "preserved_suffix_sha256": "1049c91087c583f5bf9284093372ca5b18b1c0d8c8508378e907f4f049db4fff"
+  },
+  "reviewer": "Codex / GPT-6.1, 2026-10-23",
+  "schema": 1,
+  "scope": "Explicit source-reviewed CLI/MCP answer update and observed real GUI source-content answer; original baseline bytes retained.",
+  "source": {
+    "coordinate": "pypi:tomli@2.2.1",
+    "files_sha256": {
+      "src/tomli/__init__.py": "3e1370fdec8b81d9fb31c27a9eb00df32226ddd5c2ef9bebd6c546555c034a90",
+      "src/tomli/_parser.py": "f70f0b1b48c1edfc26659581d2f5576de7a30c7725e00348271076b1c1270e50",
+      "src/tomli/_re.py": "b21e2c0434603bde0a259c0d22b81d73257fa906acb79d18bf3380506a510ca0",
+      "src/tomli/_types.py": "f864c6d9552a929c7032ace654ee05ef26ca75d21b027b801d77e65907138b74"
+    },
+    "hash": "sha256-zUXh3HnINc5g90BOyBGfLrBtOLHeuhRvB87Tu8RFBf8=",
+    "kind": "sdist",
+    "lane": "python",
+    "method": "Verified exact source archive SHA-256 and independently parsed every Python source with Python ast. Read class inheritance and queried exports/functions.",
+    "url": "https://files.pythonhosted.org/packages/18/87/302344fed471e44a87289cf4967697d07e532f2421fdaf868a303cbae4ff/tomli-2.2.1.tar.gz"
+  },
+  "verified_source_anchors": [
+    [
+      "DEPRECATED_DEFAULT",
+      "src/tomli/_parser.py",
+      66,
+      true
+    ],
+    [
+      "TOMLDecodeError",
+      "src/tomli/__init__.py",
+      8,
+      true
+    ],
+    [
+      "TOMLDecodeError",
+      "src/tomli/_parser.py",
+      71,
+      true
+    ],
+    [
+      "loads",
+      "src/tomli/__init__.py",
+      8,
+      true
+    ],
+    [
+      "loads",
+      "src/tomli/_parser.py",
+      142,
+      true
+    ]
+  ]
+}
