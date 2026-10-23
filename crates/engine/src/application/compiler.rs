@@ -843,11 +843,38 @@ fn package_source_input_witness(package: &PackageSourceSet<'_>) -> SemanticInput
     SemanticInputWitness::claimed_state(root, ScopeRoot::from_bytes(root), Coverage::Partial)
 }
 
-fn rust_target_source_closure_matches(
+fn rust_target_input_witness(
+    input: SemanticInputWitness,
     expected: Option<[u8; 32]>,
     observed: Option<[u8; 32]>,
-) -> bool {
-    expected.is_none_or(|expected| observed == Some(expected))
+    has_input_claim: bool,
+) -> Result<SemanticInputWitness, PackageSemanticError> {
+    if !expected.is_none_or(|expected| observed == Some(expected)) {
+        return Err(PackageSemanticError::RustTargetSourceClosureMismatch);
+    }
+    let Some(closure_identity) = observed else {
+        return Ok(input);
+    };
+    let preserve_prebound_claim = expected.is_some() && has_input_claim;
+    if preserve_prebound_claim {
+        // The selected-target admission path supplies a source observation
+        // already salted with the admitted target identity and source closure.
+        // The recomputed closure is checked against that admission separately;
+        // wrapping the claim again would make the staged root differ from the
+        // exact CandidateAttempt that owns it.
+        return Ok(input);
+    }
+    let mut identity = blake3::Hasher::new();
+    identity.update(b"backend.compiler.rust-target-input-frontier.v1\0");
+    identity.update(input.input_root());
+    identity.update(input.read_manifest_root().as_bytes());
+    identity.update(&closure_identity);
+    let root = *identity.finalize().as_bytes();
+    Ok(SemanticInputWitness::claimed_state(
+        root,
+        ScopeRoot::from_bytes(root),
+        Coverage::Partial,
+    ))
 }
 
 fn semantic_embedding_identity(
@@ -4829,12 +4856,14 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             CompilationUnitKeyV2::PackageRoot => None,
             _ => None,
         };
-        if !rust_target_source_closure_matches(
+        input = rust_target_input_witness(
+            input,
             package.expected_rust_target_source_closure,
-            rust_target_source_closure.as_ref().map(|closure| closure.identity()),
-        ) {
-            return Err(PackageSemanticError::RustTargetSourceClosureMismatch);
-        }
+            rust_target_source_closure
+                .as_ref()
+                .map(|closure| closure.identity()),
+            package.input_claim.is_some(),
+        )?;
         let rust_compilation_sources = if let Some(closure) = &rust_target_source_closure {
             if target.profile.language() != backend_semantic::vocabulary::Language::Rust {
                 return Err(PackageSemanticError::Capacity {
@@ -4867,24 +4896,6 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         } else {
             package.compilation_sources().collect::<Vec<_>>()
         };
-        if let (CompilationUnitKeyV2::RustCrate { .. }, Some(closure)) = (
-            package.package_target.unit_key(),
-            rust_target_source_closure.as_ref(),
-        ) {
-            // Bind reuse and staged identity to the exact selected target
-            // frontier, even when a direct caller supplied an input claim.
-            let mut identity = blake3::Hasher::new();
-            identity.update(b"backend.compiler.rust-target-input-frontier.v1\0");
-            identity.update(input.input_root());
-            identity.update(input.read_manifest_root().as_bytes());
-            identity.update(&closure.identity());
-            let root = *identity.finalize().as_bytes();
-            input = SemanticInputWitness::claimed_state(
-                root,
-                ScopeRoot::from_bytes(root),
-                Coverage::Partial,
-            );
-        }
         let rust_workspace_authority = if let Some(lease) = rust_workspace_lease.as_ref() {
             let source_path = package.package_root.join(first_source.relative_path);
             let toolchain = self
@@ -7843,6 +7854,7 @@ mod tests {
         AuthorityDiagnosticClass, AuthorityPhase, CompilerCause, CorrelationId, GenerateTarget,
         PackageCompileRequest,
     };
+    use backend_semantic::ir::{Coverage, ScopeRoot, SemanticInputWitness};
     use backend_semantic::registry::AdapterRoute;
     use backend_semantic::vocabulary::NativeTool;
     use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, RustEdition, Stage};
@@ -9351,11 +9363,47 @@ mod tests {
             super::package_source_input_witness(&changed_unit_a).input_root(),
             "out-of-scope package inputs remain part of provenance"
         );
-        assert!(super::rust_target_source_closure_matches(None, None));
-        assert!(!super::rust_target_source_closure_matches(
+        let admitted_target_input = SemanticInputWitness::claimed_state(
+            [11; 32],
+            ScopeRoot::from_bytes([12; 32]),
+            Coverage::Partial,
+        );
+        let selected_target_input = super::rust_target_input_witness(
+            admitted_target_input,
             Some([7; 32]),
-            None
+            Some([7; 32]),
+            true,
+        )
+        .expect("matching selected closure preserves its admitted source claim");
+        assert_eq!(
+            selected_target_input, admitted_target_input,
+            "a prebound source observation is preserved after its closure matches"
+        );
+        assert!(matches!(
+            super::rust_target_input_witness(
+                admitted_target_input,
+                Some([7; 32]),
+                Some([8; 32]),
+                true,
+            ),
+            Err(PackageSemanticError::RustTargetSourceClosureMismatch)
         ));
+
+        let fallback_input = super::package_source_input_witness(&unit_a);
+        let fallback_a =
+            super::rust_target_input_witness(fallback_input, None, Some([7; 32]), false)
+                .expect("unclaimed fallback binds closure A");
+        let fallback_b =
+            super::rust_target_input_witness(fallback_input, None, Some([8; 32]), false)
+                .expect("unclaimed fallback binds closure B");
+        assert_ne!(fallback_a.input_root(), fallback_b.input_root());
+        let unpinned_claim =
+            super::rust_target_input_witness(admitted_target_input, None, Some([7; 32]), true)
+                .expect("direct caller claim still binds its observed closure");
+        assert_ne!(
+            unpinned_claim.input_root(),
+            admitted_target_input.input_root()
+        );
 
         let wrong_unit = CompilerPackageTargetV2::new(
             request.as_ref().clone(),
@@ -9382,17 +9430,33 @@ mod tests {
         // closure witness. Production takes this identity only from the
         // freshly recomputed, checked source closure above.
         let recomputed_identity = [11; 32];
-        assert!(super::rust_target_source_closure_matches(
-            Some([11; 32]),
-            Some(recomputed_identity)
+        let input = SemanticInputWitness::claimed_state(
+            [10; 32],
+            ScopeRoot::from_bytes([10; 32]),
+            Coverage::Partial,
+        );
+        assert_eq!(
+            super::rust_target_input_witness(
+                input,
+                Some([11; 32]),
+                Some(recomputed_identity),
+                true,
+            )
+            .expect("the exact recomputed closure is admitted"),
+            input
+        );
+        assert!(matches!(
+            super::rust_target_input_witness(
+                input,
+                Some([12; 32]),
+                Some(recomputed_identity),
+                true,
+            ),
+            Err(PackageSemanticError::RustTargetSourceClosureMismatch)
         ));
-        assert!(!super::rust_target_source_closure_matches(
-            Some([12; 32]),
-            Some(recomputed_identity)
-        ));
-        assert!(!super::rust_target_source_closure_matches(
-            Some([11; 32]),
-            None
+        assert!(matches!(
+            super::rust_target_input_witness(input, Some([11; 32]), None, true),
+            Err(PackageSemanticError::RustTargetSourceClosureMismatch)
         ));
     }
 
