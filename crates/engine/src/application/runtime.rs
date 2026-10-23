@@ -5625,7 +5625,7 @@ fn dispatch_runtime_command(
                 return;
             }
             let result = catch_unwind(AssertUnwindSafe(|| {
-                let operation = || -> Result<
+                let mut operation = || -> Result<
                     (CompilerPackageTargetV2, RustCargoTargetSourceClosureV1),
                     PackageSemanticRuntimeError,
                 > {

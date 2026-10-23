@@ -845,9 +845,9 @@ fn package_source_input_witness(package: &PackageSourceSet<'_>) -> SemanticInput
 
 fn rust_target_source_closure_matches(
     expected: Option<[u8; 32]>,
-    observed: Option<&RustCargoTargetSourceClosureV1>,
+    observed: Option<[u8; 32]>,
 ) -> bool {
-    expected.is_none_or(|expected| observed.is_some_and(|observed| observed.identity() == expected))
+    expected.is_none_or(|expected| observed == Some(expected))
 }
 
 fn semantic_embedding_identity(
@@ -3231,7 +3231,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 })?;
         let selected = self
             .toolchain(application_request)
-            .map_err(|cause| toolchain_terminal(source_authority, application_request, cause))?;
+            .map_err(|cause| toolchain_terminal(source_authority, application_request, cause))
+            .map_err(|terminal| PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(terminal),
+            })?;
         let resolved = match selected {
             ToolchainSelection::ResolvedNative(resolved) => resolved,
             ToolchainSelection::ExplicitlyUnavailable { tool } => {
@@ -4722,7 +4726,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         };
         if !rust_target_source_closure_matches(
             package.expected_rust_target_source_closure,
-            rust_target_source_closure.as_ref(),
+            rust_target_source_closure.as_ref().map(|closure| closure.identity()),
         ) {
             return Err(PackageSemanticError::RustTargetSourceClosureMismatch);
         }
@@ -9221,8 +9225,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["src/b.rs"]
         );
-        let unit_a_input = package_source_input_witness(&unit_a);
-        let unit_b_input = package_source_input_witness(&unit_b);
+        let unit_a_input = super::package_source_input_witness(&unit_a);
+        let unit_b_input = super::package_source_input_witness(&unit_b);
         assert_ne!(unit_a_input.input_root(), unit_b_input.input_root());
         let changed_unselected_sources = [
             sources[0],
@@ -9238,7 +9242,7 @@ mod tests {
         .expect("unchanged selected root remains present");
         assert_ne!(
             unit_a_input.input_root(),
-            package_source_input_witness(&changed_unit_a).input_root(),
+            super::package_source_input_witness(&changed_unit_a).input_root(),
             "out-of-scope package inputs remain part of provenance"
         );
         assert!(super::rust_target_source_closure_matches(None, None));
@@ -9268,20 +9272,17 @@ mod tests {
 
     #[test]
     fn expected_rust_target_closure_requires_exact_recomputed_identity() {
-        let closure = RustCargoTargetSourceClosureV1 {
-            target_name: "bench".into(),
-            target_root: "benches/bench.rs".into(),
-            target_kinds: Box::new(["bench".into()]),
-            sources: Box::new([]),
-            identity: [11; 32],
-        };
+        // Exercise the identity guard without fabricating a frontend-owned
+        // closure witness. Production takes this identity only from the
+        // freshly recomputed, checked source closure above.
+        let recomputed_identity = [11; 32];
         assert!(super::rust_target_source_closure_matches(
             Some([11; 32]),
-            Some(&closure)
+            Some(recomputed_identity)
         ));
         assert!(!super::rust_target_source_closure_matches(
             Some([12; 32]),
-            Some(&closure)
+            Some(recomputed_identity)
         ));
         assert!(!super::rust_target_source_closure_matches(
             Some([11; 32]),
