@@ -177,6 +177,7 @@ in
         python3 .config/ci/test_perf_context.py
         cp ${../ci/surface.py} .config/ci/surface.py
         cp ${../ci/process_custody.py} .config/ci/process_custody.py
+        cp ${../ci/test.py} .config/ci/test.py
         cp ${../ci/test_surface.py} .config/ci/test_surface.py
         python3 .config/ci/test_surface.py
         cp ${../ci/smoke.py} .config/ci/smoke.py
