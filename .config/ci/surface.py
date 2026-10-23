@@ -2339,6 +2339,9 @@ def main() -> int:
         except BlockingIOError:
             parser.error("another surface run owns the fixed scratch paths")
         if args.ci_report:
+            # Retire the pre-case filesystem-drain command under the same
+            # owned-session policy as product subprocesses.
+            process_custody.activate()
             drain_task_volume()
         from cpu_placement import measurement_placement
         with measurement_placement() as placement:

@@ -95,6 +95,79 @@ class FailedIndexDiagnosticTests(unittest.TestCase):
 
 
 class RuntimeImportDrainTests(unittest.TestCase):
+    def test_main_activates_owned_process_custody_before_setup_drain(self):
+        import contextlib
+        import sys
+        import tempfile
+        import types
+        from unittest.mock import patch
+
+        events = []
+        cpu_placement = types.ModuleType("cpu_placement")
+
+        @contextlib.contextmanager
+        def placement():
+            events.append("placement")
+            yield {"fixture": True}
+
+        cpu_placement.measurement_placement = placement
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def drain():
+                events.append("drain")
+                self.assertEqual(events[0], "activate")
+
+            with patch.object(surface.sys, "argv", [
+                    "surface.py", "--bin-dir", str(root / "bin"),
+                    "--ci-report", str(root / "evidence.json"),
+                    "--source-sha", "a" * 40]), \
+                    patch.object(surface, "SCRATCH", root / "scratch"), \
+                    patch.object(surface, "evidence_artifact", return_value="b" * 64), \
+                    patch.object(surface.process_custody, "activate",
+                                 side_effect=lambda: events.append("activate")) as activate, \
+                    patch.object(surface, "drain_task_volume", side_effect=drain), \
+                    patch.object(surface, "compare_cases",
+                                 side_effect=lambda *_args: events.append("cases") or 0) as compare, \
+                    patch.dict(sys.modules, {"cpu_placement": cpu_placement}):
+                self.assertEqual(surface.main(), 0)
+
+        self.assertEqual(events, ["activate", "drain", "placement", "cases"])
+        activate.assert_called_once_with()
+        compare.assert_called_once()
+
+    def test_main_drain_failure_aborts_before_case_comparison(self):
+        import sys
+        import tempfile
+        import types
+        from unittest.mock import patch
+
+        events = []
+        cpu_placement = types.ModuleType("cpu_placement")
+        cpu_placement.measurement_placement = lambda: self.fail("placement ran after drain failure")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def fail_drain():
+                events.append("drain")
+                self.assertEqual(events[0], "activate")
+                raise RuntimeError("drain refused")
+
+            with patch.object(surface.sys, "argv", [
+                    "surface.py", "--bin-dir", str(root / "bin"),
+                    "--ci-report", str(root / "evidence.json"),
+                    "--source-sha", "a" * 40]), \
+                    patch.object(surface, "SCRATCH", root / "scratch"), \
+                    patch.object(surface, "evidence_artifact", return_value="b" * 64), \
+                    patch.object(surface.process_custody, "activate",
+                                 side_effect=lambda: events.append("activate")), \
+                    patch.object(surface, "drain_task_volume", side_effect=fail_drain), \
+                    patch.object(surface, "compare_cases") as compare, \
+                    patch.dict(sys.modules, {"cpu_placement": cpu_placement}):
+                with self.assertRaisesRegex(RuntimeError, "drain refused"):
+                    surface.main()
+
+        self.assertEqual(events, ["activate", "drain"])
+        compare.assert_not_called()
+
     def test_linux_flushes_only_task_filesystem_with_bounded_setup(self):
         import subprocess
         from unittest.mock import patch
