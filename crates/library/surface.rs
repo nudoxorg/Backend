@@ -2704,7 +2704,7 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
             language: CompilerLanguageFact::CSharp,
             phase: AuthorityPhaseFact::Open,
             class: AuthorityClassFact::Authority,
-            ..
+            diagnostic: None,
         }
     ) {
         return sanitize_package_compiler_detail(
@@ -6860,6 +6860,94 @@ mod tests {
         );
         assert!(unavailable.detail().contains("NUDOX_PYTHON"));
         assert!(unavailable.detail().contains(".venv/bin/python"));
+    }
+
+    #[test]
+    fn csharp_unavailable_without_diagnostic_is_actionable_and_preserves_legacy_wire() {
+        use crate::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CompilerDiagnostic, CompilerTerminal,
+            SourceAuthority,
+        };
+        use backend_semantic::vocabulary::{Language, Stage};
+
+        let source = SourceAuthority {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"C# source bytes"),
+            byte_len: 15,
+        };
+        let generic = CompilerTerminal::AuthorityAdmission {
+            source,
+            language: Language::CSharp,
+            stage: Stage::LowerIr,
+            phase: AuthorityPhase::Open,
+            class: AuthorityDiagnosticClass::Authority,
+            diagnostic: None,
+        };
+        let failure = PackageCompilerFailure::from_package_terminal("src/Library.cs", &generic)
+            .expect("C# authority refusal projects")
+            .expect("pre-recipe authority refusal is retained");
+
+        assert_eq!(failure.recipe_identity(), None);
+        assert_eq!(failure.source_identity(), source.identity);
+        assert_eq!(failure.source_byte_len(), source.byte_len);
+        assert_eq!(
+            failure.cause(),
+            &PackageCompilerFailureCause::AuthorityAdmission {
+                language: CompilerLanguageFact::CSharp,
+                stage: CompilerStageFact::LowerIr,
+                phase: AuthorityPhaseFact::Open,
+                class: AuthorityClassFact::Authority,
+                diagnostic: None,
+            }
+        );
+        assert!(failure.detail().contains("NUDOX_DOTNET"));
+        assert!(failure.detail().contains("NUDOX_ROSLYN_HELPER"));
+
+        let bytes = failure
+            .encode_bounded_json()
+            .expect("bounded setup refusal JSON");
+        assert!(bytes.len() <= PackageCompilerFailure::MAX_ENCODED_BYTES);
+        assert_eq!(
+            PackageCompilerFailure::decode_bounded_json(&bytes)
+                .expect("new setup refusal round-trips"),
+            failure
+        );
+
+        // DTO39 and PSC3 use this same strict PackageCompilerFailure serde
+        // reader. Earlier generic C# setup records carried this bounded detail
+        // string with the unchanged cause and identity fields.
+        let current_detail = serde_json::to_string(failure.detail()).expect("detail JSON string");
+        let legacy_detail = serde_json::to_string("open authority fault: authority runtime")
+            .expect("legacy detail JSON string");
+        let mut legacy_bytes = String::from_utf8(bytes).expect("failure JSON is UTF-8");
+        assert!(legacy_bytes.contains(&current_detail));
+        legacy_bytes = legacy_bytes.replace(&current_detail, &legacy_detail);
+        let legacy = PackageCompilerFailure::decode_bounded_json(legacy_bytes.as_bytes())
+            .expect("prior generic DTO39/PSC3 C# detail remains readable");
+        assert_eq!(legacy.source_identity(), source.identity);
+        assert_eq!(legacy.recipe_identity(), None);
+        assert_eq!(
+            legacy.cause(),
+            &PackageCompilerFailureCause::AuthorityAdmission {
+                language: CompilerLanguageFact::CSharp,
+                stage: CompilerStageFact::LowerIr,
+                phase: AuthorityPhaseFact::Open,
+                class: AuthorityClassFact::Authority,
+                diagnostic: None,
+            }
+        );
+        assert_eq!(legacy.detail(), "open authority fault: authority runtime");
+
+        let specific = CompilerTerminal::AuthorityAdmission {
+            diagnostic: Some(
+                CompilerDiagnostic::from_native(b"specific C# authority diagnostic", 33, false)
+                    .expect("bounded diagnostic"),
+            ),
+            ..generic
+        };
+        let specific = PackageCompilerFailure::from_package_terminal("src/Library.cs", &specific)
+            .expect("specific authority refusal projects")
+            .expect("specific refusal is retained");
+        assert_eq!(specific.detail(), "open authority fault: authority runtime");
     }
 
     #[test]

@@ -8352,18 +8352,16 @@ mod tests {
             "{}",
             super::super::compiler_terminal_text::TerminalText::new("Library.cs", &terminal)
         );
-        assert!(!text.contains("in this build"), "{text}");
-        assert!(
-            text.contains("C# semantic authority is unavailable in this owner/configuration"),
-            "{text}"
+        assert_eq!(
+            text,
+            "setup refused it (authority_runtime): open authority fault: authority runtime"
         );
-        assert!(text.contains("NUDOX_DOTNET"), "{text}");
-        assert!(text.contains("NUDOX_ROSLYN_HELPER"), "{text}");
         let failure =
             backend_library::PackageCompilerFailure::from_package_terminal("Library.cs", &terminal)
                 .unwrap()
                 .expect("authority refusal must retain a typed package outcome");
         assert_eq!(failure.recipe_identity(), None);
+        assert_eq!(failure.detail(), "open authority fault: authority runtime");
         let encoded = failure.encode_bounded_json().unwrap();
         assert_eq!(
             backend_library::PackageCompilerFailure::decode_bounded_json(&encoded).unwrap(),
