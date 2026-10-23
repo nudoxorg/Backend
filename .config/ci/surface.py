@@ -55,6 +55,10 @@ SCRATCH = Path("/tmp/nudox-surface")
 TOLERANCE = {"seconds": 1.5, "peak_rss_kib": 1.25, "cpu_seconds": 1.5}
 # Below these floors noise dominates and a change is not a regression.
 FLOOR = {"seconds": 2.0, "peak_rss_kib": 64 * 1024, "cpu_seconds": 2.0}
+SEARCH_PREPARATION_DIAGNOSTICS_ENV = "NUDOX_SEARCH_PREPARATION_DIAGNOSTICS"
+SEARCH_PREPARATION_RECEIPT = "search-preparation-worker-v1.json"
+SEARCH_PREPARATION_RECEIPT_LIMIT = 4096
+SEARCH_PREPARATION_DIAGNOSTIC_LIMIT = 4096
 # Values that legitimately change from run to run.
 VOLATILE_KEYS = {"elapsed_ms", "duration_ms", "timestamp", "started_at", "finished_at", "generated_at", "pid"}
 
@@ -422,6 +426,211 @@ def _finish_diagnostics(diagnostics: dict) -> None:
     _emit_diagnostics(diagnostics)
 
 
+def _preparation_diagnostic_opt_in(provenance: dict | None, value: str | None = None) -> bool:
+    """CI evidence opts in; explicit zero disables the worker receipt."""
+    if value is None:
+        value = os.environ.get(SEARCH_PREPARATION_DIAGNOSTICS_ENV)
+    return provenance is not None and value != "0"
+
+
+def _diagnostic_hex(value: object, length: int = 64) -> bool:
+    return isinstance(value, str) and re.fullmatch(rf"[0-9a-f]{{{length}}}", value) is not None
+
+
+def _diagnostic_phase(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    if value.get("state") == "not-run":
+        return {"state": "not-run"}
+    elapsed = value.get("elapsed_ns")
+    if (value.get("state") != "observed" or type(elapsed) is not int
+            or not 0 <= elapsed <= 86_400_000_000_000):
+        return None
+    return {"state": "observed", "elapsed_ns": elapsed}
+
+
+def _diagnostic_selection(value: object) -> dict | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return None
+    result = {}
+    for key in ("row_evidence_join_ns", "relation_state_ns", "document_state_ns",
+                "projection_open_advance_ns"):
+        item = value.get(key)
+        if item is not None and (type(item) is not int or not 0 <= item <= 86_400_000_000_000):
+            return None
+        result[key] = item
+    for key in ("view_rows", "evidence_facts", "lexical_documents", "selected_entities"):
+        item = value.get(key)
+        if item is not None and (type(item) is not int or not 0 <= item <= 1_000_000_000):
+            return None
+        result[key] = item
+    for key in ("same_view", "same_workspace", "same_relation_root", "same_binding"):
+        item = value.get(key)
+        if item is not None and type(item) is not bool:
+            return None
+        result[key] = item
+    maintenance = value.get("maintenance")
+    if maintenance is not None and maintenance not in (
+            "reused", "restored", "rebound", "revised", "rebuilt", "refused"):
+        return None
+    result["maintenance"] = maintenance
+    return result
+
+
+def _search_answer_identities(content: dict) -> dict | None:
+    """Collect only identity fields the public answer explicitly exposes."""
+    found = {}
+
+    def add(target: str, value: object) -> bool:
+        if not _diagnostic_hex(value) and not (target == "source.schema" and type(value) is int
+                                                and 0 <= value <= 65535):
+            return False
+        if target in found and found[target] != value:
+            return False
+        found[target] = value
+        return True
+
+    for field in ("workspace", "view", "view_version"):
+        if field in content and not add(field, content[field]):
+            return None
+    source_fields = ("root", "object", "branch", "log", "schema")
+    for container in (content.get("basis"), content.get("source_basis")):
+        if isinstance(container, dict):
+            source = container.get("source", container)
+            for field in ("workspace", "view", "view_version"):
+                if field in container and not add(field, container[field]):
+                    return None
+            if isinstance(source, dict):
+                for field in source_fields:
+                    if field in source and not add(f"source.{field}", source[field]):
+                        return None
+    for container in (content, content.get("page")):
+        if isinstance(container, dict):
+            for external, internal in (("source_root", "root"), ("source_object", "object"),
+                                       ("branch", "branch"), ("log", "log"), ("schema", "schema")):
+                if external in container and not add(f"source.{internal}", container[external]):
+                    return None
+    return found
+
+
+def capture_search_preparation_diagnostic(owner, provenance: dict, answer_content: dict) -> dict:
+    """Read one current owner's bounded receipt without making it an authority input."""
+    def unavailable(reason: str) -> dict:
+        return {"state": "unavailable", "reason": reason}
+
+    try:
+        if not isinstance(answer_content, dict):
+            return unavailable("search-answer-identity-invalid")
+        pid = owner.process.pid
+        if type(pid) is not int or pid <= 0 or owner.process.poll() is not None:
+            return unavailable("owner-not-live")
+        if (not _diagnostic_hex(provenance.get("source_sha"), 40)
+                or not _diagnostic_hex(provenance.get("artifact_manifest_sha256"))):
+            return unavailable("ci-provenance-invalid")
+        directory = Path(owner.workspace)
+        directory_stat = directory.lstat()
+        if (not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != os.getuid()
+                or stat.S_IMODE(directory_stat.st_mode) & 0o077):
+            return unavailable("owner-workspace-not-private")
+        path = directory / SEARCH_PREPARATION_RECEIPT
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid():
+            return unavailable("receipt-not-owned-regular-file")
+        if before.st_size > SEARCH_PREPARATION_RECEIPT_LIMIT:
+            return unavailable("receipt-over-limit")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid()
+                    or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+                    or opened.st_size > SEARCH_PREPARATION_RECEIPT_LIMIT):
+                return unavailable("receipt-changed-before-read")
+            raw = stream.read(SEARCH_PREPARATION_RECEIPT_LIMIT + 1)
+            finished = os.fstat(stream.fileno())
+        after = path.lstat()
+        if (len(raw) > SEARCH_PREPARATION_RECEIPT_LIMIT or len(raw) != opened.st_size
+                or (finished.st_dev, finished.st_ino, finished.st_size, finished.st_mtime_ns)
+                != (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
+                or (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)):
+            return unavailable("receipt-changed-during-read")
+        if owner.process.poll() is not None:
+            return unavailable("owner-retired-during-read")
+        receipt = json.loads(raw)
+        if (not isinstance(receipt, dict)
+                or receipt.get("schema") != "nudox.search-preparation-worker.v1"
+                or type(receipt.get("process_id")) is not int
+                or receipt.get("process_id") != pid
+                or receipt.get("authority") != "worker-observation-only"):
+            return unavailable("receipt-owner-or-schema-mismatch")
+        answer_identities = _search_answer_identities(answer_content)
+        if answer_identities is None:
+            return unavailable("search-answer-identity-invalid")
+        if any(not _diagnostic_hex(receipt.get(key)) for key in ("workspace", "view", "view_version")):
+            return unavailable("receipt-workspace-identity-invalid")
+        source = receipt.get("source")
+        if (not isinstance(source, dict)
+                or any(not _diagnostic_hex(source.get(key)) for key in ("root", "object", "branch", "log"))
+                or type(source.get("schema")) is not int or not 0 <= source["schema"] <= 65535):
+            return unavailable("receipt-source-identity-invalid")
+        worker_identities = {
+            "workspace": receipt["workspace"],
+            "view": receipt["view"],
+            "view_version": receipt["view_version"],
+            **{f"source.{key}": source[key] for key in ("root", "object", "branch", "log", "schema")},
+        }
+        if any(worker_identities[key] != value for key, value in answer_identities.items()):
+            return unavailable("search-answer-identity-mismatch")
+        outcome = receipt.get("outcome")
+        outcomes = {"prepared", "capture-refused", "projection-refused", "cancelled", "panicked", "stopped"}
+        elapsed = receipt.get("elapsed_ns")
+        if (outcome not in outcomes or type(elapsed) is not int
+                or not 0 <= elapsed <= 86_400_000_000_000):
+            return unavailable("receipt-outcome-invalid")
+        phases = receipt.get("phases")
+        phase_names = ("indexed_sources", "semantic_corpus", "lexical_projection")
+        if not isinstance(phases, dict):
+            return unavailable("receipt-phases-invalid")
+        bounded_phases = {key: _diagnostic_phase(phases.get(key)) for key in phase_names}
+        if any(value is None for value in bounded_phases.values()):
+            return unavailable("receipt-phases-invalid")
+        selection = _diagnostic_selection(receipt.get("selection"))
+        if receipt.get("selection") is not None and selection is None:
+            return unavailable("receipt-selection-invalid")
+        return {
+            "state": "captured",
+            "source_sha": provenance["source_sha"],
+            "artifact_manifest_sha256": provenance["artifact_manifest_sha256"],
+            "receipt_sha256": hashlib.sha256(raw).hexdigest(),
+            "owner_pid": pid,
+            "workspace": receipt["workspace"],
+            "view": receipt["view"],
+            "view_version": receipt["view_version"],
+            "source": {key: source[key] for key in ("root", "object", "branch", "log", "schema")},
+            "binding_level": "owner-process-private-workspace",
+            "verified_answer_fields": sorted(answer_identities),
+            "unbound_worker_fields": sorted(set(worker_identities) - set(answer_identities)),
+            "outcome": outcome,
+            "elapsed_ns": elapsed,
+            "phases": bounded_phases,
+            "selection": selection,
+        }
+    except FileNotFoundError:
+        return unavailable("receipt-not-found")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return unavailable("receipt-read-or-decode-failed")
+
+
+def emit_search_preparation_diagnostic(diagnostic: dict, case_name: str) -> None:
+    packet = {"schema": 1, "case": case_name, **diagnostic}
+    encoded = json.dumps(packet, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) <= SEARCH_PREPARATION_DIAGNOSTIC_LIMIT:
+        with OUTPUT_LOCK:
+            print("SURFACE-SEARCH-PREPARATION " + encoded, flush=True)
+
+
 def stable(value):
     """Drops run-dependent fields so snapshots compare behaviour only."""
     if isinstance(value, dict):
@@ -448,6 +657,10 @@ class Owner:
         self.workspace = state / "workspace"
         self.endpoint = case_root / "locald.sock"
         self.env = isolated_env(self.home, bin_dir)
+        if _preparation_diagnostic_opt_in(RUN_PROVENANCE.get()):
+            # isolated_env strips inherited BACKEND_* overrides; this one is
+            # explicitly reintroduced only for a provenance-bound CI report.
+            self.env["BACKEND_JOURNEY_SEARCH_PREPARATION"] = "1"
         if cargo_vendor is not None:
             # Pinned lockfile sources are outside the upstream project. Keep
             # the owner offline and give this case its own writable Cargo home.
@@ -1998,6 +2211,17 @@ def run_case(case: dict, bin_dir: Path) -> dict:
     record = {"answers": {}, "performance": {"seconds": {}}, "continuation_evidence": []}
     proven_answers: dict[str, set[str]] = {}
     cli_proofs: list[tuple[list[str], str, dict, float]] = []
+    preparation_diagnostic_captured = False
+
+    def capture_first_full_search_diagnostic(answer_content: dict) -> None:
+        nonlocal preparation_diagnostic_captured
+        provenance = RUN_PROVENANCE.get()
+        if preparation_diagnostic_captured or not _preparation_diagnostic_opt_in(provenance):
+            return
+        preparation_diagnostic_captured = True
+        diagnostic = capture_search_preparation_diagnostic(owner, provenance, answer_content)
+        record["search_preparation_diagnostic"] = diagnostic
+        emit_search_preparation_diagnostic(diagnostic, case["name"])
     try:
         try:
             if case.get("index_mode", "resumable") == "resumable":
@@ -2051,6 +2275,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                     request=args,
                 )
                 seconds = time.monotonic() - query_started
+                capture_first_full_search_diagnostic(answer["json"])
             token = require_initial_cursor_shape(answer["json"])
             if token is not None:
                 remaining = query_deadline - time.monotonic()
@@ -2452,6 +2677,8 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
                 log(f"case {case['name']} completed after SIGTERM; classified as interrupted")
                 return
             entry.update(record["performance"])
+            if "search_preparation_diagnostic" in record:
+                entry["search_preparation_diagnostic"] = record["search_preparation_diagnostic"]
             if args.ci_report and record.get("continuation_evidence"):
                 entry["continuation_evidence"] = continuation_report_references(record["continuation_evidence"])
             if case.get("kind") == "cli-contract":

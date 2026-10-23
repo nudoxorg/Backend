@@ -27,6 +27,166 @@ class NativeTypeScriptOwnerEnvironmentTests(unittest.TestCase):
         self.assertEqual(env["NUDOX_RUSTC"], "/pinned/rustc")
         self.assertEqual(env["BACKEND_LOCALD_BIN"], "/published/bin/backend-locald")
 
+    def test_search_preparation_diagnostics_require_exact_ci_report_opt_in(self):
+        self.assertFalse(surface._preparation_diagnostic_opt_in(None, "1"))
+        provenance = {"source_sha": "a" * 40}
+        self.assertTrue(surface._preparation_diagnostic_opt_in(provenance, None))
+        self.assertTrue(surface._preparation_diagnostic_opt_in(provenance, "true"))
+        self.assertFalse(surface._preparation_diagnostic_opt_in(provenance, "0"))
+
+
+class SearchPreparationReceiptTests(unittest.TestCase):
+    @staticmethod
+    def receipt(pid=42):
+        return {
+            "schema": "nudox.search-preparation-worker.v1",
+            "process_id": pid,
+            "workspace": "a" * 64,
+            "view": "b" * 64,
+            "view_version": "c" * 64,
+            "source": {"root": "d" * 64, "object": "e" * 64,
+                       "branch": "f" * 64, "log": "0" * 64, "schema": 3},
+            "elapsed_ns": 1000,
+            "phases": {
+                "indexed_sources": {"state": "observed", "elapsed_ns": 100},
+                "semantic_corpus": {"state": "observed", "elapsed_ns": 200},
+                "lexical_projection": {"state": "observed", "elapsed_ns": 300},
+            },
+            "selection": {
+                "row_evidence_join_ns": 11, "relation_state_ns": 12,
+                "document_state_ns": 13, "projection_open_advance_ns": 14,
+                "view_rows": 7, "evidence_facts": 8, "lexical_documents": 9,
+                "selected_entities": 6, "previous_view": None, "previous_binding": None,
+                "same_view": False, "same_workspace": True, "same_relation_root": False,
+                "same_binding": False, "maintenance": "revised",
+            },
+            "outcome": "prepared",
+            "authority": "worker-observation-only",
+        }
+
+    @staticmethod
+    def owner(directory, pid=42, poll=None):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        process = Mock(pid=pid)
+        process.poll.return_value = poll
+        return SimpleNamespace(workspace=directory, process=process)
+
+    def write_receipt(self, directory, receipt=None):
+        import json
+        value = self.receipt() if receipt is None else receipt
+        raw = json.dumps(value, separators=(",", ":")).encode()
+        path = Path(directory) / surface.SEARCH_PREPARATION_RECEIPT
+        path.write_bytes(raw)
+        return path, raw
+
+    def test_captures_exact_private_owner_receipt_as_bounded_identities_and_scalars(self):
+        import contextlib
+        import io
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self.owner(directory)
+            _, raw = self.write_receipt(directory)
+            provenance = {"source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                captured = surface.capture_search_preparation_diagnostic(owner, provenance, {
+                    "answer": "records", "workspace": "a" * 64, "view": "b" * 64,
+                    "view_version": "c" * 64,
+                    "basis": {"source": {"root": "d" * 64, "object": "e" * 64,
+                                          "branch": "f" * 64, "log": "0" * 64, "schema": 3}},
+                })
+                surface.emit_search_preparation_diagnostic(captured, "fixture")
+            packet = json.loads(output.getvalue().split(" ", 1)[1])
+            self.assertEqual(packet["state"], "captured")
+            self.assertEqual(packet["receipt_sha256"], hashlib.sha256(raw).hexdigest())
+            self.assertEqual(packet["owner_pid"], 42)
+            self.assertEqual(packet["workspace"], "a" * 64)
+            self.assertEqual(packet["phases"]["semantic_corpus"]["elapsed_ns"], 200)
+            self.assertEqual(packet["selection"]["maintenance"], "revised")
+            self.assertEqual(packet["binding_level"], "owner-process-private-workspace")
+            self.assertEqual(len(packet["verified_answer_fields"]), 8)
+            self.assertEqual(packet["unbound_worker_fields"], [])
+            self.assertNotIn(directory, output.getvalue())
+            self.assertLessEqual(len(output.getvalue().encode()), surface.SEARCH_PREPARATION_DIAGNOSTIC_LIMIT + 40)
+
+    def test_oversized_and_stale_owner_receipts_are_refused_without_content(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self.owner(directory)
+            path, _ = self.write_receipt(directory)
+            path.write_bytes(b"x" * (surface.SEARCH_PREPARATION_RECEIPT_LIMIT + 1))
+            oversized = surface.capture_search_preparation_diagnostic(owner, {
+                "source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}, {})
+            self.assertEqual(oversized, {"state": "unavailable", "reason": "receipt-over-limit"})
+            self.write_receipt(directory, self.receipt(pid=41))
+            stale = surface.capture_search_preparation_diagnostic(owner, {
+                "source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}, {})
+            self.assertEqual(stale["reason"], "receipt-owner-or-schema-mismatch")
+            owner.process.poll.return_value = 0
+            retired = surface.capture_search_preparation_diagnostic(owner, {
+                "source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}, {})
+            self.assertEqual(retired["reason"], "owner-not-live")
+
+    def test_receipt_without_observation_only_authority_is_refused(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self.owner(directory)
+            receipt = self.receipt()
+            receipt.pop("authority")
+            self.write_receipt(directory, receipt)
+            result = surface.capture_search_preparation_diagnostic(owner, {
+                "source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}, {})
+            self.assertEqual(result, {
+                "state": "unavailable", "reason": "receipt-owner-or-schema-mismatch"})
+
+    def test_atomic_replacement_between_stat_and_open_is_refused(self):
+        import json
+        import os
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self.owner(directory)
+            path, _ = self.write_receipt(directory)
+            replacement = Path(directory) / "replacement.json"
+            replacement.write_bytes(json.dumps(self.receipt(pid=42, ) | {"elapsed_ns": 999},
+                                                   separators=(",", ":")).encode())
+            real_open = os.open
+            replaced = False
+
+            def replace_then_open(target, flags, *args, **kwargs):
+                nonlocal replaced
+                if Path(target) == path and not replaced:
+                    os.replace(replacement, path)
+                    replaced = True
+                return real_open(target, flags, *args, **kwargs)
+
+            with patch.object(surface.os, "open", side_effect=replace_then_open):
+                result = surface.capture_search_preparation_diagnostic(owner, {
+                    "source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}, {})
+            self.assertTrue(replaced)
+            self.assertEqual(result["reason"], "receipt-changed-before-read")
+
+    def test_unexposed_search_ids_are_labeled_unbound_and_exposed_mismatch_refuses(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self.owner(directory)
+            self.write_receipt(directory)
+            provenance = {"source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}
+            unbound = surface.capture_search_preparation_diagnostic(owner, provenance, {
+                "answer": "records", "readiness": "ready", "records": []})
+            self.assertEqual(unbound["binding_level"], "owner-process-private-workspace")
+            self.assertEqual(unbound["verified_answer_fields"], [])
+            self.assertEqual(len(unbound["unbound_worker_fields"]), 8)
+            mismatch = surface.capture_search_preparation_diagnostic(owner, provenance, {
+                "answer": "records", "view": "9" * 64})
+            self.assertEqual(mismatch, {
+                "state": "unavailable", "reason": "search-answer-identity-mismatch"})
+            source_mismatch = surface.capture_search_preparation_diagnostic(owner, provenance, {
+                "answer": "records", "page": {"source_root": "9" * 64}})
+            self.assertEqual(source_mismatch, {
+                "state": "unavailable", "reason": "search-answer-identity-mismatch"})
+
 
 class FailedIndexDiagnosticTests(unittest.TestCase):
     def test_diagnostic_reads_public_outcome_without_changing_setup_verdict(self):
