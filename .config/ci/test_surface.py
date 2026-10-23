@@ -1160,7 +1160,7 @@ class SnapshotContinuationTests(unittest.TestCase):
 
 
 class InteractiveMcpTests(unittest.TestCase):
-    def test_case_exhausts_outline_with_the_issuing_session_deadline(self):
+    def test_case_measures_one_outline_hop_then_accounts_full_proof_outside_baseline(self):
         import contextlib, io, tempfile
         from types import SimpleNamespace
         from unittest.mock import patch
@@ -1174,17 +1174,26 @@ class InteractiveMcpTests(unittest.TestCase):
                 "package": {"project": "/project"}, "detail": "summary",
                 "page": {"source_root": "root", "source_object": "object", "coverage": [],
                          "branch": "branch", "log": "log", "schema": 3,
-                         "sequence": 2, "limit": 2, "more": token is not None}}
+                         "sequence": 2, "limit": 2, "more": token is not None},
+                "budget": ({"bytes": len(token.encode()), "bytesPerToken": 1,
+                            "estimatedTokens": len(token.encode())} if token else {})}
             if token is not None:
                 result["nextCursor"] = token
             return result
 
         first, last = page("first", "mcp2-next"), page("last")
-        continued = []
+        events = []
+        state = {"cpu_seconds": 1.0, "peak_rss_kib": 100, "resident_rss_kib": 80}
+        sessions = 0
 
         def session(_owner, _project, calls, _timeout, on_reply, *, absolute_deadline):
-            def exchange(call):
-                continued.append(call)
+            nonlocal sessions
+            sessions += 1
+            proof_session = sessions == 2
+            def exchange(call, _per_call=10):
+                events.append("proof-hop" if proof_session else "measured-hop")
+                if proof_session:
+                    state.update(cpu_seconds=99.0, peak_rss_kib=9999, resident_rss_kib=90)
                 return {"isError": False, "structuredContent": last}
             exchange.deadline = absolute_deadline
             reply = {"isError": False, "structuredContent": first}
@@ -1196,8 +1205,15 @@ class InteractiveMcpTests(unittest.TestCase):
             root = Path(directory)
             fixture = root / "fixture"
             fixture.mkdir()
+            def usage_raw():
+                events.append("usage")
+                return dict(state)
+            def reset_peak_rss():
+                events.append("reset")
+                state["peak_rss_kib"] = state["resident_rss_kib"]
+                return dict(state)
             owner = SimpleNamespace(process=SimpleNamespace(pid=1), stop=lambda: None,
-                                    usage=lambda: {"cpu_seconds": 0, "peak_rss_kib": 0})
+                                    usage_raw=usage_raw, reset_peak_rss=reset_peak_rss)
             case = {"name": "outline-session", "project": str(fixture),
                     "languages": ["python"], "index_mode": "wait",
                     "mcp": [{"tool": "backend.outline", "arguments": {}}]}
@@ -1209,9 +1225,45 @@ class InteractiveMcpTests(unittest.TestCase):
                     patch.object(surface, "normalize_surface_answers", side_effect=lambda answers, _proofs: answers), \
                     contextlib.redirect_stdout(io.StringIO()):
                 record = surface.run_case(case, root / "bin")
-        self.assertEqual(len(continued), 1)
-        self.assertEqual(continued[0]["arguments"]["cursor"], "mcp2-next")
+        self.assertEqual(sessions, 2)
+        self.assertLess(events.index("measured-hop"), events.index("usage"))
+        self.assertLess(events.index("usage"), events.index("proof-hop"))
+        self.assertLess(events.index("proof-hop"), events.index("reset"))
+        self.assertEqual(record["performance"]["cpu_seconds"], 1)
+        self.assertEqual(record["performance"]["peak_rss_kib"], 100)
+        self.assertEqual(record["resource_phase_evidence"]["proof_cpu_seconds"], 98)
+        self.assertNotIn("resource_phase_evidence", record["performance"])
         self.assertEqual(len(record["continuation_evidence"]), 2)
+
+    def test_replay_refuses_expired_original_cli_deadline(self):
+        import time
+        owner = object()
+        with self.assertRaisesRegex(RuntimeError, "original query deadline expired"):
+            surface._replay_cli_cursor(owner, Path("/project"), ["search", "x"],
+                                       "cli search x", {"json": {}}, {}, "root", [],
+                                       time.monotonic() - 1)
+
+
+class OwnerPeakResetTests(unittest.TestCase):
+    def test_peak_reset_refusal_fails_closed(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        owner = surface.Owner.__new__(surface.Owner)
+        owner.process = SimpleNamespace(pid=123)
+        writes = []
+
+        def read(path):
+            if str(path) == "/proc/123/status":
+                return "VmHWM:\t120 kB\nVmRSS:\t100 kB\n"
+            return "123 (locald) R " + " ".join(["0"] * 10 + ["10", "20"])
+
+        with patch.object(Path, "write_text", autospec=True,
+                          side_effect=lambda self, value: writes.append((str(self), value))), \
+             patch.object(Path, "read_text", autospec=True,
+                          side_effect=lambda self, *args, **kwargs: read(self)):
+            with self.assertRaisesRegex(RuntimeError, "VmHWM reset did not take effect"):
+                owner.reset_peak_rss()
+        self.assertEqual(writes, [("/proc/123/clear_refs", "5\n")])
 
     def test_partial_search_is_retried_inside_its_issuing_mcp_session(self):
         import os

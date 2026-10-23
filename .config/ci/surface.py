@@ -24,6 +24,7 @@ Exit 0 when every case matches, 1 otherwise.
 from __future__ import annotations
 
 import argparse
+import copy
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextvars import ContextVar
 from contextlib import contextmanager
@@ -498,13 +499,31 @@ class Owner:
 
     def usage(self) -> dict:
         """Peak RSS (VmHWM) and CPU time of the owner so far, from /proc."""
+        raw = self.usage_raw()
+        return {"peak_rss_kib": raw["peak_rss_kib"], "cpu_seconds": round(raw["cpu_seconds"], 2)}
+
+    def usage_raw(self) -> dict:
+        """Unrounded owner counters used for phase accounting."""
         pid = self.process.pid
         status = Path(f"/proc/{pid}/status").read_text()
         peak = int(re.search(r"VmHWM:\s+(\d+) kB", status).group(1))
+        resident = int(re.search(r"VmRSS:\s+(\d+) kB", status).group(1))
         fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
         ticks = os.sysconf("SC_CLK_TCK")
         cpu = (int(fields[11]) + int(fields[12])) / ticks
-        return {"peak_rss_kib": peak, "cpu_seconds": round(cpu, 2)}
+        return {"peak_rss_kib": peak, "resident_rss_kib": resident, "cpu_seconds": cpu}
+
+    def reset_peak_rss(self) -> dict:
+        """Reset this locald's VmHWM and verify Linux accepted the reset."""
+        pid = self.process.pid
+        Path(f"/proc/{pid}/clear_refs").write_text("5\n")
+        reset = self.usage_raw()
+        if reset["peak_rss_kib"] != reset["resident_rss_kib"]:
+            raise RuntimeError(
+                "owner VmHWM reset did not take effect: "
+                f"peak={reset['peak_rss_kib']} KiB resident={reset['resident_rss_kib']} KiB"
+            )
+        return reset
 
     def stop(self) -> None:
         try:
@@ -1522,6 +1541,196 @@ def normalize_surface_answers(answers: dict, proven_answers: dict[str, set[str]]
     return normalized
 
 
+def _assert_published_root(answer: dict, published_root: str, label: str) -> None:
+    """Reject a replay that answers from a different immutable publication."""
+    if answer.get("source_root") is not None and answer["source_root"] != published_root:
+        raise RuntimeError(f"{label}: replay changed the published source root")
+    page = answer.get("page")
+    if isinstance(page, dict) and page.get("source_root") is not None and page["source_root"] != published_root:
+        raise RuntimeError(f"{label}: replay changed the published source root")
+
+
+def _replay_comparison_projection(value):
+    """Drop only declared volatile fields; retain every answer and basis field."""
+    if isinstance(value, dict):
+        return {key: _replay_comparison_projection(item)
+                for key, item in sorted(value.items()) if key not in VOLATILE_KEYS}
+    if isinstance(value, list):
+        return [_replay_comparison_projection(item) for item in value]
+    return value
+
+
+def _assert_same_initial_answer(measured: dict, replayed: dict,
+                                measured_tokens: set[str], replay_tokens: set[str],
+                                label: str) -> None:
+    """Compare immutable first-page content after each offered token was proven."""
+    left = _replay_comparison_projection(normalize_continuations(measured, measured_tokens))
+    right = _replay_comparison_projection(normalize_continuations(replayed, replay_tokens))
+    if left != right:
+        raise RuntimeError(f"{label}: proof replay initial answer differs from the measured answer")
+
+
+def _mcp_structured(reply: dict, label: str) -> dict:
+    if (not isinstance(reply, dict) or reply.get("isError", False)
+            or not isinstance(reply.get("structuredContent"), dict)):
+        raise RuntimeError(f"{label}: MCP refused the offered cursor: {reply}")
+    return reply["structuredContent"]
+
+
+def _single_mcp_hop(owner: Owner, project: Path, call: dict, first: dict,
+                    deadline: float, label: str, published_root: str) -> dict:
+    """Measure one offered page using a fresh session and the current absolute deadline."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise RuntimeError(f"{label}: MCP continuation deadline exceeded")
+    continuation = mcp_continuation_call(call, first)
+    continued, _seconds = run_mcp(owner, project, [continuation], min(10, remaining))
+    if continued["exit"] != 0 or len(continued["calls"]) != 1:
+        raise RuntimeError(f"{label}: MCP continuation session failed")
+    following = _mcp_structured(continued["calls"][0]["reply"], label)
+    require_continuation_reply(first, following, published_root)
+    return following
+
+
+def _replay_cli_cursor(owner: Owner, project: Path, args: list[str], key: str,
+                       measured: dict, case: dict, published_root: str,
+                       evidence: list[dict], deadline: float) -> float:
+    """Replay one selected CLI request after measurement, then exhaust only its proof chain."""
+    started = time.monotonic()
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise RuntimeError(f"{key}: original query deadline expired before proof replay")
+    replayed, _seconds = run_cli(owner, project, args, remaining)
+    require_cli_success(key + " proof replay", replayed)
+    current = replayed["json"]
+    if args[0] == "search" and args[-1] in case.get("authored_symbols", {}):
+        current, _frames = resolve_partial_authored_search(
+            replayed,
+            lambda remaining: run_cli(owner, project, args, remaining)[0],
+            deadline,
+            transport="cli",
+            query=args[-1],
+            expected={args[-1]: case["authored_symbols"][args[-1]]},
+            language=case["languages"][0],
+            request=args,
+        )
+        current = current["json"]
+    _assert_published_root(current, published_root, key)
+    replay_token = require_initial_cursor_shape(current)
+    measured_token = require_initial_cursor_shape(measured["json"])
+    if (replay_token is None) != (measured_token is None):
+        raise RuntimeError(f"{key}: proof replay changed cursor availability")
+    proven = set()
+    if replay_token is not None:
+        def fetch(current_page, cursor):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(f"{key}: proof replay deadline exceeded")
+            if current_page.get("answer") == "outline":
+                following, _elapsed = run_cli(owner, project, args + ["--cursor", cursor], min(10, remaining))
+                require_cli_success(key + " proof continuation", following)
+                return following["json"]
+            following, _elapsed = run_cli(owner, project, args + ["--cursor", cursor], min(10, remaining))
+            require_cli_success(key + " proof continuation", following)
+            return following["json"]
+
+        def retain(page_number, page, input_cursor):
+            kind = "outline" if current.get("answer") == "outline" else "search"
+            _emit_continuation_page(evidence, "cli", kind, page_number,
+                                    {"arguments": args}, page, input_cursor)
+
+        if current.get("answer") == "outline":
+            walk_outline_pages(current, fetch, published_root, deadline=deadline, on_page=retain)
+        elif current.get("answer") == "records":
+            walk_record_pages(current, fetch, deadline=deadline, on_page=retain)
+        else:
+            raise RuntimeError(f"{key}: proof replay has an unsupported answer")
+        proven.add(replay_token)
+    _assert_same_initial_answer(measured["json"], current,
+                                {measured_token} if measured_token else set(), proven, key)
+    return time.monotonic() - started
+
+
+def _replay_mcp_calls(owner: Owner, project: Path, calls: list[dict], measured: dict,
+                      case: dict, published_root: str, evidence: list[dict],
+                      measured_proofs: dict[str, set[str]], deadline: float) -> float:
+    """Replay selected MCP calls and exhaust their cursor chains in one proof session."""
+    started = time.monotonic()
+    if deadline <= started:
+        raise RuntimeError("MCP original session deadline expired before proof replay")
+    timeout = deadline - started
+    answer_index = 0
+
+    def prove(call, reply, exchange, readiness_exchange):
+        nonlocal answer_index
+        index = answer_index
+        answer_index += 1
+        if index >= len(measured.get("calls", [])):
+            raise RuntimeError("MCP proof replay returned an extra initial answer")
+        measured_call = measured["calls"][index]
+        if measured_call.get("call") != call:
+            raise RuntimeError("MCP proof replay changed the selected request order or operands")
+        measured_reply = measured_call.get("reply")
+        query = call.get("arguments", {}).get("query")
+        if call["tool"] == "backend.search" and query in case.get("authored_symbols", {}):
+            replay_reply, _frames = resolve_partial_authored_search(
+                reply,
+                lambda remaining: readiness_exchange(call, remaining),
+                readiness_exchange.deadline,
+                transport="mcp",
+                query=query,
+                expected={query: case["authored_symbols"][query]},
+                language=case["languages"][0],
+                request=call,
+            )
+        else:
+            replay_reply = reply
+        replay_first = _mcp_structured(replay_reply, "MCP proof replay initial request")
+        measured_first = _mcp_structured(measured_reply, "MCP measured initial request")
+        _assert_published_root(replay_first, published_root, "MCP proof replay")
+        replay_token = require_initial_cursor_shape(replay_first)
+        measured_token = require_initial_cursor_shape(measured_first)
+        if (replay_token is None) != (measured_token is None):
+            raise RuntimeError("MCP proof replay changed cursor availability")
+        replay_proven = set()
+        if replay_token is not None:
+            def fetch(current, cursor):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("MCP cursor proof replay deadline exceeded")
+                continuation = mcp_continuation_call(call, current)
+                following = exchange(continuation, min(10, remaining))
+                return _mcp_structured(following, "MCP cursor proof replay")
+
+            def retain(page_number, page, input_cursor):
+                _emit_continuation_page(evidence, "mcp", call["tool"], page_number,
+                                        {"arguments": call.get("arguments", {})}, page,
+                                        input_cursor)
+
+            if replay_first.get("answer") == "outline":
+                walk_outline_pages(replay_first, fetch, published_root,
+                                   deadline=deadline, on_page=retain)
+            elif replay_first.get("answer") == "records":
+                walk_record_pages(replay_first, fetch, deadline=deadline, on_page=retain)
+            else:
+                raise RuntimeError("MCP proof replay has an unsupported answer")
+            replay_proven.add(replay_token)
+        _assert_same_initial_answer(
+            measured_first, replay_first,
+            measured_proofs.get(f"mcp:{index}", set()), replay_proven,
+            f"MCP call {index} proof replay",
+        )
+        return replay_reply if replay_reply is not reply else None
+
+    replay, _seconds = run_mcp_interactive(
+        owner, project, calls, timeout, prove, absolute_deadline=deadline)
+    if replay.get("exit") != 0 or not replay.get("tools"):
+        raise RuntimeError("MCP proof replay session failed")
+    if answer_index != len(calls):
+        raise RuntimeError("MCP proof replay omitted an initial selected request")
+    return time.monotonic() - started
+
+
 def require_authored_symbols(answer: dict, expected: dict, language: str) -> None:
     for query, declaration in expected.items():
         # Search text need not be the compiler's canonical identity. Java,
@@ -1738,6 +1947,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
 
     record = {"answers": {}, "performance": {"seconds": {}}, "continuation_evidence": []}
     proven_answers: dict[str, set[str]] = {}
+    cli_proofs: list[tuple[list[str], str, dict, float]] = []
     try:
         try:
             if case.get("index_mode", "resumable") == "resumable":
@@ -1793,43 +2003,17 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 seconds = time.monotonic() - query_started
             token = require_initial_cursor_shape(answer["json"])
             if token is not None:
-                if answer["json"].get("answer") == "outline":
-                    def cli_outline_page(current, cursor):
-                        remaining = query_deadline - time.monotonic()
-                        if remaining <= 0:
-                            raise RuntimeError("snapshot continuation: CLI outline deadline exceeded")
-                        following, _ = run_cli(owner, project, args + ["--cursor", cursor], min(10, remaining))
-                        require_cli_success(key + " continuation", following)
-                        return following["json"]
-                    def retain_cli_outline(page_number, current, input_cursor):
-                        _emit_continuation_page(record["continuation_evidence"], "cli", "outline", page_number,
-                                                {"arguments": args}, current, input_cursor)
-                    pages, declarations = walk_outline_pages(
-                        answer["json"], cli_outline_page, published_root,
-                        max_pages=outline_max_pages,
-                        deadline=query_deadline, on_page=retain_cli_outline)
-                    log(f"{key}: exhausted {pages} CLI outline pages ({declarations} unique declarations)")
-                elif answer["json"].get("answer") == "records":
-                    def cli_search_page(_current, cursor):
-                        remaining = query_deadline - time.monotonic()
-                        if remaining <= 0:
-                            raise RuntimeError("snapshot continuation: CLI search deadline exceeded")
-                        following, _ = run_cli(owner, project, args + ["--cursor", cursor], min(10, remaining))
-                        require_cli_success(key + " continuation", following)
-                        return following["json"]
-                    def retain_cli_search(page_number, current, input_cursor):
-                        _emit_continuation_page(record["continuation_evidence"], "cli", "search", page_number,
-                                                {"arguments": args}, current, input_cursor)
-                    pages, count = walk_record_pages(answer["json"], cli_search_page,
-                                                     deadline=query_deadline, on_page=retain_cli_search)
-                    log(f"{key}: exhausted {pages} CLI search pages ({count} unique records)")
-                else:
-                    raise RuntimeError("snapshot continuation: unsupported CLI answer")
+                remaining = query_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(f"{key}: measured first-hop deadline exceeded")
+                following, _ = run_cli(owner, project, args + ["--cursor", token], min(10, remaining))
+                require_cli_success(key + " first continuation", following)
+                require_continuation_reply(answer["json"], following["json"], published_root)
                 proven_answers.setdefault(f"cli:{key}", set()).add(token)
+                cli_proofs.append((list(args), key, copy.deepcopy(answer), query_deadline))
             record["answers"][key] = answer
             record["performance"]["seconds"][key] = round(seconds, 2)
         if case.get("mcp"):
-            page_requests = {}
             def prove_session_outline(call, reply, exchange, readiness_exchange, answer_index):
                 query = call.get("arguments", {}).get("query")
                 if (call["tool"] == "backend.search" and query in case.get("authored_symbols", {})):
@@ -1852,26 +2036,17 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 token = require_initial_cursor_shape(first)
                 if call["tool"] != "backend.outline" or token is None:
                     return replacement
-                def mcp_outline_page(current, cursor):
-                    continuation = mcp_continuation_call(call, current)
-                    actual_arguments = dict(continuation["arguments"])
-                    actual_arguments.pop("cursor", None)
-                    page_requests[cursor] = {"arguments": actual_arguments}
-                    following = exchange(continuation)
-                    if (not isinstance(following, dict) or following.get("isError", False)
-                            or not isinstance(following.get("structuredContent"), dict)):
-                        raise RuntimeError(f"snapshot continuation: MCP refused offered outline token: {following}")
-                    return following["structuredContent"]
-                def retain_mcp_outline(page_number, current, input_cursor):
-                    request = page_requests.get(input_cursor, {"arguments": dict(call.get("arguments", {}))})
-                    _emit_continuation_page(record["continuation_evidence"], "mcp", call["tool"], page_number,
-                                            request, current, input_cursor)
-                pages, declarations = walk_outline_pages(first, mcp_outline_page, published_root,
-                                                         max_pages=outline_max_pages,
-                                                         deadline=exchange.deadline,
-                                                         on_page=retain_mcp_outline)
+                remaining = exchange.deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("backend.outline first-hop deadline exceeded")
+                continuation = mcp_continuation_call(call, first)
+                following = _mcp_structured(
+                    exchange(continuation, min(10, remaining)),
+                    "backend.outline first continuation",
+                )
+                require_continuation_reply(first, following, published_root)
                 proven_answers.setdefault(f"mcp:{answer_index}", set()).add(token)
-                log(f"backend.outline: exhausted {pages} same-session MCP outline pages ({declarations} unique declarations)")
+                log("backend.outline: measured one offered continuation in its issuing session")
                 return replacement
 
             mcp_answer_index = 0
@@ -1898,33 +2073,44 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 first = reply.get("structuredContent", {})
                 token = require_initial_cursor_shape(first)
                 if token is not None and token not in proven_answers.get(f"mcp:{answer_index}", set()):
-                    call = result["call"]
-                    def mcp_search_page(current, cursor):
-                        remaining = mcp_deadline - time.monotonic()
-                        if remaining <= 0:
-                            raise RuntimeError("snapshot continuation: MCP search deadline exceeded")
-                        continuation = mcp_continuation_call(call, current)
-                        actual_arguments = dict(continuation["arguments"])
-                        actual_arguments.pop("cursor", None)
-                        page_requests[cursor] = {"arguments": actual_arguments}
-                        continued, _ = run_mcp(owner, project, [continuation], min(10, remaining))
-                        if continued["exit"] != 0 or len(continued["calls"]) != 1:
-                            raise RuntimeError("snapshot continuation: MCP session failed")
-                        following = continued["calls"][0]["reply"]
-                        if (not isinstance(following, dict) or following.get("isError", False)
-                                or not isinstance(following.get("structuredContent"), dict)):
-                            raise RuntimeError(f"snapshot continuation: MCP refused offered token: {following}")
-                        return following["structuredContent"]
-                    def retain_mcp_search(page_number, current, input_cursor):
-                        request = page_requests.get(input_cursor, {"arguments": dict(call.get("arguments", {}))})
-                        _emit_continuation_page(record["continuation_evidence"], "mcp", call["tool"], page_number,
-                                                request, current, input_cursor)
-                    pages, count = walk_record_pages(first, mcp_search_page,
-                                                     deadline=mcp_deadline, on_page=retain_mcp_search)
+                    _single_mcp_hop(owner, project, result["call"], first, mcp_deadline,
+                                    result["call"]["tool"] + " first continuation", published_root)
                     proven_answers.setdefault(f"mcp:{answer_index}", set()).add(token)
-                    log(f"{call['tool']}: exhausted {pages} MCP search pages ({count} unique records)")
+                    log(f"{result['call']['tool']}: measured one offered continuation in a fresh MCP session")
             record["answers"]["mcp"] = answer
             record["performance"]["seconds"]["mcp"] = round(seconds, 2)
+        # Freeze the historical selected-call workload before cursor proof:
+        # initial replies plus exactly one offered continuation, with MCP
+        # issuing sessions fully closed as in the original measurement.
+        preproof_usage = owner.usage_raw()
+        # Reissue initial requests and exhaust full chains while the measured
+        # publication is still current. Each proof uses the original absolute
+        # query deadline, never a renewed deadline.
+        proof_started = time.monotonic()
+        for args, key, measured, deadline in cli_proofs:
+            _replay_cli_cursor(owner, project, args, key, measured, case,
+                               published_root, record["continuation_evidence"], deadline)
+        if case.get("mcp"):
+            _replay_mcp_calls(owner, project, case["mcp"], record["answers"]["mcp"],
+                              case, published_root, record["continuation_evidence"],
+                              proven_answers, mcp_deadline)
+        proof_usage = owner.usage_raw()
+        if proof_usage["cpu_seconds"] < preproof_usage["cpu_seconds"]:
+            raise RuntimeError("owner CPU counter decreased during cursor proof phase")
+        if proof_usage["peak_rss_kib"] < preproof_usage["peak_rss_kib"]:
+            raise RuntimeError("owner VmHWM decreased before the explicit reset")
+        has_cursor_proof = any(require_initial_cursor_shape(item[2]["json"]) is not None
+                               for item in cli_proofs)
+        if case.get("mcp"):
+            has_cursor_proof = has_cursor_proof or any(
+                require_initial_cursor_shape((item.get("reply") or {}).get("structuredContent", {})) is not None
+                for item in record["answers"]["mcp"].get("calls", [])
+            )
+        reset_usage = owner.reset_peak_rss() if has_cursor_proof else proof_usage
+        record["performance"].update({
+            "cpu_seconds": round(preproof_usage["cpu_seconds"], 2),
+            "peak_rss_kib": preproof_usage["peak_rss_kib"],
+        })
         if case.get("live_contracts"):
             record["performance"]["seconds"].update(
                 run_live_contracts(owner, project, case["live_contracts"], published_root)
@@ -1937,7 +2123,27 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             record["performance"].update(usage)
             with OUTPUT_LOCK:
                 print("CI-GUI-EVIDENCE " + json.dumps({**(RUN_PROVENANCE.get() or {}), **evidence}, sort_keys=True), flush=True)
-        record["performance"].update(owner.usage())
+        final_usage = owner.usage_raw()
+        if final_usage["cpu_seconds"] < proof_usage["cpu_seconds"]:
+            raise RuntimeError("owner CPU counter decreased across cursor proof and live/GUI phases")
+        if final_usage["peak_rss_kib"] < reset_usage["peak_rss_kib"]:
+            raise RuntimeError("owner VmHWM decreased after the explicit reset")
+        postproof_cpu = final_usage["cpu_seconds"] - proof_usage["cpu_seconds"]
+        if postproof_cpu < 0:
+            raise RuntimeError("owner post-proof CPU delta is negative")
+        record["resource_phase_evidence"] = {
+            "preproof": preproof_usage,
+            "postproof": proof_usage,
+            "post_reset_final": final_usage,
+            "proof_cpu_seconds": proof_usage["cpu_seconds"] - preproof_usage["cpu_seconds"],
+            "proof_elapsed_seconds": round(time.monotonic() - proof_started, 3),
+            "peak_reset_method": ("locald /proc clear_refs=5; VmHWM verified equals VmRSS"
+                                  if has_cursor_proof else "not needed; no selected cursor proof"),
+            "peak_reset_performed": has_cursor_proof,
+        }
+        record["performance"]["cpu_seconds"] = round(preproof_usage["cpu_seconds"] + postproof_cpu, 2)
+        record["performance"]["peak_rss_kib"] = max(
+            preproof_usage["peak_rss_kib"], final_usage["peak_rss_kib"])
     finally:
         case_error = sys.exc_info()[1]
         try:

@@ -703,6 +703,22 @@ its former `function` filter rejected both real methods. The two required
 source paths/languages, exact lowercase name and all ranking/completeness,
 continuation and live-health guards remain in place.
 
+The selected CLI/MCP performance workload retains the historical initial
+requests and exactly one offered continuation per selected cursor. Its owner
+CPU and peak RSS are sampled before completeness proofs. The harness then
+reissues the same initial requests and exhausts every offered cursor chain
+against that still-current publication, under the original absolute query
+deadlines. Proof CPU is removed from the owner CPU metric by phase deltas. For
+peak RSS, Linux `clear_refs=5` resets only the locald high-water mark after
+proof; the harness requires the reset VmHWM to equal current VmRSS and fails
+closed if the kernel refuses it. The reported peak is the maximum of the
+pre-proof VmHWM and the post-reset live/GUI VmHWM. Raw phase counters and proof
+timing are kept as separate evidence, not folded into baseline performance.
+This accounts for locald CPU and VmHWM; teardown housekeeping in the MCP
+client process is outside those owner counters. Full proof still runs under
+the original CLI per-query deadline and original MCP session deadline, so an
+expired deadline remains a failure.
+
 ### Corrected C-family stability and xxhash reviews (W2, 2026-10-23)
 
 Fixed artifact9819cef0c produces identical C++ answers across two diagnostic
