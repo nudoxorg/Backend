@@ -32,6 +32,7 @@ import difflib
 import hashlib
 import fcntl
 import json
+import math
 import os
 import re
 import shutil
@@ -511,6 +512,8 @@ class Owner:
         fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
         ticks = os.sysconf("SC_CLK_TCK")
         cpu = (int(fields[11]) + int(fields[12])) / ticks
+        if not math.isfinite(cpu) or cpu < 0:
+            raise RuntimeError("owner CPU counter is not finite and nonnegative")
         return {"peak_rss_kib": peak, "resident_rss_kib": resident, "cpu_seconds": cpu}
 
     def reset_peak_rss(self) -> dict:
@@ -1550,6 +1553,16 @@ def _assert_published_root(answer: dict, published_root: str, label: str) -> Non
         raise RuntimeError(f"{label}: replay changed the published source root")
 
 
+def _validate_owner_usage(usage: dict, label: str) -> None:
+    for field in ("peak_rss_kib", "resident_rss_kib"):
+        value = usage.get(field)
+        if type(value) is not int or value < 0:
+            raise RuntimeError(f"owner {field} counter is invalid {label}")
+    cpu = usage.get("cpu_seconds")
+    if type(cpu) not in (int, float) or not math.isfinite(cpu) or cpu < 0:
+        raise RuntimeError(f"owner CPU counter is invalid {label}")
+
+
 def _replay_comparison_projection(value):
     """Drop only declared volatile fields; retain every answer and basis field."""
     if isinstance(value, dict):
@@ -1640,7 +1653,9 @@ def _replay_cli_cursor(owner: Owner, project: Path, args: list[str], key: str,
                                     {"arguments": args}, page, input_cursor)
 
         if current.get("answer") == "outline":
-            walk_outline_pages(current, fetch, published_root, deadline=deadline, on_page=retain)
+            walk_outline_pages(current, fetch, published_root,
+                               max_pages=case.get("outline_max_pages", 256),
+                               deadline=deadline, on_page=retain)
         elif current.get("answer") == "records":
             walk_record_pages(current, fetch, deadline=deadline, on_page=retain)
         else:
@@ -1694,21 +1709,27 @@ def _replay_mcp_calls(owner: Owner, project: Path, calls: list[dict], measured: 
             raise RuntimeError("MCP proof replay changed cursor availability")
         replay_proven = set()
         if replay_token is not None:
+            page_requests = {}
             def fetch(current, cursor):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise RuntimeError("MCP cursor proof replay deadline exceeded")
                 continuation = mcp_continuation_call(call, current)
+                actual_arguments = dict(continuation["arguments"])
+                actual_arguments.pop("cursor", None)
+                page_requests[cursor] = {"arguments": actual_arguments}
                 following = exchange(continuation, min(10, remaining))
                 return _mcp_structured(following, "MCP cursor proof replay")
 
             def retain(page_number, page, input_cursor):
                 _emit_continuation_page(evidence, "mcp", call["tool"], page_number,
-                                        {"arguments": call.get("arguments", {})}, page,
+                                        page_requests.get(input_cursor,
+                                                          {"arguments": dict(call.get("arguments", {}))}), page,
                                         input_cursor)
 
             if replay_first.get("answer") == "outline":
                 walk_outline_pages(replay_first, fetch, published_root,
+                                   max_pages=case.get("outline_max_pages", 256),
                                    deadline=deadline, on_page=retain)
             elif replay_first.get("answer") == "records":
                 walk_record_pages(replay_first, fetch, deadline=deadline, on_page=retain)
@@ -2083,6 +2104,12 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         # initial replies plus exactly one offered continuation, with MCP
         # issuing sessions fully closed as in the original measurement.
         preproof_usage = owner.usage_raw()
+        _validate_owner_usage(preproof_usage, "before cursor proof")
+        with OUTPUT_LOCK:
+            print("CI-RESOURCE-PHASE " + json.dumps({
+                **(RUN_PROVENANCE.get() or {}), "case": case["name"], "phase": "preproof",
+                "owner": preproof_usage,
+            }, sort_keys=True), flush=True)
         # Reissue initial requests and exhaust full chains while the measured
         # publication is still current. Each proof uses the original absolute
         # query deadline, never a renewed deadline.
@@ -2091,10 +2118,15 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             _replay_cli_cursor(owner, project, args, key, measured, case,
                                published_root, record["continuation_evidence"], deadline)
         if case.get("mcp"):
-            _replay_mcp_calls(owner, project, case["mcp"], record["answers"]["mcp"],
-                              case, published_root, record["continuation_evidence"],
-                              proven_answers, mcp_deadline)
+            has_mcp_cursor = any(require_initial_cursor_shape(
+                (item.get("reply") or {}).get("structuredContent", {})) is not None
+                for item in record["answers"]["mcp"].get("calls", []))
+            if has_mcp_cursor:
+                _replay_mcp_calls(owner, project, case["mcp"], record["answers"]["mcp"],
+                                  case, published_root, record["continuation_evidence"],
+                                  proven_answers, mcp_deadline)
         proof_usage = owner.usage_raw()
+        _validate_owner_usage(proof_usage, "after cursor proof")
         if proof_usage["cpu_seconds"] < preproof_usage["cpu_seconds"]:
             raise RuntimeError("owner CPU counter decreased during cursor proof phase")
         if proof_usage["peak_rss_kib"] < preproof_usage["peak_rss_kib"]:
@@ -2107,6 +2139,24 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 for item in record["answers"]["mcp"].get("calls", [])
             )
         reset_usage = owner.reset_peak_rss() if has_cursor_proof else proof_usage
+        _validate_owner_usage(reset_usage, "after VmHWM reset")
+        proof_elapsed = time.monotonic() - proof_started
+        phase_record = {
+            "preproof": preproof_usage,
+            "postproof": proof_usage,
+            "post_reset": reset_usage,
+            "proof_cpu_seconds": proof_usage["cpu_seconds"] - preproof_usage["cpu_seconds"],
+            "proof_elapsed_seconds": round(proof_elapsed, 3),
+            "peak_reset_method": ("locald /proc clear_refs=5; VmHWM verified equals VmRSS"
+                                  if has_cursor_proof else "not needed; no selected cursor proof"),
+            "peak_reset_performed": has_cursor_proof,
+        }
+        record["resource_phase_evidence"] = phase_record
+        with OUTPUT_LOCK:
+            print("CI-RESOURCE-PHASE " + json.dumps({
+                **(RUN_PROVENANCE.get() or {}), "case": case["name"], "phase": "proof-complete",
+                **phase_record,
+            }, sort_keys=True), flush=True)
         record["performance"].update({
             "cpu_seconds": round(preproof_usage["cpu_seconds"], 2),
             "peak_rss_kib": preproof_usage["peak_rss_kib"],
@@ -2124,6 +2174,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             with OUTPUT_LOCK:
                 print("CI-GUI-EVIDENCE " + json.dumps({**(RUN_PROVENANCE.get() or {}), **evidence}, sort_keys=True), flush=True)
         final_usage = owner.usage_raw()
+        _validate_owner_usage(final_usage, "after live/GUI phases")
         if final_usage["cpu_seconds"] < proof_usage["cpu_seconds"]:
             raise RuntimeError("owner CPU counter decreased across cursor proof and live/GUI phases")
         if final_usage["peak_rss_kib"] < reset_usage["peak_rss_kib"]:
@@ -2131,16 +2182,12 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         postproof_cpu = final_usage["cpu_seconds"] - proof_usage["cpu_seconds"]
         if postproof_cpu < 0:
             raise RuntimeError("owner post-proof CPU delta is negative")
-        record["resource_phase_evidence"] = {
-            "preproof": preproof_usage,
-            "postproof": proof_usage,
-            "post_reset_final": final_usage,
-            "proof_cpu_seconds": proof_usage["cpu_seconds"] - preproof_usage["cpu_seconds"],
-            "proof_elapsed_seconds": round(time.monotonic() - proof_started, 3),
-            "peak_reset_method": ("locald /proc clear_refs=5; VmHWM verified equals VmRSS"
-                                  if has_cursor_proof else "not needed; no selected cursor proof"),
-            "peak_reset_performed": has_cursor_proof,
-        }
+        phase_record["post_reset_final"] = final_usage
+        with OUTPUT_LOCK:
+            print("CI-RESOURCE-PHASE " + json.dumps({
+                **(RUN_PROVENANCE.get() or {}), "case": case["name"], "phase": "final",
+                **phase_record,
+            }, sort_keys=True), flush=True)
         record["performance"]["cpu_seconds"] = round(preproof_usage["cpu_seconds"] + postproof_cpu, 2)
         record["performance"]["peak_rss_kib"] = max(
             preproof_usage["peak_rss_kib"], final_usage["peak_rss_kib"])

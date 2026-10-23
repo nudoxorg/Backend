@@ -28,8 +28,10 @@ receipts; subsequent query answers retain their product fields. Only explicitly
 listed timestamp/timing/process fields are normalized.
 
 Wall time is measured separately for each CLI operation and for the MCP session.
-Peak RSS and CPU cover the owner over the whole case, including indexing; they
-exclude compiler subprocesses and CLI/MCP resource use. Linux `/proc` is required.
+Peak RSS and CPU cover indexing, the historical selected request workload, and
+later live/GUI work. Added completeness-proof work is accounted as the separate
+phase documented below. The owner counters exclude compiler subprocesses and
+CLI/MCP resource use. Linux `/proc` is required.
 The initial ratios and noise floors in `surface.py` are provisional and need
 repeated measurements before this becomes a required performance gate. Compiler
 shell acquisition is infrastructure setup, outside those operation measurements.
@@ -714,6 +716,9 @@ proof; the harness requires the reset VmHWM to equal current VmRSS and fails
 closed if the kernel refuses it. The reported peak is the maximum of the
 pre-proof VmHWM and the post-reset live/GUI VmHWM. Raw phase counters and proof
 timing are kept as separate evidence, not folded into baseline performance.
+The runner emits `CI-RESOURCE-PHASE` records before proof, after the verified
+reset, and after live/GUI work so phase counters remain available even when a
+later GUI contract fails.
 This accounts for locald CPU and VmHWM; teardown housekeeping in the MCP
 client process is outside those owner counters. Full proof still runs under
 the original CLI per-query deadline and original MCP session deadline, so an

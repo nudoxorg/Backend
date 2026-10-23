@@ -1160,8 +1160,9 @@ class SnapshotContinuationTests(unittest.TestCase):
 
 
 class InteractiveMcpTests(unittest.TestCase):
-    def test_case_measures_one_outline_hop_then_accounts_full_proof_outside_baseline(self):
+    def test_case_accounts_proof_separately_and_retains_later_gui_usage(self):
         import contextlib, io, tempfile
+        import sys
         from types import SimpleNamespace
         from unittest.mock import patch
 
@@ -1216,23 +1217,32 @@ class InteractiveMcpTests(unittest.TestCase):
                                     usage_raw=usage_raw, reset_peak_rss=reset_peak_rss)
             case = {"name": "outline-session", "project": str(fixture),
                     "languages": ["python"], "index_mode": "wait",
+                    "gui": {"kind": "test"},
                     "mcp": [{"tool": "backend.outline", "arguments": {}}]}
+            def gui(_owner, _project, _case):
+                events.append("gui")
+                state.update(cpu_seconds=105.0, peak_rss_kib=120, resident_rss_kib=100)
+                return {"answer": "gui"}, {"seconds": {}, "gui_peak_rss_kib": 10}, {}
+            gui_module = SimpleNamespace(run_gui=gui)
             with patch.object(surface, "SCRATCH", root / "scratch"), \
                     patch.object(surface, "Owner", return_value=owner), \
                     patch.object(surface, "run_cli", return_value=({"exit": 0, "json": {}}, 0.01)), \
                     patch.object(surface, "require_completed_index", return_value="root"), \
                     patch.object(surface, "run_mcp_interactive", side_effect=session), \
                     patch.object(surface, "normalize_surface_answers", side_effect=lambda answers, _proofs: answers), \
+                    patch.dict(sys.modules, {"gui_contract": gui_module}), \
                     contextlib.redirect_stdout(io.StringIO()):
                 record = surface.run_case(case, root / "bin")
         self.assertEqual(sessions, 2)
         self.assertLess(events.index("measured-hop"), events.index("usage"))
         self.assertLess(events.index("usage"), events.index("proof-hop"))
         self.assertLess(events.index("proof-hop"), events.index("reset"))
-        self.assertEqual(record["performance"]["cpu_seconds"], 1)
-        self.assertEqual(record["performance"]["peak_rss_kib"], 100)
+        self.assertLess(events.index("reset"), events.index("gui"))
+        self.assertEqual(record["performance"]["cpu_seconds"], 7)
+        self.assertEqual(record["performance"]["peak_rss_kib"], 120)
         self.assertEqual(record["resource_phase_evidence"]["proof_cpu_seconds"], 98)
         self.assertNotIn("resource_phase_evidence", record["performance"])
+        self.assertEqual(record["resource_phase_evidence"]["post_reset_final"]["cpu_seconds"], 105)
         self.assertEqual(len(record["continuation_evidence"]), 2)
 
     def test_replay_refuses_expired_original_cli_deadline(self):
@@ -1264,6 +1274,28 @@ class OwnerPeakResetTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "VmHWM reset did not take effect"):
                 owner.reset_peak_rss()
         self.assertEqual(writes, [("/proc/123/clear_refs", "5\n")])
+
+
+class CursorProofReplayTests(unittest.TestCase):
+    def test_initial_replay_compares_semantic_basis_and_refuses_mismatch(self):
+        measured = {"answer": "records", "records": [{"id": "stable"}],
+                    "page": {"source_root": "published-root", "sequence": 3},
+                    "more": True, "nextCursor": "pc1-measured",
+                    "budget": {"bytes": 13, "bytesPerToken": 1, "estimatedTokens": 13}}
+        replayed = {"answer": "records", "records": [{"id": "stable"}],
+                    "page": {"source_root": "published-root", "sequence": 3},
+                    "more": True, "nextCursor": "pc1-replayed",
+                    "budget": {"bytes": 13, "bytesPerToken": 1, "estimatedTokens": 13}}
+        surface._assert_same_initial_answer(measured, replayed,
+                                            {"pc1-measured"}, {"pc1-replayed"}, "test")
+        replayed["page"]["sequence"] = 4
+        with self.assertRaisesRegex(RuntimeError, "differs from the measured answer"):
+            surface._assert_same_initial_answer(measured, replayed,
+                                                {"pc1-measured"}, {"pc1-replayed"}, "test")
+
+    def test_mcp_cursor_refusal_is_not_admitted_as_proof(self):
+        with self.assertRaisesRegex(RuntimeError, "refused the offered cursor"):
+            surface._mcp_structured({"isError": True, "content": [{"text": "stale"}]}, "test")
 
     def test_partial_search_is_retried_inside_its_issuing_mcp_session(self):
         import os
