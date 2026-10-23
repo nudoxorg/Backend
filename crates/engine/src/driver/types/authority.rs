@@ -498,6 +498,9 @@ fn rust_phase(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> Auth
         | backend_frontend_rust::legacy::RustAuthorityError::SourceNotLoaded { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::DetachedSource { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::AmbiguousSourceOwner { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::CargoTargetSourceNotCaptured {
+            ..
+        }
         | backend_frontend_rust::legacy::RustAuthorityError::EditionMismatch { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::MissingSemanticFact { .. } => {
             AuthorityPhase::Resolve
@@ -551,9 +554,10 @@ fn rust_class(
 ) -> AuthorityDiagnosticClass {
     match cause {
         backend_frontend_rust::legacy::RustAuthorityError::DetachedSource { .. }
-        | backend_frontend_rust::legacy::RustAuthorityError::AmbiguousSourceOwner { .. } => {
-            AuthorityDiagnosticClass::SourceScope
-        }
+        | backend_frontend_rust::legacy::RustAuthorityError::AmbiguousSourceOwner { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::CargoTargetSourceNotCaptured {
+            ..
+        } => AuthorityDiagnosticClass::SourceScope,
         _ => match rust_phase(cause) {
             AuthorityPhase::Resolve => AuthorityDiagnosticClass::Binding,
             AuthorityPhase::TypeCheck => AuthorityDiagnosticClass::Type,
