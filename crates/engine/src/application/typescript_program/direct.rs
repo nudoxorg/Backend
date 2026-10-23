@@ -130,15 +130,9 @@ struct NativeAdmissionCheckpoint<'a> {
     deadline: Instant,
     cancelled: &'a AtomicBool,
     work: std::sync::atomic::AtomicU64,
-    control: Option<SnapshotReplayControl<'a>>,
 }
 impl TszExecutionCheckpoint for NativeAdmissionCheckpoint<'_> {
     fn checkpoint(&self, work: u64) -> Result<(), TszProjectExecutionStop> {
-        if let Some(control) = &self.control
-            && (**control.borrow_mut())().is_err()
-        {
-            return Err(TszProjectExecutionStop::Cancelled);
-        }
         if self.cancelled.load(std::sync::atomic::Ordering::Acquire) {
             return Err(TszProjectExecutionStop::Cancelled);
         }
@@ -171,7 +165,6 @@ pub(super) fn replay_native_root_selection(
         deadline,
         cancelled: &cancelled,
         work: std::sync::atomic::AtomicU64::new(0),
-        control: Some(Rc::clone(&shared_control)),
     };
     let fs = CapturedNativeFileSystem {
         resolver: RefCell::new(&mut resolver),
@@ -181,10 +174,15 @@ pub(super) fn replay_native_root_selection(
         cancelled: &cancelled,
         control: Some(Rc::clone(&shared_control)),
     };
-    let replayed = backend_frontend_typescript::native_project::replay_root_selection(
+    let replayed = backend_frontend_typescript::native_project::replay_root_selection_controlled(
         &fs,
         &query.config_path,
-        &checkpoint,
+        &|work| {
+            (**shared_control.borrow_mut())().map_err(|error| error.to_string())?;
+            checkpoint
+                .checkpoint(work)
+                .map_err(|stop| format!("native TSZ admission stopped: {stop:?}"))
+        },
     );
     let filesystem_error = std::mem::take(&mut *fs.error.borrow_mut());
     drop(fs);
@@ -203,7 +201,7 @@ pub(super) fn replay_native_root_selection(
             });
         }
     };
-    if replayed.config_path != query.config_path
+    if replayed.config_path.as_path() != query.config_path.as_ref()
         || replayed
             .root_names
             .iter()
@@ -230,7 +228,11 @@ pub(super) fn replay_native_root_selection(
         ));
     }
     control()?;
-    Ok(query.directories.iter().map(PathBuf::from).collect())
+    Ok(query
+        .directories
+        .iter()
+        .map(|path| PathBuf::from(path.as_ref()))
+        .collect())
 }
 
 pub(super) fn build_direct_inputs_for_config(
@@ -249,7 +251,6 @@ pub(super) fn build_direct_inputs_for_config(
         deadline,
         cancelled,
         work: std::sync::atomic::AtomicU64::new(aggregate.replay_work),
-        control: None,
     };
     let inferred_roots = package_sources
         .iter()

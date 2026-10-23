@@ -264,10 +264,7 @@ impl TypeScriptProjectInputs<'_> {
     }
     /// Starts an isolated observation ledger for one compiler program.
     pub(crate) fn resolver(&self) -> TypeScriptResolverCapability<'_> {
-        TypeScriptResolverCapability {
-            witness: self.witness,
-            observations: ResolverObservationLedger::default(),
-        }
+        self.witness.resolver()
     }
 
     #[cfg(test)]
@@ -1914,6 +1911,14 @@ struct TypeScriptCompilerApiWitness {
 }
 
 impl TypeScriptProjectWitness {
+    /// Starts an isolated observation ledger for native construction or replay.
+    pub(crate) fn resolver(&self) -> TypeScriptResolverCapability<'_> {
+        TypeScriptResolverCapability {
+            witness: self,
+            observations: ResolverObservationLedger::default(),
+        }
+    }
+
     pub(crate) fn workspace_root(&self) -> &Path {
         &self.workspace_root
     }

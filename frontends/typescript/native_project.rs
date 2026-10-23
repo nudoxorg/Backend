@@ -67,6 +67,18 @@ pub fn replay_root_selection(
     config_path: &Path,
     checkpoint: &dyn ExecutionCheckpoint,
 ) -> Result<NativeRootSelectionTranscript, String> {
+    replay_root_selection_controlled(fs, config_path, &|work| poll(checkpoint, work))
+}
+
+/// Replays roots with a local caller control, including polls within glob matching.
+/// This callback stays on the replay thread; compiler execution retains its
+/// separate Send + Sync checkpoint contract.
+pub fn replay_root_selection_controlled(
+    fs: &dyn ResolutionFileSystem,
+    config_path: &Path,
+    control: &dyn Fn(u64) -> Result<(), String>,
+) -> Result<NativeRootSelectionTranscript, String> {
+    let checkpoint = &RootReplayCheckpoint(control);
     poll(checkpoint, 0)?;
     let parsed = tsz::config::load_tsconfig_with_diagnostics_and_file_system(config_path, fs)
         .map_err(|error| error.to_string())?;
@@ -74,7 +86,10 @@ pub fn replay_root_selection(
         tsz::config::resolve_compiler_options_embedded(parsed.config.compiler_options.as_ref())
             .map_err(|error| error.to_string())?;
     if options.base_url.is_none()
-        && options.paths.as_ref().is_some_and(|paths| !paths.is_empty())
+        && options
+            .paths
+            .as_ref()
+            .is_some_and(|paths| !paths.is_empty())
         && let Some(paths_base_path) = parsed.paths_base_path
     {
         options.paths_base_path = Some(paths_base_path);
@@ -129,7 +144,10 @@ pub fn build(
     // Preserve the resolver's separate `base_url` fallback semantics by
     // setting only the paths anchor.
     if options.base_url.is_none()
-        && options.paths.as_ref().is_some_and(|paths| !paths.is_empty())
+        && options
+            .paths
+            .as_ref()
+            .is_some_and(|paths| !paths.is_empty())
         && let Some(paths_base_path) = paths_base_path
     {
         options.paths_base_path = Some(paths_base_path);
@@ -541,10 +559,27 @@ pub fn build(
     })
 }
 
-fn poll(checkpoint: &dyn ExecutionCheckpoint, work: u64) -> Result<(), String> {
-    checkpoint
-        .checkpoint(work)
-        .map_err(|stop| format!("native TSZ admission stopped: {stop:?}"))
+trait NativeCheckpoint {
+    fn poll(&self, work: u64) -> Result<(), String>;
+}
+
+impl<T: ExecutionCheckpoint + ?Sized> NativeCheckpoint for T {
+    fn poll(&self, work: u64) -> Result<(), String> {
+        self.checkpoint(work)
+            .map_err(|stop| format!("native TSZ admission stopped: {stop:?}"))
+    }
+}
+
+struct RootReplayCheckpoint<'a>(&'a dyn Fn(u64) -> Result<(), String>);
+
+impl NativeCheckpoint for RootReplayCheckpoint<'_> {
+    fn poll(&self, work: u64) -> Result<(), String> {
+        (self.0)(work)
+    }
+}
+
+fn poll(checkpoint: &(impl NativeCheckpoint + ?Sized), work: u64) -> Result<(), String> {
+    checkpoint.poll(work)
 }
 
 fn explicit_resolution_mode(
@@ -597,7 +632,7 @@ fn select_roots(
     config_path: &Path,
     config: &TsConfig,
     options: &ResolvedCompilerOptions,
-    checkpoint: &dyn ExecutionCheckpoint,
+    checkpoint: &(impl NativeCheckpoint + ?Sized),
 ) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
     let directory = config_path
         .parent()
@@ -782,7 +817,7 @@ fn any_selector_matches(
     path: &str,
     include: bool,
     directory_prefix: bool,
-    checkpoint: &dyn ExecutionCheckpoint,
+    checkpoint: &(impl NativeCheckpoint + ?Sized),
 ) -> Result<bool, String> {
     for pattern in patterns {
         if glob_path_matches(pattern, path, include, directory_prefix, checkpoint)? {
@@ -797,7 +832,7 @@ fn glob_path_matches(
     path: &str,
     include: bool,
     directory_prefix: bool,
-    checkpoint: &dyn ExecutionCheckpoint,
+    checkpoint: &(impl NativeCheckpoint + ?Sized),
 ) -> Result<bool, String> {
     let pattern = pattern.split('/').collect::<Vec<_>>();
     let path = path.split('/').collect::<Vec<_>>();
@@ -855,7 +890,7 @@ fn segment_matches(
     path: &str,
     include: bool,
     file_name: bool,
-    checkpoint: &dyn ExecutionCheckpoint,
+    checkpoint: &(impl NativeCheckpoint + ?Sized),
 ) -> Result<bool, String> {
     let wildcard = pattern.contains(['*', '?']);
     if include && wildcard && matches!(path, "node_modules" | "bower_components" | "jspm_packages")
@@ -1077,8 +1112,7 @@ mod tests {
     #[test]
     fn configured_root_transcript_replays_unrelated_files_but_rejects_new_roots()
     -> Result<(), Box<dyn Error>> {
-        static NEXT_TEMP: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
+        static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let id = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root =
             std::env::temp_dir().join(format!("tsz-root-query-replay-{}-{id}", std::process::id()));
@@ -1138,6 +1172,28 @@ mod tests {
         )?);
         Ok(())
     }
+    #[test]
+    fn local_root_replay_control_stops_inside_a_single_pattern() {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let control = |_: u64| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 2 {
+                Err("caller cancelled replay".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let result = glob_path_matches(
+            "/repo/**/*",
+            "/repo/src/main.ts",
+            true,
+            false,
+            &RootReplayCheckpoint(&control),
+        );
+        assert_eq!(result, Err("caller cancelled replay".to_string()));
+        assert_eq!(calls.get(), 2, "stop propagates from inside the matcher");
+    }
+
     #[test]
     fn native_root_matcher_propagates_work_stops_inside_a_single_pattern() {
         struct Stopped;
@@ -1226,13 +1282,9 @@ mod tests {
 
     #[test]
     fn configured_paths_alias_resolves_without_base_url() -> Result<(), Box<dyn Error>> {
-        static NEXT_TEMP: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
+        static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let id = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "tsz-path-alias-{}-{id}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("tsz-path-alias-{}-{id}", std::process::id()));
         std::fs::create_dir_all(root.join("src/app"))?;
         std::fs::create_dir_all(root.join("src/components"))?;
         std::fs::write(
@@ -1264,9 +1316,15 @@ mod tests {
                     && resolution.target.as_ref() == Some(&target)
             }),
             "tsconfig paths without baseUrl must resolve through the configured project root: {:?}",
-            program.resolutions.iter().map(|resolution|
-                (&resolution.importer, &resolution.specifier, &resolution.target)
-            ).collect::<Vec<_>>()
+            program
+                .resolutions
+                .iter()
+                .map(|resolution| (
+                    &resolution.importer,
+                    &resolution.specifier,
+                    &resolution.target
+                ))
+                .collect::<Vec<_>>()
         );
         std::fs::remove_dir_all(root)?;
         Ok(())
@@ -1285,10 +1343,9 @@ mod tests {
     }
 
     #[test]
-    fn inherited_paths_keep_declaring_config_anchor_and_local_override(
-    ) -> Result<(), Box<dyn Error>> {
-        static NEXT_TEMP: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
+    fn inherited_paths_keep_declaring_config_anchor_and_local_override()
+    -> Result<(), Box<dyn Error>> {
+        static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let id = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
             "tsz-inherited-path-alias-{}-{id}",
@@ -1370,10 +1427,13 @@ mod tests {
             &Unlimited,
         )
         .map_err(io::Error::other)?;
-        assert!(array_program.resolutions.iter().any(|resolution| {
-            resolution.specifier == "@/components/Inherited"
-                && resolution.target.as_ref() == Some(&inherited_target)
-        }), "an extends entry without paths must retain the earlier mapping origin");
+        assert!(
+            array_program.resolutions.iter().any(|resolution| {
+                resolution.specifier == "@/components/Inherited"
+                    && resolution.target.as_ref() == Some(&inherited_target)
+            }),
+            "an extends entry without paths must retain the earlier mapping origin"
+        );
 
         // A later extends entry that inherits `paths` from its own base wins
         // as a whole option and carries that ancestor's declaring directory.
@@ -1414,10 +1474,13 @@ mod tests {
         let alternate_target = alternate_mapping
             .join("alt-src/components/Alternate.ts")
             .canonicalize()?;
-        assert!(array_override_program.resolutions.iter().any(|resolution| {
-            resolution.specifier == "@/components/Alternate"
-                && resolution.target.as_ref() == Some(&alternate_target)
-        }), "the later extends entry must carry its inherited paths origin");
+        assert!(
+            array_override_program.resolutions.iter().any(|resolution| {
+                resolution.specifier == "@/components/Alternate"
+                    && resolution.target.as_ref() == Some(&alternate_target)
+            }),
+            "the later extends entry must carry its inherited paths origin"
+        );
 
         std::fs::write(
             overridden_leaf.join("tsconfig.json"),
@@ -1487,10 +1550,13 @@ mod tests {
         let base_url_target = base_url_config
             .join("lib/components/BaseUrl.ts")
             .canonicalize()?;
-        assert!(base_url_program.resolutions.iter().any(|resolution| {
-            resolution.specifier == "@/BaseUrl"
-                && resolution.target.as_ref() == Some(&base_url_target)
-        }), "an inherited baseUrl must continue to anchor paths substitutions");
+        assert!(
+            base_url_program.resolutions.iter().any(|resolution| {
+                resolution.specifier == "@/BaseUrl"
+                    && resolution.target.as_ref() == Some(&base_url_target)
+            }),
+            "an inherited baseUrl must continue to anchor paths substitutions"
+        );
 
         std::fs::remove_dir_all(root)?;
         Ok(())
