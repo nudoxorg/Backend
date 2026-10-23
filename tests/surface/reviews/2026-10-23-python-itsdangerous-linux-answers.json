@@ -1,0 +1,238 @@
+{
+  "acceptance": "Fresh exact-head Linux snapshot/performance comparison remains required; not a green verdict.",
+  "answer_review": [
+    "Signer is the class at src/itsdangerous/signer.py:76; URLSafeSerializer is at src/itsdangerous/url_safe.py:72. Every source-backed related import, test method and mixin row matches the exact archive AST.",
+    "Search counts remain25 and5; shelf native count827 is unchanged. Source-free parameter/result carriers and external placeholders retain their distinct native identities without fabricated source locations.",
+    "Checked every source-backed search or explicit source-coordinate outline row across CLI/MCP against its exact AST name, file and line; all visible outline names occur in the independent AST. The attached anchor list records the exact checks.",
+    "Retain the original bounded page shapes, ordering, child relationships, identities, source-root/branch/log fields, measured wire accounting and live-validated continuation markers. Existing harness publication, authored-symbol and continuation assertions passed before the candidate was emitted.",
+    "The native semantic coverage field now reports complete while embedding-based semantic_search remains explicitly unavailable/unconfigured. No embedding capability is inferred or added.",
+    "The visible prefixes and queried authored results are independently reviewed; this does not claim independent enumeration of every stored native carrier or every later continuation page. Counts describe observed native rows, including implicit semantic carriers."
+  ],
+  "case": "python-itsdangerous",
+  "evidence": {
+    "artifact_manifest_sha256": "ecebb531d2b88ff9e6cfc4aa245d2840181a7d7593d7f36090a74b3b7d8456c2",
+    "build": 1807,
+    "global_build": 594865,
+    "job": "pr-t2",
+    "pipeline": "nudox-backend-t1-pr",
+    "source_sha": "ee8d0c27be6bf9f58e1f88ae525b123c50d49ee3"
+  },
+  "normalization": "No normalizer or public assertion changed for this review.",
+  "performance": {
+    "action": "Previous performance JSON suffix retained byte-for-byte; no measured candidate baseline, ratio or floor adopted.",
+    "preserved_suffix_sha256": "2d47f2b28e2ef17f21c27b428795a1aad69b750d7609c65cc10459b971a95062"
+  },
+  "reviewer": "Codex / GPT-6.1, 2026-10-23",
+  "schema": 1,
+  "scope": "Explicit answer-only review against complete pinned source, with existing baseline bytes preserved.",
+  "source": {
+    "coordinate": "pypi:itsdangerous@2.2.0",
+    "files_sha256": {
+      "docs/conf.py": "40f5e13a39d50776a4f5f98828211ff49a3b58b79aced9a61ae8a51a7bf6486b",
+      "src/itsdangerous/__init__.py": "e122bbe6c09edbdc5b460404d5942d3079ca52e65801fddb4a964eadf7f52006",
+      "src/itsdangerous/_json.py": "c0f4069a07b6c99f77dbc107285ea069d19ec866022502b1b54fa22ca13a5270",
+      "src/itsdangerous/encoding.py": "c304f3e6aff7ccb71a01dba793afef4a84adc06a9859edf4ed997f53ceda4453",
+      "src/itsdangerous/exc.py": "46bddec68d0c44511c3d996dc1e7322b5e955756c4d8af7f175f9dfa58dc527e",
+      "src/itsdangerous/serializer.py": "3e67700032ea912c902d9d2338a0200ec016e24fc7d13940ef5122df3d02e5a2",
+      "src/itsdangerous/signer.py": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584",
+      "src/itsdangerous/timed.py": "e91bc332a36e9863317f4f8796969974df4f51042646fad01a994a871ba2bd4b",
+      "src/itsdangerous/url_safe.py": "6b3e1ee5f5e2fefb3e61b5a3f186709f8c2254a7de0fef8610a453e547aee0fe",
+      "tests/test_itsdangerous/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "tests/test_itsdangerous/test_encoding.py": "af71dbee0825fc8ae947b6c789b05f2331afe60efae2aee5145727446385c3f0",
+      "tests/test_itsdangerous/test_serializer.py": "e9620d6a6999a77773e3a5733ca71cb81375dafd06ad0f3a5b2bea9404e66c26",
+      "tests/test_itsdangerous/test_signer.py": "219c2a399adc874f14534d1311e950c1e29b2c7d05d037770701b2af258b97a2",
+      "tests/test_itsdangerous/test_timed.py": "b75531b8901d48a6d7a5c4bbbb2342f02f6ef022185840121f7705c1e907979a",
+      "tests/test_itsdangerous/test_url_safe.py": "64d2afc9ab467f209549841f0d87125243d646e011c725818eda8e75ad4d830d"
+    },
+    "method": "Downloaded the exact archive, recomputed its pinned SRI SHA-256, read the queried declarations, and independently parsed every .py/.pyi file with Python ast; no product output was used to construct the source index.",
+    "url": "https://files.pythonhosted.org/packages/9c/cb/8ac0172223afbccb63986cc25049b154ecfb5e85932587206f42317be31d/itsdangerous-2.2.0.tar.gz",
+    "verified_archive_hash": "sha256-4AUMC32h7qU/+vFJwM+7XG4uK2nEvvIsgfputz5fYXM="
+  },
+  "verified_source_anchors": [
+    [
+      "cli search Signer",
+      "Signer",
+      "src/itsdangerous/signer.py",
+      76
+    ],
+    [
+      "cli search Signer",
+      "Signer",
+      "tests/test_itsdangerous/test_timed.py",
+      11
+    ],
+    [
+      "cli search Signer",
+      "Signer",
+      "src/itsdangerous/timed.py",
+      19
+    ],
+    [
+      "cli search Signer",
+      "Signer",
+      "tests/test_itsdangerous/test_signer.py",
+      9
+    ],
+    [
+      "cli search Signer",
+      "Signer",
+      "src/itsdangerous/__init__.py",
+      17
+    ],
+    [
+      "cli search Signer",
+      "Signer",
+      "tests/test_itsdangerous/test_serializer.py",
+      18
+    ],
+    [
+      "cli search Signer",
+      "Signer",
+      "src/itsdangerous/serializer.py",
+      11
+    ],
+    [
+      "cli search Signer",
+      "signer",
+      "tests/test_itsdangerous/test_signer.py",
+      24
+    ],
+    [
+      "cli search URLSafeSerializer",
+      "URLSafeSerializer",
+      "src/itsdangerous/url_safe.py",
+      72
+    ],
+    [
+      "cli search URLSafeSerializer",
+      "URLSafeSerializer",
+      "src/itsdangerous/__init__.py",
+      20
+    ],
+    [
+      "cli search URLSafeSerializer",
+      "URLSafeSerializer",
+      "tests/test_itsdangerous/test_url_safe.py",
+      5
+    ],
+    [
+      "cli search URLSafeSerializer",
+      "URLSafeSerializerMixin",
+      "src/itsdangerous/url_safe.py",
+      15
+    ],
+    [
+      "backend.search",
+      "URLSafeSerializer",
+      "src/itsdangerous/url_safe.py",
+      72
+    ],
+    [
+      "backend.search",
+      "URLSafeSerializer",
+      "src/itsdangerous/__init__.py",
+      20
+    ],
+    [
+      "backend.search",
+      "URLSafeSerializer",
+      "tests/test_itsdangerous/test_url_safe.py",
+      5
+    ],
+    [
+      "backend.search",
+      "Signer",
+      "src/itsdangerous/signer.py",
+      76
+    ],
+    [
+      "backend.search",
+      "Signer",
+      "tests/test_itsdangerous/test_timed.py",
+      11
+    ],
+    [
+      "backend.search",
+      "Signer",
+      "src/itsdangerous/timed.py",
+      19
+    ]
+  ],
+  "visible_outline_names": [
+    "_CompactJSON",
+    "loads",
+    "payload",
+    "loads",
+    "dumps",
+    "kwargs",
+    "obj",
+    "dumps",
+    "BadHeader",
+    "__init__",
+    "header",
+    "payload",
+    "original_error",
+    "message",
+    "BadTimeSignature",
+    "__init__",
+    "payload",
+    "message",
+    "date_signed",
+    "BadSignature",
+    "__init__",
+    "message",
+    "payload",
+    "BadData",
+    "__init__",
+    "_CompactJSON",
+    "loads",
+    "payload",
+    "loads",
+    "dumps",
+    "kwargs",
+    "obj",
+    "dumps",
+    "BadHeader",
+    "__init__",
+    "header",
+    "payload",
+    "original_error",
+    "message",
+    "BadTimeSignature",
+    "__init__",
+    "payload",
+    "message",
+    "date_signed",
+    "BadSignature",
+    "__init__",
+    "message",
+    "payload",
+    "BadData",
+    "__init__",
+    "message",
+    "__str__",
+    "__str__",
+    "SignatureExpired",
+    "BadPayload",
+    "__init__",
+    "message",
+    "original_error",
+    "_PDataSerializer",
+    "dumps",
+    "dumps",
+    "obj",
+    "loads",
+    "payload",
+    "loads",
+    "Serializer",
+    "__init__",
+    "signer",
+    "serializer_kwargs",
+    "salt",
+    "signer_kwargs",
+    "serializer",
+    "secret_key",
+    "fallback_signers",
+    "__init__"
+  ]
+}

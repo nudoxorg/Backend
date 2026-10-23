@@ -1,0 +1,206 @@
+{
+  "acceptance": "Fresh exact-head Linux snapshot/performance comparison remains required; not a green verdict.",
+  "answer_review": [
+    "NamedSignal is the authored class at src/blinker/base.py:464; make_id is the authored function at src/blinker/_utilities.py:42. Their newly source-backed import and cleanup-method search rows also match the exact pinned AST.",
+    "The actual search result counts change4->5 and3->5 while adding/retaining authored class/import/method rows; the old result count is not a reason to drop these genuine source results. The shelf now explicitly reports406 native rows.",
+    "Checked every source-backed search or explicit source-coordinate outline row across CLI/MCP against its exact AST name, file and line; all visible outline names occur in the independent AST. The attached anchor list records the exact checks.",
+    "Retain the original bounded page shapes, ordering, child relationships, identities, source-root/branch/log fields, measured wire accounting and live-validated continuation markers. Existing harness publication, authored-symbol and continuation assertions passed before the candidate was emitted.",
+    "The native semantic coverage field now reports complete while embedding-based semantic_search remains explicitly unavailable/unconfigured. No embedding capability is inferred or added.",
+    "The visible prefixes and queried authored results are independently reviewed; this does not claim independent enumeration of every stored native carrier or every later continuation page. Counts describe observed native rows, including implicit semantic carriers."
+  ],
+  "case": "python-blinker",
+  "evidence": {
+    "artifact_manifest_sha256": "ecebb531d2b88ff9e6cfc4aa245d2840181a7d7593d7f36090a74b3b7d8456c2",
+    "build": 1807,
+    "global_build": 594865,
+    "job": "pr-t2",
+    "pipeline": "nudox-backend-t1-pr",
+    "source_sha": "ee8d0c27be6bf9f58e1f88ae525b123c50d49ee3"
+  },
+  "normalization": "No normalizer or public assertion changed for this review.",
+  "performance": {
+    "action": "Previous performance JSON suffix retained byte-for-byte; no measured candidate baseline, ratio or floor adopted.",
+    "preserved_suffix_sha256": "dc6dc79dea4ceae7305b3caf3b2a6e0013789b6d5d2d426c6764b6b1b5bc51b8"
+  },
+  "reviewer": "Codex / GPT-6.1, 2026-10-23",
+  "schema": 1,
+  "scope": "Explicit answer-only review against complete pinned source, with existing baseline bytes preserved.",
+  "source": {
+    "coordinate": "pypi:blinker@1.9.0",
+    "files_sha256": {
+      "docs/conf.py": "4073e95bf134abd591bc04279954868192f5d5b6dce684444bff242d2e173b5c",
+      "src/blinker/__init__.py": "23611d66aa72e0bca35f5ec79f5cb32465828de2da55a3f3b0c80790b7e3fdc4",
+      "src/blinker/_utilities.py": "d09ede7975d3531d08bdff1ab1fa71d32715929d04a9faa78f5d7bc769985fd1",
+      "src/blinker/base.py": "4290eebd75dcc09178f65501707e418924f8e91cfdc121bb556fe9ecdff4dbb3",
+      "tests/test_context.py": "6540ea7f647af45c9c084b815a82a2748a593489a2390cf74e19ea1770eee058",
+      "tests/test_signals.py": "170085932a31787640df616afb2cc64bf051ec7947c812c9bbc56313ccdae606",
+      "tests/test_symbol.py": "04812ff1549cd4ddf54437608bf09ca23b14c79d4185a1faffd5df450e7b29db"
+    },
+    "method": "Downloaded the exact archive, recomputed its pinned SRI SHA-256, read the queried declarations, and independently parsed every .py/.pyi file with Python ast; no product output was used to construct the source index.",
+    "url": "https://files.pythonhosted.org/packages/21/28/9b3f50ce0e048515135495f198351908d99540d69bfdc8c1d15b73dc55ce/blinker-1.9.0.tar.gz",
+    "verified_archive_hash": "sha256-tM4iZaer7ORefMiW6Y2+vmzq1WvPgFo9IxNtFF9URb8="
+  },
+  "verified_source_anchors": [
+    [
+      "cli search NamedSignal",
+      "NamedSignal",
+      "src/blinker/base.py",
+      464
+    ],
+    [
+      "cli search NamedSignal",
+      "NamedSignal",
+      "src/blinker/__init__.py",
+      5
+    ],
+    [
+      "cli search NamedSignal",
+      "signal",
+      "src/blinker/base.py",
+      486
+    ],
+    [
+      "cli search NamedSignal",
+      "__call__",
+      "src/blinker/base.py",
+      500
+    ],
+    [
+      "cli search make_id",
+      "make_id",
+      "src/blinker/_utilities.py",
+      42
+    ],
+    [
+      "cli search make_id",
+      "make_id",
+      "src/blinker/base.py",
+      12
+    ],
+    [
+      "cli search make_id",
+      "_make_cleanup_sender",
+      "src/blinker/base.py",
+      414
+    ],
+    [
+      "cli search make_id",
+      "_make_cleanup_receiver",
+      "src/blinker/base.py",
+      399
+    ],
+    [
+      "backend.search",
+      "NamedSignal",
+      "src/blinker/base.py",
+      464
+    ],
+    [
+      "backend.search",
+      "NamedSignal",
+      "src/blinker/__init__.py",
+      5
+    ],
+    [
+      "backend.search",
+      "signal",
+      "src/blinker/base.py",
+      486
+    ],
+    [
+      "backend.search",
+      "make_id",
+      "src/blinker/_utilities.py",
+      42
+    ],
+    [
+      "backend.search",
+      "make_id",
+      "src/blinker/base.py",
+      12
+    ],
+    [
+      "backend.search",
+      "_make_cleanup_sender",
+      "src/blinker/base.py",
+      414
+    ]
+  ],
+  "visible_outline_names": [
+    "Symbol",
+    "__init__",
+    "name",
+    "__init__",
+    "__repr__",
+    "__repr__",
+    "__getnewargs__",
+    "__getnewargs__",
+    "__new__",
+    "name",
+    "cls",
+    "__new__",
+    "symbols",
+    "Namespace",
+    "signal",
+    "doc",
+    "name",
+    "signal",
+    "Signal",
+    "_clear_state",
+    "_clear_state",
+    "has_receivers_for",
+    "has_receivers_for",
+    "sender",
+    "send",
+    "Symbol",
+    "__init__",
+    "name",
+    "__init__",
+    "__repr__",
+    "__repr__",
+    "__getnewargs__",
+    "__getnewargs__",
+    "__new__",
+    "name",
+    "cls",
+    "__new__",
+    "symbols",
+    "Namespace",
+    "signal",
+    "doc",
+    "name",
+    "signal",
+    "Signal",
+    "_clear_state",
+    "_clear_state",
+    "has_receivers_for",
+    "has_receivers_for",
+    "sender",
+    "send",
+    "sender",
+    "kwargs",
+    "send",
+    "_async_wrapper",
+    "_make_cleanup_receiver",
+    "cleanup",
+    "cleanup",
+    "ref",
+    "_make_cleanup_receiver",
+    "receiver_id",
+    "send_async",
+    "_sync_wrapper",
+    "send_async",
+    "sender",
+    "kwargs",
+    "_cleanup_bookkeeping",
+    "_cleanup_bookkeeping",
+    "_disconnect",
+    "_disconnect",
+    "sender_id",
+    "receiver_id",
+    "disconnect",
+    "sender",
+    "receiver",
+    "disconnect"
+  ]
+}
