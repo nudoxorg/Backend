@@ -627,3 +627,16 @@ same-named result from another file cannot satisfy the search. The case uses the
 existing direct TSZ default; `COMPILER_TYPESCRIPT_COMPILER` remains a separate
 oracle. Exact-head indexing,
 answers, and performance remain unvalidated by this source candidate.
+
+### C rxi/map initial Linux snapshot (W2, 2026-10-23)
+
+Reviewed build1807/global594865 on exactee8d0c27 against the complete pinned
+map.c/map.h sources and an independent Clang syntax-only AST. Both transports
+retain the authored cleanup/lookup functions and header declarations/macros.
+The outline also retains compiler result carriers, explicitly distinguished
+from authored local variables; no source location is invented for them.
+The25-row CLI and50-row MCP pages remain bounded with validated continuation.
+See reviews/2026-10-23-c-rxi-map-initial-linux.json for scope and evidence.
+The first Linux sample (add2.47s, CPU2.37s, RSS335836KiB) seeds this new case's
+baseline; no existing baseline or tolerance changes. Fresh exact-head CI
+comparison is still required; this review alone is not a passing T2 verdict.
