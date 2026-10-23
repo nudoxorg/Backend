@@ -4,6 +4,7 @@ from gui_contract import (
     emit_failure_evidence,
     open_current_result,
     require_current_result,
+    require_navigation_breadcrumb,
     require_visible,
 )
 import surface
@@ -30,6 +31,25 @@ class GuiAdmissionTests(unittest.TestCase):
                 'TOMLDecodeError src/tomli/parser.py',
                 'TOMLDecodeError', 'parser.py')
 
+    def test_captured_closed_route_breadcrumb_passes_despite_retained_library_copy(self):
+        # OCR transcribed from the successful Tomli opened-result capture.
+        success_window = (
+            'project TOMLDecodeError TOMLDecodeError ValueError '
+            'Earlier Library reading retained: 1 package names. '
+            'Checking the current index; package links are unavailable.'
+        )
+        require_navigation_breadcrumb(
+            success_window, 'project TOMLDecodeError', 'project', 'TOMLDecodeError')
+
+    def test_stale_ask_capture_with_query_but_without_route_breadcrumb_is_refused(self):
+        stale_window = (
+            'Earlier search results; index changed; Links unavailable '
+            'TOMLDecodeError project'
+        )
+        with self.assertRaisesRegex(RuntimeError, 'breadcrumb'):
+            require_navigation_breadcrumb(
+                stale_window, 'Q TOMLDecodeError', 'project', 'TOMLDecodeError')
+
     def test_retained_row_is_retried_before_return(self):
         now = [0.0]
         captures = iter([
@@ -44,9 +64,10 @@ class GuiAdmissionTests(unittest.TestCase):
             now[0] += seconds
 
         opened = open_current_result(
-            lambda: next(captures), lambda: '',
+            lambda: next(captures), lambda: 'project TOMLDecodeError',
             lambda: submitted.append(now[0]),
-            'TOMLDecodeError', 'parser.py', 10, now=lambda: now[0], pause=pause)
+            'project', 'TOMLDecodeError', 'parser.py', 10,
+            now=lambda: now[0], pause=pause)
 
         self.assertEqual(opened, 'Opened parser.py')
         self.assertEqual(len(submitted), 1)
@@ -61,7 +82,7 @@ class GuiAdmissionTests(unittest.TestCase):
             'TOMLDecodeError src/tomli/parser.py',
             'Opened parser.py',
         ])
-        plates = iter(['TOMLDecodeError', ''])
+        plates = iter(['TOMLDecodeError', 'project TOMLDecodeError'])
         returns = []
         shell_keys = []
 
@@ -71,7 +92,8 @@ class GuiAdmissionTests(unittest.TestCase):
         open_current_result(
             lambda: next(captures), lambda: next(plates),
             lambda: returns.append(now[0]),
-            'TOMLDecodeError', 'parser.py', 10, now=lambda: now[0], pause=pause)
+            'project', 'TOMLDecodeError', 'parser.py', 10,
+            now=lambda: now[0], pause=pause)
         shell_keys.append('s')
 
         self.assertEqual(len(returns), 2)
@@ -89,7 +111,8 @@ class GuiAdmissionTests(unittest.TestCase):
             open_current_result(
                 lambda: 'Earlier result; index changed; itoa src/itoa/lib.rs',
                 lambda: 'itoa', lambda: returns.append(now[0]),
-                'itoa', 'lib.rs', 1, now=lambda: now[0], pause=pause)
+                'itoa', 'itoa', 'lib.rs', 1,
+                now=lambda: now[0], pause=pause)
         self.assertEqual(returns, [])
         self.assertGreaterEqual(now[0], 1)
 
@@ -97,8 +120,9 @@ class GuiAdmissionTests(unittest.TestCase):
         now = [0.0]
         captures = iter(['itoa src/itoa/lib.rs', 'project home'])
         opened = open_current_result(
-            lambda: next(captures), lambda: 'Q', lambda: None,
-            'itoa', 'lib.rs', 10, now=lambda: now[0], pause=lambda seconds: now.__setitem__(0, now[0] + seconds))
+            lambda: next(captures), lambda: 'project itoa', lambda: None,
+            'project', 'itoa', 'lib.rs', 10, now=lambda: now[0],
+            pause=lambda seconds: now.__setitem__(0, now[0] + seconds))
         self.assertEqual(opened, 'project home')
         with self.assertRaisesRegex(RuntimeError, 'missing visible source'):
             require_visible('project home', self.expected)

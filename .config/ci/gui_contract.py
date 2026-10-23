@@ -38,14 +38,17 @@ def require_current_result(text: str, query: str, filename: str) -> None:
         raise RuntimeError('GUI search result is retained from an earlier index')
 
 
-def require_ask_dismissed(window_text: str, ask_plate_text: str, query: str) -> None:
-    """Prove Return closed Ask before sending any plain shell key."""
-    if len(ask_plate_text.encode('utf-8')) > 32768:
-        raise RuntimeError('GUI Ask plate OCR response exceeds its bound')
-    normalized_plate = ' '.join(ask_plate_text.casefold().split())
+def require_navigation_breadcrumb(
+    window_text: str, topbar_text: str, project_name: str, query: str
+) -> None:
+    """Prove Ask closed onto this project's selected symbol before a shell key."""
+    if len(topbar_text.encode('utf-8')) > 32768:
+        raise RuntimeError('GUI top-bar OCR response exceeds its bound')
+    normalized_topbar = ' '.join(topbar_text.casefold().split())
+    normalized_project = ' '.join(project_name.casefold().split())
     normalized_query = ' '.join(query.casefold().split())
-    if normalized_query in normalized_plate:
-        raise RuntimeError('GUI Ask input is still visible after choosing a result')
+    if normalized_project not in normalized_topbar or normalized_query not in normalized_topbar:
+        raise RuntimeError('GUI project and selected symbol breadcrumb is not visible after Return')
     normalized_window = ' '.join(window_text.casefold().split())
     if any(marker in normalized_window for marker in _RETAINED_RESULT_MARKERS):
         raise RuntimeError('GUI Ask retained an earlier-index result after Return')
@@ -53,8 +56,9 @@ def require_ask_dismissed(window_text: str, ask_plate_text: str, query: str) -> 
 
 def open_current_result(
     capture: Callable[[], str],
-    ask_plate: Callable[[], str],
+    topbar: Callable[[], str],
     press_return: Callable[[], None],
+    project_name: str,
     query: str,
     filename: str,
     deadline: float,
@@ -77,12 +81,13 @@ def open_current_result(
             on_ready()
         press_return()
         # Keep the existing settle interval, then check the whole window and
-        # the top-center Ask input plate independently. A stale Return leaves
-        # the query plate open, so no plain `s` can be typed into it.
+        # the top-center navigation breadcrumb independently. A stale Return
+        # leaves Ask open without this project+symbol route, so no plain `s`
+        # can be typed into the input.
         pause(min(0.5, max(0, deadline - now())))
         opened = capture()
         try:
-            require_ask_dismissed(opened, ask_plate(), query)
+            require_navigation_breadcrumb(opened, topbar(), project_name, query)
             return opened
         except RuntimeError as error:
             last_error = error
@@ -192,21 +197,21 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
             (root / 'window.txt').write_text(result)
             return result
 
-        def ask_plate_pixels():
-            # Ask's input is centered at the top of the owned window. OCR only
-            # this region so a matching declaration in the opened source body
-            # cannot be mistaken for an Ask field that stayed open.
+        def topbar_pixels():
+            # The opened route's project+symbol breadcrumb occupies the
+            # top-center bar. This distinguishes it from Ask's query input
+            # and from matching source text below.
             window_width = int(width.group(1))
             crop_width = max(1, int(window_width * 0.6))
             crop_x = (window_width - crop_width) // 2
-            crop = root / 'ask-plate.png'
+            crop = root / 'topbar.png'
             command('magick', 'import', '-silent', '-window', window, '-crop',
                     f'{crop_width}x64+{crop_x}+0', '+repage', crop)
             if crop.stat().st_size > 512 * 1024:
-                raise RuntimeError('GUI Ask plate capture exceeds512KiB')
+                raise RuntimeError('GUI top-bar capture exceeds512KiB')
             result = command('tesseract', crop, 'stdout', '-l', 'eng', '--psm', '11').stdout
             if len(result.encode('utf-8')) > 32768:
-                raise RuntimeError('GUI Ask plate OCR exceeds32KiB')
+                raise RuntimeError('GUI top-bar OCR exceeds32KiB')
             return result
 
         # The project is selected through the desktop's normal launch contract,
@@ -242,15 +247,15 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
         else:
             raise RuntimeError('GUI Ask field did not display the typed query')
         # A retained result can still show both the query and source filename.
-        # Retry until the row is current, then verify Ask actually dismissed
-        # after Return before sending the shell's plain `s` binding.
+        # Retry until the row is current, then verify the project+symbol route
+        # breadcrumb before sending the shell's plain `s` binding.
         open_current_result(
-            pixels, ask_plate_pixels,
+            pixels, topbar_pixels,
             lambda: command('xdotool', 'key', '--clearmodifiers', 'Return'),
-            spec['query'], spec['result_filename'], deadline,
+            spec['project_name'], spec['query'], spec['result_filename'], deadline,
             on_ready=lambda: shutil.copyfile(root / 'window.png', root / 'search-result.png'))
         shutil.copyfile(root / 'window.png', root / 'opened-result.png')
-        # Ask dismissal above is the positive readiness signal. PeelSource uses
+        # The route breadcrumb is the positive readiness signal. PeelSource uses
         # the shell's plain `s` binding (shell/keys.rs), revealing source.
         command('xdotool', 'key', '--clearmodifiers', 's')
         command('xdotool', 'key', '--clearmodifiers', 'ctrl+equal', 'ctrl+equal')
