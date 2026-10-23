@@ -7,16 +7,33 @@ use backend_frontend_typescript::native_project::{
 use backend_frontend_typescript::{TszExecutionCheckpoint, TszProjectExecutionStop};
 use std::cell::RefCell;
 use std::io;
+use std::rc::Rc;
+use std::time::Duration;
 
-struct CapturedNativeFileSystem<'resolver, 'witness> {
+type SnapshotReplayControl<'a> =
+    Rc<RefCell<&'a mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>>>;
+
+struct CapturedNativeFileSystem<'resolver, 'witness, 'control> {
     resolver: RefCell<&'resolver mut TypeScriptResolverCapability<'witness>>,
     error: RefCell<Option<TypeScriptProjectHostError>>,
     boundary: &'resolver Path,
     deadline: Instant,
     cancelled: &'resolver AtomicBool,
+    control: Option<SnapshotReplayControl<'control>>,
 }
 
-impl CapturedNativeFileSystem<'_, '_> {
+impl CapturedNativeFileSystem<'_, '_, '_> {
+    fn check_control(&self) -> io::Result<()> {
+        let Some(control) = &self.control else {
+            return Ok(());
+        };
+        if let Err(error) = (**control.borrow_mut())() {
+            let message = error.to_string();
+            *self.error.borrow_mut() = Some(error);
+            return Err(io::Error::other(message));
+        }
+        Ok(())
+    }
     fn observe<T>(
         &self,
         operation: impl FnOnce(
@@ -28,8 +45,10 @@ impl CapturedNativeFileSystem<'_, '_> {
                 "native TSZ captured filesystem already refused",
             ));
         }
+        self.check_control()?;
         let result = check_admission_control(self.deadline, self.cancelled)
             .and_then(|()| operation(&mut self.resolver.borrow_mut()));
+        self.check_control()?;
         result.map_err(|error| {
             let message = error.to_string();
             *self.error.borrow_mut() = Some(error);
@@ -38,7 +57,7 @@ impl CapturedNativeFileSystem<'_, '_> {
     }
 }
 
-impl ResolutionFileSystem for CapturedNativeFileSystem<'_, '_> {
+impl ResolutionFileSystem for CapturedNativeFileSystem<'_, '_, '_> {
     fn resolution_boundary(&self) -> Option<&Path> {
         Some(self.boundary)
     }
@@ -111,9 +130,15 @@ struct NativeAdmissionCheckpoint<'a> {
     deadline: Instant,
     cancelled: &'a AtomicBool,
     work: std::sync::atomic::AtomicU64,
+    control: Option<SnapshotReplayControl<'a>>,
 }
 impl TszExecutionCheckpoint for NativeAdmissionCheckpoint<'_> {
     fn checkpoint(&self, work: u64) -> Result<(), TszProjectExecutionStop> {
+        if let Some(control) = &self.control
+            && (**control.borrow_mut())().is_err()
+        {
+            return Err(TszProjectExecutionStop::Cancelled);
+        }
         if self.cancelled.load(std::sync::atomic::Ordering::Acquire) {
             return Err(TszProjectExecutionStop::Cancelled);
         }
@@ -128,6 +153,84 @@ impl TszExecutionCheckpoint for NativeAdmissionCheckpoint<'_> {
         }
         Ok(())
     }
+}
+
+pub(super) fn replay_native_root_selection(
+    witness: &TypeScriptProjectWitness,
+    query: &NativeRootSelectionObservation,
+    control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+) -> Result<BTreeSet<PathBuf>, TypeScriptProjectHostError> {
+    control()?;
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(30))
+        .ok_or_else(|| closure_mismatch("native root-query replay deadline overflow"))?;
+    let cancelled = AtomicBool::new(false);
+    let shared_control: SnapshotReplayControl<'_> = Rc::new(RefCell::new(&mut *control));
+    let mut resolver = witness.resolver();
+    let checkpoint = NativeAdmissionCheckpoint {
+        deadline,
+        cancelled: &cancelled,
+        work: std::sync::atomic::AtomicU64::new(0),
+        control: Some(Rc::clone(&shared_control)),
+    };
+    let fs = CapturedNativeFileSystem {
+        resolver: RefCell::new(&mut resolver),
+        error: RefCell::new(None),
+        boundary: witness.workspace_root(),
+        deadline,
+        cancelled: &cancelled,
+        control: Some(Rc::clone(&shared_control)),
+    };
+    let replayed = backend_frontend_typescript::native_project::replay_root_selection(
+        &fs,
+        &query.config_path,
+        &checkpoint,
+    );
+    let filesystem_error = std::mem::take(&mut *fs.error.borrow_mut());
+    drop(fs);
+    drop(checkpoint);
+    drop(shared_control);
+    if let Some(error) = filesystem_error {
+        return Err(error);
+    }
+    let replayed = match replayed {
+        Ok(replayed) => replayed,
+        Err(message) => {
+            control()?;
+            return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                detail: format!("native TypeScript root-query replay failed: {message}")
+                    .into_boxed_str(),
+            });
+        }
+    };
+    if replayed.config_path != query.config_path
+        || replayed
+            .root_names
+            .iter()
+            .map(PathBuf::as_path)
+            .collect::<Vec<_>>()
+            != query
+                .root_names
+                .iter()
+                .map(|path| path.as_ref())
+                .collect::<Vec<_>>()
+        || replayed
+            .directories
+            .iter()
+            .map(PathBuf::as_path)
+            .collect::<Vec<_>>()
+            != query
+                .directories
+                .iter()
+                .map(|path| path.as_ref())
+                .collect::<Vec<_>>()
+    {
+        return Err(closure_mismatch(
+            "native TypeScript root-query result changed during snapshot replay",
+        ));
+    }
+    control()?;
+    Ok(query.directories.iter().map(PathBuf::from).collect())
 }
 
 pub(super) fn build_direct_inputs_for_config(
@@ -146,6 +249,7 @@ pub(super) fn build_direct_inputs_for_config(
         deadline,
         cancelled,
         work: std::sync::atomic::AtomicU64::new(aggregate.replay_work),
+        control: None,
     };
     let inferred_roots = package_sources
         .iter()
@@ -157,6 +261,7 @@ pub(super) fn build_direct_inputs_for_config(
         boundary: inputs.workspace_root,
         deadline,
         cancelled,
+        control: None,
     };
     let built = backend_frontend_typescript::native_project::build(
         &fs,
@@ -367,6 +472,13 @@ pub(super) fn build_direct_inputs_for_config(
     let previous_work = aggregate.replay_work;
     aggregate.replay_work = checkpoint.work.load(std::sync::atomic::Ordering::Relaxed);
     let closure_work = aggregate.replay_work.saturating_sub(previous_work);
+    if let Some(query) = &built.root_selection {
+        resolver.record_native_root_selection(
+            &query.config_path,
+            &query.root_names,
+            &query.directories,
+        )?;
+    }
     let sealed = match validated_host {
         Some(host) => resolver.seal_with_host(host)?,
         None => resolver.seal()?,

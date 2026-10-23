@@ -52,6 +52,7 @@ struct ResolverDto {
         BoundedSnapshotVec<(String, NativeSourceSnapshotDto), MAX_RESOLVED_SOURCE_FILES>,
     missing_paths: BoundedSnapshotVec<(String, SnapshotOption<String>), MAX_RESOLVER_OBSERVATIONS>,
     directories: BoundedSnapshotVec<(String, DirectoryDto), MAX_RESOLVER_DIRECTORIES>,
+    native_root_selection: SnapshotOption<NativeRootSelectionDto>,
     external_negative_parents: BoundedSnapshotVec<(String, RealpathDto), MAX_RESOLVER_OBSERVATIONS>,
     external_absent_directories:
         BoundedSnapshotVec<(String, RealpathDto), MAX_RESOLVER_OBSERVATIONS>,
@@ -79,6 +80,14 @@ struct DirectoryDto {
     path: String,
     identity: (u64, u128),
     entries: BoundedSnapshotVec<EntryDto, MAX_RESOLVER_DIRECTORY_ENTRIES>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeRootSelectionDto {
+    config_path: String,
+    root_names: BoundedSnapshotVec<String, MAX_RESOLVED_SOURCE_FILES>,
+    directories: BoundedSnapshotVec<String, MAX_RESOLVER_DIRECTORIES>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -289,7 +298,7 @@ impl TypeScriptResolverWitness {
             return None;
         }
         let dto = ResolverDto {
-            version: 1,
+            version: 2,
             project_fingerprint: self.project_fingerprint,
             digest: self.digest,
             loaded_sources: BoundedSnapshotVec(encode_map(
@@ -303,6 +312,26 @@ impl TypeScriptResolverWitness {
                 &observations.directories,
                 encode_directory,
             )?),
+            native_root_selection: match observations.native_root_selection.as_ref() {
+                Some(query) => SnapshotOption::Present(NativeRootSelectionDto {
+                    config_path: snapshot_path(&query.config_path)?,
+                    root_names: BoundedSnapshotVec(
+                        query
+                            .root_names
+                            .iter()
+                            .map(|path| snapshot_path(path))
+                            .collect::<Option<_>>()?,
+                    ),
+                    directories: BoundedSnapshotVec(
+                        query
+                            .directories
+                            .iter()
+                            .map(|path| snapshot_path(path))
+                            .collect::<Option<_>>()?,
+                    ),
+                }),
+                None => SnapshotOption::Absent,
+            },
             external_negative_parents: BoundedSnapshotVec(encode_map(
                 &observations.external_negative_parents,
                 encode_realpath,
@@ -377,13 +406,39 @@ impl TypeScriptResolverWitness {
             return None;
         }
         let dto: ResolverDto = serde_json::from_slice(bytes).ok()?;
-        if dto.version != 1 || dto.project_fingerprint != host.fingerprint {
+        if dto.version != 2 || dto.project_fingerprint != host.fingerprint {
             return None;
         }
         let observations = ResolverObservationLedger {
             loaded_sources: decode_map(dto.loaded_sources.0, snapshot_decode_source, control)?,
             missing_paths: decode_map(dto.missing_paths.0, decode_path_option, control)?,
             directories: decode_map(dto.directories.0, decode_directory, control)?,
+            native_root_selection: match dto.native_root_selection {
+                SnapshotOption::Absent => None,
+                SnapshotOption::Present(query) => Some(NativeRootSelectionObservation {
+                    config_path: decode_path(query.config_path)?.into_boxed_path(),
+                    root_names: query
+                        .root_names
+                        .0
+                        .into_iter()
+                        .map(decode_path)
+                        .collect::<Option<Vec<_>>>()?
+                        .into_iter()
+                        .map(PathBuf::into_boxed_path)
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                    directories: query
+                        .directories
+                        .0
+                        .into_iter()
+                        .map(decode_path)
+                        .collect::<Option<Vec<_>>>()?
+                        .into_iter()
+                        .map(PathBuf::into_boxed_path)
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                }),
+            },
             external_negative_parents: decode_map(
                 dto.external_negative_parents.0,
                 decode_realpath,
@@ -448,21 +503,15 @@ impl TypeScriptResolverWitness {
         if capability.resolver_witness().ok()? != dto.digest {
             return None;
         }
-        // Same constructor fence as seal_with_host, with cancellation retained
-        // throughout the replay rather than an uncontrolled second validation.
-        validate_resolver_observations_with_host_controlled(
-            host,
-            &capability.observations,
-            Some(current_host),
-            control,
-        )
-        .ok()?;
-        control().ok()?;
         let restored = Self {
             project_fingerprint: host.fingerprint,
             digest: capability.resolver_witness().ok()?,
             observations: std::mem::take(&mut capability.observations),
         };
+        restored
+            .validate_with_host_controlled(current_host, control)
+            .ok()?;
+        control().ok()?;
         (restored.retained_bytes() <= MAX_BYTES).then_some(restored)
     }
 }
@@ -547,6 +596,39 @@ fn checked_counters(
         }
         entries = entries.checked_add(directory.entries.len())?;
         metadata = metadata.checked_add(directory_snapshot_metadata_cost(directory))?;
+    }
+    if let Some(query) = &ledger.native_root_selection {
+        if captured_root_source_target(&query.config_path, ledger, host).is_none()
+            || query.root_names.len() > MAX_RESOLVED_SOURCE_FILES
+            || query.directories.len() > MAX_RESOLVER_DIRECTORIES
+            || query.root_names.windows(2).any(|pair| pair[0] >= pair[1])
+            || query.directories.windows(2).any(|pair| pair[0] >= pair[1])
+            || query
+                .root_names
+                .iter()
+                .any(|path| captured_root_source_target(path, ledger, host).is_none())
+            || query.directories.iter().any(|path| {
+                !host.path_is_admitted(path) || !ledger.directories.contains_key(path.as_ref())
+            })
+        {
+            return None;
+        }
+        metadata = metadata
+            .checked_add(path_bytes(&query.config_path))?
+            .checked_add(
+                query
+                    .root_names
+                    .iter()
+                    .map(|path| path_bytes(path))
+                    .try_fold(0usize, usize::checked_add)?,
+            )?
+            .checked_add(
+                query
+                    .directories
+                    .iter()
+                    .map(|path| path_bytes(path))
+                    .try_fold(0usize, usize::checked_add)?,
+            )?;
     }
     for (path, snapshot) in &ledger.realpaths {
         if path.as_path() != snapshot.path.as_ref() {
@@ -779,6 +861,7 @@ mod tests {
             "loaded_sources",
             "missing_paths",
             "directories",
+            "native_root_selection",
             "external_negative_parents",
             "external_absent_directories",
             "captured_peer_manifests",
@@ -805,9 +888,21 @@ mod tests {
         bad_counter["retained_metadata_bytes"] = serde_json::json!(0);
         let mut unknown = original.clone();
         unknown["unknown"] = serde_json::json!(true);
+        let mut unknown_query = original.clone();
+        unknown_query["native_root_selection"] =
+            serde_json::json!({"state":"absent", "unexpected":true});
+        let mut future_version = original.clone();
+        future_version["version"] = serde_json::json!(3);
         let mut bad_digest = original;
         bad_digest["digest"][0] = serde_json::json!(bad_digest["digest"][0].as_u64().unwrap() ^ 1);
-        for changed in [duplicate, bad_counter, unknown, bad_digest] {
+        for changed in [
+            duplicate,
+            bad_counter,
+            unknown,
+            unknown_query,
+            future_version,
+            bad_digest,
+        ] {
             assert!(
                 TypeScriptResolverWitness::decode_native_snapshot(
                     &serde_json::to_vec(&changed).unwrap(),
@@ -828,6 +923,16 @@ mod tests {
             TypeScriptResolverWitness::decode_native_snapshot(&bytes, &host, &mut || Ok(()))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn configured_root_transcript_vectors_are_bounded_during_decode() {
+        let oversized = serde_json::json!({
+            "config_path": "/workspace/tsconfig.json",
+            "root_names": [],
+            "directories": vec!["/workspace/src"; MAX_RESOLVER_DIRECTORIES + 1],
+        });
+        assert!(serde_json::from_value::<NativeRootSelectionDto>(oversized).is_err());
     }
 
     #[cfg(unix)]

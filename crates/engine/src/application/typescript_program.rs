@@ -25,9 +25,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use super::typescript_host::{
-    TypeScriptDirectoryEntryKind, TypeScriptProjectHostError, TypeScriptProjectInputs,
-    TypeScriptProjectWitness, TypeScriptResolverCapability, TypeScriptResolverWitness,
-    ValidatedTypeScriptHost,
+    NativeRootSelectionObservation, TypeScriptDirectoryEntryKind, TypeScriptProjectHostError,
+    TypeScriptProjectInputs, TypeScriptProjectWitness, TypeScriptResolverCapability,
+    TypeScriptResolverWitness, ValidatedTypeScriptHost,
 };
 use super::{ToolchainProbeLimits, toolchain_probe::run_typescript_program_bridge};
 use crate::application::compiler::PackageSource;
@@ -88,6 +88,14 @@ pub(crate) fn native_program_execution_fingerprint(
     }
     digest.update(&count.to_le_bytes());
     *digest.finalize().as_bytes()
+}
+
+pub(super) fn replay_native_root_selection(
+    witness: &TypeScriptProjectWitness,
+    query: &NativeRootSelectionObservation,
+    control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+) -> Result<BTreeSet<PathBuf>, TypeScriptProjectHostError> {
+    direct::replay_native_root_selection(witness, query, control)
 }
 
 /// A captured source can retain provenance without being a Compiler API program member.

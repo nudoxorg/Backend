@@ -11,7 +11,7 @@ pub(crate) fn declaration_kind(
 
 /// Returns the kind of one captured definition, read from its parse node.
 ///
-/// [`declaration_kind`] settles what a grammar's node *name* says. Three
+/// [`declaration_kind`] settles what a grammar's node *name* says. Four
 /// languages say too little there, so the shape under the node decides:
 ///
 /// * Go spells every named type `type_spec`; the type it names (`struct_type`,
@@ -22,6 +22,8 @@ pub(crate) fn declaration_kind(
 ///   constant; any other binding is a variable, which is also what the
 ///   compiler-backed lane calls it.
 /// * A TypeScript `let` binding is a variable, not a constant.
+/// * C# uses `record_declaration` for both record classes and record structs;
+///   only the latter have a `struct` keyword before the declaration name.
 pub(crate) fn declaration_kind_at(
     language: SourceLanguage,
     tag: &str,
@@ -39,6 +41,19 @@ fn refined_kind(
     name: &str,
 ) -> Option<DeclarationKind> {
     match (language, node.kind()) {
+        (SourceLanguage::CSharp, "record_declaration") => {
+            let name = node.child_by_field_name("name")?;
+            let mut cursor = node.walk();
+            let is_struct = node
+                .children(&mut cursor)
+                .take_while(|child| child.start_byte() < name.start_byte())
+                .any(|child| child.kind() == "struct");
+            Some(if is_struct {
+                DeclarationKind::Struct
+            } else {
+                DeclarationKind::Class
+            })
+        }
         (SourceLanguage::Go, "type_spec") => match node.child_by_field_name("type")?.kind() {
             "struct_type" => Some(DeclarationKind::Struct),
             "interface_type" => Some(DeclarationKind::Interface),
