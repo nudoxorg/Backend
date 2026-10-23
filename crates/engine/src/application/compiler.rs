@@ -2653,7 +2653,7 @@ fn typescript_source_gap_cause(
 /// Emits a bounded, opt-in explanation for one compatibility-checker source
 /// that was already accepted as a source-local coverage gap. This diagnostic
 /// is outside persisted coverage and does not affect the admission decision.
-fn report_typescript_compatibility_gap(path: &Path, terminal: &CompilerTerminal) {
+fn report_typescript_compatibility_gap(path: &str, terminal: &CompilerTerminal) {
     use std::{ffi::OsStr, fmt::Write as _};
 
     const DETAIL_LIMIT: usize = 768;
@@ -2672,11 +2672,20 @@ fn report_typescript_compatibility_gap(path: &Path, terminal: &CompilerTerminal)
     ) {
         return;
     }
+    static EMITTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    if EMITTED
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+            (count < 32).then_some(count + 1)
+        })
+        .is_err()
+    {
+        return;
+    }
 
     let mut detail = BoundedDiagnostic::new(DETAIL_LIMIT);
     let _ = write!(&mut detail, "{cause:?}");
     let mut bounded_path = String::new();
-    for character in path.to_string_lossy().chars() {
+    for character in path.chars() {
         let character = if character.is_control() {
             '?'
         } else {
