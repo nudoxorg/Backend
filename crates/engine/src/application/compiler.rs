@@ -3446,12 +3446,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         else {
             unreachable!("profile was checked above")
         };
-        let workspace = RustWorkspace::open_with_features_and_metadata_policy(
+        let target = RustWorkspace::select_cargo_target_metadata(
             package.package_root,
             rust_toolchain,
-            edition,
             authority.features,
             authority.metadata_policy,
+            target_name,
             RustAnalysisControl {
                 cancelled,
                 maximum_source_bytes: authority.maximum_source_bytes,
@@ -3471,27 +3471,13 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             path: first_source.relative_path.into(),
             terminal: Box::new(terminal),
         })?;
-        let target = workspace
-            .cargo_target_for_name(target_name)
-            .ok_or_else(|| {
-                package_authority_terminal(
-                    package.package_target.target(),
-                    application_request,
-                    source_authority,
-                    selected,
-                    PackageAuthorityError::RustProject(
-                        RustAuthorityError::CargoTargetMetadataMismatch,
-                    ),
-                )
-            })
-            .map_err(|terminal| PackageSemanticError::Compile {
-                path: first_source.relative_path.into(),
-                terminal: Box::new(terminal),
+        let root = target
+            .root()
+            .to_str()
+            .ok_or(PackageSemanticError::Capacity {
+                lane: "Rust Cargo target root encoding",
             })?;
-        let root = target.root.to_str().ok_or(PackageSemanticError::Capacity {
-            lane: "Rust Cargo target root encoding",
-        })?;
-        let target_root = target.root.to_path_buf();
+        let target_root = target.root().to_path_buf();
         if !package
             .sources
             .iter()
@@ -3505,7 +3491,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     source_authority,
                     selected,
                     PackageAuthorityError::RustProject(RustAuthorityError::SessionSourcePath {
-                        path: target.root.to_path_buf(),
+                        path: target.root().to_path_buf(),
                     }),
                 )),
             });
@@ -3513,7 +3499,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let package_target = CompilerPackageTargetV2::new(
             package.package_target.package().clone(),
             CompilationUnitKeyV2::RustCrate {
-                name: target.name.into(),
+                name: target.name().into(),
                 root: root.into(),
             },
         )

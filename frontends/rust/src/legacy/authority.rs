@@ -599,6 +599,64 @@ pub struct RustCargoTarget<'target> {
     pub root: &'target Path,
 }
 
+/// Owned target selection from complete, fresh Cargo metadata alone.
+///
+/// This does not establish source ownership; a captured workspace transaction
+/// must independently validate the target and its complete source closure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RustCargoTargetMetadata {
+    name: Box<str>,
+    root: PathBuf,
+}
+
+impl RustCargoTargetMetadata {
+    /// Exact declared Cargo name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Normalized package-relative declared root.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
+fn cargo_target_for_name<'facts>(
+    root: &Path,
+    facts: &'facts RustCargoWorkspaceFactsV1,
+    name: &str,
+) -> Option<RustCargoTarget<'facts>> {
+    if name.is_empty() {
+        return None;
+    }
+    let package_id = facts.selected_package_id.as_deref()?;
+    let package = facts
+        .workspace_packages
+        .iter()
+        .find(|package| package.package_id.as_ref() == package_id)?;
+    if package.manifest_path != root.join("Cargo.toml") {
+        return None;
+    }
+    let mut matching = package
+        .targets
+        .iter()
+        .filter(|target| target.name.as_ref() == name);
+    let target = matching.next()?;
+    if matching.next().is_some() {
+        return None;
+    }
+    let relative = target.source_path.strip_prefix(root).ok()?;
+    if !is_normalized_relative_path(relative) {
+        return None;
+    }
+    Some(RustCargoTarget {
+        name: target.name.as_ref(),
+        root: relative,
+    })
+}
+
 /// Bounded reason that package-root analysis did or did not select an exact
 /// Cargo target from the already admitted metadata snapshot.
 ///
@@ -720,34 +778,58 @@ impl RustWorkspace {
     /// comes from the same complete metadata snapshot used by target-scoped ownership checks.
     #[must_use]
     pub fn cargo_target_for_name(&self, name: &str) -> Option<RustCargoTarget<'_>> {
+        cargo_target_for_name(&self.root, self.cargo_workspace_facts.as_deref()?, name)
+    }
+
+    /// Selects a target from full bounded Cargo metadata without loading HIR.
+    /// Source ownership remains the responsibility of the later captured session.
+    ///
+    /// # Errors
+    /// Refuses cancellation, deadline expiry, incomplete or stale metadata, and
+    /// ambiguous names or targets outside the exact selected package.
+    pub fn select_cargo_target_metadata(
+        root: impl AsRef<Path>,
+        toolchain: &RustToolchain,
+        features: RustFeatureControl<'_>,
+        metadata_policy: RustCargoMetadataPolicy,
+        name: &str,
+        control: RustAnalysisControl<'_>,
+    ) -> Result<RustCargoTargetMetadata, RustAuthorityError> {
+        control.check()?;
         if name.is_empty() {
-            return None;
+            return Err(RustAuthorityError::CargoTargetMetadataMismatch);
         }
-        let facts = self.cargo_workspace_facts.as_deref()?;
-        let package_id = facts.selected_package_id.as_deref()?;
-        let package = facts
-            .workspace_packages
-            .iter()
-            .find(|package| package.package_id.as_ref() == package_id)?;
-        if package.manifest_path != self.root.join("Cargo.toml") {
-            return None;
-        }
-        let mut matching = package
-            .targets
-            .iter()
-            .filter(|target| target.name.as_ref() == name);
-        let target = matching.next()?;
-        if matching.next().is_some() {
-            return None;
-        }
-        let root = target.source_path.strip_prefix(&self.root).ok()?;
-        if !is_normalized_relative_path(root) {
-            return None;
-        }
-        Some(RustCargoTarget {
-            name: target.name.as_ref(),
-            root,
-        })
+        let root = RustProject::validate_root(root)?;
+        let cargo = toolchain
+            .cargo
+            .as_ref()
+            .ok_or(LoadError::MissingCargoConfiguration)?;
+        let cargo_home = toolchain
+            .cargo_home
+            .as_ref()
+            .ok_or(LoadError::MissingCargoConfiguration)?;
+        // Keep the gate (and its isolated lockfile) alive through selection and
+        // the final freshness checks, exactly as in workspace admission.
+        let gate = cargo_metadata_preflight(
+            &root,
+            cargo,
+            cargo_home,
+            toolchain,
+            features,
+            metadata_policy,
+            control,
+        )?;
+        let facts = gate
+            .fresh_workspace_facts(&root, cargo_home)
+            .ok_or(RustAuthorityError::CargoTargetMetadataMismatch)?;
+        let selected = cargo_target_for_name(&root, facts, name)
+            .ok_or(RustAuthorityError::CargoTargetMetadataMismatch)?;
+        let selected = RustCargoTargetMetadata {
+            name: selected.name.into(),
+            root: selected.root.to_path_buf(),
+        };
+        control.check()?;
+        Ok(selected)
     }
 
     /// Returns the exact captured source closure owned by one admitted Cargo target.
@@ -2550,13 +2632,10 @@ impl RustWorkspace {
             });
         }
         control.check()?;
-        let cargo_workspace_facts = if metadata_gate.workspace_facts.is_some()
-            && metadata_gate
-                .config_digest
-                .is_some_and(|digest| cargo_config_digest(&root, cargo_home) == Some(digest))
-            && metadata_gate.lockfile_digest.is_some_and(|digest| {
-                bounded_file_digest(&metadata_gate.lockfile_path) == Some(digest)
-            }) {
+        let cargo_workspace_facts = if metadata_gate
+            .fresh_workspace_facts(&root, cargo_home)
+            .is_some()
+        {
             metadata_gate.workspace_facts.clone()
         } else {
             None
@@ -3996,6 +4075,25 @@ struct CargoMetadataGate {
     config_digest: Option<[u8; 32]>,
     workspace_facts: Option<Arc<RustCargoWorkspaceFactsV1>>,
     _isolated_lockfile: Option<IsolatedCargoLockfile>,
+}
+
+impl CargoMetadataGate {
+    fn fresh_workspace_facts(
+        &self,
+        root: &Path,
+        cargo_home: &Path,
+    ) -> Option<&RustCargoWorkspaceFactsV1> {
+        if !self
+            .config_digest
+            .is_some_and(|digest| cargo_config_digest(root, cargo_home) == Some(digest))
+            || !self
+                .lockfile_digest
+                .is_some_and(|digest| bounded_file_digest(&self.lockfile_path) == Some(digest))
+        {
+            return None;
+        }
+        self.workspace_facts.as_deref()
+    }
 }
 
 fn cargo_metadata_preflight(
@@ -6402,6 +6500,35 @@ mod read_frontier_budget_tests {
                 deadline: Instant::now() + std::time::Duration::from_secs(60),
             },
         );
+        let metadata_selection = RustWorkspace::select_cargo_target_metadata(
+            &root,
+            &toolchain,
+            RustFeatureControl {
+                all_features: true,
+                no_default_features: false,
+                features: &[],
+            },
+            RustCargoMetadataPolicy::Offline,
+            "readiness-metadata-fallback",
+            RustAnalysisControl {
+                cancelled: &cancelled,
+                maximum_source_bytes: SourceByteLimit::from(1024 * 1024),
+                deadline: Instant::now() + std::time::Duration::from_secs(60),
+            },
+        );
+        assert!(matches!(
+            metadata_selection,
+            Err(RustAuthorityError::CargoMetadataIncomplete {
+                policy: RustCargoMetadataPolicy::Offline,
+                cause: CargoMetadataIncompleteCause::Preflight(
+                    CargoMetadataPreflightError::CommandFailed {
+                        phase: "metadata full",
+                        ..
+                    }
+                ),
+                ..
+            })
+        ));
         assert!(
             !root.join("Cargo.lock").exists(),
             "metadata resolution must not write a lockfile into the project"
@@ -6914,6 +7041,110 @@ mod read_frontier_budget_tests {
             control(),
         )
         .expect("load declared library, bench, and test targets");
+
+        let metadata_target = RustWorkspace::select_cargo_target_metadata(
+            &root,
+            &toolchain,
+            RustFeatureControl::default(),
+            RustCargoMetadataPolicy::Offline,
+            "ownership_bench",
+            control(),
+        )
+        .expect("full metadata selects the same target without HIR");
+        let full_target = workspace
+            .cargo_target_for_name("ownership_bench")
+            .expect("full workspace target");
+        assert_eq!(metadata_target.name(), full_target.name);
+        assert_eq!(metadata_target.root(), full_target.root);
+        assert!(matches!(
+            RustWorkspace::select_cargo_target_metadata(
+                &root,
+                &toolchain,
+                RustFeatureControl::default(),
+                RustCargoMetadataPolicy::Offline,
+                "missing-target",
+                control(),
+            ),
+            Err(RustAuthorityError::CargoTargetMetadataMismatch)
+        ));
+        cancelled.store(true, std::sync::atomic::Ordering::Release);
+        assert!(matches!(
+            RustWorkspace::select_cargo_target_metadata(
+                &root,
+                &toolchain,
+                RustFeatureControl::default(),
+                RustCargoMetadataPolicy::Offline,
+                "ownership_bench",
+                control(),
+            ),
+            Err(RustAuthorityError::Cancelled)
+        ));
+        cancelled.store(false, std::sync::atomic::Ordering::Release);
+
+        // The selector's freshness gate refuses changes made after full metadata
+        // capture, including the isolated lockfile when the fixture has no lock.
+        let gate_root = super::RustProject::validate_root(&root).expect("canonical fixture root");
+        let cargo_home = toolchain
+            .cargo_home
+            .as_ref()
+            .expect("configured Cargo home");
+        let gate = super::cargo_metadata_preflight(
+            &gate_root,
+            toolchain.cargo.as_ref().expect("configured Cargo"),
+            cargo_home,
+            &toolchain,
+            RustFeatureControl::default(),
+            RustCargoMetadataPolicy::Offline,
+            control(),
+        )
+        .expect("full metadata gate");
+        assert!(gate.fresh_workspace_facts(&gate_root, cargo_home).is_some());
+        let facts = gate
+            .fresh_workspace_facts(&gate_root, cargo_home)
+            .expect("fresh facts");
+        let mut ambiguous = facts.clone();
+        let selected_package_id = ambiguous
+            .selected_package_id
+            .clone()
+            .expect("selected package");
+        let package = ambiguous
+            .workspace_packages
+            .iter_mut()
+            .find(|package| package.package_id == selected_package_id)
+            .expect("selected package row");
+        let mut targets = package.targets.to_vec();
+        let duplicate = targets
+            .iter()
+            .find(|target| target.name.as_ref() == "ownership_bench")
+            .expect("bench target")
+            .clone();
+        targets.push(duplicate);
+        package.targets = targets.into_boxed_slice();
+        assert!(super::cargo_target_for_name(&gate_root, &ambiguous, "ownership_bench").is_none());
+        let mut wrong_manifest = facts.clone();
+        wrong_manifest
+            .workspace_packages
+            .iter_mut()
+            .find(|package| package.package_id == selected_package_id)
+            .expect("selected package row")
+            .manifest_path = gate_root.join("other/Cargo.toml");
+        assert!(
+            super::cargo_target_for_name(&gate_root, &wrong_manifest, "ownership_bench").is_none()
+        );
+
+        let lock = std::fs::read(&gate.lockfile_path).expect("admitted lockfile");
+        let mut changed_lock = lock.clone();
+        changed_lock.extend_from_slice(b"\n# post-capture change\n");
+        std::fs::write(&gate.lockfile_path, changed_lock).expect("change captured lockfile");
+        assert!(gate.fresh_workspace_facts(&gate_root, cargo_home).is_none());
+        std::fs::write(&gate.lockfile_path, lock).expect("restore captured lockfile");
+        std::fs::create_dir_all(root.join(".cargo")).expect("fixture Cargo config directory");
+        std::fs::write(root.join(".cargo/config.toml"), "[build]\njobs = 1\n")
+            .expect("change captured config");
+        assert!(gate.fresh_workspace_facts(&gate_root, cargo_home).is_none());
+        std::fs::remove_file(root.join(".cargo/config.toml")).expect("restore captured config");
+        assert!(gate.fresh_workspace_facts(&gate_root, cargo_home).is_some());
+        drop(gate);
 
         let admitted_bench = workspace
             .cargo_target_for_source_path(root.join("benches/bench.rs"))
