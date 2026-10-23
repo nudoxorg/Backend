@@ -11,6 +11,7 @@ use crate::{
 };
 use backend_advisory::{AdvisoryPackageDto, OverrideEvidence};
 pub use backend_semantic::vocabulary::{PackageUrl as PackageCoordinate, RegistryEcosystem};
+use backend_semantic::vocabulary::NativeTool;
 use backend_version::{CompileRecipeDomain, ContentId, Domain, HASH_BYTES, SourceFactDomain};
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::SerializeStruct,
@@ -2697,6 +2698,20 @@ fn detail_for_fragment_failure(
 }
 
 fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, bool) {
+    if matches!(
+        cause,
+        PackageCompilerFailureCause::AuthorityAdmission {
+            language: CompilerLanguageFact::CSharp,
+            phase: AuthorityPhaseFact::Open,
+            class: AuthorityClassFact::Authority,
+            ..
+        }
+    ) {
+        return sanitize_package_compiler_detail(
+            "C# semantic authority is unavailable in this owner/configuration; it requires an admitted NUDOX_DOTNET executable and a compatible published NUDOX_ROSLYN_HELPER assembly",
+            false,
+        );
+    }
     if let PackageCompilerFailureCause::Lowering(PackageLoweringFaultFacts::FactRejected {
         cause:
             PackageProjectionAdmissionFaultFacts::TypeProjectionCycle {
@@ -2871,6 +2886,20 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
         }
         PackageCompilerFailureCause::RequiredTool { issue, .. } => {
             let (requirement, action) = match (issue.requirement, issue.failure) {
+                (
+                    CompilerToolRequirement::Native(NativeTool::CSharpCompiler),
+                    CompilerToolFailure::Missing,
+                ) => (
+                    "dotnet is required for C# semantic authority",
+                    "set NUDOX_DOTNET to the admitted executable path",
+                ),
+                (
+                    CompilerToolRequirement::Native(NativeTool::CSharpCompiler),
+                    CompilerToolFailure::ProbeFailed,
+                ) => (
+                    "the configured dotnet executable failed its bounded version probe",
+                    "verify the NUDOX_DOTNET executable and retry",
+                ),
                 (CompilerToolRequirement::PythonChecker, CompilerToolFailure::Missing) => (
                     "pyrefly is required for Python semantic checking",
                     "set NUDOX_PYREFLY to its absolute executable path",

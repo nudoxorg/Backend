@@ -90,6 +90,12 @@ fn write_terminal(formatter: &mut fmt::Formatter<'_>, terminal: &CompilerTermina
             formatter,
             "the source is {actual} bytes, more than a semantic fact can address"
         ),
+        CompilerTerminal::Unavailable {
+            language: Language::CSharp,
+            ..
+        } => formatter.write_str(
+            "C# semantic authority is unavailable in this owner/configuration; it requires an admitted NUDOX_DOTNET executable and a compatible published NUDOX_ROSLYN_HELPER assembly",
+        ),
         CompilerTerminal::Unavailable { language, stage } => write!(
             formatter,
             "no {} compiler is available for the {} stage in this build",
@@ -485,6 +491,70 @@ mod tests {
             text(&terminal),
             "the Python compiler owner could not finish the request: the native Python checker failed admission: Python checker workspace I/O failed"
         );
+    }
+
+    #[test]
+    fn csharp_unavailable_names_both_authorities_without_guessing_which_is_missing() {
+        let terminal = CompilerTerminal::Unavailable {
+            language: Language::CSharp,
+            stage: Stage::LowerIr,
+        };
+        let rendered = text(&terminal);
+        assert!(
+            rendered.contains("C# semantic authority is unavailable"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("NUDOX_DOTNET"), "{rendered}");
+        assert!(rendered.contains("NUDOX_ROSLYN_HELPER"), "{rendered}");
+        assert!(!rendered.contains("in this build"), "{rendered}");
+    }
+
+    #[test]
+    fn non_csharp_unavailable_wording_is_unchanged() {
+        for (language, name) in [(Language::Go, "Go"), (Language::Python, "Python")] {
+            let terminal = CompilerTerminal::Unavailable {
+                language,
+                stage: Stage::LowerIr,
+            };
+            let rendered = text(&terminal);
+            assert_eq!(
+                rendered,
+                format!("no {name} compiler is available for the lowering stage in this build")
+            );
+            assert!(!rendered.contains("NUDOX_ROSLYN_HELPER"), "{rendered}");
+        }
+    }
+
+    #[test]
+    fn csharp_missing_dotnet_requirement_keeps_its_exact_configuration_variable() {
+        use backend_library::interface::{
+            CompilerToolFailure, CompilerToolIssue, CompilerToolRequirement,
+        };
+
+        let terminal = CompilerTerminal::RequiredTool {
+            source: attempted().source,
+            language: Language::CSharp,
+            stage: Stage::LowerIr,
+            issue: CompilerToolIssue {
+                requirement: CompilerToolRequirement::Native(NativeTool::CSharpCompiler),
+                failure: CompilerToolFailure::Missing,
+            },
+        };
+        let failure =
+            backend_library::PackageCompilerFailure::from_package_terminal("Library.cs", &terminal)
+                .expect("valid package failure")
+                .expect("required native tool is projected");
+        assert_eq!(
+            failure.required_configuration_variable(),
+            Some("NUDOX_DOTNET")
+        );
+        assert_eq!(
+            failure.required_native_tool(),
+            Some(backend_library::CompilerNativeToolFact::CSharpCompiler)
+        );
+        assert!(failure.detail().contains("dotnet is required"));
+        assert!(failure.detail().contains("NUDOX_DOTNET"));
+        assert!(!failure.detail().contains("NUDOX_ROSLYN_HELPER"));
     }
 
     #[test]
