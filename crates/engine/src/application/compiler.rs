@@ -841,6 +841,15 @@ fn package_source_input_witness(package: &PackageSourceSet<'_>) -> SemanticInput
     SemanticInputWitness::claimed_state(root, ScopeRoot::from_bytes(root), Coverage::Partial)
 }
 
+fn rust_target_source_closure_matches(
+    expected: Option<[u8; 32]>,
+    observed: Option<&RustCargoTargetSourceClosureV1>,
+) -> bool {
+    expected.is_none_or(|expected| {
+        observed.is_some_and(|observed| observed.identity() == expected)
+    })
+}
+
 fn semantic_embedding_identity(
     identity: EmbeddingExecutionIdentity,
 ) -> Result<EmbeddingPlaneIdentity, Box<str>> {
@@ -4708,14 +4717,10 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             CompilationUnitKeyV2::PackageRoot => None,
             _ => None,
         };
-        if package
-            .expected_rust_target_source_closure
-            .is_some_and(|expected| {
-                rust_target_source_closure
-                    .as_ref()
-                    .is_none_or(|observed| observed.identity() != expected)
-            })
-        {
+        if !rust_target_source_closure_matches(
+            package.expected_rust_target_source_closure,
+            rust_target_source_closure.as_ref(),
+        ) {
             return Err(PackageSemanticError::RustTargetSourceClosureMismatch);
         }
         let rust_compilation_sources = if let Some(closure) = &rust_target_source_closure {
@@ -9214,6 +9219,28 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["src/b.rs"]
         );
+        let unit_a_input = package_source_input_witness(&unit_a);
+        let unit_b_input = package_source_input_witness(&unit_b);
+        assert_ne!(unit_a_input.input_root(), unit_b_input.input_root());
+        let changed_unselected_sources = [
+            sources[0],
+            PackageSource::new("src/b.rs", "pub fn changed() {}")
+                .expect("changed source path remains normalized"),
+        ];
+        let changed_unit_a = PackageSourceSet::new_for_unit(
+            &request,
+            &target_a,
+            host_path("/workspace"),
+            &changed_unselected_sources,
+        )
+        .expect("unchanged selected root remains present");
+        assert_ne!(
+            unit_a_input.input_root(),
+            package_source_input_witness(&changed_unit_a).input_root(),
+            "out-of-scope package inputs remain part of provenance"
+        );
+        assert!(super::rust_target_source_closure_matches(None, None));
+        assert!(!super::rust_target_source_closure_matches(Some([7; 32]), None));
 
         let wrong_unit = CompilerPackageTargetV2::new(
             request.as_ref().clone(),
@@ -9232,6 +9259,26 @@ mod tests {
             .err(),
             Some(PackageSourceSetError::CompilationUnitMismatch)
         );
+    }
+
+    #[test]
+    fn expected_rust_target_closure_requires_exact_recomputed_identity() {
+        let closure = RustCargoTargetSourceClosureV1 {
+            target_name: "bench".into(),
+            target_root: "benches/bench.rs".into(),
+            target_kinds: Box::new(["bench".into()]),
+            sources: Box::new([]),
+            identity: [11; 32],
+        };
+        assert!(super::rust_target_source_closure_matches(
+            Some([11; 32]),
+            Some(&closure)
+        ));
+        assert!(!super::rust_target_source_closure_matches(
+            Some([12; 32]),
+            Some(&closure)
+        ));
+        assert!(!super::rust_target_source_closure_matches(Some([11; 32]), None));
     }
 
     #[test]

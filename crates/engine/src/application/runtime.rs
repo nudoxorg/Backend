@@ -4786,6 +4786,89 @@ impl OwnedCompilerRequest {
     }
 }
 
+#[cfg(test)]
+mod rust_target_selector_admission_tests {
+    use super::*;
+    use backend_library::interface::{GenerateTarget, PackageUrl};
+    use backend_semantic::vocabulary::RustEdition;
+
+    fn request(profile: LanguageProfile, package: &str) -> PackageCompileRequest {
+        PackageCompileRequest::new(
+            GenerateTarget {
+                correlation: crate::application::CorrelationId(1),
+                profile,
+                stage: Stage::LowerIr,
+            },
+            PackageUrl::parse(package).expect("canonical test package URL"),
+        )
+        .expect("test package profile is supported")
+    }
+
+    fn rust_package() -> OwnedPackageSourceSet {
+        OwnedPackageSourceSet::new(
+            request(
+                LanguageProfile::Rust(RustEdition::Rust2024),
+                "pkg:cargo/selector-fixture@1.0.0",
+            ),
+            PathBuf::from("/selector-fixture"),
+            vec![OwnedPackageSource::from_string("src/lib.rs", "pub fn value() {}".into())
+                .expect("normalized Rust source")]
+            .into_boxed_slice(),
+        )
+        .expect("valid Rust package source set")
+    }
+
+    #[test]
+    fn target_name_selector_rejects_empty_wrong_profile_and_unit() {
+        assert!(matches!(
+            rust_package().with_rust_cargo_target_name(""),
+            Err(PackageSourceSetError::InvalidRustCargoTargetName)
+        ));
+
+        let non_rust = OwnedPackageSourceSet::new(
+            request(
+                LanguageProfile::TypeScript(
+                    backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+                ),
+                "pkg:npm/selector-fixture@1.0.0",
+            ),
+            PathBuf::from("/selector-fixture"),
+            vec![OwnedPackageSource::from_string("src/index.ts", "export {};".into())
+                .expect("normalized TypeScript source")]
+            .into_boxed_slice(),
+        )
+        .expect("valid TypeScript package source set");
+        assert!(matches!(
+            non_rust.with_rust_cargo_target_name("selector-fixture"),
+            Err(PackageSourceSetError::InvalidRustCargoTargetName)
+        ));
+
+        let rust = rust_package();
+        let selected = OwnedPackageSourceSet::new_for_unit(
+            rust.request.clone(),
+            CompilerPackageTargetV2::new(
+                rust.request.as_ref().clone(),
+                CompilationUnitKeyV2::RustCrate {
+                    name: "selector-fixture".into(),
+                    root: "src/lib.rs".into(),
+                },
+            )
+            .expect("canonical unit target"),
+            rust.package_root.to_path_buf(),
+            rust.sources.clone(),
+        )
+        .expect("valid selected-unit source set");
+        assert!(matches!(
+            selected.with_rust_cargo_target_name("selector-fixture"),
+            Err(PackageSourceSetError::InvalidRustCargoTargetName)
+        ));
+        assert!(matches!(
+            rust.with_expected_rust_target_source_closure([9; 32]),
+            Err(PackageSourceSetError::CompilationUnitMismatch)
+        ));
+    }
+}
+
 #[derive(Clone, Copy)]
 struct RequestFacts {
     profile: LanguageProfile,
