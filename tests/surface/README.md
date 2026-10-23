@@ -670,3 +670,11 @@ exactly. An independent Roslyn parse of the verified pinned source confirms
 all12visible source anchors, including conditional class-modifier start lines.
 The dated TinyIoC review records scope, generated semantic carriers, both
 measurements and the remaining fresh exact-head comparison requirement.
+
+### Itoa answer review (W2, 2026-10-23)
+
+Itoa answers repeat exactly in T2/1807 and1844. The answer-only review checks
+queried sites against the verified crate and an independent Rust AST, and
+checks generated benchmark/test names against actual pinned-rustc macro
+expansion. The dated review distinguishes source declarations from compiler
+carriers. Original performance bytes remain unchanged; fresh T2 is required.
