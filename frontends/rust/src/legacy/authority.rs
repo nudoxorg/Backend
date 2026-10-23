@@ -1186,14 +1186,13 @@ impl RustWorkspace {
         let exact_root = root_path
             .strip_prefix(package_root.as_path())
             .is_some_and(|relative| Path::new(relative.as_str()) == target.root);
-        // Cargo target names may contain `-`, while Rust crate identifiers use
-        // `_`. Normalize only this comparison with rust-analyzer's canonical
-        // crate spelling; the admitted unit key and its recipe remain verbatim.
-        let canonical_target_name = target.name.replace('-', "_");
+        // `canonical_name()` retains the original Cargo spelling (including
+        // `-`); the dereferenced display name is the normalized Rust spelling.
+        // Match the former against the exact admitted metadata target name.
         let exact_name = owner
             .krate
             .display_name(&self.database)
-            .is_some_and(|name| name.canonical_name().as_str() == canonical_target_name.as_str());
+            .is_some_and(|name| name.canonical_name().as_str() == target.name);
         exact_root && exact_name
     }
 
@@ -6971,7 +6970,7 @@ mod read_frontier_budget_tests {
                 control(),
                 |_| Ok(()),
             )
-            .expect("Cargo hyphens match the Rust canonical crate spelling");
+            .expect("the exact Cargo target name matches RA's retained Cargo spelling");
         assert!(matches!(
             workspace.analyze_source_for_target(
                 root.join("bin/hyphen.rs"),
