@@ -10,6 +10,24 @@ surface = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(surface)
 
 
+class NativeTypeScriptOwnerEnvironmentTests(unittest.TestCase):
+    def test_shared_shell_report_overrides_cannot_select_an_external_product_producer(self):
+        import os, tempfile
+        from unittest.mock import patch
+        inherited = {name: "/pinned/external" for name in (
+            "NUDOX_TSC", "NUDOX_TYPESCRIPT_NODE", "NUDOX_TYPESCRIPT_MODULE_ROOT",
+            "NUDOX_TYPESCRIPT_REPORT_PROGRAM",
+        )}
+        inherited["NUDOX_RUSTC"] = "/pinned/rustc"
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, inherited, clear=True):
+            env = surface.isolated_env(Path(temporary) / "home", Path("/published/bin"))
+        for name in inherited:
+            if name != "NUDOX_RUSTC":
+                self.assertNotIn(name, env)
+        self.assertEqual(env["NUDOX_RUSTC"], "/pinned/rustc")
+        self.assertEqual(env["BACKEND_LOCALD_BIN"], "/published/bin/backend-locald")
+
+
 class FailedIndexDiagnosticTests(unittest.TestCase):
     def test_diagnostic_reads_public_outcome_without_changing_setup_verdict(self):
         import contextlib, io, json
@@ -25,6 +43,44 @@ class FailedIndexDiagnosticTests(unittest.TestCase):
         ], 10)
         packet = json.loads(output.getvalue().split(" ", 1)[1])
         self.assertEqual(packet, {"project": str(project), "reply": reply})
+
+    def test_exact_coverage_pages_and_refusal_diagnostics_are_copied_under_one_deadline(self):
+        import contextlib, io, json
+        from unittest.mock import patch
+        first = {"kind": "coverage", "selector": {"catalog": "exact", "offset": 0}}
+        next_page = {"kind": "coverage", "selector": {"catalog": "exact", "offset": 25}}
+        diagnostic = {"kind": "diagnostic", "selector": {"basis": "exact", "profile": [0, 1]}}
+        summary = {"state": "summary", "coverage": [{"state": "retained", "read": first}],
+                   "refusals": [{"diagnostic": {"state": "retained", "read": diagnostic}}]}
+        outcomes = [summary, {"state": "coverage", "page": {"rows": [{"kind": "gap"}], "next": next_page}},
+                    {"state": "diagnostic", "refusal": {"compiler_failure": {"phase": "authority"}}},
+                    {"state": "coverage", "page": {"rows": [], "next": None}}]
+        replies = [({"exit": 0, "json": {"compiler_outcomes": body}}, 0.1) for body in outcomes]
+        with patch.object(surface, "run_cli", side_effect=replies) as run, \
+                patch.object(surface.time, "monotonic", side_effect=[100, 101, 102, 103]), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            surface.emit_index_failure_diagnostic(object(), Path("/tmp/project"))
+        self.assertEqual(run.call_count, 4)
+        calls = run.call_args_list
+        self.assertEqual([call.args[3] for call in calls], [10, 9, 8, 7])
+        self.assertEqual([json.loads(call.args[2][-1]) for call in calls[1:]],
+                         [first, diagnostic, next_page])
+        packets = [json.loads(line.split(" ", 1)[1]) for line in output.getvalue().splitlines()]
+        self.assertEqual(len(packets), 4)
+        self.assertEqual(packets[-1]["reply"]["json"]["compiler_outcomes"]["page"]["next"], None)
+
+    def test_stale_or_repeated_coverage_selectors_cannot_extend_diagnostic_capture(self):
+        import contextlib, io
+        from unittest.mock import patch
+        read = {"kind": "coverage", "selector": {"catalog": "exact", "offset": 0}}
+        first = {"exit": 0, "json": {"compiler_outcomes": {
+            "state": "summary", "coverage": [{"state": "retained", "read": read}]}}}
+        for body in [{"state": "stale"}, {"state": "coverage", "page": {"next": read}}]:
+            with self.subTest(body=body), patch.object(surface, "run_cli", side_effect=[
+                    (first, 0), ({"exit": 0, "json": {"compiler_outcomes": body}}, 0)]) as run, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                surface.emit_index_failure_diagnostic(object(), Path("/tmp/project"))
+            self.assertEqual(run.call_count, 2)
 
     def test_diagnostic_failure_cannot_replace_the_original_exception(self):
         from unittest.mock import patch

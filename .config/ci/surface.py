@@ -554,6 +554,12 @@ def isolated_env(home: Path, bin_dir: Path) -> dict[str, str]:
         path = home / sub
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
         env[name] = str(path)
+    # T2 verifies the linked native TSZ producer. The shared corpus shell also
+    # exports standalone Compiler API tools; inheriting one would explicitly
+    # select that different producer and suppress native project coverage.
+    for name in ("NUDOX_TSC", "NUDOX_TYPESCRIPT_NODE", "NUDOX_TYPESCRIPT_MODULE_ROOT",
+                 "NUDOX_TYPESCRIPT_REPORT_PROGRAM"):
+        env.pop(name, None)
     env["BACKEND_LOCALD_BIN"] = str(bin_dir / "backend-locald")
     env["NO_COLOR"] = "1"
     return env
@@ -1624,8 +1630,9 @@ def make_case_directories_writable(root: Path) -> None:
 
 
 def emit_index_failure_diagnostic(owner: Owner, project: Path) -> None:
-    """Retain the public compiler refusal while this failed setup still owns its state."""
+    """Retain discovery and copied exact reads without replacing the setup failure."""
     try:
+        deadline = time.monotonic() + 10
         reply, _ = run_cli(owner, project, [
             "package-profile", str(project),
             "--compiler-outcome", '{"kind":"current"}',
@@ -1633,6 +1640,43 @@ def emit_index_failure_diagnostic(owner: Owner, project: Path) -> None:
         print("SURFACE-INDEX-DIAGNOSTIC " + json.dumps({
             "project": str(project), "reply": reply,
         }, sort_keys=True), flush=True)
+        outcomes = (reply.get("json") or {}).get("compiler_outcomes") or {}
+        if reply.get("exit") != 0 or outcomes.get("state") != "summary":
+            return
+        reads = [entry.get("read") for entry in outcomes.get("coverage") or []
+                 if entry.get("state") == "retained"]
+        reads.extend((entry.get("diagnostic") or {}).get("read")
+                     for entry in outcomes.get("refusals") or []
+                     if (entry.get("diagnostic") or {}).get("state") == "retained")
+        seen = set()
+        # One shared deadline and at most 16 bounded pages/diagnostics. Selectors
+        # come from this owner; never reconstruct a basis or infer missing rows.
+        for _ in range(16):
+            if not reads:
+                break
+            read = reads.pop(0)
+            if not isinstance(read, dict) or read.get("kind") not in ("coverage", "diagnostic"):
+                continue
+            encoded = json.dumps(read, sort_keys=True, separators=(",", ":"))
+            if encoded in seen:
+                continue
+            seen.add(encoded)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            reply, _ = run_cli(owner, project, [
+                "package-profile", str(project), "--compiler-outcome", encoded,
+            ], remaining)
+            print("SURFACE-INDEX-DIAGNOSTIC " + json.dumps({
+                "project": str(project), "read": read, "reply": reply,
+            }, sort_keys=True), flush=True)
+            outcome = (reply.get("json") or {}).get("compiler_outcomes") or {}
+            if reply.get("exit") != 0 or outcome.get("state") in ("stale", "unavailable"):
+                break
+            if outcome.get("state") == "coverage":
+                following = (outcome.get("page") or {}).get("next")
+                if following is not None:
+                    reads.append(following)
     except Exception as error:
         # A diagnostic cannot replace the original setup failure or pass a case.
         log(f"index failure diagnostic unavailable: {error}")
