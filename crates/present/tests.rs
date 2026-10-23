@@ -111,7 +111,7 @@ fn page_limit_domains_preserve_defaults_and_admit_exact_engine_boundaries() {
 
 #[test]
 fn repeated_operands_remain_visible_outside_compiler_coverage_pages() {
-    let view = ProductView::rows(
+    let view = ProductView::assembled(
         "generic",
         vec![
             ProductRecord::new("first row", Some("same operand".to_owned()), Vec::new()),
