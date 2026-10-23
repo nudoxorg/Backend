@@ -720,7 +720,10 @@ pre-proof VmHWM and the post-reset live/GUI VmHWM. Raw phase counters and proof
 timing are kept as separate evidence, not folded into baseline performance.
 The runner emits `CI-RESOURCE-PHASE` records before proof, after the verified
 reset, and after live/GUI work so phase counters remain available even when a
-later GUI contract fails.
+later GUI contract fails. When a case has a GUI contract, a separate
+`gui-owner-cpu` record samples locald immediately before and after that call;
+its delta is diagnostic only and does not change the existing owner CPU total
+or performance gate.
 This accounts for locald CPU and VmHWM; teardown housekeeping in the MCP
 client process is outside those owner counters. Full proof still runs under
 the original CLI per-query deadline and original MCP session deadline, so an

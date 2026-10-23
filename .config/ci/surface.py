@@ -2537,7 +2537,37 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             )
         if case.get("gui"):
             from gui_contract import run_gui
-            answer, usage, evidence = run_gui(owner, project, case["gui"])
+            gui_owner_phase = {"phase": "gui-owner-cpu"}
+            try:
+                gui_owner_phase["before_cpu_seconds"] = owner.usage_raw()["cpu_seconds"]
+            except Exception as error:
+                # This is observational only. Keep GUI execution and its
+                # product verdict independent of an extra diagnostic sample.
+                gui_owner_phase["before_unavailable"] = type(error).__name__
+            try:
+                answer, usage, evidence = run_gui(owner, project, case["gui"])
+            finally:
+                try:
+                    gui_owner_phase["after_cpu_seconds"] = owner.usage_raw()["cpu_seconds"]
+                except Exception as error:
+                    gui_owner_phase["after_unavailable"] = type(error).__name__
+                before_cpu = gui_owner_phase.get("before_cpu_seconds")
+                after_cpu = gui_owner_phase.get("after_cpu_seconds")
+                if isinstance(before_cpu, (int, float)) and isinstance(after_cpu, (int, float)):
+                    if after_cpu >= before_cpu:
+                        gui_owner_phase["cpu_delta_seconds"] = round(after_cpu - before_cpu, 2)
+                    else:
+                        gui_owner_phase["cpu_delta_state"] = "counter-decreased"
+                phase_record["gui_owner_cpu"] = gui_owner_phase
+                try:
+                    with OUTPUT_LOCK:
+                        print("CI-RESOURCE-PHASE " + json.dumps({
+                            **(RUN_PROVENANCE.get() or {}), "case": case["name"],
+                            **gui_owner_phase,
+                        }, sort_keys=True), flush=True)
+                except Exception:
+                    # Diagnostics must not replace the GUI result or failure.
+                    pass
             record["answers"]["gui"] = answer
             record["performance"]["seconds"].update(usage.pop("seconds"))
             record["performance"].update(usage)

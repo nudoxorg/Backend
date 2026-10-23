@@ -1482,6 +1482,7 @@ class InteractiveMcpTests(unittest.TestCase):
                              resident_rss_kib=gui_resident_rss)
                 return {"answer": "gui"}, {"seconds": {}, "gui_peak_rss_kib": 10}, {}
             gui_module = SimpleNamespace(run_gui=gui)
+            output = io.StringIO()
             with patch.object(surface, "SCRATCH", root / "scratch"), \
                     patch.object(surface, "Owner", return_value=owner), \
                     patch.object(surface, "run_cli", return_value=({"exit": 0, "json": {}}, 0.01)), \
@@ -1489,17 +1490,21 @@ class InteractiveMcpTests(unittest.TestCase):
                     patch.object(surface, "run_mcp_interactive", side_effect=session), \
                     patch.object(surface, "normalize_surface_answers", side_effect=lambda answers, _proofs: answers), \
                     patch.dict(sys.modules, {"gui_contract": gui_module}), \
-                    contextlib.redirect_stdout(io.StringIO()):
+                    contextlib.redirect_stdout(output):
                 record = surface.run_case(case, root / "bin")
-        return record, events, sessions
+        return record, events, sessions, output.getvalue()
 
     def test_case_accounts_proof_separately_and_tolerates_decreasing_hwm_snapshots(self):
-        record, events, sessions = self._run_phase_accounting_scenario(9999, 70, 70)
+        import json
+        record, events, sessions, output = self._run_phase_accounting_scenario(9999, 70, 70)
         self.assertEqual(sessions, 2)
         self.assertLess(events.index("measured-hop"), events.index("usage"))
         self.assertLess(events.index("usage"), events.index("proof-hop"))
         self.assertLess(events.index("proof-hop"), events.index("reset"))
         self.assertLess(events.index("reset"), events.index("gui"))
+        gui_position = events.index("gui")
+        self.assertEqual(events[gui_position - 1], "usage")
+        self.assertEqual(events[gui_position + 1], "usage")
         self.assertEqual(record["performance"]["cpu_seconds"], 7)
         self.assertEqual(record["performance"]["peak_rss_kib"], 100)
         self.assertEqual(record["resource_phase_evidence"]["proof_cpu_seconds"], 98)
@@ -1507,16 +1512,25 @@ class InteractiveMcpTests(unittest.TestCase):
         self.assertEqual(record["resource_phase_evidence"]["post_reset_peak_rss_kib"], 90)
         self.assertNotIn("resource_phase_evidence", record["performance"])
         self.assertEqual(record["resource_phase_evidence"]["post_reset_final"]["cpu_seconds"], 105)
+        self.assertEqual(record["resource_phase_evidence"]["gui_owner_cpu"], {
+            "phase": "gui-owner-cpu", "before_cpu_seconds": 99.0,
+            "after_cpu_seconds": 105.0, "cpu_delta_seconds": 6.0,
+        })
+        gui_phase = next(json.loads(line.split("CI-RESOURCE-PHASE ", 1)[1])
+                         for line in output.splitlines()
+                         if "CI-RESOURCE-PHASE " in line
+                         and '"phase": "gui-owner-cpu"' in line)
+        self.assertEqual(gui_phase["cpu_delta_seconds"], 6.0)
         self.assertEqual(len(record["continuation_evidence"]), 2)
 
         # The exact failure observed in build 600335 was a lower postproof
         # VmHWM than the independently sampled preproof VmHWM.
-        record, _events, _sessions = self._run_phase_accounting_scenario(70, 70, 70)
+        record, _events, _sessions, _output = self._run_phase_accounting_scenario(70, 70, 70)
         self.assertEqual(record["performance"]["peak_rss_kib"], 100)
         self.assertEqual(record["resource_phase_evidence"]["proof_peak_rss_kib"], 100)
 
     def test_case_retains_a_higher_gui_hwm_sample(self):
-        record, _events, _sessions = self._run_phase_accounting_scenario(70, 120, 100)
+        record, _events, _sessions, _output = self._run_phase_accounting_scenario(70, 120, 100)
         self.assertEqual(record["performance"]["peak_rss_kib"], 120)
         self.assertEqual(record["resource_phase_evidence"]["post_reset_peak_rss_kib"], 120)
 
