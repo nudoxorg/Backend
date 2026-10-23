@@ -1038,6 +1038,59 @@ class SnapshotContinuationTests(unittest.TestCase):
 
 
 class InteractiveMcpTests(unittest.TestCase):
+    def test_case_exhausts_outline_with_the_issuing_session_deadline(self):
+        import contextlib, io, tempfile
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        def page(name, token=None):
+            result = {"answer": "outline", "roots": [{
+                "key": name, "name": name,
+                "semantic_data": {"kind": "selected-symbol-id",
+                                  "value": list(hashlib.sha256(name.encode()).digest())},
+                "children": []}], "declarations": 1,
+                "package": {"project": "/project"}, "detail": "summary",
+                "page": {"source_root": "root", "source_object": "object", "coverage": [],
+                         "branch": "branch", "log": "log", "schema": 3,
+                         "sequence": 2, "limit": 2, "more": token is not None}}
+            if token is not None:
+                result["nextCursor"] = token
+            return result
+
+        first, last = page("first", "mcp2-next"), page("last")
+        continued = []
+
+        def session(_owner, _project, calls, _timeout, on_reply, *, absolute_deadline):
+            def exchange(call):
+                continued.append(call)
+                return {"isError": False, "structuredContent": last}
+            exchange.deadline = absolute_deadline
+            reply = {"isError": False, "structuredContent": first}
+            on_reply(calls[0], reply, exchange, exchange)
+            return {"exit": 0, "tools": ["backend.outline"],
+                    "calls": [{"call": calls[0], "reply": reply}]}, 0.01
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = root / "fixture"
+            fixture.mkdir()
+            owner = SimpleNamespace(process=SimpleNamespace(pid=1), stop=lambda: None,
+                                    usage=lambda: {"cpu_seconds": 0, "peak_rss_kib": 0})
+            case = {"name": "outline-session", "project": str(fixture),
+                    "languages": ["python"], "index_mode": "wait",
+                    "mcp": [{"tool": "backend.outline", "arguments": {}}]}
+            with patch.object(surface, "SCRATCH", root / "scratch"), \
+                    patch.object(surface, "Owner", return_value=owner), \
+                    patch.object(surface, "run_cli", return_value=({"exit": 0, "json": {}}, 0.01)), \
+                    patch.object(surface, "require_completed_index", return_value="root"), \
+                    patch.object(surface, "run_mcp_interactive", side_effect=session), \
+                    patch.object(surface, "normalize_surface_answers", side_effect=lambda answers, _proofs: answers), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                record = surface.run_case(case, root / "bin")
+        self.assertEqual(len(continued), 1)
+        self.assertEqual(continued[0]["arguments"]["cursor"], "mcp2-next")
+        self.assertEqual(len(record["continuation_evidence"]), 2)
+
     def test_partial_search_is_retried_inside_its_issuing_mcp_session(self):
         import os
         import sys

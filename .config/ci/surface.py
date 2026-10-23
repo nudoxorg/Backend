@@ -1842,7 +1842,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                     _emit_continuation_page(record["continuation_evidence"], "mcp", call["tool"], page_number,
                                             request, current, input_cursor)
                 pages, declarations = walk_outline_pages(first, mcp_outline_page, published_root,
-                                                         deadline=continue_call.deadline,
+                                                         deadline=exchange.deadline,
                                                          on_page=retain_mcp_outline)
                 proven_answers.setdefault(f"mcp:{answer_index}", set()).add(token)
                 log(f"backend.outline: exhausted {pages} same-session MCP outline pages ({declarations} unique declarations)")
