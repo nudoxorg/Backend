@@ -335,6 +335,13 @@ struct DirectorySnapshot {
     entries: Box<[TypeScriptDirectoryEntry]>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NativeRootSelectionObservation {
+    pub(crate) config_path: Box<Path>,
+    pub(crate) root_names: Box<[Box<Path>]>,
+    pub(crate) directories: Box<[Box<Path>]>,
+}
+
 #[derive(Debug)]
 struct CapturedPeerManifest {
     source_path: Box<Path>,
@@ -348,6 +355,7 @@ struct ResolverObservationLedger {
     loaded_sources: std::collections::BTreeMap<PathBuf, TypeScriptFileInput>,
     missing_paths: std::collections::BTreeMap<PathBuf, Option<PathBuf>>,
     directories: std::collections::BTreeMap<PathBuf, DirectorySnapshot>,
+    native_root_selection: Option<NativeRootSelectionObservation>,
     external_negative_parents: std::collections::BTreeMap<PathBuf, RealpathSnapshot>,
     external_absent_directories: std::collections::BTreeMap<PathBuf, RealpathSnapshot>,
     captured_peer_manifests: std::collections::BTreeMap<PathBuf, CapturedPeerManifest>,
@@ -367,6 +375,7 @@ impl ResolverObservationLedger {
             .len()
             .saturating_add(self.missing_paths.len())
             .saturating_add(self.directories.len())
+            .saturating_add(usize::from(self.native_root_selection.is_some()))
             .saturating_add(self.realpaths.len())
             .saturating_add(self.external_negative_parents.len())
             .saturating_add(self.external_absent_directories.len())
@@ -437,11 +446,18 @@ impl TypeScriptResolverWitness {
                 path: witness.project_root.clone(),
             });
         }
-        validate_resolver_observations_with_host_controlled(
+        let root_query_directories = match &self.observations.native_root_selection {
+            Some(query) => {
+                super::typescript_program::replay_native_root_selection(witness, query, control)?
+            }
+            None => std::collections::BTreeSet::new(),
+        };
+        validate_resolver_observations_with_host_controlled_and_root_replay(
             witness,
             &self.observations,
             Some(host),
             control,
+            &root_query_directories,
         )
     }
 }
@@ -457,6 +473,111 @@ pub(crate) struct TypeScriptResolverCapability<'a> {
 }
 
 impl TypeScriptResolverCapability<'_> {
+    pub(crate) fn record_native_root_selection(
+        &mut self,
+        config_path: &Path,
+        root_names: &[PathBuf],
+        directories: &[PathBuf],
+    ) -> Result<(), TypeScriptProjectHostError> {
+        let canonical_config = normalize_absolute_path(config_path).ok_or_else(|| {
+            TypeScriptProjectHostError::SourceOutsideCapability {
+                path: config_path.to_path_buf().into_boxed_path(),
+            }
+        })?;
+        if canonical_config != config_path
+            || !self.witness.path_is_admitted(&canonical_config)
+            || !self
+                .observations
+                .loaded_sources
+                .contains_key(&canonical_config)
+            || self.observations.native_root_selection.is_some()
+            || self.observations.observation_count() >= MAX_RESOLVER_OBSERVATIONS
+            || root_names.len() > MAX_RESOLVED_SOURCE_FILES
+            || directories.len() > MAX_RESOLVER_DIRECTORIES
+        {
+            return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                detail:
+                    "native root-selection transcript is incomplete or outside its host witness"
+                        .into(),
+            });
+        }
+        let mut checked_roots = Vec::with_capacity(root_names.len());
+        for path in root_names {
+            let canonical = normalize_absolute_path(path).ok_or_else(|| {
+                TypeScriptProjectHostError::SourceOutsideCapability {
+                    path: path.clone().into_boxed_path(),
+                }
+            })?;
+            if canonical != *path
+                || !self.witness.path_is_admitted(&canonical)
+                || !self.observations.loaded_sources.contains_key(&canonical)
+            {
+                return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                    detail: "native root-selection transcript contains an unadmitted root".into(),
+                });
+            }
+            checked_roots.push(canonical.into_boxed_path());
+        }
+        if checked_roots.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                detail: "native root-selection transcript roots are not sorted and unique".into(),
+            });
+        }
+        let mut checked_directories = Vec::with_capacity(directories.len());
+        for path in directories {
+            let canonical = normalize_absolute_path(path).ok_or_else(|| {
+                TypeScriptProjectHostError::SourceOutsideCapability {
+                    path: path.clone().into_boxed_path(),
+                }
+            })?;
+            if canonical != *path
+                || !self.witness.path_is_admitted(&canonical)
+                || !self.observations.directories.contains_key(&canonical)
+            {
+                return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                    detail:
+                        "native root-selection transcript omits a complete directory observation"
+                            .into(),
+                });
+            }
+            checked_directories.push(canonical.into_boxed_path());
+        }
+        if checked_directories
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                detail: "native root-selection transcript directories are not sorted and unique"
+                    .into(),
+            });
+        }
+        let charge = checked_roots
+            .iter()
+            .chain(checked_directories.iter())
+            .try_fold(
+                native_snapshot_path_bytes(&canonical_config),
+                |total, path| total.checked_add(native_snapshot_path_bytes(path)),
+            )
+            .ok_or_else(|| TypeScriptProjectHostError::ResolverObservationLimit {
+                observed: usize::MAX,
+                maximum: MAX_RESOLVER_METADATA_BYTES,
+            })?;
+        ensure_metadata_capacity(&self.observations, charge, &canonical_config)?;
+        self.observations.retained_metadata_bytes = self
+            .observations
+            .retained_metadata_bytes
+            .checked_add(charge)
+            .ok_or_else(|| TypeScriptProjectHostError::ResolverObservationLimit {
+                observed: usize::MAX,
+                maximum: MAX_RESOLVER_METADATA_BYTES,
+            })?;
+        self.observations.native_root_selection = Some(NativeRootSelectionObservation {
+            config_path: canonical_config.into_boxed_path(),
+            root_names: checked_roots.into_boxed_slice(),
+            directories: checked_directories.into_boxed_slice(),
+        });
+        Ok(())
+    }
     pub(crate) fn try_load_source<'a>(
         &'a mut self,
         path: &Path,
@@ -976,6 +1097,18 @@ impl TypeScriptResolverCapability<'_> {
                 }
             }
         }
+        if let Some(query) = &self.observations.native_root_selection {
+            digest.update(&[7]);
+            update_logical_path(&mut digest, self.witness, &query.config_path)?;
+            update_len(&mut digest, query.root_names.len());
+            for path in query.root_names.iter() {
+                update_logical_path(&mut digest, self.witness, path)?;
+            }
+            update_len(&mut digest, query.directories.len());
+            for path in query.directories.iter() {
+                update_logical_path(&mut digest, self.witness, path)?;
+            }
+        }
         for snapshot in self.observations.realpaths.values() {
             digest.update(&[4]);
             update_logical_path(&mut digest, self.witness, &snapshot.path)?;
@@ -1402,6 +1535,22 @@ fn validate_resolver_observations_with_host_controlled(
     host: Option<&ValidatedTypeScriptHost<'_>>,
     control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
 ) -> Result<(), TypeScriptProjectHostError> {
+    validate_resolver_observations_with_host_controlled_and_root_replay(
+        witness,
+        observations,
+        host,
+        control,
+        &std::collections::BTreeSet::new(),
+    )
+}
+
+fn validate_resolver_observations_with_host_controlled_and_root_replay(
+    witness: &TypeScriptProjectWitness,
+    observations: &ResolverObservationLedger,
+    host: Option<&ValidatedTypeScriptHost<'_>>,
+    control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+    root_query_directories: &std::collections::BTreeSet<PathBuf>,
+) -> Result<(), TypeScriptProjectHostError> {
     control()?;
     if host.is_some_and(|host| !std::ptr::eq(host.witness, witness)) {
         return Err(TypeScriptProjectHostError::WitnessChanged {
@@ -1472,7 +1621,9 @@ fn validate_resolver_observations_with_host_controlled(
     for (path, expected) in &observations.directories {
         control()?;
         let observed = capture_directory_snapshot_controlled(path, witness, control)?;
-        if &observed != expected {
+        let replayed_root_query_matches = root_query_directories.contains(path)
+            && directory_snapshots_match_replayed_root_query(expected, &observed);
+        if &observed != expected && !replayed_root_query_matches {
             return Err(TypeScriptProjectHostError::WitnessChanged {
                 path: path.clone().into_boxed_path(),
             });
@@ -1492,6 +1643,23 @@ fn validate_resolver_observations_with_host_controlled(
     }
     control()?;
     Ok(())
+}
+
+fn directory_snapshots_match_replayed_root_query(
+    expected: &DirectorySnapshot,
+    observed: &DirectorySnapshot,
+) -> bool {
+    if expected.path != observed.path || expected.identity != observed.identity {
+        return false;
+    }
+    let non_regular = |snapshot: &DirectorySnapshot| {
+        snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.effective_kind != Some(TypeScriptDirectoryEntryKind::RegularFile))
+            .collect::<Vec<_>>()
+    };
+    non_regular(expected) == non_regular(observed)
 }
 
 fn capture_realpath_snapshot(
@@ -1594,6 +1762,10 @@ fn record_realpath_ledger(
     Ok(())
 }
 
+fn native_snapshot_path_bytes(path: &Path) -> usize {
+    path.as_os_str().as_encoded_bytes().len()
+}
+
 fn directory_snapshot_metadata_cost(snapshot: &DirectorySnapshot) -> usize {
     snapshot.path.as_os_str().as_encoded_bytes().len()
         + snapshot
@@ -1661,6 +1833,10 @@ struct TypeScriptCompilerApiWitness {
 }
 
 impl TypeScriptProjectWitness {
+    pub(crate) fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
     /// Exact native host identity forwarded through admitted project inputs and
     /// combined with ordered TSZ environments for project execution authority.
     /// Compiler API selection and resource identities use a separate recipe.

@@ -880,6 +880,7 @@ mod tests {
                 .expect("complete native program forest encodes"),
         })
         .expect("complete bounded certificate encodes");
+        fixture.write("src/unrelated.txt", "");
         let parsed = decode_snapshot_certificate(&bytes).expect("strict certificate decode");
         assert_eq!(parsed.root, fixture.0);
         assert_eq!(parsed.profile, profile());
@@ -897,6 +898,24 @@ mod tests {
         )
         .expect("all resolver observations replay before witness admission");
         assert!(forest.validate_current(&host).is_ok());
+
+        fixture.write("src/new.ts", "export const added = 1;");
+        let parsed = decode_snapshot_certificate(&bytes).expect("certificate stays well formed");
+        let host = Arc::new(
+            TypeScriptProjectWitness::decode_native_snapshot(&parsed.host)
+                .expect("host structure remains decodable"),
+        );
+        let mut active = || Ok(());
+        assert!(
+            TypeScriptForestClosureWitness::decode_native_snapshot(
+                parsed.programs,
+                &host,
+                &mut active,
+            )
+            .is_none(),
+            "cold replay rejects a new source selected by the configured glob"
+        );
+        fs::remove_file(fixture.0.join("src/new.ts")).unwrap();
 
         fixture.write("base.json", r#"{"compilerOptions":{"strict":false}}"#);
         let parsed = decode_snapshot_certificate(&bytes).expect("certificate stays well formed");
@@ -1127,11 +1146,22 @@ mod tests {
             "created-source",
             "negative",
             "negative-parent",
+            "type-root",
             "config",
             "dependency",
             "exports",
         ] {
             let fixture = Fixture::new();
+            if mutation == "type-root" {
+                fixture.write(
+                    "tsconfig.json",
+                    r#"{"extends":"./base.json","compilerOptions":{"noLib":true,"moduleResolution":"Bundler","module":"ESNext","typeRoots":["./type-roots"]},"include":["src/**/*"]}"#,
+                );
+                fixture.write(
+                    "type-roots/baseline/index.d.ts",
+                    "interface BaselineAmbientType {}",
+                );
+            }
             let staged = fixture.compile();
             let binding = *staged.binding_facts().identity.as_ref();
             let owner = client();
@@ -1153,6 +1183,10 @@ mod tests {
                 "negative-parent" => {
                     fixture.write("src/not-yet/leaf.ts", "export interface Leaf {}")
                 }
+                "type-root" => fixture.write(
+                    "type-roots/added/index.d.ts",
+                    "interface AddedAmbientType {}",
+                ),
                 "config" => fixture.write("base.json", r#"{"compilerOptions":{"strict":false}}"#),
                 "dependency" => {
                     fixture.write("node_modules/dep/index.d.ts", "export const value: string;")

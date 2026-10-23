@@ -44,6 +44,48 @@ pub struct NativeProgram {
     pub root_names: Vec<PathBuf>,
     /// Diagnostics produced while loading and resolving project configuration.
     pub program_diagnostics: Vec<crate::TszDiagnostic>,
+    /// Bounded filesystem transcript for configured root discovery. It is
+    /// replayed before a retained native resolver proof may tolerate file-set
+    /// changes in directories it enumerated.
+    pub root_selection: Option<NativeRootSelectionTranscript>,
+}
+
+/// Exact configured-root query needed to replay TypeScript's root matcher
+/// against a fresh admitted filesystem view.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeRootSelectionTranscript {
+    pub config_path: PathBuf,
+    pub root_names: Vec<PathBuf>,
+    pub directories: Vec<PathBuf>,
+}
+
+/// Replays only configured source-root selection. Module parsing and checking
+/// are deliberately not performed; the resolver ledger separately replays all
+/// positive and negative module candidates.
+pub fn replay_root_selection(
+    fs: &dyn ResolutionFileSystem,
+    config_path: &Path,
+    checkpoint: &dyn ExecutionCheckpoint,
+) -> Result<NativeRootSelectionTranscript, String> {
+    poll(checkpoint, 0)?;
+    let parsed = tsz::config::load_tsconfig_with_diagnostics_and_file_system(config_path, fs)
+        .map_err(|error| error.to_string())?;
+    let mut options =
+        tsz::config::resolve_compiler_options_embedded(parsed.config.compiler_options.as_ref())
+            .map_err(|error| error.to_string())?;
+    if options.base_url.is_none()
+        && options.paths.as_ref().is_some_and(|paths| !paths.is_empty())
+        && let Some(paths_base_path) = parsed.paths_base_path
+    {
+        options.paths_base_path = Some(paths_base_path);
+    }
+    let (root_names, directories) =
+        select_roots(fs, config_path, &parsed.config, &options, checkpoint)?;
+    Ok(NativeRootSelectionTranscript {
+        config_path: config_path.to_path_buf(),
+        root_names,
+        directories,
+    })
 }
 
 /// Resolver metadata for one module request in a program source file.
@@ -96,9 +138,17 @@ pub fn build(
     options.checker.allow_importing_ts_extensions = options.allow_importing_ts_extensions;
     options.checker.rewrite_relative_import_extensions = options.rewrite_relative_import_extensions;
     let options_identity = format!("{options:?}");
-    let roots = match config_path {
-        Some(path) => select_roots(fs, path, &config, &options, checkpoint)?,
-        None => inferred_roots.to_vec(),
+    let (roots, root_selection) = match config_path {
+        Some(path) => {
+            let (roots, directories) = select_roots(fs, path, &config, &options, checkpoint)?;
+            let transcript = NativeRootSelectionTranscript {
+                config_path: path.to_path_buf(),
+                root_names: roots.clone(),
+                directories,
+            };
+            (roots, Some(transcript))
+        }
+        None => (inferred_roots.to_vec(), None),
     };
     let mut resolver = ModuleResolver::with_file_system(&options, fs);
     let solution = roots.is_empty()
@@ -116,6 +166,7 @@ pub fn build(
             options_identity,
             root_names: roots,
             program_diagnostics,
+            root_selection,
         });
     }
     let mut pending = roots.iter().cloned().collect::<VecDeque<_>>();
@@ -486,6 +537,7 @@ pub fn build(
         options_identity,
         root_names: roots,
         program_diagnostics,
+        root_selection,
     })
 }
 
@@ -546,7 +598,7 @@ fn select_roots(
     config: &TsConfig,
     options: &ResolvedCompilerOptions,
     checkpoint: &dyn ExecutionCheckpoint,
-) -> Result<Vec<PathBuf>, String> {
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
     let directory = config_path
         .parent()
         .ok_or("native TSZ config has no directory")?;
@@ -621,6 +673,7 @@ fn select_roots(
         .map(|path| (path, 0usize))
         .collect::<Vec<_>>();
     let mut visited = BTreeSet::new();
+    let mut queried_directories = BTreeSet::new();
     let mut entries_seen = 0usize;
     while let Some((directory, depth)) = pending.pop() {
         poll(checkpoint, 1)?;
@@ -630,12 +683,13 @@ fn select_roots(
         else {
             continue;
         };
-        if !visited.insert(canonical) {
+        if !visited.insert(canonical.clone()) {
             continue;
         }
         if depth > MAX_DIRECTORY_DEPTH {
             return Err("native TSZ root directory depth exceeds bound".into());
         }
+        queried_directories.insert(canonical);
         let Some(entries) = fs.read_dir(&directory).map_err(|error| error.to_string())? else {
             continue;
         };
@@ -674,7 +728,10 @@ fn select_roots(
             }
         }
     }
-    Ok(roots.into_iter().collect())
+    Ok((
+        roots.into_iter().collect(),
+        queried_directories.into_iter().collect(),
+    ))
 }
 
 fn source_extension(path: &Path, allow_js: bool) -> bool {
@@ -1014,6 +1071,42 @@ mod tests {
             false,
             &Unlimited
         )?);
+        Ok(())
+    }
+
+    #[test]
+    fn configured_root_transcript_replays_unrelated_files_but_rejects_new_roots()
+    -> Result<(), Box<dyn Error>> {
+        static NEXT_TEMP: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("tsz-root-query-replay-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(root.join("src"))?;
+        let config = root.join("tsconfig.json");
+        std::fs::write(
+            &config,
+            r#"{"compilerOptions":{"noLib":true,"types":[]},"include":["src/**/*"]}"#,
+        )?;
+        std::fs::write(root.join("src/main.ts"), "export const main = 1;")?;
+        let before = replay_root_selection(&tsz::StdResolutionFileSystem, &config, &Unlimited)?;
+        std::fs::write(root.join("src/unrelated.txt"), "")?;
+        let after_text = replay_root_selection(&tsz::StdResolutionFileSystem, &config, &Unlimited)?;
+        assert_eq!(before, after_text, "the .txt is not a TSZ root input");
+
+        std::fs::write(root.join("src/new.ts"), "export const added = 1;")?;
+        let after_source =
+            replay_root_selection(&tsz::StdResolutionFileSystem, &config, &Unlimited)?;
+        assert_ne!(before.root_names, after_source.root_names);
+
+        std::fs::write(
+            &config,
+            r#"{"compilerOptions":{"noLib":true,"types":[]},"include":["src/main.ts"]}"#,
+        )?;
+        let after_options =
+            replay_root_selection(&tsz::StdResolutionFileSystem, &config, &Unlimited)?;
+        assert_ne!(after_source, after_options);
+        std::fs::remove_dir_all(root)?;
         Ok(())
     }
     #[test]
