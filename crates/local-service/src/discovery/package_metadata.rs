@@ -1407,10 +1407,62 @@ fn require_nuget_path_under(resource: &str, base: &str) -> Result<(), DiscoveryS
         .map_err(|_| DiscoveryStoreError::Corrupt)?;
     let base_path = base_uri.path().trim_end_matches('/');
     let expected_prefix = format!("{base_path}/");
+    validate_nuget_path_segments(base_path)?;
+    validate_nuget_path_segments(resource_uri.path())?;
     if !resource_uri.path().starts_with(&expected_prefix) {
         return Err(DiscoveryStoreError::Corrupt);
     }
     Ok(())
+}
+
+fn validate_nuget_path_segments(path: &str) -> Result<(), DiscoveryStoreError> {
+    let bytes = path.as_bytes();
+    let mut segment = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        match byte {
+            b'/' => {
+                if segment == b"." || segment == b".." {
+                    return Err(DiscoveryStoreError::Corrupt);
+                }
+                segment.clear();
+                index += 1;
+            }
+            b'\\' => return Err(DiscoveryStoreError::Corrupt),
+            b'%' => {
+                let Some((&high, &low)) = bytes.get(index + 1).zip(bytes.get(index + 2)) else {
+                    return Err(DiscoveryStoreError::Corrupt);
+                };
+                let (Some(high), Some(low)) = (hex_digit(high), hex_digit(low)) else {
+                    return Err(DiscoveryStoreError::Corrupt);
+                };
+                let decoded = (high << 4) | low;
+                if matches!(decoded, b'/' | b'\\') {
+                    return Err(DiscoveryStoreError::Corrupt);
+                }
+                segment.push(decoded);
+                index += 3;
+            }
+            _ => {
+                segment.push(byte);
+                index += 1;
+            }
+        }
+    }
+    if segment == b"." || segment == b".." {
+        return Err(DiscoveryStoreError::Corrupt);
+    }
+    Ok(())
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn nuget_hash_part(hasher: &mut blake3::Hasher, bytes: &[u8]) {
@@ -1872,30 +1924,65 @@ mod tests {
 
     #[test]
     fn nuget_inline_page_ids_stay_within_source_origin_and_path() {
-        for external_origin in [true, false] {
+        for invalid_path in [
+            "external-origin",
+            "outside-path",
+            "dot-segment",
+            "encoded-dot-segment",
+            "encoded-separator",
+            "encoded-backslash",
+            "raw-backslash",
+            "malformed-escape",
+        ] {
             let (endpoint, worker) = nuget_server(|address| {
                 let registration = format!("http://{address}/registration/");
                 let root_url = format!("{registration}demo/index.json");
-                let inline_page_url = if external_origin {
-                    let port = address.rsplit_once(':').expect("loopback host port").1;
-                    format!("http://127.0.0.2:{port}/registration/demo/index.json#opaque")
-                } else {
-                    format!("http://{address}/outside/demo/index.json#opaque")
+                let inline_page_url = match invalid_path {
+                    "external-origin" => {
+                        let port = address.rsplit_once(':').expect("loopback host port").1;
+                        format!("http://127.0.0.2:{port}/registration/demo/index.json#opaque")
+                    }
+                    "outside-path" => format!("http://{address}/outside/demo/index.json#opaque"),
+                    "dot-segment" => format!("{registration}../outside/demo/index.json#opaque"),
+                    "encoded-dot-segment" => {
+                        format!("{registration}%2e%2e/outside/demo/index.json#opaque")
+                    }
+                    "encoded-separator" => {
+                        format!("{registration}%2e%2e%2foutside/demo/index.json#opaque")
+                    }
+                    "encoded-backslash" => {
+                        format!("{registration}%5c..%5coutside/demo/index.json#opaque")
+                    }
+                    "raw-backslash" => {
+                        format!("{registration}\\..\\outside/demo/index.json#opaque")
+                    }
+                    "malformed-escape" => {
+                        format!("{registration}%2/outside/demo/index.json#opaque")
+                    }
+                    _ => unreachable!("listed inline path fixture"),
                 };
-                vec![
-                    (
-                        "200 OK".to_owned(),
-                        format!(
-                            r#"{{"resources":[{{"@id":"{registration}","@type":"RegistrationsBaseUrl/3.6.0"}}]}}"#
-                        ),
-                    ),
-                    (
-                        "200 OK".to_owned(),
-                        format!(
-                            r#"{{"@id":"{root_url}","count":1,"items":[{{"@id":"{inline_page_url}","count":1,"lower":"1.0.0","upper":"1.0.0","items":[{{"catalogEntry":{{"id":"demo","version":"1.0.0","listed":true}}}}]}}]}}"#
-                        ),
-                    ),
-                ]
+                let service = format!(
+                    r#"{{"resources":[{{"@id":"{registration}","@type":"RegistrationsBaseUrl/3.6.0"}}]}}"#
+                );
+                let root = serde_json::json!({
+                    "@id": root_url,
+                    "count": 1,
+                    "items": [{
+                        "@id": inline_page_url,
+                        "count": 1,
+                        "lower": "1.0.0",
+                        "upper": "1.0.0",
+                        "items": [{
+                            "catalogEntry": {
+                                "id": "demo",
+                                "version": "1.0.0",
+                                "listed": true
+                            }
+                        }]
+                    }]
+                })
+                .to_string();
+                vec![("200 OK".to_owned(), service), ("200 OK".to_owned(), root)]
             });
             let mut owner = gateway(endpoint);
             let package =
@@ -1907,6 +1994,64 @@ mod tests {
             assert!(owner.store.facts().next().is_none());
             let requests = worker.join().expect("NuGet fixture worker");
             assert_eq!(requests.len(), 2);
+            assert!(requests[1].starts_with("GET /registration/demo/index.json "));
+        }
+    }
+
+    #[test]
+    fn nuget_external_page_paths_reject_traversal_before_fetch() {
+        for invalid_path in [
+            "dot-segment",
+            "encoded-dot-segment",
+            "encoded-separator",
+            "encoded-backslash",
+            "raw-backslash",
+            "malformed-escape",
+        ] {
+            let (endpoint, worker) = nuget_server(|address| {
+                let registration = format!("http://{address}/registration/");
+                let root_url = format!("{registration}demo/index.json");
+                let page_url = match invalid_path {
+                    "dot-segment" => format!("{registration}../outside/page.json"),
+                    "encoded-dot-segment" => {
+                        format!("{registration}%2e%2e/outside/page.json")
+                    }
+                    "encoded-separator" => {
+                        format!("{registration}%2e%2e%2foutside/page.json")
+                    }
+                    "encoded-backslash" => {
+                        format!("{registration}%5c..%5coutside/page.json")
+                    }
+                    "raw-backslash" => format!("{registration}\\..\\outside/page.json"),
+                    "malformed-escape" => format!("{registration}%2/outside/page.json"),
+                    _ => unreachable!("listed external-page path fixture"),
+                };
+                let service = format!(
+                    r#"{{"resources":[{{"@id":"{registration}","@type":"RegistrationsBaseUrl/3.6.0"}}]}}"#
+                );
+                let root = serde_json::json!({
+                    "@id": root_url,
+                    "count": 1,
+                    "items": [{
+                        "@id": page_url,
+                        "count": 1,
+                        "lower": "1.0.0",
+                        "upper": "1.0.0"
+                    }]
+                })
+                .to_string();
+                vec![("200 OK".to_owned(), service), ("200 OK".to_owned(), root)]
+            });
+            let mut owner = gateway(endpoint);
+            let package =
+                PackageCoordinate::parse("pkg:nuget/demo@2.0.0").expect("NuGet package coordinate");
+            assert!(matches!(
+                owner.observe_package(&package),
+                Some(RegistryPackageDiscoveryObservation::Unavailable { .. })
+            ));
+            assert!(owner.store.facts().next().is_none());
+            let requests = worker.join().expect("NuGet fixture worker");
+            assert_eq!(requests.len(), 2, "no escaped page GET");
             assert!(requests[1].starts_with("GET /registration/demo/index.json "));
         }
     }
