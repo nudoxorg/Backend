@@ -2346,7 +2346,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:28 \u203a AsciiSet"
+              "trail": "project › src/ascii_set.rs:28 › AsciiSet"
             },
             "kind": "struct",
             "language": "rust",
@@ -2401,7 +2401,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:56 \u203a AsciiSet"
+              "trail": "project › src/lib.rs:56 › AsciiSet"
             },
             "kind": "import",
             "language": "rust",
@@ -2453,7 +2453,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a AsciiSet"
+              "trail": "project › AsciiSet"
             },
             "kind": "type",
             "language": "unknown",
@@ -2505,7 +2505,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a AsciiSet"
+              "trail": "project › AsciiSet"
             },
             "kind": "type",
             "language": "unknown",
@@ -2557,7 +2557,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a AsciiSet"
+              "trail": "project › AsciiSet"
             },
             "kind": "type",
             "language": "unknown",
@@ -2611,7 +2611,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:40 \u203a EMPTY"
+              "trail": "project › src/ascii_set.rs:40 › EMPTY"
             },
             "kind": "constant",
             "language": "rust",
@@ -2666,7 +2666,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:80 \u203a complement"
+              "trail": "project › src/ascii_set.rs:80 › complement"
             },
             "kind": "method",
             "language": "rust",
@@ -2721,7 +2721,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:69 \u203a union"
+              "trail": "project › src/ascii_set.rs:69 › union"
             },
             "kind": "method",
             "language": "rust",
@@ -2776,7 +2776,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:117 \u203a percent_encode"
+              "trail": "project › src/lib.rs:117 › percent_encode"
             },
             "kind": "function",
             "language": "rust",
@@ -2831,13 +2831,13 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:107 \u203a CONTROLS"
+              "trail": "project › src/ascii_set.rs:107 › CONTROLS"
             },
             "kind": "constant",
             "language": "rust",
             "score": 4294967286,
             "state": "ready",
-            "summary": "The set of 0x00\u00a0to 0x1F (C0 controls), and 0x7F (DEL)."
+            "summary": "The set of 0x00 to 0x1F (C0 controls), and 0x7F (DEL)."
           },
           {
             "identity": {
@@ -2886,7 +2886,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:196 \u203a A"
+              "trail": "project › src/ascii_set.rs:196 › A"
             },
             "kind": "constant",
             "language": "rust",
@@ -2940,7 +2940,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:87 \u203a Output"
+              "trail": "project › src/ascii_set.rs:87 › Output"
             },
             "kind": "type",
             "language": "rust",
@@ -2994,7 +2994,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:198 \u203a UNION"
+              "trail": "project › src/ascii_set.rs:198 › UNION"
             },
             "kind": "constant",
             "language": "rust",
@@ -3048,7 +3048,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:56 \u203a add"
+              "trail": "project › src/ascii_set.rs:56 › add"
             },
             "kind": "method",
             "language": "rust",
@@ -3102,7 +3102,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:197 \u203a B"
+              "trail": "project › src/ascii_set.rs:197 › B"
             },
             "kind": "constant",
             "language": "rust",
@@ -3156,7 +3156,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:62 \u203a remove"
+              "trail": "project › src/ascii_set.rs:62 › remove"
             },
             "kind": "method",
             "language": "rust",
@@ -3210,7 +3210,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:208 \u203a COMPLEMENT"
+              "trail": "project › src/ascii_set.rs:208 › COMPLEMENT"
             },
             "kind": "constant",
             "language": "rust",
@@ -3264,7 +3264,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:95 \u203a Output"
+              "trail": "project › src/ascii_set.rs:95 › Output"
             },
             "kind": "type",
             "language": "rust",
@@ -3318,7 +3318,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:97 \u203a not"
+              "trail": "project › src/ascii_set.rs:97 › not"
             },
             "kind": "method",
             "language": "rust",
@@ -3372,7 +3372,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:199 \u203a EXPECTED"
+              "trail": "project › src/ascii_set.rs:199 › EXPECTED"
             },
             "kind": "constant",
             "language": "rust",
@@ -3426,7 +3426,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:207 \u203a BOTH"
+              "trail": "project › src/ascii_set.rs:207 › BOTH"
             },
             "kind": "constant",
             "language": "rust",
@@ -3480,7 +3480,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:89 \u203a add"
+              "trail": "project › src/ascii_set.rs:89 › add"
             },
             "kind": "method",
             "language": "rust",
@@ -3534,7 +3534,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:136 \u203a utf8_percent_encode"
+              "trail": "project › src/lib.rs:136 › utf8_percent_encode"
             },
             "kind": "function",
             "language": "rust",
@@ -3589,7 +3589,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/ascii_set.rs:137 \u203a NON_ALPHANUMERIC"
+              "trail": "project › src/ascii_set.rs:137 › NON_ALPHANUMERIC"
             },
             "kind": "constant",
             "language": "rust",
@@ -3644,7 +3644,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:73 \u203a percent_encode_byte"
+              "trail": "project › src/lib.rs:73 › percent_encode_byte"
             },
             "kind": "function",
             "language": "rust",
@@ -3738,7 +3738,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:142 \u203a PercentEncode"
+              "trail": "project › src/lib.rs:142 › PercentEncode"
             },
             "kind": "struct",
             "language": "rust",
@@ -3793,7 +3793,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:117 \u203a percent_encode"
+              "trail": "project › src/lib.rs:117 › percent_encode"
             },
             "kind": "function",
             "language": "rust",
@@ -3848,7 +3848,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:136 \u203a utf8_percent_encode"
+              "trail": "project › src/lib.rs:136 › utf8_percent_encode"
             },
             "kind": "function",
             "language": "rust",
@@ -3903,7 +3903,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/lib.rs:195 \u203a from"
+              "trail": "project › src/lib.rs:195 › from"
             },
             "kind": "method",
             "language": "rust",
@@ -3955,7 +3955,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a PercentEncode<'a>"
+              "trail": "project › PercentEncode<'a>"
             },
             "kind": "type",
             "language": "unknown",
@@ -4007,7 +4007,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a PercentEncode<'_>"
+              "trail": "project › PercentEncode<'_>"
             },
             "kind": "type",
             "language": "unknown",
@@ -4059,7 +4059,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a self"
+              "trail": "project › self"
             },
             "kind": "variable",
             "language": "unknown",
@@ -4111,7 +4111,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a self"
+              "trail": "project › self"
             },
             "kind": "variable",
             "language": "unknown",
@@ -4163,7 +4163,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a self"
+              "trail": "project › self"
             },
             "kind": "variable",
             "language": "unknown",
@@ -4215,7 +4215,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a iter"
+              "trail": "project › iter"
             },
             "kind": "variable",
             "language": "unknown",
@@ -4267,7 +4267,7 @@
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a From<PercentEncode<'a>>"
+              "trail": "project › From<PercentEncode<'a>>"
             },
             "language": "unknown",
             "score": 4294967285,
@@ -4293,11 +4293,11 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 7225,
                 "bytesPerToken": 4,
-                "estimatedTokens": 1807,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
+                "normalizedEstimatedTokensExcludingCounters": 951,
+                "normalizedFrameBytesExcludingCounters": 3802,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -4306,7 +4306,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `PercentEncode` \u00b7 struct \u00b7 rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::a3a78a92969ecd6d25f04a56b2d21af5b58b0d442df0bc27920dbc35f825ef8d::PercentEncode`\n\u2022 `percent_encode` \u00b7 function \u00b7 rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::b32114bb75cbcfe09c6ad40e840c02988c2da15211a4e55a9baedc6a1f9f4094::percent_encode`\n\u2022 `utf8_percent_encode` \u00b7 function \u00b7 rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::634da06b4504632a7366df9e10181584b28f38468f980234ee3fca450ee77173::utf8_percent_encode`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `PercentEncode` · struct · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::a3a78a92969ecd6d25f04a56b2d21af5b58b0d442df0bc27920dbc35f825ef8d::PercentEncode`\n• `percent_encode` · function · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::b32114bb75cbcfe09c6ad40e840c02988c2da15211a4e55a9baedc6a1f9f4094::percent_encode`\n• `utf8_percent_encode` · function · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::634da06b4504632a7366df9e10181584b28f38468f980234ee3fca450ee77173::utf8_percent_encode`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
                 "type": "text"
               }
             ],
@@ -4314,13 +4314,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 5840,
+                "bytesExcludingCursor": 2403,
                 "bytesPerToken": 4,
-                "estimatedTokens": 1460
+                "estimatedTokensExcludingCursor": 601
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-1792131818-pc4-eJztl31wFdUVwHdfDCAIioL9gMHtCiHRl7B793sDgRACRCXvQYBYEPLu3r2bLL63G3b3ESKJVDBWPmoMbUSlChZFqToCDiBqHRyJRcVaPoQYsCKt1bagwGhHbTGdfcl7JBBNGPAPZ7r_vJuzZ8-55-s3J-OnhgsIkiAC-xfRC7DjmrZFqxwI0g6eH8euV2bqtMoGaWTHYtDSaXURfbvp_9Iuhg6qoIO0Dj3oyz280KNVOowdhC2v0EK2jukgHTVjpkerXJCuMi3drvJVU57YIG26bhzrCQUdR80F2KmmVa42SGvQNV1apTmZZ6AoCJoEZIFRsKwhkWdZxEmCwBoyL0FJkYCGWI41GFmHGosM0T9yiJMFTqSDNIo7ru34nh2MzEpMq7TMSQrPASRyBqswkNUhgLIg8KLC64BXNJkTJUXEADGiLEDdgAbQWQFjyPE8LwksHTwbBS0gWRMZRdA4zPBIYnUOchjqMgM4qCNDwbIisQxgFBbrUBEVJEiAZ5CgA6gADsl0kNYcaKEKWqV5UWCgoAOdk5HASEgErKZJUMdIETloQCRpusQzmoZkgWEkjUW6yChQlAwN8DIw_JTb5bRKswDyjMZCRZc1DhqMArCmCBIvSIIiSohVoKBrCoK8jHUs8ACIGMgGUDiRxZwkMnSQdlEFjsFEbRzb9qurK8iQOZZlkMGyAuB0ReQ0wBssjw1ZQYImYMSwHKdxrKwIugAZUeAlJEBJ10RW03yjfmdZCNMqCNLz49ipLrMNw8VtTdImuKBWqfW7FeplMWiZBnY9WrXi0WhtbS1JEETvfhuXZywbcMuJp2qXt7KNRnPvd-7LfbLm653W4qxwxpitTa92935bVc2ap2YZy1c2H3m05c4_H8gBezbdvPjpSfXibS-8_bfxH__ptYEFm3sNqY1XCLPVae7yZZ_e-MWDn3Hk9ANryxZnjZhEEOQbpTPDbOmUiSBAEARJhNaM3dOyZtzTe8alNfdZf-DOQ02nf_ur_dUH69__x8570wffVcPtakrPnZcbmLv7r49z-9bNLX5zbsuzL73w3NW35968-avLb12Y-_zmHdf-5b_r_x1-qKF-yY8cZXD05VU1727pt2NK1aRHzA398tb95pW4_WH2TdzpG4fn2yVfvmLWPNbceEdd5jOr95KQSCO7uwRBEIHVRIB8pveiIbtuGl70ZehUaNiw02taN2d8tv-m0Kzfbec-CnB7w6uJtDSS2TNkZG24ue_bdf0Pj16z6_dnRvZ6aDYkN3l3b9wafskgCIIoLZgCAt3laviZAYc-znqj9Ojfz1S3vDJv5ROfrH1u50hnxbZVDeqO43IZcfaJl4angUBPIrmHIMlPVPnZvSPPBCOFNXXD7vt8anmf3QXb1m54a2_LEmJsdN-xdqPUx4c37bx2zsInsq31Uw8d2T64btnYmnmz8l5U3105Ycgd28t7D5DHbZixPTP86IrX84dKM667-45q5-VrruvTsvkdeHLpa3Ui2Xti-Il9-1eGa7Qh2589_oD69R__4PV7uY5YNPTg5RsWb5k8iiCIy2LQtMg-Vz_e76ePrFBPrvpXo1f68_JXH56z483JJz4an3GsPkscJkX8_o2amgOd6kD60uqCIDp1_2MtN9RNN6cMX7O0_IFjOytmffBc9uBP10-YNJUgCKs9jPTEFLX_kYmgB6N2eXZCmN02WtkLWIIk0jrBOpmD7iJs1yOJ9F63rYg0Pn_0lvn71_-zOaAe-eqT1VdRDSc2mk3OuKZ9G6_fTRDksplFhaUzC6eVFIWKk7WjehDLhVyF6m6Gk3o9KE1Cr9vCpH1_FnsYcyCp_947SwdecWrw9e-hLaFBny1r2nqc5J7_ceO76_CkpicPw5dS5eo1oHvVq66YCYpDEwoJMkCSlL8ZtD1Xfp4y0_4r-nWdUjg9P1XU_xer22Kl8nkDmTxSDaHQoGO_-OVBYcw9leaR5qPHPzj8-tB5z6hfxG5dMLP0ym1taml3-fmeFiolLvDDH0BdiBWjvFjlKCuu2wuz3bhjQIRHOXHXy65s41M29gFlWuWjKh17Hkaeqro4Bi3PRKoKOSjJUAGKqGCkizoQDIaHgqgBHbDQEDRB1hid54FuMBoCkgIYXUOcYMhAwIasq2onCpKtra2tqRxPnqQXr_rPieMPFffZtRh9-eGWKzfV7753dtahV9db_e9fNT8ZQXrycM30Ckw52Is7FuVVV2LKNqhk9Qe0h1OGO_H24QfrPhyIXlgeXPdgxpMLN0VWNBU21IdC6wb1XzLi_VNrG1I-KGjpKWPXxD1DLuva4qrCh8ecnHttr1-3jt-r3nn6pFs_6ODRoVtenNu38UDuN2-5SYtkTjLQoZVxjXI9J448qlM6Ro-EeWT_pFpf10GjoqaW4_g27kuKS7_ra2pRX4qiKK3aw65KZYyE1Oy4PCeYEEIXmWaZiz3_hetBz0RUvi8rwV6wb2KB858lvMxLIs9jBRga9ldhhceMjHjJEDlDxqwGGENjZAPJsixoQNElxEJOxIyuMAqQ2IvvkkBqYDuMbs_yfNkb541uDwv0AxjdhosZXZHjdciIGi8wvMgBKHGiqBsKZhlWZgWZ14BscDIvyobi_y_FY8wZCPICg7EksRKnql0MgT_AZy54gAcmD2K448Ux5VVgasb0idkylYzEH2lfWm4uwJbf9qZVnpOWyshlJRhfqpEfQjm4HDoJr15nsHTw2Pd6qnAhjFVGsZuWlpYMPS_uYqqTe9MqV9VFXaQsSBWHisvybwlPzi-eMaVwWlFBbe5ZQ7Og62LHK8Pzf5bZxceZtGHblAadsfT5drJyPLusLUWZWUHKVx0BGA06I7iJdFZuygf0CWJYVBf2fYZkmlZlPAEJ6Cc8-J3gyKKy87qAWFrXELs3KW783q_QTsJz0pewmwPdsgQh_SylLGddUgRe7LR1icCedXL61vMQ2MMR-AEgcOXFIFDjAMvymiYJSEMGZhQkQp1nsMwziAGKLCOgQ1YALAt5LAhQ0SDWkQhZQzF4RuFV9Xz6fXPB9PtJ8gC6oF8b5xLdSVWZXkVH-GGvA4eEYtvKzi8pKCpq1_b3lbaTaVGRVFtHKOjgNpxivcP3V52zO6lnX5XeQBX5gIthy3OpSJGHHejZzugiD8eoMVSG6zl5kYQ_rwI72LAdTFVAl4JUJAfZ0Wgi66NLEiDKy8yKUDHsVdh6MOUgv7ODCaZbGYXV32ayA9TON1Vyzl0tzx5dYFeN9u-YF6E023HsKp_okcToR6iqCmxRlm0llkXTc5PZ6zJJXcNe-RbYXwjnZ3bg_DmM0i4F4-e0A_a72ZpYDi8h3-NJ8ePfq3uqje2d5O2yDttvwlHb6ttp_W0T1V5S3F8sWQIk-T8P1P6n-2e0f7834260e7105522e7942ad1a9fcd",
+                  "cursor": "mcp2-<live-validated>",
                   "limit": 3,
                   "query": "PercentEncode"
                 },
@@ -4396,7 +4396,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/lib.rs:142 \u203a PercentEncode"
+                    "trail": "project › src/lib.rs:142 › PercentEncode"
                   },
                   "kind": "struct",
                   "language": "rust",
@@ -4451,7 +4451,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/lib.rs:117 \u203a percent_encode"
+                    "trail": "project › src/lib.rs:117 › percent_encode"
                   },
                   "kind": "function",
                   "language": "rust",
@@ -4506,7 +4506,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/lib.rs:136 \u203a utf8_percent_encode"
+                    "trail": "project › src/lib.rs:136 › utf8_percent_encode"
                   },
                   "kind": "function",
                   "language": "rust",
@@ -4533,11 +4533,11 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 6863,
                 "bytesPerToken": 4,
-                "estimatedTokens": 1716,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
+                "normalizedEstimatedTokensExcludingCounters": 879,
+                "normalizedFrameBytesExcludingCounters": 3516,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -4546,7 +4546,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `AsciiSet` \u00b7 struct \u00b7 rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::03d4cf8275bbde9af062483aa42b5803afa6d6ab168baea9577972a2f0cf6f0b::AsciiSet`\n\u2022 `AsciiSet` \u00b7 import \u00b7 rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::f6ff4af48d0445a862ca7b44924a66c53728a211bf3d4c409ba6b948d8f25185::AsciiSet`\n\u2022 `AsciiSet` \u00b7 type \u00b7 unknown\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f76383081933421344717f10d073c5db36fc8aed17534918::AsciiSet`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `AsciiSet` · struct · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::03d4cf8275bbde9af062483aa42b5803afa6d6ab168baea9577972a2f0cf6f0b::AsciiSet`\n• `AsciiSet` · import · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::f6ff4af48d0445a862ca7b44924a66c53728a211bf3d4c409ba6b948d8f25185::AsciiSet`\n• `AsciiSet` · type · unknown\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f76383081933421344717f10d073c5db36fc8aed17534918::AsciiSet`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
                 "type": "text"
               }
             ],
@@ -4554,13 +4554,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 5525,
+                "bytesExcludingCursor": 2164,
                 "bytesPerToken": 4,
-                "estimatedTokens": 1382
+                "estimatedTokensExcludingCursor": 541
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-1792131818-pc4-eJztV3t0FcUZ33uvhBiEqgj2SA6uqxJSb3L3vbMbEUIIJJLchIQQSwzJzOxssuTevXF3L0lMIqdqqDyEikW0QaEi-IIj0CMvqQeOoKI8Cj6gaD3FqmgFUU5p8YHp2ZB7Mcpp4Ej_qKf7z87OfPOb-X6_75tvduyk0jzKR1H-Pa3MDGI7ZsxiNIEPMja5I04ct8bUGY0LMjgWjUJLZ7RWpsH03oxDoI3rmSCjQxd6_S5pdhmNyXWwaZYTlwkyETNquowmBJkm09JjTZ5VchEuyJiOEyd6t4FOIuYMYrcwmtAeZBB0TIfRGAGILJQlCSk8kFiVAIRlkeOwoEgSZwBRgYqq8AhzAmewQIeIw4bsNQUsAEmQmSCD47YTs72VbYLNRsJoDEZEBUQVRIBVWRR4DhsIE4lXgSEpBuIwVnSgG4qg8wZvcKKkI1nWWSgiBDlsACZ41gsGspwAIW-oiiqLIlYlSTAMLHKcDAjLKoAgWRcxr7ICNiTCcsDbO8ISx_Icr7IeGLKhhesZjRFliYWSzusCwBKrYJnnEFKgTrAqC9CAWEG6IrIIYSCxrII4rMusCmXFQLwIeMOjPFbHaAzHQ5FFHFR1gARosCpPkCopoqRIqqxgToWSjlQMRUB0Iok8LxMeGLwqyBwRFJllgoyD60kUdmtjx2KesFASVQ6LssxjAyAJEZ4HgoIlXeZ4BBVJ4AiWCBA5DsiiAKCiY11SECtDYiAAVQ_UCyoLE0bjg8wdcWK31MQMwyFnguRMxwWFSrsXqFCviULLNIjjMpoVj0Ta29t9FEX1H_D0nBGzBxUde6p9The3yDjYf-_8nCfbvtpqzcwsHTHq-R3b-hpf39TW-dRUY868g-8-duiuP72Zze9aM3HmsxMWyLdv3P3B2CN7Xroib23KsPZ4vVSllTlzZn9208mHjwu-yW8urZmZeeMEivLtrJxSylUWj-f9FEX5qJLO0bsOdY55dteYwMHU5W_edWDHiSX3v9Hy9oK_fLL1vn5DftUmbN_RL2d6jn_aq397Qti_bFr4tWmHVr-w8bkrG3Imrv3y0tuac_6wdtPQ975Z_s_SRx5YcPfVtjoksmVh21vrBmwqbprwqLlywC3LfvtiPHY461bhxE035MbKT71otv3-4KI7O0auWrzPB6mAr69NUBTlX0z5fav6tw7bfusNhadKvigZPvxEZ9faEcffuLVk6uMbhA_9wr7SxVQg4GN3DctoLz2Ytrtj4Ds3d25_5nRGyiNV0LfGvffp50tfMCiKoirzinl_X1zdcHrQgSOZOyv_-tHplkMvTp-34uOlz23NsOeuX_iAtukoqKHOPvHK0jLefz6ezKJ8vo81sHpfxulgbX5bx_D5_5hUl_pq3vqlK1_fd-huanRk__s9oPSRd9ZsHVrdvCLLWj7pwLsbhnTMHt02feotm7W35o0bdueGuv6DwJiVFRtGlj429-XcdKXi2nvvbLG3DL429dDavfDze17qkH39x5eu2P_GvNI2NGzD6qMPaV-98kd3wJYOqjX97UtXzlxXEKIo6pIoNC1f6pVPDLjm0bna5ws_XeRW_rJu2--qN71WcOzDsSPeX5ApD1dqvfiNmMiGdou_3-ufzH-wYKfOp3-9p-zhkzPX7mq__1-jQqGrqtdH0yZuTj9FUZTZ40a_7izq-bgeQxdGYnVZ3Z1ZZ1IrawZH-ahA4pxOuN-Xcz12PqpfyrLBz4QWPzRuZ8Xob3KHzqeaP40WZQb2TvPdE6_acfl1makU5Zs9pTC_ckp-WXlhSTghG30eblzIVui-0jdhdx6qdNv1qUngv4d4nj77E_YrCtPHo71zq94fqex4-8rNce7otHuvmJU3p3135Zrpxzc-nZQrZVDfppd9O4UPl4zLp3x-n4_27gNnnss-SsL0vGVP1-L8yblJUf8vVp9iJfn8hS_RpNn8JX9efPWvO26vnvU4ffDvHy5KWVrZOSXl-pOj2oombWjP7kFY7fFdVlJJXeDE_wFdqFkhN9oYsuJ6rDnLidsGxCRkxx03q5HYmFhuFrFwTDetulCjHZtOsKtpDolCyzWxphmyYYjQEIHOiqIEgcxjqCBRVHkRyjKWBIUHkOc4ZAi6iEVWRVBGqgh0YPASByRNSxyAvq6urm-T9BZM0MMLvz529JFw6vaZ-NThdT9bs-DV-6oyD2xbbg38zcI7EptPCjJ8BozESZpDIoamQQ-zxiFuWhL9ioRhmmPjUMRE2bZDURRIdI9pjCM67hD6ewia1prACNJ5JeHJZSVF5UE6XBKuyS0qLcgNVxTnlxXmteckgO4WgajIokhU3kDEuzSqImEBFhVDFgxAOMSzBmKBgQEAEuJVXcEcFGTC6iqr8gr340n9YZjnf6wcP_xlZkPeyec6h47Tngjvbrrsy1HPn7C2LEk99uS4HjpTfv6DMD-_iT_5MGc9og3AKxJCOlGhwcq8CAQIRR5JgPX-CmRdhoiTAYIEqpLi_RFB3mCxIRss6h3mXRcc5sMTjZwy0mgTh1iuQ0PaIS4dM2hcD22IXWI7dMymUYtLHNq0aLee0LnleYWFtA2tOpIdSHJx-eR606FNxwt43TNNHJGDesio6SaDJKNg34Mby_eDky-P6brmC_-q-8enx6bm37Yn98jKiul1193-cAK3Hw0tPQk2OO4aoObciEfj_TNWFbeCaVe12cXv6U--1gjwjdcFhixeVzzwxJLa-cn0zk5uujqxaceMmhFo026Mruolnpe8rlM9st51Gx0tFIrbkWynkeDspnroNtVlx-y60PW9Z-hZ3XRlfoecwgqHdHNXC3W9lo4Stz6mezRDiybNpuOaVl03826M1olhWoSGtEWavL5senzMpkkzjDZGiBYIXCRer9ZobEOXaFpvnMDFpDo9ucg5wAKBQCJob_JOyV6jplV3zmOyPefsrJtDoRD9H4UxbFgX9ZTprVCWQ9wkym04ZjkuPb4sd0JxfniyRo9IrEqPokck1s2Guj4SZdAZmT0tJtm6Odm6JdmqzcjMSa4w2KsDjmvHsUsnc3ZgYvRyr3gka8OZEpKeGCw6x1S6NY2maToKnQaNrsqrj1sNOWeSsqYsNzwhv6YoP0yH6LGFk8trSvPLavIKKsITq4Np3X_OF6mc_NjDy5-sI9-pKA0Z9YeXHb3kM0k69cHmsmXctoLa0VZLg3PqlQdGS-aWr86Y-YM_qCjnN_EnX1EIUBCvACLLnIoEwBqKLACBBZwqCCLPCaKocIrBsTqrCFjSkSAbGECic4okiCoHeleU0xd-caJ8KWdvTxchyn6sQ34f9W-7Hv-h-218dea587a4590370007c1946bef45af",
+                  "cursor": "mcp2-<live-validated>",
                   "limit": 3,
                   "query": "AsciiSet"
                 },
@@ -4636,7 +4636,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/ascii_set.rs:28 \u203a AsciiSet"
+                    "trail": "project › src/ascii_set.rs:28 › AsciiSet"
                   },
                   "kind": "struct",
                   "language": "rust",
@@ -4691,7 +4691,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/lib.rs:56 \u203a AsciiSet"
+                    "trail": "project › src/lib.rs:56 › AsciiSet"
                   },
                   "kind": "import",
                   "language": "rust",
@@ -4743,7 +4743,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a AsciiSet"
+                    "trail": "project › AsciiSet"
                   },
                   "kind": "type",
                   "language": "unknown",

@@ -1,0 +1,42 @@
+{
+  "acceptance": "Fresh exact-head Linux comparison still pending; this review alone is not CI green.",
+  "case": "rust-percent-encoding",
+  "evidence": {
+    "artifact_manifest_sha256": "ecebb531d2b88ff9e6cfc4aa245d2840181a7d7593d7f36090a74b3b7d8456c2",
+    "build": 1807,
+    "global_build": 594865,
+    "job": "pr-t2",
+    "pipeline": "nudox-backend-t1-pr",
+    "source_sha": "ee8d0c27be6bf9f58e1f88ae525b123c50d49ee3"
+  },
+  "invariants": [
+    "Only2 MCP search replies differ; their old literal, session-bound opaque tokens become the existing mcp2-<live-validated> marker after the harness consumes the real advertised continuation. The normalizer itself is unchanged.",
+    "Recomputed old payload size minus exactly one cursor copy equals the new bytesExcludingCursor for each search. Token byte widths and both49152-byte/12000-token limits are unchanged. MCP normalized complete-frame counters follow the existing normalizer after actual raw frame accounting has passed.",
+    "After excluding only those enumerated accounting fields and the two opaque cursor strings, every CLI/MCP content field, record, authored source path/line/name/kind, ordering, key, source/page identity, readiness, coverage, tool list and preview text is recursively equal to the prior reviewed golden.",
+    "The independent pinned-source review in2026-10-16-t2-rust-percent-encoding-answer-review.json remains applicable because no declaration content changed."
+  ],
+  "performance": {
+    "action": "Retained the complete previous performance object unchanged; no candidate measurements copied, no tolerance/floor change.",
+    "baseline_sha256": "19a0186682eee7971ceca6af996fd4154667ad25ce41925ee55dc8ae7f315215",
+    "candidate_passes_existing_regressions": true
+  },
+  "review": [
+    {
+      "call_index": 0,
+      "old_payload_bytes": 5840,
+      "preserved_payload_bytes": 2403,
+      "query": "PercentEncode",
+      "removed_opaque_cursor_bytes": 3437
+    },
+    {
+      "call_index": 1,
+      "old_payload_bytes": 5525,
+      "preserved_payload_bytes": 2164,
+      "query": "AsciiSet",
+      "removed_opaque_cursor_bytes": 3361
+    }
+  ],
+  "reviewer": "Codex / GPT-6.1, 2026-10-23",
+  "schema": 1,
+  "scope": "Answer-only admission of already-implemented live continuation normalization; every product answer outside the enumerated token/accounting fields is recursively equal to the old reviewed golden."
+}
