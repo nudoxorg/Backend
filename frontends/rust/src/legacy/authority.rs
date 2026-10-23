@@ -816,11 +816,11 @@ impl RustWorkspace {
                     .vfs
                     .file_path(*file_id)
                     .as_path()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_default();
+                    .ok_or(RustAuthorityError::CargoTargetMetadataMismatch)?;
+                let path = Path::new(path.as_str());
                 return match self.source_owner_entry(
                     *file_id,
-                    &path,
+                    path,
                     Some(target),
                     RustCargoTargetResolution::ExplicitUnitTarget,
                     control,
@@ -833,10 +833,9 @@ impl RustWorkspace {
                 let Some(path) = self.vfs.file_path(*file_id).as_path() else {
                     return Err(RustAuthorityError::CargoTargetMetadataMismatch);
                 };
-                let Some(relative) = path.strip_prefix(self.root.as_path()) else {
+                let Ok(relative) = Path::new(path.as_str()).strip_prefix(self.root.as_path()) else {
                     return Err(RustAuthorityError::CargoTargetMetadataMismatch);
                 };
-                let relative = Path::new(relative.as_str());
                 if !is_normalized_relative_path(relative)
                     || !self.selected_source_identities.contains_key(file_id)
                 {
@@ -7012,7 +7011,7 @@ mod read_frontier_budget_tests {
         let mut targets = package.targets.to_vec();
         targets.push(duplicate_target);
         package.targets = targets.into_boxed_slice();
-        workspace.cargo_workspace_facts = Some(Arc::new(duplicate_facts));
+        workspace.cargo_workspace_facts = Some(std::sync::Arc::new(duplicate_facts));
         assert!(workspace.cargo_target_for_name("ownership_bench").is_none());
         assert!(matches!(
             workspace.source_closure_for_target(
