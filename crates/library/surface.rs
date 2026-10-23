@@ -6937,12 +6937,18 @@ mod tests {
         );
         assert_eq!(legacy.detail(), "open authority fault: authority runtime");
 
+        let specific_bytes = b"specific C# authority diagnostic";
         let specific = CompilerTerminal::AuthorityAdmission {
-            diagnostic: Some(
-                CompilerDiagnostic::from_native(b"specific C# authority diagnostic", 33, false)
-                    .expect("bounded diagnostic"),
+            source,
+            language: Language::CSharp,
+            stage: Stage::LowerIr,
+            phase: AuthorityPhase::Open,
+            class: AuthorityDiagnosticClass::Authority,
+            diagnostic: CompilerDiagnostic::from_native(
+                specific_bytes,
+                specific_bytes.len(),
+                false,
             ),
-            ..generic
         };
         let specific = PackageCompilerFailure::from_package_terminal("src/Library.cs", &specific)
             .expect("specific authority refusal projects")
