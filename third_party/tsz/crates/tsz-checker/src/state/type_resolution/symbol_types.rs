@@ -1771,6 +1771,130 @@ impl<'a> CheckerState<'a> {
                     } else {
                         resolved_params.clone()
                     };
+                    // The native semantic projection has an opt-in diagnostic
+                    // for a checker-owned type whose exact lazy definition
+                    // closes a projection cycle. When that points at a
+                    // suspiciously generic builtin (notably `Error`), retain
+                    // the corresponding interface-publication provenance too:
+                    // the raw SymbolId, selected interface name/owner, exact
+                    // declaration arenas, and destination DefInfo. This is
+                    // diagnostic-only and deliberately does not perform a
+                    // second DefId lookup or alter the publication path.
+                    if std::env::var_os("NUDOX_TYPESCRIPT_TYPE_PROJECTION_DIAGNOSTICS").as_deref()
+                        == Some(std::ffi::OsStr::new("1"))
+                    {
+                        let bounded_name = |name: &str| name.chars().take(128).collect::<String>();
+                        let destination = self.ctx.definition_store.get(def_id).map(|info| {
+                            let name = self.ctx.types.resolve_atom_ref(info.name);
+                            (
+                                bounded_name(name.as_ref()),
+                                info.file_id,
+                                info.symbol_id,
+                                self.ctx
+                                    .definition_store
+                                    .get_body(def_id)
+                                    .map(|body| body.0),
+                            )
+                        });
+                        let destination_name =
+                            destination.as_ref().map(|(name, _, _, _)| name.as_str());
+                        let local_previous_params =
+                            self.ctx.def_type_params.borrow().get(&def_id).cloned();
+                        let store_previous_params =
+                            self.ctx.definition_store.get_type_params(def_id);
+                        let destination_name_mismatch =
+                            self.ctx.definition_store.get(def_id).is_some_and(|info| {
+                                self.ctx.types.resolve_atom_ref(info.name).as_ref()
+                                    != symbol.escaped_name.as_str()
+                            });
+                        let suspicious = destination_name_mismatch
+                            || (destination_name == Some("Error")
+                                && (!reg_params.is_empty()
+                                    || local_previous_params
+                                        .as_ref()
+                                        .is_some_and(|params| !params.is_empty())
+                                    || store_previous_params
+                                        .as_ref()
+                                        .is_some_and(|params| !params.is_empty())));
+                        static EMITTED: std::sync::atomic::AtomicUsize =
+                            std::sync::atomic::AtomicUsize::new(0);
+                        if suspicious
+                            && EMITTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 16
+                        {
+                            let param_facts = |params: &[tsz_solver::TypeParamInfo]| {
+                                params
+                                    .iter()
+                                    .take(4)
+                                    .map(|param| {
+                                        (
+                                            bounded_name(
+                                                self.ctx
+                                                    .types
+                                                    .resolve_atom_ref(param.name)
+                                                    .as_ref(),
+                                            ),
+                                            param.default.map(|default| default.0),
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                            };
+                            let incoming_param_facts = param_facts(&reg_params);
+                            let local_previous_param_facts = local_previous_params
+                                .as_deref()
+                                .map(param_facts)
+                                .unwrap_or_default();
+                            let store_previous_param_facts = store_previous_params
+                                .as_deref()
+                                .map(param_facts)
+                                .unwrap_or_default();
+                            let declaration_facts = decls_with_arenas
+                                .iter()
+                                .take(2)
+                                .map(|(decl_idx, arena)| {
+                                    let declaration = arena.get(*decl_idx);
+                                    let (name, arity) = declaration
+                                        .and_then(|node| arena.get_interface(node))
+                                        .map_or((None, None), |interface| {
+                                            (
+                                                arena
+                                                    .get_identifier_text(interface.name)
+                                                    .map(bounded_name),
+                                                interface
+                                                    .type_parameters
+                                                    .as_ref()
+                                                    .map(|params| params.nodes.len()),
+                                            )
+                                        });
+                                    (
+                                        decl_idx.0,
+                                        std::ptr::from_ref(*arena) as usize,
+                                        self.ctx.all_arenas.as_ref().and_then(|arenas| {
+                                            arenas.iter().position(|candidate| {
+                                                std::ptr::eq(candidate.as_ref(), *arena)
+                                            })
+                                        }),
+                                        self.ctx.lib_contexts.iter().position(|lib| {
+                                            std::ptr::eq(lib.arena.as_ref(), *arena)
+                                        }),
+                                        name,
+                                        arity,
+                                        std::ptr::eq(*arena, self.ctx.arena),
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            eprintln!(
+                                "typescript interface def publication: current_file={} sym={} selected_name={:?} resolved_owner={:?} destination_def={} destination={destination:?} incoming_arity={} incoming_params={incoming_param_facts:?} local_previous_arity={} local_previous_params={local_previous_param_facts:?} store_previous_arity={} store_previous_params={store_previous_param_facts:?} declarations={declaration_facts:?}",
+                                self.ctx.current_file_idx,
+                                sym_id.0,
+                                bounded_name(&symbol.escaped_name),
+                                self.ctx.resolve_symbol_file_index(sym_id),
+                                def_id.0,
+                                reg_params.len(),
+                                local_previous_params.as_ref().map_or(0, Vec::len),
+                                store_previous_params.as_ref().map_or(0, Vec::len),
+                            );
+                        }
+                    }
                     self.ctx.insert_def_type_params(def_id, reg_params.clone());
                     // Publication/consumption of heritage-merged interface
                     // bodies through the shared `DefinitionStore`; see
