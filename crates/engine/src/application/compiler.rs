@@ -3413,6 +3413,16 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 source: source.source,
             })
             .collect::<Vec<_>>();
+        let mut resolver_frontier = blake3::Hasher::new();
+        resolver_frontier.update(b"backend.engine.rust-target-resolver-frontier.v1\0");
+        resolver_frontier.update(package_target.target().as_ref());
+        for source in package.sources {
+            resolver_frontier.update(&(source.relative_path.len() as u64).to_be_bytes());
+            resolver_frontier.update(source.relative_path.as_bytes());
+            resolver_frontier.update(&(source.source.as_bytes().len() as u64).to_be_bytes());
+            resolver_frontier.update(source.source.as_bytes());
+        }
+        let resolver_frontier_identity = *resolver_frontier.finalize().as_bytes();
         let key = RustWorkspaceSessionKey::new(
             package.package_root,
             rust_toolchain,
@@ -3423,7 +3433,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             None,
             None,
             None,
-            [0x5a; 32],
+            resolver_frontier_identity,
             &source_paths,
         )
         .and_then(|key| key.with_cargo_target(selected_target))

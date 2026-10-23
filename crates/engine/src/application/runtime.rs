@@ -4956,6 +4956,18 @@ enum LaneJob {
         plane_execution_seed: Option<LocalCompilerPlaneExecutionSeed>,
         reservation: StagedOutputLease,
     },
+    ResolveRustCargoTarget {
+        request: OwnedPackageSourceSet,
+        target_name: Box<str>,
+        response: SyncSender<
+            Result<
+                (CompilerPackageTargetV2, RustCargoTargetSourceClosureV1),
+                PackageSemanticRuntimeError,
+            >,
+        >,
+        cancelled: Arc<AtomicBool>,
+        reservation: StagedOutputLease,
+    },
 }
 
 enum PackageCompileResponse {
@@ -4989,6 +5001,21 @@ enum LaneCompletion {
         request: OwnedPackageSourceSet,
         staged: Result<StagedPackageCompilation, PackageSemanticRuntimeError>,
         response: PackageCompileResponse,
+        cancelled: Arc<AtomicBool>,
+        reservation: StagedOutputLease,
+    },
+    ResolveRustCargoTarget {
+        facts: RequestFacts,
+        resolved: Result<
+            (CompilerPackageTargetV2, RustCargoTargetSourceClosureV1),
+            PackageSemanticRuntimeError,
+        >,
+        response: SyncSender<
+            Result<
+                (CompilerPackageTargetV2, RustCargoTargetSourceClosureV1),
+                PackageSemanticRuntimeError,
+            >,
+        >,
         cancelled: Arc<AtomicBool>,
         reservation: StagedOutputLease,
     },
@@ -5624,44 +5651,52 @@ fn dispatch_runtime_command(
                 )));
                 return;
             }
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                let mut operation = || -> Result<
-                    (CompilerPackageTargetV2, RustCargoTargetSourceClosureV1),
-                    PackageSemanticRuntimeError,
-                > {
-                if request.rust_cargo_target_name.as_deref() != Some(target_name.as_ref()) {
-                    return Err(PackageSourceSetError::InvalidRustCargoTargetName.into());
-                }
-                if request.package_target.unit_key() != &CompilationUnitKeyV2::PackageRoot {
-                    return Err(PackageSourceSetError::CompilationUnitMismatch.into());
-                }
-                let borrowed =
-                    borrow_package_sources(&request.sources, request.request.target.profile)?;
-                let package = PackageSourceSet::new_for_unit(
-                    &request.request,
-                    &request.package_target,
-                    &request.package_root,
-                    &borrowed,
-                )?;
-                compiler
-                    .resolve_rust_cargo_target_name(package, &target_name, &cancelled)
-                    .map_err(PackageSemanticRuntimeError::from)
-                };
-                operation()
-            }));
-            match result {
-                Ok(result) => {
-                    let _ = response.send(result);
-                }
-                Err(payload) => {
-                    let cause =
-                        backend_library::interface::CompilerRuntimePanic::capture(payload.as_ref());
+            let reservation_bytes = staged_output_reservation(
+                facts.profile,
+                request.sources.len(),
+                image_cap,
+                0,
+                0,
+            );
+            let Some(reservation_bytes) = reservation_bytes else {
+                let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
+                    facts.terminal(CompilerRuntimeCause::StagedOutputReservationOverflow),
+                )));
+                return;
+            };
+            let reservation = match budget.reserve(reservation_bytes) {
+                Ok(reservation) => reservation,
+                Err(full) => {
                     let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
-                        facts.terminal(CompilerRuntimeCause::WorkerPanic(cause)),
+                        facts.terminal(staged_output_budget_cause(full)),
                     )));
-                    debug_compiler_owner(6, "worker-panic-stop", "operation=resolve-rust-target");
-                    *stopping = true;
-                    alive.store(false, Ordering::Release);
+                    return;
+                }
+            };
+            let identity = lane_identity(facts, capabilities, None);
+            let job = LaneJob::ResolveRustCargoTarget {
+                request,
+                target_name,
+                response,
+                cancelled,
+                reservation,
+            };
+            match lane_queue.try_send(identity, job) {
+                Ok(_) => *in_flight = in_flight.saturating_add(1),
+                Err(LaneSendError::Full(job)) => reject_lane_job(
+                    job,
+                    CompilerRuntimeCause::LaneQueueFull {
+                        capacity: u16::try_from(COMPILER_LANE_QUEUE_CAPACITY).unwrap_or(u16::MAX),
+                    },
+                ),
+                Err(LaneSendError::Closed(job)) => {
+                    let lane = identity.lane(compiler_lane_count());
+                    debug_compiler_owner(
+                        3,
+                        "lane-closed",
+                        format_args!("lane={lane} owner_alive={}", alive.load(Ordering::Acquire)),
+                    );
+                    reject_lane_job(job, CompilerRuntimeCause::RequestOwnerStopped);
                 }
             }
         }
@@ -6041,6 +6076,13 @@ fn reject_lane_job(job: LaneJob, cause: CompilerRuntimeCause) {
                 request.facts().terminal(cause),
             ));
         }
+        LaneJob::ResolveRustCargoTarget {
+            request, response, ..
+        } => {
+            let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
+                request.facts().terminal(cause),
+            )));
+        }
     }
 }
 
@@ -6397,6 +6439,88 @@ fn run_lane(
                     return;
                 }
             }
+            LaneJob::ResolveRustCargoTarget {
+                request,
+                target_name,
+                response,
+                cancelled,
+                reservation,
+            } => {
+                let facts = request.facts();
+                let resolved = if cancelled.load(Ordering::Acquire) {
+                    Err(PackageSemanticRuntimeError::Runtime(
+                        facts.terminal(CompilerRuntimeCause::RequestCancelled),
+                    ))
+                } else {
+                    run_lane_attempt(
+                        || {
+                            if request.rust_cargo_target_name.as_deref()
+                                != Some(target_name.as_ref())
+                            {
+                                return Err(
+                                    PackageSourceSetError::InvalidRustCargoTargetName.into(),
+                                );
+                            }
+                            if request.package_target.unit_key()
+                                != &CompilationUnitKeyV2::PackageRoot
+                            {
+                                return Err(PackageSourceSetError::CompilationUnitMismatch.into());
+                            }
+                            let borrowed = borrow_package_sources(
+                                &request.sources,
+                                request.request.target.profile,
+                            )?;
+                            let package = PackageSourceSet::new_for_unit(
+                                &request.request,
+                                &request.package_target,
+                                &request.package_root,
+                                &borrowed,
+                            )?;
+                            execution
+                                .resolve_rust_cargo_target_name(
+                                    &package,
+                                    target_name.as_ref(),
+                                    &cancelled,
+                                )
+                                .map_err(PackageSemanticRuntimeError::from)
+                        },
+                        |cause| {
+                            PackageSemanticRuntimeError::Runtime(
+                                facts.terminal(CompilerRuntimeCause::WorkerPanic(cause)),
+                            )
+                        },
+                    )
+                };
+                let panicked = matches!(
+                    &resolved,
+                    Err(PackageSemanticRuntimeError::Runtime(
+                        CompilerTerminal::Runtime {
+                            cause: CompilerRuntimeCause::WorkerPanic(_),
+                            ..
+                        }
+                    ))
+                );
+                let replacement = panicked.then(|| scratch.lane_scratch().ok()).flatten();
+                let retire_lane = panicked && replacement.is_none();
+                if let Some(replacement) = replacement {
+                    scratch = replacement;
+                }
+                if completions
+                    .send(LaneCompletion::ResolveRustCargoTarget {
+                        facts,
+                        resolved,
+                        response,
+                        cancelled,
+                        reservation,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+                if retire_lane {
+                    return;
+                }
+            }
         }
     }
 }
@@ -6511,6 +6635,23 @@ fn publish_lane_completion(
                     }
                 }
             }
+            true
+        }
+        LaneCompletion::ResolveRustCargoTarget {
+            facts,
+            resolved,
+            response,
+            cancelled,
+            reservation: _reservation,
+        } => {
+            let resolved = if cancelled.load(Ordering::Acquire) {
+                Err(PackageSemanticRuntimeError::Runtime(
+                    facts.terminal(CompilerRuntimeCause::RequestCancelled),
+                ))
+            } else {
+                resolved
+            };
+            let _ = response.send(resolved);
             true
         }
     }
