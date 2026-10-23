@@ -652,3 +652,21 @@ outlines (455 UUID rows, 371 Sync rows), including real module filenames and
 documented positional signature carriers. These are source/result reviews;
 official exact-head T2 and its unchanged performance guards still must pass.
 See the two dated Go review JSON files for provenance and scope.
+
+### Java annotation answer review (W2, 2026-10-23)
+
+The repaired Java annotation capture produces identical answers in official
+T2/1844 and diagnostic596497 on4fdf93137. The answer-only golden update was
+reviewed against all31verified source-jar files using an independent Javac AST
+reader; visible source sites, qualification and semantic carriers are explained
+in reviews/2026-10-23-java-jsr305-linux-answers.json. The old performance section
+is retained byte-for-byte. This is not an official passing T2 comparison.
+
+### TinyIoC initial Linux snapshot (W2, 2026-10-23)
+
+The first C# golden uses T2/1835's measured answers and performance, after
+source-site/native publication checks succeeded. T2/1844 repeats its answers
+exactly. An independent Roslyn parse of the verified pinned source confirms
+all12visible source anchors, including conditional class-modifier start lines.
+The dated TinyIoC review records scope, generated semantic carriers, both
+measurements and the remaining fresh exact-head comparison requirement.

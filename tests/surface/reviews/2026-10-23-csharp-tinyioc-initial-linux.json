@@ -1,0 +1,137 @@
+{
+  "acceptance": "A fresh exact-head official comparison against this reviewed golden and unchanged guards is still required; not a green verdict.",
+  "answer_review": [
+    "TinyIoCContainer class starts at864 and TinyIoCResolutionException at552. These are active public modifier lines before #endif and the class name, as independently confirmed by Roslyn type.Span.Start; they are not incorrect identifier-token lines.",
+    "Both real TinyIoCContainer constructors at3143/3151, exception constructors558/563, GetChildContainer1125 and visible fields/properties match all12distinct source-backed anchors acrossCLI/MCP.",
+    "Outline names match the parsed source after qualification except explicit semantic namespace/builtin type carriers(System.Reflection,System.Type,Assembly,bool), the package root and qualified TinyIoC generic types. These are not claimed as extra authored declarations. C# lowering retains function result carriers on ProductChildRole::FunctionResult.",
+    "The source/site projection, complete native receipt, bounded CLI/MCP outputs and real continuation checks all passed before both missing-golden candidates were emitted. No product/harness assertion or normalizer weakened.",
+    "Initial snapshot includes public coordinates, semantic identity data, order, page provenance, wire accounting and coverage. Review covers visible prefixes and queried sites; it does not independently reconstruct every stored compiler row/hash."
+  ],
+  "case": "csharp-tinyioc",
+  "evidence": {
+    "answers_equal": true,
+    "initial_build": 1835,
+    "initial_global_build": 596075,
+    "initial_source_sha": "ad0cde8367f4f3beb373c5f9a613302075d2d404",
+    "repeat_artifact_manifest_sha256": "be3ebf4236d6a06f9f1137777c382d614afb7cdd5f133c25350a887e441ea55a",
+    "repeat_build": 1844,
+    "repeat_global_build": 596519,
+    "repeat_source_sha": "4fdf93137a114bfd2f04b00bf5e8a31d7a8eb91e"
+  },
+  "performance": {
+    "action": "Initial measured Linux1835 baseline; no previous C# golden existed.1844independent sample also retained here for assessment, not substituted to fit limits.",
+    "initial": {
+      "cpu_seconds": 4.03,
+      "peak_rss_kib": 379108,
+      "seconds": {
+        "cli add": 4.45,
+        "cli outline": 0.37,
+        "cli packages": 0.38,
+        "cli search TinyIoCContainer": 0.84,
+        "cli search TinyIoCResolutionException": 0.21,
+        "mcp": 0.61
+      }
+    },
+    "repeat": {
+      "cpu_seconds": 3.89,
+      "peak_rss_kib": 365876,
+      "seconds": {
+        "cli add": 5.02,
+        "cli outline": 0.37,
+        "cli packages": 0.39,
+        "cli search TinyIoCContainer": 0.5,
+        "cli search TinyIoCResolutionException": 0.21,
+        "mcp": 0.6
+      }
+    }
+  },
+  "reviewer": "Codex / GPT-6.1, 2026-10-23",
+  "schema": 1,
+  "scope": "First Linux snapshot after native/source/transport guards pass; explicit independent source/result review.",
+  "source": {
+    "coordinate": "nuget:tinyioc@1.3.0",
+    "files_sha256": {
+      "Content/TinyIoC.cs": "e7898a069de8f1d2ba97414a92d140cf167a0c61bcfb869b9b33dd94e94aac4b"
+    },
+    "hash": "sha256-fAHK4ISYrbr8c/i1mTgvT+o50F4B2OMoLq91cnmWx0k=",
+    "kind": "nupkg",
+    "lane": "csharp",
+    "method": "Recomputed pinned nupkg SHA-256, read queried declarations, independently parsed complete TinyIoC.cs with SDK8Roslyn CSharpSyntaxTree. Identifier tokens and class declaration starts checked; no product facts used to build source index.",
+    "review_program_sha256": "d3581477d61b0d1a7f1a3f81a8d397965a1fd1d7842332579037b0ab46b4bd42",
+    "url": "https://api.nuget.org/v3-flatcontainer/tinyioc/1.3.0/tinyioc.1.3.0.nupkg"
+  },
+  "verified_source_anchors": [
+    [
+      "Current",
+      "Content/TinyIoC.cs",
+      3084,
+      true
+    ],
+    [
+      "GetChildContainer",
+      "Content/TinyIoC.cs",
+      1125,
+      true
+    ],
+    [
+      "RegisterOptions",
+      "Content/TinyIoC.cs",
+      924,
+      true
+    ],
+    [
+      "TinyIoCContainer",
+      "Content/TinyIoC.cs",
+      864,
+      true
+    ],
+    [
+      "TinyIoCContainer",
+      "Content/TinyIoC.cs",
+      3143,
+      true
+    ],
+    [
+      "TinyIoCContainer",
+      "Content/TinyIoC.cs",
+      3151,
+      true
+    ],
+    [
+      "TinyIoCResolutionException",
+      "Content/TinyIoC.cs",
+      552,
+      true
+    ],
+    [
+      "TinyIoCResolutionException",
+      "Content/TinyIoC.cs",
+      558,
+      true
+    ],
+    [
+      "TinyIoCResolutionException",
+      "Content/TinyIoC.cs",
+      563,
+      true
+    ],
+    [
+      "_Container",
+      "Content/TinyIoC.cs",
+      921,
+      true
+    ],
+    [
+      "_Current",
+      "Content/TinyIoC.cs",
+      3075,
+      true
+    ],
+    [
+      "_Parent",
+      "Content/TinyIoC.cs",
+      3150,
+      true
+    ]
+  ]
+}
