@@ -211,6 +211,8 @@ pub enum CauseSlug {
     Unproven,
     /// The connected NuDox owner reports a different wire DTO version.
     OwnerVersionMismatch,
+    /// The MCP client supports an older wire DTO version than the connected owner.
+    ClientVersionMismatch,
     /// The source bytes exist but are not resident locally.
     NotResident,
     /// The producer never captured the requested evidence.
@@ -234,6 +236,7 @@ impl CauseSlug {
             Self::Oversized => "oversized",
             Self::Unproven => "unproven",
             Self::OwnerVersionMismatch => "owner-version-mismatch",
+            Self::ClientVersionMismatch => "client-version-mismatch",
             Self::NotResident => "not-resident",
             Self::NotCaptured => "not-captured",
             Self::Refused => "refused",
@@ -1273,10 +1276,10 @@ impl Fault {
                 Affordance::Retry,
             ),
             ClientError::OwnerUpdate { found, supported, detail } => {
-                let cause_slug = if found == supported {
-                    CauseSlug::Unproven
-                } else {
-                    CauseSlug::OwnerVersionMismatch
+                let cause_slug = match found.cmp(supported) {
+                    std::cmp::Ordering::Less => CauseSlug::OwnerVersionMismatch,
+                    std::cmp::Ordering::Greater => CauseSlug::ClientVersionMismatch,
+                    std::cmp::Ordering::Equal => CauseSlug::Unproven,
                 };
                 let message = if found == supported {
                     format!("NuDox owner build update: {detail}")
@@ -1537,6 +1540,18 @@ mod owner_image_update_tests {
         assert!(wire.cause().sentence().contains("version 38 → 39"));
         assert_eq!(wire.cause().slug(), CauseSlug::OwnerVersionMismatch);
         assert_eq!(wire.affordance(), &Affordance::Retry);
+        let newer_owner = Fault::from_client_error(
+            &ClientError::OwnerUpdate {
+                found: 40,
+                supported: 39,
+                detail: "restart the MCP server with a matching build; no command was submitted"
+                    .into(),
+            },
+            Operand::Whole,
+        );
+        assert!(newer_owner.cause().sentence().contains("version 40 → 39"));
+        assert_eq!(newer_owner.cause().slug(), CauseSlug::ClientVersionMismatch);
+        assert_eq!(newer_owner.affordance(), &Affordance::Retry);
         let same_version = Fault::from_client_error(
             &ClientError::OwnerUpdate {
                 found: 39,

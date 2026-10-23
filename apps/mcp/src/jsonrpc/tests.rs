@@ -84,6 +84,30 @@ fn owner_wire_version_mismatch_has_specific_jsonrpc_message_and_keeps_typed_deta
     assert!(detail.contains("version 38 → 39"));
     assert!(detail.contains("no command was submitted"));
 
+    let older_mcp = Fault::from_client_error(
+        &ClientError::OwnerUpdate {
+            found: 40,
+            supported: 39,
+            detail: "update and restart the MCP server; no command was submitted".into(),
+        },
+        backend_present::Operand::Whole,
+    );
+    let reply = RpcError::from_fault(&older_mcp).into_reply(json!(8));
+    assert_eq!(reply["error"]["code"], -32603);
+    assert_eq!(
+        reply["error"]["message"],
+        "NuDox MCP server is older than the connected owner; update and restart the MCP server"
+    );
+    assert_eq!(
+        reply["error"]["data"]["structuredContent"]["cause"],
+        "client-version-mismatch"
+    );
+    let detail = reply["error"]["data"]["detail"]
+        .as_str()
+        .expect("preserved reverse-direction explanation");
+    assert!(detail.contains("version 40 → 39"));
+    assert!(detail.contains("no command was submitted"));
+
     let same_version = Fault::from_client_error(
         &ClientError::OwnerUpdate {
             found: 39,
@@ -92,14 +116,14 @@ fn owner_wire_version_mismatch_has_specific_jsonrpc_message_and_keeps_typed_deta
         },
         backend_present::Operand::Whole,
     );
-    let reply = RpcError::from_fault(&same_version).into_reply(json!(8));
+    let reply = RpcError::from_fault(&same_version).into_reply(json!(9));
     assert_eq!(reply["error"]["message"], "Backend request failed");
 
     let unrelated = Fault::from_client_error(
         &ClientError::Protocol("reply identity was not admitted".into()),
         backend_present::Operand::Whole,
     );
-    let reply = RpcError::from_fault(&unrelated).into_reply(json!(9));
+    let reply = RpcError::from_fault(&unrelated).into_reply(json!(10));
     assert_eq!(reply["error"]["message"], "Backend request failed");
 }
 

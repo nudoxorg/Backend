@@ -3530,6 +3530,8 @@ impl RpcError {
                 "Resource not found"
             } else if fault.cause().slug() == backend_present::CauseSlug::OwnerVersionMismatch {
                 "NuDox owner version mismatch; restart the running owner before retrying"
+            } else if fault.cause().slug() == backend_present::CauseSlug::ClientVersionMismatch {
+                "NuDox MCP server is older than the connected owner; update and restart the MCP server"
             } else {
                 "Backend request failed"
             },
