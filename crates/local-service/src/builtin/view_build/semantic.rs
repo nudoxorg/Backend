@@ -1717,9 +1717,8 @@ pub(super) fn project_image_rows(
                 .as_ref()
                 .map(|placement| placement.location.clone())
                 .or_else(|| {
-                    native_line.and_then(|line| {
-                        backend_compile::SourceLocation::new(path, line).ok()
-                    })
+                    native_line
+                        .and_then(|line| backend_compile::SourceLocation::new(path, line).ok())
                 })
                 .or_else(|| kinds.exact_location(profile, identity, path));
             placements.insert(identity, placement);
@@ -1789,10 +1788,7 @@ pub(super) fn project_image_rows(
             row = row
                 .with_source(placement.location)
                 .with_excerpt(placement.excerpt);
-        } else if let Some(site) = native_sites
-            .as_ref()
-            .and_then(|sites| sites.get(&identity))
-        {
+        } else if let Some(site) = native_sites.as_ref().and_then(|sites| sites.get(&identity)) {
             let excerpt = site.excerpt();
             charges.push(Charge::Sub(excerpt.text().map_or(0, str::len)));
             let location =
@@ -1808,11 +1804,15 @@ pub(super) fn project_image_rows(
             charges.push(Charge::Sub(excerpt.text().map_or(0, str::len)));
             let location =
                 backend_compile::SourceLocation::new(path, site.line).map_err(|error| {
-                    BuiltinModelError(format!("native C# semantic declaration source site: {error}"))
+                    BuiltinModelError(format!(
+                        "native C# semantic declaration source site: {error}"
+                    ))
                 })?;
             row = row.with_source(location).with_excerpt(excerpt);
         } else if let Some(site) = sites.get(&identity) {
-            charges.push(Charge::Sub(site.source_excerpt().text().map_or(0, str::len)));
+            charges.push(Charge::Sub(
+                site.source_excerpt().text().map_or(0, str::len),
+            ));
             let location =
                 backend_compile::SourceLocation::new(path, site.line()).map_err(|error| {
                     BuiltinModelError(format!("semantic declaration source site: {error}"))
@@ -2229,14 +2229,14 @@ mod tests {
             },
             name,
             holder: Vec::new(),
-            item: ItemKind::Record,
+            item: ItemKind::Trait,
             kind: DeclarationKind::Interface,
             start: Some(10),
         };
         let declaration = SourceDeclaration::at_path(
             "javax/annotation/Nonnull.java",
             "Nonnull",
-            DeclarationKind::Interface,
+            DeclarationKind::Annotation,
             10,
             "public @interface Nonnull",
             "",
@@ -2244,6 +2244,14 @@ mod tests {
         let sites = super::kinds::pair_sites(Language::Java, &[entity], &[&declaration]);
 
         assert_eq!(sites.len(), 1);
+        assert_eq!(
+            super::kinds::kind_with_site(
+                DeclarationKind::Interface,
+                ItemKind::Trait,
+                declaration.kind(),
+            ),
+            DeclarationKind::Annotation,
+        );
         assert_eq!(
             sites.values().next().map(|site| site.location().path()),
             Some("javax/annotation/Nonnull.java")
