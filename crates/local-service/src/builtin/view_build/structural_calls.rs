@@ -433,6 +433,8 @@ pub(crate) enum StructuralCallEndpoint {
 // Project metadata shares the semantic query projection budget, not the
 // 256-row bound on a single product reply.
 const MAX_STRUCTURAL_REFERENCE_METADATA_ITEMS: usize = super::super::MAX_SEMANTIC_QUERY_ROWS;
+const MAX_STRUCTURAL_REFERENCE_PARENT_DEPTH: usize = 256;
+const MAX_STRUCTURAL_REFERENCE_CONTAINING_OWNERS: usize = MAX_STRUCTURAL_REFERENCE_PARENT_DEPTH;
 
 /// Exact captured owners from the same selected file facts as the call graph.
 /// Graph edges retain enclosing callable context; reference occurrences use
@@ -440,7 +442,7 @@ const MAX_STRUCTURAL_REFERENCE_METADATA_ITEMS: usize = super::super::MAX_SEMANTI
 pub(crate) struct StructuralReferenceOwners {
     retained: usize,
     limit: usize,
-    files: BTreeMap<[u8; 32], Vec<ReferenceOwner>>,
+    files: BTreeMap<[u8; 32], ReferenceFileOwners>,
     calls: BTreeMap<(StructuralCallBinding, StructuralCallBinding), CapturedCallSpans>,
 }
 
@@ -454,6 +456,145 @@ struct ReferenceOwner {
     parent: Option<backend_compile::SourceBinding>,
     callable: bool,
     endpoint: StructuralCallEndpoint,
+}
+
+/// A start-sorted interval index with subtree maximum ends. Queries prune
+/// irrelevant ranges and enumerate only containing owners, rightmost first.
+/// Both storage and tree height are bounded by the admitted metadata count.
+#[derive(Default)]
+struct ReferenceFileOwners {
+    owners: Vec<ReferenceOwner>,
+    by_binding: BTreeMap<backend_compile::SourceBinding, usize>,
+    leaf_base: usize,
+    max_end: Vec<u32>,
+}
+
+impl ReferenceFileOwners {
+    fn finish(&mut self) -> Result<(), BuiltinModelError> {
+        if self.owners.len() > MAX_STRUCTURAL_REFERENCE_METADATA_ITEMS {
+            return Err(BuiltinModelError(
+                "structural reference interval index exceeds its owner bound".to_owned(),
+            ));
+        }
+        self.owners.sort_by_key(|owner| {
+            let (start, end) = owner.capture.owner();
+            (start, std::cmp::Reverse(end), owner.capture.binding())
+        });
+        self.by_binding.clear();
+        self.leaf_base = self.owners.len().max(1).next_power_of_two();
+        let nodes = self.leaf_base * 2;
+        let mut max_end = Vec::new();
+        max_end.try_reserve_exact(nodes).map_err(|_| {
+            BuiltinModelError("structural reference interval index allocation failed".to_owned())
+        })?;
+        max_end.resize(nodes, 0);
+        for (at, owner) in self.owners.iter().enumerate() {
+            if self
+                .by_binding
+                .insert(owner.capture.binding(), at)
+                .is_some()
+            {
+                return Err(BuiltinModelError(
+                    "structural reference interval index repeats a binding".to_owned(),
+                ));
+            }
+            max_end[self.leaf_base + at] = owner.capture.owner().1;
+        }
+        for node in (1..self.leaf_base).rev() {
+            max_end[node] = max_end[node * 2].max(max_end[node * 2 + 1]);
+        }
+        self.max_end = max_end;
+        Ok(())
+    }
+
+    fn visit_containing(
+        &self,
+        node: usize,
+        range: (usize, usize),
+        upper: usize,
+        end: u32,
+        visit_node: &mut impl FnMut(),
+        visit_owner: &mut impl FnMut(usize) -> Result<bool, BuiltinModelError>,
+    ) -> Result<bool, BuiltinModelError> {
+        visit_node();
+        if range.0 >= upper || self.max_end[node] < end {
+            return Ok(true);
+        }
+        if range.1 - range.0 == 1 {
+            return visit_owner(range.0);
+        }
+        let middle = range.0 + (range.1 - range.0) / 2;
+        if !self.visit_containing(
+            node * 2 + 1,
+            (middle, range.1),
+            upper,
+            end,
+            visit_node,
+            visit_owner,
+        )? {
+            return Ok(false);
+        }
+        self.visit_containing(
+            node * 2,
+            (range.0, middle),
+            upper,
+            end,
+            visit_node,
+            visit_owner,
+        )
+    }
+
+    fn nearest(&self, span: (u32, u32)) -> Result<Option<&ReferenceOwner>, BuiltinModelError> {
+        self.nearest_counted(span, &mut || {})
+    }
+
+    fn nearest_counted(
+        &self,
+        span: (u32, u32),
+        visit_node: &mut impl FnMut(),
+    ) -> Result<Option<&ReferenceOwner>, BuiltinModelError> {
+        if span.0 >= span.1 || self.owners.is_empty() {
+            return Ok(None);
+        }
+        let upper = self
+            .owners
+            .partition_point(|owner| owner.capture.owner().0 <= span.0);
+        let mut nearest = None;
+        let mut previous: Option<usize> = None;
+        let mut count = 0;
+        let complete = self.visit_containing(
+            1,
+            (0, self.leaf_base),
+            upper,
+            span.1,
+            visit_node,
+            &mut |at| {
+                count += 1;
+                if count > MAX_STRUCTURAL_REFERENCE_CONTAINING_OWNERS {
+                    return Err(BuiltinModelError(
+                        "structural reference containment lookup exceeds its owner bound"
+                            .to_owned(),
+                    ));
+                }
+                let owner = &self.owners[at];
+                // Descending starts and ascending ends must form a strict chain.
+                // Equal/crossing extents are ambiguous, including outer captures.
+                if previous
+                    .is_some_and(|held| !owner.capture.strictly_contains(self.owners[held].capture))
+                {
+                    return Ok(false);
+                }
+                nearest.get_or_insert(at);
+                previous = Some(at);
+                Ok(true)
+            },
+        )?;
+        Ok(if complete {
+            nearest.map(|at| &self.owners[at])
+        } else {
+            None
+        })
+    }
 }
 
 impl StructuralReferenceOwners {
@@ -529,53 +670,42 @@ impl StructuralReferenceOwners {
         &'a self,
         caller: &'a StructuralCallEndpoint,
         span: &backend_engine::SemanticSourceSpan,
-    ) -> Option<&'a StructuralCallEndpoint> {
+    ) -> Result<Option<&'a StructuralCallEndpoint>, BuiltinModelError> {
         let StructuralCallEndpoint::Binding {
             source, location, ..
         } = caller
         else {
-            return Some(caller);
+            return Ok(Some(caller));
         };
         if location.path() != span.file.as_str() {
-            return None;
+            return Ok(None);
         }
-        let Some(owners) = self.files.get(&source.file) else {
+        let Some(index) = self.files.get(&source.file) else {
             // Other languages retain their existing reference projection.
-            return Some(caller);
+            return Ok(Some(caller));
         };
-        let mut nearest: Option<&ReferenceOwner> = None;
-        for owner in owners {
-            let (start, end) = owner.capture.owner();
-            if start > span.start || span.end > end {
-                continue;
-            }
-            match nearest {
-                None => nearest = Some(owner),
-                Some(held) if held.capture.strictly_contains(owner.capture) => {
-                    nearest = Some(owner)
-                }
-                Some(held) if owner.capture.strictly_contains(held.capture) => {}
-                // Equal or overlapping extents do not prove a unique owner.
-                Some(_) => return None,
-            }
-        }
-        let nearest = nearest?;
+        let Some(nearest) = index.nearest((span.start, span.end))? else {
+            return Ok(None);
+        };
         let mut current = nearest;
-        for _ in 0..256 {
+        for _ in 0..MAX_STRUCTURAL_REFERENCE_PARENT_DEPTH {
             if current.capture.binding() == source.binding {
-                return Some(&nearest.endpoint);
+                return Ok(Some(&nearest.endpoint));
             }
             // A nested callable supplies its own edge and resolution scope.
             // Never borrow the enclosing callable's callee resolution for it.
             if current.callable {
-                return None;
+                return Ok(None);
             }
-            let parent = current.parent?;
-            current = owners
-                .iter()
-                .find(|owner| owner.capture.binding() == parent)?;
+            let Some(parent) = current.parent else {
+                return Ok(None);
+            };
+            let Some(&at) = index.by_binding.get(&parent) else {
+                return Ok(None);
+            };
+            current = &index.owners[at];
         }
-        None
+        Ok(None)
     }
 }
 
@@ -728,6 +858,7 @@ impl ProjectCalls {
                         .files
                         .entry(file.key)
                         .or_default()
+                        .owners
                         .push(ReferenceOwner {
                             capture,
                             parent,
@@ -843,6 +974,11 @@ impl ProjectCalls {
             }
             declarations.push(lookup);
             callers.push(file_callers);
+        }
+        if let Some(owners) = graph.reference_owners.as_mut() {
+            for index in owners.files.values_mut() {
+                index.finish()?;
+            }
         }
         for (at, file) in files.iter().enumerate() {
             let imported = ImportedCalls::join(
@@ -1120,6 +1256,213 @@ impl StructuralCallResidence {
 mod tests {
     use super::super::super::tests::{analyze_source, cross_file_sources};
     use super::*;
+
+    #[test]
+    fn large_parsed_file_reference_lookup_prunes_unrelated_owners() -> Result<(), String> {
+        use backend_engine::SourceLanguage::TypeScript;
+        let body = (0..4096)
+            .map(|at| format!("const item{at} = target();\n"))
+            .collect::<String>();
+        let text = format!("function target() {{}}\nfunction caller() {{\n{body}}}\n");
+        let declarations = analyze_source(TypeScript, "large.ts", &text)?;
+        // Real files of this size arrive through complete paged facts. Do not
+        // force thousands of captures into the legacy single-row test helper.
+        let mut owners = StructuralReferenceOwners::new(MAX_STRUCTURAL_REFERENCE_METADATA_ITEMS);
+        let mut index = ReferenceFileOwners::default();
+        for declaration in declarations.iter() {
+            let backend_compile::SourceBindingIdentity::Exact(capture) =
+                declaration.binding_identity()
+            else {
+                continue;
+            };
+            let parent = match declaration.container() {
+                Container::Binding { binding } => Some(*binding),
+                Container::Module => None,
+                _ => return Err("expected exact parsed ownership".to_owned()),
+            };
+            owners.reserve_item().map_err(|error| error.to_string())?;
+            index.owners.push(ReferenceOwner {
+                capture,
+                parent,
+                callable: structural_callable(declaration.kind()),
+                endpoint: StructuralCallEndpoint::Binding {
+                    source: StructuralCallBinding {
+                        file: [3; 32],
+                        binding: capture.binding(),
+                    },
+                    row: RowId::Symbol(backend_engine::symbol_key(&format!(
+                        "large-owner-{}",
+                        capture.name().0
+                    ))),
+                    location: declaration.location().clone(),
+                    semantic_site_unique: true,
+                    name: declaration.name().to_owned(),
+                },
+            });
+        }
+        index.finish().map_err(|error| error.to_string())?;
+        owners.files.insert([3; 32], index);
+        let index = owners.files.get(&[3; 32]).ok_or("file index")?;
+        assert_eq!(index.owners.len(), 4098);
+        assert_eq!(index.by_binding.len(), index.owners.len());
+        let caller = &index.owners.iter().find(|owner|
+            matches!(&owner.endpoint, StructuralCallEndpoint::Binding { name, .. } if name == "caller")).ok_or("caller")?.endpoint;
+        let calls = text
+            .match_indices("target()")
+            .skip(1)
+            .map(|(start, _)| (start as u32, start as u32 + 6))
+            .collect::<Vec<_>>();
+        for at in [0, 2047, 4095] {
+            let mut visited = 0;
+            let owner = index
+                .nearest_counted(calls[at], &mut || visited += 1)
+                .map_err(|error| error.to_string())?
+                .ok_or("nearest variable")?;
+            assert!(
+                visited <= 128,
+                "a shallow occurrence must not scan4098 owners: visited{visited} index nodes"
+            );
+            let StructuralCallEndpoint::Binding { name, .. } = &owner.endpoint else {
+                return Err("exact owner".to_owned());
+            };
+            assert_eq!(name, &format!("item{at}"));
+            let bound = *index
+                .by_binding
+                .get(&owner.capture.binding())
+                .ok_or("binding index")?;
+            assert!(std::ptr::eq(&index.owners[bound], owner));
+            let span = backend_engine::SemanticSourceSpan {
+                file: backend_engine::ProductText::new("large.ts")
+                    .map_err(|error| error.to_string())?,
+                start: calls[at].0,
+                end: calls[at].1,
+            };
+            assert!(std::ptr::eq(
+                owners
+                    .site(caller, &span)
+                    .map_err(|error| error.to_string())?
+                    .ok_or("indexed parent traversal")?,
+                &owner.endpoint
+            ));
+        }
+        Ok(())
+    }
+
+    // Private interval data controls deliberately include malformed overlaps;
+    // they do not construct a compiler capability or pretend to parse a file.
+    fn interval_owner(start: u32, end: u32, parent: Option<u32>, callable: bool) -> ReferenceOwner {
+        let capture = backend_compile::SourceBindingCapture::new(start, end, start, start + 1)
+            .expect("nonempty test capture");
+        ReferenceOwner {
+            capture,
+            parent: parent.and_then(|start| backend_compile::SourceBinding::new(start, start + 1)),
+            callable,
+            endpoint: StructuralCallEndpoint::Binding {
+                source: StructuralCallBinding {
+                    file: [7; 32],
+                    binding: capture.binding(),
+                },
+                row: RowId::Symbol(backend_engine::symbol_key(&format!("owner{start}"))),
+                location: backend_compile::SourceLocation::new("owners.ts", 1)
+                    .expect("test location"),
+                semantic_site_unique: true,
+                name: "x".to_owned(),
+            },
+        }
+    }
+
+    #[test]
+    fn indexed_reference_lookup_preserves_ambiguity_and_bounded_nesting() -> Result<(), String> {
+        let mut overlap = ReferenceFileOwners::default();
+        overlap.owners = vec![
+            interval_owner(0, 30, None, false),
+            interval_owner(10, 40, None, false),
+        ];
+        overlap.finish().map_err(|error| error.to_string())?;
+        assert!(
+            overlap
+                .nearest((20, 21))
+                .map_err(|error| error.to_string())?
+                .is_none()
+        );
+        assert_eq!(
+            overlap
+                .nearest((25, 35))
+                .map_err(|error| error.to_string())?
+                .map(|owner| owner.capture.owner()),
+            Some((10, 40)),
+            "an owner must contain the whole span"
+        );
+        assert_eq!(
+            overlap
+                .nearest((2, 3))
+                .map_err(|error| error.to_string())?
+                .map(|owner| owner.capture.owner()),
+            Some((0, 30))
+        );
+        let mut equal = ReferenceFileOwners::default();
+        let mut duplicate = interval_owner(0, 30, None, false);
+        duplicate.capture =
+            backend_compile::SourceBindingCapture::new(0, 30, 1, 2).ok_or("second binding")?;
+        if let StructuralCallEndpoint::Binding { source, row, .. } = &mut duplicate.endpoint {
+            source.binding = duplicate.capture.binding();
+            *row = RowId::Symbol(backend_engine::symbol_key("equal-owner-second"));
+        }
+        equal.owners = vec![interval_owner(0, 30, None, false), duplicate];
+        equal.finish().map_err(|error| error.to_string())?;
+        assert!(
+            equal
+                .nearest((20, 21))
+                .map_err(|error| error.to_string())?
+                .is_none()
+        );
+
+        let nested = |count: u32| -> Result<ReferenceFileOwners, String> {
+            let mut index = ReferenceFileOwners::default();
+            index.owners = (0..count)
+                .map(|at| interval_owner(at, count * 2 - at, at.checked_sub(1), at == 0))
+                .collect();
+            index.finish().map_err(|error| error.to_string())?;
+            Ok(index)
+        };
+        let boundary = nested(256)?;
+        let caller = boundary
+            .owners
+            .first()
+            .ok_or("root owner")?
+            .endpoint
+            .clone();
+        let mut owners = StructuralReferenceOwners::new(MAX_STRUCTURAL_REFERENCE_METADATA_ITEMS);
+        owners.files.insert([7; 32], boundary);
+        let span = backend_engine::SemanticSourceSpan {
+            file: backend_engine::ProductText::new("owners.ts")
+                .map_err(|error| error.to_string())?,
+            start: 256,
+            end: 257,
+        };
+        assert!(
+            owners
+                .site(&caller, &span)
+                .map_err(|error| error.to_string())?
+                .is_some(),
+            "the256-owner/parent boundary remains admissible"
+        );
+        let deep = nested(2048)?;
+        let mut visited = 0;
+        let error = match deep.nearest_counted((2048, 2049), &mut || visited += 1) {
+            Ok(_) => return Err("uncertified deep lookup must explicitly refuse".to_owned()),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "structural reference containment lookup exceeds its owner bound"
+        );
+        assert!(
+            visited <= 1024,
+            "adversarial nesting must stop before scanning2048 owners: visited{visited} nodes"
+        );
+        Ok(())
+    }
 
     #[test]
     fn reference_metadata_is_optional_and_refuses_overflow_without_truncation() -> Result<(), String>

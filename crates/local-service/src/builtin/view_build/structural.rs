@@ -2152,7 +2152,7 @@ pub(crate) fn structural_reference_sites(
             end,
         };
         let endpoint = match owners {
-            Some(owners) => owners.site(caller, &source),
+            Some(owners) => owners.site(caller, &source)?,
             None => Some(caller),
         };
         let Some(RowId::Symbol(site)) = endpoint.and_then(|endpoint| rows.mapped(endpoint)) else {
