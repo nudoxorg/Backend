@@ -1,5 +1,6 @@
 """The snapshot admission contract must reject failed product setup."""
 import importlib.util
+import hashlib
 from concurrent.futures import Future
 from pathlib import Path
 import unittest
@@ -690,7 +691,15 @@ class PartialSearchReadinessTests(unittest.TestCase):
 class SnapshotContinuationTests(unittest.TestCase):
     def page(self, token="pc4-one", coordinate="first"):
         size = 100 + len(token)
-        return {"answer": "records", "query": "Digest", "records": [{"identity": {"coordinate": coordinate}}],
+        identity = {"coordinate": coordinate,
+                    "semantic_data": {"kind": "selected-symbol-id",
+                                      "value": list(hashlib.sha256(coordinate.encode()).digest())}}
+        return {"answer": "records", "query": "Digest", "coverage": [], "readiness": "ready",
+                "detail": "summary", "semantic_search": "ready", "search_scope": "source",
+                "limit": 1, "source_root": "root", "source_object": "object",
+                "branch": "branch", "log": "log", "schema": 3, "sequence": 2,
+                "revision": "revision",
+                "records": [{"identity": identity}],
                 "more": True, "nextCursor": token,
                 "budget": {"bytes": size, "bytesPerToken": 4, "estimatedTokens": (size + 3) // 4}}
 
@@ -709,6 +718,23 @@ class SnapshotContinuationTests(unittest.TestCase):
             surface.normalize_continuations(invalid, {invalid["nextCursor"]})
         unchanged = {"budget": {"bytes": 99, "estimatedTokens": 25}, "state": "stale"}
         self.assertEqual(surface.normalize_continuations(unchanged, set()), unchanged)
+
+    def test_continuation_evidence_retains_dtos_and_hashes_opaque_tokens(self):
+        import contextlib
+        import io
+
+        token = "mcp2-opaque-proof"
+        evidence = []
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            surface._emit_continuation_page(evidence, "mcp", "backend.search", 1,
+                {"arguments": {"query": "Digest", "limit": 3}}, self.page(token), None)
+        receipt = evidence[0]
+        self.assertEqual(receipt["offered_cursor_sha256"], hashlib.sha256(token.encode()).hexdigest())
+        self.assertNotIn(token, output.getvalue())
+        self.assertNotIn("nextCursor", receipt["response"])
+        self.assertEqual(receipt["response"]["records"], self.page(token)["records"])
+        self.assertEqual(receipt["response"]["budget"]["bytes"], self.page(token)["budget"]["bytes"])
 
     def test_executable_only_cursor_is_consumed_before_normalization(self):
         import copy
@@ -739,6 +765,20 @@ class SnapshotContinuationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "contradictory"):
             surface.normalize_continuations(wrong, {token, wrong["nextCursor"]})
 
+    def test_initial_more_flag_must_match_cursor_without_rejecting_empty_terminal_pages(self):
+        records = {"answer": "records", "records": [], "more": False}
+        outline = {"answer": "outline", "roots": [], "declarations": 0,
+                   "page": {"more": False}}
+        self.assertIsNone(surface.require_initial_cursor_shape(records))
+        self.assertIsNone(surface.require_initial_cursor_shape(outline))
+
+        missing_cursor = {"answer": "records", "records": [], "more": True}
+        spurious_cursor = {"answer": "outline", "roots": [], "declarations": 0,
+                           "nextCursor": "mcp2-spurious", "page": {"more": False}}
+        for answer in (missing_cursor, spurious_cursor):
+            with self.subTest(answer=answer), self.assertRaisesRegex(RuntimeError, "more flag"):
+                surface.require_initial_cursor_shape(answer)
+
     def test_wire_accounting_is_measured_before_normalizing_proof_bytes(self):
         import copy
         import json
@@ -758,8 +798,8 @@ class SnapshotContinuationTests(unittest.TestCase):
 
         first, size = fixture("mcp2-first-proof")
         other, _ = fixture("mcp2-a-different-longer-proof")
-        one = surface.normalize_surface_answers(first, {"mcp2-first-proof"})
-        two = surface.normalize_surface_answers(other, {"mcp2-a-different-longer-proof"})
+        one = surface.normalize_surface_answers(first, {"mcp:0": {"mcp2-first-proof"}})
+        two = surface.normalize_surface_answers(other, {"mcp:0": {"mcp2-a-different-longer-proof"}})
         self.assertEqual(one, two)
         bad = copy.deepcopy(first["mcp"]["calls"][0]["reply"])
         bad["_meta"]["backend/wireBudget"]["bytes"] += 1
@@ -767,17 +807,34 @@ class SnapshotContinuationTests(unittest.TestCase):
             surface.require_mcp_wire_budget(bad, size)
         self.assertEqual(one["mcp"]["calls"][0]["reply"]["_meta"]["backend/wireBudget"]["limitBytes"], 49152)
 
+    def test_same_cursor_from_distinct_mcp_answers_requires_each_answer_proof(self):
+        token = "mcp2-reused-across-answers"
+        reply = {"structuredContent": self.page(token)}
+        answers = {"mcp": {"calls": [
+            {"call": {"tool": "backend.search", "arguments": {"query": "A"}}, "reply": reply},
+            {"call": {"tool": "backend.search", "arguments": {"query": "B"}}, "reply": reply},
+        ]}}
+        with self.assertRaisesRegex(RuntimeError, "unconsumed token"):
+            surface.normalize_surface_answers(answers, {"mcp:0": {token}})
+
     def test_search_continuation_refuses_fault_repetition_and_scope_drift(self):
         first = self.page()
-        following = {"answer": "records", "query": "Digest", "records": [{"identity": {"coordinate": "second"}}], "more": False}
+        following = {"answer": "records", "query": "Digest", "coverage": [], "readiness": "ready",
+                     "detail": "summary", "semantic_search": "ready", "search_scope": "source",
+                     "limit": 1, "source_root": "root", "source_object": "object",
+                     "branch": "branch", "log": "log", "schema": 3, "sequence": 2,
+                     "revision": "revision",
+                     "records": [{"identity": {"coordinate": "second"}}], "more": False}
         surface.require_continuation_reply(first, following, "root")
         for wrong in ({"answer": "fault"}, dict(following, records=[]), dict(following, records=first["records"]),
-                      dict(following, query="other"), dict(following, nextCursor=first["nextCursor"]),
+                      dict(following, query="other"), dict(following, limit=2),
+                      dict(following, source_object="other"), dict(following, nextCursor=first["nextCursor"]),
                       dict(following, more=True)):
             with self.subTest(answer=wrong), self.assertRaises(RuntimeError):
                 surface.require_continuation_reply(first, wrong, "root")
 
     def test_outline_resume_uses_the_returned_page_limit(self):
+        import copy
         call = {"tool": "backend.outline", "arguments": {}}
         first = {"nextCursor": "mcp2-proof", "page": {"limit": 50},
                  "package": {"project": "/project"}, "detail": "summary"}
@@ -785,21 +842,113 @@ class SnapshotContinuationTests(unittest.TestCase):
                          {"tool": "backend.outline", "arguments": {"path": "/project", "limit": 50, "detail": "summary", "cursor": "mcp2-proof"}})
         with self.assertRaises(RuntimeError):
             surface.mcp_continuation_call(call, dict(first, page={}))
+        first["continuation_call"] = {"name": "backend.outline", "arguments": {
+            "path": "/project", "limit": 50, "detail": "summary", "cursor": "mcp2-proof"}}
+        self.assertEqual(surface.mcp_continuation_call(call, first), {
+            "tool": "backend.outline", "arguments": first["continuation_call"]["arguments"]})
+        wrong = copy.deepcopy(first)
+        wrong["continuation_call"]["arguments"]["limit"] = 49
+        with self.assertRaisesRegex(RuntimeError, "effective limit"):
+            surface.mcp_continuation_call(call, wrong)
 
     def test_outline_continuation_keeps_the_published_basis(self):
         import copy
         first = {"answer": "outline", "roots": [{"key": "first"}], "declarations": 1, "nextCursor": "mcp2-one",
-                 "page": {"source_root": "root", "branch": "branch", "log": "log", "schema": 3, "sequence": 2, "limit": 100, "more": True}}
+                 "package": {"project": "/project"}, "detail": "summary",
+                 "page": {"source_root": "root", "source_object": "object", "coverage": [],
+                          "branch": "branch", "log": "log", "schema": 3, "sequence": 2, "limit": 100, "more": True}}
         following = {"answer": "outline", "roots": [{"key": "second"}], "declarations": 1,
+                     "package": {"project": "/project"}, "detail": "summary",
                      "page": dict(first["page"], more=False)}
         surface.require_continuation_reply(first, following, "root")
-        for field in ("source_root", "branch", "log", "schema", "sequence", "limit"):
+        for field in ("source_root", "source_object", "coverage", "branch", "log", "schema", "sequence", "limit"):
             wrong = copy.deepcopy(following)
             wrong["page"][field] = "changed"
             with self.subTest(field=field), self.assertRaises(RuntimeError):
                 surface.require_continuation_reply(first, wrong, "root")
         with self.assertRaises(RuntimeError):
             surface.require_continuation_reply(first, dict(following, roots=first["roots"]), "root")
+
+    def test_outline_cursor_walk_exhausts_pages_and_rejects_cross_page_duplicates(self):
+        def row(name, children=()):
+            return {"coordinate": name, "name": name, "kind": "class", "key": name[:8],
+                    "semantic_data": {"kind": "selected-symbol-id",
+                                      "value": list(hashlib.sha256(name.encode()).digest())},
+                    "children": list(children)}
+
+        def page(root, token, more):
+            def count(node): return 1 + sum(count(child) for child in node.get("children", []))
+            value = {"answer": "outline", "roots": [root],
+                     "declarations": count(root), "package": {"project": "/project"}, "detail": "summary",
+                     "page": {"source_root": "root", "source_object": "object", "coverage": [],
+                              "branch": "branch", "log": "log",
+                              "schema": 3, "sequence": 2, "limit": 2, "more": more}}
+            if token is not None:
+                value["nextCursor"] = token
+            return value
+
+        first = page(row("decl-a"), "mcp2-a", True)
+        second = page(row("decl-b"), "mcp2-b", True)
+        last = page(row("decl-c"), None, False)
+        offered = []
+
+        def fetch(current, token):
+            offered.append(token)
+            return {"mcp2-a": second, "mcp2-b": last}[token]
+
+        self.assertEqual(surface.walk_outline_pages(first, fetch, "root"), (3, 3))
+        self.assertEqual(offered, ["mcp2-a", "mcp2-b"])
+        duplicate = row("different-label")
+        duplicate["semantic_data"] = first["roots"][0]["semantic_data"]
+        with self.assertRaisesRegex(RuntimeError, "duplicate emitted outline identity"):
+            surface.walk_outline_pages(first, lambda _current, _token: page(duplicate, None, False), "root")
+
+        first_context = page(row("parent", [row("child-one")]), "mcp2-context", True)
+        resumed_context = page(row("parent", [row("child-two")]), None, False)
+        self.assertEqual(surface.walk_outline_pages(
+            first_context, lambda _current, _token: resumed_context, "root"), (2, 3))
+        nested_context = page(row("parent", [row("child-one", [row("grandchild")])]), None, False)
+        first_nested = page(row("parent", [row("child-one")]), "mcp2-nested", True)
+        self.assertEqual(surface.walk_outline_pages(
+            first_nested, lambda _current, _token: nested_context, "root"), (2, 3))
+        nonprogress = page(row("parent"), None, False)
+        with self.assertRaisesRegex(RuntimeError, "duplicate emitted outline identity"):
+            surface.walk_outline_pages(first_context, lambda _current, _token: nonprogress, "root")
+        dishonest_terminal = page(row("decl-z"), "mcp2-late", False)
+        with self.assertRaisesRegex(RuntimeError, "more flag disagrees"):
+            surface.walk_outline_pages(dishonest_terminal, lambda _current, _token: last, "root")
+        cycle = page(row("decl-d"), "mcp2-a", True)
+        with self.assertRaisesRegex(RuntimeError, "repeated outline cursor"):
+            surface.walk_outline_pages(first, lambda _current, token: {
+                "mcp2-a": second, "mcp2-b": cycle}[token], "root")
+        with self.assertRaisesRegex(RuntimeError, "deadline"):
+            surface.walk_outline_pages(first, fetch, "root", deadline=0)
+
+    def test_search_cursor_walk_exhausts_pages_and_rejects_cycles_or_duplicates(self):
+        def page(coordinate, token, more):
+            value = {"answer": "records", "query": "Digest", "coverage": [], "readiness": "ready",
+                     "detail": "summary", "semantic_search": "ready",
+                     "records": [{"identity": {"coordinate": coordinate,
+                                                   "semantic_data": {"kind": "selected-symbol-id",
+                                                                     "value": list(hashlib.sha256(coordinate.encode()).digest())}}}],
+                     "more": more}
+            if token is not None:
+                value["nextCursor"] = token
+            return value
+
+        first = page("decl-a", "pc4-a", True)
+        second = page("decl-b", "pc4-b", True)
+        last = page("decl-c", None, False)
+        self.assertEqual(surface.walk_record_pages(first, lambda _current, token: {
+            "pc4-a": second, "pc4-b": last}[token]), (3, 3))
+        duplicate = page("different-coordinate", None, False)
+        duplicate["records"][0]["identity"]["semantic_data"] = first["records"][0]["identity"]["semantic_data"]
+        with self.assertRaisesRegex(RuntimeError, "duplicate emitted search identity"):
+            surface.walk_record_pages(first, lambda _current, _token: duplicate)
+        cycle = page("decl-c", "pc4-a", True)
+        with self.assertRaisesRegex(RuntimeError, "repeated search cursor"):
+            surface.walk_record_pages(first, lambda _current, token: {
+                "pc4-a": second, "pc4-b": cycle}[token])
 
 
 class InteractiveMcpTests(unittest.TestCase):

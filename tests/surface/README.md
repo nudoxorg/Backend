@@ -296,12 +296,19 @@ claim; representative-corpus scale and indexing efficiency remain open.
 
 The first comparison (pr-t1/599, `06daafdca`) kept the exact native view root
 and declaration answers, but opaque continuation proof bytes varied between
-fresh owners. Snapshot admission now consumes every offered first-page token
-through the appropriate public client before replacing its spelling with
-`<live-validated>`. It rejects refused tokens, repeated/empty pages, search scope
-changes, outline basis changes and dishonest continuation flags. This is a
-one-hop continuation proof, alongside the existing synthetic exhaustive search
-traversal; it does not claim exhaustive real-project outline traversal.
+fresh owners. Snapshot admission consumes every offered cursor through the
+appropriate public client before replacing its spelling with
+`<live-validated>`. Real CLI/MCP search and outline chains are walked through the
+terminal page before snapshot comparison. The harness rejects refused tokens,
+cycles, empty/non-progressing pages, repeated emitted identities, scope drift,
+outline basis changes and dishonest continuation flags. Outline identity uses
+the full selected-symbol ID carried by the DTO; a repeated ancestor is allowed
+only when it contains newly emitted descendants. MCP outline continuations stay
+in their issuing session, while search cursors use the public clients. The
+bounded CI evidence retains each page response without its opaque cursor bytes,
+linking pages with cursor SHA-256 values. A proof is bound to its CLI answer or
+MCP call ordinal, so an identical token on another request must be traversed
+independently. The reviewed answer golden remains the first page.
 
 For token-bearing answers only, the normalizer validates the reported byte/token
 arithmetic, then records `bytesExcludingCursor` and

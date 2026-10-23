@@ -28,6 +28,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextvars import ContextVar
 from contextlib import contextmanager
 import difflib
+import hashlib
 import fcntl
 import json
 import os
@@ -628,13 +629,14 @@ def run_mcp(owner: Owner, project: Path, calls: list[dict], timeout: float) -> t
     return {"tools": tools, "calls": answers, "exit": result.returncode}, seconds
 
 
-def run_mcp_interactive(owner: Owner, project: Path, calls: list[dict], timeout: float, on_reply) -> tuple[dict, float]:
+def run_mcp_interactive(owner: Owner, project: Path, calls: list[dict], timeout: float, on_reply,
+                       absolute_deadline: float | None = None) -> tuple[dict, float]:
     """Keep session-bound outline authority while dynamically consuming its token."""
     import selectors
     import tempfile
 
     started = time.monotonic()
-    deadline = started + timeout
+    deadline = absolute_deadline if absolute_deadline is not None else started + timeout
     log(f"MCP interactive: started ({len(calls)} calls; timeout={timeout:g}s)")
     outcome = "completed"
     answers = []
@@ -698,6 +700,8 @@ def run_mcp_interactive(owner: Owner, project: Path, calls: list[dict], timeout:
                 nonlocal continuation_id
                 continuation_id += 1
                 return exchange(call, continuation_id, per_call)
+
+            continue_call.deadline = deadline
 
             def readiness_call(call, per_call):
                 nonlocal continuation_id
@@ -1084,6 +1088,26 @@ def offered_cursor(answer: dict) -> str | None:
     return token
 
 
+def require_initial_cursor_shape(answer: dict) -> str | None:
+    """Require the public more flag and cursor presence to agree on first pages."""
+    if not isinstance(answer, dict):
+        raise RuntimeError("snapshot continuation: malformed initial answer")
+    kind = answer.get("answer")
+    if kind == "records":
+        more = answer.get("more")
+    elif kind == "outline":
+        page = answer.get("page")
+        if not isinstance(page, dict):
+            raise RuntimeError("snapshot continuation: malformed initial outline page")
+        more = page.get("more")
+    else:
+        return None
+    token = offered_cursor(answer)
+    if type(more) is not bool or more != (token is not None):
+        raise RuntimeError("snapshot continuation: initial more flag disagrees with its cursor")
+    return token
+
+
 def require_continuation_reply(first: dict, following: dict, published_root: str) -> None:
     """Prove an offered token works through a fresh public client before normalizing it."""
     token = offered_cursor(first)
@@ -1094,7 +1118,9 @@ def require_continuation_reply(first: dict, following: dict, published_root: str
     if first["answer"] == "records":
         if first.get("more") is not True:
             raise RuntimeError("snapshot continuation: token on an exhausted search")
-        for field in ("query", "coverage", "readiness", "detail", "semantic_search"):
+        for field in ("query", "coverage", "readiness", "detail", "semantic_search", "search_scope",
+                      "full_search", "limit", "source_root", "source_object", "branch", "log",
+                      "schema", "sequence", "revision"):
             if following.get(field) != first.get(field):
                 raise RuntimeError(f"snapshot continuation: changed {field}")
         before, after = first.get("records"), following.get("records")
@@ -1109,11 +1135,13 @@ def require_continuation_reply(first: dict, following: dict, published_root: str
         page, next_page = first.get("page", {}), following.get("page", {})
         if following.get("package") != first.get("package"):
             raise RuntimeError("snapshot continuation: changed outline package")
+        if following.get("detail") != first.get("detail"):
+            raise RuntimeError("snapshot continuation: changed outline detail")
         if page.get("more") is not True:
             raise RuntimeError("snapshot continuation: token on an exhausted outline")
         if page.get("source_root") != published_root or next_page.get("source_root") != published_root:
             raise RuntimeError("snapshot continuation: changed published source root")
-        for field in ("branch", "log", "schema", "sequence", "limit"):
+        for field in ("branch", "log", "schema", "sequence", "limit", "source_object", "coverage"):
             if field not in page or next_page.get(field) != page[field]:
                 raise RuntimeError(f"snapshot continuation: changed outline {field}")
         if not following.get("roots") or following["roots"] == first.get("roots") or following.get("declarations", 0) <= 0:
@@ -1126,6 +1154,209 @@ def require_continuation_reply(first: dict, following: dict, published_root: str
         raise RuntimeError("snapshot continuation: dishonest continuation flag")
 
 
+def _exact_symbol_id(dto: dict) -> str | None:
+    """Return the full selected-symbol ID, never its display key/coordinate."""
+    proof = dto.get("semantic_data")
+    if not isinstance(proof, dict) or proof.get("kind") != "selected-symbol-id":
+        return None
+    value = proof.get("value")
+    if (not isinstance(value, list) or len(value) != 32
+            or any(type(byte) is not int or not 0 <= byte <= 255 for byte in value)
+            or not any(value)):
+        raise RuntimeError("snapshot continuation: malformed selected-symbol ID")
+    return bytes(value).hex()
+
+
+def _outline_page_identities(page: dict, previously_seen: set[str]) -> tuple[set[str], int]:
+    roots = page.get("roots")
+    if not isinstance(roots, list):
+        raise RuntimeError("snapshot continuation: malformed outline roots")
+    page_ids = set()
+    node_count = 0
+
+    def visit(row):
+        nonlocal node_count
+        if not isinstance(row, dict):
+            raise RuntimeError("snapshot continuation: malformed outline row")
+        node_count += 1
+        identity = _exact_symbol_id(row)
+        if identity is None:
+            # An unresolved DTO has no exact selector. Its complete public
+            # structural tuple is a conservative fallback, never the short key alone.
+            identity = "unresolved:" + json.dumps(
+                [row.get("coordinate"), row.get("key"), row.get("kind"), row.get("name"),
+                 row.get("semantic_data")],
+                sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        if identity in page_ids:
+            raise RuntimeError("snapshot continuation: duplicate outline identity within a page")
+        page_ids.add(identity)
+        children = row.get("children", [])
+        if not isinstance(children, list):
+            raise RuntimeError("snapshot continuation: malformed outline children")
+        new_descendants = sum(visit(child) for child in children)
+        is_new = identity not in previously_seen
+        if not is_new and new_descendants == 0:
+            raise RuntimeError("snapshot continuation: duplicate emitted outline identity across pages")
+        # A repeated ancestor with new descendants is structural page context;
+        # the exact selected-symbol ID keeps it distinct from a repeated row.
+        return int(is_new) + new_descendants
+
+    new_count = sum(visit(root) for root in roots)
+    declarations = page.get("declarations")
+    if type(declarations) is not int or declarations != node_count:
+        raise RuntimeError("snapshot continuation: outline declaration count disagrees with its rows")
+    if new_count == 0:
+        raise RuntimeError("snapshot continuation: outline page made no identity progress")
+    return page_ids, new_count
+
+
+def _emit_continuation_page(evidence: list, transport: str, tool: str,
+                            page_index: int, request: dict | list[str],
+                            response: dict, input_cursor: str | None) -> None:
+    """Retain each public page outside goldens without logging opaque cursors."""
+    payload = json.loads(json.dumps(response))
+    offered = offered_cursor(payload)
+    payload.pop("nextCursor", None)
+    executable = payload.get("continuation_call")
+    if isinstance(executable, dict) and isinstance(executable.get("arguments"), dict):
+        executable["arguments"].pop("cursor", None)
+    receipt = {
+        "transport": transport,
+        "tool": tool,
+        "page": page_index,
+        "request": request,
+        "input_cursor_sha256": hashlib.sha256(input_cursor.encode()).hexdigest() if input_cursor else None,
+        "offered_cursor_sha256": hashlib.sha256(offered.encode()).hexdigest() if offered else None,
+        "response": payload,
+    }
+    evidence.append(receipt)
+    with OUTPUT_LOCK:
+        print("SURFACE-CONTINUATION-PAGE " + json.dumps(
+            receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False), flush=True)
+
+
+def walk_outline_pages(first: dict, fetch_page, published_root: str,
+                       max_pages: int = 256, timeout: float = 60.0,
+                       deadline: float | None = None, on_page=None) -> tuple[int, int]:
+    """Exhaust a real outline cursor chain and reject holes, overlap or basis drift."""
+    if max_pages < 1 or timeout <= 0:
+        raise ValueError("outline continuation bounds must be positive")
+    started = time.monotonic()
+    deadline = deadline if deadline is not None else started + timeout
+    current = first
+    seen_tokens = set()
+    seen_rows = set()
+    pages = 0
+    declarations = 0
+    incoming_token = None
+    while True:
+        if time.monotonic() >= deadline:
+            raise RuntimeError("snapshot continuation: outline traversal deadline exceeded")
+        pages += 1
+        if pages > max_pages:
+            raise RuntimeError("snapshot continuation: outline traversal exceeded its page bound")
+        if on_page is not None:
+            on_page(pages, current, incoming_token)
+        page_ids, new_count = _outline_page_identities(current, seen_rows)
+        seen_rows.update(page_ids)
+        declarations += new_count
+        token = offered_cursor(current)
+        page_meta = current.get("page", {})
+        more = page_meta.get("more") if isinstance(page_meta, dict) else None
+        if not isinstance(more, bool) or more != (token is not None):
+            raise RuntimeError("snapshot continuation: outline more flag disagrees with its cursor")
+        if token is None:
+            return pages, declarations
+        if token in seen_tokens:
+            raise RuntimeError("snapshot continuation: repeated outline cursor")
+        seen_tokens.add(token)
+        following = fetch_page(current, token)
+        if time.monotonic() >= deadline:
+            raise RuntimeError("snapshot continuation: outline traversal deadline exceeded")
+        require_continuation_reply(current, following, published_root)
+        incoming_token = token
+        current = following
+
+
+def walk_record_pages(first: dict, fetch_page, max_pages: int = 256,
+                      timeout: float = 60.0, deadline: float | None = None,
+                      on_page=None) -> tuple[int, int]:
+    """Exhaust search cursors and verify stable scope plus a unique row union."""
+    if max_pages < 1 or timeout <= 0:
+        raise ValueError("search continuation bounds must be positive")
+    started = time.monotonic()
+    deadline = deadline if deadline is not None else started + timeout
+    current = first
+    seen_tokens = set()
+    seen_rows = set()
+    pages = 0
+    rows_seen = 0
+    reference = first
+    effective_call = None
+    effective_tool = None
+    incoming_token = None
+    while True:
+        if time.monotonic() >= deadline:
+            raise RuntimeError("snapshot continuation: search traversal deadline exceeded")
+        pages += 1
+        if pages > max_pages:
+            raise RuntimeError("snapshot continuation: search traversal exceeded its page bound")
+        if on_page is not None:
+            on_page(pages, current, incoming_token)
+        rows = current.get("records")
+        if not isinstance(rows, list) or not rows:
+            raise RuntimeError("snapshot continuation: empty search page")
+        identities = []
+        for row in rows:
+            identity = row.get("identity") if isinstance(row, dict) else None
+            if not isinstance(identity, dict):
+                raise RuntimeError("snapshot continuation: search row has no identity DTO")
+            exact = _exact_symbol_id(identity)
+            if exact is None:
+                exact = "unresolved:" + json.dumps(
+                    [identity.get("coordinate"), identity.get("key"), identity.get("name"),
+                     identity.get("path"), identity.get("line"), identity.get("segments"),
+                     row.get("kind"), row.get("language"), row.get("state")], sort_keys=True,
+                    separators=(",", ":"), ensure_ascii=False)
+            identities.append(exact)
+        if len(identities) != len(set(identities)) or seen_rows.intersection(identities):
+            raise RuntimeError("snapshot continuation: duplicate emitted search identity across pages")
+        seen_rows.update(identities)
+        rows_seen += len(identities)
+        token = offered_cursor(current)
+        more = current.get("more")
+        if not isinstance(more, bool) or more != (token is not None):
+            raise RuntimeError("snapshot continuation: search more flag disagrees with its cursor")
+        executable = current.get("continuation_call")
+        if executable is not None:
+            if not isinstance(executable, dict) or not isinstance(executable.get("arguments"), dict):
+                raise RuntimeError("snapshot continuation: malformed search continuation operands")
+            name = executable.get("name")
+            arguments = dict(executable["arguments"])
+            arguments.pop("cursor", None)
+            if effective_tool is None:
+                effective_tool, effective_call = name, arguments
+            elif name != effective_tool or arguments != effective_call:
+                raise RuntimeError("snapshot continuation: changed effective search tool or operands")
+        if token is None:
+            return pages, rows_seen
+        if token in seen_tokens:
+            raise RuntimeError("snapshot continuation: repeated search cursor")
+        seen_tokens.add(token)
+        following = fetch_page(current, token)
+        if time.monotonic() >= deadline:
+            raise RuntimeError("snapshot continuation: search traversal deadline exceeded")
+        require_continuation_reply(current, following, "")
+        for field in ("query", "coverage", "readiness", "detail", "semantic_search", "search_scope",
+                      "full_search", "limit", "source_root", "source_object", "branch", "log",
+                      "schema", "sequence", "revision"):
+            if field in reference or field in following:
+                if following.get(field) != reference.get(field):
+                    raise RuntimeError(f"snapshot continuation: changed search {field}")
+        incoming_token = token
+        current = following
+
+
 def mcp_continuation_call(call: dict, first: dict) -> dict:
     token = offered_cursor(first)
     if token is None:
@@ -1134,7 +1365,25 @@ def mcp_continuation_call(call: dict, first: dict) -> dict:
     if executable is not None:
         if executable.get("name") != call["tool"] or executable["arguments"].get("cursor") != token:
             raise RuntimeError("snapshot continuation: executable call changed tool or token")
-        return {"tool": executable["name"], "arguments": dict(executable["arguments"])}
+        arguments = dict(executable["arguments"])
+        if call["tool"] == "backend.outline":
+            expected = {"path": first.get("package", {}).get("project"),
+                        "limit": first.get("page", {}).get("limit"),
+                        "detail": first.get("detail"), "cursor": token}
+            if arguments != expected:
+                raise RuntimeError("snapshot continuation: executable outline changed path, effective limit, detail or cursor")
+        else:
+            requested = dict(call.get("arguments", {}))
+            actual = dict(arguments)
+            actual.pop("cursor", None)
+            requested.pop("cursor", None)
+            requested_limit = requested.pop("limit", None)
+            actual_limit = actual.pop("limit", None)
+            if (arguments.get("cursor") != token or actual != requested
+                    or type(actual_limit) is not int or not 1 <= actual_limit <= 200
+                    or (type(requested_limit) is int and actual_limit > requested_limit)):
+                raise RuntimeError("snapshot continuation: executable search changed query scope or effective limit")
+        return {"tool": executable["name"], "arguments": arguments}
     arguments = dict(call.get("arguments", {}), cursor=token)
     if call["tool"] == "backend.outline":
         # MCP can reduce the first page to fit its response budget. Its
@@ -1195,8 +1444,24 @@ def require_mcp_wire_budget(reply: dict, frame_size: int) -> None:
         raise RuntimeError("snapshot continuation: dishonest MCP wire accounting")
 
 
-def normalize_surface_answers(answers: dict, proven_tokens: set[str]) -> dict:
-    normalized = normalize_continuations(answers, proven_tokens)
+def normalize_surface_answers(answers: dict, proven_answers: dict[str, set[str]]) -> dict:
+    """Normalize each answer only with cursor proofs from that exact request."""
+    normalized = {}
+    for name, answer in answers.items():
+        if name != "mcp" or not isinstance(answer, dict):
+            normalized[name] = normalize_continuations(
+                answer, proven_answers.get(f"cli:{name}", set()))
+            continue
+        normalized_mcp = {}
+        for field, value in answer.items():
+            if field != "calls" or not isinstance(value, list):
+                normalized_mcp[field] = normalize_continuations(value, set())
+                continue
+            normalized_mcp[field] = [
+                normalize_continuations(call, proven_answers.get(f"mcp:{index}", set()))
+                for index, call in enumerate(value)
+            ]
+        normalized[name] = normalized_mcp
     # The MCP whole-line counter includes the opaque token as well as the
     # inner answer budget. Validate it against the actual compact JSON-RPC
     # envelope, then compare the normalized envelope without its own counters.
@@ -1397,8 +1662,8 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             raise RuntimeError("real corpus: missing pinned Cargo dependency vendor directory")
     owner = Owner(bin_dir, case_root, cargo_vendor)
 
-    record = {"answers": {}, "performance": {"seconds": {}}}
-    proven_tokens = set()
+    record = {"answers": {}, "performance": {"seconds": {}}, "continuation_evidence": []}
+    proven_answers: dict[str, set[str]] = {}
     try:
         try:
             if case.get("index_mode", "resumable") == "resumable":
@@ -1452,17 +1717,45 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                     request=args,
                 )
                 seconds = time.monotonic() - query_started
-            if answer["json"].get("nextCursor") is not None:
-                token = answer["json"]["nextCursor"]
-                following, _ = run_cli(owner, project, args + ["--cursor", token], 10)
-                require_cli_success(key + " continuation", following)
-                require_continuation_reply(answer["json"], following["json"], published_root)
-                proven_tokens.add(token)
-                log(f"{key}: offered continuation consumed by a fresh CLI client")
+            token = require_initial_cursor_shape(answer["json"])
+            if token is not None:
+                if answer["json"].get("answer") == "outline":
+                    def cli_outline_page(current, cursor):
+                        remaining = query_deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise RuntimeError("snapshot continuation: CLI outline deadline exceeded")
+                        following, _ = run_cli(owner, project, args + ["--cursor", cursor], min(10, remaining))
+                        require_cli_success(key + " continuation", following)
+                        return following["json"]
+                    def retain_cli_outline(page_number, current, input_cursor):
+                        _emit_continuation_page(record["continuation_evidence"], "cli", "outline", page_number,
+                                                {"arguments": args}, current, input_cursor)
+                    pages, declarations = walk_outline_pages(
+                        answer["json"], cli_outline_page, published_root,
+                        deadline=query_deadline, on_page=retain_cli_outline)
+                    log(f"{key}: exhausted {pages} CLI outline pages ({declarations} unique declarations)")
+                elif answer["json"].get("answer") == "records":
+                    def cli_search_page(_current, cursor):
+                        remaining = query_deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise RuntimeError("snapshot continuation: CLI search deadline exceeded")
+                        following, _ = run_cli(owner, project, args + ["--cursor", cursor], min(10, remaining))
+                        require_cli_success(key + " continuation", following)
+                        return following["json"]
+                    def retain_cli_search(page_number, current, input_cursor):
+                        _emit_continuation_page(record["continuation_evidence"], "cli", "search", page_number,
+                                                {"arguments": args}, current, input_cursor)
+                    pages, count = walk_record_pages(answer["json"], cli_search_page,
+                                                     deadline=query_deadline, on_page=retain_cli_search)
+                    log(f"{key}: exhausted {pages} CLI search pages ({count} unique records)")
+                else:
+                    raise RuntimeError("snapshot continuation: unsupported CLI answer")
+                proven_answers.setdefault(f"cli:{key}", set()).add(token)
             record["answers"][key] = answer
             record["performance"]["seconds"][key] = round(seconds, 2)
         if case.get("mcp"):
-            def prove_session_outline(call, reply, exchange, readiness_exchange):
+            page_requests = {}
+            def prove_session_outline(call, reply, exchange, readiness_exchange, answer_index):
                 query = call.get("arguments", {}).get("query")
                 if (call["tool"] == "backend.search" and query in case.get("authored_symbols", {})):
                     ready, _frames = resolve_partial_authored_search(
@@ -1481,24 +1774,43 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 first = reply.get("structuredContent", {}) if isinstance(reply, dict) else {}
                 if (call["tool"] == "backend.search" and query in case.get("authored_symbols", {})):
                     first = ready.get("structuredContent", {})
-                token = offered_cursor(first)
+                token = require_initial_cursor_shape(first)
                 if call["tool"] != "backend.outline" or token is None:
                     return replacement
-                following = exchange(mcp_continuation_call(call, first))
-                if not isinstance(following, dict) or following.get("isError", False) or not isinstance(following.get("structuredContent"), dict):
-                    raise RuntimeError(f"snapshot continuation: MCP refused offered outline token: {following}")
-                require_continuation_reply(first, following["structuredContent"], published_root)
-                proven_tokens.add(token)
-                log("backend.outline: offered continuation consumed in its issuing MCP session")
+                def mcp_outline_page(current, cursor):
+                    continuation = mcp_continuation_call(call, current)
+                    actual_arguments = dict(continuation["arguments"])
+                    actual_arguments.pop("cursor", None)
+                    page_requests[cursor] = {"arguments": actual_arguments}
+                    following = exchange(continuation)
+                    if (not isinstance(following, dict) or following.get("isError", False)
+                            or not isinstance(following.get("structuredContent"), dict)):
+                        raise RuntimeError(f"snapshot continuation: MCP refused offered outline token: {following}")
+                    return following["structuredContent"]
+                def retain_mcp_outline(page_number, current, input_cursor):
+                    request = page_requests.get(input_cursor, {"arguments": dict(call.get("arguments", {}))})
+                    _emit_continuation_page(record["continuation_evidence"], "mcp", call["tool"], page_number,
+                                            request, current, input_cursor)
+                pages, declarations = walk_outline_pages(first, mcp_outline_page, published_root,
+                                                         deadline=continue_call.deadline,
+                                                         on_page=retain_mcp_outline)
+                proven_answers.setdefault(f"mcp:{answer_index}", set()).add(token)
+                log(f"backend.outline: exhausted {pages} same-session MCP outline pages ({declarations} unique declarations)")
                 return replacement
 
+            mcp_answer_index = 0
             def track_mcp_reply(call, reply, exchange, readiness_exchange):
-                return prove_session_outline(call, reply, exchange, readiness_exchange)
+                nonlocal mcp_answer_index
+                answer_index = mcp_answer_index
+                mcp_answer_index += 1
+                return prove_session_outline(call, reply, exchange, readiness_exchange, answer_index)
 
-            answer, seconds = run_mcp_interactive(owner, project, case["mcp"], timeout, track_mcp_reply)
+            mcp_deadline = time.monotonic() + timeout
+            answer, seconds = run_mcp_interactive(owner, project, case["mcp"], timeout,
+                                                   track_mcp_reply, absolute_deadline=mcp_deadline)
             if answer["exit"] != 0 or not answer["tools"]:
                 raise RuntimeError(f"MCP session failed: {answer}")
-            for result in answer["calls"]:
+            for answer_index, result in enumerate(answer["calls"]):
                 reply = result["reply"]
                 if not isinstance(reply, dict) or reply.get("isError", False) or "code" in reply:
                     raise RuntimeError(f"MCP call failed: {result}")
@@ -1508,18 +1820,33 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 if result["call"]["tool"] == "backend.search" and text in case.get("authored_symbols", {}):
                     require_authored_symbols(reply["structuredContent"], {text: case["authored_symbols"][text]}, case["languages"][0])
                 first = reply.get("structuredContent", {})
-                if offered_cursor(first) is not None and offered_cursor(first) not in proven_tokens:
-                    token = offered_cursor(first)
+                token = require_initial_cursor_shape(first)
+                if token is not None and token not in proven_answers.get(f"mcp:{answer_index}", set()):
                     call = result["call"]
-                    continued, _ = run_mcp(owner, project, [mcp_continuation_call(call, first)], 10)
-                    if continued["exit"] != 0 or len(continued["calls"]) != 1:
-                        raise RuntimeError("snapshot continuation: MCP session failed")
-                    following = continued["calls"][0]["reply"]
-                    if not isinstance(following, dict) or following.get("isError", False) or not isinstance(following.get("structuredContent"), dict):
-                        raise RuntimeError(f"snapshot continuation: MCP refused offered token: {following}")
-                    require_continuation_reply(first, following["structuredContent"], published_root)
-                    proven_tokens.add(token)
-                    log(f"{call['tool']}: offered continuation consumed by a fresh MCP session")
+                    def mcp_search_page(current, cursor):
+                        remaining = mcp_deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise RuntimeError("snapshot continuation: MCP search deadline exceeded")
+                        continuation = mcp_continuation_call(call, current)
+                        actual_arguments = dict(continuation["arguments"])
+                        actual_arguments.pop("cursor", None)
+                        page_requests[cursor] = {"arguments": actual_arguments}
+                        continued, _ = run_mcp(owner, project, [continuation], min(10, remaining))
+                        if continued["exit"] != 0 or len(continued["calls"]) != 1:
+                            raise RuntimeError("snapshot continuation: MCP session failed")
+                        following = continued["calls"][0]["reply"]
+                        if (not isinstance(following, dict) or following.get("isError", False)
+                                or not isinstance(following.get("structuredContent"), dict)):
+                            raise RuntimeError(f"snapshot continuation: MCP refused offered token: {following}")
+                        return following["structuredContent"]
+                    def retain_mcp_search(page_number, current, input_cursor):
+                        request = page_requests.get(input_cursor, {"arguments": dict(call.get("arguments", {}))})
+                        _emit_continuation_page(record["continuation_evidence"], "mcp", call["tool"], page_number,
+                                                request, current, input_cursor)
+                    pages, count = walk_record_pages(first, mcp_search_page,
+                                                     deadline=mcp_deadline, on_page=retain_mcp_search)
+                    proven_answers.setdefault(f"mcp:{answer_index}", set()).add(token)
+                    log(f"{call['tool']}: exhausted {pages} MCP search pages ({count} unique records)")
             record["answers"]["mcp"] = answer
             record["performance"]["seconds"]["mcp"] = round(seconds, 2)
         if case.get("live_contracts"):
@@ -1547,7 +1874,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 if case_error is not None:
                     raise RuntimeError(f"{case_error}\nowner cleanup failed: {cleanup_error}") from case_error
                 raise
-    record["answers"] = stable(normalize_surface_answers(record["answers"], proven_tokens))
+    record["answers"] = stable(normalize_surface_answers(record["answers"], proven_answers))
     return record
 
 
@@ -1571,7 +1898,8 @@ def regressions(baseline: dict, measured: dict) -> list[str]:
 def print_candidate(name: str, record: dict) -> None:
     with OUTPUT_LOCK:
         print(f"SURFACE-SNAPSHOT-BEGIN {name}\n"
-              + json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False)
+              + json.dumps({"answers": record["answers"], "performance": record["performance"]},
+                           indent=2, sort_keys=True, ensure_ascii=False)
               + f"\nSURFACE-SNAPSHOT-END {name}", flush=True)
 
 
@@ -1766,6 +2094,8 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
                 log(f"case {case['name']} completed after SIGTERM; classified as interrupted")
                 return
             entry.update(record["performance"])
+            if args.ci_report and record.get("continuation_evidence"):
+                entry["continuation_evidence"] = record["continuation_evidence"]
             if case.get("kind") == "cli-contract":
                 entry["state"] = "passed"
                 report[case["name"]] = record["performance"]
@@ -1777,7 +2107,9 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
             snapshot_path = SURFACE / "snapshots" / f"{case['name']}.json"
             if args.update:
                 snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-                snapshot_path.write_text(json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+                snapshot_path.write_text(json.dumps(
+                    {"answers": record["answers"], "performance": record["performance"]},
+                    indent=2, sort_keys=True, ensure_ascii=False) + "\n")
                 log(f"case {case['name']} snapshot written ({elapsed:.1f}s)")
                 return
             if not snapshot_path.exists():
