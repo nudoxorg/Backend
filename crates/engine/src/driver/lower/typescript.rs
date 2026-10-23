@@ -1314,6 +1314,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
     fn push_parameter_facts(
         &mut self,
         params: &ParamRows,
+        depth: u8,
     ) -> Result<[u32; MAX_FACT_CHILDREN + 1], TypeScriptCollectError> {
         let mut ordinals = [0_u32; MAX_FACT_CHILDREN + 1];
         for (index, row) in params.iter().enumerate() {
@@ -1327,7 +1328,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
             let member_base = self.staged_members.len();
             let cells = match row.annotation {
-                Some(span) => self.owner_cells(span.start, span.end, 0)?,
+                Some(span) => self.owner_cells(span.start, span.end, depth)?,
                 None => TypeCells::unknown(TypeReason::Unannotated),
             };
             let extension = self.extension(type_parameter_start)?;
@@ -1410,6 +1411,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         &mut self,
         name: Span,
         annotation: Span,
+        depth: u8,
     ) -> Result<u32, TypeScriptCollectError> {
         let name_bytes = self.slice_span(name).ok_or(TypeScriptCollectError::Span {
             start: name.start,
@@ -1417,7 +1419,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         })?;
         let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
         let member_base = self.staged_members.len();
-        let cells = self.owner_cells(annotation.start, annotation.end, 0)?;
+        let cells = self.owner_cells(annotation.start, annotation.end, depth)?;
         let extension = self.extension(type_parameter_start)?;
         // A result may share its callable's name and type with an authored
         // input (`stmt(stmt: Stmt): Stmt`). Both are Parameter facts under
@@ -1465,11 +1467,24 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         result: Option<Span>,
         static_member: bool,
     ) -> Result<u32, TypeScriptCollectError> {
+        self.push_signature_at_depth(name, declaration, rows, params, result, static_member, 0)
+    }
+
+    fn push_signature_at_depth(
+        &mut self,
+        name: Span,
+        declaration: Span,
+        rows: &TypeParamRows,
+        params: &ParamRows,
+        result: Option<Span>,
+        static_member: bool,
+        depth: u8,
+    ) -> Result<u32, TypeScriptCollectError> {
         self.push_type_parameter_facts(rows)?;
-        let type_parameter_start = self.push_type_params(rows, 0)?;
-        let param_ordinals = self.push_parameter_facts(params)?;
+        let type_parameter_start = self.push_type_params(rows, depth)?;
+        let param_ordinals = self.push_parameter_facts(params, depth)?;
         let result_target = match result {
-            Some(span) => Some(self.push_result_carrier(name, span)?),
+            Some(span) => Some(self.push_result_carrier(name, span, depth)?),
             None => None,
         };
         let name_bytes = self.slice_span(name).ok_or(TypeScriptCollectError::Span {
@@ -2420,41 +2435,6 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         self.synthetic_cells_fact(fallback_name, TypeCells::unknown(TypeReason::Unannotated))
     }
 
-    /// Declares one formal parameter as a `Parameter` fact when the binding
-    /// site is not already registered, then walks its annotation for nested
-    /// function bindings.
-    ///
-    /// The annotation is not lowered onto this fact. These parameters belong
-    /// to a function type, and the type-literal walk already owns every
-    /// member of that annotation. Lowering it here would claim a second
-    /// index-signature field to the parameter, and a same-named parameter of
-    /// the enclosing signature would then share that field's identity.
-    fn declare_formal_parameter_binding(
-        &mut self,
-        name_span: Span,
-        annotation: Option<Span>,
-        flags: u8,
-        depth: u8,
-    ) -> Result<(), TypeScriptCollectError> {
-        if self.text_span(name_span).is_some_and(|name| name == "this") {
-            return Ok(());
-        }
-        if self.fact_at_name_start(name_span.start).is_none() {
-            let mut params = ParamRows::new();
-            params.push(ParamRow {
-                name: name_span,
-                annotation: None,
-                default: None,
-                flags,
-            })?;
-            self.push_parameter_facts(&params)?;
-        }
-        if let Some(span) = annotation {
-            self.declare_bindings_in_span(span.start, span.end, depth.saturating_add(1))?;
-        }
-        Ok(())
-    }
-
     /// Walks one expression span and declares bindings reachable through
     /// `satisfies`, `as`, and non-null assertions on the initializer plane.
     fn declare_expression_bindings(
@@ -2684,21 +2664,10 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             }
             if let Some(function_type) = kind.as_ts_function_type() {
                 for parameter in function_type.params.items.iter() {
-                    let annotation = parameter
-                        .type_annotation
-                        .as_ref()
-                        .map(|annotation| annotation.type_annotation.span());
-                    let flags = if parameter.optional {
-                        SemanticTypeChild::FLAG_OPTIONAL
-                    } else {
-                        0
-                    };
-                    self.declare_formal_parameter_binding(
-                        parameter.pattern.span(),
-                        annotation,
-                        flags,
-                        next_depth,
-                    )?;
+                    if let Some(annotation) = parameter.type_annotation.as_ref() {
+                        let inner = annotation.type_annotation.span();
+                        self.declare_bindings_in_span(inner.start, inner.end, next_depth)?;
+                    }
                     if let Some(init) = parameter.initializer.as_ref() {
                         let init_span = init.span();
                         self.declare_expression_bindings(
@@ -2709,16 +2678,10 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                     }
                 }
                 if let Some(rest) = function_type.params.rest.as_ref() {
-                    let annotation = rest
-                        .type_annotation
-                        .as_ref()
-                        .map(|annotation| annotation.type_annotation.span());
-                    self.declare_formal_parameter_binding(
-                        rest.rest.argument.span(),
-                        annotation,
-                        SemanticTypeChild::FLAG_REST,
-                        next_depth,
-                    )?;
+                    if let Some(annotation) = rest.type_annotation.as_ref() {
+                        let inner = annotation.type_annotation.span();
+                        self.declare_bindings_in_span(inner.start, inner.end, next_depth)?;
+                    }
                 }
                 let returned = function_type.return_type.type_annotation.span();
                 self.declare_bindings_in_span(returned.start, returned.end, next_depth)?;
@@ -3311,61 +3274,69 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         next_depth: u8,
     ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
         if let Some(function_type) = kind.as_ts_function_type() {
-            let width = function_type
-                .params
-                .items
-                .len()
-                .saturating_add(usize::from(function_type.params.rest.is_some()))
-                .saturating_add(1);
-            if width > MAX_TYPE_CHILDREN {
-                return Err(fault(FactFault::TypeProjectionWidth {
-                    actual: width,
-                    maximum: MAX_TYPE_CHILDREN,
-                }));
+            if let Some(existing) = self.fact_at_name_start(span.start)
+                && let Ok(index) = usize::try_from(existing)
+                && self.fact_kinds.get(index) == Some(&EntityKind::Function)
+                && self.decl_starts.get(index) == Some(&span.start)
+                && self.decl_ends.get(index) == Some(&span.end)
+            {
+                return Ok(TypeOutcome::Existing(existing));
             }
-            let mut cells = TypeCells::leaf(SemanticTypeTag::FunctionPointer);
+            // A function type is a real lexical owner for its parameter
+            // declarations. Emitting it through the shared signature path
+            // keeps same-named parameters in sibling function types distinct
+            // without adding source coordinates to their identities.
+            let mut rows = TypeParamRows::new();
+            if let Some(declared) = function_type.type_parameters.as_ref() {
+                for parameter in declared.params.iter() {
+                    Self::stage_row(
+                        &mut rows,
+                        TypeParamRow {
+                            name: parameter.name.span,
+                            constraint: parameter.constraint.as_ref().map(|t| t.span()),
+                            default: parameter.default.as_ref().map(|t| t.span()),
+                        },
+                    )?;
+                }
+            }
+            let mut params = ParamRows::new();
             for parameter in function_type.params.items.iter() {
-                let target = match parameter.type_annotation.as_ref() {
-                    Some(annotation) => {
-                        let inner = annotation.type_annotation.span();
-                        self.child_target(inner.start, inner.end, next_depth)?
-                    }
-                    None => self.unannotated_fact(parameter.span())?,
-                };
-                let flags = if parameter.optional {
-                    SemanticTypeChild::FLAG_OPTIONAL
-                } else {
-                    0
-                };
-                // A standalone function type mints no `Parameter` fact
-                // for its parameters, so the written pattern is the only
-                // source of a name; pass it explicitly rather than
-                // leaving the child unnamed.
-                let name = self.slice_span(parameter.pattern.span());
-                cells.push_child(target, name, flags)?;
+                params.push(ParamRow {
+                    name: parameter.pattern.span(),
+                    annotation: parameter
+                        .type_annotation
+                        .as_ref()
+                        .map(|annotation| annotation.type_annotation.span()),
+                    default: parameter.initializer.as_ref().map(|init| init.span()),
+                    flags: if parameter.optional {
+                        SemanticTypeChild::FLAG_OPTIONAL
+                    } else {
+                        0
+                    },
+                })?;
             }
             if let Some(rest) = function_type.params.rest.as_ref() {
-                let target = match rest.type_annotation.as_ref() {
-                    Some(annotation) => {
-                        let inner = annotation.type_annotation.span();
-                        self.child_target(inner.start, inner.end, next_depth)?
-                    }
-                    None => self.unannotated_fact(rest.span())?,
-                };
-                let name = self.slice_span(rest.rest.argument.span());
-                cells.push_child(target, name, SemanticTypeChild::FLAG_REST)?;
+                params.push(ParamRow {
+                    name: rest.rest.argument.span(),
+                    annotation: rest
+                        .type_annotation
+                        .as_ref()
+                        .map(|annotation| annotation.type_annotation.span()),
+                    default: None,
+                    flags: SemanticTypeChild::FLAG_REST,
+                })?;
             }
             let returned = function_type.return_type.type_annotation.span();
-            let target = self.child_target(returned.start, returned.end, next_depth)?;
-            cells.record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
-            cells.push_child(target, None, 0)?;
-            // The rest element is pushed after every fixed parameter, so
-            // it is the final parameter exactly when present, and the
-            // record must declare the typed-last variadic form for it.
-            if function_type.params.rest.is_some() {
-                cells.record.payload0 = SemanticTypeRecord::FUNCTION_TYPED_VARIADIC_FLAG;
-            }
-            return Ok(TypeOutcome::Cells(cells));
+            let ordinal = self.push_signature_at_depth(
+                span,
+                span,
+                &rows,
+                &params,
+                Some(returned),
+                false,
+                next_depth,
+            )?;
+            return Ok(TypeOutcome::Existing(ordinal));
         }
         Ok(TypeOutcome::Cells(self.unrepresented(span)))
     }
@@ -14166,6 +14137,46 @@ type Container = {\n\
                     row.5,
                     AnonymousCallableFamilyMultiplicity::Unique,
                     "call and construct signatures have distinct typed roles"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_keeps_function_type_parameters_in_distinct_signature_owners()
+    -> Result<(), LaneError> {
+        let source = concat!(
+            "type ReplaceReturnType<TFunction extends (...args: any[]) => unknown, TReturn> = ",
+            "(...args: Parameters<TFunction>) => TReturn;\n",
+            "type QueryKey = readonly unknown[];\n",
+            "type QueryFunctionContext<TKey> = { queryKey: TKey };\n",
+            "type QueryFunction<T, TKey, TPage> = T;\n",
+            "type Query = {};\n",
+            "type QueryPersister<T, TKey extends QueryKey, TPage> = ",
+            "[TPage] extends [never] ",
+            "? (queryFn: QueryFunction<T, TKey, never>, context: QueryFunctionContext<TKey>, query: Query) => T ",
+            ": (queryFn: QueryFunction<T, TKey, TPage>, context: QueryFunctionContext<TKey>, query: Query) => T;\n",
+        );
+        for ir in [owned_ir(source, None)?, owned_tsz_ir(source)?] {
+            for name in [b"args".as_slice(), b"context".as_slice()] {
+                let parameters = ir
+                    .items()
+                    .filter(|item| item.kind() == EntityKind::Parameter && item.name() == name)
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    parameters.len(),
+                    2,
+                    "both authored {name:?} parameters survive"
+                );
+                assert_ne!(
+                    parameters[0].parent(),
+                    parameters[1].parent(),
+                    "same-named parameters belong to their distinct function-type signatures"
+                );
+                assert!(
+                    parameters.iter().all(|parameter| parameter.parent().is_some()),
+                    "function-type parameter ownership is explicit"
                 );
             }
         }
