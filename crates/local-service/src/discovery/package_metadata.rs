@@ -726,11 +726,7 @@ fn fetch_nuget_registration(
     let root: serde_json::Value =
         serde_json::from_slice(&registration_bytes).map_err(|_| DiscoveryStoreError::Decode)?;
     let root_object = root.as_object().ok_or(DiscoveryStoreError::Decode)?;
-    if root_object
-        .get("@id")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|id| id != registration_index_url)
-    {
+    if root_object.get("@id").and_then(serde_json::Value::as_str) != Some(registration_index_url) {
         return Err(DiscoveryStoreError::Corrupt);
     }
 
@@ -748,7 +744,8 @@ fn fetch_nuget_registration(
     if root_object
         .get("count")
         .and_then(serde_json::Value::as_u64)
-        .is_some_and(|count| usize::try_from(count).ok() != Some(items.len()))
+        .and_then(|count| usize::try_from(count).ok())
+        != Some(items.len())
     {
         return Err(DiscoveryStoreError::Corrupt);
     }
@@ -811,11 +808,21 @@ fn collect_nuget_registration_items(
             continue;
         }
         if let Some(inline) = object.get("items").and_then(serde_json::Value::as_array) {
-            if let Some(count) = object.get("count").and_then(serde_json::Value::as_u64)
-                && usize::try_from(count).ok() != Some(inline.len())
-            {
+            let inline_page_url = object
+                .get("@id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(DiscoveryStoreError::Decode)?;
+            require_nuget_resource_url(inline_page_url, registration_base)?;
+            require_nuget_path_under(inline_page_url, registration_base)?;
+            let count = object
+                .get("count")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|count| usize::try_from(count).ok());
+            if count != Some(inline.len()) {
                 return Err(DiscoveryStoreError::Corrupt);
             }
+            let declared_bounds = nuget_registration_bounds(object)?;
+            let start = leaves.len();
             collect_nuget_registration_items(
                 inline,
                 registration_index_url,
@@ -828,6 +835,7 @@ fn collect_nuget_registration_items(
                 cancelled,
                 remaining_budget,
             )?;
+            validate_nuget_registration_bounds(&leaves[start..], declared_bounds)?;
             continue;
         }
 
@@ -835,6 +843,12 @@ fn collect_nuget_registration_items(
             .get("@id")
             .and_then(serde_json::Value::as_str)
             .ok_or(DiscoveryStoreError::Decode)?;
+        let count = object
+            .get("count")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|count| usize::try_from(count).ok())
+            .ok_or(DiscoveryStoreError::Corrupt)?;
+        let declared_bounds = nuget_registration_bounds(object)?;
         require_nuget_resource_url(page_url, registration_base)?;
         require_nuget_path_under(page_url, registration_base)?;
         if !visited_pages.insert(page_url.to_owned()) {
@@ -862,14 +876,11 @@ fn collect_nuget_registration_items(
         let page: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|_| DiscoveryStoreError::Decode)?;
         let page_object = page.as_object().ok_or(DiscoveryStoreError::Decode)?;
-        if page_object
-            .get("@id")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|id| id != page_url)
+        if page_object.get("@id").and_then(serde_json::Value::as_str) != Some(page_url)
             || page_object
                 .get("parent")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|parent| parent != registration_index_url)
+                != Some(registration_index_url)
         {
             return Err(DiscoveryStoreError::Corrupt);
         }
@@ -880,10 +891,13 @@ fn collect_nuget_registration_items(
         if page_object
             .get("count")
             .and_then(serde_json::Value::as_u64)
-            .is_some_and(|count| usize::try_from(count).ok() != Some(page_items.len()))
+            .and_then(|count| usize::try_from(count).ok())
+            != Some(page_items.len())
+            || count != page_items.len()
         {
             return Err(DiscoveryStoreError::Corrupt);
         }
+        let start = leaves.len();
         collect_nuget_registration_items(
             page_items,
             registration_index_url,
@@ -896,6 +910,7 @@ fn collect_nuget_registration_items(
             cancelled,
             remaining_budget,
         )?;
+        validate_nuget_registration_bounds(&leaves[start..], declared_bounds)?;
     }
     Ok(())
 }
@@ -943,9 +958,13 @@ fn parse_nuget_registration_observation(
         if normalized_version != wanted_version {
             continue;
         }
-        let Some(listed) = entry.get("listed").and_then(serde_json::Value::as_bool) else {
-            complete = false;
-            continue;
+        let listed = match entry.get("listed") {
+            None => true,
+            Some(serde_json::Value::Bool(listed)) => *listed,
+            Some(_) => {
+                complete = false;
+                continue;
+            }
         };
         let standing = if listed {
             DiscoveryStanding::Published
@@ -1007,9 +1026,129 @@ fn nuget_tags_facet(
                 .then_some(DiscoveryFacet::Known(tags))
                 .unwrap_or(DiscoveryFacet::Unknown)
         }
+        Some(serde_json::Value::Array(values)) => {
+            let Some(tags) = values
+                .iter()
+                .map(serde_json::Value::as_str)
+                .collect::<Option<Vec<_>>>()
+            else {
+                return DiscoveryFacet::Unknown;
+            };
+            let total_bytes = tags.iter().map(|tag| tag.len()).sum::<usize>();
+            if tags.len() <= 128
+                && total_bytes <= 32 * 1024
+                && tags.iter().all(|tag| !tag.contains('\0'))
+            {
+                DiscoveryFacet::Known(tags.into_iter().map(str::to_owned).collect())
+            } else {
+                DiscoveryFacet::Unknown
+            }
+        }
         Some(serde_json::Value::Null) => DiscoveryFacet::Absent,
         Some(serde_json::Value::String(_)) => DiscoveryFacet::Unknown,
         Some(_) | None => DiscoveryFacet::Unknown,
+    }
+}
+
+fn nuget_registration_bounds(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(String, String), DiscoveryStoreError> {
+    let normalize_bound = |key| {
+        object
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .and_then(normalize_nuget_version)
+            .ok_or(DiscoveryStoreError::Corrupt)
+    };
+    let lower = normalize_bound("lower")?;
+    let upper = normalize_bound("upper")?;
+    if compare_nuget_versions(&lower, &upper) == Some(std::cmp::Ordering::Greater) {
+        return Err(DiscoveryStoreError::Corrupt);
+    }
+    Ok((lower, upper))
+}
+
+fn validate_nuget_registration_bounds(
+    leaves: &[serde_json::Value],
+    (lower, upper): (String, String),
+) -> Result<(), DiscoveryStoreError> {
+    let mut versions = Vec::with_capacity(leaves.len());
+    for leaf in leaves {
+        let version = leaf
+            .get("catalogEntry")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|entry| entry.get("version"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(normalize_nuget_version)
+            .ok_or(DiscoveryStoreError::Corrupt)?;
+        versions.push(version);
+    }
+    if versions.is_empty()
+        || versions.iter().any(|version| {
+            compare_nuget_versions(version, &lower) == Some(std::cmp::Ordering::Less)
+                || compare_nuget_versions(version, &upper) == Some(std::cmp::Ordering::Greater)
+        })
+        || !versions.contains(&lower)
+        || !versions.contains(&upper)
+    {
+        return Err(DiscoveryStoreError::Corrupt);
+    }
+    Ok(())
+}
+
+fn compare_nuget_versions(left: &str, right: &str) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+
+    let (left_core, left_pre) = left
+        .split_once('-')
+        .map_or((left, None), |(a, b)| (a, Some(b)));
+    let (right_core, right_pre) = right
+        .split_once('-')
+        .map_or((right, None), |(a, b)| (a, Some(b)));
+    let left_core = left_core
+        .split('.')
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let right_core = right_core
+        .split('.')
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()?;
+    for index in 0..left_core.len().max(right_core.len()) {
+        match left_core
+            .get(index)
+            .copied()
+            .unwrap_or(0)
+            .cmp(&right_core.get(index).copied().unwrap_or(0))
+        {
+            Ordering::Equal => {}
+            ordering => return Some(ordering),
+        }
+    }
+    match (left_pre, right_pre) {
+        (None, None) => Some(Ordering::Equal),
+        (None, Some(_)) => Some(Ordering::Greater),
+        (Some(_), None) => Some(Ordering::Less),
+        (Some(left), Some(right)) => {
+            for (left, right) in left.split('.').zip(right.split('.')) {
+                let left_numeric = left.bytes().all(|byte| byte.is_ascii_digit());
+                let right_numeric = right.bytes().all(|byte| byte.is_ascii_digit());
+                let ordering = match (left_numeric, right_numeric) {
+                    (true, true) => {
+                        let left = left.trim_start_matches('0');
+                        let right = right.trim_start_matches('0');
+                        left.len().cmp(&right.len()).then_with(|| left.cmp(right))
+                    }
+                    (true, false) => Ordering::Less,
+                    (false, true) => Ordering::Greater,
+                    (false, false) => left.cmp(right),
+                };
+                match ordering {
+                    Ordering::Equal => {}
+                    ordering => return Some(ordering),
+                }
+            }
+            Some(left.split('.').count().cmp(&right.split('.').count()))
+        }
     }
 }
 
@@ -1086,6 +1225,7 @@ fn normalize_nuget_version(value: &str) -> Option<String> {
         .map_or((version, None), |(v, p)| (v, Some(p)));
     if let Some(metadata) = _metadata
         && (metadata.is_empty()
+            || metadata.split('.').any(str::is_empty)
             || !metadata
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-')))
@@ -1114,6 +1254,7 @@ fn normalize_nuget_version(value: &str) -> Option<String> {
     let mut normalized = numbers.join(".");
     if let Some(prerelease) = prerelease {
         if prerelease.is_empty()
+            || prerelease.split('.').any(str::is_empty)
             || !prerelease
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
@@ -1500,7 +1641,9 @@ mod tests {
     fn nuget_point_metadata_uses_configured_registration_and_normalizes_versions() {
         let (endpoint, worker) = nuget_server(|address| {
             let registration = format!("http://{address}/private/v3/registration/");
-            let root_url = format!("{registration}demo/index.json");
+            let root_url = format!(
+                "{registration}microsoft.aspnetcore.identity.entityframeworkcore/index.json"
+            );
             vec![
                 (
                     "200 OK".to_owned(),
@@ -1511,14 +1654,16 @@ mod tests {
                 (
                     "200 OK".to_owned(),
                     format!(
-                        r#"{{"@id":"{root_url}","count":1,"items":[{{"catalogEntry":{{"id":"DEMO","version":"1.0.0.0+build42","listed":true,"published":"2026-10-20T00:00:00Z","downloads":12,"description":"exact package"}}}}]}}"#
+                        r#"{{"@id":"{root_url}","count":1,"items":[{{"catalogEntry":{{"id":"Microsoft.AspNetCore.Identity.EntityFrameworkCore","version":"10.0.0","published":"2026-10-20T00:00:00Z","downloads":12,"description":"exact package","tags":["one","two"]}}}}]}}"#
                     ),
                 ),
             ]
         });
         let mut owner = gateway(endpoint);
-        let package = PackageCoordinate::parse("pkg:nuget/demo@1.0")
-            .expect("canonical pinned NuGet coordinate");
+        let package = PackageCoordinate::parse(
+            "pkg:nuget/microsoft.aspnetcore.identity.entityframeworkcore@10.0.0",
+        )
+        .expect("canonical pinned NuGet coordinate");
         assert!(owner.observe_package(&package).is_none());
         let fact = owner
             .store
@@ -1528,10 +1673,16 @@ mod tests {
             .expect("admitted exact version fact");
         assert_eq!(fact.standing, DiscoveryStanding::Published);
         assert_eq!(fact.metadata.downloads, DiscoveryFacet::Known(12));
+        assert_eq!(
+            fact.metadata.keywords,
+            DiscoveryFacet::Known(vec!["one".to_owned(), "two".to_owned()])
+        );
         let requests = worker.join().expect("NuGet fixture worker");
         assert_eq!(requests.len(), 2);
         assert!(requests[0].starts_with("GET /v3/index.json "));
-        assert!(requests[1].starts_with("GET /private/v3/registration/demo/index.json "));
+        assert!(requests[1].starts_with(
+            "GET /private/v3/registration/microsoft.aspnetcore.identity.entityframeworkcore/index.json "
+        ));
         assert!(
             requests[1]
                 .to_ascii_lowercase()
@@ -1604,7 +1755,139 @@ mod tests {
     }
 
     #[test]
-    fn nuget_matching_leaf_without_required_standing_is_incomplete_not_missing() {
+    fn nuget_complete_bounded_page_can_prove_exact_absence() {
+        let (endpoint, worker) = nuget_server(|address| {
+            let registration = format!("http://{address}/registration/");
+            let root_url = format!("{registration}demo/index.json");
+            let page_url = format!("{registration}demo/page-0.json");
+            vec![
+                (
+                    "200 OK".to_owned(),
+                    format!(
+                        r#"{{"resources":[{{"@id":"{registration}","@type":"RegistrationsBaseUrl/3.6.0"}}]}}"#
+                    ),
+                ),
+                (
+                    "200 OK".to_owned(),
+                    format!(
+                        r#"{{"@id":"{root_url}","count":1,"items":[{{"@id":"{page_url}","count":1,"lower":"1.0.0","upper":"1.0.0"}}]}}"#
+                    ),
+                ),
+                (
+                    "200 OK".to_owned(),
+                    format!(
+                        r#"{{"@id":"{page_url}","parent":"{root_url}","count":1,"items":[{{"catalogEntry":{{"id":"demo","version":"1.0.0"}}}}]}}"#
+                    ),
+                ),
+            ]
+        });
+        let mut owner = gateway(endpoint);
+        let package =
+            PackageCoordinate::parse("pkg:nuget/demo@2.0.0").expect("NuGet package coordinate");
+        assert!(matches!(
+            owner.observe_package(&package),
+            Some(RegistryPackageDiscoveryObservation::Missing { .. })
+        ));
+        assert!(owner.store.facts().next().is_none());
+        assert_eq!(worker.join().expect("NuGet fixture worker").len(), 3);
+    }
+
+    #[test]
+    fn nuget_registration_absence_requires_root_identity_and_count() {
+        for root in [
+            r#"{"items":[]}"#.to_owned(),
+            r#"{"@id":"http://wrong/index.json","count":0,"items":[]}"#.to_owned(),
+            r#"{"@id":"{ROOT}","items":[]}"#.to_owned(),
+        ] {
+            let (endpoint, worker) = nuget_server(|address| {
+                let registration = format!("http://{address}/registration/");
+                let root_url = format!("{registration}demo/index.json");
+                let root = root.replace("{ROOT}", &root_url);
+                vec![
+                    (
+                        "200 OK".to_owned(),
+                        format!(
+                            r#"{{"resources":[{{"@id":"{registration}","@type":"RegistrationsBaseUrl/3.6.0"}}]}}"#
+                        ),
+                    ),
+                    ("200 OK".to_owned(), root),
+                ]
+            });
+            let mut owner = gateway(endpoint);
+            let package =
+                PackageCoordinate::parse("pkg:nuget/demo@1.0.0").expect("NuGet package coordinate");
+            assert!(matches!(
+                owner.observe_package(&package),
+                Some(RegistryPackageDiscoveryObservation::Unavailable { .. })
+            ));
+            assert!(owner.store.facts().next().is_none());
+            assert_eq!(worker.join().expect("NuGet fixture worker").len(), 2);
+        }
+    }
+
+    #[test]
+    fn nuget_registration_page_identity_count_and_bounds_are_required_for_absence() {
+        for (page, descriptor) in [
+            (
+                r#"{"@id":"{PAGE}","count":1,"items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
+                r#""count":1,"lower":"1.0.0","upper":"1.0.0""#,
+            ),
+            (
+                r#"{"count":1,"parent":"{ROOT}","items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
+                r#""count":1,"lower":"1.0.0","upper":"1.0.0""#,
+            ),
+            (
+                r#"{"@id":"{PAGE}","parent":"{ROOT}","items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
+                r#""count":1,"lower":"1.0.0","upper":"1.0.0""#,
+            ),
+            (
+                r#"{"@id":"{PAGE}","parent":"{ROOT}","count":1,"items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
+                r#""lower":"1.0.0","upper":"1.0.0""#,
+            ),
+            (
+                r#"{"@id":"{PAGE}","parent":"{ROOT}","count":1,"items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
+                r#""count":1"#,
+            ),
+            (
+                r#"{"@id":"{PAGE}","parent":"{ROOT}","count":1,"items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
+                r#""count":1,"lower":"9.0.0","upper":"9.0.0""#,
+            ),
+        ] {
+            let (endpoint, worker) = nuget_server(|address| {
+                let registration = format!("http://{address}/registration/");
+                let root_url = format!("{registration}demo/index.json");
+                let page_url = format!("{registration}demo/page-0.json");
+                let root = format!(
+                    r#"{{"@id":"{root_url}","count":1,"items":[{{"@id":"{page_url}",{descriptor}}}]}}"#
+                );
+                let page = page
+                    .replace("{PAGE}", &page_url)
+                    .replace("{ROOT}", &root_url);
+                vec![
+                    (
+                        "200 OK".to_owned(),
+                        format!(
+                            r#"{{"resources":[{{"@id":"{registration}","@type":"RegistrationsBaseUrl/3.6.0"}}]}}"#
+                        ),
+                    ),
+                    ("200 OK".to_owned(), root),
+                    ("200 OK".to_owned(), page),
+                ]
+            });
+            let mut owner = gateway(endpoint);
+            let package =
+                PackageCoordinate::parse("pkg:nuget/demo@2.0.0").expect("NuGet package coordinate");
+            assert!(matches!(
+                owner.observe_package(&package),
+                Some(RegistryPackageDiscoveryObservation::Unavailable { .. })
+            ));
+            assert!(owner.store.facts().next().is_none());
+            assert_eq!(worker.join().expect("NuGet fixture worker").len(), 3);
+        }
+    }
+
+    #[test]
+    fn nuget_matching_leaf_with_invalid_standing_is_incomplete_not_missing() {
         let (endpoint, worker) = nuget_server(|address| {
             let registration = format!("http://{address}/registration/");
             let root_url = format!("{registration}demo/index.json");
@@ -1618,7 +1901,7 @@ mod tests {
                 (
                     "200 OK".to_owned(),
                     format!(
-                        r#"{{"@id":"{root_url}","count":1,"items":[{{"catalogEntry":{{"id":"Demo","version":"2.1.0"}}}}]}}"#
+                        r#"{{"@id":"{root_url}","count":1,"items":[{{"catalogEntry":{{"id":"Demo","version":"2.1.0","listed":"true"}}}}]}}"#
                     ),
                 ),
             ]
@@ -1697,6 +1980,29 @@ mod tests {
         );
         assert_eq!(normalize_nuget_version("1..0"), None);
         assert_eq!(normalize_nuget_version("1.0.0+"), None);
+    }
+
+    #[test]
+    fn nuget_version_bounds_use_semantic_numeric_and_prerelease_order() {
+        use std::cmp::Ordering;
+
+        assert_eq!(
+            compare_nuget_versions("2.0.0", "1.99.0"),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            compare_nuget_versions("1.0.0-rc.10", "1.0.0-rc.2"),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            compare_nuget_versions("1.0.0", "1.0.0-rc.10"),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            compare_nuget_versions("1.0.0-rc.99999999999999999999", "1.0.0-rc.2"),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(normalize_nuget_version("1.0.0-rc..2"), None);
     }
 
     #[test]
