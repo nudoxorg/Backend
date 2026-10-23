@@ -2320,7 +2320,7 @@ fn compiler_outcome_rows(
                 State::Failed { reason, .. } => format!("failed: {reason}; prior generation remains stale"),
             };
             let mut tags = vec![format!("{} captured source file(s)", profile.source_count)];
-            if let Some(scope) = source_capture.cargo_target.as_ref().filter(|_| matches!(profile.profile.profile(), Ok(backend_semantic::vocabulary::LanguageProfile::Rust(_)))) {
+            if let Some(scope) = source_capture.cargo_target.as_ref().filter(|_| profile.profile.name() == Some("rust")) {
                 tags.push(format!("Cargo target {} ({}) at {}; coverage is its selected source closure", scope.name.as_str(), scope.kinds.join(", "), scope.root));
             }
             let mut operand = refusals.iter().find(|refusal| refusal.profile==profile.profile).and_then(|refusal| match &refusal.diagnostic {

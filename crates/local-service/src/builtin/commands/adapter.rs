@@ -1175,13 +1175,13 @@ impl CommandAdapter {
                 request.request_id,
             );
         }
+        let certificate = request.certificate().cloned();
         if let Command::Add {
             cargo_target,
             package,
             execution_intent,
         } = request.command
         {
-            let certificate = request.certificate().cloned();
             let label = certified_package_label(certificate.as_ref(), package)?;
             let owner_ticket = self.issue_index_ticket(
                 backend_library::PackageReference::parse(label)
