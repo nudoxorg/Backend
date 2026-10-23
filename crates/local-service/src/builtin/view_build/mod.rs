@@ -2190,6 +2190,28 @@ pub fn execute() {}
         Ok(())
     }
 
+    /// The old target stays stale even when the replacement uses identical
+    /// package source bytes; publication creates a new freshness decision.
+    #[test]
+    fn a_new_selected_target_invalidates_unchanged_prior_images() -> Result<(), String> {
+        let bytes = fixture_semantic_image("src/worker.rs")?;
+        let view = SemanticImageView::reopen(&bytes).map_err(|error| error.to_string())?;
+        let (path, identity) = super::compiled_source(&view).map_err(|e| e.to_string())?;
+        let compiled = BTreeMap::from([(path.clone(), identity)]);
+        let current = BTreeSet::from([path.clone()]);
+        let identities = fixture_identity_map(&path, identity);
+        let mut prior = super::freshness_decision(&compiled, &current, Some(&identities));
+        assert!(!prior.image_stale(&path, identity));
+        prior.invalidate_selected_context();
+        assert!(prior.image_stale(&path, identity));
+        assert_eq!(prior.stale_paths, current);
+        assert!(prior.identity_decisive, "the bytes are still identical");
+        assert!(!prior.path_sets_differ, "the path sets still agree");
+        let published = super::freshness_decision(&compiled, &current, Some(&identities));
+        assert!(!published.image_stale(&path, identity));
+        Ok(())
+    }
+
     /// Records persisted before identities existed cannot prove freshness by
     /// content; they keep the coarse path-set comparison, which marks every
     /// current path stale when the path sets disagree and fresh otherwise.

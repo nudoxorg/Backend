@@ -25,7 +25,8 @@ use backend_engine::application::{
     DocumentationFragment, DocumentationSession, LocalCompilerClient,
 };
 use backend_engine::builtin::{
-    ProductSemanticPublicationRecord, SemanticUnavailableReason, semantic_capture_relation,
+    ProductSemanticCaptureOutcome, ProductSemanticPublicationRecord, SemanticUnavailableReason,
+    semantic_capture_relation,
 };
 use backend_engine::{Fragment, Row, RowId, ViewRoot, product_source_file_key};
 use backend_semantic::ir::{
@@ -762,6 +763,25 @@ fn semantic_rows(
                 current_paths.get(&target).unwrap_or(&empty),
                 current_identities.get(&target),
             );
+            let capture = capture_relation
+                .as_ref()
+                .map(|captures| captures.lookup(key))
+                .transpose()
+                .map_err(|error| {
+                    BuiltinModelError(format!("read selected semantic capture: {error}"))
+                })?
+                .flatten();
+            if capture.as_ref().is_some_and(|capture| {
+                capture.cargo_target().is_some()
+                    && !matches!(
+                        capture.outcome(),
+                        ProductSemanticCaptureOutcome::Published { .. }
+                    )
+            }) {
+                // Source bytes alone cannot make the previous target current:
+                // the latest explicit selection has not published its result.
+                decision.invalidate_selected_context();
+            }
             let native_frontier_is_complete = !matches!(
                 key.profile(),
                 backend_semantic::vocabulary::LanguageProfile::C(_)
@@ -1137,9 +1157,16 @@ pub(super) struct FreshnessDecision {
     pub(super) identity_decisive: bool,
     /// Whether the compiled path set already differs from the current scan.
     pub(super) path_sets_differ: bool,
+    /// A newer selected target capture has not published a generation yet.
+    selected_context_stale: bool,
 }
 
 impl FreshnessDecision {
+    pub(super) fn invalidate_selected_context(&mut self) {
+        self.selected_context_stale = true;
+        self.stale_paths.extend(self.compiled.keys().cloned());
+    }
+
     /// Returns whether the image compiled from `path` with `identity`
     /// predates the current file content.
     pub(super) fn image_stale(
@@ -1147,12 +1174,13 @@ impl FreshnessDecision {
         path: &str,
         identity: backend_version::ContentId<backend_version::SourceFactDomain>,
     ) -> bool {
-        match &self.identities {
-            Some(identities) => identities
-                .get(path)
-                .is_none_or(|current| *current != identity),
-            None => self.path_sets_differ,
-        }
+        self.selected_context_stale
+            || match &self.identities {
+                Some(identities) => identities
+                    .get(path)
+                    .is_none_or(|current| *current != identity),
+                None => self.path_sets_differ,
+            }
     }
 }
 
@@ -1208,6 +1236,7 @@ pub(super) fn freshness_decision(
         stale_paths,
         identity_decisive,
         path_sets_differ,
+        selected_context_stale: false,
     }
 }
 
