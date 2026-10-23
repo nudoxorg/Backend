@@ -1533,15 +1533,10 @@ def continuation_report_references(evidence: list[dict]) -> list[dict]:
 
 
 def walk_outline_pages(first: dict, fetch_page, published_root: str,
-                       max_pages: int | None = None, timeout: float = 60.0,
+                       max_pages: int = 256, timeout: float = 60.0,
                        deadline: float | None = None, on_page=None) -> tuple[int, int]:
-    """Exhaust an outline cursor chain without truncating valid coverage.
-
-    An explicit page cap remains available to a case that needs one. The
-    default still retains the original deadline and all identity, basis,
-    cursor-progress and receipt-byte checks.
-    """
-    if (max_pages is not None and max_pages < 1) or timeout <= 0:
+    """Exhaust a real outline cursor chain and reject holes, overlap or basis drift."""
+    if max_pages < 1 or timeout <= 0:
         raise ValueError("outline continuation bounds must be positive")
     started = time.monotonic()
     deadline = deadline if deadline is not None else started + timeout
@@ -1555,7 +1550,7 @@ def walk_outline_pages(first: dict, fetch_page, published_root: str,
         if time.monotonic() >= deadline:
             raise RuntimeError("snapshot continuation: outline traversal deadline exceeded")
         pages += 1
-        if max_pages is not None and pages > max_pages:
+        if pages > max_pages:
             raise RuntimeError("snapshot continuation: outline traversal exceeded its page bound")
         page_ids, new_count = _outline_page_identities(current, seen_rows)
         seen_rows.update(page_ids)
@@ -1893,7 +1888,7 @@ def _replay_cli_cursor(owner: Owner, project: Path, args: list[str], key: str,
 
         if current.get("answer") == "outline":
             walk_outline_pages(current, fetch, published_root,
-                               max_pages=case.get("outline_max_pages"),
+                               max_pages=case.get("outline_max_pages", 256),
                                deadline=deadline, on_page=retain)
         elif current.get("answer") == "records":
             walk_record_pages(current, fetch, deadline=deadline, on_page=retain)
@@ -1969,7 +1964,7 @@ def _replay_mcp_calls(owner: Owner, project: Path, calls: list[dict], measured: 
 
             if replay_first.get("answer") == "outline":
                 walk_outline_pages(replay_first, fetch, published_root,
-                                   max_pages=case.get("outline_max_pages"),
+                                   max_pages=case.get("outline_max_pages", 256),
                                    deadline=deadline, on_page=retain)
             elif replay_first.get("answer") == "records":
                 walk_record_pages(replay_first, fetch, deadline=deadline, on_page=retain)
@@ -2195,10 +2190,9 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         shutil.copytree(ROOT / case["project"], project)
     make_case_directories_writable(project)
     timeout = case.get("timeout_seconds", 300)
-    outline_max_pages = case.get("outline_max_pages")
-    if (outline_max_pages is not None and
-            (isinstance(outline_max_pages, bool) or not isinstance(outline_max_pages, int)
-             or outline_max_pages < 1)):
+    outline_max_pages = case.get("outline_max_pages", 256)
+    if (isinstance(outline_max_pages, bool) or not isinstance(outline_max_pages, int)
+            or outline_max_pages < 1):
         raise RuntimeError("outline continuation page bound must be a positive integer")
     cargo_vendor = None
     if "cargo_vendor_env" in case:

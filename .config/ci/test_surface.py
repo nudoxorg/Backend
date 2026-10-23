@@ -1277,9 +1277,8 @@ class SnapshotContinuationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "deadline"):
             surface.walk_outline_pages(first, fetch, "root", deadline=0)
 
-        # Large native projects can legitimately exceed 256 pages. A caller
-        # can still impose an explicit page bound, but default traversal is
-        # admitted by the original deadline and bounded retained receipts.
+        # The general 256-page cap remains fail-closed. A reviewed case can
+        # explicitly raise it while keeping the deadline and receipt bounds.
         def long_page(index):
             more = index < 257
             return page(row(f"long-decl-{index}"), f"long-{index + 1}" if more else None, more)
@@ -1287,7 +1286,7 @@ class SnapshotContinuationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "page bound"):
             surface.walk_outline_pages(
                 long_page(1), lambda _current, token: long_page(int(token.removeprefix("long-"))),
-                "root", max_pages=256)
+                "root")
 
         import contextlib
         import io
@@ -1297,6 +1296,7 @@ class SnapshotContinuationTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(surface.walk_outline_pages(
                 long_page(1), fetch_long_page, "root",
+                max_pages=512,
                 on_page=lambda index, response, incoming: surface._emit_continuation_page(
                     retained, "cli", "outline", index, {"arguments": ["outline"]},
                     response, incoming, byte_budget=byte_budget)),
@@ -1311,6 +1311,7 @@ class SnapshotContinuationTests(unittest.TestCase):
                 RuntimeError, "complete receipt chain exceeded its byte bound"):
             surface.walk_outline_pages(
                 long_page(1), fetch_long_page, "root",
+                max_pages=512,
                 on_page=lambda index, response, incoming: surface._emit_continuation_page(
                     retained, "cli", "outline", index, {"arguments": ["outline"]},
                     response, incoming, byte_budget=byte_budget,

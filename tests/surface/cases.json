@@ -634,6 +634,7 @@
         "python"
       ],
       "index_mode": "wait",
+      "outline_max_pages": 512,
       "authored_symbols": {
         "xml_document": "src/pugixml.hpp",
         "xml_parse_result": "src/pugixml.hpp"
