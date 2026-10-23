@@ -633,6 +633,7 @@
         "cpp",
         "python"
       ],
+      "outline_max_pages": 512,
       "index_mode": "wait",
       "authored_symbols": {
         "xml_document": "src/pugixml.hpp",

@@ -310,6 +310,14 @@ linking pages with cursor SHA-256 values. A proof is bound to its CLI answer or
 MCP call ordinal, so an identical token on another request must be traversed
 independently. The reviewed answer golden remains the first page.
 
+The general outline proof cap remains 256 pages. `cpp-pugixml` explicitly allows
+512 because build 599439 consumed 256 valid pages and 7,876 unique declarations
+while the admitted page still honestly offered a cursor. Its issued CLI limit is
+200, but output admission deliberately narrows large encoded frames to 25
+declarations while retaining the original page credit and immutable basis. The
+case-specific cap corrects proof capacity for that admitted delivery size; the
+unchanged 300-second query deadline still bounds the complete walk.
+
 For token-bearing answers only, the normalizer validates the reported byte/token
 arithmetic, then records `bytesExcludingCursor` and
 `estimatedTokensExcludingCursor`. It subtracts exactly the opaque token's UTF-8

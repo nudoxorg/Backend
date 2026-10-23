@@ -1044,6 +1044,21 @@ class SnapshotContinuationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "deadline"):
             surface.walk_outline_pages(first, fetch, "root", deadline=0)
 
+        # Large native projects can legitimately exceed 256 bounded pages.
+        # Keep exhausting the offered cursor chain while retaining an explicit
+        # finite page bound and the existing wall-clock deadline.
+        def long_page(index):
+            more = index < 257
+            return page(row(f"long-decl-{index}"), f"long-{index + 1}" if more else None, more)
+
+        self.assertEqual(surface.walk_outline_pages(
+            long_page(1), lambda _current, token: long_page(int(token.removeprefix("long-"))),
+            "root", max_pages=512), (257, 257))
+        with self.assertRaisesRegex(RuntimeError, "page bound"):
+            surface.walk_outline_pages(
+                long_page(1), lambda _current, token: long_page(int(token.removeprefix("long-"))),
+                "root")
+
     def test_search_cursor_walk_exhausts_pages_and_rejects_cycles_or_duplicates(self):
         def page(coordinate, token, more):
             value = {"answer": "records", "query": "Digest", "coverage": [], "readiness": "ready",

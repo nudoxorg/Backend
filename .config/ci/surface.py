@@ -1725,6 +1725,9 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         shutil.copytree(ROOT / case["project"], project)
     make_case_directories_writable(project)
     timeout = case.get("timeout_seconds", 300)
+    outline_max_pages = case.get("outline_max_pages", 256)
+    if isinstance(outline_max_pages, bool) or not isinstance(outline_max_pages, int) or outline_max_pages < 1:
+        raise RuntimeError("outline continuation page bound must be a positive integer")
     cargo_vendor = None
     if "cargo_vendor_env" in case:
         vendor = os.environ.get(case["cargo_vendor_env"], "")
@@ -1803,6 +1806,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                                                 {"arguments": args}, current, input_cursor)
                     pages, declarations = walk_outline_pages(
                         answer["json"], cli_outline_page, published_root,
+                        max_pages=outline_max_pages,
                         deadline=query_deadline, on_page=retain_cli_outline)
                     log(f"{key}: exhausted {pages} CLI outline pages ({declarations} unique declarations)")
                 elif answer["json"].get("answer") == "records":
@@ -1863,6 +1867,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                     _emit_continuation_page(record["continuation_evidence"], "mcp", call["tool"], page_number,
                                             request, current, input_cursor)
                 pages, declarations = walk_outline_pages(first, mcp_outline_page, published_root,
+                                                         max_pages=outline_max_pages,
                                                          deadline=exchange.deadline,
                                                          on_page=retain_mcp_outline)
                 proven_answers.setdefault(f"mcp:{answer_index}", set()).add(token)
