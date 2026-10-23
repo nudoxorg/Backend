@@ -82,7 +82,11 @@ class GuiAdmissionTests(unittest.TestCase):
             'TOMLDecodeError src/tomli/parser.py',
             'Opened parser.py',
         ])
-        plates = iter(['TOMLDecodeError', 'project TOMLDecodeError'])
+        plates = iter([
+            'TOMLDecodeError',
+            'Q TOMLDecodeError',
+            'project TOMLDecodeError',
+        ])
         returns = []
         shell_keys = []
 
@@ -99,6 +103,45 @@ class GuiAdmissionTests(unittest.TestCase):
         self.assertEqual(len(returns), 2)
         self.assertEqual(shell_keys, ['s'])
         self.assertEqual(now[0], 1.5)
+
+    def test_post_return_route_is_rechecked_before_requiring_ask_filename(self):
+        now = [0.0]
+        captures = iter([
+            'TOMLDecodeError src/tomli/_parser.py',
+            'Opened declaration page',
+            'Opened declaration page',
+        ])
+        plates = iter(['Q TOMLDecodeError', 'project TOMLDecodeError'])
+        returns = []
+
+        opened = open_current_result(
+            lambda: next(captures), lambda: next(plates),
+            lambda: returns.append(now[0]),
+            'project', 'TOMLDecodeError', '_parser.py', 10,
+            now=lambda: now[0],
+            pause=lambda seconds: now.__setitem__(0, now[0] + seconds))
+
+        self.assertEqual(opened, 'Opened declaration page')
+        self.assertEqual(returns, [0.0])
+        self.assertEqual(now[0], 1.0)
+
+    def test_matching_route_at_entry_cannot_bypass_ask_and_return(self):
+        now = [0.0]
+        returns = []
+
+        def topbar():
+            raise AssertionError('route proof is unavailable before Return')
+
+        with self.assertRaisesRegex(RuntimeError, 'before its deadline'):
+            open_current_result(
+                lambda: 'project TOMLDecodeError declaration page', topbar,
+                lambda: returns.append(now[0]),
+                'project', 'TOMLDecodeError', '_parser.py', 1,
+                now=lambda: now[0],
+                pause=lambda seconds: now.__setitem__(0, now[0] + seconds))
+
+        self.assertEqual(returns, [])
+        self.assertGreaterEqual(now[0], 1)
 
     def test_deadline_exhaustion_never_returns_on_retained_row(self):
         now = [0.0]

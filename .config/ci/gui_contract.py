@@ -69,9 +69,20 @@ def open_current_result(
 ) -> str:
     """Retry stale Ask rows within the original GUI deadline, returning only after dismissal."""
     last_error = None
+    return_sent = False
     while now() < deadline:
+        observed = capture()
+        # Once Return has been issued, its route transition may complete after
+        # the first settled OCR sample. Recheck the positive route proof before
+        # treating the already-open page as though it were still an Ask row.
+        if return_sent:
+            try:
+                require_navigation_breadcrumb(observed, topbar(), project_name, query)
+                return observed
+            except RuntimeError as error:
+                last_error = error
         try:
-            require_current_result(capture(), query, filename)
+            require_current_result(observed, query, filename)
         except RuntimeError as error:
             last_error = error
             pause(min(0.5, max(0, deadline - now())))
@@ -80,6 +91,7 @@ def open_current_result(
         if on_ready is not None:
             on_ready()
         press_return()
+        return_sent = True
         # Keep the existing settle interval, then check the whole window and
         # the top-center navigation breadcrumb independently. A stale Return
         # leaves Ask open without this project+symbol route, so no plain `s`
