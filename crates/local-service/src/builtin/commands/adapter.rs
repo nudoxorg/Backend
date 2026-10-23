@@ -3332,6 +3332,12 @@ impl CommandAdapter {
         &mut self,
         daemon: &mut ProductDaemon,
     ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
+        // Discovery workers only fetch and validate source batches. The owner
+        // loop is their sole writer, and it must drain them even when no
+        // surface command arrives to request a catalog projection.
+        if let Some(discovery) = self.discovery.as_mut() {
+            discovery.apply_pending();
+        }
         // A completed result can precede thread exit. Reap only finished
         // input workers; active owner turns never wait for a live tail.
         self.index_input_workers.reap_finished();
@@ -10053,6 +10059,103 @@ mod tests {
             work: IndexJobWork::Transition,
         });
         cancelled
+    }
+
+    #[test]
+    fn idle_owner_poll_commits_discovery_batches_without_surface_queries() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+
+        let mut fixture = AdapterFixture::new();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener");
+        listener
+            .set_nonblocking(true)
+            .expect("bounded fixture accept");
+        let address = listener.local_addr().expect("fixture address");
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "discovery worker made no request"
+                        );
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("accept discovery request: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("bounded request read");
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0_u8; 1];
+                stream.read_exact(&mut byte).expect("read request headers");
+                request.push(byte[0]);
+                assert!(request.len() <= 16 * 1024, "bounded request headers");
+            }
+            let request = String::from_utf8(request).expect("HTTP request");
+            assert!(request.starts_with("GET /solrsearch/select?"));
+            let body = r#"{"response":{"numFound":1,"docs":[{"g":"org.example","a":"idle-owner","latestVersion":"1.0.0","timestamp":100}]}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            )
+            .expect("write bounded catalog response");
+            stream
+                .write_all(body.as_bytes())
+                .expect("write catalog body");
+        });
+
+        let discovery_root = fixture.root.0.join("registry-metadata");
+        let endpoint = backend_engine::registry::RegistryEndpoint::new(
+            backend_engine::registry::RegistryEcosystem::Maven,
+            format!("http://{address}"),
+        )
+        .expect("loopback Maven endpoint");
+        let (adapter, daemon) = fixture.parts();
+        adapter.discovery = Some(
+            crate::discovery::DiscoveryGateway::open(
+                discovery_root,
+                crate::process::RegistryDiscoveryConfig {
+                    sources: vec![endpoint],
+                    offline: false,
+                    max_pages: 1,
+                },
+            )
+            .expect("open discovery owner"),
+        );
+        let coordinate = backend_engine::registry::PackageCoordinate::parse(
+            "pkg:maven/org.example/idle-owner@1.0.0",
+        )
+        .expect("fixture coordinate");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            // This is the ordinary owner housekeeping poll. No execute() or
+            // surface/catalog command is issued in this test.
+            let _ = adapter.poll_deferred(daemon);
+            if adapter
+                .discovery
+                .as_ref()
+                .expect("configured discovery owner")
+                .store()
+                .facts()
+                .any(|(_, fact)| fact.coordinate == coordinate)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "idle owner did not commit the feed batch"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        server.join().expect("bounded catalog server");
     }
 
     fn stalled_package_metadata_owner(abandon: bool) {
