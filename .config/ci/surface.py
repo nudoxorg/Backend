@@ -1612,10 +1612,15 @@ def drain_task_volume() -> None:
     if sys.platform != "linux":
         return
     started = time.monotonic()
-    result = process_custody.run(
-        ["sync", "--file-system", str(ROOT)],
-        capture_output=True, text=True, timeout=60,
-    )
+    try:
+        result = process_custody.run(
+            ["sync", "--file-system", str(ROOT)],
+            capture_output=True, text=True, timeout=60,
+        )
+    except subprocess.TimeoutExpired as error:
+        seconds = time.monotonic() - started
+        print(f"CI-TIMING lane=t2 step=filesystem-drain seconds={seconds:.3f} exit=timeout", flush=True)
+        raise RuntimeError("T2 infrastructure: runtime-import filesystem drain exceeded 60 seconds") from error
     seconds = time.monotonic() - started
     print(f"CI-TIMING lane=t2 step=filesystem-drain seconds={seconds:.3f} exit={result.returncode}", flush=True)
     if result.returncode != 0:
@@ -1633,8 +1638,6 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         if unknown:
             parser.error(f"unknown cases: {sorted(unknown)}")
         cases = [case for case in cases if case["name"] in args.case]
-    if args.ci_report:
-        drain_task_volume()
     failed = []
     report = {}
     evidence = {}
@@ -1877,6 +1880,8 @@ def main() -> int:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             parser.error("another surface run owns the fixed scratch paths")
+        if args.ci_report:
+            drain_task_volume()
         from cpu_placement import measurement_placement
         with measurement_placement() as placement:
             print("SURFACE-CPU-PLACEMENT " + json.dumps(placement, sort_keys=True), flush=True)

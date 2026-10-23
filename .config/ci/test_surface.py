@@ -29,6 +29,14 @@ class RuntimeImportDrainTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "infrastructure.*I/O error"):
                 surface.drain_task_volume()
 
+    def test_timeout_is_an_infrastructure_failure(self):
+        import subprocess
+        from unittest.mock import patch
+        with patch.object(surface.sys, "platform", "linux"), \
+                patch.object(surface.process_custody, "run", side_effect=subprocess.TimeoutExpired("sync", 60)):
+            with self.assertRaisesRegex(RuntimeError, "infrastructure.*exceeded 60 seconds"):
+                surface.drain_task_volume()
+
     def test_other_platforms_do_not_invoke_linux_syncfs(self):
         from unittest.mock import patch
         with patch.object(surface.sys, "platform", "darwin"), \
