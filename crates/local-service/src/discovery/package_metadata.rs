@@ -826,7 +826,7 @@ fn collect_nuget_registration_items(
                 .get("@id")
                 .and_then(serde_json::Value::as_str)
                 .ok_or(DiscoveryStoreError::Decode)?;
-            require_nuget_inline_page_url(inline_page_url, registration_base, &declared_bounds)?;
+            require_nuget_inline_page_url(inline_page_url, registration_base)?;
             let count = object
                 .get("count")
                 .and_then(serde_json::Value::as_u64)
@@ -1088,27 +1088,20 @@ fn nuget_registration_bounds(
 fn require_nuget_inline_page_url(
     resource: &str,
     registration_base: &str,
-    declared_bounds: &(String, String),
 ) -> Result<(), DiscoveryStoreError> {
-    let (resource_url, fragment) = resource
-        .split_once('#')
-        .ok_or(DiscoveryStoreError::Corrupt)?;
-    if fragment.contains('#') {
+    let resource_url = if let Some((resource_url, fragment)) = resource.split_once('#') {
+        if fragment.contains('#') {
+            return Err(DiscoveryStoreError::Corrupt);
+        }
+        resource_url
+    } else {
+        resource
+    };
+    if resource_url.is_empty() {
         return Err(DiscoveryStoreError::Corrupt);
     }
     require_nuget_resource_url(resource_url, registration_base)?;
     require_nuget_path_under(resource_url, registration_base)?;
-    let mut parts = fragment.split('/');
-    let (Some("page"), Some(lower), Some(upper), None) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return Err(DiscoveryStoreError::Corrupt);
-    };
-    if normalize_nuget_version(lower).as_deref() != Some(declared_bounds.0.as_str())
-        || normalize_nuget_version(upper).as_deref() != Some(declared_bounds.1.as_str())
-    {
-        return Err(DiscoveryStoreError::Corrupt);
-    }
     Ok(())
 }
 
@@ -1837,6 +1830,83 @@ mod tests {
         ));
         assert!(owner.store.facts().next().is_none());
         assert_eq!(worker.join().expect("NuGet fixture worker").len(), 3);
+    }
+
+    #[test]
+    fn nuget_inline_page_ids_accept_absent_and_opaque_fragments_without_fetching() {
+        for fragment in ["", "#opaque/page-reference"] {
+            let (endpoint, worker) = nuget_server(|address| {
+                let registration = format!("http://{address}/registration/");
+                let root_url = format!("{registration}demo/index.json");
+                let inline_page_url = format!("{root_url}{fragment}");
+                vec![
+                    (
+                        "200 OK".to_owned(),
+                        format!(
+                            r#"{{"resources":[{{"@id":"{registration}","@type":"RegistrationsBaseUrl/3.6.0"}}]}}"#
+                        ),
+                    ),
+                    (
+                        "200 OK".to_owned(),
+                        format!(
+                            r#"{{"@id":"{root_url}","count":1,"items":[{{"@id":"{inline_page_url}","count":1,"lower":"1.0.0","upper":"1.0.0","items":[{{"catalogEntry":{{"id":"demo","version":"1.0.0","listed":true}}}}]}}]}}"#
+                        ),
+                    ),
+                ]
+            });
+            let mut owner = gateway(endpoint);
+            let package =
+                PackageCoordinate::parse("pkg:nuget/demo@2.0.0").expect("NuGet package coordinate");
+            assert!(matches!(
+                owner.observe_package(&package),
+                Some(RegistryPackageDiscoveryObservation::Missing { .. })
+            ));
+            assert!(owner.store.facts().next().is_none());
+            let requests = worker.join().expect("NuGet fixture worker");
+            assert_eq!(requests.len(), 2);
+            assert!(requests[1].starts_with("GET /registration/demo/index.json "));
+        }
+    }
+
+    #[test]
+    fn nuget_inline_page_ids_stay_within_source_origin_and_path() {
+        for external_origin in [true, false] {
+            let (endpoint, worker) = nuget_server(|address| {
+                let registration = format!("http://{address}/registration/");
+                let root_url = format!("{registration}demo/index.json");
+                let inline_page_url = if external_origin {
+                    let port = address.rsplit_once(':').expect("loopback host port").1;
+                    format!("http://127.0.0.2:{port}/registration/demo/index.json#opaque")
+                } else {
+                    format!("http://{address}/outside/demo/index.json#opaque")
+                };
+                vec![
+                    (
+                        "200 OK".to_owned(),
+                        format!(
+                            r#"{{"resources":[{{"@id":"{registration}","@type":"RegistrationsBaseUrl/3.6.0"}}]}}"#
+                        ),
+                    ),
+                    (
+                        "200 OK".to_owned(),
+                        format!(
+                            r#"{{"@id":"{root_url}","count":1,"items":[{{"@id":"{inline_page_url}","count":1,"lower":"1.0.0","upper":"1.0.0","items":[{{"catalogEntry":{{"id":"demo","version":"1.0.0","listed":true}}}}]}}]}}"#
+                        ),
+                    ),
+                ]
+            });
+            let mut owner = gateway(endpoint);
+            let package =
+                PackageCoordinate::parse("pkg:nuget/demo@2.0.0").expect("NuGet package coordinate");
+            assert!(matches!(
+                owner.observe_package(&package),
+                Some(RegistryPackageDiscoveryObservation::Unavailable { .. })
+            ));
+            assert!(owner.store.facts().next().is_none());
+            let requests = worker.join().expect("NuGet fixture worker");
+            assert_eq!(requests.len(), 2);
+            assert!(requests[1].starts_with("GET /registration/demo/index.json "));
+        }
     }
 
     #[test]
