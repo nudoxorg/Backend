@@ -39,7 +39,6 @@ pub(super) fn declaration_family(kind: DeclarationKind) -> u8 {
         DeclarationKind::Function | DeclarationKind::Method | DeclarationKind::Constructor => 0,
         DeclarationKind::Class
         | DeclarationKind::Interface
-        | DeclarationKind::Annotation
         | DeclarationKind::Type
         | DeclarationKind::Enum
         | DeclarationKind::Struct

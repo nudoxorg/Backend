@@ -2229,14 +2229,14 @@ mod tests {
             },
             name,
             holder: Vec::new(),
-            item: ItemKind::Trait,
+            item: ItemKind::Record,
             kind: DeclarationKind::Interface,
             start: Some(10),
         };
         let declaration = SourceDeclaration::at_path(
             "javax/annotation/Nonnull.java",
             "Nonnull",
-            DeclarationKind::Annotation,
+            DeclarationKind::Interface,
             10,
             "public @interface Nonnull",
             "",
@@ -2244,14 +2244,6 @@ mod tests {
         let sites = super::kinds::pair_sites(Language::Java, &[entity], &[&declaration]);
 
         assert_eq!(sites.len(), 1);
-        assert_eq!(
-            super::kinds::kind_with_site(
-                DeclarationKind::Interface,
-                ItemKind::Trait,
-                declaration.kind(),
-            ),
-            DeclarationKind::Annotation,
-        );
         assert_eq!(
             sites.values().next().map(|site| site.location().path()),
             Some("javax/annotation/Nonnull.java")
