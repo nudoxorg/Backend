@@ -897,6 +897,14 @@ fn product_projection(
         return lines.finish();
     }
     let readable_records = view.readable_records();
+    let coverage_continuation = match view.compiler_outcomes() {
+        Some(backend_library::PackageCompilerOutcomes::Coverage { page, .. }) => page
+            .next
+            .as_ref()
+            .and_then(|read| serde_json::to_string(&read).ok()),
+        _ => None,
+    };
+    let mut shown_coverage_continuation = false;
     for record in readable_records.as_ref() {
         let mut head = record.title().to_owned();
         if !record.tags().is_empty() {
@@ -904,7 +912,13 @@ fn product_projection(
         }
         lines.push(head);
         if let Some(operand) = record.operand() {
-            lines.push(format!("`{operand}`"));
+            let repeated_coverage_continuation = coverage_continuation
+                .as_deref()
+                .is_some_and(|continuation| continuation == operand);
+            if !repeated_coverage_continuation || !shown_coverage_continuation {
+                lines.push(format!("`{operand}`"));
+                shown_coverage_continuation |= repeated_coverage_continuation;
+            }
         }
         if let Some(status) = record.history_status() {
             lines.push(semantic_history_details(status));

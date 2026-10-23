@@ -386,16 +386,33 @@ fn partial_coverage_pages_keep_complete_escaped_observations_inside_actual_cli_a
         cause: SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
         diagnostic: None,
     };
+    let mut rows = vec![row.clone()];
+    for index in 1..12 {
+        let source = format!("spec-{index}");
+        let source_id =
+            backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                source.as_bytes(),
+            );
+        rows.push(SourceCoverageRow::Gap {
+            path: format!("src/z{index:02}/excluded.spec.ts"),
+            source: *source_id.as_ref(),
+            byte_len: source.len() as u32,
+            cause: SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
+            diagnostic: None,
+        });
+    }
+    // Offset one starts after the single selected config row: 19 gaps plus
+    // that config produce 20 catalog rows, matching 31/50 semantic artifacts.
     let page = PackageCompilerCoveragePage {
         generation: selector.generation,
         input_digest: selector.input_digest,
         source_count: 50,
-        completed: 41,
-        row_count: 10,
-        rows: vec![row.clone()].into_boxed_slice(),
+        completed: 31,
+        row_count: 20,
+        rows: rows.clone().into_boxed_slice(),
         next: Some(PackageCompilerOutcomeRead::Coverage(
             PackageCompilerCoverageSelector {
-                offset: 2,
+                offset: 13,
                 ..selector
             },
         )),
@@ -463,9 +480,31 @@ fn partial_coverage_pages_keep_complete_escaped_observations_inside_actual_cli_a
                 result["structuredContent"], cli_value,
                 "the complete CLI and MCP DTOs agree at the same detail"
             );
+            let expected_continuation = serde_json::to_string(
+                &PackageCompilerOutcomeRead::Coverage(PackageCompilerCoverageSelector {
+                    offset: 13,
+                    ..selector
+                }),
+            )
+            .map_err(|error| format!("serialize the exact next coverage selector: {error}"))?;
+            let text = result["content"][0]["text"]
+                .as_str()
+                .expect("the package-profile result has its readable text preview");
+            assert_eq!(
+                text.matches(&format!("`{expected_continuation}`")).count(),
+                1,
+                "the page-level selector is printed once in the text projection"
+            );
             let dto: backend_present::ProductDto =
                 serde_json::from_value(result["structuredContent"].clone())
                     .map_err(|error| format!("decode the typed MCP product DTO: {error}"))?;
+            assert_eq!(dto.records.len(), rows.len());
+            assert!(
+                dto.records.iter().all(|record| {
+                    record.operand.as_deref() == Some(expected_continuation.as_str())
+                }),
+                "the full structured DTO retains every row and its original operand"
+            );
             let observed = dto
                 .compiler_outcomes
                 .expect("complete typed coverage observation");
@@ -476,7 +515,7 @@ fn partial_coverage_pages_keep_complete_escaped_observations_inside_actual_cli_a
             let PackageCompilerOutcomes::Coverage { page, .. } = observed else {
                 panic!("coverage")
             };
-            assert_eq!(page.rows.as_ref(), [row.clone()].as_slice());
+            assert_eq!(page.rows.as_ref(), rows.as_slice());
         }
     }
     Ok(())

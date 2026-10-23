@@ -110,6 +110,20 @@ fn page_limit_domains_preserve_defaults_and_admit_exact_engine_boundaries() {
 }
 
 #[test]
+fn repeated_operands_remain_visible_outside_compiler_coverage_pages() {
+    let view = ProductView::rows(
+        "generic",
+        vec![
+            ProductRecord::new("first row", Some("same operand".to_owned()), Vec::new()),
+            ProductRecord::new("second row", Some("same operand".to_owned()), Vec::new()),
+        ],
+    );
+
+    let text = crate::render::markdown::product(&view);
+    assert_eq!(text.matches("`same operand`").count(), 2);
+}
+
+#[test]
 fn durable_index_grammars_keep_exact_keys_and_reject_mixed_progress_identities() {
     let key = backend_library::IndexOperationKey::from_bytes([0x51; 32]).expect("key");
     let mut start = Invocation::new(grammar_for("index_start").expect("start grammar"));
