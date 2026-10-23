@@ -487,6 +487,8 @@ pub struct RustWorkspace {
     selected_source_paths: HashMap<PathBuf, PathBuf>,
     /// Exact selected buffers keyed by their real RA file and Cargo edition.
     selected_source_coordinates: HashMap<FileId, SelectedRustSourceCoordinate>,
+    /// Exact identities of every selected input buffer, including shared or detached files.
+    selected_source_identities: HashMap<FileId, SourceIdentity>,
     /// Exact active module membership for this database, built before it is shared.
     source_ownership_index: Option<RustSourceOwnershipIndex>,
 }
@@ -501,6 +503,79 @@ pub struct RustSelectedSourceCoordinate<'source> {
     pub relative_path: &'source Path,
     /// Central content identity of the captured source bytes.
     pub source: SourceIdentity,
+}
+
+/// One exact captured source member of an explicitly selected Cargo target.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RustCargoTargetSourceV1 {
+    relative_path: Box<str>,
+    source: SourceIdentity,
+}
+
+impl RustCargoTargetSourceV1 {
+    /// Package-relative path retained in the selected target closure.
+    #[must_use]
+    pub fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+
+    /// Exact central source identity for the captured bytes.
+    #[must_use]
+    pub const fn source(&self) -> SourceIdentity {
+        self.source
+    }
+}
+
+/// Exact Cargo target metadata and captured source closure admitted by rust-analyzer.
+///
+/// This witness names only captured Rust source buffers that have exactly one
+/// active HIR owner matching the selected target. Package files without that
+/// owner remain package inputs, but are outside this target's semantic scope.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RustCargoTargetSourceClosureV1 {
+    target_name: Box<str>,
+    target_root: Box<str>,
+    target_kinds: Box<[Box<str>]>,
+    sources: Box<[RustCargoTargetSourceV1]>,
+    identity: [u8; 32],
+}
+
+impl RustCargoTargetSourceClosureV1 {
+    /// Exact target name from the admitted Cargo metadata row.
+    #[must_use]
+    pub fn target_name(&self) -> &str {
+        &self.target_name
+    }
+
+    /// Exact package-relative Cargo target root.
+    #[must_use]
+    pub fn target_root(&self) -> &str {
+        &self.target_root
+    }
+
+    /// Target kinds from the same admitted Cargo metadata row.
+    #[must_use]
+    pub fn target_kinds(&self) -> &[Box<str>] {
+        &self.target_kinds
+    }
+
+    /// Sorted exact source members admitted under this target's HIR context.
+    #[must_use]
+    pub fn sources(&self) -> &[RustCargoTargetSourceV1] {
+        &self.sources
+    }
+
+    /// Number of selected source members in this exact closure.
+    #[must_use]
+    pub fn source_count(&self) -> usize {
+        self.sources.len()
+    }
+
+    /// Domain-separated identity of the exact target and source closure.
+    #[must_use]
+    pub const fn identity(&self) -> [u8; 32] {
+        self.identity
+    }
 }
 
 struct SelectedRustSourceCoordinate {
@@ -637,6 +712,188 @@ impl RustWorkspace {
     ) -> Option<RustCargoTarget<'_>> {
         self.cargo_target_lookup_for_source_path(source_path.as_ref())
             .0
+    }
+
+    /// Finds the unique exact Cargo target row with this name in the selected package.
+    ///
+    /// Names are not package-unique in Cargo, so a collision is refused. The returned root
+    /// comes from the same complete metadata snapshot used by target-scoped ownership checks.
+    #[must_use]
+    pub fn cargo_target_for_name(&self, name: &str) -> Option<RustCargoTarget<'_>> {
+        if name.is_empty() {
+            return None;
+        }
+        let facts = self.cargo_workspace_facts.as_deref()?;
+        let package_id = facts.selected_package_id.as_deref()?;
+        let package = facts
+            .workspace_packages
+            .iter()
+            .find(|package| package.package_id.as_ref() == package_id)?;
+        if package.manifest_path != self.root.join("Cargo.toml") {
+            return None;
+        }
+        let mut matching = package
+            .targets
+            .iter()
+            .filter(|target| target.name.as_ref() == name);
+        let target = matching.next()?;
+        if matching.next().is_some() {
+            return None;
+        }
+        let root = target.source_path.strip_prefix(&self.root).ok()?;
+        if !is_normalized_relative_path(root) {
+            return None;
+        }
+        Some(RustCargoTarget {
+            name: target.name.as_ref(),
+            root,
+        })
+    }
+
+    /// Returns the exact captured source closure owned by one admitted Cargo target.
+    ///
+    /// Every returned source has exactly one active HIR owner matching the
+    /// target's admitted Cargo name and root. Package inputs without that owner
+    /// are outside this target's semantic scope. Ambiguous ownership, absent
+    /// Cargo metadata, or a missing target root is refused.
+    pub fn source_closure_for_target(
+        &self,
+        target: RustCargoTarget<'_>,
+        control: RustAnalysisControl<'_>,
+    ) -> Result<RustCargoTargetSourceClosureV1, RustAuthorityError> {
+        control.check()?;
+        if target.name.is_empty() || !is_normalized_relative_path(target.root) {
+            return Err(RustAuthorityError::CargoTargetMetadataMismatch);
+        }
+        let facts = self
+            .cargo_workspace_facts
+            .as_deref()
+            .ok_or(RustAuthorityError::CargoTargetMetadataMismatch)?;
+        let package_id = facts
+            .selected_package_id
+            .as_deref()
+            .ok_or(RustAuthorityError::CargoTargetMetadataMismatch)?;
+        let package = facts
+            .workspace_packages
+            .iter()
+            .find(|package| package.package_id.as_ref() == package_id)
+            .ok_or(RustAuthorityError::CargoTargetMetadataMismatch)?;
+        if package.manifest_path != self.root.join("Cargo.toml") {
+            return Err(RustAuthorityError::CargoTargetMetadataMismatch);
+        }
+        let absolute_root = self.root.join(target.root);
+        let mut target_rows = package
+            .targets
+            .iter()
+            .filter(|row| row.name.as_ref() == target.name && row.source_path == absolute_root);
+        let target_row = target_rows
+            .next()
+            .ok_or(RustAuthorityError::CargoTargetMetadataMismatch)?;
+        if target_rows.next().is_some() {
+            return Err(RustAuthorityError::CargoTargetMetadataMismatch);
+        }
+        let ownership = self
+            .source_ownership_index
+            .as_ref()
+            .ok_or(RustAuthorityError::SourceOwnershipIndexUnavailable)?;
+        let mut sources = Vec::new();
+        sources
+            .try_reserve(self.selected_source_paths.len())
+            .map_err(|_| RustAuthorityError::SessionSourceRootLimit {
+                maximum: MAX_RUST_WORKSPACE_SESSION_SOURCES,
+            })?;
+        let target_root_text = target
+            .root
+            .to_str()
+            .ok_or(RustAuthorityError::CargoTargetMetadataMismatch)?;
+        for (relative_path, source_path) in &self.selected_source_paths {
+            control.check()?;
+            let Some(relative) = relative_path.to_str() else {
+                return Err(RustAuthorityError::SessionSourcePath {
+                    path: relative_path.clone(),
+                });
+            };
+            if !is_normalized_relative_path(relative_path) {
+                return Err(RustAuthorityError::SessionSourcePath {
+                    path: relative_path.clone(),
+                });
+            }
+            let vfs_path = VfsPath::from(AbsPathBuf::assert_utf8(source_path.clone()));
+            let Some((file_id, FileExcluded::No)) = self.vfs.file_id(&vfs_path) else {
+                return Err(RustAuthorityError::SourceNotLoaded {
+                    path: source_path.clone(),
+                });
+            };
+            let owners = ownership.owners_by_file.get(&file_id);
+            let candidates: &[RustSourceOwnershipEntry] = match owners {
+                Some(RustSourceOwners::Unique(owner)) => std::slice::from_ref(owner),
+                Some(RustSourceOwners::Ambiguous(owners)) => owners,
+                None => &[],
+            };
+            let matching_count = candidates
+                .iter()
+                .filter(|owner| self.owner_matches_target(**owner, target))
+                .count();
+            if matching_count == 0 {
+                continue;
+            }
+            if matching_count > 1 {
+                return match self.source_owner_entry(
+                    file_id,
+                    source_path,
+                    Some(target),
+                    RustCargoTargetResolution::ExplicitUnitTarget,
+                    control,
+                ) {
+                    Err(error) => Err(error),
+                    Ok(_) => Err(RustAuthorityError::CargoTargetMetadataMismatch),
+                };
+            }
+            let source = self
+                .selected_source_identities
+                .get(&file_id)
+                .copied()
+                .ok_or(RustAuthorityError::SessionFrontierMismatch)?;
+            sources.push(RustCargoTargetSourceV1 {
+                relative_path: relative.into(),
+                source,
+            });
+        }
+        sources.sort_unstable_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        if !sources
+            .iter()
+            .any(|source| source.relative_path.as_ref() == target_root_text)
+        {
+            return Err(RustAuthorityError::CargoTargetSourceRootMissing {
+                path: target.root.to_path_buf(),
+            });
+        }
+        let mut kinds = target_row.kinds.to_vec();
+        kinds.sort_unstable();
+        kinds.dedup();
+        let target_kinds = kinds.into_boxed_slice();
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"nudox.rust.cargo-target-source-closure.v1\0");
+        hash_target_part(&mut hasher, target.name.as_bytes());
+        hash_target_part(&mut hasher, target.root.to_string_lossy().as_bytes());
+        hasher.update(&(target_kinds.len() as u64).to_be_bytes());
+        for kind in &target_kinds {
+            hash_target_part(&mut hasher, kind.as_bytes());
+        }
+        hasher.update(&(sources.len() as u64).to_be_bytes());
+        for source in &sources {
+            hash_target_part(&mut hasher, source.relative_path.as_bytes());
+            hasher.update(source.source.identity.as_ref());
+            hasher.update(&source.source.byte_len.to_be_bytes());
+        }
+        let identity = *hasher.finalize().as_bytes();
+        Ok(RustCargoTargetSourceClosureV1 {
+            target_name: target.name.into(),
+            target_root: target_root_text.into(),
+            target_kinds,
+            sources: sources.into_boxed_slice(),
+            identity,
+        })
     }
 
     fn cargo_target_lookup_for_source_path<'workspace>(
@@ -1609,6 +1866,11 @@ fn is_normalized_relative_path(path: &Path) -> bool {
             .all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
+fn hash_target_part(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    hasher.update(&(bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+}
+
 fn elapsed_nanos(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
@@ -2258,6 +2520,7 @@ impl RustWorkspace {
             vfs,
             selected_source_paths: HashMap::new(),
             selected_source_coordinates: HashMap::new(),
+            selected_source_identities: HashMap::new(),
             source_ownership_index: None,
         })
     }
@@ -3193,10 +3456,20 @@ impl RustWorkspace {
                 maximum: MAX_RUST_WORKSPACE_SESSION_SOURCES,
             }
         })?;
+        let mut source_identities = HashMap::new();
+        source_identities.try_reserve(files.len()).map_err(|_| {
+            RustAuthorityError::SessionSourceRootLimit {
+                maximum: MAX_RUST_WORKSPACE_SESSION_SOURCES,
+            }
+        })?;
         let ownership = self
             .source_ownership_index
             .as_ref()
             .ok_or(RustAuthorityError::SourceOwnershipIndexUnavailable)?;
+        let selected_target = key
+            .cargo_target
+            .as_ref()
+            .map(RustCargoTargetIdentity::borrowed);
         for file in files {
             control.check()?;
             let path = self
@@ -3218,16 +3491,34 @@ impl RustWorkspace {
                     observed: text.text(&self.database).len(),
                 });
             }
-            let Some(RustSourceOwners::Unique(owner)) = ownership.owners_by_file.get(&file_id)
-            else {
-                continue;
-            };
             let source = SourceIdentity::from_bytes(file.source.as_bytes()).ok_or(
                 RustAuthorityError::SourceBudget {
                     actual: file.source.len() as u64,
                     maximum: control.maximum_source_bytes,
                 },
             )?;
+            if source_identities.insert(file_id, source).is_some() {
+                return Err(RustAuthorityError::SessionFrontierMismatch);
+            }
+            let owner = match ownership.owners_by_file.get(&file_id) {
+                Some(RustSourceOwners::Unique(owner))
+                    if selected_target
+                        .is_none_or(|target| self.owner_matches_target(*owner, target)) =>
+                {
+                    Some(*owner)
+                }
+                Some(RustSourceOwners::Ambiguous(owners)) => selected_target.and_then(|target| {
+                    let mut matching = owners
+                        .iter()
+                        .copied()
+                        .filter(|owner| self.owner_matches_target(*owner, target));
+                    let selected = matching.next();
+                    selected.filter(|_| matching.next().is_none())
+                }),
+                None => None,
+                Some(RustSourceOwners::Unique(_)) => None,
+            };
+            let Some(owner) = owner else { continue };
             let coordinate = SelectedRustSourceCoordinate {
                 file: EditionedFileId::new(
                     &self.database,
@@ -3243,6 +3534,7 @@ impl RustWorkspace {
             }
         }
         self.selected_source_coordinates = coordinates;
+        self.selected_source_identities = source_identities;
         if let (Some(observer), Some(selected_file_ids)) =
             (observer.as_mut(), selected_file_ids.as_ref())
         {
@@ -5614,6 +5906,15 @@ pub enum RustAuthorityError {
         /// Rejected package-relative source path.
         path: PathBuf,
     },
+    /// The selected name/root could not be bound to exactly one admitted Cargo target row.
+    #[error("selected Rust Cargo target does not match one admitted target row")]
+    CargoTargetMetadataMismatch,
+    /// The admitted Cargo target root was not present in its exact HIR-owned source closure.
+    #[error("selected Cargo target root is missing from its Rust source closure: {path}")]
+    CargoTargetSourceRootMissing {
+        /// Exact package-relative target root.
+        path: PathBuf,
+    },
     /// A workspace source set is empty or exceeds its fixed bound.
     #[error("Rust workspace session source count {actual} exceeds allowed range 1..={maximum}")]
     SessionSourceCardinality {
@@ -6344,6 +6645,11 @@ mod read_frontier_budget_tests {
             .expect("exact Cargo metadata binds the selected bench root");
         assert_eq!(admitted_bench.name, "ownership_bench");
         assert_eq!(admitted_bench.root, Path::new("benches/bench.rs"));
+        let selected_by_name = workspace
+            .cargo_target_for_name("ownership_bench")
+            .expect("name-only selection resolves through the admitted metadata snapshot");
+        assert_eq!(selected_by_name.root, admitted_bench.root);
+        assert!(workspace.cargo_target_for_name("missing-target").is_none());
 
         assert!(matches!(
             workspace.analyze_source(root.join("benches/bench.rs"), benchmark, control(), |_| Ok(
@@ -6532,6 +6838,41 @@ mod read_frontier_budget_tests {
             let lease = lane
                 .begin(key, &files, control())
                 .expect("selected-frontier preparation resolves this unit's shared files");
+            let closure = lease
+                .workspace()
+                .source_closure_for_target(target, control())
+                .expect("selected Cargo target has an exact captured source closure");
+            assert_eq!(closure.target_name(), target.name);
+            assert_eq!(
+                closure.target_root(),
+                target.root.to_str().expect("UTF-8 root")
+            );
+            assert!(
+                closure
+                    .sources()
+                    .iter()
+                    .any(|member| member.relative_path()
+                        == target.root.to_str().expect("UTF-8 root"))
+            );
+            assert!(
+                closure
+                    .sources()
+                    .windows(2)
+                    .all(|pair| { pair[0].relative_path() < pair[1].relative_path() })
+            );
+            if target.name == "ownership_bench" {
+                assert_eq!(closure.source_count(), 1);
+                assert_eq!(closure.sources()[0].relative_path(), "benches/bench.rs");
+            }
+            if target.name == "readiness_source_ownership" {
+                assert_eq!(closure.source_count(), 2);
+                assert!(
+                    closure
+                        .sources()
+                        .iter()
+                        .any(|member| member.relative_path() == "benches/bench.rs")
+                );
+            }
             lease
                 .workspace()
                 .analyze_source_for_target(

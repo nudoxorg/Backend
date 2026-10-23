@@ -28,7 +28,8 @@ use backend_compile::{
 use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_frontend_python::legacy::checker::CheckerError as PythonCheckerError;
 use backend_frontend_rust::legacy::{
-    RustAnalysisControl, RustAuthorityError, RustCargoTarget, RustWorkspaceEditorBufferObserver,
+    RustAnalysisControl, RustAuthorityError, RustCargoTarget, RustCargoTargetSourceClosureV1,
+    RustWorkspaceEditorBufferObserver,
     RustWorkspaceFile, RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey,
     RustWorkspaceSessionLane, RustWorkspaceSessionLease,
 };
@@ -1715,6 +1716,15 @@ impl StagedSemanticPackage {
         self.staged.cargo_workspace_facts.as_deref()
     }
 
+    /// Exact Rust target and captured source closure used for this staged profile.
+    ///
+    /// Package inputs outside this closure remain committed by the input witness,
+    /// but do not contribute semantic source rows or gaps for the selected target.
+    #[must_use]
+    pub fn rust_target_source_closure(&self) -> Option<&RustCargoTargetSourceClosureV1> {
+        self.staged.rust_target_source_closure.as_ref()
+    }
+
     /// Rust language profile whose workspace preflight produced these facts.
     #[must_use]
     pub const fn profile(&self) -> backend_semantic::vocabulary::LanguageProfile {
@@ -3087,6 +3097,7 @@ pub(crate) struct StagedPackageCompilation {
     typescript_runtime_local_authority: Option<[u8; 32]>,
     typescript_program_environments: Option<Vec<[u8; 32]>>,
     cargo_workspace_facts: Option<std::sync::Arc<RustCargoWorkspaceFactsV1>>,
+    rust_target_source_closure: Option<RustCargoTargetSourceClosureV1>,
     typescript_witness:
         Option<std::sync::Arc<crate::application::typescript_host::TypeScriptProjectWitness>>,
     typescript_closure_witness: Option<
@@ -4306,6 +4317,92 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             } else {
                 None
             };
+        let rust_target_source_closure = match package.package_target.unit_key() {
+            CompilationUnitKeyV2::RustCrate { name, root } => {
+                let lease = rust_workspace_lease.as_ref().ok_or(
+                    PackageSemanticError::Capacity {
+                        lane: "selected Rust Cargo target workspace",
+                    },
+                )?;
+                let selected_target = RustCargoTarget {
+                    name: name.as_ref(),
+                    root: Path::new(root.as_ref()),
+                };
+                let toolchain = self
+                    .toolchain(first_application_request)
+                    .map_err(|cause| {
+                        toolchain_terminal(first_authority, first_application_request, cause)
+                    })
+                    .map_err(|terminal| PackageSemanticError::Compile {
+                        path: first_source.relative_path.into(),
+                        terminal: Box::new(terminal),
+                    })?;
+                Some(
+                    lease
+                        .workspace()
+                        .source_closure_for_target(
+                            selected_target,
+                            RustAnalysisControl {
+                                cancelled: control.cancelled,
+                                maximum_source_bytes: self.package_authority.rust
+                                    .ok_or(PackageSemanticError::Capacity {
+                                        lane: "Rust target closure authority configuration",
+                                    })?
+                                    .maximum_source_bytes,
+                                deadline: control.deadline,
+                            },
+                        )
+                        .map_err(|cause| {
+                            package_authority_terminal(
+                                package.package_target.target(),
+                                first_application_request,
+                                first_authority,
+                                toolchain,
+                                PackageAuthorityError::RustProject(cause),
+                            )
+                        })
+                        .map_err(|terminal| PackageSemanticError::Compile {
+                            path: first_source.relative_path.into(),
+                            terminal: Box::new(terminal),
+                        })?,
+                )
+            }
+            CompilationUnitKeyV2::PackageRoot => None,
+            _ => None,
+        };
+        let rust_compilation_sources = if let Some(closure) = &rust_target_source_closure {
+            if target.profile.language() != backend_semantic::vocabulary::Language::Rust {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "Rust target closure profile binding",
+                });
+            }
+            let mut selected = Vec::with_capacity(closure.source_count());
+            for member in closure.sources() {
+                let source = package
+                    .sources
+                    .binary_search_by(|source| source.relative_path().cmp(member.relative_path()))
+                    .ok()
+                    .and_then(|index| package.sources.get(index).copied())
+                    .ok_or(PackageSemanticError::Capacity {
+                        lane: "Rust target closure source membership",
+                    })?;
+                let observed = backend_semantic::ir::SourceIdentity::from_bytes(
+                    source.source().as_bytes(),
+                )
+                .ok_or(PackageSemanticError::Capacity {
+                    lane: "Rust target closure source identity",
+                })?;
+                if observed != member.source() {
+                    return Err(PackageSemanticError::Capacity {
+                        lane: "Rust target closure source binding",
+                    });
+                }
+                selected.push(source);
+            }
+            selected
+        } else {
+            package.compilation_sources().collect::<Vec<_>>()
+        };
         let rust_workspace_authority = if let Some(lease) = rust_workspace_lease.as_ref() {
             let source_path = package.package_root.join(first_source.relative_path);
             let toolchain = self
@@ -4414,7 +4511,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             None
         };
 
-        for source in package.compilation_sources() {
+        for source in rust_compilation_sources.iter().copied() {
             if cancelled.load(Ordering::Acquire) {
                 return Err(PackageSemanticError::Compile {
                     path: source.relative_path.into(),
@@ -5302,6 +5399,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     .cargo_workspace_facts()
                     .map(std::sync::Arc::clone)
             }),
+            rust_target_source_closure,
             typescript_witness: typescript_project
                 .as_ref()
                 .map(|project| std::sync::Arc::clone(project.witness())),
