@@ -3142,12 +3142,13 @@ impl DiscoverySearchIndex {
 pub(crate) struct LocalDeclarationSearchIndex {
     root: Option<ViewStateRoot>,
     inner: Option<TextSearchIndex<RowId>>,
+    external_inner: Option<TextSearchIndex<RowId>>,
 }
 
 impl LocalDeclarationSearchIndex {
     pub(crate) fn sync(&mut self, view: &ViewRoot) -> Result<(), String> {
         let root = view.root();
-        if self.root == Some(root) && self.inner.is_some() {
+        if self.root == Some(root) && self.inner.is_some() && self.external_inner.is_some() {
             return Ok(());
         }
         self.rebuild(view)
@@ -3161,7 +3162,7 @@ impl LocalDeclarationSearchIndex {
         &mut self,
         deltas: &[CommittedViewDelta],
     ) -> Result<(), String> {
-        if self.inner.is_none() || deltas.is_empty() {
+        if self.inner.is_none() || self.external_inner.is_none() || deltas.is_empty() {
             return Ok(());
         }
         for delta in deltas {
@@ -3200,10 +3201,13 @@ impl LocalDeclarationSearchIndex {
             }
             self.root = Some(delta.target_root());
         }
-        let commit_result = match self.inner.as_mut() {
-            Some(inner) => inner.commit(),
-            None => Ok(()),
-        };
+        let mut commit_result = self.inner.as_mut().map_or(Ok(()), |inner| inner.commit());
+        if commit_result.is_ok() {
+            commit_result = self
+                .external_inner
+                .as_mut()
+                .map_or(Ok(()), |inner| inner.commit());
+        }
         if let Err(error) = commit_result {
             self.invalidate();
             return Err(error);
@@ -3233,6 +3237,21 @@ impl LocalDeclarationSearchIndex {
             .page_with_ecosystem(query, limit, None, continuation)
     }
 
+    pub(crate) fn page_external_after(
+        &self,
+        query: &str,
+        limit: usize,
+        continuation: Option<&SearchContinuation>,
+    ) -> Result<SearchPage<RowId>, String> {
+        if let Some(continuation) = continuation {
+            continuation.admit()?;
+        }
+        self.external_inner
+            .as_ref()
+            .ok_or_else(|| "external declaration search index was not synchronized".to_owned())?
+            .page_with_ecosystem(query, limit, None, continuation)
+    }
+
     pub(crate) const fn revision(&self) -> Option<ViewStateRoot> {
         self.root
     }
@@ -3243,17 +3262,26 @@ impl LocalDeclarationSearchIndex {
     }
 
     fn upsert_row(&mut self, row: &Row) -> Result<(), String> {
+        let identity = row.id.stable_key();
         let inner = self
             .inner
             .as_mut()
             .ok_or_else(|| "local declaration writer disappeared".to_owned())?;
-        let identity = row.id.stable_key();
+        let external_inner = self
+            .external_inner
+            .as_mut()
+            .ok_or_else(|| "external declaration writer disappeared".to_owned())?;
+        inner.remove_document(&identity);
+        external_inner.remove_document(&identity);
         if !matches!(row.id, RowId::Symbol(_)) {
-            inner.remove_document(&identity);
             return Ok(());
         }
         let name = row.label.rsplit("::").next().unwrap_or(&row.label);
-        inner.remove_document(&identity);
+        let inner = if is_external_placeholder(row) {
+            external_inner
+        } else {
+            inner
+        };
         inner.insert_document(
             identity,
             row.id,
@@ -3267,6 +3295,9 @@ impl LocalDeclarationSearchIndex {
 
     fn remove_row(&mut self, id: RowId) {
         if let Some(inner) = self.inner.as_mut() {
+            inner.remove_document(&id.stable_key());
+        }
+        if let Some(inner) = self.external_inner.as_mut() {
             inner.remove_document(&id.stable_key());
         }
     }
@@ -3288,6 +3319,7 @@ impl LocalDeclarationSearchIndex {
         };
         check("local-declaration-start")?;
         let mut inner = TextSearchIndex::new()?;
+        let mut external_inner = TextSearchIndex::new()?;
         for row in view.row_refs() {
             check("local-declaration-row")?;
             if !matches!(row.id, RowId::Symbol(_)) {
@@ -3295,7 +3327,12 @@ impl LocalDeclarationSearchIndex {
             }
             let name = row.label.rsplit("::").next().unwrap_or(&row.label);
             let sort_key = local_sort_key(row.id, row.label.as_str());
-            inner.insert_document(
+            let target = if is_external_placeholder(row) {
+                &mut external_inner
+            } else {
+                &mut inner
+            };
+            target.insert_document(
                 row.id.stable_key(),
                 row.id,
                 row.label.as_str(),
@@ -3307,17 +3344,26 @@ impl LocalDeclarationSearchIndex {
         }
         check("local-declaration-before-commit")?;
         inner.commit()?;
+        external_inner.commit()?;
         check("local-declaration-after-commit")?;
         Ok(Self {
             root: Some(view.root()),
             inner: Some(inner),
+            external_inner: Some(external_inner),
         })
     }
 
     fn invalidate(&mut self) {
         self.root = None;
         self.inner = None;
+        self.external_inner = None;
     }
+}
+
+fn is_external_placeholder(row: &Row) -> bool {
+    matches!(row.id, RowId::Symbol(_))
+        && row.source.captured().is_none()
+        && row.label.contains("::external::symbol:")
 }
 
 fn local_search_content(row: &Row) -> Vec<&str> {

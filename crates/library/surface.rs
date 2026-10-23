@@ -1449,10 +1449,12 @@ impl IndexOperationProfileRefusal {
             }
             failure.encode_bounded_json()?;
             if let PackageCompilerFailureCause::Authority {
+                class,
                 diagnostic: Some(facts),
                 ..
             }
             | PackageCompilerFailureCause::AuthorityAdmission {
+                class,
                 diagnostic: Some(facts),
                 ..
             } = failure.cause()
@@ -1464,6 +1466,10 @@ impl IndexOperationProfileRefusal {
                         && language != backend_semantic::vocabulary::Language::TypeScript)
                     || (facts.go_failure.is_some()
                         && language != backend_semantic::vocabulary::Language::Go)
+                    || (facts.rust_source_scope_failure.is_some()
+                        && language != backend_semantic::vocabulary::Language::Rust)
+                    || (facts.rust_source_scope_failure.is_some()
+                        && *class != AuthorityClassFact::SourceScope)
                     || matches!(
                         facts.python_failure,
                         Some(crate::interface::PythonAuthorityFailureKind::Cancelled)
@@ -2263,7 +2269,9 @@ impl PackageCompilerFailure {
             diagnostic: Some(facts),
             ..
         } = &self.cause
-            && (facts.typescript_admission.is_some() || facts.typescript_cause.is_some())
+            && (facts.typescript_admission.is_some()
+                || facts.typescript_cause.is_some()
+                || facts.rust_source_scope_failure.is_some())
         {
             let expected = detail_for_package_cause(&self.cause);
             if (self.detail.as_str(), self.detail_truncated) != (expected.0.as_str(), expected.1) {
@@ -2681,6 +2689,41 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
     if let PackageCompilerFailureCause::Authority {
         diagnostic:
             Some(CompilerAuthorityDiagnosticFacts {
+                rust_source_scope_failure: Some(failure),
+                ..
+            }),
+        ..
+    }
+    | PackageCompilerFailureCause::AuthorityAdmission {
+        diagnostic:
+            Some(CompilerAuthorityDiagnosticFacts {
+                rust_source_scope_failure: Some(failure),
+                ..
+            }),
+        ..
+    } = cause
+    {
+        use crate::interface::RustSourceScopeFailureKind as R;
+        let detail = match failure {
+            R::DetachedSource {
+                active_hir_root_count,
+            } => format!(
+                "Rust source scope is detached from active package HIR roots ({active_hir_root_count} active roots observed)"
+            ),
+            R::AmbiguousSourceOwner {
+                definition_count,
+                omitted_definition_count,
+                target_resolution,
+            } => format!(
+                "Rust source scope has {definition_count} active owner definitions ({omitted_definition_count} omitted); Cargo target resolution: {}",
+                target_resolution.diagnostic_label(),
+            ),
+        };
+        return sanitize_package_compiler_detail(&detail, false);
+    }
+    if let PackageCompilerFailureCause::Authority {
+        diagnostic:
+            Some(CompilerAuthorityDiagnosticFacts {
                 python_failure: Some(failure),
                 ..
             }),
@@ -2820,6 +2863,7 @@ fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
         | PackageCompilerFailureCause::Lowering(_) => true,
         PackageCompilerFailureCause::AuthorityAdmission {
             language,
+            class,
             diagnostic: Some(facts),
             ..
         } => {
@@ -2830,11 +2874,17 @@ fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
                     || *language == CompilerLanguageFact::TypeScript)
                 && (facts.go_failure.is_none()
                     || *language == CompilerLanguageFact::Go)
+                && (facts.rust_source_scope_failure.is_none()
+                    || (*language == CompilerLanguageFact::Rust
+                        && *class == AuthorityClassFact::SourceScope))
         }
         PackageCompilerFailureCause::Authority {
+            class,
             diagnostic: Some(facts),
             ..
-        } => authority_diagnostic_facts_are_valid(facts),
+        } => authority_diagnostic_facts_are_valid(facts)
+            && (facts.rust_source_scope_failure.is_none()
+                || *class == AuthorityClassFact::SourceScope),
         PackageCompilerFailureCause::Authority {
             diagnostic: None, ..
         }
@@ -2849,6 +2899,7 @@ fn authority_diagnostic_facts_are_valid(facts: &CompilerAuthorityDiagnosticFacts
         facts.python_failure.is_some(),
         facts.typescript_failure.is_some(),
         facts.go_failure.is_some(),
+        facts.rust_source_scope_failure.is_some(),
     ]
     .into_iter()
     .filter(|present| *present)
@@ -2868,6 +2919,16 @@ fn authority_diagnostic_facts_are_valid(facts: &CompilerAuthorityDiagnosticFacts
                     crate::interface::TypeScriptAuthorityFailureKind::is_program_execution_failure,
                 )
         })
+        && facts
+            .rust_source_scope_failure
+            .is_none_or(|failure| match failure {
+                crate::interface::RustSourceScopeFailureKind::DetachedSource { .. } => true,
+                crate::interface::RustSourceScopeFailureKind::AmbiguousSourceOwner {
+                    definition_count,
+                    omitted_definition_count,
+                    ..
+                } => definition_count >= 2 && omitted_definition_count <= definition_count,
+            })
 }
 
 #[cfg(test)]
@@ -6336,7 +6397,7 @@ mod tests {
         let decoded: SurfaceReply = serde_json::from_value(wire).expect("same protocol roundtrip");
         assert_eq!(decoded, reply);
         let envelope = crate::ReplyDto::new(41, crate::CommandReply::Surface(reply));
-        let encoded = serde_json::to_vec(&envelope).expect("current live DTO38 envelope");
+        let encoded = serde_json::to_vec(&envelope).expect("current live DTO39 envelope");
         assert!(encoded.len() <= crate::MAX_REPLY_BODY);
         assert_eq!(
             crate::decode_reply_body(&encoded).expect("strict current wire"),
@@ -7052,6 +7113,196 @@ mod tests {
         assert_eq!(reopened, failure);
         assert_eq!(reopened.kind_tag(), failure.kind_tag());
         assert!(reopened.retained_diagnostic_for_local_debug().is_none());
+    }
+
+    #[test]
+    fn rust_source_scope_refusal_keeps_only_closed_path_free_facts() {
+        use crate::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,
+            CompilerDiagnostic, CompilerTerminal, RustSourceScopeFailureKind as R,
+            RustTargetResolutionKind as T, SourceAuthority,
+        };
+        let attempt = CompilerAttempt {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"rust bytes"),
+                byte_len: 10,
+            },
+            recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"rust recipe"),
+        };
+        let terminal = CompilerTerminal::Compile {
+            attempted: attempt,
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::Resolve,
+                class: AuthorityDiagnosticClass::SourceScope,
+                diagnostic: Some(CompilerDiagnostic::from_rust_source_scope_failure(
+                    R::AmbiguousSourceOwner {
+                        definition_count: 7,
+                        omitted_definition_count: 3,
+                        target_resolution: T::DuplicateExactTarget,
+                    },
+                )),
+            },
+        };
+        let failure = PackageCompilerFailure::from_package_terminal("src/lib.rs", &terminal)
+            .expect("bounded Rust failure projection")
+            .expect("authority refusal");
+        assert_eq!(failure.kind_tag(), "rust_source_scope_failure");
+        assert!(failure.detail().contains("7 active owner definitions"));
+        assert!(failure.detail().contains("duplicate_exact_target"));
+
+        let encoded = failure
+            .encode_bounded_json()
+            .expect("canonical refusal facts");
+        let wire = String::from_utf8(encoded.clone()).expect("JSON UTF-8");
+        assert!(!wire.contains("/private"));
+        assert!(!wire.contains("stderr"));
+        let align_detail = |wire: &mut serde_json::Value| {
+            let cause: PackageCompilerFailureCause =
+                serde_json::from_value(wire["cause"].clone()).expect("closed cause variant");
+            let (detail, truncated) = detail_for_package_cause(&cause);
+            wire["detail"] = serde_json::json!(detail);
+            wire["detail_truncated"] = serde_json::json!(truncated);
+        };
+        for (field, invalid_count) in [("definition_count", 1), ("omitted_definition_count", 8)] {
+            let mut malformed: serde_json::Value =
+                serde_json::from_slice(&encoded).expect("valid failure JSON");
+            malformed["cause"]["fault"]["diagnostic"]["rust_source_scope_failure"][field] =
+                serde_json::json!(invalid_count);
+            align_detail(&mut malformed);
+            let malformed = serde_json::to_vec(&malformed).expect("mutated failure JSON");
+            assert!(
+                PackageCompilerFailure::decode_bounded_json(&malformed).is_err(),
+                "authority decoder rejects impossible {field}"
+            );
+        }
+        let reopened = PackageCompilerFailure::decode_bounded_json(&encoded)
+            .expect("typed Rust diagnostic survives cold decoding");
+        assert_eq!(reopened, failure);
+        let PackageCompilerFailureCause::Authority {
+            diagnostic: Some(facts),
+            ..
+        } = reopened.cause()
+        else {
+            panic!("Rust scope cause remains structured");
+        };
+        assert_eq!(
+            facts.rust_source_scope_failure,
+            Some(R::AmbiguousSourceOwner {
+                definition_count: 7,
+                omitted_definition_count: 3,
+                target_resolution: T::DuplicateExactTarget,
+            })
+        );
+
+        let setup_terminal = CompilerTerminal::AuthorityAdmission {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"rust setup bytes"),
+                byte_len: 16,
+            },
+            language: backend_semantic::vocabulary::Language::Rust,
+            stage: backend_semantic::vocabulary::Stage::LowerIr,
+            phase: AuthorityPhase::Resolve,
+            class: AuthorityDiagnosticClass::SourceScope,
+            diagnostic: Some(CompilerDiagnostic::from_rust_source_scope_failure(
+                R::DetachedSource {
+                    active_hir_root_count: 2,
+                },
+            )),
+        };
+        let setup =
+            PackageCompilerFailure::from_package_terminal("src/detached.rs", &setup_terminal)
+                .expect("pre-recipe refusal projection")
+                .expect("Rust setup refusal");
+        assert_eq!(setup.recipe_identity(), None);
+        let setup_wire = setup.encode_bounded_json().expect("pre-recipe fact codec");
+        let mut malformed_setup: serde_json::Value =
+            serde_json::from_slice(&setup_wire).expect("valid setup failure JSON");
+        malformed_setup["cause"]["fault"]["diagnostic"]["rust_source_scope_failure"] = serde_json::json!({
+            "kind": "ambiguous_source_owner",
+            "definition_count": 2,
+            "omitted_definition_count": 3,
+            "target_resolution": "exact_cargo_target",
+        });
+        align_detail(&mut malformed_setup);
+        let malformed_setup =
+            serde_json::to_vec(&malformed_setup).expect("mutated setup failure JSON");
+        assert!(
+            PackageCompilerFailure::decode_bounded_json(&malformed_setup).is_err(),
+            "authority-admission decoder rejects omitted definitions exceeding total"
+        );
+        let reopened_setup = PackageCompilerFailure::decode_bounded_json(&setup_wire)
+            .expect("pre-recipe cold failure reader");
+        let PackageCompilerFailureCause::AuthorityAdmission {
+            diagnostic: Some(setup_facts),
+            ..
+        } = reopened_setup.cause()
+        else {
+            panic!("pre-recipe Rust cause remains an admission failure");
+        };
+        assert_eq!(
+            setup_facts.rust_source_scope_failure,
+            Some(R::DetachedSource {
+                active_hir_root_count: 2,
+            })
+        );
+        assert!(reopened_setup.detail().contains("2 active roots observed"));
+
+        let zero_root_terminal = CompilerTerminal::AuthorityAdmission {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"zero roots"),
+                byte_len: 10,
+            },
+            language: backend_semantic::vocabulary::Language::Rust,
+            stage: backend_semantic::vocabulary::Stage::LowerIr,
+            phase: AuthorityPhase::Resolve,
+            class: AuthorityDiagnosticClass::SourceScope,
+            diagnostic: Some(CompilerDiagnostic::from_rust_source_scope_failure(
+                R::DetachedSource {
+                    active_hir_root_count: 0,
+                },
+            )),
+        };
+        let zero_root =
+            PackageCompilerFailure::from_package_terminal("src/no-root.rs", &zero_root_terminal)
+                .expect("zero-root refusal projection")
+                .expect("zero-root source scope refusal");
+        let zero_root_wire = zero_root
+            .encode_bounded_json()
+            .expect("zero detached roots remain a valid closed fact");
+        assert!(PackageCompilerFailure::decode_bounded_json(&zero_root_wire).is_ok());
+
+        // Old causes retain their prior canonical shape: the new optional fact
+        // is explicitly omitted when no typed Rust scope evidence exists.
+        let legacy = CompilerDiagnostic::from_native(b"bounded", 7, false)
+            .expect("bounded prior diagnostic");
+        let legacy_terminal = CompilerTerminal::Compile {
+            attempted: attempt,
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::Resolve,
+                class: AuthorityDiagnosticClass::SourceScope,
+                diagnostic: Some(legacy),
+            },
+        };
+        let legacy = PackageCompilerFailure::from_package_terminal("src/lib.rs", &legacy_terminal)
+            .expect("legacy failure projection")
+            .expect("authority refusal");
+        let legacy_bytes = legacy
+            .encode_bounded_json()
+            .expect("legacy canonical facts");
+        let legacy_json: serde_json::Value =
+            serde_json::from_slice(&legacy_bytes).expect("legacy JSON");
+        assert!(
+            legacy_json["cause"]["fault"]["diagnostic"]
+                .get("rust_source_scope_failure")
+                .is_none()
+        );
+        assert_eq!(
+            PackageCompilerFailure::decode_bounded_json(&legacy_bytes)
+                .expect("old row still decodes")
+                .encode_bounded_json()
+                .expect("legacy row reencodes canonically"),
+            legacy_bytes
+        );
     }
 
     #[test]

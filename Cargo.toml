@@ -179,6 +179,8 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.tantivy]
 opt-level = 2
+[profile.dev.package.tantivy-fst]
+opt-level = 2
 [profile.dev.package.iroh]
 opt-level = 2
 [profile.dev.package.trustfall_core]

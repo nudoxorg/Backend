@@ -8,8 +8,10 @@
 //! declaration witnessed by both lanes has one compiler-owned identity.
 
 mod call_join;
+mod csharp_native_sites;
+#[cfg(test)]
+mod csharp_native_sites_tests;
 mod exact_sites;
-mod native_target_aliases;
 #[cfg(test)]
 mod foreign_target_display_tests;
 #[cfg(test)]
@@ -22,6 +24,10 @@ mod image_rows;
 #[cfg(test)]
 mod java_enum_value_join;
 mod kinds;
+mod native_sites;
+#[cfg(test)]
+mod native_sites_tests;
+mod native_target_aliases;
 #[cfg(test)]
 mod py_function_field_join;
 #[cfg(test)]
@@ -58,6 +64,8 @@ pub(in crate::builtin) fn image_publication_rows_for_test(
         false,
         path,
         &[],
+        None,
+        None,
     )?;
     Ok(projected
         .rows
@@ -83,7 +91,8 @@ pub(super) fn semantic_display_name(
 pub(in crate::builtin) use call_join::RetargetingScope;
 pub(crate) use call_join::{
     ProjectCallableIndex, foreign_namespace_call_retarget, foreign_package_call_retarget,
-    join_native_typescript_target, join_project_field, join_project_mention, join_project_value, project_paths_for_package,
+    join_native_typescript_target, join_project_field, join_project_mention, join_project_value,
+    project_paths_for_package,
 };
 #[cfg(test)]
 pub(crate) use call_join::{foreign_display_name, join_project_call};
@@ -102,6 +111,8 @@ pub(super) use semantic::{ForeignPublication, rows_for_indexed_sources};
 pub(in crate::builtin) use source_availability::{
     CurrentNativeProgram, SelectedSourceArtifacts, SourceAvailability,
 };
+#[cfg(test)]
+pub(crate) use structural::view_row_for_structural_coordinate;
 pub(crate) use structural::{
     StructuralCallEndpoint, StructuralCallResidence, StructuralCallRows,
     structural_call_endpoint_relations_mapped, structural_call_graph_relations_resident,
@@ -113,8 +124,6 @@ pub(crate) use structural::{
     structural_call_coordinate_pairs, structural_call_graph_relations,
     structural_call_graph_relations_mapped, structural_reference_facts,
 };
-#[cfg(test)]
-pub(crate) use structural::view_row_for_structural_coordinate;
 
 #[cfg(test)]
 use query::append_structural_query_facts;
@@ -520,6 +529,7 @@ pub fn execute() {}
             stale,
             path: FIXTURE_PATH,
             site_declarations: &[],
+            native_source: None,
         };
         super::append_image_rows(
             &view,
@@ -637,6 +647,7 @@ pub fn execute() {}
             stale: false,
             path: FIXTURE_PATH,
             site_declarations: &[],
+            native_source: None,
         };
         super::append_image_rows(&view, &project, profile, &mut sink)
             .map_err(|error| error.to_string())?;
@@ -2210,10 +2221,32 @@ pub fn execute() {}
     fn complete_go_publication_only_suppresses_its_literal_module_profile() -> Result<(), String> {
         use backend_semantic::vocabulary::GoVersion;
         let package = package_key("mixed-go-modules");
-        let complete = BTreeSet::from([(package.to_bytes(), LanguageProfile::Go(GoVersion::Go125))]);
-        assert!(semantic_profile_is_complete(&complete, Some(package), "main.go", None, Some(GoVersion::Go125)).map_err(|error| error.to_string())?);
-        assert!(!semantic_profile_is_complete(&complete, Some(package), "nested/main.go", None, Some(GoVersion::Go126)).map_err(|error| error.to_string())?);
-        assert!(semantic_profile_is_complete(&complete, Some(package), "historical.go", None, None).map_err(|error| error.to_string())?);
+        let complete =
+            BTreeSet::from([(package.to_bytes(), LanguageProfile::Go(GoVersion::Go125))]);
+        assert!(
+            semantic_profile_is_complete(
+                &complete,
+                Some(package),
+                "main.go",
+                None,
+                Some(GoVersion::Go125)
+            )
+            .map_err(|error| error.to_string())?
+        );
+        assert!(
+            !semantic_profile_is_complete(
+                &complete,
+                Some(package),
+                "nested/main.go",
+                None,
+                Some(GoVersion::Go126)
+            )
+            .map_err(|error| error.to_string())?
+        );
+        assert!(
+            semantic_profile_is_complete(&complete, Some(package), "historical.go", None, None)
+                .map_err(|error| error.to_string())?
+        );
         Ok(())
     }
 
@@ -2976,11 +3009,14 @@ pub fn decoy_mention() { let _ = "parse_config("; }
             let callee_id = *coordinate_ids
                 .get(&callee_coordinate)
                 .ok_or("structural call graph callee is absent from the published view")?;
-            relations.insert(backend_engine::GraphRelation::new(
-                caller_id,
-                callee_id,
-                backend_library::SemanticLinkKind::Calls,
-            ).with_confidence(backend_library::SemanticConfidence::Syntactic));
+            relations.insert(
+                backend_engine::GraphRelation::new(
+                    caller_id,
+                    callee_id,
+                    backend_library::SemanticLinkKind::Calls,
+                )
+                .with_confidence(backend_library::SemanticConfidence::Syntactic),
+            );
         }
         Ok(relations
             .into_iter()
@@ -3143,12 +3179,14 @@ pub fn decoy_mention() { let _ = "parse_config("; }
                 left_worker,
                 left_target,
                 backend_library::SemanticLinkKind::Calls,
-            ).with_confidence(backend_library::SemanticConfidence::Syntactic),
+            )
+            .with_confidence(backend_library::SemanticConfidence::Syntactic),
             backend_engine::GraphRelation::new(
                 right_worker,
                 right_target,
                 backend_library::SemanticLinkKind::Calls,
-            ).with_confidence(backend_library::SemanticConfidence::Syntactic),
+            )
+            .with_confidence(backend_library::SemanticConfidence::Syntactic),
         ]);
         let plan = StructuralProjectionPlan::of(&sources, &BTreeSet::new())
             .map_err(|error| error.to_string())?;
@@ -3184,7 +3222,8 @@ pub fn decoy_mention() { let _ = "parse_config("; }
                     projected.mapped(caller).ok_or("exact caller")?,
                     projected.mapped(callee).ok_or("exact target")?,
                     backend_library::SemanticLinkKind::Calls,
-                ).with_confidence(backend_library::SemanticConfidence::Syntactic))
+                )
+                .with_confidence(backend_library::SemanticConfidence::Syntactic))
             })
             .collect::<Result<BTreeSet<_>, String>>()?;
         assert_eq!(complete, expected);
@@ -3194,11 +3233,14 @@ pub fn decoy_mention() { let _ = "parse_config("; }
             );
             assert_eq!(
                 mapped,
-                vec![backend_engine::GraphRelation::new(
-                    caller,
-                    target,
-                    backend_library::SemanticLinkKind::Calls
-                ).with_confidence(backend_library::SemanticConfidence::Syntactic)]
+                vec![
+                    backend_engine::GraphRelation::new(
+                        caller,
+                        target,
+                        backend_library::SemanticLinkKind::Calls
+                    )
+                    .with_confidence(backend_library::SemanticConfidence::Syntactic)
+                ]
             );
         }
         // Even a lone semantic-shaped worker row cannot distinguish the
@@ -3257,7 +3299,8 @@ pub fn decoy_mention() { let _ = "parse_config("; }
                 caller,
                 target,
                 backend_library::SemanticLinkKind::Calls,
-            ).with_confidence(backend_library::SemanticConfidence::Syntactic);
+            )
+            .with_confidence(backend_library::SemanticConfidence::Syntactic);
             assert_eq!(outgoing, vec![edge.clone()]);
             assert_eq!(incoming, vec![edge]);
             let label = view.row_ref(target).ok_or("target row")?.label.as_str();
@@ -3353,11 +3396,14 @@ pub fn decoy_mention() { let _ = "parse_config("; }
             let edges = calls_relations(&view, &sources, package, worker, false)?;
             assert_eq!(
                 edges,
-                vec![backend_engine::GraphRelation::new(
-                    worker,
-                    target,
-                    backend_library::SemanticLinkKind::Calls
-                ).with_confidence(backend_library::SemanticConfidence::Syntactic)],
+                vec![
+                    backend_engine::GraphRelation::new(
+                        worker,
+                        target,
+                        backend_library::SemanticLinkKind::Calls
+                    )
+                    .with_confidence(backend_library::SemanticConfidence::Syntactic)
+                ],
                 "each stored worker must own only its own excerpt's outgoing call"
             );
         }

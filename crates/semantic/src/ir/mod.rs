@@ -367,8 +367,12 @@ pub use native_program_sources::{
 pub use wire::{FRAGMENT_MAGIC, FRAGMENT_SCHEMA};
 
 mod source_coverage;
+mod typescript_snapshot_witness;
 pub use source_coverage::{
     MAX_SOURCE_COVERAGE_BYTES, MAX_SOURCE_COVERAGE_ROWS, SOURCE_COVERAGE_OBSERVATION_OVERHEAD,
-    SourceCoverageCapacityReason, SourceCoverageGapCause, SourceCoverageManifest,
-    SourceCoverageObservation, SourceCoverageRow, SourceCoverageSchema,
+    SourceCoverageCapacityReason, SourceCoverageGapCause, SourceCoverageGapDiagnostic,
+    SourceCoverageManifest, SourceCoverageObservation, SourceCoverageRow, SourceCoverageSchema,
+};
+pub use typescript_snapshot_witness::{
+    MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES, TypeScriptSnapshotWitnessSchema,
 };

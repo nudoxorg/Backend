@@ -979,6 +979,38 @@ mod display_tests {
     }
 
     #[test]
+    fn typescript_preview_hides_parameter_trailing_comma_without_touching_literals() {
+        let signature = "getTeachersByClass(classCode: string | null, opts?: { limit?: number; offset?: number },): Promise<TeacherDTO[]>";
+        assert_eq!(
+            Signature::preview(signature, Language::TypeScript).text(),
+            "getTeachersByClass(classCode: string | null, opts?: { limit?: number; offset?: number }): Promise<TeacherDTO[]>"
+        );
+
+        let multiline = "foo(\n  opts?: { limit?: number },\n): Promise<void>";
+        assert_eq!(
+            Signature::preview(multiline, Language::TypeScript).text(),
+            "foo( opts?: { limit?: number }): Promise<void>"
+        );
+
+        let literal = r#"foo(value: string = "x,")"#;
+        assert_eq!(
+            Signature::preview(literal, Language::TypeScript).text(),
+            literal
+        );
+        let call = "foo(value,);";
+        assert_eq!(
+            Signature::preview(call, Language::TypeScript).text(),
+            call,
+            "unsupported expression grammar retains its original punctuation"
+        );
+        assert_eq!(
+            Signature::tokenize(signature, Language::TypeScript).text(),
+            signature,
+            "the complete declaration signature remains source-faithful"
+        );
+    }
+
+    #[test]
     fn signature_preview_boundaries_keep_generated_escapes_atomic() {
         for (character, displayed) in [
             ('\n', " "),

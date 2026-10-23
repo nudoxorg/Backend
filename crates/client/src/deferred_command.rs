@@ -200,6 +200,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn oversized_search_reply_preserves_the_request_basis() {
+        let (stream, mut peer) = backend_replication::LocalStream::pair().expect("pair");
+        let length = u32::try_from(crate::MAX_FRAME + 1).expect("frame length");
+        peer.write_all(&length.to_be_bytes())
+            .expect("oversized header");
+        peer.write_all(b"unconsumed body bytes")
+            .expect("body prefix");
+        peer.set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("bounded closed-socket check");
+        let server = std::thread::spawn(move || {
+            let _request = read_body(&mut peer).expect("search request");
+            let mut byte = [0];
+            assert_eq!(peer.read(&mut byte).expect("shutdown notification"), 0);
+        });
+        let mut client = UnixCommandTransport::from_stream(stream);
+        let command = request();
+        let expected_basis = super::super::query_continuation::basis(&command.command);
+        let actual_basis = match client.request(command) {
+            Err(ClientError::ResponseFrameTooLarge { basis }) => basis,
+            other => panic!("oversized reply returned: {other:?}"),
+        };
+        assert!(expected_basis.is_some(), "fixture is a Search request");
+        assert_eq!(actual_basis, expected_basis);
+        // Shutdown can leave bytes already queued in the kernel, but the
+        // transport cannot start another exchange on this stream.
+        assert!(client.request(request()).is_err());
+        server.join().expect("closed peer joined");
+    }
+
     /// A private short-path directory for named-socket tests. `temp_dir()` can
     /// point into a deeply nested runner directory, longer than `sun_path`.
     /// Prefer the conventional short roots and reject any path that leaves a

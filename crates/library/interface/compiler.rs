@@ -1052,8 +1052,69 @@ pub struct CompilerDiagnosticFacts {
     pub typescript_cause: Option<super::TypeScriptFailureCause>,
     /// Exact Go dependency-admission cause; native bytes and paths remain local.
     pub go_failure: Option<super::GoAuthorityFailureKind>,
+    /// Closed Rust source-scope facts; paths and native diagnostic text remain local.
+    pub rust_source_scope_failure: Option<RustSourceScopeFailureKind>,
     /// Zero-filled storage whose prefix through `byte_len` is the exact diagnostic prefix.
     pub bytes: [u8; MAX_NATIVE_DIAGNOSTIC_BYTES],
+}
+
+/// Closed, path-free Rust source-scope facts retained by compiler refusal diagnostics.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RustSourceScopeFailureKind {
+    /// The selected source has no active package HIR owner.
+    DetachedSource {
+        /// Number of active package HIR crate roots retained by the authority.
+        active_hir_root_count: u64,
+    },
+    /// The selected source has multiple active HIR owners.
+    AmbiguousSourceOwner {
+        /// Exact number of active module definitions reported by the authority.
+        definition_count: u64,
+        /// Number of module definitions omitted from the bounded owner sample.
+        omitted_definition_count: u64,
+        /// Closed Cargo-target evidence available to the authority.
+        target_resolution: RustTargetResolutionKind,
+    },
+}
+
+/// Closed Rust Cargo-target resolution fact with no source or filesystem paths.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum RustTargetResolutionKind {
+    /// The caller requested unscoped analysis.
+    NotRequested,
+    /// Complete bounded Cargo metadata facts were not retained.
+    MetadataUnavailable,
+    /// Metadata did not identify one selected package.
+    SelectedPackageUnavailable,
+    /// The selected package manifest differed from the workspace-root manifest.
+    ManifestMismatch,
+    /// No unique declared Cargo target had the selected source root.
+    NoExactTarget,
+    /// Multiple declared Cargo targets had the selected source root.
+    DuplicateExactTarget,
+    /// One exact target root and name were selected from Cargo metadata.
+    ExactCargoTarget,
+    /// An exact target name and root were supplied by the admitted unit key.
+    ExplicitUnitTarget,
+}
+
+impl RustTargetResolutionKind {
+    /// Stable compact label copied from the Rust authority's closed reason.
+    #[must_use]
+    pub const fn diagnostic_label(self) -> &'static str {
+        match self {
+            Self::NotRequested => "not_requested",
+            Self::MetadataUnavailable => "metadata_unavailable",
+            Self::SelectedPackageUnavailable => "selected_package_unavailable",
+            Self::ManifestMismatch => "manifest_mismatch",
+            Self::NoExactTarget => "no_exact_target",
+            Self::DuplicateExactTarget => "duplicate_exact_target",
+            Self::ExactCargoTarget => "exact_cargo_target",
+            Self::ExplicitUnitTarget => "explicit_unit_target",
+        }
+    }
 }
 
 /// Exact, finite evidence for a refused captured Python configuration.
@@ -1212,6 +1273,27 @@ impl Deref for CompilerDiagnostic {
 }
 
 impl CompilerDiagnostic {
+    /// Builds a path-free typed Rust refusal fact when no native diagnostic
+    /// buffer was supplied. Its observed byte count is correctly zero.
+    #[must_use]
+    pub fn from_rust_source_scope_failure(failure: RustSourceScopeFailureKind) -> Self {
+        let bytes = [0; MAX_NATIVE_DIAGNOSTIC_BYTES];
+        Self(Box::new(CompilerDiagnosticFacts {
+            byte_len: 0,
+            observed: 0,
+            truncated: false,
+            python_failure: None,
+            python_configuration: None,
+            typescript_failure: None,
+            typescript_stop_site: None,
+            typescript_admission: None,
+            typescript_cause: None,
+            go_failure: None,
+            rust_source_scope_failure: Some(failure),
+            bytes,
+        }))
+    }
+
     /// Copies an emitted native diagnostic before the compiler scratch lease ends.
     ///
     /// An empty, complete native stream has no diagnostic fact and deliberately owns no heap
@@ -1240,6 +1322,7 @@ impl CompilerDiagnostic {
             typescript_admission: None,
             typescript_cause: None,
             go_failure: None,
+            rust_source_scope_failure: None,
             bytes: output,
         })))
     }
@@ -1257,6 +1340,7 @@ impl CompilerDiagnostic {
         self.0.typescript_admission = None;
         self.0.typescript_cause = None;
         self.0.go_failure = None;
+        self.0.rust_source_scope_failure = None;
         self
     }
 
@@ -1270,6 +1354,7 @@ impl CompilerDiagnostic {
         self.0.typescript_admission = None;
         self.0.typescript_cause = None;
         self.0.go_failure = None;
+        self.0.rust_source_scope_failure = None;
         self
     }
 
@@ -1286,6 +1371,7 @@ impl CompilerDiagnostic {
         self.0.python_failure = None;
         self.0.python_configuration = None;
         self.0.go_failure = None;
+        self.0.rust_source_scope_failure = None;
         self
     }
 
@@ -1317,6 +1403,7 @@ impl CompilerDiagnostic {
         self.0.python_failure = None;
         self.0.python_configuration = None;
         self.0.go_failure = None;
+        self.0.rust_source_scope_failure = None;
         self
     }
 
@@ -1327,6 +1414,7 @@ impl CompilerDiagnostic {
     pub fn with_typescript_cause(mut self, cause: super::TypeScriptFailureCause) -> Self {
         if self.0.typescript_failure.is_some() && self.0.typescript_admission.is_none() {
             self.0.typescript_cause = Some(cause);
+            self.0.rust_source_scope_failure = None;
         }
         self
     }
@@ -1335,12 +1423,27 @@ impl CompilerDiagnostic {
     #[must_use]
     pub fn with_go_failure(mut self, failure: super::GoAuthorityFailureKind) -> Self {
         self.0.go_failure = Some(failure);
+        self.0.rust_source_scope_failure = None;
         self.0.python_failure = None;
         self.0.python_configuration = None;
         self.0.typescript_failure = None;
         self.0.typescript_stop_site = None;
         self.0.typescript_admission = None;
         self.0.typescript_cause = None;
+        self
+    }
+
+    /// Adds exact closed Rust source-scope facts without modifying retained native bytes.
+    #[must_use]
+    pub fn with_rust_source_scope_failure(mut self, failure: RustSourceScopeFailureKind) -> Self {
+        self.0.rust_source_scope_failure = Some(failure);
+        self.0.python_failure = None;
+        self.0.python_configuration = None;
+        self.0.typescript_failure = None;
+        self.0.typescript_stop_site = None;
+        self.0.typescript_admission = None;
+        self.0.typescript_cause = None;
+        self.0.go_failure = None;
         self
     }
 

@@ -346,8 +346,8 @@ fn verified_owner_image_mode_refusal_gets_exact_cli_and_mcp_repair_guidance() {
     let path = "/home/alice/Backend with 'quotes'/target/debug/backend-locald";
     let fault = Fault::from_client_error(
         &ClientError::OwnerUpdate {
-            found: 38,
-            supported: 38,
+            found: 39,
+            supported: 39,
             detail: format!(
                 "the installed default owner image could not be proven: owner image {path} is group-writable (uid 1000, gid 1002, mode 0775); no command was submitted"
             ),
@@ -386,8 +386,8 @@ fn verified_owner_image_mode_refusal_gets_exact_cli_and_mcp_repair_guidance() {
 
     let world_and_group = Fault::from_client_error(
         &ClientError::OwnerUpdate {
-            found: 38,
-            supported: 38,
+            found: 39,
+            supported: 39,
             detail: format!(
                 "the installed default owner image could not be proven: owner image {path} is world-writable (uid 1000, gid 1002, mode 0777); no command was submitted"
             ),
@@ -404,8 +404,8 @@ fn verified_owner_image_mode_refusal_gets_exact_cli_and_mcp_repair_guidance() {
 fn owner_image_mode_refusal_with_non_displayable_path_does_not_offer_a_blind_retry() {
     let fault = Fault::from_client_error(
         &ClientError::OwnerUpdate {
-            found: 38,
-            supported: 38,
+            found: 39,
+            supported: 39,
             detail: "the installed default owner image could not be proven: owner image /tmp/bad\nname/backend-locald is group-writable (uid 1000, gid 1002, mode 0775); no command was submitted".into(),
         },
         Operand::Whole,

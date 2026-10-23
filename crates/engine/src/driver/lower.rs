@@ -58,6 +58,11 @@ use provenance::{MemberSetCapture, Provenance, local_parent};
 /// output, and resource reservation below.
 /// 32,768 slots × 4-byte `u32` coordinate = 128 KiB; measured high-water 6,882 facts, and the clang authority mirror measures 32,768 declaration-lane rows for fmt's deferred-parameter traversal, so the coupled protocol geometry moves with it. Roll back to 16,384 if every target package stays below 8,192 facts.
 pub(super) const MAX_EMISSION_FACTS: usize = 32768;
+/// Worst-case bounded Clang name-span lane reservation (including `None`
+/// tags), bounded independently from the declaration row-count ceiling.
+const MAX_DECLARED_NAME_SPAN_BYTES: usize =
+    MAX_EMISSION_FACTS * size_of::<Option<crate::driver::types::SourceSpanFact>>();
+const _: () = assert!(MAX_DECLARED_NAME_SPAN_BYTES <= 512 * 1024);
 /// Dense bound of one fact's ordered product children.
 ///
 /// A signature or product may name this many children. The count is a `u8`,
@@ -176,6 +181,8 @@ const SECTION_NONE: u32 = u32::MAX;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ResourcePlan {
     facts: usize,
+    /// Clang-only exact declaration-name spans, aligned with fact ordinals.
+    name_spans: usize,
     product_children: usize,
     declared_type_children: usize,
     occurrences: usize,
@@ -196,6 +203,7 @@ impl ResourcePlan {
     pub(crate) const fn protocol_maximum() -> Self {
         Self {
             facts: MAX_EMISSION_FACTS,
+            name_spans: MAX_EMISSION_FACTS,
             product_children: MAX_EMISSION_CHILDREN,
             declared_type_children: MAX_EMISSION_TYPE_CHILDREN,
             occurrences: MAX_EMISSION_OCCURRENCES,
@@ -235,8 +243,18 @@ impl ResourcePlan {
         let bounded_children =
             |value: usize, maximum: usize| value.clamp(TYPE_CHILD_POOL_STRIDE, maximum);
         let facts = bounded(units / 2 + 8, MAX_EMISSION_FACTS);
+        let name_spans = if matches!(
+            profile,
+            backend_semantic::vocabulary::LanguageProfile::C(_)
+                | backend_semantic::vocabulary::LanguageProfile::Cxx(_)
+        ) {
+            facts
+        } else {
+            0
+        };
         Self {
             facts,
+            name_spans,
             product_children: bounded_children(units.saturating_mul(4), MAX_EMISSION_CHILDREN),
             declared_type_children: bounded_children(
                 units.saturating_mul(8),
@@ -714,6 +732,9 @@ pub(super) struct FactSet<'source> {
     total_children: usize,
     kinds: Box<[EntityKind]>,
     names: Box<[&'source [u8]]>,
+    /// Optional exact Clang name-token spans. The extra allocation is
+    /// bounded to `name_spans * size_of<Option<SourceSpanFact>>()` bytes.
+    name_spans: Box<[Option<crate::driver::types::SourceSpanFact>]>,
     anonymous_callables: Box<[Option<backend_semantic::ir::AnonymousCallableFamilyMultiplicity>]>,
     anonymous_callable_names: Box<[Option<u32>]>,
     anonymous_callable_anchor_pool: Vec<Box<[u8]>>,
@@ -1100,6 +1121,7 @@ impl<'source> FactSet<'source> {
             total_children: 0,
             kinds: vec![EntityKind::Function; plan.facts].into_boxed_slice(),
             names: vec![empty_name; plan.facts].into_boxed_slice(),
+            name_spans: vec![None; plan.name_spans].into_boxed_slice(),
             anonymous_callables: vec![None; plan.facts].into_boxed_slice(),
             anonymous_callable_names: vec![None; plan.facts].into_boxed_slice(),
             anonymous_callable_anchor_pool: Vec::new(),
@@ -1128,7 +1150,11 @@ impl<'source> FactSet<'source> {
             identity_discriminators: vec![None; plan.facts].into_boxed_slice(),
             documentation_captured: vec![false; plan.facts].into_boxed_slice(),
             provenance: Provenance::new(plan.facts),
-            publication_roles: vec![backend_semantic::ir::DeclarationPublicationRole::Unavailable; plan.facts].into_boxed_slice(),
+            publication_roles: vec![
+                backend_semantic::ir::DeclarationPublicationRole::Unavailable;
+                plan.facts
+            ]
+            .into_boxed_slice(),
             occurrence_owners: vec![0; plan.occurrences].into_boxed_slice(),
             occurrences: vec![
                 Occurrence {
@@ -2843,6 +2869,14 @@ impl<'source> FactSet<'source> {
         let mut rewritten_python = Vec::with_capacity(extension_demand.python);
         let mut rewritten_java = Vec::with_capacity(extension_demand.java);
         let mut rewritten_clang = Vec::with_capacity(extension_demand.clang);
+        let source_file = self.provenance.source_spans()[..fact_count]
+            .iter()
+            .any(Option::is_some)
+            // The declaration scope carries the authority-entered,
+            // package-relative source path. The content identity remains in
+            // the image provenance header.
+            .then(|| tree.intern_atom(declaration_scope.path().as_bytes()))
+            .transpose()?;
         for (ordinal, extension) in self.extensions[..fact_count].iter().enumerate() {
             match extension {
                 Some(EmissionExtension::TypeScript(value)) => {
@@ -3034,6 +3068,28 @@ impl<'source> FactSet<'source> {
                 }
                 Some(EmissionExtension::Clang(value)) => {
                     let pool_index = rewritten_clang.len();
+                    let declared_name = self
+                        .name_spans
+                        .get(ordinal)
+                        .copied()
+                        .flatten()
+                        .map(|span| {
+                            let file = source_file.ok_or(
+                                backend_semantic::ir::BuildError::InvalidOccurrenceSpan {
+                                    owner: backend_semantic::ir::EntityId::new(ordinal as u32),
+                                    start: span.start,
+                                    end: span.end,
+                                },
+                            )?;
+                            backend_semantic::ir::SourceSpan::new(file, span.start, span.end).ok_or(
+                                backend_semantic::ir::BuildError::InvalidOccurrenceSpan {
+                                    owner: backend_semantic::ir::EntityId::new(ordinal as u32),
+                                    start: span.start,
+                                    end: span.end,
+                                },
+                            )
+                        })
+                        .transpose()?;
                     rewritten_clang.push(backend_semantic::ir::ClangFacts {
                         templates: live_type_parameters(
                             &mut tree,
@@ -3050,6 +3106,7 @@ impl<'source> FactSet<'source> {
                             &mut projection_scratch,
                         )?,
                         includes: live_atom_list(&mut tree, self, value.includes)?,
+                        declared_name,
                         ..*value
                     });
                     extension_bindings[ordinal] = Some(RewrittenExtension::Clang(pool_index));
@@ -3072,15 +3129,6 @@ impl<'source> FactSet<'source> {
                     .map(backend_semantic::ir::TreeEntityId::new),
             );
         }
-        let source_file = self.provenance.source_spans()[..fact_count]
-            .iter()
-            .any(Option::is_some)
-            // The declaration scope carries the authority-entered,
-            // package-relative source path.  Source content identity remains
-            // in the image provenance header; using its digest as a span's
-            // file atom would make path navigation impossible after reopen.
-            .then(|| tree.intern_atom(declaration_scope.path().as_bytes()))
-            .transpose()?;
         let mut item_attribute_ranges = vec![(0_usize, 0_usize); fact_count].into_boxed_slice();
         let mut item_attribute_total = 0_usize;
         for ordinal in 0..fact_count {

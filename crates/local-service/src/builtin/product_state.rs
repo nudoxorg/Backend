@@ -50,7 +50,7 @@ const MAX_PROJECTS: usize = 256;
 const MAX_PROJECT_MEMBERS: usize = backend_library::MAX_PROJECT_MEMBERS;
 const MAX_SUBSCRIPTIONS: usize = 4096;
 const MAX_TREE_NODES: usize = 2048;
-const INDEX_SEARCH_CURSOR_VERSION: u8 = 4;
+const INDEX_SEARCH_CURSOR_VERSION: u8 = 5;
 const MAX_INDEX_SEARCH_CURSOR_STATE_BYTES: usize = 48 * 1024;
 const INDEX_SEARCH_CURSOR_PREFIX: &str = "is1-";
 
@@ -194,6 +194,8 @@ struct IndexSearchCursorState {
     discovery: Option<DiscoverySearchCursor>,
     forge_source_pins: Option<SearchContinuation>,
     local: Option<SearchContinuation>,
+    #[serde(default)]
+    external_local: Option<SearchContinuation>,
 }
 
 impl Default for StoredState {
@@ -1558,6 +1560,10 @@ fn index_search_page_with_discovery_measured_snapshot(
                     .local
                     .as_ref()
                     .is_some_and(|cursor| cursor.admit().is_err())
+                || state
+                    .external_local
+                    .as_ref()
+                    .is_some_and(|cursor| cursor.admit().is_err())
             {
                 return Err(
                     "index search cursor does not match this query or selected snapshot".to_owned(),
@@ -1574,6 +1580,7 @@ fn index_search_page_with_discovery_measured_snapshot(
             discovery: None,
             forge_source_pins: None,
             local: None,
+            external_local: None,
         },
     };
     let evaluated_at_millis = cursor_state.evaluated_at_millis;
@@ -1628,7 +1635,14 @@ fn index_search_page_with_discovery_measured_snapshot(
         .as_ref()
         .map_or(0, |page| page.posting_candidates);
     let local_page = local_search.page_after(query.as_str(), limit, cursor_state.local.as_ref())?;
-    work.local_postings = local_page.posting_candidates;
+    let external_local_page = local_search.page_external_after(
+        query.as_str(),
+        limit,
+        cursor_state.external_local.as_ref(),
+    )?;
+    work.local_postings = local_page
+        .posting_candidates
+        .saturating_add(external_local_page.posting_candidates);
     let mut ranked = Vec::<MergedPageSearchCandidate>::new();
     for search_hit in &acquired_page.hits {
         let key = &search_hit.key;
@@ -1796,11 +1810,38 @@ fn index_search_page_with_discovery_measured_snapshot(
             continuation: SearchPlaneContinuation::Local(search_hit.continuation_after.clone()),
         });
     }
+    for search_hit in &external_local_page.hits {
+        let row = view.row_ref(search_hit.key).ok_or_else(|| {
+            "external local search page refers to a row outside its view snapshot".to_owned()
+        })?;
+        if !matches!(row.id, RowId::Symbol(_)) {
+            return Err("external local search page contains a non-declaration row".to_owned());
+        }
+        ranked.push(MergedPageSearchCandidate {
+            candidate: PageSearchCandidate {
+                evidence: search_hit.evidence,
+                hit: RegistrySearchHit::LocalDeclaration(declaration_search_record(row)?),
+                plane: SearchPlane::LocalDeclaration,
+            },
+            page_order: format!(
+                "{}\u{1f}{}",
+                unicode_lowercase(row.label.as_str()),
+                search_hit.key.stable_key()
+            ),
+            continuation: SearchPlaneContinuation::ExternalLocal(
+                search_hit.continuation_after.clone(),
+            ),
+        });
+    }
     ranked.sort_by(|left, right| {
         left.candidate
             .evidence
             .rank()
             .cmp(&right.candidate.evidence.rank())
+            .then_with(|| {
+                index_search_usefulness_rank(&left.candidate.hit)
+                    .cmp(&index_search_usefulness_rank(&right.candidate.hit))
+            })
             .then_with(|| left.page_order.cmp(&right.page_order))
             .then_with(|| left.candidate.plane.cmp(&right.candidate.plane))
     });
@@ -1813,7 +1854,8 @@ fn index_search_page_with_discovery_measured_snapshot(
         || forge_source_pin_page
             .as_ref()
             .is_some_and(|page| page.next_cursor.is_some())
-        || local_page.next_cursor.is_some();
+        || local_page.next_cursor.is_some()
+        || external_local_page.next_cursor.is_some();
     ranked.truncate(limit);
     for candidate in &ranked {
         match &candidate.continuation {
@@ -1828,6 +1870,9 @@ fn index_search_page_with_discovery_measured_snapshot(
             }
             SearchPlaneContinuation::Local(continuation) => {
                 cursor_state.local = Some(continuation.clone());
+            }
+            SearchPlaneContinuation::ExternalLocal(continuation) => {
+                cursor_state.external_local = Some(continuation.clone());
             }
         }
     }
@@ -1844,17 +1889,20 @@ fn index_search_page_with_discovery_measured_snapshot(
                 .as_ref()
                 .map_or(SearchResultCount::Exact(0), |page| page.result_count),
             local_page.result_count,
+            external_local_page.result_count,
         ) {
             (
                 SearchResultCount::Exact(acquired),
                 SearchResultCount::Exact(discovered),
                 SearchResultCount::Exact(forge_source_pins),
                 SearchResultCount::Exact(local),
+                SearchResultCount::Exact(external_local),
             ) => IndexSearchResultCount::Exact(to_count(
                 acquired
                     .saturating_add(discovered)
                     .saturating_add(forge_source_pins)
-                    .saturating_add(local),
+                    .saturating_add(local)
+                    .saturating_add(external_local),
             )),
             _ => IndexSearchResultCount::Unknown,
         }
@@ -1875,6 +1923,22 @@ fn index_search_page_with_discovery_measured_snapshot(
         next_cursor,
         result_count,
     })
+}
+
+/// Keep source-less external placeholders available, but behind package and
+/// owned declaration evidence when search relevance is otherwise equal.
+/// This is only a merge tie-break: each source plane's continuation remains
+/// attached to the exact hit selected from that plane.
+fn index_search_usefulness_rank(hit: &RegistrySearchHit) -> u8 {
+    match hit {
+        RegistrySearchHit::LocalDeclaration(record)
+            if matches!(&record.source, LocalDeclarationSource::NotCaptured)
+                && record.coordinate.as_str().contains("::external::symbol:") =>
+        {
+            1
+        }
+        _ => 0,
+    }
 }
 
 fn index_search_snapshot(
@@ -1920,6 +1984,7 @@ enum SearchPlaneContinuation {
     Discovered(DiscoverySearchCursor),
     ForgeSourcePin(SearchContinuation),
     Local(SearchContinuation),
+    ExternalLocal(SearchContinuation),
 }
 
 struct MergedPageSearchCandidate {
@@ -2244,7 +2309,8 @@ fn index_search_with_discovery(
     }
 
     let local_page = local_search.page(query.as_str(), limit)?;
-    for search_hit in local_page.hits {
+    let external_local_page = local_search.page_external_after(query.as_str(), limit, None)?;
+    for search_hit in local_page.hits.into_iter().chain(external_local_page.hits) {
         let row_id = search_hit.key;
         let Some(row) = view.row_ref(row_id) else {
             continue;
@@ -2425,6 +2491,10 @@ fn index_search_with_discovery(
         left.evidence
             .rank()
             .cmp(&right.evidence.rank())
+            .then_with(|| {
+                index_search_usefulness_rank(&left.hit)
+                    .cmp(&index_search_usefulness_rank(&right.hit))
+            })
             .then_with(|| left.tie.cmp(&right.tie))
     });
     Ok(ranked_hits
@@ -3977,6 +4047,185 @@ mod tests {
     }
 
     #[test]
+    fn index_search_usefulness_tie_break_demotes_only_external_placeholders() {
+        let external = RegistrySearchHit::LocalDeclaration(LocalDeclarationSearchRecord {
+            coordinate: ProductText::new(format!(
+                "/abs/app::external::symbol:{}::React",
+                "a".repeat(64)
+            ))
+            .expect("external coordinate"),
+            name: ProductText::new("React").expect("name"),
+            source: LocalDeclarationSource::NotCaptured,
+        });
+        let local = RegistrySearchHit::LocalDeclaration(LocalDeclarationSearchRecord {
+            coordinate: ProductText::new("/abs/app::src/main.ts:4::React")
+                .expect("local coordinate"),
+            name: ProductText::new("React").expect("name"),
+            source: LocalDeclarationSource::Captured {
+                path: ProductText::new("src/main.ts").expect("path"),
+                line: std::num::NonZeroU32::new(4).expect("nonzero line"),
+            },
+        });
+        let package = RegistrySearchHit::Acquired(registry_row("pkg:npm/react@19.1.0", "react"));
+
+        assert_eq!(index_search_usefulness_rank(&external), 1);
+        assert_eq!(index_search_usefulness_rank(&local), 0);
+        assert_eq!(index_search_usefulness_rank(&package), 0);
+    }
+
+    #[test]
+    fn paged_index_search_keeps_external_local_and_discovered_hits_exactly_once() {
+        const ROWS_PER_KIND: usize = 30;
+        let mut selected_view = view();
+        let mut expected = BTreeSet::new();
+        let mut external_operands = BTreeSet::new();
+        for ordinal in 0..ROWS_PER_KIND {
+            let external_label =
+                format!("/abs/app::external::symbol:{ordinal:064x}::React");
+            let external_row = Row::new(
+                RowId::Symbol(backend_engine::symbol_key(&external_label)),
+                selected_view.basis(),
+                &external_label,
+            );
+            let prepared = selected_view
+                .prepare(
+                    backend_engine::ViewDelta::Upsert { row: external_row },
+                    super::super::test_builtin_view_capability().expect("view capability"),
+                )
+                .expect("prepare external row");
+            (selected_view, _) = selected_view.commit(prepared).expect("commit external row");
+            expected.insert(external_label.clone());
+            external_operands.insert(external_label);
+
+            let path = format!("src/components/local-{ordinal:02}.tsx");
+            let local_label = format!("/abs/app::{path}:1::React");
+            let local_row = Row::new(
+                RowId::Symbol(backend_engine::symbol_key(&local_label)),
+                selected_view.basis(),
+                &local_label,
+            )
+            .with_source(
+                backend_library::SourceLocation::new(&path, 1).expect("captured source"),
+            );
+            let prepared = selected_view
+                .prepare(
+                    backend_engine::ViewDelta::Upsert { row: local_row },
+                    super::super::test_builtin_view_capability().expect("view capability"),
+                )
+                .expect("prepare captured row");
+            (selected_view, _) = selected_view.commit(prepared).expect("commit captured row");
+            expected.insert(local_label);
+        }
+        let mut local_index = LocalDeclarationSearchIndex::default();
+        local_index.sync(&selected_view).expect("build split local index");
+
+        let root = fixture("index-search-external-local-pages");
+        let endpoint = RegistryEndpoint::new(RegistryEcosystem::Npm, "https://registry.npmjs.org")
+            .expect("Npm discovery source");
+        let source = discovery_source_identity(&endpoint);
+        let observed = DiscoveryObservedAt::from_unix_millis(discovery_now());
+        let mut discovery = DiscoveryStore::open(root.join("discovery.journal"))
+            .expect("open discovery journal");
+        let cursor = |value: &str| {
+            DiscoveryCursor::new(value.as_bytes().to_vec()).expect("cursor")
+        };
+        let expected_base_sequence = discovery.sequence(source).unwrap_or(0);
+        discovery
+            .commit(DiscoveryBatch {
+                source,
+                expected_base_sequence,
+                previous_cursor: DiscoveryCursor::default(),
+                next_cursor: cursor("1"),
+                source_high_watermark: cursor("1"),
+                caught_up: true,
+                observed_at: observed,
+                completeness: DiscoveryCompleteness::CompleteThroughCursor,
+                facts: vec![DiscoveryFact {
+                    source,
+                    coordinate: ProductPackageCoordinate::parse("pkg:npm/react@19.1.0")
+                        .expect("discovered package coordinate"),
+                    standing: DiscoveryStanding::Published,
+                    observed_at: observed,
+                    source_event: DiscoverySourceEvent::Snapshot,
+                    source_event_time: None,
+                    proof: [0x34; 32],
+                    metadata: backend_engine::registry::DiscoveryMetadata::default(),
+                }],
+                package_retractions: Vec::new(),
+            })
+            .expect("commit discovered package");
+        let discovery_index = DiscoverySearchIndex::open(&discovery).expect("discovery index");
+        let catalog = [];
+        let catalog_index = CatalogLookupIndex::from_catalog(&catalog);
+        let query = ProductText::new("React").expect("query");
+        let mut expected_with_package = expected;
+        expected_with_package.insert("discovered:react".to_owned());
+
+        for limit in [1, 5] {
+            let mut cursor = None;
+            let mut actual = Vec::new();
+            let mut pages = 0;
+            loop {
+                pages += 1;
+                assert!(pages <= expected_with_package.len() + 1, "cursor closed");
+                let page = index_search_page_with_discovery(
+                    &selected_view,
+                    &catalog,
+                    &catalog_index,
+                    &query,
+                    limit,
+                    cursor.as_ref(),
+                    Some(&discovery),
+                    Some(&discovery_index),
+                    &local_index,
+                    &[],
+                )
+                .expect("combined index-search page");
+                for hit in page.hits.iter() {
+                    actual.push(match hit {
+                        RegistrySearchHit::LocalDeclaration(record) => {
+                            record.coordinate.as_str().to_owned()
+                        }
+                        RegistrySearchHit::PackageGroup(group) => {
+                            assert_eq!(group.kind, RegistrySearchGroupKind::Discovered);
+                            format!("discovered:{}", group.lineage.as_str())
+                        }
+                        other => panic!("unexpected hit in fixture: {other:?}"),
+                    });
+                }
+                cursor = page.next_cursor;
+                if cursor.is_none() {
+                    break;
+                }
+            }
+
+            assert_eq!(actual.len(), expected_with_package.len());
+            assert_eq!(actual.iter().collect::<BTreeSet<_>>().len(), actual.len());
+            assert_eq!(
+                actual.iter().cloned().collect::<BTreeSet<_>>(),
+                expected_with_package
+            );
+            let first_external = actual
+                .iter()
+                .position(|operand| external_operands.contains(operand))
+                .expect("external hits retained after useful rows");
+            assert_eq!(first_external, ROWS_PER_KIND + 1);
+            assert!(
+                actual[..first_external]
+                    .iter()
+                    .all(|operand| !external_operands.contains(operand)),
+                "owned declarations and the discovered package precede external placeholders"
+            );
+            assert!(
+                actual[..first_external]
+                    .iter()
+                    .any(|operand| operand == "discovered:react")
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn index_search_cursor_compression_roundtrips_new_and_legacy_state() {
         let state = IndexSearchCursorState {
             version: INDEX_SEARCH_CURSOR_VERSION,
@@ -3998,6 +4247,7 @@ mod tests {
                 after_sort_key: format!("local:src/components/needle.rs:{}", "symbol/".repeat(400)),
                 returned_before: 125,
             }),
+            external_local: None,
         };
 
         let legacy_bytes = serde_json::to_vec(&state).expect("legacy cursor JSON");
@@ -4061,6 +4311,7 @@ mod tests {
             discovery: None,
             forge_source_pins: None,
             local: None,
+            external_local: None,
         };
         let token = encode_index_search_cursor_state(&state).expect("compressed cursor");
         let compressed = decode_canonical_index_search_cursor_base64(

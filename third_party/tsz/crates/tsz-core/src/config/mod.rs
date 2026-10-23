@@ -1537,6 +1537,24 @@ fn load_tsconfig_inner_with_diagnostics(
     // `extends` anchoring, which only fires on the leftover relative paths.
     substitute_config_dir_templates(&mut parsed.config, config_dir);
     anchor_inherited_path_options_with_file_system(&mut parsed.config, path, file_system)?;
+    // `paths` targets without `baseUrl` are relative to the config that
+    // declared the effective mapping. Keep that origin beside the merged
+    // options; resolving it later from the entry config would mis-anchor
+    // inherited mappings.
+    if parsed
+        .config
+        .compiler_options
+        .as_ref()
+        .is_some_and(|options| options.paths.is_some())
+    {
+        let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty());
+        let parent = parent.unwrap_or_else(|| Path::new("."));
+        parsed.paths_base_path = Some(
+            file_system
+                .canonicalize(parent)?
+                .unwrap_or_else(|| parent.to_path_buf()),
+        );
+    }
     if inherited {
         anchor_inherited_root_selectors_with_file_system(&mut parsed.config, path, file_system)?;
     }
@@ -1549,6 +1567,7 @@ fn load_tsconfig_inner_with_diagnostics(
             ExtendsValue::Array(arr) => arr,
         };
         let mut accumulated: Option<TsConfig> = None;
+        let mut accumulated_paths_base_path: Option<PathBuf> = None;
         // Removed-option notices (TS5102/TS5108 family) from base configs stay
         // pending until the whole chain merges: tsc runs the removal check
         // once on the merged effective options (fixes the false TS5108
@@ -1655,6 +1674,9 @@ fn load_tsconfig_inner_with_diagnostics(
             inherited_explicit_keys
                 .extend(base_parsed.explicit_compiler_option_keys.iter().cloned());
             inherited_literal_keys.extend(base_parsed.subtree_literal_keys.iter().cloned());
+            if base_parsed.paths_base_path.is_some() {
+                accumulated_paths_base_path = base_parsed.paths_base_path.clone();
+            }
             accumulated = Some(match accumulated {
                 Some(acc) => merge_configs(acc, base_parsed.config),
                 None => base_parsed.config,
@@ -1662,6 +1684,9 @@ fn load_tsconfig_inner_with_diagnostics(
         }
         if let Some(base) = accumulated {
             parsed.config = merge_configs(base, parsed.config);
+            if parsed.paths_base_path.is_none() {
+                parsed.paths_base_path = accumulated_paths_base_path;
+            }
         }
         // This config overrides every base: value notices die to its valid
         // keys, key notices to its literal keys; survivors precede this

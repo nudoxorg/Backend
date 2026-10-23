@@ -382,12 +382,8 @@ impl StructuralProjectionPlan {
             }
             let containment =
                 FileContainment::for_file(sources, record, &project.label, cancelled)?;
-            let duplicate_coordinates = duplicate_declaration_coordinates(
-                sources,
-                record,
-                &containment,
-                cancelled,
-            )?;
+            let duplicate_coordinates =
+                duplicate_declaration_coordinates(sources, record, &containment, cancelled)?;
             let mut occurrences = BTreeMap::new();
             let mut declarations = Vec::new();
             visit_complete_declarations(sources, record, |declaration| {
@@ -888,6 +884,163 @@ pub(super) fn profile_source_identities(
             .insert(file.path.to_owned(), identity);
     }
     Ok(identities)
+}
+
+/// Fresh native profile identities admitted from the same selected source
+/// closure. Refused or missing frontiers are deliberately absent from both
+/// outputs, so callers cannot use a path-set-only fallback for C/C++.
+pub(super) struct NativeFrontierFreshness {
+    pub(super) complete: BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
+    pub(super) identities: ProfileSourceIdentities,
+}
+
+pub(super) fn native_frontier_freshness(
+    sources: &IndexedSources,
+    current_paths: &ProfileSourcePaths,
+) -> NativeFrontierFreshness {
+    let mut complete = BTreeSet::new();
+    let mut identities = ProfileSourceIdentities::new();
+    let mut rows = BTreeMap::new();
+    for (_, record) in &sources.files {
+        if let Some(file) = record.file_fields() {
+            rows.insert((file.project, file.path.to_owned()), record);
+        }
+    }
+    let Some(snapshot) = &sources.source_snapshot else {
+        return NativeFrontierFreshness {
+            complete,
+            identities,
+        };
+    };
+    for ((project, profile), paths) in current_paths {
+        if !matches!(
+            profile,
+            backend_semantic::vocabulary::LanguageProfile::C(_)
+                | backend_semantic::vocabulary::LanguageProfile::Cxx(_)
+                | backend_semantic::vocabulary::LanguageProfile::CSharp(_)
+        ) {
+            continue;
+        }
+        let Ok(Some(frontier)) = snapshot.admit_native_frontier(*project, *profile, paths) else {
+            continue;
+        };
+        if !frontier.is_compilable() {
+            continue;
+        }
+        let mut profile_identities = BTreeMap::new();
+        let mut row_bindings_valid = true;
+        for (path, disposition) in frontier.dispositions() {
+            let Some(record) = rows.get(&(*project, path.clone())) else {
+                row_bindings_valid = false;
+                break;
+            };
+            let Some(file) = record.file_fields() else {
+                row_bindings_valid = false;
+                break;
+            };
+            if file.project != *project
+                || file.path != path
+                || file.language != profile.language()
+                || super::super::ingest::source_profile(Path::new(path))
+                    .ok()
+                    .flatten()
+                    != Some(*profile)
+            {
+                row_bindings_valid = false;
+                break;
+            }
+            match disposition {
+                backend_engine::builtin::NativePathDisposition::Structural {
+                    content,
+                    source_identity,
+                } => {
+                    if file.content_version != *content
+                        || file.source_identity != Some(*source_identity)
+                        || file.content_version == [0; 32]
+                        || !matches!(file.admitted_unavailable_reason(), Ok(None))
+                    {
+                        row_bindings_valid = false;
+                        break;
+                    }
+                }
+                backend_engine::builtin::NativePathDisposition::ClangMalformed {
+                    source_identity,
+                    content,
+                    ..
+                } => {
+                    if file.content_version != [0; 32]
+                        || file.source_identity.is_some()
+                        || file.admitted_unavailable_reason().ok().flatten()
+                            != Some(backend_engine::SourceUnavailableReason::Unparsed)
+                    {
+                        row_bindings_valid = false;
+                        break;
+                    }
+                    let Ok(native_source) = snapshot.verified_native_source(&frontier, path) else {
+                        row_bindings_valid = false;
+                        break;
+                    };
+                    if native_source.content_digest() != *content
+                        || native_source.source_identity() != *source_identity
+                        || native_source.project() != *project
+                        || native_source.profile() != *profile
+                        || native_source.relative_path() != path
+                    {
+                        row_bindings_valid = false;
+                        break;
+                    }
+                    // Keep one bounded source buffer live at a time. The
+                    // selected relation has authenticated the bytes; the
+                    // semantic worker reconstructs them again for compilation.
+                    profile_identities.insert(path.clone(), *source_identity);
+                }
+                backend_engine::builtin::NativePathDisposition::CSharpMalformed {
+                    source_identity,
+                    content,
+                    ..
+                } => {
+                    if profile.language() != backend_engine::SourceLanguage::CSharp
+                        || file.content_version != [0; 32]
+                        || file.source_identity.is_some()
+                        || file.admitted_unavailable_reason().ok().flatten()
+                            != Some(backend_engine::SourceUnavailableReason::Unparsed)
+                    {
+                        row_bindings_valid = false;
+                        break;
+                    }
+                    let Ok(native_source) = snapshot.verified_native_csharp_source(&frontier, path)
+                    else {
+                        row_bindings_valid = false;
+                        break;
+                    };
+                    if native_source.content_digest() != *content
+                        || native_source.source_identity() != *source_identity
+                        || native_source.project() != *project
+                        || native_source.profile() != *profile
+                        || native_source.relative_path() != path
+                    {
+                        row_bindings_valid = false;
+                        break;
+                    }
+                    profile_identities.insert(path.clone(), *source_identity);
+                }
+                backend_engine::builtin::NativePathDisposition::Refused(_) => {
+                    row_bindings_valid = false;
+                    break;
+                }
+            }
+        }
+        if row_bindings_valid {
+            complete.insert((*project, *profile));
+            if !profile_identities.is_empty() {
+                identities.insert((*project, *profile), profile_identities);
+            }
+        }
+    }
+    NativeFrontierFreshness {
+        complete,
+        identities,
+    }
 }
 
 fn structural_callable(kind: DeclarationKind) -> bool {

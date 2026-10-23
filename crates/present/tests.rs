@@ -1984,6 +1984,28 @@ fn a_references_reply_renders_sites_with_their_provenance() {
 }
 
 #[test]
+fn empty_references_result_does_not_claim_that_its_target_is_absent() {
+    let reply = backend_library::SurfaceReply::References {
+        target: backend_library::ProductText::new("pkg::semantic::callee")
+            .expect("reference target"),
+        references: Box::new([]),
+    };
+    let view = product_view(&reply);
+    for rendered in [
+        markdown::product(&view),
+        text::product(&view, Theme::plain()),
+    ] {
+        assert!(
+            rendered.contains("no references found for this target at this revision"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("no row at this revision"), "{rendered}");
+    }
+    let generic = product_view(&backend_library::SurfaceReply::IndexSearch(Box::new([])));
+    assert!(markdown::product(&generic).contains("no row at this revision"));
+}
+
+#[test]
 fn advisory_reply_renders_typed_coverage_and_decision() {
     let reply =
         backend_library::SurfaceReply::Advisory(backend_library::AdvisoryPackageDto::unknown());

@@ -563,6 +563,10 @@ pub(crate) struct Corpus {
     pub(crate) coverage: CoverageWitness,
     pub(crate) lexical: lexical::TantivyAdapter,
     pub(crate) lexical_binding: lexical::Binding,
+    // The exact admitted state used to build or advance `lexical`. Keeping its
+    // persistent tree lets a later durable revision diff from the prior view
+    // without rejoining that view's rows and semantic evidence.
+    document_state: lexical::DocumentState,
     selected: SelectedCorpus,
     pub(crate) semantic_evidence: SemanticQueryCorpus,
 }
@@ -1482,6 +1486,7 @@ impl QueryCoordinator {
                     coverage: prepared.coverage,
                     lexical,
                     lexical_binding: prepared.binding,
+                    document_state: prepared.state,
                     selected: prepared.selected,
                     semantic_evidence: prepared.semantic_evidence,
                 }),
@@ -1498,8 +1503,8 @@ impl QueryCoordinator {
         cancelled: Option<&AtomicBool>,
     ) -> Result<Option<(SnapshotMaintenance, &mut Corpus)>, QueryError> {
         // Existing readers own the old immutable corpus. Detect that before
-        // reconstructing its document state; the replacement still consumes
-        // the identical already-admitted current corpus above.
+        // replacing its document state; the replacement still consumes the
+        // identical already-admitted current corpus above.
         let Some(corpus) = Arc::get_mut(&mut self.corpus) else {
             return Ok(None);
         };
@@ -1511,21 +1516,7 @@ impl QueryCoordinator {
             return Ok(None);
         }
         let previous_state = if durable_root.is_some() {
-            let previous_view_capability = corpus
-                .view
-                .capability()
-                .ok_or(QueryError::StaleViewBinding)?;
-            Some(
-                prepare_corpus_controlled(
-                    corpus.workspace,
-                    corpus.view.clone(),
-                    &previous_view_capability,
-                    corpus.coverage,
-                    corpus.semantic_evidence.clone(),
-                    cancelled,
-                )?
-                .state,
-            )
+            Some(corpus.document_state.clone())
         } else {
             None
         };
@@ -1596,6 +1587,7 @@ impl QueryCoordinator {
                 },
             }
         };
+        corpus.document_state = prepared.state.clone();
         Ok(Some((maintenance, corpus)))
     }
 
@@ -2518,11 +2510,15 @@ mod prepared_corpus_tests {
     impl std::error::Error for ViewFixtureError {}
 
     fn renamed_view(view: &ViewRoot) -> TestResult<ViewRoot> {
+        relabeled_view(view, "alpha exact", "zephyr marker")
+    }
+
+    fn relabeled_view(view: &ViewRoot, from: &str, to: &str) -> TestResult<ViewRoot> {
         let mut rows = view.rows().to_vec();
         rows.iter_mut()
-            .find(|row| row.label == "alpha exact")
+            .find(|row| row.label == from)
             .ok_or_else(|| std::io::Error::other("missing fixture symbol"))?
-            .label = "zephyr marker".to_owned();
+            .label = to.to_owned();
         let renamed = ViewRoot::new_checked(
             view.recipe(),
             view.basis(),
@@ -2889,8 +2885,7 @@ mod prepared_corpus_tests {
     }
 
     #[test]
-    fn an_owned_revision_prepares_current_once_and_only_durable_previous_state_once() -> TestResult
-    {
+    fn an_owned_revision_prepares_only_the_current_document_state() -> TestResult {
         for durable in [false, true] {
             let directory = Directory::new()?;
             let (workspace, old_view) = super::super::tests::selected_view();
@@ -2907,8 +2902,9 @@ mod prepared_corpus_tests {
                 1
             );
             assert_eq!(
-                work.iter().filter(|root| **root == old_view.root()).count(),
-                usize::from(durable)
+                work,
+                [next_view.root()],
+                "the prior admitted document state supplies the durable delta base"
             );
             assert_eq!(
                 owner.maintenance(),
@@ -2918,6 +2914,91 @@ mod prepared_corpus_tests {
             );
             assert_eq!(owner.projection_builds(), 1);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn durable_revisions_reuse_exact_document_states_and_preserve_retained_answers() -> TestResult {
+        let directory = Directory::new()?;
+        let (workspace, old_view) = super::super::tests::selected_view();
+        let middle_view = renamed_view(&old_view)?;
+        let current_view = relabeled_view(&middle_view, "zephyr marker", "nova marker")?;
+        let mut owner = directory.owner(true, "successive-revisions");
+
+        select(&mut owner, workspace, &old_view)?;
+        let retained_old = search(&owner, "alpha")?;
+        let old_binding = {
+            let corpus = &owner
+                .selected
+                .as_ref()
+                .ok_or_else(|| std::io::Error::other("missing old snapshot"))?
+                .corpus;
+            let binding = corpus.lexical_binding;
+            assert_eq!(corpus.document_state.binding(), binding);
+            binding
+        };
+
+        let measure = Measurement::start();
+        select(&mut owner, workspace, &middle_view)?;
+        assert_eq!(measure.take(), [middle_view.root()]);
+        assert_eq!(retained_old.corpus.view.root(), old_view.root());
+        assert_eq!(retained_old.corpus.document_state.binding(), old_binding);
+        assert!(
+            retained_old
+                .rows
+                .iter()
+                .any(|row| row.row.label == "alpha exact")
+        );
+        assert_eq!(search(&owner, "alpha")?.total_matches, 0);
+        let middle_answer = search(&owner, "zephyr")?;
+        assert!(
+            middle_answer
+                .rows
+                .iter()
+                .any(|row| row.row.label == "zephyr marker")
+        );
+        let middle_binding = {
+            let corpus = &owner
+                .selected
+                .as_ref()
+                .ok_or_else(|| std::io::Error::other("missing middle snapshot"))?
+                .corpus;
+            let binding = corpus.lexical_binding;
+            assert_eq!(corpus.document_state.binding(), binding);
+            binding
+        };
+        drop(retained_old);
+        drop(middle_answer);
+
+        select(&mut owner, workspace, &current_view)?;
+        assert_eq!(measure.take(), [current_view.root()]);
+        assert_eq!(
+            owner.maintenance(),
+            Some(SnapshotMaintenance::Revised {
+                rewritten_documents: 1,
+            })
+        );
+        assert_eq!(search(&owner, "zephyr")?.total_matches, 0);
+        let current_answer = search(&owner, "nova")?;
+        assert!(
+            current_answer
+                .rows
+                .iter()
+                .any(|row| row.row.label == "nova marker")
+        );
+        let current_corpus = &owner
+            .selected
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("missing current snapshot"))?
+            .corpus;
+        assert_eq!(current_corpus.view.root(), current_view.root());
+        assert_eq!(
+            current_corpus.document_state.binding(),
+            current_corpus.lexical_binding
+        );
+        assert_ne!(old_binding.root, middle_binding.root);
+        assert_ne!(middle_binding.root, current_corpus.lexical_binding.root);
+
         Ok(())
     }
 }

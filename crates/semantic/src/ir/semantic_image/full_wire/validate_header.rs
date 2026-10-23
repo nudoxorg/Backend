@@ -7,7 +7,7 @@ use super::super::{
         ATOM_ROW_BYTES, DIRECTORY_BYTES, ENTITY_ROW_BYTES, EXTERNAL_ROW_BYTES, FullDirectoryEntry,
         FullDirectoryKind, FullImageLayout, HEADER_BYTES, LINK_ROW_BYTES, MAGIC,
         OCCURRENCE_ROW_BYTES, RANGE_ROW_BYTES, SCHEMA_CARRIER_BINDINGS, SCHEMA_CARRIER_ROLES,
-        SCHEMA_LEGACY, SCHEMA_PUBLICATION_ROLES, SCHEMA_TYPED_NAMES,
+        SCHEMA_CLANG_DECLARED_NAMES, SCHEMA_LEGACY, SCHEMA_PUBLICATION_ROLES, SCHEMA_TYPED_NAMES,
         SIGNATURE_CARRIER_RANGE_ROW_BYTES, SIGNATURE_CARRIER_TARGET_ROW_BYTES,
         SPARSE_BINDING_ROW_BYTES, TYPED_EDGE_ROW_BYTES, TYPED_NODE_ROW_BYTES, get_u16, get_u32,
         read_array,
@@ -218,6 +218,7 @@ pub(super) fn validate_lane_widths(layout: FullImageLayout) -> Result<(), FullSe
             | SCHEMA_CARRIER_BINDINGS
             | SCHEMA_TYPED_NAMES
             | SCHEMA_PUBLICATION_ROLES
+            | SCHEMA_CLANG_DECLARED_NAMES
     ) {
         return Err(FullSemanticImageFault::Schema {
             expected: SCHEMA_CARRIER_BINDINGS,
@@ -226,7 +227,10 @@ pub(super) fn validate_lane_widths(layout: FullImageLayout) -> Result<(), FullSe
     }
     if matches!(
         layout.schema,
-        SCHEMA_CARRIER_BINDINGS | SCHEMA_TYPED_NAMES | SCHEMA_PUBLICATION_ROLES
+        SCHEMA_CARRIER_BINDINGS
+            | SCHEMA_TYPED_NAMES
+            | SCHEMA_PUBLICATION_ROLES
+            | SCHEMA_CLANG_DECLARED_NAMES
     ) {
         fixed(
             layout,

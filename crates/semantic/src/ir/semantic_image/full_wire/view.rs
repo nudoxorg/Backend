@@ -836,11 +836,16 @@ impl<'bytes> SemanticReader for SemanticImageView<'bytes> {
         )
     }
     fn clang_extensions(&self) -> Self::ClangExtensions<'_> {
+        let decode = if self.layout().schema >= super::wire::SCHEMA_CLANG_DECLARED_NAMES {
+            extensions_decode::clang_with_declared_name
+        } else {
+            extensions_decode::clang
+        };
         extension_rows(
             self,
             FullDirectoryKind::ClangFacts,
             FullDirectoryKind::ClangBindings,
-            extensions_decode::clang,
+            decode,
         )
     }
     fn typescript_extension(&self, entity: EntityId) -> Option<TypeScriptFacts> {
@@ -898,12 +903,17 @@ impl<'bytes> SemanticReader for SemanticImageView<'bytes> {
         )
     }
     fn clang_extension(&self, entity: EntityId) -> Option<ClangFacts> {
+        let decode = if self.layout().schema >= super::wire::SCHEMA_CLANG_DECLARED_NAMES {
+            extensions_decode::clang_with_declared_name
+        } else {
+            extensions_decode::clang
+        };
         extension(
             self,
             FullDirectoryKind::ClangFacts,
             FullDirectoryKind::ClangBindings,
             entity,
-            extensions_decode::clang,
+            decode,
         )
     }
 }

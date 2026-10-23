@@ -9,7 +9,6 @@ use source_preparation::{
 };
 #[path = "index_source_preparation.rs"]
 mod source_preparation;
-use backend_engine::WorkspaceSnapshot;
 use backend_engine::application::{
     CaptureWorkspaceIdentityV2, CapturedFullWorkspaceV2, CompilerBalancingRequest,
     CompilerByteCredits, CompilerCpuCredits, CompilerDemand, CompilerInputAdmissionError,
@@ -22,13 +21,15 @@ use backend_engine::application::{
     VerifierAcceptedFullWorkspaceInput, capture_full_workspace_v2_with_prior,
 };
 use backend_engine::builtin::{
-    PartialSemanticCoverage, ProductSemanticCaptureOutcome, ProductSemanticPublicationKey,
-    ProductSemanticPublicationRecord, ProductSourceFileFactsRecord, ProductSourceFileFactsRelation,
-    ProductSourceFileFactsUpdate, SemanticPublicationClaim, SemanticPublicationCoverage,
-    SemanticPublicationVersion, SemanticSourceCapture,
-    product_source_file_facts_record_key, product_source_file_facts_relation,
-    product_source_file_facts_row_keys, semantic_capture_relation,
+    PartialSemanticCoverage, ProductNativeFrontierRecord, ProductNativeFrontierRelation,
+    ProductSemanticCaptureOutcome, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
+    ProductSourceFileFactsRecord, ProductSourceFileFactsRelation, ProductSourceFileFactsUpdate,
+    SemanticPublicationClaim, SemanticPublicationCoverage, SemanticPublicationVersion,
+    SemanticSourceCapture, product_source_file_facts_record_key,
+    product_source_file_facts_relation, product_source_file_facts_row_keys,
+    semantic_capture_relation,
 };
+use backend_engine::{Relation, WorkspaceSnapshot};
 #[cfg(test)]
 use backend_engine::builtin::SemanticPublicationSelection;
 use backend_extension_turso::SourceObservationReceipt;
@@ -506,6 +507,8 @@ pub(super) fn finish_index_scan(
         mut file_keys,
         mut changes,
         mut source_facts_changes,
+        mut native_frontier_changes,
+        native_frontier,
         revision_fence: final_revision_fence,
         python_environment,
         cancellation,
@@ -652,6 +655,9 @@ pub(super) fn finish_index_scan(
                 captures,
                 reused_profiles,
                 pending_changes,
+                native_clang_candidates,
+                native_csharp_candidates,
+                native_frontier: _,
             } = *compilation;
             // The synchronous reference path commits the independently
             // admitted source/Pending frontier before materializing inputs.
@@ -676,6 +682,16 @@ pub(super) fn finish_index_scan(
             if !source_facts_changes.is_empty() {
                 capture_intent =
                     capture_intent.with_source_facts(std::mem::take(&mut source_facts_changes))?;
+            }
+            if !native_frontier_changes.is_empty() {
+                if capture_intent.has_capture_changes() && capture_intent.capture_basis().is_none()
+                {
+                    capture_intent = capture_intent.with_capture_basis(
+                        super::super::capture_basis_for_snapshot(&base_snapshot)?,
+                    )?;
+                }
+                capture_intent = capture_intent
+                    .with_native_frontier(std::mem::take(&mut native_frontier_changes))?;
             }
             let capture_intent = match operation_key {
                 Some(key) => capture_intent.with_operation_key(key)?,
@@ -724,17 +740,19 @@ pub(super) fn finish_index_scan(
             file_keys = captured_file_keys.clone();
             let before_capture = Some(captured_project.clone());
 
-            let sources = ingest::admit_compiler_sources_for_scan(
+            let admission = ingest::admit_compiler_sources_with_native_candidates_for_scan(
                 requested_root,
                 revision_fence,
                 fresh,
                 reused,
+                native_clang_candidates,
+                native_csharp_candidates,
                 source_admission_policy,
                 Some(cancellation.as_ref()),
             )
             .map_err(BuiltinModelError);
-            let sources = match sources {
-                Ok(sources) => sources,
+            let (sources, native_candidate_profiles) = match admission {
+                Ok(admitted) => admitted,
                 Err(error) => {
                     let terminal = terminal_capture_changes(
                         daemon,
@@ -759,6 +777,13 @@ pub(super) fn finish_index_scan(
                     Vec::new(),
                     &semantic_context,
                     sources,
+                    native_candidate_profiles.clone(),
+                    source_preparation::native_candidate_permits(
+                        &daemon.engine().daemon().owner().snapshot(),
+                        project_key,
+                        &native_frontier,
+                        &native_candidate_profiles,
+                    )?,
                     revision_fence.clone(),
                     &observations,
                     captures,
@@ -773,6 +798,13 @@ pub(super) fn finish_index_scan(
                 daemon,
                 &semantic_context,
                 sources,
+                &native_candidate_profiles,
+                &source_preparation::native_candidate_permits(
+                    &daemon.engine().daemon().owner().snapshot(),
+                    project_key,
+                    &native_frontier,
+                    &native_candidate_profiles,
+                )?,
                 &revision_fence,
                 &observations,
                 semantic_authority,
@@ -868,10 +900,11 @@ pub(super) fn finish_index_scan(
         && semantic_changes.is_empty()
         && capture_changes.is_empty()
         && source_facts_changes.is_empty()
+        && native_frontier_changes.is_empty()
     {
         None
     } else {
-        let intent = if !source_facts_changes.is_empty() {
+        let mut intent = if !source_facts_changes.is_empty() {
             BuiltinIntent::index_with_source_facts(
                 package,
                 &label,
@@ -891,6 +924,14 @@ pub(super) fn finish_index_scan(
                 capture_changes,
             )?
         };
+        if !native_frontier_changes.is_empty() {
+            if intent.has_capture_changes() && intent.capture_basis().is_none() {
+                intent = intent.with_capture_basis(super::super::capture_basis_for_snapshot(
+                    &daemon.engine().daemon().owner().snapshot(),
+                )?)?;
+            }
+            intent = intent.with_native_frontier(native_frontier_changes)?;
+        }
         Some(intent)
     };
     Ok(PreparedIndex::Ready(PreparedProductSelection {
@@ -2273,6 +2314,58 @@ impl DeferredIndex {
 /// Begins the local compile of every profile the sources name, exactly as
 /// the in-place local route does (`compile_semantic_publications` with no
 /// compiler cluster), stopping short of the compile itself.
+fn admitted_native_candidate_source_set(
+    request: PackageCompileRequest,
+    package_root: PathBuf,
+    sources: Box<[OwnedPackageSource]>,
+    profile: LanguageProfile,
+    candidate_profiles: &ingest::NativeCandidateProfiles,
+    permits: &source_preparation::NativeCandidatePermits,
+) -> Result<OwnedPackageSourceSet, BuiltinModelError> {
+    if candidate_profiles.clang.contains(&profile) {
+        OwnedPackageSourceSet::new_native_clang_candidate(
+            request,
+            package_root,
+            sources,
+            permits.project.ok_or_else(|| {
+                BuiltinModelError("native frontier project is missing".to_owned())
+            })?,
+            permits.selected_root.ok_or_else(|| {
+                BuiltinModelError("selected native frontier root is missing".to_owned())
+            })?,
+            permits
+                .clang_by_profile
+                .get(&profile)
+                .cloned()
+                .ok_or_else(|| {
+                    BuiltinModelError("checked Clang candidate permits are missing".to_owned())
+                })?,
+        )
+    } else if candidate_profiles.csharp.contains(&profile) {
+        OwnedPackageSourceSet::new_native_csharp_candidate(
+            request,
+            package_root,
+            sources,
+            permits.project.ok_or_else(|| {
+                BuiltinModelError("native frontier project is missing".to_owned())
+            })?,
+            permits.selected_root.ok_or_else(|| {
+                BuiltinModelError("selected native frontier root is missing".to_owned())
+            })?,
+            permits
+                .csharp_by_profile
+                .get(&profile)
+                .cloned()
+                .ok_or_else(|| {
+                    BuiltinModelError("checked C# candidate permits are missing".to_owned())
+                })?,
+        )
+    } else {
+        OwnedPackageSourceSet::new(request, package_root, sources)
+    }
+    .map_err(|error| BuiltinModelError(error.to_string()))
+}
+
 fn prepare_deferred_compile(
     snapshot: &WorkspaceSnapshot,
     package: backend_engine::PackageKey,
@@ -2285,6 +2378,8 @@ fn prepare_deferred_compile(
     source_changes: Vec<BuiltinSourceChange>,
     context: &SemanticCompilationContext<'_>,
     sources: Vec<ingest::CompilerSource>,
+    native_candidate_profiles: ingest::NativeCandidateProfiles,
+    native_candidate_permits: source_preparation::NativeCandidatePermits,
     revision_fence: ingest::CompilerRevisionFence,
     observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
     captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
@@ -2358,13 +2453,15 @@ fn prepare_deferred_compile(
                 ScopeRoot::from_bytes(scan_input_digest),
                 Coverage::Partial,
             );
-            let sources = OwnedPackageSourceSet::new(
+            let source_set = admitted_native_candidate_source_set(
                 request,
                 context.source_root.to_path_buf(),
                 sources.into_boxed_slice(),
-            )
-            .map_err(|error| BuiltinModelError(error.to_string()))?
-            .with_input_claim(input_claim);
+                profile,
+                &native_candidate_profiles,
+                &native_candidate_permits,
+            )?;
+            let sources = source_set.with_input_claim(input_claim);
             let sources = match context
                 .python_environment
                 .filter(|_| matches!(profile, LanguageProfile::Python(_)))
@@ -3283,6 +3380,8 @@ fn compile_semantic_publications(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     context: &SemanticCompilationContext<'_>,
     sources: Vec<ingest::CompilerSource>,
+    native_candidate_profiles: &ingest::NativeCandidateProfiles,
+    native_candidate_permits: &source_preparation::NativeCandidatePermits,
     revision_fence: &ingest::CompilerRevisionFence,
     observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
@@ -3295,6 +3394,8 @@ fn compile_semantic_publications(
         &daemon.engine().daemon().owner().snapshot(),
         context,
         sources,
+        native_candidate_profiles,
+        native_candidate_permits,
         revision_fence,
         observations,
         semantic_authority,
@@ -3313,6 +3414,8 @@ fn compile_semantic_publications_for_snapshot(
     snapshot: &WorkspaceSnapshot,
     context: &SemanticCompilationContext<'_>,
     sources: Vec<ingest::CompilerSource>,
+    native_candidate_profiles: &ingest::NativeCandidateProfiles,
+    native_candidate_permits: &source_preparation::NativeCandidatePermits,
     revision_fence: &ingest::CompilerRevisionFence,
     observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
@@ -3384,7 +3487,8 @@ fn compile_semantic_publications_for_snapshot(
         })?;
         let source_paths = source_paths_by_profile.remove(&profile).unwrap_or_default();
         let mut captured_work = None;
-        let observation = if let (Some(owner), Some(snapshot)) = (owner_cluster, workspace_snapshot)
+        let observation = if !native_candidate_profiles.contains(&profile)
+            && let (Some(owner), Some(snapshot)) = (owner_cluster, workspace_snapshot)
         {
             let compiler_target = CompilerPackageTargetV2::for_package(key.coordinate().clone());
             let execution_identity = context
@@ -3952,12 +4056,14 @@ fn compile_semantic_publications_for_snapshot(
                     ScopeRoot::from_bytes(scan_input_digest),
                     Coverage::Partial,
                 );
-                let source_set = OwnedPackageSourceSet::new(
+                let source_set = admitted_native_candidate_source_set(
                     request,
                     context.source_root.to_path_buf(),
                     sources.into_boxed_slice(),
-                )
-                .map_err(|error| BuiltinModelError(error.to_string()))?
+                    profile,
+                    native_candidate_profiles,
+                    native_candidate_permits,
+                )?
                 .with_input_claim(local_input_claim);
                 let source_set = match context
                     .python_environment
@@ -6536,6 +6642,19 @@ fn semantic_input_digest(scan: &ingest::IndexSnapshot, profile: LanguageProfile)
         if let Some(environment) = &scan.python_environment {
             hasher.update(&environment.identity());
         }
+    }
+    for record in scan.native_frontier.iter().filter(|record| {
+        record.owner().1 == profile
+            && matches!(
+                record,
+                ProductNativeFrontierRecord::Profile { .. }
+                    | ProductNativeFrontierRecord::Path { .. }
+            )
+    }) {
+        let mut encoded = Vec::new();
+        ProductNativeFrontierRelation::encode_value(record, &mut encoded);
+        hasher.update(&(encoded.len() as u64).to_le_bytes());
+        hasher.update(&encoded);
     }
     if matches!(
         profile,

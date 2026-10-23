@@ -583,6 +583,7 @@ fn production_go_authority_scopes_a_multi_package_module_to_its_owning_package()
             package_root: &module_root,
             source_path: &path,
             source: &source,
+            java_sourcepath: &[],
             unit_key: &backend_engine::application::CompilationUnitKeyV2::PackageRoot,
             profile: PROFILE,
             toolchain: ToolchainSelection::ResolvedNative(toolchain()?),

@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn dto36_rejects_batched_coverage_before_payload_admission() {
-        assert_eq!(crate::DTO_VERSION, 38);
+        assert_eq!(crate::DTO_VERSION, 39);
         let mut envelope = serde_json::json!({
             "version": crate::DTO_VERSION,
             "request_id": 41,
@@ -298,8 +298,8 @@ mod tests {
         });
         let current = serde_json::to_vec(&envelope).expect("bounded versioned envelope");
         let old_peer = super::check_version_header_against(&current, "reply", 36)
-            .expect_err("DTO36 client refuses the DTO38 coverage page before shape admission");
-        assert!(old_peer.contains("reply DTO version 38"));
+            .expect_err("DTO36 client refuses the DTO39 coverage page before shape admission");
+        assert!(old_peer.contains("reply DTO version 39"));
         assert!(old_peer.contains("this build supports 36"));
         assert!(!old_peer.contains("unknown_batch_field"));
         envelope["version"] = serde_json::json!(36);
@@ -307,13 +307,13 @@ mod tests {
         let error = super::decode_reply_body(&old_bytes)
             .expect_err("current client refuses a v36 multirow payload before deserialization");
         assert!(error.contains("reply DTO version 36"));
-        assert!(error.contains("this build supports 38"));
+        assert!(error.contains("this build supports 39"));
         assert!(!error.contains("unknown_batch_field"));
     }
 
     #[test]
     fn outline_order_cutover_refuses_dto33_before_page_shape_or_verification() {
-        assert_eq!(crate::DTO_VERSION, 38);
+        assert_eq!(crate::DTO_VERSION, 39);
         let current = serde_json::to_vec(&serde_json::json!({
             "request_id": 41,
             "certificate": null,
@@ -326,8 +326,8 @@ mod tests {
         // The maintained v33 byte-entry version preflight, not a replay of an
         // old binary, rejects the new cohort before its strict page grammar.
         let old_peer = super::check_version_header_against(&current, "reply", 33)
-            .expect_err("v33 peer refuses the v38 owner");
-        assert!(old_peer.contains("reply DTO version 38"));
+            .expect_err("v33 peer refuses the v39 owner");
+        assert!(old_peer.contains("reply DTO version 39"));
         assert!(old_peer.contains("this build supports 33"));
         assert!(!old_peer.contains("unknown field"));
         let mut old: serde_json::Value = serde_json::from_slice(&current).expect("envelope");
@@ -339,14 +339,14 @@ mod tests {
         let bytes = serde_json::to_vec(&old).expect("old owner reply");
         let verifier = CountingVerifier::new();
         for error in [
-            decode_reply_body(&bytes).expect_err("v38 client refuses v33 owner"),
+            decode_reply_body(&bytes).expect_err("v39 client refuses v33 owner"),
             decode_reply_body_with_verifier(&bytes, &verifier)
                 .expect_err("refuse before verification"),
             ReplyDto::decode_with_certificate(&bytes, None)
                 .expect_err("certificate path version guard"),
         ] {
             assert!(error.contains("reply DTO version 33"));
-            assert!(error.contains("this build supports 38"));
+            assert!(error.contains("this build supports 39"));
             assert!(!error.contains("unknown field"));
         }
         assert_eq!(verifier.calls(), 0);
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn source_selection_cutover_refuses_dto34_before_health_shape_or_verification() {
-        assert_eq!(crate::DTO_VERSION, 38);
+        assert_eq!(crate::DTO_VERSION, 39);
         let current = serde_json::to_vec(&serde_json::json!({
             "request_id": 41,
             "certificate": null,
@@ -378,8 +378,8 @@ mod tests {
         }))
         .expect("new health envelope");
         let old_peer = super::check_version_header_against(&current, "reply", 34)
-            .expect_err("v34 peer refuses the v38 owner before health shape");
-        assert!(old_peer.contains("reply DTO version 38"));
+            .expect_err("v34 peer refuses the v39 owner before health shape");
+        assert!(old_peer.contains("reply DTO version 39"));
         assert!(old_peer.contains("this build supports 34"));
         assert!(!old_peer.contains("unknown field"));
         let mut old: serde_json::Value = serde_json::from_slice(&current).expect("envelope");
@@ -391,14 +391,14 @@ mod tests {
         let bytes = serde_json::to_vec(&old).expect("old owner reply");
         let verifier = CountingVerifier::new();
         for error in [
-            decode_reply_body(&bytes).expect_err("v38 client refuses v34 owner"),
+            decode_reply_body(&bytes).expect_err("v39 client refuses v34 owner"),
             decode_reply_body_with_verifier(&bytes, &verifier)
                 .expect_err("refuse before verification"),
             ReplyDto::decode_with_certificate(&bytes, None)
                 .expect_err("certificate path version guard"),
         ] {
             assert!(error.contains("reply DTO version 34"));
-            assert!(error.contains("this build supports 38"));
+            assert!(error.contains("this build supports 39"));
             assert!(!error.contains("unknown field"));
         }
         assert_eq!(verifier.calls(), 0);
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn profile_refusal_cutover_refuses_dto35_before_closed_event_shape() {
-        assert_eq!(crate::DTO_VERSION, 38);
+        assert_eq!(crate::DTO_VERSION, 39);
         let current = serde_json::to_vec(&serde_json::json!({
             "version": crate::DTO_VERSION,
             "request_id": 41,
@@ -425,8 +425,8 @@ mod tests {
         // This runs the real byte-entry preflight parameterized by the old
         // supported cohort. It does not pretend to execute an old binary.
         let old_peer = super::check_version_header_against(&current, "reply", 35)
-            .expect_err("installed DTO35 CLI/MCP/GUI refuses DTO38 owner before tag parsing");
-        assert!(old_peer.contains("reply DTO version 38"));
+            .expect_err("installed DTO35 CLI/MCP/GUI refuses DTO39 owner before tag parsing");
+        assert!(old_peer.contains("reply DTO version 39"));
         assert!(old_peer.contains("this build supports 35"));
         assert!(old_peer.contains("same build"));
         assert!(!old_peer.contains("unknown"));
@@ -441,7 +441,7 @@ mod tests {
                 ReplyDto::decode_with_certificate(&bytes, None).expect_err("same byte-entry guard"),
             ] {
                 assert!(error.contains(&format!("reply DTO version {version}")));
-                assert!(error.contains("this build supports 38"));
+                assert!(error.contains("this build supports 39"));
                 assert!(error.contains("CLI/MCP/GUI"));
                 assert!(!error.contains("unknown"));
             }

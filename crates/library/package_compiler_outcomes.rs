@@ -13,6 +13,10 @@ pub const MAX_PACKAGE_COMPILER_COVERAGE_PAGE_BYTES: usize = 4096;
 
 /// Public compiler coverage row contract, shared unchanged with authenticated IR storage.
 pub use backend_semantic::ir::SourceCoverageRow as PackageCompilerCoverageRow;
+/// Cause carried by a typed compiler coverage gap row.
+pub use backend_semantic::ir::SourceCoverageGapCause as PackageCompilerCoverageGapCause;
+/// Optional source-bound diagnostic carried by a typed compiler coverage gap row.
+pub use backend_semantic::ir::SourceCoverageGapDiagnostic as PackageCompilerCoverageGapDiagnostic;
 
 /// Immutable selected roots required to resume a compiler outcome read.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

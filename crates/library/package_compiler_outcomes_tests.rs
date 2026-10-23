@@ -485,6 +485,7 @@ fn coverage_pages_bind_generation_input_catalog_and_exact_continuation_without_r
             source,
             byte_len: 4,
             cause: SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
+            diagnostic: None,
         }]
         .into_boxed_slice(),
         next: Some(PackageCompilerOutcomeRead::Coverage(

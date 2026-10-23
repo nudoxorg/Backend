@@ -28,6 +28,7 @@ impl<'image, 'cancel> ImageDemand<'image, 'cancel> {
             image,
             plan: ResourcePlan {
                 facts: 0,
+                name_spans: 0,
                 product_children: 0,
                 declared_type_children: 0,
                 occurrences: 0,

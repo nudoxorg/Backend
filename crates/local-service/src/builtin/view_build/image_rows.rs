@@ -68,6 +68,8 @@ pub(super) struct ProjectedRow {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ProjectedImage {
     pub(super) ownership_complete: bool,
+    /// Source reconstruction and proof maps reserved while projection is admitted.
+    pub(super) temporary_bytes: usize,
     /// Declaration rows, then that declaration's external targets.
     pub(super) rows: Vec<ProjectedRow>,
 }
@@ -350,6 +352,8 @@ pub(super) fn append_resident_image_rows(
         sink.stale,
         sink.path,
         sink.site_declarations,
+        sink.native_projection(),
+        sink.native_csharp_projection(),
     )?;
     match residence.store(key, projected) {
         Ok(cached) => apply_projected_image(cached, sink),
@@ -364,6 +368,7 @@ pub(super) fn apply_projected_image(
 ) -> Result<(), super::super::BuiltinModelError> {
     let basis = sink.initial.basis();
     *sink.ownership_complete &= projected.ownership_complete;
+    apply_charge(sink, Charge::Sub(projected.temporary_bytes))?;
     for projected_row in &projected.rows {
         match projected_row.duplicate {
             DuplicatePolicy::Skip => {
@@ -395,6 +400,7 @@ pub(super) fn apply_projected_image(
         }
         sink.rows.push(row);
     }
+    apply_charge(sink, Charge::Add(projected.temporary_bytes))?;
     Ok(())
 }
 
@@ -437,9 +443,18 @@ fn projection_key(
     hasher.update(sink.path.as_bytes());
     hasher.update(&[0]);
     hasher.update(&[u8::from(sink.stale)]);
+    if let Some(source) = sink.native_source {
+        hasher.update(&[1]);
+        hasher.update(source.source_identity().as_ref());
+        hasher.update(&source.content_digest());
+    } else {
+        hasher.update(&[0]);
+    }
     for site in sink.site_declarations {
         match site.binding_identity() {
-            backend_compile::SourceBindingIdentity::Legacy => { hasher.update(&[0]); }
+            backend_compile::SourceBindingIdentity::Legacy => {
+                hasher.update(&[0]);
+            }
             backend_compile::SourceBindingIdentity::Exact(capture) => {
                 hasher.update(&[1]);
                 let (start, end) = capture.owner();
@@ -1292,6 +1307,7 @@ fn publish_image_batch(
                     stale: false,
                     path: &path,
                     site_declarations: &[],
+                    native_source: None,
                 };
                 append_resident_image_rows(view, project, profile, &mut sink, residence)
                     .expect("project image");
@@ -1308,6 +1324,7 @@ fn publish_image_batch(
                     stale: false,
                     path: path.as_str(),
                     site_declarations: &[],
+                    native_source: None,
                 };
                 let applied = apply_resident_image(*digest, project, profile, &mut sink, residence)
                     .expect("apply image");
@@ -1354,6 +1371,7 @@ fn admit(
         stale,
         path: "src/worker.rs",
         site_declarations: &[],
+        native_source: None,
     };
     append_resident_image_rows(
         image,
@@ -1541,6 +1559,7 @@ mod tests {
         remaining: usize,
         symbols: &mut BTreeSet<RowId>,
         sites: &[&backend_compile::SourceDeclaration],
+        native_source: Option<&backend_engine::builtin::VerifiedNativeSource>,
     ) -> Result<Admitted, super::super::super::BuiltinModelError> {
         let mut rows = Vec::new();
         let mut remaining = remaining;
@@ -1555,6 +1574,7 @@ mod tests {
             stale,
             path: PATH,
             site_declarations: sites,
+            native_source,
         };
         append_resident_image_rows(
             image,
@@ -1581,6 +1601,8 @@ mod tests {
             false,
             PATH,
             sites,
+            None,
+            None,
         )
         .expect("direct projection");
         let mut symbols = BTreeSet::new();
@@ -1597,6 +1619,7 @@ mod tests {
             stale: false,
             path: PATH,
             site_declarations: sites,
+            native_source: None,
         };
         super::apply_projected_image(&projected, &mut sink).expect("apply direct projection");
         rows
@@ -1624,6 +1647,7 @@ mod tests {
             stale,
             path: PATH,
             site_declarations: &[],
+            native_source: None,
         };
         append_image_rows(
             image,
@@ -1653,6 +1677,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         )
         .expect("miss");
         let mut symbols = BTreeSet::new();
@@ -1666,6 +1691,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         )
         .expect("hit");
         assert_eq!(residence.misses(), 1);
@@ -1698,6 +1724,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         )
         .expect("fresh");
         let mut symbols = BTreeSet::new();
@@ -1711,6 +1738,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         )
         .expect("stale");
         let mut symbols = BTreeSet::new();
@@ -1724,6 +1752,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         )
         .expect("fresh hit");
         assert_eq!(residence.misses(), 2);
@@ -1759,6 +1788,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         )
         .expect("fixture");
         let mut symbols = BTreeSet::new();
@@ -1772,6 +1802,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         )
         .expect("other");
         assert_eq!(residence.misses(), 2);
@@ -1817,6 +1848,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[&kept],
+            None,
         )
         .expect("kept");
         let mut symbols = BTreeSet::new();
@@ -1830,6 +1862,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[&edited],
+            None,
         )
         .expect("edited");
         let mut symbols = BTreeSet::new();
@@ -1843,6 +1876,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[&kept],
+            None,
         )
         .expect("kept hit");
         assert_eq!(residence.misses(), 2);
@@ -1901,6 +1935,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[&unobserved],
+            None,
         )
         .expect("unobserved projection");
         let first_worker = first
@@ -1921,6 +1956,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[&observed],
+            None,
         )
         .expect("observed projection");
         assert_eq!(
@@ -1982,6 +2018,7 @@ mod tests {
                 usize::MAX,
                 &mut symbols,
                 &[&site],
+                None,
             )
             .expect("admit excerpt");
             assert_eq!(
@@ -2014,6 +2051,8 @@ mod tests {
             false,
             PATH,
             &[],
+            None,
+            None,
         )
         .expect("project");
         let mut tweaked = projected;
@@ -2034,6 +2073,7 @@ mod tests {
             stale: false,
             path: PATH,
             site_declarations: &[],
+            native_source: None,
         };
         apply_projected_image(&tweaked, &mut sink).expect("apply");
         let admitted = rows.first().expect("admitted");
@@ -2061,6 +2101,7 @@ mod tests {
                 budget,
                 &mut symbols,
                 &[],
+                None,
             )
             .map_err(|error| error.to_string());
             let mut symbols = BTreeSet::new();
@@ -2074,6 +2115,7 @@ mod tests {
                 budget,
                 &mut symbols,
                 &[],
+                None,
             )
             .map_err(|error| error.to_string());
             match (&direct, &miss, &hit) {
@@ -2109,6 +2151,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         )
         .expect("prime");
         let mut symbols = BTreeSet::new();
@@ -2122,6 +2165,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         );
         assert!(
             capacity
@@ -2146,6 +2190,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         );
         assert!(
             duplicate
@@ -2167,6 +2212,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         )
         .expect("recovered hit");
         assert_eq!(recovered.rows, primed.rows);
@@ -2194,6 +2240,7 @@ mod tests {
                 stale: false,
                 path,
                 site_declarations: &[],
+                native_source: None,
             };
             append_resident_image_rows(
                 &image,
@@ -2220,6 +2267,7 @@ mod tests {
             stale: false,
             path: "src/a.rs",
             site_declarations: &[],
+            native_source: None,
         };
         append_resident_image_rows(
             &image,
@@ -2244,6 +2292,7 @@ mod tests {
             stale: false,
             path: "src/c.rs",
             site_declarations: &[],
+            native_source: None,
         };
         append_resident_image_rows(
             &image,
@@ -2276,7 +2325,14 @@ mod tests {
         }
         assert!(
             residence
-                .store([9_u8; 32], ProjectedImage { rows, ownership_complete: true })
+                .store(
+                    [9_u8; 32],
+                    ProjectedImage {
+                        rows,
+                        ownership_complete: true,
+                        temporary_bytes: 0
+                    }
+                )
                 .is_err()
         );
         assert_eq!(residence.len(), 0, "one image past the row budget leaves");
@@ -2287,6 +2343,7 @@ mod tests {
                 [8_u8; 32],
                 ProjectedImage {
                     ownership_complete: true,
+                    temporary_bytes: 0,
                     rows: vec![ProjectedRow {
                         exact_binding: None,
                         row: Row::new(
@@ -2306,6 +2363,7 @@ mod tests {
     fn one_projected_row(label: &str, basis: backend_engine::Basis) -> ProjectedImage {
         ProjectedImage {
             ownership_complete: true,
+            temporary_bytes: 0,
             rows: vec![ProjectedRow {
                 exact_binding: None,
                 row: Row::new(
@@ -2464,6 +2522,7 @@ mod tests {
             stale: false,
             path: PATH,
             site_declarations: &[],
+            native_source: None,
         };
         apply_projected_image(projected, &mut sink).expect("replay projected rows");
         (rows, remaining_bytes)
@@ -2597,6 +2656,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         )
         .expect("project");
         drop(opened);
@@ -2618,6 +2678,7 @@ mod tests {
             stale: false,
             path: PATH,
             site_declarations: &[],
+            native_source: None,
         };
         let applied = apply_resident_image(
             digest,
@@ -2654,6 +2715,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         )
         .expect("fresh project");
         let digest = *blake3::hash(fixture.bytes.as_slice()).as_bytes();
@@ -2671,6 +2733,7 @@ mod tests {
             stale: true,
             path: PATH,
             site_declarations: &[],
+            native_source: None,
         };
         let applied = apply_resident_image(
             digest,
@@ -2696,6 +2759,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         )
         .expect("stale project");
         assert!(stale.rows.iter().all(|row| {
@@ -2718,6 +2782,7 @@ mod tests {
             stale: false,
             path: PATH,
             site_declarations: &[],
+            native_source: None,
         };
         let fresh_hit = apply_resident_image(
             digest,
@@ -2757,6 +2822,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         )
         .expect("prime");
         let digest = *blake3::hash(fixture.bytes.as_slice()).as_bytes();
@@ -2774,6 +2840,7 @@ mod tests {
             stale: false,
             path: PATH,
             site_declarations: &[],
+            native_source: None,
         };
         let failed = apply_resident_image(
             digest,
@@ -2803,6 +2870,7 @@ mod tests {
             stale: false,
             path: PATH,
             site_declarations: &[],
+            native_source: None,
         };
         let recovered = apply_resident_image(
             digest,
@@ -2895,6 +2963,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         )
         .expect("project");
         let token = admission("pkg:cargo/fixture@1.0.0");
@@ -2919,6 +2988,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         )
         .expect("projection hit");
         assert_eq!(hit.rows, primed.rows);
@@ -3137,6 +3207,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         )
         .expect("fresh project");
         drop(opened);
@@ -3164,6 +3235,7 @@ mod tests {
             stale: true,
             path: PATH,
             site_declarations: &[],
+            native_source: None,
         };
         let applied = apply_resident_image(
             digest,
@@ -3190,6 +3262,7 @@ mod tests {
             usize::MAX,
             &mut symbols,
             &[],
+            None,
         )
         .expect("stale project");
         assert_eq!(stale.rows.len(), fresh.rows.len());
