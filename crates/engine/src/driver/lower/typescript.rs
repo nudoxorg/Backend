@@ -10913,6 +10913,7 @@ fn intern_native_tsz_type<'source>(
     // dynamically-typed meaning instead of being confused with a failed lookup.
     if !active.insert(resolved_type_id) {
         report_native_tsz_type_projection_cycle(
+            registry,
             checker,
             database,
             type_id,
@@ -10956,6 +10957,7 @@ fn intern_native_tsz_type<'source>(
 /// path. This is diagnostic-only: it does not change projection, admission, or
 /// persisted failure data, and it never formats a checker type as source text.
 fn report_native_tsz_type_projection_cycle(
+    registry: &FactRegistry<'_, '_>,
     checker: &TszCheckerState<'_>,
     database: &dyn TszTypeDatabase,
     input: TszTypeId,
@@ -10975,6 +10977,16 @@ fn report_native_tsz_type_projection_cycle(
     let mut active_ids = active.iter().map(|id| id.0).collect::<Vec<_>>();
     active_ids.sort_unstable();
     active_ids.truncate(32);
+    let active_types = active_ids
+        .iter()
+        .filter_map(|id| {
+            let id = TszTypeId(*id);
+            let data = database.lookup(id)?;
+            let lazy = matches!(data, TypeData::Lazy(_))
+                .then(|| format_native_tsz_lazy_diagnostic(checker, database, &data));
+            Some((id.0, format!("{data:?}"), lazy))
+        })
+        .collect::<Vec<_>>();
     let raw_data = database.lookup(input);
     let raw_lazy_detail = raw_data
         .as_ref()
@@ -11082,6 +11094,60 @@ fn report_native_tsz_type_projection_cycle(
                 "data={data:?} {}",
                 format_native_tsz_lazy_diagnostic(checker, database, &data)
             ),
+            TypeData::Conditional(conditional_id) => {
+                let conditional = database.conditional_type(conditional_id);
+                let children = [
+                    ("check", conditional.check_type),
+                    ("extends", conditional.extends_type),
+                    ("true", conditional.true_type),
+                    ("false", conditional.false_type),
+                ]
+                .into_iter()
+                .map(|(role, child)| {
+                    let child_data = database.lookup(child);
+                    let lazy = child_data
+                        .as_ref()
+                        .filter(|item| matches!(item, TypeData::Lazy(_)));
+                    let lazy_detail = lazy.map(|item| {
+                        format_native_tsz_lazy_diagnostic(checker, database, item)
+                    });
+                    (
+                        role,
+                        child.0,
+                        child_data.map(|item| format!("{item:?}")),
+                        lazy_detail,
+                    )
+                })
+                .collect::<Vec<_>>();
+                let definition_file = match raw_data.as_ref() {
+                    Some(TypeData::Lazy(def_id)) => checker
+                        .ctx
+                        .definition_store
+                        .get(*def_id)
+                        .and_then(|info| info.file_id)
+                        .and_then(|index| {
+                            registry.tsz_project?.program().files.get(index as usize)
+                        })
+                        .map(|file| {
+                            let path = if file.file_name.len() > 256 {
+                                &file.file_name[..file.file_name.floor_char_boundary(256)]
+                            } else {
+                                file.file_name.as_str()
+                            };
+                            (
+                                path,
+                                file.arena
+                                    .get_source_file_at(file.source_file)
+                                    .map(|source| source.text.len()),
+                            )
+                        }),
+                    _ => None,
+                };
+                format!(
+                    "data={data:?} distributive={} children={children:?} definition_file={definition_file:?}",
+                    conditional.is_distributive,
+                )
+            }
             TypeData::Union(list) | TypeData::Intersection(list) => {
                 let children = database
                     .type_list(list)
@@ -11114,7 +11180,7 @@ fn report_native_tsz_type_projection_cycle(
         detail.truncate(end);
     }
     eprintln!(
-        "typescript type projection cycle: input={} raw={raw_data:?} raw_lazy={raw_lazy_detail:?} resolved={} active={active_ids:?} {detail}",
+        "typescript type projection cycle: input={} raw={raw_data:?} raw_lazy={raw_lazy_detail:?} resolved={} active={active_ids:?} active_types={active_types:?} {detail}",
         input.0, resolved.0,
     );
 }
