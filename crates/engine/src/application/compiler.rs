@@ -7854,10 +7854,11 @@ mod tests {
         AuthorityDiagnosticClass, AuthorityPhase, CompilerCause, CorrelationId, GenerateTarget,
         PackageCompileRequest,
     };
-    use backend_semantic::ir::{Coverage, ScopeRoot, SemanticInputWitness};
+    use backend_semantic::ir::SemanticInputWitness;
     use backend_semantic::registry::AdapterRoute;
     use backend_semantic::vocabulary::NativeTool;
     use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, RustEdition, Stage};
+    use backend_version::{Coverage, ScopeRoot};
     use thiserror::Error;
 
     use crate::application::{LocalToolchainSet, LocalToolchainSetError, PackageAuthorityError};
