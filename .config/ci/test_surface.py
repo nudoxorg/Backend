@@ -889,6 +889,36 @@ class SnapshotContinuationTests(unittest.TestCase):
             with self.subTest(answer=wrong), self.assertRaises(RuntimeError):
                 surface.require_continuation_reply(first, wrong, "root")
 
+    def test_search_page_overlap_uses_full_symbol_ids_then_structural_fallback(self):
+        import hashlib
+
+        first = self.page("pc4-first", "same-coordinate")
+        def terminal(coordinate):
+            page = self.page("pc4-terminal", coordinate)
+            page["more"] = False
+            page.pop("nextCursor")
+            return page
+
+        different_symbol = terminal("same-coordinate")
+        different_symbol["records"][0]["identity"]["semantic_data"]["value"] = list(
+            hashlib.sha256(b"another exact declaration").digest())
+        surface.require_continuation_reply(first, different_symbol, "root")
+
+        same_symbol_elsewhere = terminal("different-coordinate")
+        same_symbol_elsewhere["records"][0]["identity"]["semantic_data"] = first["records"][0]["identity"]["semantic_data"]
+        with self.assertRaisesRegex(RuntimeError, "duplicate emitted search identity"):
+            surface.require_continuation_reply(first, same_symbol_elsewhere, "root")
+
+        unresolved_first = self.page("pc4-unresolved", "same-coordinate")
+        unresolved_first["records"][0]["identity"] = {"coordinate": "same-coordinate", "name": "first"}
+        unresolved_following = terminal("same-coordinate")
+        unresolved_following["records"][0]["identity"] = {"coordinate": "same-coordinate", "name": "second"}
+        surface.require_continuation_reply(unresolved_first, unresolved_following, "root")
+        unresolved_duplicate = terminal("different-coordinate")
+        unresolved_duplicate["records"][0]["identity"] = {"coordinate": "same-coordinate", "name": "first"}
+        with self.assertRaisesRegex(RuntimeError, "duplicate emitted search identity"):
+            surface.require_continuation_reply(unresolved_first, unresolved_duplicate, "root")
+
     def test_outline_resume_uses_the_returned_page_limit(self):
         import copy
         call = {"tool": "backend.outline", "arguments": {}}
@@ -2381,10 +2411,6 @@ finally:
                         os.close(runner_fd)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class SelectedCargoTargetAdmissionTests(unittest.TestCase):
     def test_selected_receipt_requires_exact_request_and_coverage_denominator(self):
         import copy
@@ -2403,3 +2429,7 @@ class SelectedCargoTargetAdmissionTests(unittest.TestCase):
             elif mutation == "root": capture["cargo_target"]["root"] = "benches/bench.rs"
             with self.subTest(mutation=mutation), self.assertRaisesRegex(RuntimeError, "selected Cargo target"):
                 surface.require_selected_cargo_target(bad, "ryu")
+
+
+if __name__ == "__main__":
+    unittest.main()

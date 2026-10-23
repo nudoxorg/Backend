@@ -1132,10 +1132,11 @@ def require_continuation_reply(first: dict, following: dict, published_root: str
         before, after = first.get("records"), following.get("records")
         if not isinstance(before, list) or not before or not isinstance(after, list) or not after:
             raise RuntimeError("snapshot continuation: empty records page")
-        old = [row.get("identity", {}).get("coordinate") for row in before]
-        new = [row.get("identity", {}).get("coordinate") for row in after]
-        if any(not isinstance(key, str) or not key for key in old + new) or set(old) & set(new):
-            raise RuntimeError("snapshot continuation: missing identities or repeated rows")
+        old = [_search_record_identity(row) for row in before]
+        new = [_search_record_identity(row) for row in after]
+        if (len(old) != len(set(old)) or len(new) != len(set(new))
+                or set(old) & set(new)):
+            raise RuntimeError("snapshot continuation: duplicate emitted search identity across pages")
         more = following.get("more")
     elif first["answer"] == "outline":
         page, next_page = first.get("page", {}), following.get("page", {})
@@ -1171,6 +1172,21 @@ def _exact_symbol_id(dto: dict) -> str | None:
             or not any(value)):
         raise RuntimeError("snapshot continuation: malformed selected-symbol ID")
     return bytes(value).hex()
+
+
+def _search_record_identity(row: dict) -> str:
+    """Use the full symbol ID, falling back to the same structural tuple as traversal."""
+    identity = row.get("identity") if isinstance(row, dict) else None
+    if not isinstance(identity, dict):
+        raise RuntimeError("snapshot continuation: search row has no identity DTO")
+    exact = _exact_symbol_id(identity)
+    if exact is not None:
+        return exact
+    return "unresolved:" + json.dumps(
+        [identity.get("coordinate"), identity.get("key"), identity.get("name"),
+         identity.get("path"), identity.get("line"), identity.get("segments"),
+         row.get("kind"), row.get("language"), row.get("state")], sort_keys=True,
+        separators=(",", ":"), ensure_ascii=False)
 
 
 def _outline_page_identities(page: dict, previously_seen: set[str]) -> tuple[set[str], int]:
@@ -1314,17 +1330,7 @@ def walk_record_pages(first: dict, fetch_page, max_pages: int = 256,
             raise RuntimeError("snapshot continuation: empty search page")
         identities = []
         for row in rows:
-            identity = row.get("identity") if isinstance(row, dict) else None
-            if not isinstance(identity, dict):
-                raise RuntimeError("snapshot continuation: search row has no identity DTO")
-            exact = _exact_symbol_id(identity)
-            if exact is None:
-                exact = "unresolved:" + json.dumps(
-                    [identity.get("coordinate"), identity.get("key"), identity.get("name"),
-                     identity.get("path"), identity.get("line"), identity.get("segments"),
-                     row.get("kind"), row.get("language"), row.get("state")], sort_keys=True,
-                    separators=(",", ":"), ensure_ascii=False)
-            identities.append(exact)
+            identities.append(_search_record_identity(row))
         if len(identities) != len(set(identities)) or seen_rows.intersection(identities):
             raise RuntimeError("snapshot continuation: duplicate emitted search identity across pages")
         seen_rows.update(identities)
