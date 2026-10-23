@@ -1083,6 +1083,21 @@ pub(crate) fn rust_authority_diagnostic<'diagnostic>(
                 "Full Cargo dependency and feature resolution is incomplete under the {policy} policy; no-dependency metadata cannot authorize Rust semantics."
             );
         }
+        RustError::CargoTargetMetadataMismatch => {
+            let _ = message.write_str(
+                "selected Rust Cargo target did not match one admitted Cargo target row.",
+            );
+        }
+        RustError::CargoTargetSourceRootMissing { .. } => {
+            let _ = message.write_str(
+                "selected Rust Cargo target root is absent from its captured source closure.",
+            );
+        }
+        RustError::CargoTargetSourceNotCaptured { .. } => {
+            let _ = message.write_str(
+                "an active Rust Cargo target source was not present in the captured frontier.",
+            );
+        }
         RustError::SourceNotLoaded { .. } => {
             let _ = message.write_str("rust-analyzer did not load the selected Cargo source.");
         }

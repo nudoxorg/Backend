@@ -6685,7 +6685,7 @@ mod read_frontier_budget_tests {
             maximum_source_bytes: SourceByteLimit::from(1024 * 1024),
             deadline: Instant::now() + std::time::Duration::from_secs(120),
         };
-        let workspace = RustWorkspace::open_with_features_and_metadata_policy(
+        let mut workspace = RustWorkspace::open_with_features_and_metadata_policy(
             &root,
             &toolchain,
             RustEdition::Rust2024,
@@ -6977,7 +6977,8 @@ mod read_frontier_budget_tests {
         .expect("partial captured source key")
         .with_cargo_target(partial_target)
         .expect("selected target root is captured");
-        let partial_lease = RustWorkspaceSessionLane::default()
+        let mut partial_lane = RustWorkspaceSessionLane::default();
+        let partial_lease = partial_lane
             .begin(partial_key, &partial_files, control())
             .expect("Cargo analyzer can observe the package's existing module file");
         assert!(matches!(
