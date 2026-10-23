@@ -772,14 +772,15 @@ fn semantic_rows(
                 })?
                 .flatten();
             if capture.as_ref().is_some_and(|capture| {
-                capture.cargo_target().is_some()
-                    && !matches!(
-                        capture.outcome(),
-                        ProductSemanticCaptureOutcome::Published { .. }
-                    )
+                matches!(
+                    capture.outcome(),
+                    ProductSemanticCaptureOutcome::Pending { .. }
+                        | ProductSemanticCaptureOutcome::Failed { .. }
+                )
             }) {
-                // Source bytes alone cannot make the previous target current:
-                // the latest explicit selection has not published its result.
+                // Source bytes alone cannot make the prior generation current:
+                // the latest capture has not published its result. This also
+                // covers an unselected request replacing an explicit target.
                 decision.invalidate_selected_context();
             }
             let native_frontier_is_complete = !matches!(
@@ -1157,7 +1158,7 @@ pub(super) struct FreshnessDecision {
     pub(super) identity_decisive: bool,
     /// Whether the compiled path set already differs from the current scan.
     pub(super) path_sets_differ: bool,
-    /// A newer selected target capture has not published a generation yet.
+    /// A newer source capture has not published a generation yet.
     selected_context_stale: bool,
 }
 
