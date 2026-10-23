@@ -1253,15 +1253,18 @@ fn install_installed_rust_compiler(fixture: &mut AdapterFixture) {
     )
     .open()
     .expect("actual installed Rust compiler and Cargo selection");
-    assert_eq!(
-        compiler
-            .capabilities()
-            .for_profile(backend_semantic::vocabulary::LanguageProfile::Rust(
-                backend_semantic::vocabulary::RustEdition::Rust2021,
-            ))
-            .state(),
-        backend_engine::application::LocalCompilerCapabilityState::Ready,
-        "the real Rust test requires admitted rustc and Cargo",
+    assert!(
+        matches!(
+            compiler
+                .capabilities()
+                .for_profile(backend_semantic::vocabulary::LanguageProfile::Rust(
+                    backend_semantic::vocabulary::RustEdition::Rust2021,
+                ))
+                .state(),
+            backend_engine::application::LocalCompilerCapabilityState::Ready
+                | backend_engine::application::LocalCompilerCapabilityState::Deferred
+        ),
+        "the installed Rust pair is admitted now or deferred to the first request",
     );
     fixture.adapter.as_mut().expect("adapter").compiler = compiler;
 }
@@ -1313,11 +1316,13 @@ fn run_rust_target_operation(
         .as_ref()
         .expect("retained target scope");
     assert_eq!(scope.name.as_str(), target);
-    assert!(scope.source_count > 0);
+    assert_eq!(scope.root, format!("src/{target}.rs"));
+    assert_eq!(scope.kinds.as_ref(), ["bin".to_owned()]);
+    assert_eq!(scope.source_count, 2);
     status
 }
 
-fn public_name_rows(fixture: &mut AdapterFixture, name: &str) -> Vec<String> {
+fn public_name_rows(fixture: &mut AdapterFixture, name: &str) -> Vec<backend_library::Row> {
     let (adapter, daemon) = fixture.parts();
     let library = daemon.engine().daemon().library();
     let command = Command::Name(backend_library::NameQuery::new(
@@ -1338,16 +1343,35 @@ fn public_name_rows(fixture: &mut AdapterFixture, name: &str) -> Vec<String> {
     let CommandReply::Names(snapshot) = reply.reply else {
         panic!("public name query returns admitted rows");
     };
-    snapshot
-        .root
-        .row_refs()
-        .map(|row| row.label.clone())
-        .collect()
+    snapshot.root.row_refs().cloned().collect()
+}
+
+fn run_unselected_rust_operation(
+    fixture: &mut AdapterFixture,
+    package: backend_library::PackageReference,
+    seed: u8,
+) -> backend_library::IndexOperationStatus {
+    let operation = backend_library::IndexOperationKey::from_bytes([seed; 32]).expect("operation");
+    let command = Command::Surface(backend_library::SurfaceCommand::IndexOperationStart {
+        cargo_target: None,
+        operation_key: operation,
+        package,
+        execution_intent: CompileExecutionIntent::Interactive,
+    });
+    let body = serde_json::to_vec(&backend_engine::CommandDto::new(u64::from(seed), command))
+        .expect("actual package-wide Rust index DTO");
+    let (adapter, daemon) = fixture.parts();
+    assert!(matches!(
+        adapter.execute_or_defer(daemon, &body, u64::from(seed)),
+        Ok(Executed::Reply(_))
+    ));
+    until(fixture, |adapter, _| adapter.indexing.is_none());
+    keyed_status(fixture, operation)
 }
 
 #[test]
 fn selected_rust_target_replaces_latest_semantic_context_and_redo_keeps_it() {
-    let mut fixture = AdapterFixture::new();
+    let mut fixture = AdapterFixture::open(TempTree::new(), false);
     install_installed_rust_compiler(&mut fixture);
     let (_, label) = fixture.add_target();
     let source_root = Path::new(&label);
@@ -1359,27 +1383,32 @@ fn selected_rust_target_replaces_latest_semantic_context_and_redo_keeps_it() {
     .expect("two real Cargo binary target declarations");
     fs::write(
         source_root.join("src/alpha.rs"),
-        "pub fn alpha_context_marker() -> usize { 11 }\nfn main() {}\n",
+        "mod shared;\npub fn alpha_context_marker() -> usize { shared::shared_value() }\nfn main() {}\n",
     )
     .expect("actual alpha target source");
     fs::write(
         source_root.join("src/beta.rs"),
-        "pub fn beta_context_marker() -> usize { 22 }\nfn main() {}\n",
+        "mod shared;\npub fn beta_context_marker() -> usize { shared::shared_value() }\nfn main() {}\n",
     )
     .expect("actual beta target source");
+    fs::write(
+        source_root.join("src/shared.rs"),
+        "pub fn shared_value() -> usize { 7 }\n",
+    )
+    .expect("real module shared by both Cargo targets");
     let package = backend_library::PackageReference::parse(label).expect("local package");
 
     let alpha = run_rust_target_operation(&mut fixture, package.clone(), "alpha", 0xc1);
     assert!(
         public_name_rows(&mut fixture, "alpha_context_marker")
             .iter()
-            .any(|row| row.contains("alpha_context_marker")),
+            .any(|row| row.label.contains("alpha_context_marker")),
         "the selected alpha declaration must be visible through the public name read"
     );
     assert!(
         public_name_rows(&mut fixture, "beta_context_marker")
             .iter()
-            .all(|row| !row.contains("beta_context_marker")),
+            .all(|row| !row.label.contains("beta_context_marker")),
         "the unselected beta target must not leak into alpha's semantic result"
     );
     assert_eq!(
@@ -1391,21 +1420,39 @@ fn selected_rust_target_replaces_latest_semantic_context_and_redo_keeps_it() {
             .as_ref()
             .unwrap()
             .source_count,
-        1,
-        "alpha's exact source closure contains only its root"
+        2,
+        "alpha's exact source closure contains its root and shared module"
     );
 
     let beta = run_rust_target_operation(&mut fixture, package.clone(), "beta", 0xc2);
+    assert_ne!(
+        alpha
+            .source_capture
+            .as_ref()
+            .unwrap()
+            .cargo_target
+            .as_ref()
+            .unwrap()
+            .source_closure,
+        beta.source_capture
+            .as_ref()
+            .unwrap()
+            .cargo_target
+            .as_ref()
+            .unwrap()
+            .source_closure,
+        "different exact Cargo targets retain different source-closure identities"
+    );
     assert!(
         public_name_rows(&mut fixture, "alpha_context_marker")
             .iter()
-            .all(|row| !row.contains("alpha_context_marker")),
+            .all(|row| !row.label.contains("alpha_context_marker")),
         "switching to beta removes the prior alpha declaration from public reads"
     );
     assert!(
         public_name_rows(&mut fixture, "beta_context_marker")
             .iter()
-            .any(|row| row.contains("beta_context_marker")),
+            .any(|row| row.label.contains("beta_context_marker")),
         "the selected beta declaration is visible through the public name read"
     );
     assert_eq!(
@@ -1421,7 +1468,12 @@ fn selected_rust_target_replaces_latest_semantic_context_and_redo_keeps_it() {
         "the retained capture scope discloses the exact replacement target"
     );
 
-    let beta_redo = run_rust_target_operation(&mut fixture, package, "beta", 0xc3);
+    let beta_redo = run_rust_target_operation(&mut fixture, package.clone(), "beta", 0xc3);
+    assert_eq!(
+        beta_redo.source_capture.as_ref().unwrap().cargo_target,
+        beta.source_capture.as_ref().unwrap().cargo_target,
+        "unchanged target redo retains the exact target/source scope"
+    );
     assert_eq!(
         beta_redo
             .source_capture
@@ -1437,17 +1489,57 @@ fn selected_rust_target_replaces_latest_semantic_context_and_redo_keeps_it() {
     assert!(
         public_name_rows(&mut fixture, "beta_context_marker")
             .iter()
-            .any(|row| row.contains("beta_context_marker")),
+            .any(|row| row.label.contains("beta_context_marker")),
         "redo of the selected beta target preserves its public declaration"
     );
     assert!(
         public_name_rows(&mut fixture, "alpha_context_marker")
             .iter()
-            .all(|row| !row.contains("alpha_context_marker")),
+            .all(|row| !row.label.contains("alpha_context_marker")),
         "redo does not restore stale alpha declarations"
     );
-}
 
+    let unselected = run_unselected_rust_operation(&mut fixture, package, 0xc4);
+    assert!(
+        matches!(
+            &unselected.state,
+            backend_library::IndexOperationState::Failed {
+                reason: backend_library::IndexOperationFailureReason::Refused,
+                ..
+            } | backend_library::IndexOperationState::PartiallyPublished { .. }
+        ),
+        "package-wide compilation must honestly refuse the shared file's two active owners: {unselected:?}"
+    );
+    assert!(unselected.cargo_target.is_none());
+    assert!(
+        unselected
+            .source_capture
+            .as_ref()
+            .is_some_and(|capture| { capture.cargo_target.is_none() })
+    );
+    let beta_rows = public_name_rows(&mut fixture, "beta_context_marker");
+    assert!(
+        beta_rows
+            .iter()
+            .any(|row| row.label.contains("beta_context_marker")),
+        "the last successful beta declaration remains readable after the unselected refusal"
+    );
+    assert!(
+        beta_rows.iter().any(|row| {
+            row.label.contains("beta_context_marker")
+                && row.document.iter().any(|fragment| {
+                    matches!(fragment, backend_library::Fragment::Text(text) if text.contains("stale semantic image:"))
+                })
+        }),
+        "the preserved beta declaration must be explicitly marked stale after the later failed capture"
+    );
+    assert!(
+        public_name_rows(&mut fixture, "alpha_context_marker")
+            .iter()
+            .all(|row| !row.label.contains("alpha_context_marker")),
+        "the later unselected failure must not restore alpha"
+    );
+}
 
 fn graph_page(
     fixture: &mut AdapterFixture,
