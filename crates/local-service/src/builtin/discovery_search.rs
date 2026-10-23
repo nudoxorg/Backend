@@ -82,6 +82,13 @@ std::thread_local! {
 }
 
 #[cfg(test)]
+std::thread_local! {
+    static FORCE_DURABLE_SEARCH_MERGE_FOR_TEST: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
+}
+
+#[cfg(test)]
 pub(super) fn search_projection_work_for_test() -> SearchProjectionWorkForTest {
     SEARCH_PROJECTION_WORK_FOR_TEST.with(|work| *work.borrow())
 }
@@ -2195,7 +2202,7 @@ impl DiscoverySearchIndex {
             std::process::id()
         ));
         fs::create_dir(&staging).map_err(|error| error.to_string())?;
-        let built = match Self::build_from_sources(
+        let mut built = match Self::build_from_sources(
             store,
             forge_documents,
             source_pin_documents,
@@ -2212,6 +2219,37 @@ impl DiscoverySearchIndex {
             drop(built);
             remove_search_projection(&staging)?;
             return Err("discovery projection root disagrees with its source snapshot".to_owned());
+        }
+        #[cfg(test)]
+        if FORCE_DURABLE_SEARCH_MERGE_FOR_TEST.with(std::cell::Cell::get) {
+            if let Err(error) = built.start_durable_merge_for_test() {
+                drop(built);
+                let _ = remove_search_projection(&staging);
+                return Err(error);
+            }
+        }
+        // Tantivy commits before its background merge and garbage-collection
+        // workers have finished rewriting segment files. Join those workers
+        // before fingerprinting the stage so the manifest describes a stable
+        // directory snapshot.
+        if let Err(error) = built.finish_durable_build() {
+            drop(built);
+            let _ = remove_search_projection(&staging);
+            return Err(error);
+        }
+        #[cfg(test)]
+        if FORCE_DURABLE_SEARCH_MERGE_FOR_TEST.with(std::cell::Cell::get) {
+            assert!(built.inner.writer.is_none());
+            assert_eq!(
+                built
+                    .inner
+                    ._index
+                    .searchable_segment_metas()
+                    .map_err(|error| error.to_string())?
+                    .len(),
+                1,
+                "the durable publication barrier must join the forced segment merge"
+            );
         }
         drop(built);
         let prepared = write_search_projection_manifest(&staging, expected_root, budget)
@@ -2257,6 +2295,46 @@ impl DiscoverySearchIndex {
                 "durable discovery postings do not match the selected source root".to_owned(),
             );
         }
+        Ok(())
+    }
+
+    fn finish_durable_build(&mut self) -> Result<(), String> {
+        self.inner.finish_writes()?;
+        self.lineages.inner.finish_writes()?;
+        self.source_pins.finish_writes()
+    }
+
+    #[cfg(test)]
+    fn start_durable_merge_for_test(&mut self) -> Result<(), String> {
+        let writer = self
+            .inner
+            .writer
+            .as_mut()
+            .ok_or_else(|| "test merge requires a durable Tantivy writer".to_owned())?;
+        for ordinal in 0..3 {
+            let identity = format!("durable-merge-test-{ordinal}");
+            let mut document = TantivyDocument::default();
+            document.add_text(self.inner.document_identity, identity.as_str());
+            document.add_text(self.inner.exact_name, "temporary merge segment");
+            writer
+                .add_document(document)
+                .map_err(|error| error.to_string())?;
+            writer.commit().map_err(|error| error.to_string())?;
+            writer.delete_term(Term::from_field_text(
+                self.inner.document_identity,
+                identity.as_str(),
+            ));
+        }
+        writer.commit().map_err(|error| error.to_string())?;
+        let segment_ids = self
+            .inner
+            ._index
+            .searchable_segment_ids()
+            .map_err(|error| error.to_string())?;
+        if segment_ids.len() < 3 {
+            return Err("test setup did not create multiple mergeable segments".to_owned());
+        }
+        let _merge = writer.merge(&segment_ids);
         Ok(())
     }
 
@@ -5186,11 +5264,14 @@ impl<K: Clone> TextSearchIndex<K> {
             return Err("persisted discovery Tantivy schema is incompatible".to_owned());
         }
         let writer = if mode.writes_postings() {
-            Some(
-                index
-                    .writer_with_num_threads(1, writer_memory_bytes)
-                    .map_err(|error| error.to_string())?,
-            )
+            let writer = index
+                .writer_with_num_threads(1, writer_memory_bytes)
+                .map_err(|error| error.to_string())?;
+            #[cfg(test)]
+            if FORCE_DURABLE_SEARCH_MERGE_FOR_TEST.with(std::cell::Cell::get) {
+                writer.set_merge_policy(Box::new(tantivy::merge_policy::NoMergePolicy));
+            }
+            Some(writer)
         } else {
             None
         };
@@ -5488,6 +5569,15 @@ impl<K: Clone> TextSearchIndex<K> {
             self.reader.reload().map_err(|error| error.to_string())?;
         }
         self.dirty = false;
+        Ok(())
+    }
+
+    fn finish_writes(&mut self) -> Result<(), String> {
+        if let Some(writer) = self.writer.take() {
+            writer
+                .wait_merging_threads()
+                .map_err(|error| format!("finish discovery Tantivy merge threads: {error}"))?;
+        }
         Ok(())
     }
 
@@ -9156,6 +9246,71 @@ mod tests {
         assert!(expected_key(&rollback, "ambercachemarker92").is_empty());
         drop(rollback);
 
+        let _ = std::fs::remove_dir_all(cache);
+    }
+
+    #[test]
+    fn durable_projection_manifest_hashes_only_after_merge_workers_finish() {
+        let cache = std::env::temp_dir().join(format!(
+            "backend-discovery-search-merge-barrier-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let documents = (0..8)
+            .map(|index| {
+                let name = format!("mergecase{index}");
+                forge_document(
+                    &format!("https://github.com/acme/{name}@tag:v1.0.0"),
+                    &format!("pkg:cargo/{name}@1.0.0"),
+                    DiscoveryFacet::Known(Vec::new()),
+                    DiscoveryFacet::Known("merge barrier regression".to_owned()),
+                    DiscoveryFacet::Known(vec!["durable projection".to_owned()]),
+                    DiscoveryFacet::Known("MIT".to_owned()),
+                    DiscoveryFacet::Known("merge barrier regression".to_owned()),
+                    vec![format!("mergebarrierprobe{index}")],
+                )
+            })
+            .collect::<Vec<_>>();
+
+        FORCE_DURABLE_SEARCH_MERGE_FOR_TEST.with(|flag| flag.set(true));
+        let opened =
+            DiscoverySearchIndex::open_forge_only_with_source_pins_at(&cache, &documents, &[]);
+        FORCE_DURABLE_SEARCH_MERGE_FOR_TEST.with(|flag| flag.set(false));
+        let index = opened.expect("publish durable projection with an active merge");
+        let selected = cache
+            .join(SEARCH_PROJECTION_DIRECTORY)
+            .join(hex(&index.snapshot_root));
+        assert!(
+            verify_search_projection(
+                &selected,
+                index.snapshot_root,
+                DurableCacheBudget::default()
+            )
+            .expect("verify stable durable projection")
+        );
+        let first = search_projection_file_fingerprints(&selected, DurableCacheBudget::default())
+            .expect("fingerprint completed projection");
+        let second = search_projection_file_fingerprints(&selected, DurableCacheBudget::default())
+            .expect("fingerprint completed projection again");
+        assert_eq!(first, second);
+        let page = index
+            .search(
+                DiscoverySearchRequest {
+                    text: "mergebarrierprobe7",
+                    ecosystem: Some(RegistryEcosystem::Cargo),
+                },
+                8,
+            )
+            .expect("query completed durable postings");
+        assert_eq!(page.hits.len(), 1);
+        assert_eq!(
+            page.hits[0].key.coordinate.as_str(),
+            "pkg:cargo/mergecase7@1.0.0"
+        );
+        drop(index);
         let _ = std::fs::remove_dir_all(cache);
     }
 
