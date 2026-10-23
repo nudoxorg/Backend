@@ -1071,11 +1071,32 @@ mod tests {
             "exporter preserves the exact configured forest environment order"
         );
         assert!(!certificate.programs.is_empty());
+
+        // Exercise the actual same-owner candidate gate, not just the replay
+        // routine. The sole mutation is an unsupported regular file in a
+        // compiler-observed root-query directory; the staged input and
+        // selected binding remain the exact values the candidate must match.
+        producer.remember_typescript_snapshot(&fixture.0, input, binding, &staged);
+        let cancelled = AtomicBool::new(false);
+        fixture.write("src/unrelated.txt", "");
+        assert!(
+            producer
+                .typescript_snapshot_reuse(&fixture.0, profile(), input, binding, &cancelled)
+                .is_some(),
+            "the Ready owner's selected warm candidate survives an unrelated regular-file addition"
+        );
+        fs::remove_file(fixture.0.join("src/unrelated.txt")).unwrap();
+        assert!(
+            producer
+                .typescript_snapshot_reuse(&fixture.0, profile(), input, binding, &cancelled)
+                .is_some(),
+            "the same candidate survives removal of the unrelated regular file"
+        );
         drop(staged);
         drop(producer);
 
         let fresh = owner(&runtime_root);
-        let cancelled = AtomicBool::new(false);
+        fixture.write("src/unrelated.txt", "");
         let restored = restore_snapshot_certificate(
             &fresh,
             &fixture.0,
@@ -1085,8 +1106,22 @@ mod tests {
             &certificate_bytes,
             &cancelled,
         )
-        .expect("fresh Ready owner replays the production export");
+        .expect("fresh Ready owner replays the production export across unrelated text addition");
         assert!(restored.is_current(None));
+        fs::remove_file(fixture.0.join("src/unrelated.txt")).unwrap();
+        assert!(
+            restore_snapshot_certificate(
+                &fresh,
+                &fixture.0,
+                profile(),
+                input,
+                binding,
+                &certificate_bytes,
+                &cancelled,
+            )
+            .is_some(),
+            "cold replay remains valid after removal of the unrelated regular file"
+        );
 
         fixture.write(
             "tsconfig.json",

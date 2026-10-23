@@ -5160,7 +5160,7 @@ mod tests {
             .compile_package_sources_staged(
                 OwnedPackageSourceSet::new(
                     request,
-                    package_root,
+                    package_root.clone(),
                     vec![OwnedPackageSource::new("src/main.ts", SOURCE).expect("native source")]
                         .into_boxed_slice(),
                 )
@@ -5198,6 +5198,37 @@ mod tests {
             .expect("exact selected closure admits its typed member")
             .expect("selected optional member is present");
         assert_eq!(selected_certificate.as_bytes(), certificate.as_slice());
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        std::fs::write(package_root.join("src/unrelated.txt"), "")
+            .expect("add unrelated unsupported text under the selected source root");
+        assert!(
+            client
+                .restore_typescript_snapshot_certificate(
+                    &package_root,
+                    profile,
+                    input,
+                    *claim.binding().identity.as_ref(),
+                    &selected_certificate,
+                    &cancelled,
+                )
+                .is_some(),
+            "the authenticated selected certificate replays across an unrelated text addition"
+        );
+        std::fs::remove_file(package_root.join("src/unrelated.txt"))
+            .expect("remove unrelated unsupported text");
+        assert!(
+            client
+                .restore_typescript_snapshot_certificate(
+                    &package_root,
+                    profile,
+                    input,
+                    *claim.binding().identity.as_ref(),
+                    &selected_certificate,
+                    &cancelled,
+                )
+                .is_some(),
+            "the authenticated selected certificate remains current after text removal"
+        );
         let publication =
             super::super::versioned_planes::SelectedVersionedPlanePublication::from_reopened(
                 &key, &selected, &reopened,

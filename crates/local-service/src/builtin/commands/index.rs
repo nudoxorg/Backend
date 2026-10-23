@@ -6825,7 +6825,7 @@ mod typescript_snapshot_input_tests {
     use std::fs;
 
     #[test]
-    fn exact_typescript_input_does_not_depend_on_fresh_or_reused_scan_partition()
+    fn typescript_input_ignores_unrelated_text_but_tracks_source_and_configuration_changes()
     -> Result<(), String> {
         use crate::test_support::TestValue as _;
         let directory =
@@ -6833,6 +6833,11 @@ mod typescript_snapshot_input_tests {
         let root = directory.path();
         fs::write(root.join("a.ts"), "export const a = 1;").test_value()?;
         fs::write(root.join("b.ts"), "export const b = 2;").test_value()?;
+        fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"strict":false},"files":["a.ts","b.ts"]}"#,
+        )
+        .test_value()?;
         let text = root.to_str().test_value()?;
         let cold = ingest::scan_project(text, [27; 32], &BTreeMap::new()).test_value()?;
         let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
@@ -6842,6 +6847,46 @@ mod typescript_snapshot_input_tests {
         assert!(warm.compiler_sources.is_empty());
         assert_eq!(warm.reused_compiler_files.len(), 2);
         assert_eq!(input, semantic_input_digest(&warm, profile));
+
+        fs::write(root.join("unrelated.txt"), "").test_value()?;
+        let with_unrelated_text = ingest::scan_project(text, [27; 32], &rows).test_value()?;
+        assert_eq!(
+            with_unrelated_text.source_version,
+            cold.source_version,
+            "an unsupported text file is outside the indexed source version"
+        );
+        assert_eq!(
+            input,
+            semantic_input_digest(&with_unrelated_text, profile),
+            "the production TypeScript input key is stable across unrelated text capture-root churn"
+        );
+        fs::remove_file(root.join("unrelated.txt")).test_value()?;
+        let after_unrelated_text_removal =
+            ingest::scan_project(text, [27; 32], &rows).test_value()?;
+        assert_eq!(
+            input,
+            semantic_input_digest(&after_unrelated_text_removal, profile),
+            "removing an unsupported text file preserves the same TypeScript input key"
+        );
+
+        fs::write(root.join("new.ts"), "export const newSource = true;").test_value()?;
+        let with_new_source = ingest::scan_project(text, [27; 32], &rows).test_value()?;
+        assert_ne!(input, semantic_input_digest(&with_new_source, profile));
+        fs::remove_file(root.join("new.ts")).test_value()?;
+
+        fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"strict":true},"files":["a.ts","b.ts"]}"#,
+        )
+        .test_value()?;
+        let changed_configuration = ingest::scan_project(text, [27; 32], &rows).test_value()?;
+        assert_ne!(input, semantic_input_digest(&changed_configuration, profile));
+        fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"strict":false},"files":["a.ts","b.ts"]}"#,
+        )
+        .test_value()?;
+
         fs::write(root.join("a.ts"), "export const a = 'changed';").test_value()?;
         let changed = ingest::scan_project(text, [27; 32], &rows).test_value()?;
         assert_ne!(input, semantic_input_digest(&changed, profile));
