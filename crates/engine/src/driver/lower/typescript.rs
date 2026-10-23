@@ -10912,6 +10912,13 @@ fn intern_native_tsz_type<'source>(
     // therefore comes from the checker-owned body and must keep its native
     // dynamically-typed meaning instead of being confused with a failed lookup.
     if !active.insert(resolved_type_id) {
+        report_native_tsz_type_projection_cycle(
+            checker,
+            database,
+            type_id,
+            resolved_type_id,
+            active,
+        );
         // A checker-owned lazy alias may close on its already active body.
         // Keep that named reference through the existing entity plane only
         // after proving its exact definition/file/declaration identity. A raw
@@ -10945,6 +10952,212 @@ fn intern_native_tsz_type<'source>(
     result
 }
 
+/// Emits a bounded, opt-in view of the exact TSZ row that closed a projection
+/// path. This is diagnostic-only: it does not change projection, admission, or
+/// persisted failure data, and it never formats a checker type as source text.
+fn report_native_tsz_type_projection_cycle(
+    checker: &TszCheckerState<'_>,
+    database: &dyn TszTypeDatabase,
+    input: TszTypeId,
+    resolved: TszTypeId,
+    active: &std::collections::HashSet<TszTypeId>,
+) {
+    use std::ffi::OsStr;
+
+    const LIMIT: usize = 16;
+    const NAME_BYTES: usize = 64;
+    if std::env::var_os("NUDOX_TYPESCRIPT_TYPE_PROJECTION_DIAGNOSTICS").as_deref()
+        != Some(OsStr::new("1"))
+    {
+        return;
+    }
+
+    let mut active_ids = active.iter().map(|id| id.0).collect::<Vec<_>>();
+    active_ids.sort_unstable();
+    active_ids.truncate(32);
+    let raw_data = database.lookup(input);
+    let raw_lazy_detail = raw_data
+        .as_ref()
+        .filter(|data| matches!(data, TypeData::Lazy(_)))
+        .map(|data| format_native_tsz_lazy_diagnostic(checker, database, data));
+    let mut detail = database.lookup(resolved).map_or_else(
+        || "lookup=missing".to_owned(),
+        |data| match data {
+            TypeData::Object(shape_id) | TypeData::ObjectWithIndex(shape_id) => {
+                let shape = database.object_shape(shape_id);
+                let properties = shape
+                    .properties
+                    .iter()
+                    .take(LIMIT)
+                    .map(|property| {
+                        let name = bounded_native_tsz_diagnostic_name(
+                            &database.resolve_atom_ref(property.name),
+                            NAME_BYTES,
+                        );
+                        format!("{name:?}:{}", property.type_id.0)
+                    })
+                    .collect::<Vec<_>>();
+                format!(
+                    "data={data:?} nominal_symbol={:?} properties={properties:?} total_properties={} indexes=[string:{:?},number:{:?},symbol:{:?}]",
+                    shape.symbol,
+                    shape.properties.len(),
+                    shape.string_index.map(|index| (index.key_type.0, index.value_type.0)),
+                    shape.number_index.map(|index| (index.key_type.0, index.value_type.0)),
+                    shape.symbol_index.map(|index| (index.key_type.0, index.value_type.0)),
+                )
+            }
+            TypeData::Function(shape_id) => {
+                let shape = database.function_shape(shape_id);
+                let parameters = shape
+                    .params
+                    .iter()
+                    .take(LIMIT)
+                    .map(|parameter| {
+                        let name = parameter.name.map(|name| {
+                            bounded_native_tsz_diagnostic_name(
+                                &database.resolve_atom_ref(name),
+                                NAME_BYTES,
+                            )
+                        });
+                        (name, parameter.type_id.0, parameter.optional, parameter.rest)
+                    })
+                    .collect::<Vec<_>>();
+                format!(
+                    "data={data:?} params={parameters:?} total_params={} return={} this={:?} type_params={}",
+                    shape.params.len(),
+                    shape.return_type.0,
+                    shape.this_type.map(|ty| ty.0),
+                    shape.type_params.len(),
+                )
+            }
+            TypeData::Callable(shape_id) => {
+                let shape = database.callable_shape(shape_id);
+                let signatures =
+                    |signatures: &[backend_frontend_typescript::tsz_type_handles::CallSignature]| {
+                    signatures
+                        .iter()
+                        .take(LIMIT)
+                        .map(|signature| {
+                            let params = signature
+                                .params
+                                .iter()
+                                .take(LIMIT)
+                                .map(|parameter| {
+                                    let name = parameter.name.map(|name| {
+                                        bounded_native_tsz_diagnostic_name(
+                                            &database.resolve_atom_ref(name),
+                                            NAME_BYTES,
+                                        )
+                                    });
+                                    (name, parameter.type_id.0, parameter.optional, parameter.rest)
+                                })
+                                .collect::<Vec<_>>();
+                            (params, signature.return_type.0, signature.type_params.len())
+                        })
+                        .collect::<Vec<_>>()
+                };
+                format!(
+                    "data={data:?} calls={:?} total_calls={} constructs={:?} total_constructs={}",
+                    signatures(&shape.call_signatures),
+                    shape.call_signatures.len(),
+                    signatures(&shape.construct_signatures),
+                    shape.construct_signatures.len(),
+                )
+            }
+            TypeData::Application(application_id) => {
+                let application = database.type_application(application_id);
+                let args = application
+                    .args
+                    .iter()
+                    .take(LIMIT)
+                    .map(|argument| argument.0)
+                    .collect::<Vec<_>>();
+                format!(
+                    "data={data:?} base={} args={args:?} total_args={}",
+                    application.base.0,
+                    application.args.len(),
+                )
+            }
+            TypeData::Lazy(_) => format!(
+                "data={data:?} {}",
+                format_native_tsz_lazy_diagnostic(checker, database, &data)
+            ),
+            TypeData::Union(list) | TypeData::Intersection(list) => {
+                let children = database
+                    .type_list(list)
+                    .iter()
+                    .take(LIMIT)
+                    .map(|child| child.0)
+                    .collect::<Vec<_>>();
+                format!("data={data:?} children={children:?}")
+            }
+            TypeData::Array(child) | TypeData::ReadonlyType(child) | TypeData::NoInfer(child) => {
+                format!("data={data:?} child={}", child.0)
+            }
+            TypeData::Tuple(list) => {
+                let elements = database
+                    .tuple_list(list)
+                    .iter()
+                    .take(LIMIT)
+                    .map(|element| (element.type_id.0, element.optional, element.rest))
+                    .collect::<Vec<_>>();
+                format!("data={data:?} elements={elements:?}")
+            }
+            other => format!("data={other:?}"),
+        },
+    );
+    if detail.len() > 2048 {
+        let mut end = 2048;
+        while !detail.is_char_boundary(end) {
+            end -= 1;
+        }
+        detail.truncate(end);
+    }
+    eprintln!(
+        "typescript type projection cycle: input={} raw={raw_data:?} raw_lazy={raw_lazy_detail:?} resolved={} active={active_ids:?} {detail}",
+        input.0, resolved.0,
+    );
+}
+
+fn format_native_tsz_lazy_diagnostic(
+    checker: &TszCheckerState<'_>,
+    database: &dyn TszTypeDatabase,
+    data: &TypeData,
+) -> String {
+    const NAME_BYTES: usize = 64;
+    let TypeData::Lazy(def_id) = data else {
+        return "data=not_lazy".to_owned();
+    };
+    checker.ctx.definition_store.get(*def_id).map_or_else(
+        || "definition=missing".to_owned(),
+        |info| {
+            let name = bounded_native_tsz_diagnostic_name(
+                &database.resolve_atom_ref(info.name),
+                NAME_BYTES,
+            );
+            format!(
+                "definition={{kind:{:?},name:{name:?},file:{:?},span:{:?},symbol:{:?},type_params:{},body:{:?}}}",
+                info.kind,
+                info.file_id,
+                info.span,
+                info.symbol_id,
+                info.type_params.len(),
+                info.body.map(|body| body.0),
+            )
+        },
+    )
+}
+
+fn bounded_native_tsz_diagnostic_name(name: &str, maximum_bytes: usize) -> String {
+    if name.len() <= maximum_bytes {
+        return name.to_owned();
+    }
+    let mut end = maximum_bytes;
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &name[..end])
+}
 /// Returns one exact same-file, non-generic alias entity for a lazy back-edge.
 /// Definition IDs and binder-local symbol IDs are never interchanged. The
 /// primary definition index, declaring file, source bytes, stable declaration,
