@@ -598,17 +598,15 @@ fn checked_counters(
         metadata = metadata.checked_add(directory_snapshot_metadata_cost(directory))?;
     }
     if let Some(query) = &ledger.native_root_selection {
-        if !host.path_is_admitted(&query.config_path)
-            || !ledger
-                .loaded_sources
-                .contains_key(query.config_path.as_ref())
+        if captured_root_source_target(&query.config_path, ledger, host).is_none()
             || query.root_names.len() > MAX_RESOLVED_SOURCE_FILES
             || query.directories.len() > MAX_RESOLVER_DIRECTORIES
             || query.root_names.windows(2).any(|pair| pair[0] >= pair[1])
             || query.directories.windows(2).any(|pair| pair[0] >= pair[1])
-            || query.root_names.iter().any(|path| {
-                !host.path_is_admitted(path) || !ledger.loaded_sources.contains_key(path.as_ref())
-            })
+            || query
+                .root_names
+                .iter()
+                .any(|path| captured_root_source_target(path, ledger, host).is_none())
             || query.directories.iter().any(|path| {
                 !host.path_is_admitted(path) || !ledger.directories.contains_key(path.as_ref())
             })

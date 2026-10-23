@@ -1204,6 +1204,29 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn native_snapshot_capture_accepts_and_revalidates_configured_symlink_roots() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = Fixture::new();
+        fixture.write("src/alias-target.ts", "export interface AliasTarget {}");
+        symlink("alias-target.ts", fixture.0.join("src/alias.ts")).unwrap();
+        let staged = fixture.compile();
+        let (host, forest) = staged
+            .typescript_snapshot_witness(&fixture.0)
+            .expect("a valid symlink root maps through its admitted realpath edge");
+        forest
+            .validate_current(&host)
+            .expect("the exact configured symlink root remains current");
+
+        fs::remove_file(fixture.0.join("src/alias.ts")).unwrap();
+        assert!(
+            forest.validate_current(&host).is_err(),
+            "removing a configured symlink root invalidates its captured realpath"
+        );
+    }
+
     #[test]
     fn native_snapshot_replay_cancellation_interrupts_observation_steps_without_admitting_partial_proof()
      {

@@ -479,17 +479,14 @@ impl TypeScriptResolverCapability<'_> {
         root_names: &[PathBuf],
         directories: &[PathBuf],
     ) -> Result<(), TypeScriptProjectHostError> {
-        let canonical_config = normalize_absolute_path(config_path).ok_or_else(|| {
+        let normalized_config = normalize_absolute_path(config_path).ok_or_else(|| {
             TypeScriptProjectHostError::SourceOutsideCapability {
                 path: config_path.to_path_buf().into_boxed_path(),
             }
         })?;
-        if canonical_config != config_path
-            || !self.witness.path_is_admitted(&canonical_config)
-            || !self
-                .observations
-                .loaded_sources
-                .contains_key(&canonical_config)
+        if normalized_config != config_path
+            || captured_root_source_target(&normalized_config, &self.observations, self.witness)
+                .is_none()
             || self.observations.native_root_selection.is_some()
             || self.observations.observation_count() >= MAX_RESOLVER_OBSERVATIONS
             || root_names.len() > MAX_RESOLVED_SOURCE_FILES
@@ -509,8 +506,8 @@ impl TypeScriptResolverCapability<'_> {
                 }
             })?;
             if canonical != *path
-                || !self.witness.path_is_admitted(&canonical)
-                || !self.observations.loaded_sources.contains_key(&canonical)
+                || captured_root_source_target(&canonical, &self.observations, self.witness)
+                    .is_none()
             {
                 return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
                     detail: "native root-selection transcript contains an unadmitted root".into(),
@@ -555,14 +552,14 @@ impl TypeScriptResolverCapability<'_> {
             .iter()
             .chain(checked_directories.iter())
             .try_fold(
-                native_snapshot_path_bytes(&canonical_config),
+                native_snapshot_path_bytes(&normalized_config),
                 |total, path| total.checked_add(native_snapshot_path_bytes(path)),
             )
             .ok_or_else(|| TypeScriptProjectHostError::ResolverObservationLimit {
                 observed: usize::MAX,
                 maximum: MAX_RESOLVER_METADATA_BYTES,
             })?;
-        ensure_metadata_capacity(&self.observations, charge, &canonical_config)?;
+        ensure_metadata_capacity(&self.observations, charge, &normalized_config)?;
         self.observations.retained_metadata_bytes = self
             .observations
             .retained_metadata_bytes
@@ -572,7 +569,7 @@ impl TypeScriptResolverCapability<'_> {
                 maximum: MAX_RESOLVER_METADATA_BYTES,
             })?;
         self.observations.native_root_selection = Some(NativeRootSelectionObservation {
-            config_path: canonical_config.into_boxed_path(),
+            config_path: normalized_config.into_boxed_path(),
             root_names: checked_roots.into_boxed_slice(),
             directories: checked_directories.into_boxed_slice(),
         });
@@ -1829,6 +1826,25 @@ fn record_realpath_ledger(
 
 fn native_snapshot_path_bytes(path: &Path) -> usize {
     path.as_os_str().as_encoded_bytes().len()
+}
+
+/// Resolves a transcript's lexical config/root path to its source only through
+/// the exact realpath edge captured by this resolver ledger.
+fn captured_root_source_target<'a>(
+    path: &Path,
+    observations: &'a ResolverObservationLedger,
+    witness: &TypeScriptProjectWitness,
+) -> Option<&'a Path> {
+    if normalize_absolute_path(path).as_deref() != Some(path) || !witness.path_is_admitted(path) {
+        return None;
+    }
+    let canonical = observations
+        .realpaths
+        .get(path)?
+        .canonical_path
+        .as_deref()?;
+    (witness.path_is_admitted(canonical) && observations.loaded_sources.contains_key(canonical))
+        .then_some(canonical)
 }
 
 fn directory_snapshot_metadata_cost(snapshot: &DirectorySnapshot) -> usize {
