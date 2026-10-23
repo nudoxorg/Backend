@@ -14768,22 +14768,22 @@ fn refresh_index_operation_source_capture_for_snapshot(
     else {
         return Err(IndexOperationJournalError::InvalidTransition);
     };
-    if original.profiles().len() != latest.profiles().len()
-        || !original
-            .profiles()
-            .iter()
-            .zip(latest.profiles())
-            .all(|(left, right)| {
-                left.profile == right.profile
-                    && left.source_version == right.source_version
-                    && left.input_digest == right.input_digest
-                    && left.observation_sequence == right.observation_sequence
-                    && left.source_count == right.source_count
-            })
-    {
+    let refreshed = refreshed_index_operation_source_capture(operation_key, original, &latest)?;
+    if &refreshed == original {
+        return Ok(());
+    }
+    journal.source_capture_updated(operation_key, refreshed)
+}
+
+fn refreshed_index_operation_source_capture(
+    operation_key: backend_library::IndexOperationKey,
+    original: &backend_library::IndexOperationSourceCaptureReceipt,
+    latest: &backend_library::IndexOperationSourceCaptureReceipt,
+) -> Result<backend_library::IndexOperationSourceCaptureReceipt, IndexOperationJournalError> {
+    if !super::index_operation::same_source_capture_basis(original, latest) {
         return Err(IndexOperationJournalError::InvalidTransition);
     }
-    let refreshed = backend_library::IndexOperationSourceCaptureReceipt::from_checked_parts(
+    let mut refreshed = backend_library::IndexOperationSourceCaptureReceipt::from_checked_parts(
         operation_key,
         *original.commit_identity(),
         *original.workspace_root(),
@@ -14791,10 +14791,92 @@ fn refresh_index_operation_source_capture_for_snapshot(
         latest.profiles().to_vec().into_boxed_slice(),
     )
     .map_err(|_| IndexOperationJournalError::InvalidTransition)?;
-    if &refreshed == original {
-        return Ok(());
+    // `from_checked_parts` intentionally makes an unscoped receipt. The
+    // scope was already admitted on `original`, and exact basis comparison
+    // above proves the latest snapshot carries the identical target closure.
+    refreshed.cargo_target = original.cargo_target.clone();
+    Ok(refreshed)
+}
+
+#[cfg(test)]
+mod refusal_capture_scope_tests {
+    use super::refreshed_index_operation_source_capture;
+    use backend_library::{
+        CargoTargetScope, CargoTargetSelector, IndexOperationKey,
+        IndexOperationSemanticProfileState as State, IndexOperationSourceCaptureReceipt,
+        IndexOperationSourceProfile, SemanticLanguageProfile,
+    };
+
+    fn receipt(state: State, with_scope: bool) -> IndexOperationSourceCaptureReceipt {
+        let operation = IndexOperationKey::from_bytes([0x71; 32]).expect("operation key");
+        let mut receipt = IndexOperationSourceCaptureReceipt::from_checked_parts(
+            operation,
+            [0x72; 32],
+            [0x73; 32],
+            8,
+            vec![IndexOperationSourceProfile {
+                profile: SemanticLanguageProfile::from_name("rust").expect("Rust profile"),
+                source_version: [0x74; 32],
+                input_digest: [0x75; 32],
+                observation_sequence: 9,
+                source_count: 12,
+                state,
+            }]
+            .into_boxed_slice(),
+        )
+        .expect("source receipt");
+        if with_scope {
+            let scope = CargoTargetScope {
+                name: CargoTargetSelector::new("ryu".to_owned()).expect("target name"),
+                root: "src/lib.rs".to_owned(),
+                kinds: vec!["lib".to_owned()].into_boxed_slice(),
+                source_closure: [0x76; 32],
+                source_count: 12,
+            };
+            scope.validate().expect("admitted target closure");
+            receipt.cargo_target = Some(scope);
+        }
+        receipt
     }
-    journal.source_capture_updated(operation_key, refreshed)
+
+    #[test]
+    fn refusal_refresh_preserves_exact_target_scope_and_compiler_input_basis() {
+        let pending = receipt(State::Pending { prior: None }, true);
+        let terminal = receipt(
+            State::Unavailable {
+                reason: backend_library::IndexOperationSemanticUnavailableReason::Rejected,
+            },
+            true,
+        );
+        let refreshed = refreshed_index_operation_source_capture(
+            pending.operation_key(),
+            &pending,
+            &terminal,
+        )
+        .expect("same selected target and compiler inputs can close a refusal");
+        assert_eq!(refreshed.cargo_target, pending.cargo_target);
+        assert_eq!(refreshed.profiles()[0].input_digest, pending.profiles()[0].input_digest);
+        assert_eq!(refreshed.profiles()[0].source_count, pending.profiles()[0].source_count);
+        assert_eq!(refreshed.profiles()[0].source_version, pending.profiles()[0].source_version);
+        assert_eq!(refreshed.profiles()[0].state, terminal.profiles()[0].state);
+    }
+
+    #[test]
+    fn refusal_refresh_rejects_a_changed_target_scope() {
+        let pending = receipt(State::Pending { prior: None }, true);
+        let terminal = receipt(
+            State::Unavailable {
+                reason: backend_library::IndexOperationSemanticUnavailableReason::Rejected,
+            },
+            false,
+        );
+        assert!(refreshed_index_operation_source_capture(
+            pending.operation_key(),
+            &pending,
+            &terminal,
+        )
+        .is_err());
+    }
 }
 
 fn partial_publication_for_snapshot(
