@@ -2114,6 +2114,7 @@ fn owner_index_job_grammars_lower_exact_ticket_operands_to_typed_surface_command
         Request::Surface(command)
             if matches!(*command,
                 backend_library::SurfaceCommand::IndexStart {
+                    cargo_target: None,
                     package: backend_library::PackageReference::Purl(ref package),
                     execution_intent: backend_library::CompileExecutionIntent::Background,
                 } if package.as_str() == "pkg:cargo/serde@1.0.228")

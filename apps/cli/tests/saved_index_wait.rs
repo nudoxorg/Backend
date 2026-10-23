@@ -30,6 +30,7 @@ impl OwnerService for ReceiptOwner {
             .expect("actual owner request admission");
         let (key, started) = match &request.command {
             Command::Surface(SurfaceCommand::IndexOperationStart {
+                cargo_target: None,
                 operation_key,
                 package,
                 execution_intent,

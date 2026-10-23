@@ -9,7 +9,7 @@ use crate::ClientError;
 use crate::RequestContext;
 use backend_library::{
     CompileExecutionIntent, IndexOperationKey, IndexOperationObservation, IndexOperationState,
-    PackageReference, SurfaceCommand, SurfaceReply, index_operation_request_digest,
+    PackageReference, SurfaceCommand, SurfaceReply,
 };
 use backend_platform::DirectoryCapability;
 use backend_runtime::WorkspacePaths;
@@ -34,6 +34,8 @@ struct Attachment {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Claim {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cargo_target: Option<backend_library::CargoTargetSelector>,
     version: u8,
     operation_key: IndexOperationKey,
     package: PackageReference,
@@ -322,6 +324,7 @@ fn admit_observation(
         claim.operation_key,
         &claim.package,
         claim.execution_intent,
+        claim.cargo_target.as_ref(),
         observation,
     )
 }
@@ -330,17 +333,23 @@ fn admit_request_observation(
     operation_key: IndexOperationKey,
     package: &PackageReference,
     execution_intent: CompileExecutionIntent,
+    cargo_target: Option<&backend_library::CargoTargetSelector>,
     observation: &IndexOperationObservation,
 ) -> Result<(), ClientError> {
     SurfaceReply::IndexOperationStatus(observation.clone())
         .admit(SurfaceCommand::IndexOperationStatus { operation_key }.id())
         .map_err(|error| ClientError::Protocol(error.to_string()))?;
-    let digest = index_operation_request_digest(package, execution_intent);
+    let digest = backend_library::index_operation_scoped_request_digest(
+        package,
+        execution_intent,
+        cargo_target,
+    );
     let matches = match observation {
         IndexOperationObservation::Known(status) => {
             status.operation_key == operation_key
                 && &status.package == package
                 && status.execution_intent == execution_intent
+                && status.cargo_target.as_ref() == cargo_target
                 && status.request_digest == digest
         }
         IndexOperationObservation::OutsideReceiptWindow {
@@ -365,6 +374,7 @@ impl JournaledIndexStart<'_> {
     #[must_use]
     pub fn command(&self) -> SurfaceCommand {
         SurfaceCommand::IndexOperationStart {
+            cargo_target: self.claim.cargo_target.clone(),
             operation_key: self.claim.operation_key,
             package: self.claim.package.clone(),
             execution_intent: self.claim.execution_intent,
@@ -594,6 +604,7 @@ fn index_with_journal_transport(
         paths,
         package,
         execution_intent,
+        None,
         |dispatch| match dispatch {
             IndexJournalDispatch::Observe(operation_key) => {
                 transport(SurfaceCommand::IndexOperationStatus { operation_key })
@@ -641,6 +652,7 @@ pub fn index_with_journal_recovery(
         paths,
         package,
         execution_intent,
+        None,
         &mut transport,
         None,
         std::thread::park_timeout,
@@ -667,6 +679,36 @@ pub fn index_with_journal_recovery_wait(
         paths,
         package,
         execution_intent,
+        None,
+        &mut transport,
+        Some(&|| {
+            context
+                .map(RequestContext::remaining_read_budget)
+                .transpose()
+                .map(Option::flatten)
+        }),
+        std::thread::park_timeout,
+    )
+}
+
+/// Runs the durable caller journal for one explicitly selected Cargo target.
+/// Target selection participates in the saved claim, key and replay checks.
+#[cfg(any(unix, windows))]
+pub fn index_with_journal_recovery_wait_for_target(
+    paths: &WorkspacePaths,
+    package: PackageReference,
+    execution_intent: CompileExecutionIntent,
+    cargo_target: Option<backend_library::CargoTargetSelector>,
+    context: Option<&RequestContext>,
+    mut transport: impl for<'held> FnMut(
+        IndexJournalDispatch<'held>,
+    ) -> Result<SurfaceReply, ClientError>,
+) -> Result<SurfaceReply, ClientError> {
+    index_with_journal_recovery_inner(
+        paths,
+        package,
+        execution_intent,
+        cargo_target,
         &mut transport,
         Some(&|| {
             context
@@ -746,6 +788,7 @@ fn index_with_journal_recovery_inner(
     paths: &WorkspacePaths,
     package: PackageReference,
     execution_intent: CompileExecutionIntent,
+    cargo_target: Option<backend_library::CargoTargetSelector>,
     mut transport: impl for<'held> FnMut(
         IndexJournalDispatch<'held>,
     ) -> Result<SurfaceReply, ClientError>,
@@ -777,7 +820,11 @@ fn index_with_journal_recovery_inner(
         Err(error) => return Err(io_error(error)),
     };
     directory.validate_private().map_err(io_error)?;
-    let digest = index_operation_request_digest(&package, execution_intent);
+    let digest = backend_library::index_operation_scoped_request_digest(
+        &package,
+        execution_intent,
+        cargo_target.as_ref(),
+    );
     let name = format!("{}.json", blake3::Hash::from(digest).to_hex());
     let lock = directory
         .open_private_file_read_write(&format!("{name}.lock"), true)
@@ -791,6 +838,7 @@ fn index_with_journal_recovery_inner(
             if claim.version == 1
                 && claim.package == package
                 && claim.execution_intent == execution_intent
+                && claim.cargo_target == cargo_target
                 && claim.attachment == bound_attachment =>
         {
             claim.clone()
@@ -807,6 +855,7 @@ fn index_with_journal_recovery_inner(
         }
         None => {
             let claim = Claim {
+                cargo_target: cargo_target.clone(),
                 version: 1,
                 operation_key: fresh_key()?,
                 package,
@@ -893,7 +942,10 @@ fn index_with_journal_recovery_inner(
 mod tests {
     #![allow(clippy::expect_used)]
     use super::*;
-    use backend_library::{IndexOperationFailureReason, IndexOperationStatus, ProductText};
+    use backend_library::{
+        IndexOperationFailureReason, IndexOperationStatus, ProductText,
+        index_operation_request_digest,
+    };
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -1000,7 +1052,8 @@ mod tests {
                     observed_claim = Some(claim.clone());
                     let original = start.command();
                     commands.push(original.clone()); // Scripted original send loses its reply.
-                    assert_eq!(original, SurfaceCommand::IndexOperationStart { operation_key: claim.operation_key,
+                    assert_eq!(original, SurfaceCommand::IndexOperationStart {
+                        cargo_target: None, operation_key: claim.operation_key,
                         package: claim.package.clone(), execution_intent: claim.execution_intent });
                     let observation = if outside { IndexOperationObservation::OutsideReceiptWindow {
                         operation_key: claim.operation_key, request_digest: index_operation_request_digest(&claim.package, claim.execution_intent)
@@ -1034,6 +1087,103 @@ mod tests {
                     assert_eq!(fixture.claims(), [claim], "nonterminal keeps original identity");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn different_cargo_targets_get_distinct_saved_request_keys() {
+        let fixture = Fixture::new();
+        let targets = ["lib", "integration-test"].map(|name| {
+            backend_library::CargoTargetSelector::new(name.to_owned()).expect("target")
+        });
+        let mut operation_keys = Vec::new();
+        for target in targets {
+            let reply = index_with_journal_recovery_inner(
+                &fixture.paths,
+                fixture.package.clone(),
+                CompileExecutionIntent::Interactive,
+                Some(target.clone()),
+                |dispatch| {
+                    let IndexJournalDispatch::Start(start) = dispatch else {
+                        panic!("a distinct target has no prior saved request");
+                    };
+                    let command = start.command();
+                    let SurfaceCommand::IndexOperationStart {
+                        cargo_target: Some(command_target),
+                        operation_key,
+                        ..
+                    } = command
+                    else {
+                        panic!("held start preserves the selected target");
+                    };
+                    assert_eq!(command_target, target);
+                    operation_keys.push(operation_key);
+                    Ok(SurfaceReply::IndexOperationStarted(
+                        IndexOperationObservation::Unknown { operation_key },
+                    ))
+                },
+                None,
+                std::thread::park_timeout,
+            )
+            .expect("target-scoped journal start");
+            assert!(matches!(reply, SurfaceReply::IndexOperationStarted(_)));
+        }
+
+        let claims = fixture.claims();
+        assert_eq!(
+            claims.len(),
+            2,
+            "selector scopes the saved journal filename"
+        );
+        assert_ne!(operation_keys[0], operation_keys[1]);
+        assert_eq!(
+            claims
+                .iter()
+                .map(|claim| claim.cargo_target.as_ref().expect("scoped claim").as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["integration-test", "lib"].into_iter().collect(),
+        );
+        assert_eq!(
+            claims
+                .iter()
+                .map(|claim| claim.operation_key)
+                .collect::<std::collections::HashSet<_>>(),
+            operation_keys.into_iter().collect(),
+        );
+        for claim in claims {
+            let expected = backend_library::index_operation_scoped_request_digest(
+                &claim.package,
+                claim.execution_intent,
+                claim.cargo_target.as_ref(),
+            );
+            assert_eq!(
+                expected,
+                backend_library::index_operation_scoped_request_digest(
+                    &fixture.package,
+                    CompileExecutionIntent::Interactive,
+                    claim.cargo_target.as_ref(),
+                )
+            );
+            let correct = IndexOperationObservation::Known(
+                IndexOperationStatus::new(
+                    claim.operation_key,
+                    claim.package.clone(),
+                    claim.execution_intent,
+                    IndexOperationState::Accepted,
+                )
+                .with_cargo_target(claim.cargo_target.clone()),
+            );
+            admit_observation(&claim, &correct).expect("exact target status is admitted");
+            let aliased = IndexOperationObservation::Known(IndexOperationStatus::new(
+                claim.operation_key,
+                claim.package.clone(),
+                claim.execution_intent,
+                IndexOperationState::Accepted,
+            ));
+            assert!(
+                admit_observation(&claim, &aliased).is_err(),
+                "same operation key without the saved target cannot alias this claim"
+            );
         }
     }
 
@@ -1199,6 +1349,7 @@ mod tests {
                     &fixture.paths,
                     fixture.package.clone(),
                     CompileExecutionIntent::Interactive,
+                    None,
                     |dispatch| {
                         observed += 1;
                         let IndexJournalDispatch::Observe(key) = dispatch else {
@@ -1273,6 +1424,7 @@ mod tests {
             &fixture.paths,
             fixture.package.clone(),
             CompileExecutionIntent::Interactive,
+            None,
             |_| panic!("cancelled waiter cannot dispatch"),
             Some(&|| context.remaining_read_budget()),
             |_| {
@@ -1293,6 +1445,7 @@ mod tests {
                 &fixture.paths,
                 fixture.package.clone(),
                 CompileExecutionIntent::Interactive,
+                None,
                 |_| panic!("expired waiter cannot dispatch"),
                 Some(&|| expired.remaining_read_budget()),
                 |_| panic!("expired scope cannot wait")
@@ -1371,6 +1524,7 @@ mod tests {
                 &fixture.paths,
                 fixture.package.clone(),
                 CompileExecutionIntent::Interactive,
+                None,
                 |dispatch| {
                     calls += 1;
                     let IndexJournalDispatch::Observe(key) = dispatch else {
@@ -1440,6 +1594,7 @@ mod tests {
                     CompileExecutionIntent::Interactive,
                     |command| {
                         let SurfaceCommand::IndexOperationStart {
+                            cargo_target: None,
                             operation_key,
                             package,
                             execution_intent,
@@ -1510,6 +1665,7 @@ mod tests {
                     CompileExecutionIntent::Interactive,
                     |command| {
                         let SurfaceCommand::IndexOperationStart {
+                            cargo_target: None,
                             operation_key,
                             package,
                             execution_intent,
@@ -1703,7 +1859,8 @@ mod tests {
                         assert_eq!(operation_key, claim.operation_key);
                         Ok(SurfaceReply::IndexOperationStatus(observation.clone()))
                     }
-                    SurfaceCommand::IndexOperationStart { operation_key, package, execution_intent } => {
+                    SurfaceCommand::IndexOperationStart {
+ cargo_target: None, operation_key, package, execution_intent } => {
                         assert_eq!(operation_key, claim.operation_key);
                         assert_eq!(package, claim.package);
                         assert_eq!(execution_intent, claim.execution_intent);
@@ -2032,6 +2189,7 @@ mod tests {
                                 Ok(SurfaceReply::IndexOperationStatus(terminal.clone()))
                             }
                             SurfaceCommand::IndexOperationStart {
+                                cargo_target: None,
                                 operation_key,
                                 package,
                                 execution_intent,

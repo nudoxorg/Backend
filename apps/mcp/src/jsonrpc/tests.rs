@@ -1128,13 +1128,16 @@ impl Engine for Fake {
         &mut self,
         package: PackageReference,
         execution_intent: CompileExecutionIntent,
+        cargo_target: Option<backend_library::CargoTargetSelector>,
     ) -> Result<SurfaceReply, ClientError> {
         let command = self.durable_index_key.map_or_else(
             || SurfaceCommand::IndexStart {
+                cargo_target: cargo_target.clone(),
                 package: package.clone(),
                 execution_intent,
             },
             |operation_key| SurfaceCommand::IndexOperationStart {
+                cargo_target,
                 operation_key,
                 package: package.clone(),
                 execution_intent,
@@ -2809,6 +2812,7 @@ fn tool_failure<'a>(response: &'a Value, slug: &str) -> &'a Value {
 }
 fn compiler_error_routes() -> Vec<(&'static str, Value, &'static str)> {
     let command = SurfaceCommand::IndexStart {
+        cargo_target: None,
         package: PackageReference::parse(PROJECT).expect("project reference"),
         execution_intent: CompileExecutionIntent::Interactive,
     };
@@ -3416,6 +3420,7 @@ fn index_first_use_returns_one_admitted_durable_poll_and_copying_it_only_observe
             state,
         ));
         let start = SurfaceCommand::IndexOperationStart {
+            cargo_target: None,
             operation_key: key,
             package: package.clone(),
             execution_intent: CompileExecutionIntent::Interactive,
@@ -3568,7 +3573,7 @@ fn default_index_start_preserves_active_ticket_and_uses_durable_purl_index_api()
     );
     assert_context_bounded(&result);
     assert!(matches!(server.product.surface_commands.as_slice(),
-        [SurfaceCommand::IndexOperationStart { operation_key: key, package: PackageReference::Purl(package), execution_intent: CompileExecutionIntent::Background }]
+        [SurfaceCommand::IndexOperationStart { cargo_target: None, operation_key: key, package: PackageReference::Purl(package), execution_intent: CompileExecutionIntent::Background }]
         if *key == operation_key && package.as_str() == "pkg:cargo/serde@1.0.228"
     ));
 }
@@ -3787,6 +3792,48 @@ fn assert_compact_index_job_receipt(response: &Value, expected: &Value) {
         full_bytes.len() - compact_bytes.len(),
         receipt_bytes - pointer_bytes,
         "only the duplicate receipt value is removed from the serialized MCP result"
+    );
+}
+
+#[test]
+fn keyed_index_start_keeps_cargo_target_in_the_exact_surface_command() {
+    let key = backend_library::IndexOperationKey::from_bytes([0x73; 32]).expect("operation key");
+    let package = PackageReference::parse("pkg:cargo/serde@1.0.228").expect("package");
+    let target = backend_library::CargoTargetSelector::new("integration-test".to_owned())
+        .expect("target");
+    let status = backend_library::IndexOperationStatus::new(
+        key,
+        package.clone(),
+        CompileExecutionIntent::Background,
+        backend_library::IndexOperationState::Accepted,
+    )
+    .with_cargo_target(Some(target.clone()));
+    let reply = SurfaceReply::IndexOperationStarted(
+        backend_library::IndexOperationObservation::Known(status),
+    );
+    let mut server = ready(Fake {
+        surface_reply: Some(reply),
+        ..Fake::default()
+    });
+    let result = call(
+        &mut server,
+        INDEX_START_TOOL,
+        &json!({
+            "package": package.as_str(),
+            "cargo_target": target.as_str(),
+            "execution_intent": "background",
+            "operation_key": key.to_hex(),
+        }),
+    );
+    assert_eq!(result["isError"], false);
+    assert_eq!(
+        server.product.surface_commands,
+        [SurfaceCommand::IndexOperationStart {
+            cargo_target: Some(target),
+            operation_key: key,
+            package,
+            execution_intent: CompileExecutionIntent::Background,
+        }]
     );
 }
 
@@ -4387,6 +4434,39 @@ fn index_tool_advertises_and_validates_execution_intent() {
             .unwrap_or_default()
             .contains("must be a string")
     );
+}
+
+#[test]
+fn index_tool_preserves_explicit_cargo_target_in_surface_command() {
+    let fixture = LazyAuthorityFixture::new();
+    let project = fixture.project.to_str().expect("UTF-8 project");
+    let mut server = ready(Fake::default());
+    let listed = request(&mut server, "tools/list", &json!({}));
+    let tool = tool_named(&listed["result"]["tools"], "backend.index");
+    assert!(tool["inputSchema"]["properties"]["cargo_target"].is_object());
+
+    let response = call(
+        &mut server,
+        "backend.index",
+        &json!({"path":project,"cargo_target":"integration-test"}),
+    );
+    assert_eq!(response["isError"], false);
+    assert!(matches!(
+        server.product.surface_commands.as_slice(),
+        [SurfaceCommand::IndexStart {
+            cargo_target: Some(target),
+            package,
+            execution_intent: CompileExecutionIntent::Interactive,
+        }] if target.as_str() == "integration-test" && package.as_str() == project
+    ));
+
+    let malformed = call(
+        &mut server,
+        "backend.index",
+        &json!({"path":project,"cargo_target":"../lib"}),
+    );
+    assert_eq!(malformed["isError"], true);
+    assert!(text_of(&malformed).contains("path separator"));
 }
 
 #[test]
@@ -8370,6 +8450,7 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
             let (command, reply, name, arguments) = if started {
                 (
                     SurfaceCommand::IndexOperationStart {
+                        cargo_target: None,
                         operation_key: key,
                         package: partial.package.clone(),
                         execution_intent: CompileExecutionIntent::Interactive,

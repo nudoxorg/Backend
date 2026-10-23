@@ -173,15 +173,17 @@ impl Engine for SessionEngine<'_> {
         &mut self,
         package: backend_library::PackageReference,
         execution_intent: backend_library::CompileExecutionIntent,
+        cargo_target: Option<backend_library::CargoTargetSelector>,
     ) -> Result<SurfaceReply, ClientError> {
         let session = &mut *self.session;
         let recovery = &mut self.recovery;
         let context = session.request_context().cloned();
         match self.paths {
-            Some(paths) => backend_client::index_with_journal_recovery_wait(
+            Some(paths) => backend_client::index_with_journal_recovery_wait_for_target(
                 paths,
                 package,
                 execution_intent,
+                cargo_target.clone(),
                 context.as_ref(),
                 |dispatch| match recovery.as_deref_mut() {
                     Some(recovery) => recovery.journal(session, dispatch, None),
@@ -189,6 +191,7 @@ impl Engine for SessionEngine<'_> {
                 },
             ),
             None => session.surface(SurfaceCommand::IndexStart {
+                cargo_target,
                 package,
                 execution_intent,
             }),

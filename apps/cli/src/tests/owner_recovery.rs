@@ -214,6 +214,7 @@ fn ambiguous_journal_start_reconciles_original_tuple_without_new_add_identity() 
                         .clone()
                         .expect("original identity before replacement");
                     let SurfaceCommand::IndexOperationStart {
+                        cargo_target: None,
                         operation_key,
                         package,
                         execution_intent,
@@ -284,6 +285,7 @@ fn ambiguous_journal_start_reconciles_original_tuple_without_new_add_identity() 
         };
         let saved = start.lock().expect("start").clone().expect("original");
         let SurfaceCommand::IndexOperationStart {
+            cargo_target: None,
             operation_key,
             package,
             execution_intent,
@@ -361,6 +363,7 @@ fn owner_replacement_excludes_pinned_timeout_cancel_protocol_and_nonindex_mutati
         });
     let package = PackageReference::parse("/actual/project").expect("package");
     let command = SurfaceCommand::IndexStart {
+        cargo_target: None,
         package,
         execution_intent: CompileExecutionIntent::Interactive,
     };
@@ -847,6 +850,7 @@ fn saved_operation_reads_survive_real_frame_retirements(with_profiles: bool) {
             }
             let (key, started) = match request.command {
                 Command::Surface(SurfaceCommand::IndexOperationStart {
+                    cargo_target: None,
                     operation_key,
                     package,
                     execution_intent,
