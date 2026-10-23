@@ -1,0 +1,217 @@
+{
+  "artifact_manifest_sha256": "72d2073a5b379755da9e8899e66f835abf8b3182ea1d8c84f86d39ed6f9e2d49",
+  "diagnostic_build": 599078,
+  "existing_baselines_changed": false,
+  "initial_goldens": [
+    "rust-ryu",
+    "typescript-query-core"
+  ],
+  "runtime_guards": "All selected cases, full cursor-chain validation, exact scope/identity checks, deadlines, performance tolerances and fsync/publication guards retained.",
+  "rust_ryu": {
+    "archive_sha256": "f3cb5ba0dc43242ce17de99c180e96db90b235b8a9fdc9543c96d2209116bd9f",
+    "full_input_rust_files": 27,
+    "observer": "independent Syn AST parser plus manifest/module-graph and authored source review",
+    "performance": {
+      "cpu_seconds": 71.75,
+      "peak_rss_kib": 1329532,
+      "seconds": {
+        "cli add": 90.6,
+        "cli outline": 0.76,
+        "cli packages": 0.66,
+        "cli search Buffer": 0.46,
+        "cli search format_finite": 0.29,
+        "mcp": 1.78
+      }
+    },
+    "review": "2026-10-23-ryu-native-answers.md",
+    "selected_source_files": [
+      {
+        "path": "src/buffer/mod.rs",
+        "sha256": "e32f3fa7e994ff704796e58e115c5258e94a79a184d1608864772f2f2f5274fc"
+      },
+      {
+        "path": "src/common.rs",
+        "sha256": "cae347e97fc30c50a964f80425e8c3e69ece2b8ab81f9b81b9baa7fcec64a001"
+      },
+      {
+        "path": "src/d2s.rs",
+        "sha256": "f2612785ebe510c935b979dc5f66f6b8c818ca8a4cf0364ce1fe1d41fea39592"
+      },
+      {
+        "path": "src/d2s_full_table.rs",
+        "sha256": "9b0186acbc6d65dc55c17e16125be707a2bfb920d22b35d33234b4cc38566a36"
+      },
+      {
+        "path": "src/d2s_intrinsics.rs",
+        "sha256": "bbf15472f4299942312e80a992cbc2f47f85f17ed193f24084534434dbfb26e7"
+      },
+      {
+        "path": "src/digit_table.rs",
+        "sha256": "02351ca54cb8cb3679f635115dd094f32fd91750e9f66103c1ee9ec3db507072"
+      },
+      {
+        "path": "src/f2s.rs",
+        "sha256": "cb96f61d8c6c6c941803a7b629f2bf835e1a20ad9d3e5d3454a30ed3391c3515"
+      },
+      {
+        "path": "src/f2s_intrinsics.rs",
+        "sha256": "97bab98093838e30c60f5135f54f5ccb039ff7d9f35553ac8e74437743ca47e2"
+      },
+      {
+        "path": "src/lib.rs",
+        "sha256": "8020040eaf88b50ffe542691d4c5a63e9f07e8ae6893ab433ef86762655dc941"
+      },
+      {
+        "path": "src/pretty/exponent.rs",
+        "sha256": "fa914ec63b3f86cbdaf7933d7c44e1bc1f93c1239a29a5f86934680a7e957570"
+      },
+      {
+        "path": "src/pretty/mantissa.rs",
+        "sha256": "40cb00efe1c3fab559ab58389bd519d556548aa18fb261a90dd48138911d039b"
+      },
+      {
+        "path": "src/pretty/mod.rs",
+        "sha256": "eb0a8c78019f55a1767943821340e8b1278455e0d88bb4f63f4bd3dde340e387"
+      }
+    ],
+    "selected_target": {
+      "closure": "4f18628b75e653630fe9ab88a6b59854d7629b7d603f48e72bb328f08facfc30",
+      "kinds": [
+        "lib"
+      ],
+      "name": "ryu",
+      "root": "src/lib.rs",
+      "source_count": 12
+    },
+    "upstream": "ryu@1.0.18"
+  },
+  "source_sha": "f11d4116d57b8d4c24f675059cd908f3dd61b17e",
+  "status": "independently reviewed initial answer expectations and measured baselines; official exact-head CI acceptance pending",
+  "task": "W2",
+  "typescript_query_core": {
+    "observer": "independent pinned TypeScript Compiler API syntax parser",
+    "parser_version": "5.9.3",
+    "performance": {
+      "cpu_seconds": 56.71,
+      "peak_rss_kib": 767280,
+      "seconds": {
+        "cli add": 20.32,
+        "cli outline": 0.46,
+        "cli packages": 0.39,
+        "cli search CancelledError": 0.21,
+        "cli search QueryClient": 2.75,
+        "mcp": 4.61
+      }
+    },
+    "review": "2026-10-23-typescript-native-answers.md",
+    "scope": "Identity/kind/source-anchor answer contract, complete native profile and exhausted public pages; independent syntax review does not certify unrendered resolved type semantics. Mandatory semantic regressions remain separate.",
+    "source_files": [
+      {
+        "bytes": 2112,
+        "path": "src/focusManager.ts",
+        "sha256": "c643540e82c69508d924c542c026dfad323209329a4e5394d23a90350aac604f"
+      },
+      {
+        "bytes": 6221,
+        "path": "src/hydration.ts",
+        "sha256": "ee51773fb713b4d5385ea37ce95017efed0074ec876ee89ba7d1b0ea2374a625"
+      },
+      {
+        "bytes": 1415,
+        "path": "src/index.ts",
+        "sha256": "b205e845a82bec034b5c6042b9e7d0f919f51d98b8451fd3b36a6b467167f351"
+      },
+      {
+        "bytes": 5172,
+        "path": "src/infiniteQueryBehavior.ts",
+        "sha256": "07e44a5f98c12b6a430f43e59d1d23dc7208b52ea6eb12f0406f89280e0cf595"
+      },
+      {
+        "bytes": 5024,
+        "path": "src/infiniteQueryObserver.ts",
+        "sha256": "22c8ed14feb95a0378a288e17bce9c5118e36908346dde36b10fc1bfec1fe8df"
+      },
+      {
+        "bytes": 9072,
+        "path": "src/mutation.ts",
+        "sha256": "a6a69044764d8e51574b5c0fa11634953ec93412a3c080ed6372dd5f4ae20e29"
+      },
+      {
+        "bytes": 6029,
+        "path": "src/mutationCache.ts",
+        "sha256": "89ebfa9c6529987790c994336711617a08a6a9fe9018dcbae245b4d5131e4598"
+      },
+      {
+        "bytes": 4871,
+        "path": "src/mutationObserver.ts",
+        "sha256": "721d283d903d1ba7e532610790763f1e2670e22e21650d66267ec42206267b10"
+      },
+      {
+        "bytes": 2369,
+        "path": "src/notifyManager.ts",
+        "sha256": "6cd7559cbaa9697bf9f3f6964fe43edb9853ebbd7f46029b2a775468fd66dd14"
+      },
+      {
+        "bytes": 1809,
+        "path": "src/onlineManager.ts",
+        "sha256": "1b364f9227d13c60f64c52152ac047d2c47f7534dc51ab16647dc199ed08716a"
+      },
+      {
+        "bytes": 7673,
+        "path": "src/queriesObserver.ts",
+        "sha256": "0cea82e9800cce6bed16341e17f805a5c4c8500df7bace2b048957b14f7da650"
+      },
+      {
+        "bytes": 17688,
+        "path": "src/query.ts",
+        "sha256": "65f8be9760251d7eba7818609a7e7c784914f7092bcdd66a25bc918e87eddd43"
+      },
+      {
+        "bytes": 5681,
+        "path": "src/queryCache.ts",
+        "sha256": "53c764194a1278f454a561dc4b1831d3e53fe761b833f012ee2910ca1935a9f0"
+      },
+      {
+        "bytes": 17425,
+        "path": "src/queryClient.ts",
+        "sha256": "70d9c81c535cb418349c0a4abaad0f3c24e823b4b408a6de49550414ddc3cd3f"
+      },
+      {
+        "bytes": 23898,
+        "path": "src/queryObserver.ts",
+        "sha256": "f95577cfd74a7f75ec35a9518f7569906c8081a7216badb8154c6f2306461e6a"
+      },
+      {
+        "bytes": 851,
+        "path": "src/removable.ts",
+        "sha256": "58fb581c7c91beb19919d9e958f15dcb0392767e2380044929c2962c40a3fcc7"
+      },
+      {
+        "bytes": 5635,
+        "path": "src/retryer.ts",
+        "sha256": "f54e3cee8aa45a05aad15e5f52841df5a2bbf262e1a73203a1ce85b4f41807a7"
+      },
+      {
+        "bytes": 557,
+        "path": "src/subscribable.ts",
+        "sha256": "049af95cdd253bcef13eedcb7e798b39182e987a30c0b201c2d19f2333fe4f6e"
+      },
+      {
+        "bytes": 2156,
+        "path": "src/thenable.ts",
+        "sha256": "da244a98937f0e0963e4a95cf38bb3f18351f970b5a522affc7b5419829a378e"
+      },
+      {
+        "bytes": 37440,
+        "path": "src/types.ts",
+        "sha256": "d270b2cad582bbb0e80731c5e8084c067c3af709cba405330633be0b789790d8"
+      },
+      {
+        "bytes": 10959,
+        "path": "src/utils.ts",
+        "sha256": "cbc97d0c82e92d10ee8d480e6c45032a59d7208218f9b012c96dc784e6ba0d67"
+      }
+    ],
+    "upstream": "@tanstack/query-core@5.62.8"
+  }
+}
