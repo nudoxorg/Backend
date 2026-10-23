@@ -119,16 +119,10 @@ pub(crate) fn semantic_coordinate(
 /// collisions use the existing exact semantic operand. No entity is merged.
 pub(super) fn semantic_coordinates<'a>(
     project: &str,
-    candidates: impl IntoIterator<
-        Item = Result<
-            (
-                DeclarationIdentity,
-                backend_semantic::ir::ItemNameView<'a>,
-                Option<backend_compile::SourceLocation>,
-            ),
-            super::super::BuiltinModelError,
-        >,
-    >,
+    candidates: impl IntoIterator<Item = Result<(
+        DeclarationIdentity, backend_semantic::ir::ItemNameView<'a>,
+        Option<backend_compile::SourceLocation>,
+    ), super::super::BuiltinModelError>>,
     cancelled: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<BTreeMap<DeclarationIdentity, String>, super::super::BuiltinModelError> {
     let mut coordinates = BTreeMap::new();
@@ -140,33 +134,17 @@ pub(super) fn semantic_coordinates<'a>(
         let display = super::semantic_display_name(name)?;
         let coordinate = match location.filter(|_| name.named_bytes().is_some()) {
             Some(location) => {
-                let coordinate = declaration_coordinate(
-                    project,
-                    location.path(),
-                    location.start_line(),
-                    display,
-                );
-                source_aliases
-                    .entry(coordinate.clone())
-                    .or_default()
-                    .push(identity);
+                let coordinate = declaration_coordinate(project, location.path(), location.start_line(), display);
+                source_aliases.entry(coordinate.clone()).or_default().push(identity);
                 coordinate
             }
             None => semantic_coordinate(project, identity, display),
         };
-        if coordinates
-            .insert(identity, (coordinate, display))
-            .is_some()
-        {
-            return Err(super::super::BuiltinModelError(
-                "semantic coordinates contain a duplicate declaration identity".to_owned(),
-            ));
+        if coordinates.insert(identity, (coordinate, display)).is_some() {
+            return Err(super::super::BuiltinModelError("semantic coordinates contain a duplicate declaration identity".to_owned()));
         }
     }
-    for owners in source_aliases
-        .into_values()
-        .filter(|owners| owners.len() > 1)
-    {
+    for owners in source_aliases.into_values().filter(|owners| owners.len() > 1) {
         for identity in owners {
             super::super::check_search_preparation(cancelled, "semantic-coordinate-collision")?;
             if let Some((coordinate, display)) = coordinates.get_mut(&identity) {
@@ -174,10 +152,7 @@ pub(super) fn semantic_coordinates<'a>(
             }
         }
     }
-    Ok(coordinates
-        .into_iter()
-        .map(|(identity, (coordinate, _))| (identity, coordinate))
-        .collect())
+    Ok(coordinates.into_iter().map(|(identity, (coordinate, _))| (identity, coordinate)).collect())
 }
 
 pub(super) fn semantic_identity(
@@ -257,89 +232,37 @@ mod coordinate_tests {
             parent: CallableParentShape::TypeAliasName(b"Handler"),
         }];
         let mut bytes = [0; 128];
-        let length = AnonymousCallableAnchor { steps: &route }
-            .write_storage(
-                AnonymousCallableFamilyMultiplicity::Ambiguous { instance_count: 2 },
-                &mut bytes,
-            )
-            .expect("typed anchor");
-        let anchor = AnonymousCallableAnchorView::try_from_encoded(&bytes[..length])
-            .expect("admitted anonymous anchor");
+        let length = AnonymousCallableAnchor { steps: &route }.write_storage(
+            AnonymousCallableFamilyMultiplicity::Ambiguous { instance_count: 2 }, &mut bytes,
+        ).expect("typed anchor");
+        let anchor = AnonymousCallableAnchorView::try_from_encoded(&bytes[..length]).expect("admitted anonymous anchor");
         let anonymous = ItemNameView::AnonymousCallable { anchor };
         let same_line = backend_compile::SourceLocation::new("src/page.tsx", 153).expect("site");
-        let later_line =
-            backend_compile::SourceLocation::new("src/page.tsx", 352).expect("later site");
-        let other_file =
-            backend_compile::SourceLocation::new("src/other.ts", 153).expect("other file");
+        let later_line = backend_compile::SourceLocation::new("src/page.tsx", 352).expect("later site");
+        let other_file = backend_compile::SourceLocation::new("src/other.ts", 153).expect("other file");
         let candidates = vec![
             (identity(1), anonymous, Some(same_line.clone())),
             (identity(2), anonymous, Some(same_line.clone())),
-            (
-                identity(3),
-                ItemNameView::Named(b"teacher_id"),
-                Some(same_line.clone()),
-            ),
-            (
-                identity(4),
-                ItemNameView::Named(b"teacher_id"),
-                Some(same_line),
-            ),
-            (
-                identity(5),
-                ItemNameView::Named(b"teacher_id"),
-                Some(later_line),
-            ),
-            (
-                identity(6),
-                ItemNameView::Named(b"teacher_id"),
-                Some(other_file),
-            ),
+            (identity(3), ItemNameView::Named(b"teacher_id"), Some(same_line.clone())),
+            (identity(4), ItemNameView::Named(b"teacher_id"), Some(same_line)),
+            (identity(5), ItemNameView::Named(b"teacher_id"), Some(later_line)),
+            (identity(6), ItemNameView::Named(b"teacher_id"), Some(other_file)),
             (identity(7), ItemNameView::Named(b"unlocated"), None),
         ];
-        let actual = semantic_coordinates("/app", candidates.iter().cloned().map(Ok), None)
-            .expect("coordinates");
-        assert_eq!(
-            actual.len(),
-            candidates.len(),
-            "every exact entity survives"
-        );
-        assert_eq!(
-            actual
-                .values()
-                .collect::<std::collections::BTreeSet<_>>()
-                .len(),
-            candidates.len()
-        );
+        let actual = semantic_coordinates("/app", candidates.iter().cloned().map(Ok), None).expect("coordinates");
+        assert_eq!(actual.len(), candidates.len(), "every exact entity survives");
+        assert_eq!(actual.values().collect::<std::collections::BTreeSet<_>>().len(), candidates.len());
         for variant in 1..=4 {
-            let name = if variant <= 2 {
-                "<anonymous callable>"
-            } else {
-                "teacher_id"
-            };
-            assert_eq!(
-                actual[&identity(variant)],
-                semantic_coordinate("/app", identity(variant), name)
-            );
+            let name = if variant <= 2 { "<anonymous callable>" } else { "teacher_id" };
+            assert_eq!(actual[&identity(variant)], semantic_coordinate("/app", identity(variant), name));
         }
         assert_eq!(actual[&identity(5)], "/app::src/page.tsx:352::teacher_id");
         assert_eq!(actual[&identity(6)], "/app::src/other.ts:153::teacher_id");
-        assert_eq!(
-            actual[&identity(7)],
-            semantic_coordinate("/app", identity(7), "unlocated")
-        );
-        assert_eq!(
-            actual,
-            semantic_coordinates("/app", candidates.iter().rev().cloned().map(Ok), None)
-                .expect("source order independent")
-        );
+        assert_eq!(actual[&identity(7)], semantic_coordinate("/app", identity(7), "unlocated"));
+        assert_eq!(actual, semantic_coordinates("/app", candidates.iter().rev().cloned().map(Ok), None).expect("source order independent"));
         let duplicate = [candidates[0].clone(), candidates[0].clone()];
-        assert!(
-            semantic_coordinates("/app", duplicate.into_iter().map(Ok), None).is_err(),
-            "duplicate identity is refused, not hidden"
-        );
+        assert!(semantic_coordinates("/app", duplicate.into_iter().map(Ok), None).is_err(), "duplicate identity is refused, not hidden");
         let cancelled = std::sync::atomic::AtomicBool::new(true);
-        assert!(
-            semantic_coordinates("/app", candidates.into_iter().map(Ok), Some(&cancelled)).is_err()
-        );
+        assert!(semantic_coordinates("/app", candidates.into_iter().map(Ok), Some(&cancelled)).is_err());
     }
 }
