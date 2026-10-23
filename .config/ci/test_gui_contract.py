@@ -61,6 +61,12 @@ class GuiFailureEvidenceTests(unittest.TestCase):
                     emit_failure_evidence(Path(directory), error)
                     raise
 
+    def test_broken_log_transport_cannot_replace_product_failure(self):
+        from pathlib import Path
+        from unittest.mock import patch
+        with patch("builtins.print", side_effect=BrokenPipeError("closed log")):
+            emit_failure_evidence(Path("/missing-gui-evidence"), RuntimeError("original failure"))
+
 
 if __name__ == '__main__':
     unittest.main()

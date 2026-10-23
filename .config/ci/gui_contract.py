@@ -32,16 +32,25 @@ def emit_failure_evidence(root: Path, error: Exception) -> None:
         packet = {"observer": "owned native X11 window pixels, English OCR", "error": str(error)[:2048], "captures": []}
         for name in ("search-result.png", "opened-result.png", "window.png"):
             path = root / name
-            if path.is_file() and path.stat().st_size <= 512 * 1024:
-                data = path.read_bytes()
+            if not path.is_file():
+                continue
+            with path.open("rb") as image:
+                data = image.read(512 * 1024 + 1)
+            if len(data) <= 512 * 1024:
                 packet["captures"].append({"name": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "png_base64": base64.b64encode(data).decode("ascii")})
         text = root / "window.txt"
-        if text.is_file() and text.stat().st_size <= 32768:
-            packet["last_ocr"] = text.read_text(errors="replace")
+        if text.is_file():
+            with text.open("rb") as ocr:
+                contents = ocr.read(32769)
+            if len(contents) <= 32768:
+                packet["last_ocr"] = contents.decode("utf-8", errors="replace")
         print("CI-GUI-FAILURE " + json.dumps(packet, sort_keys=True), flush=True)
     except Exception as evidence_error:
         # Evidence cannot replace the original product/harness failure.
-        print("CI-GUI-FAILURE evidence unavailable: " + str(evidence_error)[:512], flush=True)
+        try:
+            print("CI-GUI-FAILURE evidence unavailable: " + str(evidence_error)[:512], flush=True)
+        except Exception:
+            pass
 
 
 def product_usage(pid: int) -> dict:
