@@ -764,6 +764,7 @@ fn fetch_nuget_registration(
         &mut total_bytes,
         &mut proof,
         0,
+        true,
         &cancelled,
         &remaining_budget,
     )?;
@@ -789,6 +790,7 @@ fn collect_nuget_registration_items(
     total_bytes: &mut usize,
     proof: &mut blake3::Hasher,
     depth: usize,
+    expect_pages: bool,
     cancelled: &impl Fn() -> bool,
     remaining_budget: &impl Fn() -> Duration,
 ) -> Result<(), DiscoveryStoreError> {
@@ -803,17 +805,28 @@ fn collect_nuget_registration_items(
             return Err(DiscoveryStoreError::Bounds);
         }
         let object = item.as_object().ok_or(DiscoveryStoreError::Decode)?;
-        if object.contains_key("catalogEntry") {
-            leaves.push(item.clone());
-            continue;
+        if expect_pages {
+            if object.contains_key("catalogEntry") {
+                return Err(DiscoveryStoreError::Corrupt);
+            }
+        } else {
+            if object.contains_key("catalogEntry") && !object.contains_key("items") {
+                leaves.push(item.clone());
+                continue;
+            }
+            return Err(DiscoveryStoreError::Corrupt);
         }
-        if let Some(inline) = object.get("items").and_then(serde_json::Value::as_array) {
+        if object.contains_key("items") {
+            let inline = object
+                .get("items")
+                .and_then(serde_json::Value::as_array)
+                .ok_or(DiscoveryStoreError::Decode)?;
+            let declared_bounds = nuget_registration_bounds(object)?;
             let inline_page_url = object
                 .get("@id")
                 .and_then(serde_json::Value::as_str)
                 .ok_or(DiscoveryStoreError::Decode)?;
-            require_nuget_resource_url(inline_page_url, registration_base)?;
-            require_nuget_path_under(inline_page_url, registration_base)?;
+            require_nuget_inline_page_url(inline_page_url, registration_base, &declared_bounds)?;
             let count = object
                 .get("count")
                 .and_then(serde_json::Value::as_u64)
@@ -821,7 +834,6 @@ fn collect_nuget_registration_items(
             if count != Some(inline.len()) {
                 return Err(DiscoveryStoreError::Corrupt);
             }
-            let declared_bounds = nuget_registration_bounds(object)?;
             let start = leaves.len();
             collect_nuget_registration_items(
                 inline,
@@ -832,6 +844,7 @@ fn collect_nuget_registration_items(
                 total_bytes,
                 proof,
                 depth + 1,
+                false,
                 cancelled,
                 remaining_budget,
             )?;
@@ -910,6 +923,7 @@ fn collect_nuget_registration_items(
             total_bytes,
             proof,
             depth + 1,
+            false,
             cancelled,
             remaining_budget,
         )?;
@@ -1069,6 +1083,33 @@ fn nuget_registration_bounds(
         return Err(DiscoveryStoreError::Corrupt);
     }
     Ok((lower, upper))
+}
+
+fn require_nuget_inline_page_url(
+    resource: &str,
+    registration_base: &str,
+    declared_bounds: &(String, String),
+) -> Result<(), DiscoveryStoreError> {
+    let (resource_url, fragment) = resource
+        .split_once('#')
+        .ok_or(DiscoveryStoreError::Corrupt)?;
+    if fragment.contains('#') {
+        return Err(DiscoveryStoreError::Corrupt);
+    }
+    require_nuget_resource_url(resource_url, registration_base)?;
+    require_nuget_path_under(resource_url, registration_base)?;
+    let mut parts = fragment.split('/');
+    let (Some("page"), Some(lower), Some(upper), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(DiscoveryStoreError::Corrupt);
+    };
+    if normalize_nuget_version(lower).as_deref() != Some(declared_bounds.0.as_str())
+        || normalize_nuget_version(upper).as_deref() != Some(declared_bounds.1.as_str())
+    {
+        return Err(DiscoveryStoreError::Corrupt);
+    }
+    Ok(())
 }
 
 fn validate_nuget_registration_bounds(
@@ -1649,6 +1690,7 @@ mod tests {
             let root_url = format!(
                 "{registration}microsoft.aspnetcore.identity.entityframeworkcore/index.json"
             );
+            let inline_page_url = format!("{root_url}#page/10.0.0/10.0.0");
             vec![
                 (
                     "200 OK".to_owned(),
@@ -1659,7 +1701,7 @@ mod tests {
                 (
                     "200 OK".to_owned(),
                     format!(
-                        r#"{{"@id":"{root_url}","count":1,"items":[{{"catalogEntry":{{"id":"Microsoft.AspNetCore.Identity.EntityFrameworkCore","version":"10.0.0","published":"2026-10-20T00:00:00Z","downloads":12,"description":"exact package","tags":["one","two"]}}}}]}}"#
+                        r#"{{"@id":"{root_url}","count":1,"items":[{{"@id":"{inline_page_url}","count":1,"lower":"10.0.0","upper":"10.0.0","items":[{{"@id":"{registration}microsoft.aspnetcore.identity.entityframeworkcore/10.0.0.json","catalogEntry":{{"id":"Microsoft.AspNetCore.Identity.EntityFrameworkCore","version":"10.0.0","published":"2026-10-20T00:00:00Z","downloads":12,"description":"exact package","tags":["one","two"]}}}}]}}]}}"#
                     ),
                 ),
             ]
@@ -1744,7 +1786,7 @@ mod tests {
                 (
                     "200 OK".to_owned(),
                     format!(
-                        r#"{{"@id":"{page_url}","parent":"{root_url}","count":1,"items":[{{"catalogEntry":{{"id":"some-other-package","version":"1.0.0","listed":true}}}}]}}"#
+                        r#"{{"@id":"{page_url}","parent":"{root_url}","count":1,"lower":"1.0.0","upper":"1.0.0","items":[{{"catalogEntry":{{"id":"some-other-package","version":"1.0.0","listed":true}}}}]}}"#
                     ),
                 ),
             ]
@@ -1828,6 +1870,37 @@ mod tests {
             assert!(owner.store.facts().next().is_none());
             assert_eq!(worker.join().expect("NuGet fixture worker").len(), 2);
         }
+    }
+
+    #[test]
+    fn nuget_root_catalog_leaf_cannot_prove_exact_absence() {
+        let (endpoint, worker) = nuget_server(|address| {
+            let registration = format!("http://{address}/registration/");
+            let root_url = format!("{registration}demo/index.json");
+            vec![
+                (
+                    "200 OK".to_owned(),
+                    format!(
+                        r#"{{"resources":[{{"@id":"{registration}","@type":"RegistrationsBaseUrl/3.6.0"}}]}}"#
+                    ),
+                ),
+                (
+                    "200 OK".to_owned(),
+                    format!(
+                        r#"{{"@id":"{root_url}","count":1,"items":[{{"catalogEntry":{{"id":"demo","version":"1.0.0","listed":true}}}}]}}"#
+                    ),
+                ),
+            ]
+        });
+        let mut owner = gateway(endpoint);
+        let package =
+            PackageCoordinate::parse("pkg:nuget/demo@2.0.0").expect("NuGet package coordinate");
+        assert!(matches!(
+            owner.observe_package(&package),
+            Some(RegistryPackageDiscoveryObservation::Unavailable { .. })
+        ));
+        assert!(owner.store.facts().next().is_none());
+        assert_eq!(worker.join().expect("NuGet fixture worker").len(), 2);
     }
 
     #[test]
@@ -1918,6 +1991,7 @@ mod tests {
         let (endpoint, worker) = nuget_server(|address| {
             let registration = format!("http://{address}/registration/");
             let root_url = format!("{registration}demo/index.json");
+            let inline_page_url = format!("{root_url}#page/2.1.0/2.1.0");
             vec![
                 (
                     "200 OK".to_owned(),
@@ -1928,7 +2002,7 @@ mod tests {
                 (
                     "200 OK".to_owned(),
                     format!(
-                        r#"{{"@id":"{root_url}","count":1,"items":[{{"catalogEntry":{{"id":"Demo","version":"2.1.0","listed":"true"}}}}]}}"#
+                        r#"{{"@id":"{root_url}","count":1,"items":[{{"@id":"{inline_page_url}","count":1,"lower":"2.1.0","upper":"2.1.0","items":[{{"catalogEntry":{{"id":"Demo","version":"2.1.0","listed":"true"}}}}]}}]}}"#
                     ),
                 ),
             ]
@@ -1949,6 +2023,7 @@ mod tests {
         let (endpoint, worker) = nuget_server(|address| {
             let registration = format!("http://{address}/registration/");
             let root_url = format!("{registration}demo/index.json");
+            let inline_page_url = format!("{root_url}#page/1.0.1/1.0.1");
             vec![
                 (
                     "200 OK".to_owned(),
@@ -1959,7 +2034,7 @@ mod tests {
                 (
                     "200 OK".to_owned(),
                     format!(
-                        r#"{{"@id":"{root_url}","count":1,"items":[{{"catalogEntry":{{"id":"demo","version":"1.0.1","listed":true}}}}]}}"#
+                        r#"{{"@id":"{root_url}","count":1,"items":[{{"@id":"{inline_page_url}","count":1,"lower":"1.0.1","upper":"1.0.1","items":[{{"catalogEntry":{{"id":"demo","version":"1.0.1","listed":true}}}}]}}]}}"#
                     ),
                 ),
             ]
