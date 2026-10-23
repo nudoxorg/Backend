@@ -5803,6 +5803,38 @@ fn the_references_tool_serves_occurrence_sites_with_source_spans() {
         rendered.to_lowercase().contains("compiler"),
         "the authority class is provenance: {rendered}"
     );
+    assert!(
+        !rendered.contains("does not establish that this declaration is unused"),
+        "positive reference evidence should not receive the empty-result advisory: {rendered}"
+    );
+}
+
+#[test]
+fn empty_references_tool_preview_says_zero_rows_do_not_establish_unused() {
+    let reply = SurfaceReply::References {
+        target: ProductText::new("pkg::semantic::callee").expect("target text"),
+        references: Box::new([]),
+    };
+    let mut server = ready(Fake {
+        surface_reply: Some(reply),
+        ..Fake::default()
+    });
+    let result = call(
+        &mut server,
+        "backend.references",
+        &json!({ "coordinate": "pkg::semantic::callee" }),
+    );
+    assert_eq!(result["isError"], false);
+    assert_eq!(
+        result["structuredContent"]["surface"]["data"]["references"],
+        json!([]),
+        "the wire remains the same raw typed empty result"
+    );
+    let rendered = text_of(&result);
+    assert!(
+        rendered.contains("an empty result does not establish that this declaration is unused"),
+        "the human preview must not imply an unused declaration: {rendered}"
+    );
 }
 
 #[test]

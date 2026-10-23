@@ -2010,10 +2010,13 @@ fn empty_references_result_does_not_claim_target_absence_or_reference_completene
         text::product(&view, Theme::plain()),
     ] {
         assert!(
-            rendered.contains("no reference records captured at this revision"),
+            rendered.contains(
+                "no reference records were returned; an empty result does not establish that this declaration is unused; check package coverage"
+            ),
             "{rendered}"
         );
         assert!(!rendered.contains("no references found"), "{rendered}");
+        assert!(!rendered.contains("complete reference coverage"), "{rendered}");
         assert!(!rendered.contains("no row at this revision"), "{rendered}");
     }
     let generic = product_view(&backend_library::SurfaceReply::IndexSearch(Box::new([])));
