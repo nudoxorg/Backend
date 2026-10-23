@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import process_custody
 import time
+from collections.abc import Callable
 
 from smoke import drew_a_frame
 
@@ -24,6 +25,69 @@ def require_visible(text: str, expected: list[str]) -> None:
     missing = [value for value in expected if ' '.join(value.casefold().split()) not in normalized]
     if missing:
         raise RuntimeError('GUI window is missing visible source: ' + ', '.join(missing))
+
+
+_RETAINED_RESULT_MARKERS = ('earlier result', 'index changed', 'links unavailable')
+
+
+def require_current_result(text: str, query: str, filename: str) -> None:
+    """A retained row can repeat both the query and its filename; reject it."""
+    require_visible(text, [query, filename])
+    normalized = ' '.join(text.casefold().split())
+    if any(marker in normalized for marker in _RETAINED_RESULT_MARKERS):
+        raise RuntimeError('GUI search result is retained from an earlier index')
+
+
+def require_ask_dismissed(window_text: str, ask_plate_text: str, query: str) -> None:
+    """Prove Return closed Ask before sending any plain shell key."""
+    if len(ask_plate_text.encode('utf-8')) > 32768:
+        raise RuntimeError('GUI Ask plate OCR response exceeds its bound')
+    normalized_plate = ' '.join(ask_plate_text.casefold().split())
+    normalized_query = ' '.join(query.casefold().split())
+    if normalized_query in normalized_plate:
+        raise RuntimeError('GUI Ask input is still visible after choosing a result')
+    normalized_window = ' '.join(window_text.casefold().split())
+    if any(marker in normalized_window for marker in _RETAINED_RESULT_MARKERS):
+        raise RuntimeError('GUI Ask retained an earlier-index result after Return')
+
+
+def open_current_result(
+    capture: Callable[[], str],
+    ask_plate: Callable[[], str],
+    press_return: Callable[[], None],
+    query: str,
+    filename: str,
+    deadline: float,
+    *,
+    on_ready: Callable[[], None] | None = None,
+    now: Callable[[], float] = time.monotonic,
+    pause: Callable[[float], None] = time.sleep,
+) -> str:
+    """Retry stale Ask rows within the original GUI deadline, returning only after dismissal."""
+    last_error = None
+    while now() < deadline:
+        try:
+            require_current_result(capture(), query, filename)
+        except RuntimeError as error:
+            last_error = error
+            pause(min(0.5, max(0, deadline - now())))
+            continue
+
+        if on_ready is not None:
+            on_ready()
+        press_return()
+        # Keep the existing settle interval, then check the whole window and
+        # the top-center Ask input plate independently. A stale Return leaves
+        # the query plate open, so no plain `s` can be typed into it.
+        pause(min(0.5, max(0, deadline - now())))
+        opened = capture()
+        try:
+            require_ask_dismissed(opened, ask_plate(), query)
+            return opened
+        except RuntimeError as error:
+            last_error = error
+            pause(min(0.5, max(0, deadline - now())))
+    raise RuntimeError(f'GUI did not open a current search result before its deadline: {last_error}')
 
 
 def emit_failure_evidence(root: Path, error: Exception) -> None:
@@ -128,6 +192,23 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
             (root / 'window.txt').write_text(result)
             return result
 
+        def ask_plate_pixels():
+            # Ask's input is centered at the top of the owned window. OCR only
+            # this region so a matching declaration in the opened source body
+            # cannot be mistaken for an Ask field that stayed open.
+            window_width = int(width.group(1))
+            crop_width = max(1, int(window_width * 0.6))
+            crop_x = (window_width - crop_width) // 2
+            crop = root / 'ask-plate.png'
+            command('magick', 'import', '-silent', '-window', window, '-crop',
+                    f'{crop_width}x64+{crop_x}+0', '+repage', crop)
+            if crop.stat().st_size > 512 * 1024:
+                raise RuntimeError('GUI Ask plate capture exceeds512KiB')
+            result = command('tesseract', crop, 'stdout', '-l', 'eng', '--psm', '11').stdout
+            if len(result.encode('utf-8')) > 32768:
+                raise RuntimeError('GUI Ask plate OCR exceeds32KiB')
+            return result
+
         # The project is selected through the desktop's normal launch contract,
         # on the same native owner used by this case's CLI and MCP checks.
         last_error = None
@@ -160,24 +241,17 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
                 time.sleep(0.2)
         else:
             raise RuntimeError('GUI Ask field did not display the typed query')
-        # Wait for a real result, whose source filename is not the typed query.
-        while time.monotonic() < deadline:
-            try:
-                require_visible(pixels(), [spec['query'], spec['result_filename']])
-                break
-            except RuntimeError:
-                time.sleep(1)
-        else:
-            raise RuntimeError('GUI search did not show the authored source result')
-        shutil.copyfile(root / 'window.png', root / 'search-result.png')
-        command('xdotool', 'key', '--clearmodifiers', 'Return')
-        # Enter commits the result and dismisses Ask itself. Escape here would
-        # back out of that newly opened declaration before its code is read.
-        time.sleep(0.5)
-        pixels()
+        # A retained result can still show both the query and source filename.
+        # Retry until the row is current, then verify Ask actually dismissed
+        # after Return before sending the shell's plain `s` binding.
+        open_current_result(
+            pixels, ask_plate_pixels,
+            lambda: command('xdotool', 'key', '--clearmodifiers', 'Return'),
+            spec['query'], spec['result_filename'], deadline,
+            on_ready=lambda: shutil.copyfile(root / 'window.png', root / 'search-result.png'))
         shutil.copyfile(root / 'window.png', root / 'opened-result.png')
-        # Ask has committed and dismissed. PeelSource uses the shell's plain
-        # `s` binding (shell/keys.rs), revealing this declaration's source.
+        # Ask dismissal above is the positive readiness signal. PeelSource uses
+        # the shell's plain `s` binding (shell/keys.rs), revealing source.
         command('xdotool', 'key', '--clearmodifiers', 's')
         command('xdotool', 'key', '--clearmodifiers', 'ctrl+equal', 'ctrl+equal')
         expected = [spec['project_name'], *spec['visible_source']]
