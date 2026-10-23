@@ -6,12 +6,42 @@ from gui_contract import (
     require_current_result,
     require_navigation_breadcrumb,
     require_visible,
+    wait_for_symbol_details,
 )
 import surface
 
 
 class GuiAdmissionTests(unittest.TestCase):
     expected = ['itoa', 'pub struct Buffer', 'MaybeUninit']
+
+    def test_symbol_route_waits_for_body_before_source_key(self):
+        now = [0.0]
+        captures = iter([
+            'project TOMLDecodeError Opening page...',
+            'project TOMLDecodeError What you can do with it Opening page...',
+            'project TOMLDecodeError What you can do with it Makes one',
+        ])
+        source_keys = []
+        opened = wait_for_symbol_details(
+            lambda: next(captures), 'TOMLDecodeError', 10,
+            now=lambda: now[0],
+            pause=lambda seconds: now.__setitem__(0, now[0] + seconds))
+        source_keys.append(('s', now[0]))
+        self.assertIn('Makes one', opened)
+        self.assertEqual(source_keys, [('s', 0.4)])
+
+    def test_symbol_body_wait_preserves_original_deadline(self):
+        now = [0.0]
+        source_keys = []
+        with self.assertRaisesRegex(RuntimeError, 'details did not load before its deadline'):
+            wait_for_symbol_details(
+                lambda: 'project TOMLDecodeError Opening page...',
+                'TOMLDecodeError', 0.5,
+                now=lambda: now[0],
+                pause=lambda seconds: now.__setitem__(0, now[0] + seconds))
+            source_keys.append('s')
+        self.assertEqual(now[0], 0.5)
+        self.assertEqual(source_keys, [])
 
     def test_search_query_without_opened_source_does_not_pass(self):
         with self.assertRaises(RuntimeError):

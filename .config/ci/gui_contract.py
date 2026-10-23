@@ -107,6 +107,26 @@ def open_current_result(
     raise RuntimeError(f'GUI did not open a current search result before its deadline: {last_error}')
 
 
+def wait_for_symbol_details(
+    capture: Callable[[], str], query: str, deadline: float, *,
+    now: Callable[[], float] = time.monotonic,
+    pause: Callable[[float], None] = time.sleep,
+) -> str:
+    """The route can land before its declaration body can handle PeelSource."""
+    last_error = None
+    while now() < deadline:
+        text = capture()
+        try:
+            require_visible(text, [query, 'What you can do with it'])
+            if 'opening page' in ' '.join(text.casefold().split()):
+                raise RuntimeError('GUI declaration body is still opening')
+            return text
+        except RuntimeError as error:
+            last_error = error
+            pause(min(0.2, max(0, deadline - now())))
+    raise RuntimeError(f'GUI declaration details did not load before its deadline: {last_error}')
+
+
 def emit_failure_evidence(root: Path, error: Exception) -> None:
     """Retain the already observed window without extending the GUI deadline."""
     try:
@@ -269,8 +289,12 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
             spec['project_name'], spec['query'], spec['result_filename'], deadline,
             on_ready=lambda: shutil.copyfile(root / 'window.png', root / 'search-result.png'))
         shutil.copyfile(root / 'window.png', root / 'opened-result.png')
-        # The route breadcrumb is the positive readiness signal. PeelSource uses
-        # the shell's plain `s` binding (shell/keys.rs), revealing source.
+        # A route breadcrumb may already show the selected symbol while the body
+        # still says "Opening page". Wait for its actual declaration details so
+        # the plain `s` action has a current source operand to open.
+        wait_for_symbol_details(pixels, spec['query'], deadline)
+        shutil.copyfile(root / 'window.png', root / 'opened-result.png')
+        # PeelSource uses the shell's plain `s` binding (shell/keys.rs).
         command('xdotool', 'key', '--clearmodifiers', 's')
         command('xdotool', 'key', '--clearmodifiers', 'ctrl+equal', 'ctrl+equal')
         expected = [spec['project_name'], *spec['visible_source']]
