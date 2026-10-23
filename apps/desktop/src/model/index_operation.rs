@@ -201,6 +201,7 @@ pub(crate) mod tests {
 
     pub(crate) fn observation(operation: &IndexOperationClaim, state: backend_library::IndexOperationState) -> backend_library::IndexOperationObservation {
         backend_library::IndexOperationObservation::Known(backend_library::IndexOperationStatus {
+            cargo_target: None,
             operation_key: operation.key,
             request_digest: backend_library::index_operation_request_digest(&operation.package, operation.execution_intent),
             package: operation.package.clone(), execution_intent: operation.execution_intent, state,
