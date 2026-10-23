@@ -50,16 +50,23 @@ class GuiAdmissionTests(unittest.TestCase):
             require_navigation_breadcrumb(
                 stale_window, 'Q TOMLDecodeError', 'project', 'TOMLDecodeError')
 
-    def test_long_symbol_breadcrumb_allows_one_ocr_character_error(self):
+    def test_long_symbol_breadcrumb_requires_exact_observed_symbol(self):
         for observed in (
             'TOMLDecodeErrox',
             'TOMLDecodeErrxor',
             'TOMLDecodeErro',
         ):
             with self.subTest(observed=observed):
-                require_navigation_breadcrumb(
-                    'opened declaration page', f'project {observed}',
-                    'project', 'TOMLDecodeError')
+                with self.assertRaisesRegex(RuntimeError, 'breadcrumb'):
+                    require_navigation_breadcrumb(
+                        'opened declaration page', f'project {observed}',
+                        'project', 'TOMLDecodeError')
+
+    def test_nearby_real_declaration_cannot_certify_requested_route(self):
+        with self.assertRaisesRegex(RuntimeError, 'breadcrumb'):
+            require_navigation_breadcrumb(
+                'opened declaration page', 'project parseStatementA',
+                'project', 'parseStatementB')
 
     def test_symbol_breadcrumb_refuses_two_ocr_character_errors(self):
         with self.assertRaisesRegex(RuntimeError, 'breadcrumb'):

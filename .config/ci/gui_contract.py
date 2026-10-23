@@ -30,36 +30,6 @@ def require_visible(text: str, expected: list[str]) -> None:
 _RETAINED_RESULT_MARKERS = ('earlier result', 'index changed', 'links unavailable')
 
 
-def _one_ocr_edit(expected: str, observed: str) -> bool:
-    """Accept one substitution, insertion, or deletion in a long OCR token."""
-    if abs(len(expected) - len(observed)) > 1:
-        return False
-    if len(expected) == len(observed):
-        return sum(left != right for left, right in zip(expected, observed, strict=True)) <= 1
-    shorter, longer = sorted((expected, observed), key=len)
-    skipped = False
-    short_index = 0
-    for character in longer:
-        if short_index < len(shorter) and character == shorter[short_index]:
-            short_index += 1
-        elif skipped:
-            return False
-        else:
-            skipped = True
-    return True
-
-
-def _ocr_contains_symbol(text: str, symbol: str) -> bool:
-    """Match a long symbol despite one bounded OCR character error."""
-    expected = ''.join(character for character in symbol.casefold() if character.isalnum())
-    if len(expected) < 8:
-        return False
-    return any(
-        _one_ocr_edit(expected, token)
-        for token in re.findall(r'[\w]+', text.casefold())
-    )
-
-
 def require_current_result(text: str, query: str, filename: str) -> None:
     """A retained row can repeat both the query and its filename; reject it."""
     require_visible(text, [query, filename])
@@ -77,8 +47,7 @@ def require_navigation_breadcrumb(
     normalized_topbar = ' '.join(topbar_text.casefold().split())
     normalized_project = ' '.join(project_name.casefold().split())
     normalized_query = ' '.join(query.casefold().split())
-    query_visible = normalized_query in normalized_topbar or _ocr_contains_symbol(topbar_text, query)
-    if normalized_project not in normalized_topbar or not query_visible:
+    if normalized_project not in normalized_topbar or normalized_query not in normalized_topbar:
         raise RuntimeError('GUI project and selected symbol breadcrumb is not visible after Return')
     normalized_window = ' '.join(window_text.casefold().split())
     if any(marker in normalized_window for marker in _RETAINED_RESULT_MARKERS):
@@ -248,8 +217,10 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
             crop_width = max(1, int(window_width * 0.6))
             crop_x = (window_width - crop_width) // 2
             crop = root / 'topbar.png'
+            # Keep exact symbol matching: improve the small breadcrumb pixels
+            # rather than admitting a different declaration one edit away.
             command('magick', 'import', '-silent', '-window', window, '-crop',
-                    f'{crop_width}x64+{crop_x}+0', '+repage', crop)
+                    f'{crop_width}x64+{crop_x}+0', '+repage', '-resize', '300%', crop)
             if crop.stat().st_size > 512 * 1024:
                 raise RuntimeError('GUI top-bar capture exceeds512KiB')
             result = command('tesseract', crop, 'stdout', '-l', 'eng', '--psm', '11').stdout
