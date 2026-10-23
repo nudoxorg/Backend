@@ -9,6 +9,34 @@ surface = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(surface)
 
 
+class FailedIndexDiagnosticTests(unittest.TestCase):
+    def test_diagnostic_reads_public_outcome_without_changing_setup_verdict(self):
+        import contextlib, io, json
+        from unittest.mock import patch
+        owner = object()
+        project = Path("/tmp/nudox-surface/example/project")
+        reply = {"exit": 0, "json": {"answer": "compiler-outcome", "failures": ["retained refusal"]}}
+        with patch.object(surface, "run_cli", return_value=(reply, 0.1)) as run, contextlib.redirect_stdout(io.StringIO()) as output:
+            surface.emit_index_failure_diagnostic(owner, project)
+        run.assert_called_once_with(owner, project, [
+            "--limit", "200", "package-profile", str(project),
+            "--compiler-outcome", '{"kind":"current"}',
+        ], 10)
+        packet = json.loads(output.getvalue().split(" ", 1)[1])
+        self.assertEqual(packet, {"project": str(project), "reply": reply})
+
+    def test_diagnostic_failure_cannot_replace_the_original_exception(self):
+        from unittest.mock import patch
+        with patch.object(surface, "run_cli", side_effect=RuntimeError("owner gone")):
+            # The caller's bare raise must still rethrow its setup exception.
+            with self.assertRaisesRegex(ValueError, "original setup refusal"):
+                try:
+                    raise ValueError("original setup refusal")
+                except Exception:
+                    surface.emit_index_failure_diagnostic(object(), Path("/tmp/project"))
+                    raise
+
+
 class RuntimeImportDrainTests(unittest.TestCase):
     def test_linux_flushes_only_task_filesystem_with_bounded_setup(self):
         import subprocess

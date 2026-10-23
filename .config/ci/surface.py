@@ -1340,6 +1340,21 @@ def make_case_directories_writable(root: Path) -> None:
         path.chmod(stat.S_IMODE(metadata.st_mode) | stat.S_IWUSR | stat.S_IXUSR)
 
 
+def emit_index_failure_diagnostic(owner: Owner, project: Path) -> None:
+    """Retain the public compiler refusal while this failed setup still owns its state."""
+    try:
+        reply, _ = run_cli(owner, project, [
+            "--limit", "200", "package-profile", str(project),
+            "--compiler-outcome", '{"kind":"current"}',
+        ], 10)
+        print("SURFACE-INDEX-DIAGNOSTIC " + json.dumps({
+            "project": str(project), "reply": reply,
+        }, sort_keys=True), flush=True)
+    except Exception as error:
+        # A diagnostic cannot replace the original setup failure or pass a case.
+        log(f"index failure diagnostic unavailable: {error}")
+
+
 def run_case(case: dict, bin_dir: Path) -> dict:
     case_root = SCRATCH / case["name"]
     if case_root.exists():
@@ -1367,15 +1382,19 @@ def run_case(case: dict, bin_dir: Path) -> dict:
     record = {"answers": {}, "performance": {"seconds": {}}}
     proven_tokens = set()
     try:
-        if case.get("index_mode", "resumable") == "resumable":
-            answer, index_times = run_resumable_index(owner, project, len(case["languages"]), timeout)
-        elif case["index_mode"] == "wait":
-            answer, seconds = run_cli(owner, project, ["add", str(project), "--wait"], timeout)
-            require_completed_index(answer, len(case["languages"]))
-            index_times = {"cli add": round(seconds, 2)}
-        else:
-            raise RuntimeError(f"unknown index mode: {case['index_mode']}")
-        published_root = require_completed_index(answer, len(case["languages"]))
+        try:
+            if case.get("index_mode", "resumable") == "resumable":
+                answer, index_times = run_resumable_index(owner, project, len(case["languages"]), timeout)
+            elif case["index_mode"] == "wait":
+                answer, seconds = run_cli(owner, project, ["add", str(project), "--wait"], timeout)
+                require_completed_index(answer, len(case["languages"]))
+                index_times = {"cli add": round(seconds, 2)}
+            else:
+                raise RuntimeError(f"unknown index mode: {case['index_mode']}")
+            published_root = require_completed_index(answer, len(case["languages"]))
+        except Exception:
+            emit_index_failure_diagnostic(owner, project)
+            raise
         log(f"index terminal receipt: published {len(case['languages'])} complete native profiles; view {published_root}")
         # Indexing is setup: require success above, then snapshot the verdict.
         # The caller journal embeds fresh random operation/receipt identities;
