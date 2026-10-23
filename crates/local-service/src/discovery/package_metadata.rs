@@ -884,6 +884,9 @@ fn collect_nuget_registration_items(
         {
             return Err(DiscoveryStoreError::Corrupt);
         }
+        if nuget_registration_bounds(page_object)? != declared_bounds {
+            return Err(DiscoveryStoreError::Corrupt);
+        }
         let page_items = page_object
             .get("items")
             .and_then(serde_json::Value::as_array)
@@ -1108,11 +1111,13 @@ fn compare_nuget_versions(left: &str, right: &str) -> Option<std::cmp::Ordering>
     let left_core = left_core
         .split('.')
         .map(str::parse::<u64>)
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
     let right_core = right_core
         .split('.')
         .map(str::parse::<u64>)
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
     for index in 0..left_core.len().max(right_core.len()) {
         match left_core
             .get(index)
@@ -1776,7 +1781,7 @@ mod tests {
                 (
                     "200 OK".to_owned(),
                     format!(
-                        r#"{{"@id":"{page_url}","parent":"{root_url}","count":1,"items":[{{"catalogEntry":{{"id":"demo","version":"1.0.0"}}}}]}}"#
+                        r#"{{"@id":"{page_url}","parent":"{root_url}","count":1,"lower":"1.0.0","upper":"1.0.0","items":[{{"catalogEntry":{{"id":"demo","version":"1.0.0"}}}}]}}"#
                     ),
                 ),
             ]
@@ -1827,30 +1832,46 @@ mod tests {
 
     #[test]
     fn nuget_registration_page_identity_count_and_bounds_are_required_for_absence() {
-        for (page, descriptor) in [
+        for (page, descriptor, request_count) in [
             (
-                r#"{"@id":"{PAGE}","count":1,"items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
+                r#"{"@id":"{PAGE}","count":1,"parent":"{ROOT}","lower":"1.0.0","upper":"1.0.0","items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
                 r#""count":1,"lower":"1.0.0","upper":"1.0.0""#,
+                3,
             ),
             (
-                r#"{"count":1,"parent":"{ROOT}","items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
+                r#"{"count":1,"parent":"{ROOT}","lower":"1.0.0","upper":"1.0.0","items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
                 r#""count":1,"lower":"1.0.0","upper":"1.0.0""#,
+                3,
             ),
             (
-                r#"{"@id":"{PAGE}","parent":"{ROOT}","items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
+                r#"{"@id":"{PAGE}","parent":"{ROOT}","lower":"1.0.0","upper":"1.0.0","items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
                 r#""count":1,"lower":"1.0.0","upper":"1.0.0""#,
+                3,
             ),
             (
-                r#"{"@id":"{PAGE}","parent":"{ROOT}","count":1,"items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
+                r#"{"@id":"{PAGE}","parent":"{ROOT}","count":1,"lower":"1.0.0","upper":"1.0.0","items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
                 r#""lower":"1.0.0","upper":"1.0.0""#,
+                2,
             ),
             (
-                r#"{"@id":"{PAGE}","parent":"{ROOT}","count":1,"items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
+                r#"{"@id":"{PAGE}","parent":"{ROOT}","count":1,"lower":"1.0.0","upper":"1.0.0","items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
                 r#""count":1"#,
+                2,
             ),
             (
-                r#"{"@id":"{PAGE}","parent":"{ROOT}","count":1,"items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
+                r#"{"@id":"{PAGE}","parent":"{ROOT}","count":1,"lower":"1.0.0","upper":"1.0.0","items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
                 r#""count":1,"lower":"9.0.0","upper":"9.0.0""#,
+                3,
+            ),
+            (
+                r#"{"@id":"{PAGE}","parent":"{ROOT}","count":1,"lower":"1.0.0","items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
+                r#""count":1,"lower":"1.0.0","upper":"1.0.0""#,
+                3,
+            ),
+            (
+                r#"{"@id":"{PAGE}","parent":"{ROOT}","count":1,"lower":"2.0.0","upper":"2.0.0","items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
+                r#""count":1,"lower":"1.0.0","upper":"1.0.0""#,
+                3,
             ),
         ] {
             let (endpoint, worker) = nuget_server(|address| {
@@ -1873,6 +1894,9 @@ mod tests {
                     ("200 OK".to_owned(), root),
                     ("200 OK".to_owned(), page),
                 ]
+                .into_iter()
+                .take(request_count)
+                .collect()
             });
             let mut owner = gateway(endpoint);
             let package =
@@ -1882,7 +1906,10 @@ mod tests {
                 Some(RegistryPackageDiscoveryObservation::Unavailable { .. })
             ));
             assert!(owner.store.facts().next().is_none());
-            assert_eq!(worker.join().expect("NuGet fixture worker").len(), 3);
+            assert_eq!(
+                worker.join().expect("NuGet fixture worker").len(),
+                request_count
+            );
         }
     }
 
@@ -2002,6 +2029,8 @@ mod tests {
             compare_nuget_versions("1.0.0-rc.99999999999999999999", "1.0.0-rc.2"),
             Some(Ordering::Greater)
         );
+        assert_eq!(compare_nuget_versions("invalid", "1.0.0"), None);
+        assert_eq!(compare_nuget_versions("1.0.0", "invalid"), None);
         assert_eq!(normalize_nuget_version("1.0.0-rc..2"), None);
     }
 
