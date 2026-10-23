@@ -165,7 +165,7 @@ pub(super) fn replay_native_root_selection(
         .checked_add(Duration::from_secs(30))
         .ok_or_else(|| closure_mismatch("native root-query replay deadline overflow"))?;
     let cancelled = AtomicBool::new(false);
-    let shared_control = Rc::new(RefCell::new(control));
+    let shared_control: SnapshotReplayControl<'_> = Rc::new(RefCell::new(&mut *control));
     let mut resolver = witness.resolver();
     let checkpoint = NativeAdmissionCheckpoint {
         deadline,
