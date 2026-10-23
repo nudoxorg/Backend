@@ -540,6 +540,9 @@ impl Ask {
     /// navigate; only a verified destination commits the current visit.
     pub(crate) fn choose(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if !self.current_editor(cx) { return; }
+        if let Some(query) = self.draft.query() {
+            self.links.store.read(cx).trace_search_authority("search.authority-choose", query, None);
+        }
         let choices = self.choices(cx);
         let outcome = match choices.get(self.selected) {
             None => self.empty_submission(cx),
