@@ -1117,20 +1117,53 @@ class SnapshotContinuationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "deadline"):
             surface.walk_outline_pages(first, fetch, "root", deadline=0)
 
-        # Large native projects can legitimately exceed 256 bounded pages.
-        # Keep exhausting the offered cursor chain while retaining an explicit
-        # finite page bound and the existing wall-clock deadline.
+        # Large native projects can legitimately exceed 256 pages. A caller
+        # can still impose an explicit page bound, but default traversal is
+        # admitted by the original deadline and bounded retained receipts.
         def long_page(index):
             more = index < 257
             return page(row(f"long-decl-{index}"), f"long-{index + 1}" if more else None, more)
 
-        self.assertEqual(surface.walk_outline_pages(
-            long_page(1), lambda _current, token: long_page(int(token.removeprefix("long-"))),
-            "root", max_pages=512), (257, 257))
         with self.assertRaisesRegex(RuntimeError, "page bound"):
             surface.walk_outline_pages(
                 long_page(1), lambda _current, token: long_page(int(token.removeprefix("long-"))),
-                "root")
+                "root", max_pages=256)
+
+        import contextlib
+        import io
+        retained = []
+        byte_budget = {"bytes": 0}
+        fetch_long_page = lambda _current, token: long_page(int(token.removeprefix("long-")))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(surface.walk_outline_pages(
+                long_page(1), fetch_long_page, "root",
+                on_page=lambda index, response, incoming: surface._emit_continuation_page(
+                    retained, "cli", "outline", index, {"arguments": ["outline"]},
+                    response, incoming, byte_budget=byte_budget)),
+                (257, 257))
+        self.assertEqual(len(retained), 257)
+        self.assertGreater(byte_budget["bytes"], 0)
+        self.assertLess(byte_budget["bytes"], surface.MAX_CONTINUATION_CHAIN_BYTES)
+
+        retained.clear()
+        byte_budget["bytes"] = 0
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(
+                RuntimeError, "complete receipt chain exceeded its byte bound"):
+            surface.walk_outline_pages(
+                long_page(1), fetch_long_page, "root",
+                on_page=lambda index, response, incoming: surface._emit_continuation_page(
+                    retained, "cli", "outline", index, {"arguments": ["outline"]},
+                    response, incoming, byte_budget=byte_budget,
+                    max_total_bytes=1024))
+        self.assertGreater(byte_budget["bytes"], 0)
+        self.assertLess(len(retained), 257)
+
+        oversized = dict(long_page(1), source_text="x" * 128)
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(
+                RuntimeError, "complete page receipt exceeded its byte bound"):
+            surface._emit_continuation_page([], "cli", "outline", 1,
+                {"arguments": ["outline"]}, oversized, None,
+                byte_budget={"bytes": 0}, max_page_bytes=128)
 
     def test_search_cursor_walk_exhausts_pages_and_rejects_cycles_or_duplicates(self):
         def page(coordinate, token, more):

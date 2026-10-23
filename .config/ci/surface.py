@@ -67,6 +67,12 @@ LOCALD_STARTUP_CHECKPOINT_MAX_BYTES = 4096
 LOCALD_PROCESS_CONTEXT_STATUS_MAX_BYTES = 8192
 LOCALD_PROCESS_CONTEXT_CGROUP_MAX_BYTES = 4096
 
+# Continuation receipts are retained and written to the worker event stream.
+# Apply a new 1 MiB complete-receipt cap to either transport and cap each
+# proof chain at 64 MiB; page-count overrides remain available per case.
+MAX_CONTINUATION_RECEIPT_BYTES = 1024 * 1024
+MAX_CONTINUATION_CHAIN_BYTES = 64 * 1024 * 1024
+
 
 def _startup_checkpoint(workspace, pid):
     """Return a bounded summary of this owner's last composition phase."""
@@ -1256,7 +1262,10 @@ def _outline_page_identities(page: dict, previously_seen: set[str]) -> tuple[set
 
 def _emit_continuation_page(evidence: list, transport: str, tool: str,
                             page_index: int, request: dict | list[str],
-                            response: dict, input_cursor: str | None) -> None:
+                            response: dict, input_cursor: str | None,
+                            byte_budget: dict | None = None,
+                            max_page_bytes: int = MAX_CONTINUATION_RECEIPT_BYTES,
+                            max_total_bytes: int = MAX_CONTINUATION_CHAIN_BYTES) -> int:
     """Retain each public page outside goldens without logging opaque cursors."""
     payload = json.loads(json.dumps(response))
     offered = offered_cursor(payload)
@@ -1273,10 +1282,20 @@ def _emit_continuation_page(evidence: list, transport: str, tool: str,
         "offered_cursor_sha256": hashlib.sha256(offered.encode()).hexdigest() if offered else None,
         "response": payload,
     }
+    encoded = json.dumps(receipt, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False).encode("utf-8")
+    receipt_bytes = len(encoded)
+    if receipt_bytes > max_page_bytes:
+        raise RuntimeError("snapshot continuation: complete page receipt exceeded its byte bound")
+    if byte_budget is not None:
+        retained = byte_budget.get("bytes", 0)
+        if retained + receipt_bytes > max_total_bytes:
+            raise RuntimeError("snapshot continuation: complete receipt chain exceeded its byte bound")
+        byte_budget["bytes"] = retained + receipt_bytes
     evidence.append(receipt)
     with OUTPUT_LOCK:
-        print("SURFACE-CONTINUATION-PAGE " + json.dumps(
-            receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False), flush=True)
+        print("SURFACE-CONTINUATION-PAGE " + encoded.decode("utf-8"), flush=True)
+    return receipt_bytes
 
 
 
@@ -1301,10 +1320,15 @@ def continuation_report_references(evidence: list[dict]) -> list[dict]:
 
 
 def walk_outline_pages(first: dict, fetch_page, published_root: str,
-                       max_pages: int = 256, timeout: float = 60.0,
+                       max_pages: int | None = None, timeout: float = 60.0,
                        deadline: float | None = None, on_page=None) -> tuple[int, int]:
-    """Exhaust a real outline cursor chain and reject holes, overlap or basis drift."""
-    if max_pages < 1 or timeout <= 0:
+    """Exhaust an outline cursor chain without truncating valid coverage.
+
+    An explicit page cap remains available to a case that needs one. The
+    default still retains the original deadline and all identity, basis,
+    cursor-progress and receipt-byte checks.
+    """
+    if (max_pages is not None and max_pages < 1) or timeout <= 0:
         raise ValueError("outline continuation bounds must be positive")
     started = time.monotonic()
     deadline = deadline if deadline is not None else started + timeout
@@ -1318,10 +1342,8 @@ def walk_outline_pages(first: dict, fetch_page, published_root: str,
         if time.monotonic() >= deadline:
             raise RuntimeError("snapshot continuation: outline traversal deadline exceeded")
         pages += 1
-        if pages > max_pages:
+        if max_pages is not None and pages > max_pages:
             raise RuntimeError("snapshot continuation: outline traversal exceeded its page bound")
-        if on_page is not None:
-            on_page(pages, current, incoming_token)
         page_ids, new_count = _outline_page_identities(current, seen_rows)
         seen_rows.update(page_ids)
         declarations += new_count
@@ -1330,10 +1352,12 @@ def walk_outline_pages(first: dict, fetch_page, published_root: str,
         more = page_meta.get("more") if isinstance(page_meta, dict) else None
         if not isinstance(more, bool) or more != (token is not None):
             raise RuntimeError("snapshot continuation: outline more flag disagrees with its cursor")
+        if token is not None and token in seen_tokens:
+            raise RuntimeError("snapshot continuation: repeated outline cursor")
+        if on_page is not None:
+            on_page(pages, current, incoming_token)
         if token is None:
             return pages, declarations
-        if token in seen_tokens:
-            raise RuntimeError("snapshot continuation: repeated outline cursor")
         seen_tokens.add(token)
         following = fetch_page(current, token)
         if time.monotonic() >= deadline:
@@ -1635,6 +1659,7 @@ def _replay_cli_cursor(owner: Owner, project: Path, args: list[str], key: str,
         raise RuntimeError(f"{key}: proof replay changed cursor availability")
     proven = set()
     if replay_token is not None:
+        receipt_budget = {"bytes": 0}
         def fetch(current_page, cursor):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -1650,11 +1675,12 @@ def _replay_cli_cursor(owner: Owner, project: Path, args: list[str], key: str,
         def retain(page_number, page, input_cursor):
             kind = "outline" if current.get("answer") == "outline" else "search"
             _emit_continuation_page(evidence, "cli", kind, page_number,
-                                    {"arguments": args}, page, input_cursor)
+                                    {"arguments": args}, page, input_cursor,
+                                    byte_budget=receipt_budget)
 
         if current.get("answer") == "outline":
             walk_outline_pages(current, fetch, published_root,
-                               max_pages=case.get("outline_max_pages", 256),
+                               max_pages=case.get("outline_max_pages"),
                                deadline=deadline, on_page=retain)
         elif current.get("answer") == "records":
             walk_record_pages(current, fetch, deadline=deadline, on_page=retain)
@@ -1710,6 +1736,7 @@ def _replay_mcp_calls(owner: Owner, project: Path, calls: list[dict], measured: 
         replay_proven = set()
         if replay_token is not None:
             page_requests = {}
+            receipt_budget = {"bytes": 0}
             def fetch(current, cursor):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -1725,11 +1752,11 @@ def _replay_mcp_calls(owner: Owner, project: Path, calls: list[dict], measured: 
                 _emit_continuation_page(evidence, "mcp", call["tool"], page_number,
                                         page_requests.get(input_cursor,
                                                           {"arguments": dict(call.get("arguments", {}))}), page,
-                                        input_cursor)
+                                        input_cursor, byte_budget=receipt_budget)
 
             if replay_first.get("answer") == "outline":
                 walk_outline_pages(replay_first, fetch, published_root,
-                                   max_pages=case.get("outline_max_pages", 256),
+                                   max_pages=case.get("outline_max_pages"),
                                    deadline=deadline, on_page=retain)
             elif replay_first.get("answer") == "records":
                 walk_record_pages(replay_first, fetch, deadline=deadline, on_page=retain)
@@ -1955,8 +1982,10 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         shutil.copytree(ROOT / case["project"], project)
     make_case_directories_writable(project)
     timeout = case.get("timeout_seconds", 300)
-    outline_max_pages = case.get("outline_max_pages", 256)
-    if isinstance(outline_max_pages, bool) or not isinstance(outline_max_pages, int) or outline_max_pages < 1:
+    outline_max_pages = case.get("outline_max_pages")
+    if (outline_max_pages is not None and
+            (isinstance(outline_max_pages, bool) or not isinstance(outline_max_pages, int)
+             or outline_max_pages < 1)):
         raise RuntimeError("outline continuation page bound must be a positive integer")
     cargo_vendor = None
     if "cargo_vendor_env" in case:
