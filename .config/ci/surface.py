@@ -56,6 +56,7 @@ TOLERANCE = {"seconds": 1.5, "peak_rss_kib": 1.25, "cpu_seconds": 1.5}
 # Below these floors noise dominates and a change is not a regression.
 FLOOR = {"seconds": 2.0, "peak_rss_kib": 64 * 1024, "cpu_seconds": 2.0}
 SEARCH_PREPARATION_DIAGNOSTICS_ENV = "NUDOX_SEARCH_PREPARATION_DIAGNOSTICS"
+OWNER_USAGE_DIAGNOSTICS_ENV = "NUDOX_OWNER_USAGE_DIAGNOSTICS"
 SEARCH_PREPARATION_RECEIPT = "search-preparation-worker-v1.json"
 SEARCH_PREPARATION_RECEIPT_LIMIT = 4096
 SEARCH_PREPARATION_DIAGNOSTIC_LIMIT = 4096
@@ -645,6 +646,29 @@ def stable(value):
     return value
 
 
+def _owner_usage_diagnostics_enabled(value: str | None = None) -> bool:
+    if value is None:
+        value = os.environ.get(OWNER_USAGE_DIAGNOSTICS_ENV)
+    return value == "1"
+
+
+def _owner_start_ticks(stat_text: str) -> int:
+    # /proc/<pid>/stat fields after the final ')' begin with field 3 (state);
+    # starttime is field 22, hence offset 19 in this tail.
+    fields = stat_text.rsplit(")", 1)[1].split()
+    return int(fields[19])
+
+
+def _emit_owner_usage_diagnostic(case: str | None, event: str, **fields) -> None:
+    if not _owner_usage_diagnostics_enabled():
+        return
+    with OUTPUT_LOCK:
+        print("CI-OWNER-USAGE " + json.dumps({
+            **(RUN_PROVENANCE.get() or {}), "case": case, "event": event,
+            "timestamp_ns": time.time_ns(), **fields,
+        }, sort_keys=True), flush=True)
+
+
 class Owner:
     """One backend-locald for one case, started and stopped by the harness."""
 
@@ -728,27 +752,60 @@ class Owner:
         return {"peak_rss_kib": raw["peak_rss_kib"], "cpu_seconds": round(raw["cpu_seconds"], 2)}
 
     def usage_raw(self) -> dict:
-        """Unrounded owner counters used for phase accounting."""
+        """Unrounded owner counters; optionally retain same-process sample identity."""
         if self.process.poll() is not None:
             raise RuntimeError("owner exited before its resource sample")
         pid = self.process.pid
+        diagnostics = _owner_usage_diagnostics_enabled()
+        stat_before = Path(f"/proc/{pid}/stat").read_text() if diagnostics else None
         status = Path(f"/proc/{pid}/status").read_text()
+        stat_after = Path(f"/proc/{pid}/stat").read_text()
+        if diagnostics:
+            start_before = _owner_start_ticks(stat_before)
+            start_after = _owner_start_ticks(stat_after)
+            if start_before != start_after:
+                raise RuntimeError(
+                    "owner PID identity changed during usage sample: "
+                    f"pid={pid} start_ticks_before={start_before} start_ticks_after={start_after}"
+                )
+        status_name = re.search(r"^Name:\s+(.+)$", status, re.MULTILINE)
         peak = int(re.search(r"VmHWM:\s+(\d+) kB", status).group(1))
         resident = int(re.search(r"VmRSS:\s+(\d+) kB", status).group(1))
-        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        fields = stat_after.rsplit(")", 1)[1].split()
         if self.process.poll() is not None:
             raise RuntimeError("owner exited during its resource sample")
         ticks = os.sysconf("SC_CLK_TCK")
         cpu = (int(fields[11]) + int(fields[12])) / ticks
         if not math.isfinite(cpu) or cpu < 0:
             raise RuntimeError("owner CPU counter is not finite and nonnegative")
-        return {"peak_rss_kib": peak, "resident_rss_kib": resident, "cpu_seconds": cpu}
+        result = {"peak_rss_kib": peak, "resident_rss_kib": resident, "cpu_seconds": cpu}
+        if diagnostics:
+            result.update({
+                "pid": pid,
+                "start_ticks": start_after,
+                "comm": status_name.group(1) if status_name else None,
+                "cpu_user_ticks": int(fields[11]),
+                "cpu_system_ticks": int(fields[12]),
+                "sample_wall_time_ns": time.time_ns(),
+                "sample_monotonic_ns": time.monotonic_ns(),
+            })
+        return result
 
     def reset_peak_rss(self) -> dict:
         """Reset this locald's VmHWM and verify Linux accepted the reset."""
+        case_name = getattr(self, "case_name", None)
         pid = self.process.pid
-        Path(f"/proc/{pid}/clear_refs").write_text("5\n")
+        before = self.usage_raw() if _owner_usage_diagnostics_enabled() else None
+        if before is not None:
+            _emit_owner_usage_diagnostic(case_name, "clear-refs-write-requested",
+                                         pid=pid, start_ticks=before["start_ticks"],
+                                         before=before, value="5\n")
+        written = Path(f"/proc/{pid}/clear_refs").write_text("5\n")
         reset = self.usage_raw()
+        _emit_owner_usage_diagnostic(case_name, "clear-refs-write-completed",
+                                     pid=pid, start_ticks=reset.get("start_ticks"),
+                                     bytes_written=written, before=before, after=reset,
+                                     value="5\n")
         if reset["peak_rss_kib"] != reset["resident_rss_kib"]:
             raise RuntimeError(
                 "owner VmHWM reset did not take effect: "
@@ -791,7 +848,10 @@ def isolated_env(home: Path, bin_dir: Path) -> dict[str, str]:
         name: value
         for name, value in os.environ.items()
         if not name.startswith(("BACKEND_", "FORGEJO_", "NUDOX_WORKSPACE", "NUDOX_PROJECT"))
-        and name != "NIX_BUILDER_KEY"
+        and name not in {
+            "NIX_BUILDER_KEY", SEARCH_PREPARATION_DIAGNOSTICS_ENV,
+            OWNER_USAGE_DIAGNOSTICS_ENV,
+        }
     }
     for name, sub in (
         ("HOME", ""),
@@ -2210,6 +2270,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         if not cargo_vendor.is_absolute() or not cargo_vendor.is_dir() or not str(cargo_vendor.resolve()).startswith("/nix/store/"):
             raise RuntimeError("real corpus: missing pinned Cargo dependency vendor directory")
     owner = Owner(bin_dir, case_root, cargo_vendor)
+    owner.case_name = case["name"]
 
     record = {"answers": {}, "performance": {"seconds": {}}, "continuation_evidence": []}
     proven_answers: dict[str, set[str]] = {}
@@ -2386,6 +2447,14 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         _validate_owner_usage(proof_usage, "after cursor proof")
         if proof_usage["cpu_seconds"] < preproof_usage["cpu_seconds"]:
             raise RuntimeError("owner CPU counter decreased during cursor proof phase")
+        if _owner_usage_diagnostics_enabled():
+            _emit_owner_usage_diagnostic(
+                case["name"], "proof-sample-before-reset",
+                preproof=preproof_usage, proof=proof_usage,
+                hwm_snapshot_decreased=(proof_usage["peak_rss_kib"]
+                                        < preproof_usage["peak_rss_kib"]),
+                reset_state="not-issued",
+            )
         has_cursor_proof = any(require_initial_cursor_shape(item[2]["json"]) is not None
                                for item in cli_proofs)
         if case.get("mcp"):
@@ -2437,6 +2506,15 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         _validate_owner_usage(final_usage, "after live/GUI phases")
         if final_usage["cpu_seconds"] < proof_usage["cpu_seconds"]:
             raise RuntimeError("owner CPU counter decreased across cursor proof and live/GUI phases")
+        if (_owner_usage_diagnostics_enabled()
+                and final_usage["peak_rss_kib"] < reset_usage["peak_rss_kib"]):
+            _emit_owner_usage_diagnostic(
+                case["name"], "post-reset-hwm-snapshot-decreased",
+                reset=reset_usage, final=final_usage,
+                retained_peak=max(reset_usage["peak_rss_kib"],
+                                  final_usage["peak_rss_kib"]),
+                reset_state="issued" if has_cursor_proof else "not-needed",
+            )
         postproof_cpu = final_usage["cpu_seconds"] - proof_usage["cpu_seconds"]
         if postproof_cpu < 0:
             raise RuntimeError("owner post-proof CPU delta is negative")

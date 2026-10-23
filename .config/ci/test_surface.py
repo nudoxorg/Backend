@@ -8,6 +8,9 @@ import unittest
 spec = importlib.util.spec_from_file_location("surface", Path(__file__).with_name("surface.py"))
 surface = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(surface)
+runner_spec = importlib.util.spec_from_file_location("ci_test_runner", Path(__file__).with_name("test.py"))
+runner = importlib.util.module_from_spec(runner_spec)
+runner_spec.loader.exec_module(runner)
 
 
 class NativeTypeScriptOwnerEnvironmentTests(unittest.TestCase):
@@ -27,6 +30,19 @@ class NativeTypeScriptOwnerEnvironmentTests(unittest.TestCase):
         self.assertEqual(env["NUDOX_RUSTC"], "/pinned/rustc")
         self.assertEqual(env["BACKEND_LOCALD_BIN"], "/published/bin/backend-locald")
 
+    def test_diagnostic_runner_flags_do_not_enter_application_process_environment(self):
+        import os, tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {
+                surface.SEARCH_PREPARATION_DIAGNOSTICS_ENV: "1",
+                surface.OWNER_USAGE_DIAGNOSTICS_ENV: "1",
+                "BACKEND_JOURNEY_SEARCH_PREPARATION": "untrusted-inherited-value",
+        }, clear=True):
+            env = surface.isolated_env(Path(temporary) / "home", Path("/published/bin"))
+        self.assertNotIn(surface.SEARCH_PREPARATION_DIAGNOSTICS_ENV, env)
+        self.assertNotIn(surface.OWNER_USAGE_DIAGNOSTICS_ENV, env)
+        self.assertNotIn("BACKEND_JOURNEY_SEARCH_PREPARATION", env)
+
     def test_search_preparation_diagnostics_require_exact_ci_report_opt_in(self):
         self.assertFalse(surface._preparation_diagnostic_opt_in(None, "1"))
         provenance = {"source_sha": "a" * 40}
@@ -36,6 +52,41 @@ class NativeTypeScriptOwnerEnvironmentTests(unittest.TestCase):
         self.assertTrue(surface._preparation_diagnostic_opt_in(provenance, "true"))
         self.assertTrue(surface._preparation_diagnostic_opt_in(provenance, "TRUE"))
         self.assertFalse(surface._preparation_diagnostic_opt_in(provenance, "0"))
+
+
+class SearchPreparationRunnerOptInTests(unittest.TestCase):
+    def invoke_runner(self, argv, inherited):
+        import os
+        import subprocess
+        from unittest.mock import patch
+        with patch.dict(os.environ, inherited, clear=True), \
+                patch.object(runner.sys, "argv", argv), \
+                patch.object(runner.subprocess, "run",
+                             return_value=subprocess.CompletedProcess([], 0)) as launch:
+            self.assertEqual(runner.main(), 0)
+        launch.assert_called_once()
+        return launch.call_args.kwargs["env"]
+
+    def test_provenance_report_opts_in_the_actual_integration_runner_launch(self):
+        flags = (surface.SEARCH_PREPARATION_DIAGNOSTICS_ENV,
+                 surface.OWNER_USAGE_DIAGNOSTICS_ENV)
+        environment = self.invoke_runner([
+            "test.py", "integration", "--bin-dir", "/published/bin", "--in-shell",
+            "--ci-report", "/private/ci-evidence.json", "--source-sha", "a" * 40,
+        ], {flags[0]: "0", flags[1]: "0", "PATH": "/usr/bin"})
+        self.assertEqual([environment[name] for name in flags], ["1", "1"])
+        self.assertEqual(environment["CI_T2_EXTERNAL"], "1")
+
+    def test_non_report_runs_do_not_inherit_external_opt_ins(self):
+        flags = (surface.SEARCH_PREPARATION_DIAGNOSTICS_ENV,
+                 surface.OWNER_USAGE_DIAGNOSTICS_ENV)
+        for argv in (["test.py", "integration", "--bin-dir", "/published/bin", "--in-shell"],
+                     ["test.py", "smoke"]):
+            with self.subTest(argv=argv):
+                environment = self.invoke_runner(argv, {flags[0]: "1", flags[1]: "1", "PATH": "/usr/bin"})
+                for name in flags:
+                    self.assertNotIn(name, environment)
+                self.assertEqual(environment["CI_T2_EXTERNAL"], "1")
 
 
 class SearchPreparationReceiptTests(unittest.TestCase):
@@ -1478,6 +1529,112 @@ class InteractiveMcpTests(unittest.TestCase):
                                        time.monotonic() - 1)
 
 
+class OwnerUsageDiagnosticsTests(unittest.TestCase):
+    def test_diagnostics_opt_in_is_exact(self):
+        self.assertFalse(surface._owner_usage_diagnostics_enabled("true"))
+        self.assertFalse(surface._owner_usage_diagnostics_enabled("0"))
+        self.assertTrue(surface._owner_usage_diagnostics_enabled("1"))
+
+    def test_usage_sample_captures_same_pid_starttime_and_counters(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        owner = surface.Owner.__new__(surface.Owner)
+        owner.process = SimpleNamespace(pid=123, poll=lambda: None)
+        stat_fields = ["0"] * 20
+        stat_fields[10], stat_fields[11], stat_fields[18] = "10", "20", "777"
+        proc_stat = "123 (locald with ) in comm) R " + " ".join(stat_fields)
+
+        def read(path):
+            if str(path) == "/proc/123/status":
+                return "Name:\tlocald\nVmHWM:\t120 kB\nVmRSS:\t100 kB\n"
+            if str(path) == "/proc/123/stat":
+                return proc_stat
+            raise AssertionError(path)
+
+        with patch.object(surface, "_owner_usage_diagnostics_enabled", return_value=True), \
+             patch.object(Path, "read_text", autospec=True,
+                          side_effect=lambda self, *args, **kwargs: read(self)), \
+             patch.object(surface.time, "time_ns", return_value=123456789), \
+             patch.object(surface.time, "monotonic_ns", return_value=987654321):
+            sample = owner.usage_raw()
+        self.assertEqual(sample["pid"], 123)
+        self.assertEqual(sample["start_ticks"], 777)
+        self.assertEqual(sample["comm"], "locald")
+        self.assertEqual(sample["peak_rss_kib"], 120)
+        self.assertEqual(sample["resident_rss_kib"], 100)
+        self.assertEqual(sample["cpu_user_ticks"], 10)
+        self.assertEqual(sample["cpu_system_ticks"], 20)
+        self.assertEqual(sample["sample_wall_time_ns"], 123456789)
+        self.assertEqual(sample["sample_monotonic_ns"], 987654321)
+
+    def test_usage_sample_rejects_pid_reuse_during_proc_reads(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        owner = surface.Owner.__new__(surface.Owner)
+        owner.process = SimpleNamespace(pid=123, poll=lambda: None)
+        tails = []
+        for start_ticks in (777, 778):
+            fields = ["0"] * 20
+            fields[10], fields[11], fields[18] = "10", "20", str(start_ticks)
+            tails.append("123 (locald) R " + " ".join(fields))
+
+        def read(path):
+            if str(path) == "/proc/123/status":
+                return "Name:\tlocald\nVmHWM:\t120 kB\nVmRSS:\t100 kB\n"
+            if str(path) == "/proc/123/stat":
+                return tails.pop(0)
+            raise AssertionError(path)
+
+        with patch.object(surface, "_owner_usage_diagnostics_enabled", return_value=True), \
+             patch.object(Path, "read_text", autospec=True,
+                          side_effect=lambda self, *args, **kwargs: read(self)):
+            with self.assertRaisesRegex(RuntimeError, "start_ticks_before=777 start_ticks_after=778"):
+                owner.usage_raw()
+
+    def test_reset_events_record_request_result_and_same_identity(self):
+        import contextlib, io, json
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        owner = surface.Owner.__new__(surface.Owner)
+        owner.process = SimpleNamespace(pid=123, poll=lambda: None)
+        owner.case_name = "case-a"
+        status_reads = 0
+        writes = []
+        fields = ["0"] * 20
+        fields[10], fields[11], fields[18] = "10", "20", "777"
+        stat_text = "123 (locald) R " + " ".join(fields)
+
+        def read(path):
+            nonlocal status_reads
+            if str(path) == "/proc/123/stat":
+                return stat_text
+            if str(path) == "/proc/123/status":
+                status_reads += 1
+                if status_reads <= 1:
+                    return "Name:\tlocald\nVmHWM:\t120 kB\nVmRSS:\t100 kB\n"
+                return "Name:\tlocald\nVmHWM:\t80 kB\nVmRSS:\t80 kB\n"
+            raise AssertionError(path)
+
+        output = io.StringIO()
+        with patch.object(surface, "_owner_usage_diagnostics_enabled", return_value=True), \
+             patch.object(Path, "read_text", autospec=True,
+                          side_effect=lambda self, *args, **kwargs: read(self)), \
+             patch.object(Path, "write_text", autospec=True,
+                          side_effect=lambda self, value: writes.append((str(self), value)) or len(value)), \
+             contextlib.redirect_stdout(output):
+            reset = owner.reset_peak_rss()
+        self.assertEqual(writes, [("/proc/123/clear_refs", "5\n")])
+        self.assertEqual((reset["peak_rss_kib"], reset["resident_rss_kib"]), (80, 80))
+        events = [json.loads(line.split("CI-OWNER-USAGE ", 1)[1])
+                  for line in output.getvalue().splitlines() if "CI-OWNER-USAGE " in line]
+        self.assertEqual([event["event"] for event in events], [
+            "clear-refs-write-requested", "clear-refs-write-completed"])
+        self.assertEqual(events[0]["case"], "case-a")
+        self.assertEqual(events[0]["start_ticks"], events[1]["start_ticks"])
+        self.assertEqual(events[0]["before"]["peak_rss_kib"], 120)
+        self.assertEqual(events[1]["after"]["peak_rss_kib"], 80)
+
+
 class OwnerPeakResetTests(unittest.TestCase):
     def test_usage_refuses_an_exited_owner_before_reading_proc(self):
         from types import SimpleNamespace
@@ -1485,6 +1642,29 @@ class OwnerPeakResetTests(unittest.TestCase):
         owner.process = SimpleNamespace(pid=123, poll=lambda: 1)
         with self.assertRaisesRegex(RuntimeError, "owner exited before its resource sample"):
             owner.usage_raw()
+
+    def test_usage_refuses_an_owner_that_exits_during_proc_sample(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        owner = surface.Owner.__new__(surface.Owner)
+        polls = iter((None, 0))
+        owner.process = SimpleNamespace(pid=123, poll=lambda: next(polls))
+        reads = []
+
+        def read(path):
+            reads.append(str(path))
+            if str(path) == "/proc/123/status":
+                return "VmHWM:\t120 kB\nVmRSS:\t100 kB\n"
+            if str(path) == "/proc/123/stat":
+                return "123 (locald) R " + " ".join(["0"] * 20)
+            raise AssertionError(path)
+
+        with patch.object(surface, "_owner_usage_diagnostics_enabled", return_value=False), \
+             patch.object(Path, "read_text", autospec=True,
+                          side_effect=lambda self, *args, **kwargs: read(self)):
+            with self.assertRaisesRegex(RuntimeError, "owner exited during its resource sample"):
+                owner.usage_raw()
+        self.assertEqual(reads, ["/proc/123/status", "/proc/123/stat"])
 
     def test_peak_reset_refusal_fails_closed(self):
         from types import SimpleNamespace

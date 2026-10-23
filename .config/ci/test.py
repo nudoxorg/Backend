@@ -11,6 +11,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 CI = ROOT / ".config" / "ci"
+SEARCH_PREPARATION_DIAGNOSTICS_ENV = "NUDOX_SEARCH_PREPARATION_DIAGNOSTICS"
+OWNER_USAGE_DIAGNOSTICS_ENV = "NUDOX_OWNER_USAGE_DIAGNOSTICS"
 
 
 def plan(args: argparse.Namespace) -> list[str]:
@@ -43,6 +45,19 @@ def plan(args: argparse.Namespace) -> list[str]:
     if args.tier != "integration" and (args.bin_dir or args.case or args.update or args.report or args.jobs is not None or args.ci_report or args.source_sha):
         raise ValueError("--bin-dir, --case, --update, --report, --ci-report, --source-sha and --jobs apply only to integration")
     return command if args.in_shell else ["nix", "develop", "path:.#" + shell, "--command", *command]
+
+
+def runner_environment(tier: str, has_ci_report: bool,
+                       inherited: dict[str, str] | None = None) -> dict[str, str]:
+    """Opt in only the provenance-bound integration runner, never its product."""
+    environment = dict(os.environ if inherited is None else inherited)
+    environment["CI_T2_EXTERNAL"] = "1"
+    environment.pop(SEARCH_PREPARATION_DIAGNOSTICS_ENV, None)
+    environment.pop(OWNER_USAGE_DIAGNOSTICS_ENV, None)
+    if tier == "integration" and has_ci_report:
+        environment[SEARCH_PREPARATION_DIAGNOSTICS_ENV] = "1"
+        environment[OWNER_USAGE_DIAGNOSTICS_ENV] = "1"
+    return environment
 
 
 def main() -> int:
@@ -90,7 +105,7 @@ def main() -> int:
         return 0
     # A local smoke verdict must never swallow a separate T2 failure. T2 has
     # its own explicit command, binaries and failure status.
-    environment = dict(os.environ, CI_T2_EXTERNAL="1")
+    environment = runner_environment(args.tier, args.ci_report is not None)
     return subprocess.run(command, cwd=ROOT, env=environment, check=False).returncode
 
 
