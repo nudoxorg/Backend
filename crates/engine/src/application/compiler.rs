@@ -7224,10 +7224,6 @@ fn package_authority_terminal(
             target,
             phase: PackageCompilePhase::Authority,
         },
-        PackageAuthorityError::AdapterUnavailable { .. } => CompilerTerminal::Unavailable {
-            language: request.profile.language(),
-            stage: request.stage,
-        },
         PackageAuthorityError::ToolchainUnavailable { tool, .. } => CompilerTerminal::Toolchain {
             source,
             language: request.profile.language(),
@@ -7286,6 +7282,11 @@ fn package_authority_terminal(
             )
         }
         cause => {
+            // An absent configured producer is an admission refusal, not a
+            // compiler missing from this build. Preserve its exact source and
+            // stage diagnostic without claiming a recipe was attempted.
+            let adapter_unavailable =
+                matches!(&cause, PackageAuthorityError::AdapterUnavailable { .. });
             let pre_recipe_typescript_admission =
                 matches!(&cause, PackageAuthorityError::TypeScriptProjectHost(_))
                     && request.profile.language()
@@ -7364,7 +7365,7 @@ fn package_authority_terminal(
                     },
                 },
             });
-            if pre_recipe_typescript_admission {
+            if adapter_unavailable || pre_recipe_typescript_admission {
                 CompilerTerminal::AuthorityAdmission {
                     source,
                     language: request.profile.language(),
@@ -8303,6 +8304,65 @@ mod tests {
         let encoded = serde_json::to_string(&failure).unwrap();
         assert!(encoded.contains("dependency_package_load"));
         assert!(!encoded.contains("/toolchain"));
+    }
+
+    #[test]
+    fn csharp_missing_roslyn_authority_is_configuration_admission_not_absent_build_support() {
+        use backend_semantic::vocabulary::{CSharpVersion, Language};
+
+        let request = super::ApplicationCompilerRequest {
+            profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
+            stage: Stage::LowerIr,
+            source: "public sealed class Library {}",
+        };
+        let source = request_source(request).unwrap();
+        let target = ContentId::from_canonical_bytes(b"missing Roslyn authority");
+        let toolchain = ResolvedToolchain::from_version(
+            NativeTool::CSharpCompiler,
+            host_path("/toolchain/bin/dotnet"),
+            b"10.0.100",
+        )
+        .unwrap();
+        let terminal = package_authority_terminal(
+            target,
+            request,
+            source,
+            ToolchainSelection::ResolvedNative(toolchain),
+            PackageAuthorityError::AdapterUnavailable {
+                profile: request.profile,
+                stage: crate::application::package_authority::PackageAuthorityStage::CSharpRoslyn,
+            },
+        );
+        let CompilerTerminal::AuthorityAdmission {
+            source: retained_source,
+            language: Language::CSharp,
+            stage: Stage::LowerIr,
+            phase: AuthorityPhase::Open,
+            class: AuthorityDiagnosticClass::Authority,
+            diagnostic: Some(diagnostic),
+        } = &terminal
+        else {
+            panic!("configured dotnet cannot substitute for the missing Roslyn producer");
+        };
+        assert_eq!(*retained_source, source);
+        let diagnostic = std::str::from_utf8(diagnostic.retained_bytes_for_local_debug()).unwrap();
+        assert!(diagnostic.contains("no C# package authority is configured"));
+        assert!(diagnostic.contains("running the C# compiler"));
+        let text = format!(
+            "{}",
+            super::super::compiler_terminal_text::TerminalText::new("Library.cs", &terminal)
+        );
+        assert!(!text.contains("in this build"), "{text}");
+        let failure =
+            backend_library::PackageCompilerFailure::from_package_terminal("Library.cs", &terminal)
+                .unwrap()
+                .expect("authority refusal must retain a typed package outcome");
+        assert_eq!(failure.recipe_identity(), None);
+        let encoded = failure.encode_bounded_json().unwrap();
+        assert_eq!(
+            backend_library::PackageCompilerFailure::decode_bounded_json(&encoded).unwrap(),
+            failure
+        );
     }
 
     #[test]
