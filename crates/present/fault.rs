@@ -209,6 +209,8 @@ pub enum CauseSlug {
     Oversized,
     /// A producer proof did not admit.
     Unproven,
+    /// The connected NuDox owner reports a different wire DTO version.
+    OwnerVersionMismatch,
     /// The source bytes exist but are not resident locally.
     NotResident,
     /// The producer never captured the requested evidence.
@@ -231,6 +233,7 @@ impl CauseSlug {
             Self::Unreachable => "unreachable",
             Self::Oversized => "oversized",
             Self::Unproven => "unproven",
+            Self::OwnerVersionMismatch => "owner-version-mismatch",
             Self::NotResident => "not-resident",
             Self::NotCaptured => "not-captured",
             Self::Refused => "refused",
@@ -1270,6 +1273,11 @@ impl Fault {
                 Affordance::Retry,
             ),
             ClientError::OwnerUpdate { found, supported, detail } => {
+                let cause_slug = if found == supported {
+                    CauseSlug::Unproven
+                } else {
+                    CauseSlug::OwnerVersionMismatch
+                };
                 let message = if found == supported {
                     format!("NuDox owner build update: {detail}")
                 } else {
@@ -1278,7 +1286,7 @@ impl Fault {
                 match owner_image_mode_repair(detail) {
                     Some(Some(command)) => (
                         FaultSlug::Protocol,
-                        CauseSlug::Unproven,
+                        cause_slug,
                         format!(
                             "{message}; remove the image's group/world write bit before retrying, or rebuild under umask 0022"
                         ),
@@ -1286,13 +1294,13 @@ impl Fault {
                     ),
                     Some(None) => (
                         FaultSlug::Protocol,
-                        CauseSlug::Unproven,
+                        cause_slug,
                         format!("{message}; rebuild under umask 0022 before retrying"),
                         Affordance::None,
                     ),
                     None => (
                         FaultSlug::Protocol,
-                        CauseSlug::Unproven,
+                        cause_slug,
                         message,
                         Affordance::Retry,
                     ),
@@ -1527,6 +1535,16 @@ mod owner_image_update_tests {
             Operand::Whole,
         );
         assert!(wire.cause().sentence().contains("version 38 → 39"));
+        assert_eq!(wire.cause().slug(), CauseSlug::OwnerVersionMismatch);
         assert_eq!(wire.affordance(), &Affordance::Retry);
+        let same_version = Fault::from_client_error(
+            &ClientError::OwnerUpdate {
+                found: 39,
+                supported: 39,
+                detail: "owner image could not be proven".into(),
+            },
+            Operand::Whole,
+        );
+        assert_eq!(same_version.cause().slug(), CauseSlug::Unproven);
     }
 }

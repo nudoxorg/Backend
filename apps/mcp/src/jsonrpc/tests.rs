@@ -57,6 +57,52 @@ const MODULE: &str = "/abs/polyglot::src/lib.rs";
 const DECLARATION: &str = "/abs/polyglot::src/lib.rs:2::ferris";
 const MISSING: &str = "/abs/polyglot::src/lib.rs:999::nothing";
 
+#[test]
+fn owner_wire_version_mismatch_has_specific_jsonrpc_message_and_keeps_typed_detail() {
+    let mismatch = Fault::from_client_error(
+        &ClientError::OwnerUpdate {
+            found: 38,
+            supported: 39,
+            detail: "restart the previous NuDox owner, then retry the original command; no command was submitted"
+                .into(),
+        },
+        backend_present::Operand::Whole,
+    );
+    let reply = RpcError::from_fault(&mismatch).into_reply(json!(7));
+    assert_eq!(reply["error"]["code"], -32603);
+    assert_eq!(
+        reply["error"]["message"],
+        "NuDox owner version mismatch; restart the running owner before retrying"
+    );
+    assert_eq!(
+        reply["error"]["data"]["structuredContent"]["cause"],
+        "owner-version-mismatch"
+    );
+    let detail = reply["error"]["data"]["detail"]
+        .as_str()
+        .expect("preserved fault explanation");
+    assert!(detail.contains("version 38 → 39"));
+    assert!(detail.contains("no command was submitted"));
+
+    let same_version = Fault::from_client_error(
+        &ClientError::OwnerUpdate {
+            found: 39,
+            supported: 39,
+            detail: "the running owner image could not be proven".into(),
+        },
+        backend_present::Operand::Whole,
+    );
+    let reply = RpcError::from_fault(&same_version).into_reply(json!(8));
+    assert_eq!(reply["error"]["message"], "Backend request failed");
+
+    let unrelated = Fault::from_client_error(
+        &ClientError::Protocol("reply identity was not admitted".into()),
+        backend_present::Operand::Whole,
+    );
+    let reply = RpcError::from_fault(&unrelated).into_reply(json!(9));
+    assert_eq!(reply["error"]["message"], "Backend request failed");
+}
+
 // Canonical unpadded base64url JSON, matching the index-search issuer's
 // encoding. The fixture product still owns its semantic state admission.
 const FIXTURE_INDEX_CURSOR: &str = "eyJ2ZXJzaW9uIjo0LCJmaXh0dXJlIjoibWF2ZW4tb3duZXItdjQifQ";

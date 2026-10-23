@@ -3528,6 +3528,8 @@ impl RpcError {
             },
             message: if fault.slug() == backend_present::FaultSlug::NotFound {
                 "Resource not found"
+            } else if fault.cause().slug() == backend_present::CauseSlug::OwnerVersionMismatch {
+                "NuDox owner version mismatch; restart the running owner before retrying"
             } else {
                 "Backend request failed"
             },
