@@ -251,9 +251,14 @@ mod json_value_import_tests {
             file_formats: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x5b; 32]),
         };
-        let library = TszLibraryInput::from_utf8(
+        let base_library = TszLibraryInput::from_utf8(
             "lib.es5.d.ts",
             b"interface Error { name: string; message: string; }".to_vec(),
+        )?
+        .into_lib_file();
+        let cause_library = TszLibraryInput::from_utf8(
+            "lib.es2022.error.d.ts",
+            b"interface Error { cause?: unknown; }".to_vec(),
         )?
         .into_lib_file();
         let mut authority = TszProjectAuthority::new();
@@ -264,7 +269,7 @@ mod json_value_import_tests {
                 input("src/consumer.ts", CONSUMER),
             ],
             recipe,
-            &[library],
+            &[base_library, cause_library],
         )?;
         let project = checked_project(&authority)?;
         let consumer = project
@@ -282,6 +287,29 @@ mod json_value_import_tests {
             .position(|file| file.file_name == "src/query.ts")
             .ok_or_else(|| io::Error::other("query module is absent from the checked project"))?
             as u32;
+        let program = project.program();
+        let error_id = program
+            .globals
+            .get("Error")
+            .ok_or_else(|| io::Error::other("the linked libraries do not expose global Error"))?;
+        let error_symbol = program
+            .symbols
+            .get(error_id)
+            .ok_or_else(|| io::Error::other("global Error has no merged symbol"))?;
+        let library_error_owner_count: usize = error_symbol
+            .declarations
+            .iter()
+            .map(|&declaration| {
+                program
+                    .declaration_arenas
+                    .get(&(error_id, declaration))
+                    .map_or(0, |arenas| arenas.len())
+            })
+            .sum();
+        assert_eq!(
+            library_error_owner_count, 2,
+            "the two explicit libraries must retain both Error declaration arenas"
+        );
         project.with_file_checker_and_types(consumer, |checker, binder, _, types| {
             let state = binder
                 .file_locals
@@ -296,6 +324,20 @@ mod json_value_import_tests {
                 .ok_or_else(|| io::Error::other("projected QueryState error is not bound"))?;
             let error_type = checker.get_type_of_symbol(error);
             let error_type = checker.resolve_lazy_type(error_type);
+            let checker_error_owner_count: usize = error_symbol
+                .declarations
+                .iter()
+                .map(|&declaration| {
+                    binder
+                        .declaration_arenas
+                        .get(&(error_id, declaration))
+                        .map_or(0, |arenas| arenas.len())
+                })
+                .sum();
+            assert_eq!(
+                checker_error_owner_count, library_error_owner_count,
+                "the actual project checker binder must retain both Error declaration arenas"
+            );
             // Inspect retained declarations rather than relying on whichever
             // structural spelling the formatter chooses. The builtin Error
             // must remain the non-program, zero-parameter declaration; the

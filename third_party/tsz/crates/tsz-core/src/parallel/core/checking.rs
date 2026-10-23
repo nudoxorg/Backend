@@ -686,7 +686,11 @@ pub fn check_functions_parallel_with_project_semantic_options(
         .files
         .iter()
         .enumerate()
-        .map(|(file_idx, file)| Arc::new(create_binder_from_bound_file(file, program, file_idx)))
+        .map(|(file_idx, file)| {
+            Arc::new(create_binder_from_bound_file_with_program_owners(
+                file, program, file_idx,
+            ))
+        })
         .collect();
     let all_binders = Arc::new(shared_binders.clone());
     let all_arenas = Arc::new(
@@ -1471,7 +1475,7 @@ impl<'a> ParallelCheckPlan<'a> {
         let mut all_binders_vec = Vec::with_capacity(program.files.len());
         for (file_idx, file) in program.files.iter().enumerate() {
             project_plan_checkpoint(execution_checkpoint, 1)?;
-            all_binders_vec.push(Arc::new(create_binder_from_bound_file(
+            all_binders_vec.push(Arc::new(create_binder_from_bound_file_with_program_owners(
                 file, program, file_idx,
             )));
         }
@@ -2881,9 +2885,42 @@ pub fn create_binder_from_bound_file(
     program: &MergedProgram,
     file_idx: usize,
 ) -> BinderState {
-    let declaration_arenas = Arc::clone(&file.declaration_arenas);
-    let sym_to_decl_indices = Arc::clone(&file.sym_to_decl_indices);
-    let symbol_arenas = Arc::clone(&file.symbol_arenas);
+    create_binder_from_bound_file_with_owners(file, program, file_idx, false)
+}
+
+/// Reconstruct a project checker binder with the complete merged declaration ownership maps.
+///
+/// `BoundFile` maps intentionally omit library-originated declarations, so using them together
+/// with merged program globals can make a library declaration fall back to a same-index node in
+/// the current source file. Project-wide checking must retain the merged maps, including every
+/// declaration arena for merged standard-library interfaces such as augmented `Error`.
+pub fn create_binder_from_bound_file_with_program_owners(
+    file: &BoundFile,
+    program: &MergedProgram,
+    file_idx: usize,
+) -> BinderState {
+    create_binder_from_bound_file_with_owners(file, program, file_idx, true)
+}
+
+fn create_binder_from_bound_file_with_owners(
+    file: &BoundFile,
+    program: &MergedProgram,
+    file_idx: usize,
+    use_program_owners: bool,
+) -> BinderState {
+    let (declaration_arenas, sym_to_decl_indices, symbol_arenas) = if use_program_owners {
+        (
+            Arc::clone(&program.declaration_arenas),
+            Arc::clone(&program.sym_to_decl_indices),
+            Arc::clone(&program.symbol_arenas),
+        )
+    } else {
+        (
+            Arc::clone(&file.declaration_arenas),
+            Arc::clone(&file.sym_to_decl_indices),
+            Arc::clone(&file.symbol_arenas),
+        )
+    };
 
     // Merge per-file locals with program globals via the shared helper,
     // which short-circuits to an O(1) `Arc::clone` when one side is empty.
