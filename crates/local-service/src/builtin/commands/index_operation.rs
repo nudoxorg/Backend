@@ -70,6 +70,8 @@ CREATE INDEX IF NOT EXISTS backend_index_operations_terminal_order
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct StoredOperation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) cargo_target: Option<backend_library::CargoTargetSelector>,
     pub(super) operation_key: IndexOperationKey,
     pub(super) request_digest: [u8; 32],
     pub(super) package: PackageReference,
@@ -593,8 +595,22 @@ impl IndexOperationJournal {
         package: PackageReference,
         execution_intent: CompileExecutionIntent,
     ) -> Result<Acceptance, JournalError> {
+        self.accept_with_target(operation_key, package, execution_intent, None)
+    }
+
+    pub(super) fn accept_with_target(
+        &mut self,
+        operation_key: IndexOperationKey,
+        package: PackageReference,
+        execution_intent: CompileExecutionIntent,
+        cargo_target: Option<backend_library::CargoTargetSelector>,
+    ) -> Result<Acceptance, JournalError> {
         self.require_writer()?;
-        let request_digest = index_operation_request_digest(&package, execution_intent);
+        let request_digest = backend_library::index_operation_scoped_request_digest(
+            &package,
+            execution_intent,
+            cargo_target.as_ref(),
+        );
         let result = futures_executor::block_on(async {
             let transaction = self
                 .connection
@@ -610,7 +626,8 @@ impl IndexOperationJournal {
                         JournalEntry::Retained(entry)
                             if entry.request_digest == request_digest
                                 && entry.package == package
-                                && entry.execution_intent == execution_intent =>
+                                && entry.execution_intent == execution_intent
+                                && entry.cargo_target == cargo_target =>
                         {
                             Ok(Acceptance::Existing)
                         }
@@ -621,6 +638,7 @@ impl IndexOperationJournal {
                     validate_meta(&meta)?;
                     check_acceptance_capacity(&meta)?;
                     let entry = StoredOperation {
+                        cargo_target,
                         operation_key,
                         request_digest,
                         package,
@@ -1128,6 +1146,7 @@ impl IndexOperationJournal {
                         entry.execution_intent,
                         state,
                     )
+                    .with_cargo_target(entry.cargo_target)
                     .with_source_capture(entry.source_capture),
                 )
             }
@@ -1752,7 +1771,11 @@ fn stored_state_code(state: &StoredOperationState) -> Option<i64> {
 
 fn validate_entry(entry: &StoredOperation) -> Result<(), JournalError> {
     if entry.request_digest
-        != index_operation_request_digest(&entry.package, entry.execution_intent)
+        != backend_library::index_operation_scoped_request_digest(
+            &entry.package,
+            entry.execution_intent,
+            entry.cargo_target.as_ref(),
+        )
     {
         return Err(JournalError::Corrupt(
             "stored request digest does not match the canonical request".to_owned(),
@@ -1779,6 +1802,7 @@ fn validate_entry(entry: &StoredOperation) -> Result<(), JournalError> {
             entry.execution_intent,
             IndexOperationState::Accepted,
         )
+        .with_cargo_target(entry.cargo_target.clone())
         .with_source_capture(Some(source_capture.clone()));
         SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status))
             .admit(backend_library::CommandId::IndexProgress)
@@ -1842,7 +1866,8 @@ fn validate_entry(entry: &StoredOperation) -> Result<(), JournalError> {
                 detail: detail.clone(),
                 compiler_failure: compiler_failure.clone(),
             },
-        );
+        )
+        .with_cargo_target(entry.cargo_target.clone());
         SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status))
             .admit(backend_library::CommandId::IndexProgress)
             .map_err(|error| JournalError::Corrupt(error.to_string()))?;
@@ -1917,6 +1942,7 @@ fn validate_entry(entry: &StoredOperation) -> Result<(), JournalError> {
             entry.execution_intent,
             state,
         )
+        .with_cargo_target(entry.cargo_target.clone())
         .with_source_capture(entry.source_capture.clone());
         let reply = SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status));
         reply
@@ -1934,6 +1960,7 @@ pub(super) fn same_source_capture_basis(
         && previous.commit_identity() == next.commit_identity()
         && previous.workspace_root() == next.workspace_root()
         && previous.workspace_sequence() == next.workspace_sequence()
+        && previous.cargo_target == next.cargo_target
         && previous.profiles().len() == next.profiles().len()
         && previous
             .profiles()

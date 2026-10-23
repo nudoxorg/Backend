@@ -1162,6 +1162,7 @@ fn admitted_durable_partial_matches_ticket_fault_and_cli_exit_without_inventing_
         )
         .expect("receipt"),
         source_capture: IndexSourceCaptureSummary {
+            cargo_target: None,
             producer_package: PackageReference::parse("pkg:cargo/producer@1.0.0")
                 .expect("producer"),
             request_identity: [1; 32],

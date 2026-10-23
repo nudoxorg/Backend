@@ -4811,8 +4811,10 @@ mod rust_target_selector_admission_tests {
                 "pkg:cargo/selector-fixture@1.0.0",
             ),
             PathBuf::from("/selector-fixture"),
-            vec![OwnedPackageSource::from_string("src/lib.rs", "pub fn value() {}".into())
-                .expect("normalized Rust source")]
+            vec![
+                OwnedPackageSource::from_string("src/lib.rs", "pub fn value() {}".into())
+                    .expect("normalized Rust source"),
+            ]
             .into_boxed_slice(),
         )
         .expect("valid Rust package source set")
@@ -4833,8 +4835,10 @@ mod rust_target_selector_admission_tests {
                 "pkg:npm/selector-fixture@1.0.0",
             ),
             PathBuf::from("/selector-fixture"),
-            vec![OwnedPackageSource::from_string("src/index.ts", "export {};".into())
-                .expect("normalized TypeScript source")]
+            vec![
+                OwnedPackageSource::from_string("src/index.ts", "export {};".into())
+                    .expect("normalized TypeScript source"),
+            ]
             .into_boxed_slice(),
         )
         .expect("valid TypeScript package source set");

@@ -1178,6 +1178,7 @@ fn capture_only_generation_rebind_cold_recovers_then_retains_compact_events() {
         Vec::new(),
         Vec::new(),
         vec![super::super::BuiltinCaptureChange {
+            cargo_target: None,
             key,
             expected: None,
             capture: SemanticSourceCapture::new(None, [0xB3; 32], [0xB4; 32], 1, 1)

@@ -1217,6 +1217,9 @@ pub struct IndexOperationSourceProfile {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndexOperationSourceCaptureReceipt {
+    /// Explicit selected Rust target and its compiler-proven source closure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cargo_target: Option<crate::CargoTargetScope>,
     /// Caller-owned operation identity bound into the source workspace intent.
     pub operation_key: IndexOperationKey,
     /// Exact selected source-capture commit identity.
@@ -1244,8 +1247,14 @@ impl IndexOperationSourceCaptureReceipt {
         workspace_sequence: u64,
         profiles: Box<[IndexOperationSourceProfile]>,
     ) -> Result<Self, ProductAdmissionError> {
-        admit_source_capture_parts(commit_identity, workspace_root, workspace_sequence, &profiles)?;
+        admit_source_capture_parts(
+            commit_identity,
+            workspace_root,
+            workspace_sequence,
+            &profiles,
+        )?;
         Ok(Self {
+            cargo_target: None,
             operation_key,
             commit_identity,
             workspace_root,
@@ -1285,6 +1294,7 @@ impl IndexOperationSourceCaptureReceipt {
     }
 
     fn admit(&self, operation_key: IndexOperationKey) -> Result<(), ProductAdmissionError> {
+        admit_cargo_source_scope(self.cargo_target.as_ref(), &self.profiles)?;
         if self.operation_key != operation_key {
             return Err(ProductAdmissionError::IndexOperationShape);
         }
@@ -1584,6 +1594,9 @@ pub enum IndexOperationUnresolvedReason {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndexOperationStatus {
+    /// Explicit target requested by the caller, when target scope was selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cargo_target: Option<crate::CargoTargetSelector>,
     /// Caller-owned durable operation identity.
     pub operation_key: IndexOperationKey,
     /// Hash of the canonical package and execution request.
@@ -1611,6 +1624,7 @@ impl IndexOperationStatus {
         state: IndexOperationState,
     ) -> Self {
         Self {
+            cargo_target: None,
             operation_key,
             request_digest: index_operation_request_digest(&package, execution_intent),
             package,
@@ -1618,6 +1632,18 @@ impl IndexOperationStatus {
             state,
             source_capture: None,
         }
+    }
+
+    /// Binds the target selector and recomputes this exact request's digest.
+    #[must_use]
+    pub fn with_cargo_target(mut self, target: Option<crate::CargoTargetSelector>) -> Self {
+        self.cargo_target = target;
+        self.request_digest = index_operation_scoped_request_digest(
+            &self.package,
+            self.execution_intent,
+            self.cargo_target.as_ref(),
+        );
+        self
     }
 
     /// Adds the exact source capture independently of the operation outcome.
@@ -1661,6 +1687,14 @@ impl IndexOperationObservation {
             Self::Known(status) => {
                 if let Some(source_capture) = &status.source_capture {
                     source_capture.admit(status.operation_key)?;
+                    if source_capture
+                        .cargo_target
+                        .as_ref()
+                        .map(|scope| &scope.name)
+                        != status.cargo_target.as_ref()
+                    {
+                        return Err(ProductAdmissionError::IndexOperationShape);
+                    }
                     let any_pending = source_capture.profiles().iter().any(|profile| {
                         matches!(
                             profile.state,
@@ -1735,7 +1769,11 @@ impl IndexOperationObservation {
                     _ => {}
                 }
                 if status.request_digest
-                    != index_operation_request_digest(&status.package, status.execution_intent)
+                    != index_operation_scoped_request_digest(
+                        &status.package,
+                        status.execution_intent,
+                        status.cargo_target.as_ref(),
+                    )
                 {
                     return Err(ProductAdmissionError::IndexOperationShape);
                 }
@@ -1761,6 +1799,26 @@ pub fn index_operation_request_digest(
         crate::CompileExecutionIntent::Interactive => 1,
         crate::CompileExecutionIntent::Background => 2,
     }]);
+    *hasher.finalize().as_bytes()
+}
+
+/// Request identity including an explicit Cargo context. Unset requests keep
+/// their existing digest so saved legacy operations remain reconcilable.
+#[must_use]
+pub fn index_operation_scoped_request_digest(
+    package: &PackageReference,
+    execution_intent: crate::CompileExecutionIntent,
+    cargo_target: Option<&crate::CargoTargetSelector>,
+) -> [u8; 32] {
+    let prior = index_operation_request_digest(package, execution_intent);
+    let Some(target) = cargo_target else {
+        return prior;
+    };
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.library.index-operation-cargo-target.v1\0");
+    hasher.update(&prior);
+    hasher.update(&(target.as_str().len() as u64).to_be_bytes());
+    hasher.update(target.as_str().as_bytes());
     *hasher.finalize().as_bytes()
 }
 
@@ -3068,6 +3126,9 @@ fn lower_hex_nibble(value: u8) -> Option<u8> {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndexSourceCaptureSummary {
+    /// Explicit selected Rust context; source counts refer to this target closure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cargo_target: Option<crate::CargoTargetScope>,
     /// Immutable producer namespace whose selected profile markers were read.
     pub producer_package: PackageReference,
     /// Source intent identity retained in each selected profile marker.
@@ -3085,10 +3146,35 @@ pub struct IndexSourceCaptureSummary {
     pub profiles: Box<[IndexOperationSourceProfile]>,
 }
 
+fn admit_cargo_source_scope(
+    scope: Option<&crate::CargoTargetScope>,
+    profiles: &[IndexOperationSourceProfile],
+) -> Result<(), ProductAdmissionError> {
+    if let Some(scope) = scope {
+        scope
+            .validate()
+            .map_err(|_| ProductAdmissionError::IndexOperationShape)?;
+        let mut rust = profiles.iter().filter(|profile| {
+            matches!(
+                profile.profile.profile(),
+                Ok(backend_semantic::vocabulary::LanguageProfile::Rust(_))
+            )
+        });
+        let Some(profile) = rust.next() else {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        };
+        if rust.next().is_some() || profile.source_count != scope.source_count {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        }
+    }
+    Ok(())
+}
+
 impl IndexSourceCaptureSummary {
     /// Checks the exact source basis and canonical bounded profile tuples.
     /// This is structural admission; authority comes from selected owner rows.
     pub fn admit(&self) -> Result<(), ProductAdmissionError> {
+        admit_cargo_source_scope(self.cargo_target.as_ref(), &self.profiles)?;
         if self.request_identity.iter().all(|byte| *byte == 0) {
             return Err(ProductAdmissionError::IndexOperationShape);
         }
@@ -3716,6 +3802,9 @@ pub enum SurfaceCommand {
     },
     /// Start indexing one local project without waiting for compilation.
     IndexStart {
+        /// Explicit Cargo target name, resolved only against admitted Cargo facts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cargo_target: Option<crate::CargoTargetSelector>,
         /// Local project directory or pinned package coordinate.
         package: PackageReference,
         /// Requested compiler execution class.
@@ -3723,6 +3812,9 @@ pub enum SurfaceCommand {
     },
     /// Start or replay one operation under a caller-persisted durable key.
     IndexOperationStart {
+        /// Explicit Cargo target, retained in the durable request identity.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cargo_target: Option<crate::CargoTargetSelector>,
         /// Durable identity created and persisted by the caller before dispatch.
         operation_key: IndexOperationKey,
         /// Local project directory or pinned package coordinate.
@@ -8024,6 +8116,7 @@ mod tests {
         .expect("genesis no-op still names a valid selected revision");
         assert!(genesis_no_op.request_identity().is_none());
         let status = IndexOperationStatus {
+            cargo_target: None,
             operation_key: key,
             request_digest: index_operation_request_digest(
                 &PackageReference::parse("/workspace/demo").expect("package"),
@@ -8065,6 +8158,7 @@ mod tests {
         );
 
         let command = SurfaceCommand::IndexOperationStart {
+            cargo_target: None,
             operation_key: key,
             package: PackageReference::parse("/workspace/demo").expect("package"),
             execution_intent: crate::CompileExecutionIntent::Interactive,
@@ -8164,11 +8258,16 @@ mod tests {
         let IndexOperationState::PartiallyPublished { receipt, refused_profiles } = &status.state else { unreachable!() };
         let captured = status.source_capture.as_ref().expect("source capture");
         let partial = IndexJobPartialPublication {
-            package: status.package.clone(), receipt: receipt.clone(),
+            package: status.package.clone(),
+            receipt: receipt.clone(),
             source_capture: IndexSourceCaptureSummary {
-                producer_package: status.package.clone(), request_identity: [21; 32],
-                commit_identity: *captured.commit_identity(), workspace_root: *captured.workspace_root(),
-                workspace_sequence: captured.workspace_sequence(), profiles: captured.profiles.clone(),
+                cargo_target: None,
+                producer_package: status.package.clone(),
+                request_identity: [21; 32],
+                commit_identity: *captured.commit_identity(),
+                workspace_root: *captured.workspace_root(),
+                workspace_sequence: captured.workspace_sequence(),
+                profiles: captured.profiles.clone(),
             },
             refused_profiles: refused_profiles.clone(),
         };
@@ -8180,19 +8279,41 @@ mod tests {
         assert!(serde_json::from_value::<IndexJobPartialPublication>(foreign_profile).is_err(),
             "a published outcome cannot smuggle an unknown compiler profile past refusal validation");
 
-        let reply = crate::ReplyDto::new(42, crate::CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial.clone())));
-        let requested = crate::CommandDto::new(42, crate::Command::Add {
-            package: crate::package_key(partial.package.as_str()), execution_intent: crate::CompileExecutionIntent::Interactive });
+        let reply = crate::ReplyDto::new(
+            42,
+            crate::CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial.clone())),
+        );
+        let requested = crate::CommandDto::new(
+            42,
+            crate::Command::Add {
+                cargo_target: None,
+                package: crate::package_key(partial.package.as_str()),
+                execution_intent: crate::CompileExecutionIntent::Interactive,
+            },
+        );
         crate::admit_reply(&requested, &reply).expect("exact legacy Add caller binding");
         let encoded_reply = serde_json::to_vec(&reply).expect("full wire partial");
         let decoded_reply = crate::wire::decode_reply_body(&encoded_reply).expect("strict partial wire decode");
         crate::admit_reply(&requested, &decoded_reply).expect("decoded exact Add");
-        assert!(crate::reply_memory_bound(&reply) >= encoded_reply.len(), "partial bound includes every profile and compiler refusal");
-        for command in [crate::Command::Health,
-            crate::Command::Remove { package: crate::package_key(partial.package.as_str()) },
-            crate::Command::Add { package: crate::package_key("/workspace/foreign"), execution_intent: crate::CompileExecutionIntent::Interactive }] {
-            assert!(crate::admit_reply(&crate::CommandDto::new(42, command), &decoded_reply).is_err(),
-                "generic Failed arm cannot authorize a partial publication for another request");
+        assert!(
+            crate::reply_memory_bound(&reply) >= encoded_reply.len(),
+            "partial bound includes every profile and compiler refusal"
+        );
+        for command in [
+            crate::Command::Health,
+            crate::Command::Remove {
+                package: crate::package_key(partial.package.as_str()),
+            },
+            crate::Command::Add {
+                cargo_target: None,
+                package: crate::package_key("/workspace/foreign"),
+                execution_intent: crate::CompileExecutionIntent::Interactive,
+            },
+        ] {
+            assert!(
+                crate::admit_reply(&crate::CommandDto::new(42, command), &decoded_reply).is_err(),
+                "generic Failed arm cannot authorize a partial publication for another request"
+            );
         }
 
         let terminal = IndexJobTerminal {
@@ -8523,6 +8644,7 @@ mod tests {
         )
         .expect("checked publication receipt");
         let status = IndexOperationStatus {
+            cargo_target: None,
             operation_key: key,
             request_digest: index_operation_request_digest(
                 &package,
@@ -8601,6 +8723,7 @@ mod tests {
             package.clone(),
         );
         let command = SurfaceCommand::IndexStart {
+            cargo_target: None,
             package: package.clone(),
             execution_intent: crate::CompileExecutionIntent::Interactive,
         };

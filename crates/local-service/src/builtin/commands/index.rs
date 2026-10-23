@@ -357,6 +357,7 @@ pub(super) fn capture_index_scan(
         reusable.insert(key, record);
     }
     Ok(IndexScanWork {
+        cargo_target: None,
         package,
         label: label.to_owned(),
         source_root: source_root.to_path_buf(),
@@ -495,6 +496,7 @@ pub(super) fn finish_index_scan(
 ) -> Result<PreparedIndex, BuiltinModelError> {
     let base_snapshot = daemon.engine().daemon().owner().snapshot();
     let PreparedScanSource {
+        rust_target,
         package,
         label,
         requested_root: requested_root_owned,
@@ -534,7 +536,8 @@ pub(super) fn finish_index_scan(
         compiler,
         python_environment.as_ref(),
         cancellation.as_ref(),
-    )?;
+    )?
+    .with_rust_target(rust_target.as_ref());
     let (
         semantic_changes,
         selected,
@@ -1304,6 +1307,10 @@ fn prepare_source_capture_changes_for_snapshot(
             })?
             .flatten();
         changes.push(BuiltinCaptureChange {
+            cargo_target: context
+                .rust_target
+                .filter(|_| matches!(profile, LanguageProfile::Rust(_)))
+                .map(|target| target.scope.clone()),
             key: key.clone(),
             expected,
             capture,
@@ -1414,6 +1421,10 @@ pub(super) fn source_capture_receipt_for_snapshot(
             summary.workspace_sequence,
             summary.profiles,
         )
+        .map(|mut receipt| {
+            receipt.cargo_target = summary.cargo_target;
+            receipt
+        })
         .map_err(|error| BuiltinModelError(error.to_string()))
     })
     .transpose()
@@ -1450,6 +1461,7 @@ pub(super) fn source_capture_summary_for_snapshot(
     let operation_key = operation_key.map(|key| key.to_bytes());
     let mut profiles = Vec::new();
     let mut capture_basis = None;
+    let mut cargo_target = None;
     let mut after = None;
     loop {
         let page = relation
@@ -1466,6 +1478,16 @@ pub(super) fn source_capture_summary_for_snapshot(
                     .is_some_and(|expected| record.request_identity() != &expected)
             {
                 continue;
+            }
+            if let Some(scope) = record.cargo_target() {
+                if !matches!(key.profile(), LanguageProfile::Rust(_))
+                    || cargo_target.as_ref().is_some_and(|prior| prior != scope)
+                {
+                    return Err(BuiltinModelError(
+                        "selected Cargo scope disagrees across profile markers".to_owned(),
+                    ));
+                }
+                cargo_target = Some(scope.clone());
             }
             let capture = record.capture();
             let state = match record.outcome() {
@@ -1528,6 +1550,7 @@ pub(super) fn source_capture_summary_for_snapshot(
         return Ok(None);
     };
     let summary = backend_library::IndexSourceCaptureSummary {
+        cargo_target,
         producer_package: backend_library::PackageReference::parse(package.as_str())
             .map_err(|error| BuiltinModelError(error.to_string()))?,
         request_identity,
@@ -1660,6 +1683,7 @@ fn terminal_capture_changes_for_snapshot(
             }
         };
         changes.push(BuiltinCaptureChange {
+            cargo_target: None,
             key: key.clone(),
             expected: Some(current),
             capture: *capture,
@@ -1822,6 +1846,7 @@ pub(super) fn completed_capture_changes_for_snapshot(
             }
         };
         changes.push(BuiltinCaptureChange {
+            cargo_target: None,
             key: key.clone(),
             expected: Some(expected),
             capture: *capture,
@@ -1915,6 +1940,7 @@ fn staged_cargo_alias_evidence(
 
 /// Owner-captured immutable inputs for one filesystem scan.
 pub(super) struct IndexScanWork {
+    pub(super) cargo_target: Option<backend_library::CargoTargetSelector>,
     package: backend_engine::PackageKey,
     label: String,
     source_root: PathBuf,
@@ -2321,6 +2347,7 @@ fn admitted_native_candidate_source_set(
     profile: LanguageProfile,
     candidate_profiles: &ingest::NativeCandidateProfiles,
     permits: &source_preparation::NativeCandidatePermits,
+    rust_target: Option<&ResolvedCargoTarget>,
 ) -> Result<OwnedPackageSourceSet, BuiltinModelError> {
     if candidate_profiles.clang.contains(&profile) {
         OwnedPackageSourceSet::new_native_clang_candidate(
@@ -2360,6 +2387,18 @@ fn admitted_native_candidate_source_set(
                     BuiltinModelError("checked C# candidate permits are missing".to_owned())
                 })?,
         )
+    } else if let Some(selected) =
+        rust_target.filter(|_| matches!(profile, LanguageProfile::Rust(_)))
+    {
+        OwnedPackageSourceSet::new_for_unit(
+            request,
+            selected.compiler_target.clone(),
+            package_root,
+            sources,
+        )
+        .and_then(|sources| {
+            sources.with_expected_rust_target_source_closure(selected.scope.source_closure)
+        })
     } else {
         OwnedPackageSourceSet::new(request, package_root, sources)
     }
@@ -2408,8 +2447,13 @@ fn prepare_deferred_compile(
     for (profile, sources) in by_profile {
         let mut attempt_for_error = None;
         let prepared = (|| {
-            let expected_artifacts = u32::try_from(sources.len())
-                .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
+            let expected_artifacts = u32::try_from(
+                context
+                    .rust_target
+                    .filter(|_| matches!(profile, LanguageProfile::Rust(_)))
+                    .map_or(sources.len() as u64, |target| target.scope.source_count),
+            )
+            .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
             let coordinate = super::super::compiler_scope::semantic_coordinate(
                 context.package,
                 profile,
@@ -2460,6 +2504,7 @@ fn prepare_deferred_compile(
                 profile,
                 &native_candidate_profiles,
                 &native_candidate_permits,
+                context.rust_target,
             )?;
             let sources = source_set.with_input_claim(input_claim);
             let sources = match context
@@ -2959,7 +3004,14 @@ pub(super) fn finish_deferred_index_for_snapshot(
     })
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct ResolvedCargoTarget {
+    compiler_target: CompilerPackageTargetV2,
+    scope: backend_library::CargoTargetScope,
+}
+
 struct SemanticCompilationContext<'request> {
+    rust_target: Option<&'request ResolvedCargoTarget>,
     package: backend_engine::PackageKey,
     package_reference: backend_engine::PackageReference,
     source_root: &'request Path,
@@ -3335,6 +3387,11 @@ fn selected_semantic_binding_for_snapshot(
 }
 
 impl<'request> SemanticCompilationContext<'request> {
+    fn with_rust_target(mut self, target: Option<&'request ResolvedCargoTarget>) -> Self {
+        self.rust_target = target;
+        self
+    }
+
     fn admit(
         package: backend_engine::PackageKey,
         package_label: &str,
@@ -3355,6 +3412,7 @@ impl<'request> SemanticCompilationContext<'request> {
             ));
         }
         Ok(Self {
+            rust_target: None,
             package,
             package_reference,
             source_root,
@@ -3455,8 +3513,13 @@ fn compile_semantic_publications_for_snapshot(
         if context.cancellation.load(Ordering::Acquire) {
             return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned()));
         }
-        let expected_artifacts = u32::try_from(sources.len())
-            .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
+        let expected_artifacts = u32::try_from(
+            context
+                .rust_target
+                .filter(|_| matches!(profile, LanguageProfile::Rust(_)))
+                .map_or(sources.len() as u64, |target| target.scope.source_count),
+        )
+        .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
         let coordinate = super::super::compiler_scope::semantic_coordinate(
             context.package,
             profile,
@@ -3488,9 +3551,16 @@ fn compile_semantic_publications_for_snapshot(
         let source_paths = source_paths_by_profile.remove(&profile).unwrap_or_default();
         let mut captured_work = None;
         let observation = if !native_candidate_profiles.contains(&profile)
+            && !(context.rust_target.is_some() && matches!(profile, LanguageProfile::Rust(_)))
             && let (Some(owner), Some(snapshot)) = (owner_cluster, workspace_snapshot)
         {
-            let compiler_target = CompilerPackageTargetV2::for_package(key.coordinate().clone());
+            let compiler_target = context
+                .rust_target
+                .filter(|_| matches!(profile, LanguageProfile::Rust(_)))
+                .map_or_else(
+                    || CompilerPackageTargetV2::for_package(key.coordinate().clone()),
+                    |target| target.compiler_target.clone(),
+                );
             let execution_identity = context
                 .compiler
                 .execution_identity(
@@ -4063,6 +4133,7 @@ fn compile_semantic_publications_for_snapshot(
                     profile,
                     native_candidate_profiles,
                     native_candidate_permits,
+                    context.rust_target,
                 )?
                 .with_input_claim(local_input_claim);
                 let source_set = match context
@@ -4781,6 +4852,7 @@ mod admitted_capture_publication_tests {
             Vec::new(),
             Vec::new(),
             vec![BuiltinCaptureChange {
+                cargo_target: None,
                 key: key.clone(),
                 expected: None,
                 capture,
@@ -6626,6 +6698,23 @@ fn is_compiler_configuration(path: &str) -> bool {
                 | "CMakeLists.txt"
         )
     ) || path.ends_with(".csproj")
+}
+
+fn semantic_target_input_digest(
+    scan: &ingest::IndexSnapshot,
+    profile: LanguageProfile,
+    target: Option<&ResolvedCargoTarget>,
+) -> [u8; 32] {
+    let input = semantic_input_digest(scan, profile);
+    let Some(target) = target.filter(|_| matches!(profile, LanguageProfile::Rust(_))) else {
+        return input;
+    };
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"backend.local-service.semantic-input.rust-cargo-target.v1\0");
+    hash.update(&input);
+    hash.update(target.compiler_target.target().as_ref());
+    hash.update(&target.scope.source_closure);
+    *hash.finalize().as_bytes()
 }
 
 fn semantic_input_digest(scan: &ingest::IndexSnapshot, profile: LanguageProfile) -> [u8; 32] {

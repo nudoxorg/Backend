@@ -296,6 +296,7 @@ fn start(
             .expect("actual durable acceptance before worker transfer");
     }
     let mut job = IndexJob {
+        cargo_target: None,
         owner_ticket: ticket.clone(),
         operation_key: operation,
         captures: BTreeMap::new(),
@@ -1162,6 +1163,7 @@ fn native_dispatch(
     }
     let operation = backend_library::IndexOperationKey::from_bytes([seed; 32]).expect("key");
     let command = Command::Surface(backend_library::SurfaceCommand::IndexOperationStart {
+        cargo_target: None,
         operation_key: operation,
         package: backend_library::PackageReference::parse(label.clone()).expect("actual project"),
         execution_intent: CompileExecutionIntent::Interactive,
@@ -2005,6 +2007,7 @@ fn staged_selection_removal(
         )
         .test_value()?;
         pending_changes.push(BuiltinCaptureChange {
+            cargo_target: None,
             key: key.clone(),
             expected: Some(current),
             capture,
@@ -2039,6 +2042,7 @@ fn staged_selection_removal(
             panic!("actual committed Pending capture must preserve its prior generation");
         };
         capture_changes.push(BuiltinCaptureChange {
+            cargo_target: None,
             key: change.key,
             expected: Some(current),
             capture: change.capture,
@@ -2211,6 +2215,7 @@ fn publication_worker_removes_native_selection_after_staging() -> Result<(), Str
     let (adapter, daemon) = fixture.parts();
     let ticket = adapter.issue_index_ticket(reference).test_value()?;
     let mut job = IndexJob {
+        cargo_target: None,
         owner_ticket: ticket.clone(),
         operation_key: None,
         captures: BTreeMap::new(),

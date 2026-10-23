@@ -483,6 +483,7 @@ pub(super) struct BuiltinSemanticChange {
 /// has derived the immutable source transition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct BuiltinCaptureChange {
+    pub(super) cargo_target: Option<backend_library::CargoTargetScope>,
     pub(super) key: ProductSemanticPublicationKey,
     pub(super) expected: Option<ProductSemanticCaptureRecord>,
     pub(super) capture: SemanticSourceCapture,
@@ -626,6 +627,7 @@ impl BuiltinIntent {
     /// base descriptor.
     const CAPTURE_BASIS_VERSION: u8 = 9;
     const NATIVE_FRONTIER_VERSION: u8 = 10;
+    const CARGO_TARGET_VERSION: u8 = 11;
     const ADD: u8 = 1;
     const REMOVE: u8 = 2;
     const INDEX: u8 = 3;
@@ -776,6 +778,11 @@ impl BuiltinIntent {
     ) -> Result<Self, BuiltinModelError> {
         let version = if capture_changes
             .iter()
+            .any(|change| change.cargo_target.is_some())
+        {
+            Self::CARGO_TARGET_VERSION
+        } else if capture_changes
+            .iter()
             .any(|change| change.compiler_failure.is_some())
         {
             Self::TYPED_FAILURE_VERSION
@@ -834,7 +841,7 @@ impl BuiltinIntent {
         native_frontier_changes: Vec<BuiltinNativeFrontierChange>,
     ) -> Result<Self, BuiltinModelError> {
         Self::new_with_version(
-            Self::NATIVE_FRONTIER_VERSION,
+            Self::NATIVE_FRONTIER_VERSION.max(self.encoding_version),
             self.operation,
             self.package,
             self.label,
@@ -858,6 +865,11 @@ impl BuiltinIntent {
         source_facts_changes: Vec<BuiltinSourceFactsChange>,
     ) -> Result<Self, BuiltinModelError> {
         let version = if capture_changes
+            .iter()
+            .any(|change| change.cargo_target.is_some())
+        {
+            Self::CARGO_TARGET_VERSION
+        } else if capture_changes
             .iter()
             .any(|change| change.compiler_failure.is_some())
         {
@@ -955,6 +967,7 @@ impl BuiltinIntent {
                 | Self::TYPED_FAILURE_VERSION
                 | Self::CAPTURE_BASIS_VERSION
                 | Self::NATIVE_FRONTIER_VERSION
+                | Self::CARGO_TARGET_VERSION
         ) || (encoding_version < Self::VERSION
             && (matches!(operation, BuiltinIntentOperation::SelectSemanticGeneration)
                 || semantic_selection.is_some()))
@@ -966,10 +979,11 @@ impl BuiltinIntent {
                 && encoding_version != Self::TYPED_FAILURE_VERSION
                 && encoding_version != Self::CAPTURE_BASIS_VERSION
                 && encoding_version != Self::NATIVE_FRONTIER_VERSION
+                && encoding_version != Self::CARGO_TARGET_VERSION
                 && operation_key.is_some())
             || (encoding_version == Self::CAPTURE_BASIS_VERSION
                 && (capture_changes.is_empty() || capture_basis.is_none()))
-            || (encoding_version >= Self::NATIVE_FRONTIER_VERSION
+            || (encoding_version == Self::NATIVE_FRONTIER_VERSION
                 && !capture_changes.is_empty()
                 && capture_basis.is_none())
             || (encoding_version < Self::CAPTURE_BASIS_VERSION && capture_basis.is_some())
@@ -1023,7 +1037,19 @@ impl BuiltinIntent {
                 .windows(2)
                 .any(|window| window[0].key >= window[1].key)
             || capture_changes.iter().any(|change| {
-                !change.key.is_selected()
+                change.cargo_target.as_ref().is_some_and(|scope| {
+                    encoding_version < Self::CARGO_TARGET_VERSION
+                        || !matches!(
+                            change.key.profile(),
+                            backend_semantic::vocabulary::LanguageProfile::Rust(_)
+                        )
+                        || scope.validate().is_err()
+                        || scope.source_count != change.capture.source_count()
+                        || !matches!(
+                            change.outcome,
+                            ProductSemanticCaptureOutcome::Pending { .. }
+                        )
+                }) || !change.key.is_selected()
                     || change.key.package_key() != package
                     || (change.compiler_failure.is_some()
                         && (encoding_version < Self::TYPED_FAILURE_VERSION
@@ -1198,6 +1224,11 @@ impl BuiltinIntent {
     ) -> Result<Self, BuiltinModelError> {
         let minimum_version = if capture_changes
             .iter()
+            .any(|change| change.cargo_target.is_some())
+        {
+            Self::CARGO_TARGET_VERSION
+        } else if capture_changes
+            .iter()
             .any(|change| change.compiler_failure.is_some())
         {
             Self::TYPED_FAILURE_VERSION
@@ -1276,6 +1307,7 @@ impl BuiltinIntent {
             8 => b"BPI8",
             9 => b"BPI9",
             Self::NATIVE_FRONTIER_VERSION => b"BPIA",
+            Self::CARGO_TARGET_VERSION => b"BPIB",
             _ => b"BPI9",
         });
         bytes.push(self.encoding_version);
@@ -1365,6 +1397,18 @@ impl BuiltinIntent {
                 encode_capture_outcome(change.outcome, &mut bytes);
                 if self.encoding_version >= Self::TYPED_FAILURE_VERSION {
                     encode_optional_compiler_failure(change.compiler_failure.as_ref(), &mut bytes);
+                }
+                if self.encoding_version >= Self::CARGO_TARGET_VERSION {
+                    match &change.cargo_target {
+                        None => bytes.push(0),
+                        Some(scope) => {
+                            bytes.push(1);
+                            let encoded =
+                                serde_json::to_vec(scope).expect("admitted Cargo target scope");
+                            bytes.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+                            bytes.extend_from_slice(&encoded);
+                        }
+                    }
                 }
             }
             if self.encoding_version == Self::CAPTURE_BASIS_VERSION {
@@ -1889,6 +1933,7 @@ impl<'a> IntentDecoder<'a> {
                     | (Some(b"BPI8"), 8)
                     | (Some(b"BPI9"), 9)
                     | (Some(b"BPIA"), 10)
+                    | (Some(b"BPIB"), 11)
             )
         {
             return Err(BuiltinModelError(
@@ -2248,7 +2293,45 @@ impl<'a> IntentDecoder<'a> {
         } else {
             None
         };
+        let cargo_target = if self.version >= BuiltinIntent::CARGO_TARGET_VERSION {
+            match self.take(1)?.first().copied() {
+                Some(0) => None,
+                Some(1) => {
+                    let len = self.read_u32()? as usize;
+                    if len > 8192 {
+                        return Err(BuiltinModelError(
+                            "Cargo target scope exceeds bound".to_owned(),
+                        ));
+                    }
+                    let bytes = self.take(len)?;
+                    let scope: backend_library::CargoTargetScope = serde_json::from_slice(bytes)
+                        .map_err(|_| {
+                            BuiltinModelError("malformed Cargo target scope".to_owned())
+                        })?;
+                    scope
+                        .validate()
+                        .map_err(|error| BuiltinModelError(error.to_owned()))?;
+                    if serde_json::to_vec(&scope)
+                        .map_err(|error| BuiltinModelError(error.to_string()))?
+                        != bytes
+                    {
+                        return Err(BuiltinModelError(
+                            "noncanonical Cargo target scope".to_owned(),
+                        ));
+                    }
+                    Some(scope)
+                }
+                _ => {
+                    return Err(BuiltinModelError(
+                        "malformed Cargo target scope tag".to_owned(),
+                    ));
+                }
+            }
+        } else {
+            None
+        };
         Ok(BuiltinCaptureChange {
+            cargo_target,
             key,
             expected,
             capture,
@@ -3154,9 +3237,15 @@ fn next_capture_record(
                 change.outcome,
                 change.compiler_failure.clone(),
             )
+            .and_then(|record| record.with_cargo_target(change.cargo_target.clone()))
             .map_err(|error| BuiltinModelError(error.to_owned()))
         }
         (Some(current), outcome) => {
+            if change.cargo_target.is_some() {
+                return Err(BuiltinModelError(
+                    "terminal capture cannot replace selected Cargo scope".to_owned(),
+                ));
+            }
             let ProductSemanticCaptureOutcome::Pending {
                 prior: pending_prior,
             } = current.outcome()
@@ -4687,6 +4776,95 @@ mod persisted_intent_tests {
     }
 
     #[test]
+    fn explicit_cargo_scope_round_trips_with_authenticated_capture_basis() {
+        let label = "pkg:cargo/explicit-target@1.0.0";
+        let package = backend_engine::PackageKey::from_value(label);
+        let key = ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::parse(label).expect("package"),
+            backend_semantic::vocabulary::PackageUrl::parse(label.to_owned()).expect("coordinate"),
+            backend_semantic::vocabulary::LanguageProfile::Rust(
+                backend_semantic::vocabulary::RustEdition::Rust2024,
+            ),
+        )
+        .expect("key");
+        let scope = backend_library::CargoTargetScope {
+            name: backend_library::CargoTargetSelector::new("library".to_owned()).expect("name"),
+            root: "src/lib.rs".to_owned(),
+            kinds: vec!["lib".to_owned()].into_boxed_slice(),
+            source_closure: [8; 32],
+            source_count: 1,
+        };
+        let capture = SemanticSourceCapture::new(None, [5; 32], [6; 32], 1, 1).expect("capture");
+        let intent = BuiltinIntent::index_with_capture(
+            package,
+            label,
+            Vec::new(),
+            Vec::new(),
+            vec![BuiltinCaptureChange {
+                cargo_target: Some(scope.clone()),
+                key,
+                expected: None,
+                capture,
+                outcome: ProductSemanticCaptureOutcome::Pending { prior: None },
+                compiler_failure: None,
+            }],
+        )
+        .expect("scoped pending intent");
+        let basis = BuiltinCaptureBasis::new([2; 32], 0, [9; 32], None).expect("basis");
+        let intent = intent
+            .with_capture_basis(basis)
+            .expect("bound source closure");
+        let bytes = intent.encode();
+        assert!(bytes.starts_with(b"BPIB"));
+        assert_eq!(
+            BuiltinIntent::decode(&bytes).expect("scoped intent codec"),
+            intent
+        );
+        let change = &intent.capture_changes()[0];
+        let pending =
+            next_capture_record(None, change, None, [1; 32], [2; 32], 0, [3; 32], [4; 32])
+                .expect("pending");
+        assert_eq!(pending.cargo_target(), Some(&scope));
+        let terminal = BuiltinCaptureChange {
+            cargo_target: None,
+            key: change.key.clone(),
+            expected: Some(pending.clone()),
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Unavailable {
+                reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+            },
+            compiler_failure: None,
+        };
+        let done = next_capture_record(
+            Some(&pending),
+            &terminal,
+            None,
+            [7; 32],
+            [3; 32],
+            1,
+            [10; 32],
+            [11; 32],
+        )
+        .expect("terminal");
+        assert_eq!(done.cargo_target(), Some(&scope));
+        let mut changed = terminal.clone();
+        changed.cargo_target = Some(scope);
+        assert!(
+            next_capture_record(
+                Some(&pending),
+                &changed,
+                None,
+                [7; 32],
+                [3; 32],
+                1,
+                [10; 32],
+                [11; 32]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn keyed_index_intents_round_trip_and_have_distinct_workspace_request_identities() {
         let intent = file_intent(vec![declaration(backend_compile::Container::Module)]);
         assert!(intent.encode().starts_with(b"BPI4"));
@@ -4794,6 +4972,7 @@ mod persisted_intent_tests {
             Vec::new(),
             Vec::new(),
             vec![BuiltinCaptureChange {
+                cargo_target: None,
                 key: capture_key,
                 expected: None,
                 capture,
@@ -4850,6 +5029,7 @@ mod persisted_intent_tests {
             Vec::new(),
             Vec::new(),
             vec![BuiltinCaptureChange {
+                cargo_target: None,
                 key,
                 expected: None,
                 capture,

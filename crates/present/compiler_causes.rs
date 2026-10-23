@@ -340,6 +340,7 @@ mod tests {
                 profile,
             };
             let source_capture = IndexSourceCaptureSummary {
+                cargo_target: None,
                 producer_package: package.clone(),
                 request_identity: [6; 32],
                 commit_identity: [7; 32],

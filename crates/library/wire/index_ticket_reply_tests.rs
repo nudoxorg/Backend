@@ -69,6 +69,7 @@ fn partial(ticket: &IndexJobTicket) -> IndexJobPartialPublication {
         )
         .expect("structural publication receipt"),
         source_capture: IndexSourceCaptureSummary {
+            cargo_target: None,
             producer_package: ticket.package().clone(),
             request_identity: [1; 32],
             commit_identity: [2; 32],
@@ -339,6 +340,7 @@ fn operation_replies(
             [
                 (
                     SurfaceCommand::IndexOperationStart {
+                        cargo_target: None,
                         operation_key: key,
                         package: package.clone(),
                         execution_intent: intent,
@@ -374,6 +376,7 @@ fn index_operation_replies_bind_exact_keys_through_borrowed_and_wire_admission()
                 execution_intent,
                 ..
             } => SurfaceCommand::IndexOperationStart {
+                cargo_target: None,
                 operation_key: foreign_key,
                 package,
                 execution_intent,
@@ -401,6 +404,7 @@ fn index_operation_start_rejects_self_consistent_foreign_requests_and_tombstones
     let key = crate::IndexOperationKey::from_bytes([7; 32]).expect("key");
     let package = PackageReference::parse("/workspace/demo").expect("package");
     let command = SurfaceCommand::IndexOperationStart {
+        cargo_target: None,
         operation_key: key,
         package: package.clone(),
         execution_intent: crate::CompileExecutionIntent::Interactive,
@@ -438,6 +442,7 @@ fn index_start_and_progress_reject_shared_id_reply_family_substitution_in_both_d
     let pairs = [
         (
             SurfaceCommand::IndexOperationStart {
+                cargo_target: None,
                 operation_key: key,
                 package: ticket.package().clone(),
                 execution_intent: crate::CompileExecutionIntent::Interactive,
@@ -449,6 +454,7 @@ fn index_start_and_progress_reject_shared_id_reply_family_substitution_in_both_d
         ),
         (
             SurfaceCommand::IndexStart {
+                cargo_target: None,
                 package: ticket.package().clone(),
                 execution_intent: crate::CompileExecutionIntent::Interactive,
             },
@@ -495,6 +501,7 @@ fn index_start_and_progress_reject_shared_id_reply_family_substitution_in_both_d
 fn index_start_binds_packages_without_conflating_tickets_or_universal_failures() {
     let package = PackageReference::parse("/workspace/demo").expect("package");
     let command = SurfaceCommand::IndexStart {
+        cargo_target: None,
         package: package.clone(),
         execution_intent: crate::CompileExecutionIntent::Interactive,
     };
@@ -521,6 +528,7 @@ fn index_start_binds_packages_without_conflating_tickets_or_universal_failures()
     for command in [
         command,
         SurfaceCommand::IndexOperationStart {
+            cargo_target: None,
             operation_key: key,
             package,
             execution_intent: crate::CompileExecutionIntent::Interactive,

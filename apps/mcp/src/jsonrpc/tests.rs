@@ -3799,8 +3799,8 @@ fn assert_compact_index_job_receipt(response: &Value, expected: &Value) {
 fn keyed_index_start_keeps_cargo_target_in_the_exact_surface_command() {
     let key = backend_library::IndexOperationKey::from_bytes([0x73; 32]).expect("operation key");
     let package = PackageReference::parse("pkg:cargo/serde@1.0.228").expect("package");
-    let target = backend_library::CargoTargetSelector::new("integration-test".to_owned())
-        .expect("target");
+    let target =
+        backend_library::CargoTargetSelector::new("integration-test".to_owned()).expect("target");
     let status = backend_library::IndexOperationStatus::new(
         key,
         package.clone(),
@@ -8287,6 +8287,7 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
         )
         .expect("structurally admitted receipt"),
         source_capture: IndexSourceCaptureSummary {
+            cargo_target: None,
             producer_package: package,
             request_identity: [1; 32],
             commit_identity: [2; 32],

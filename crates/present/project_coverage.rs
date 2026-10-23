@@ -307,6 +307,7 @@ mod tests {
                 capture_relation_root: [90; 32],
             },
             source_capture: IndexSourceCaptureSummary {
+                cargo_target: None,
                 producer_package: package.clone(),
                 request_identity: [generation.wrapping_add(2); 32],
                 commit_identity: [generation.wrapping_add(3); 32],

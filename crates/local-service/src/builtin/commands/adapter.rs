@@ -315,6 +315,7 @@ fn index_operation_published_observation(
                 None => backend_library::IndexOperationState::Published(receipt),
             },
         )
+        .with_cargo_target(entry.cargo_target.clone())
         .with_source_capture(entry.source_capture.clone()),
     );
     backend_library::SurfaceReply::IndexOperationStatus(observation.clone())
@@ -437,6 +438,7 @@ pub(in crate::builtin) struct CommandAdapter {
 
 /// An `Add` of a local folder whose compile runs off the owner loop.
 struct IndexJob {
+    cargo_target: Option<backend_library::CargoTargetSelector>,
     owner_ticket: backend_library::IndexJobTicket,
     /// Caller-owned durable operation key; legacy starts leave this absent.
     operation_key: Option<backend_library::IndexOperationKey>,
@@ -1028,6 +1030,7 @@ impl CommandAdapter {
             return self.read_index_operation_status(daemon, operation_key, request.request_id);
         }
         if let Command::Surface(backend_library::SurfaceCommand::IndexOperationStart {
+            cargo_target,
             operation_key,
             package,
             execution_intent,
@@ -1039,7 +1042,9 @@ impl CommandAdapter {
         {
             let exact = match self.index_operations.entry(*operation_key) {
                 Ok(Some(JournalEntry::Retained(entry))) => {
-                    entry.package == *package && entry.execution_intent == *execution_intent
+                    entry.package == *package
+                        && entry.execution_intent == *execution_intent
+                        && entry.cargo_target == *cargo_target
                 }
                 Ok(_) => false,
                 Err(error) => {
@@ -1065,6 +1070,7 @@ impl CommandAdapter {
         // Exact same-key publication/status recovery is a continuation, not
         // a new writer competing with its own durable Prepared marker.
         if let Command::Surface(backend_library::SurfaceCommand::IndexOperationStart {
+            cargo_target,
             operation_key,
             package,
             execution_intent,
@@ -1077,7 +1083,10 @@ impl CommandAdapter {
                 })?
             && !matches!(entry.state, StoredOperationState::Accepted)
         {
-            if entry.package != *package || entry.execution_intent != *execution_intent {
+            if entry.package != *package
+                || entry.execution_intent != *execution_intent
+                || entry.cargo_target != *cargo_target
+            {
                 return Self::encode_index_operation_start_failure(
                     daemon,
                     request.request_id,
@@ -1092,10 +1101,15 @@ impl CommandAdapter {
             return Self::encode_index_operation(daemon, request.request_id, observation, true);
         }
         if let Command::Surface(backend_library::SurfaceCommand::IndexStart {
+            cargo_target,
             package,
             execution_intent,
         }) = &request.command
-            && let Some(result) = self.join_active_index_start(package, *execution_intent)
+            && let Some(result) = self.join_active_index_start_with_target(
+                package,
+                *execution_intent,
+                cargo_target.as_ref(),
+            )
         {
             return Self::encode_index_start(daemon, request.request_id, result);
         }
@@ -1132,32 +1146,37 @@ impl CommandAdapter {
             return Ok(Executed::Deferred);
         }
         if let Command::Surface(backend_library::SurfaceCommand::IndexStart {
+            cargo_target,
             package,
             execution_intent,
         }) = request.command
         {
-            return self.start_owner_index_job(
+            return self.start_owner_index_job_with_target(
                 daemon,
                 package,
                 execution_intent,
+                cargo_target,
                 request.request_id,
             );
         }
         if let Command::Surface(backend_library::SurfaceCommand::IndexOperationStart {
+            cargo_target,
             operation_key,
             package,
             execution_intent,
         }) = request.command
         {
-            return self.start_index_operation(
+            return self.start_index_operation_with_target(
                 daemon,
                 operation_key,
                 package,
                 execution_intent,
+                cargo_target,
                 request.request_id,
             );
         }
         if let Command::Add {
+            cargo_target,
             package,
             execution_intent,
         } = request.command
@@ -1168,10 +1187,11 @@ impl CommandAdapter {
                 backend_library::PackageReference::parse(label)
                     .map_err(|error| BuiltinModelError(error.to_string()))?,
             )?;
-            if let Some(started) = self.start_index_job(
+            if let Some(started) = self.start_index_job_with_target(
                 daemon,
                 package,
                 execution_intent,
+                cargo_target,
                 certificate.as_ref(),
                 request.request_id,
                 owner_ticket,
@@ -1337,10 +1357,31 @@ impl CommandAdapter {
         execution_intent: CompileExecutionIntent,
         request_id: u64,
     ) -> Result<Executed, BuiltinModelError> {
-        match self
-            .index_operations
-            .accept(operation_key, package.clone(), execution_intent)
-        {
+        self.start_index_operation_with_target(
+            daemon,
+            operation_key,
+            package,
+            execution_intent,
+            None,
+            request_id,
+        )
+    }
+
+    fn start_index_operation_with_target(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        operation_key: backend_library::IndexOperationKey,
+        package: backend_library::PackageReference,
+        execution_intent: CompileExecutionIntent,
+        cargo_target: Option<backend_library::CargoTargetSelector>,
+        request_id: u64,
+    ) -> Result<Executed, BuiltinModelError> {
+        match self.index_operations.accept_with_target(
+            operation_key,
+            package.clone(),
+            execution_intent,
+            cargo_target.clone(),
+        ) {
             Ok(IndexOperationAcceptance::Existing) => {
                 self.recover_orphaned_package_label(daemon, package.as_str(), request_id)?;
                 let observation = self
@@ -1364,6 +1405,7 @@ impl CommandAdapter {
                 operation_key,
                 package,
                 execution_intent,
+                cargo_target.clone(),
                 request_id,
                 bounded_index_detail(error),
             );
@@ -1380,6 +1422,7 @@ impl CommandAdapter {
                 operation_key,
                 package,
                 execution_intent,
+                cargo_target.clone(),
                 request_id,
                 bounded_index_detail(format!("record accepted workspace base: {error}")),
             );
@@ -1393,6 +1436,7 @@ impl CommandAdapter {
                     operation_key,
                     package,
                     execution_intent,
+                    cargo_target.clone(),
                     request_id,
                     bounded_index_detail(error),
                 );
@@ -1404,10 +1448,11 @@ impl CommandAdapter {
             id: backend_engine::encode_id(package_key.as_bytes()),
             value: package.as_str().to_owned(),
         });
-        match self.start_index_job(
+        match self.start_index_job_with_target(
             daemon,
             package_key,
             execution_intent,
+            cargo_target.clone(),
             Some(&certificate),
             request_id,
             owner_ticket,
@@ -1435,6 +1480,7 @@ impl CommandAdapter {
                 operation_key,
                 package,
                 execution_intent,
+                cargo_target.clone(),
                 request_id,
                 bounded_index_detail(error),
             ),
@@ -1447,6 +1493,7 @@ impl CommandAdapter {
         operation_key: backend_library::IndexOperationKey,
         package: backend_library::PackageReference,
         execution_intent: CompileExecutionIntent,
+        cargo_target: Option<backend_library::CargoTargetSelector>,
         request_id: u64,
         detail: backend_library::ProductText,
     ) -> Result<Executed, BuiltinModelError> {
@@ -1503,11 +1550,13 @@ impl CommandAdapter {
             Self::unresolved_index_operation(
                 operation_key,
                 &StoredOperation {
-                    operation_key,
-                    request_digest: backend_library::index_operation_request_digest(
+                    request_digest: backend_library::index_operation_scoped_request_digest(
                         &package,
                         execution_intent,
+                        cargo_target.as_ref(),
                     ),
+                    cargo_target,
+                    operation_key,
                     package,
                     producer_package: None,
                     execution_intent,
@@ -2070,6 +2119,7 @@ impl CommandAdapter {
                     ),
                 },
             )
+            .with_cargo_target(entry.cargo_target.clone())
             .with_source_capture(entry.source_capture.clone()),
         )
     }
@@ -2187,7 +2237,22 @@ impl CommandAdapter {
         execution_intent: CompileExecutionIntent,
         request_id: u64,
     ) -> Result<Executed, BuiltinModelError> {
-        if let Some(result) = self.join_active_index_start(&package, execution_intent) {
+        self.start_owner_index_job_with_target(daemon, package, execution_intent, None, request_id)
+    }
+
+    fn start_owner_index_job_with_target(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        package: backend_library::PackageReference,
+        execution_intent: CompileExecutionIntent,
+        cargo_target: Option<backend_library::CargoTargetSelector>,
+        request_id: u64,
+    ) -> Result<Executed, BuiltinModelError> {
+        if let Some(result) = self.join_active_index_start_with_target(
+            &package,
+            execution_intent,
+            cargo_target.as_ref(),
+        ) {
             return Self::encode_index_start(daemon, request_id, result);
         }
         let owner_ticket = self.issue_index_ticket(package.clone())?;
@@ -2198,10 +2263,11 @@ impl CommandAdapter {
             value: package.as_str().to_owned(),
         });
         let result = self
-            .start_index_job(
+            .start_index_job_with_target(
                 daemon,
                 package_key,
                 execution_intent,
+                cargo_target,
                 Some(&certificate),
                 request_id,
                 owner_ticket.clone(),
@@ -2262,11 +2328,22 @@ impl CommandAdapter {
         package: &backend_library::PackageReference,
         execution_intent: CompileExecutionIntent,
     ) -> Option<backend_library::IndexStartResult> {
+        self.join_active_index_start_with_target(package, execution_intent, None)
+    }
+
+    fn join_active_index_start_with_target(
+        &self,
+        package: &backend_library::PackageReference,
+        execution_intent: CompileExecutionIntent,
+        cargo_target: Option<&backend_library::CargoTargetSelector>,
+    ) -> Option<backend_library::IndexStartResult> {
         if !self.waiting.is_empty() {
             return None;
         }
         self.indexing.as_ref().and_then(|job| {
-            (job.owner_ticket.package() == package && job.execution_intent == execution_intent)
+            (job.owner_ticket.package() == package
+                && job.execution_intent == execution_intent
+                && job.cargo_target.as_ref() == cargo_target)
                 .then(|| backend_library::IndexStartResult::Started {
                     ticket: job.owner_ticket.clone(),
                     stage: job
@@ -4263,6 +4340,31 @@ impl CommandAdapter {
         legacy_add: Option<u64>,
         operation_key: Option<backend_library::IndexOperationKey>,
     ) -> Result<Option<AdmittedReply>, BuiltinModelError> {
+        self.start_index_job_with_target(
+            daemon,
+            package,
+            execution_intent,
+            None,
+            certificate,
+            request_id,
+            owner_ticket,
+            legacy_add,
+            operation_key,
+        )
+    }
+
+    fn start_index_job_with_target(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        package: backend_engine::PackageKey,
+        execution_intent: CompileExecutionIntent,
+        cargo_target: Option<backend_library::CargoTargetSelector>,
+        certificate: Option<&WireCertificate>,
+        request_id: u64,
+        owner_ticket: backend_library::IndexJobTicket,
+        legacy_add: Option<u64>,
+        operation_key: Option<backend_library::IndexOperationKey>,
+    ) -> Result<Option<AdmittedReply>, BuiltinModelError> {
         let label = certified_package_label(certificate, package)?;
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
@@ -4280,6 +4382,7 @@ impl CommandAdapter {
         self.recover_orphaned_package_label(daemon, &label, request_id)?;
         let cancelled = Arc::new(AtomicBool::new(false));
         let mut indexing = IndexJob {
+            cargo_target,
             owner_ticket,
             operation_key,
             captures: BTreeMap::new(),
@@ -4336,18 +4439,16 @@ impl CommandAdapter {
         indexing: &mut IndexJob,
         mut work: IndexScanWork,
     ) -> Result<(), BuiltinModelError> {
+        work.cargo_target = indexing.cargo_target.clone();
         work.observation = work.observation.or_else(|| {
-            self.product_state
-                .workspace_path()
-                .ok()
-                .and_then(|path| {
-                    crate::builtin::index_work_observation::IndexWorkObservation::enabled(
-                        path,
-                        indexing.owner_ticket.clone(),
-                        indexing.operation_key,
-                        Arc::clone(&indexing.cancelled),
-                    )
-                })
+            self.product_state.workspace_path().ok().and_then(|path| {
+                crate::builtin::index_work_observation::IndexWorkObservation::enabled(
+                    path,
+                    indexing.owner_ticket.clone(),
+                    indexing.operation_key,
+                    Arc::clone(&indexing.cancelled),
+                )
+            })
         });
         self.index_input_workers
             .reserve()
@@ -5093,6 +5194,7 @@ impl CommandAdapter {
     ) -> Result<AdmittedReply, BuiltinModelError> {
         match command {
             Command::Add {
+                cargo_target,
                 package,
                 execution_intent,
             } => self.add(
@@ -7889,6 +7991,7 @@ mod tests {
                 Vec::new(),
                 Vec::new(),
                 vec![BuiltinCaptureChange {
+                    cargo_target: None,
                     key: key.clone(),
                     expected: None,
                     capture: SemanticSourceCapture::new(None, [4; 32], [5; 32], 1, 1)
@@ -9932,6 +10035,7 @@ mod tests {
         let owner_ticket = adapter.issue_index_ticket(package).expect("owner ticket");
         let cancelled = Arc::new(AtomicBool::new(false));
         adapter.indexing = Some(IndexJob {
+            cargo_target: None,
             owner_ticket,
             operation_key: None,
             captures: BTreeMap::new(),
@@ -10188,6 +10292,7 @@ mod tests {
             &backend_engine::CommandDto::new(
                 request_id,
                 Command::Add {
+                    cargo_target: None,
                     package,
                     execution_intent: CompileExecutionIntent::Interactive,
                 },
@@ -10360,6 +10465,7 @@ mod tests {
             serde_json::to_vec(&backend_engine::CommandDto::new(
                 1,
                 Command::Surface(backend_library::SurfaceCommand::IndexOperationStart {
+                    cargo_target: None,
                     operation_key: new_key,
                     package: reference.clone(),
                     execution_intent: CompileExecutionIntent::Interactive,
@@ -10369,6 +10475,7 @@ mod tests {
             serde_json::to_vec(&backend_engine::CommandDto::new(
                 2,
                 Command::Surface(backend_library::SurfaceCommand::IndexStart {
+                    cargo_target: None,
                     package: reference,
                     execution_intent: CompileExecutionIntent::Interactive,
                 }),
@@ -11967,6 +12074,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![crate::builtin::BuiltinCaptureChange {
+                cargo_target: None,
                 key: key.clone(),
                 expected: None,
                 capture: SemanticSourceCapture::new(None, [0xA1; 32], [0xA2; 32], 2, 1)

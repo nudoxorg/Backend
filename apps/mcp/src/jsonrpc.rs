@@ -1813,7 +1813,13 @@ impl<P: Product> Server<P> {
             INDEX_START_TOOL => {
                 no_extra(
                     arguments,
-                    &["package", "cargo_target", "execution_intent", "operation_key", "detail"],
+                    &[
+                        "package",
+                        "cargo_target",
+                        "execution_intent",
+                        "operation_key",
+                        "detail",
+                    ],
                 )?;
                 let spelling = string(arguments, "package")?.to_owned();
                 let package = PackageReference::parse(spelling)

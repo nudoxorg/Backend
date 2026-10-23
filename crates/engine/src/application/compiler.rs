@@ -29,9 +29,9 @@ use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_frontend_python::legacy::checker::CheckerError as PythonCheckerError;
 use backend_frontend_rust::legacy::{
     RustAnalysisControl, RustAuthorityError, RustCargoTarget, RustCargoTargetSourceClosureV1,
-    RustWorkspace, RustWorkspaceEditorBufferObserver,
-    RustWorkspaceFile, RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey,
-    RustWorkspaceSessionLane, RustWorkspaceSessionLease,
+    RustWorkspace, RustWorkspaceEditorBufferObserver, RustWorkspaceFile,
+    RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey, RustWorkspaceSessionLane,
+    RustWorkspaceSessionLease,
 };
 use backend_frontend_typescript::legacy::TypeScriptInvocationModeV1;
 use backend_frontend_typescript::{TszFileWorkPolicy, TszProject, TszProjectCheckerExecution};
@@ -718,9 +718,11 @@ impl<'source> PackageSourceSet<'source> {
         mut self,
         identity: [u8; 32],
     ) -> Result<Self, PackageSourceSetError> {
-        if !matches!(self.package_target.unit_key(), CompilationUnitKeyV2::RustCrate { .. })
-            || self.request.target.profile.language()
-                != backend_semantic::vocabulary::Language::Rust
+        if !matches!(
+            self.package_target.unit_key(),
+            CompilationUnitKeyV2::RustCrate { .. }
+        ) || self.request.target.profile.language()
+            != backend_semantic::vocabulary::Language::Rust
         {
             return Err(PackageSourceSetError::CompilationUnitMismatch);
         }
@@ -845,9 +847,7 @@ fn rust_target_source_closure_matches(
     expected: Option<[u8; 32]>,
     observed: Option<&RustCargoTargetSourceClosureV1>,
 ) -> bool {
-    expected.is_none_or(|expected| {
-        observed.is_some_and(|observed| observed.identity() == expected)
-    })
+    expected.is_none_or(|expected| observed.is_some_and(|observed| observed.identity() == expected))
 }
 
 fn semantic_embedding_identity(
@@ -3229,9 +3229,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         timeout: *timeout,
                     }),
                 })?;
-        let selected = self.toolchain(application_request).map_err(|cause| {
-            toolchain_terminal(source_authority, application_request, cause)
-        })?;
+        let selected = self
+            .toolchain(application_request)
+            .map_err(|cause| toolchain_terminal(source_authority, application_request, cause))?;
         let resolved = match selected {
             ToolchainSelection::ResolvedNative(resolved) => resolved,
             ToolchainSelection::ExplicitlyUnavailable { tool } => {
@@ -3250,8 +3250,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 });
             }
         };
-        let external = resolved.external().map_err(|source| {
-            PackageSemanticError::Compile {
+        let external = resolved
+            .external()
+            .map_err(|source| PackageSemanticError::Compile {
                 path: first_source.relative_path.into(),
                 terminal: Box::new(package_authority_terminal(
                     package.package_target.target(),
@@ -3263,8 +3264,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         source,
                     },
                 )),
-            }
-        })?;
+            })?;
         let authority = self.package_authority.rust.ok_or_else(|| {
             PackageSemanticError::Compile {
                 path: first_source.relative_path.into(),
@@ -4666,11 +4666,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             };
         let rust_target_source_closure = match package.package_target.unit_key() {
             CompilationUnitKeyV2::RustCrate { name, root } => {
-                let lease = rust_workspace_lease.as_ref().ok_or(
-                    PackageSemanticError::Capacity {
-                        lane: "selected Rust Cargo target workspace",
-                    },
-                )?;
+                let lease =
+                    rust_workspace_lease
+                        .as_ref()
+                        .ok_or(PackageSemanticError::Capacity {
+                            lane: "selected Rust Cargo target workspace",
+                        })?;
                 let selected_target = RustCargoTarget {
                     name: name.as_ref(),
                     root: Path::new(root.as_ref()),
@@ -4691,7 +4692,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             selected_target,
                             RustAnalysisControl {
                                 cancelled: control.cancelled,
-                                maximum_source_bytes: self.package_authority.rust
+                                maximum_source_bytes: self
+                                    .package_authority
+                                    .rust
                                     .ok_or(PackageSemanticError::Capacity {
                                         lane: "Rust target closure authority configuration",
                                     })?
@@ -4739,12 +4742,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     .ok_or(PackageSemanticError::Capacity {
                         lane: "Rust target closure source membership",
                     })?;
-                let observed = backend_semantic::ir::SourceIdentity::from_bytes(
-                    source.source().as_bytes(),
-                )
-                .ok_or(PackageSemanticError::Capacity {
-                    lane: "Rust target closure source identity",
-                })?;
+                let observed =
+                    backend_semantic::ir::SourceIdentity::from_bytes(source.source().as_bytes())
+                        .ok_or(PackageSemanticError::Capacity {
+                            lane: "Rust target closure source identity",
+                        })?;
                 if observed != member.source() {
                     return Err(PackageSemanticError::Capacity {
                         lane: "Rust target closure source binding",
@@ -9240,7 +9242,10 @@ mod tests {
             "out-of-scope package inputs remain part of provenance"
         );
         assert!(super::rust_target_source_closure_matches(None, None));
-        assert!(!super::rust_target_source_closure_matches(Some([7; 32]), None));
+        assert!(!super::rust_target_source_closure_matches(
+            Some([7; 32]),
+            None
+        ));
 
         let wrong_unit = CompilerPackageTargetV2::new(
             request.as_ref().clone(),
@@ -9278,7 +9283,10 @@ mod tests {
             Some([12; 32]),
             Some(&closure)
         ));
-        assert!(!super::rust_target_source_closure_matches(Some([11; 32]), None));
+        assert!(!super::rust_target_source_closure_matches(
+            Some([11; 32]),
+            None
+        ));
     }
 
     #[test]

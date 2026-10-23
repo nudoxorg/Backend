@@ -23,6 +23,8 @@ pub mod canonical;
 mod capability;
 mod cargo_aliases;
 mod cargo_source;
+mod cargo_target;
+pub use cargo_target::{CargoTargetScope, CargoTargetSelector};
 mod catalog;
 mod command;
 mod command_registry;
@@ -323,7 +325,7 @@ pub use surface::{
     SemanticLinkDelta, SemanticLinkEvidence, SemanticLinkKind, SemanticLinkTarget,
     SemanticSourceSpan, SemanticVersionFreshness, SemanticVersionRecord, SubscriptionRecord,
     SurfaceCommand, SurfaceReply, TreeNodeId, TreeNodeRecord, TreeOpener, TreeSubject,
-    index_operation_request_digest,
+    index_operation_request_digest, index_operation_scoped_request_digest,
 };
 pub use view::{
     AddressMatchKind, Basis, CapturedSourceCoordinate, CommittedViewDelta, CompleteViewProjection,

@@ -42,6 +42,7 @@ fn discovery_with_profiles(mut profiles: Vec<SemanticLanguageProfile>) -> Packag
     };
     profiles.sort();
     let source_capture = IndexSourceCaptureSummary {
+        cargo_target: None,
         producer_package: package,
         request_identity: [6; 32],
         commit_identity: [7; 32],

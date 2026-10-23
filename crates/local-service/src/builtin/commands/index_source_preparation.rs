@@ -26,6 +26,7 @@ pub(in crate::builtin::commands) struct SourceRoute {
 /// Owned continuation of exactly the structural capture candidate. Its inputs
 /// were materialized and hash-checked before asking the owner for a grant.
 pub(in crate::builtin::commands) struct SourceCompilePlan {
+    rust_target: Option<ResolvedCargoTarget>,
     package: backend_engine::PackageKey,
     label: String,
     project_key: [u8; 32],
@@ -54,6 +55,7 @@ pub(in crate::builtin::commands) struct SourceCompilePlan {
 /// Shared immutable-base source and profile admission. This plan cannot
 /// commit a workspace or publish a view; callers choose their capture timing.
 pub(super) struct PreparedScanSource {
+    pub(super) rust_target: Option<ResolvedCargoTarget>,
     pub(super) package: backend_engine::PackageKey,
     pub(super) label: String,
     pub(super) requested_root: PathBuf,
@@ -130,6 +132,108 @@ pub(super) struct NativeCandidatePermits {
     pub(super) clang_by_profile: BTreeMap<LanguageProfile, Box<[NativeClangCandidatePermit]>>,
     pub(super) csharp_by_profile:
         BTreeMap<LanguageProfile, Box<[backend_engine::builtin::NativeCSharpCandidatePermit]>>,
+}
+
+fn resolve_requested_cargo_target(
+    compiler: &LocalCompilerClient,
+    context: &SemanticCompilationContext<'_>,
+    scan: &ingest::IndexSnapshot,
+    live: &BTreeSet<LanguageProfile>,
+    selector: Option<&backend_library::CargoTargetSelector>,
+    cancellation: Arc<AtomicBool>,
+) -> Result<Option<ResolvedCargoTarget>, BuiltinModelError> {
+    let Some(selector) = selector else {
+        return Ok(None);
+    };
+    let mut profiles = live
+        .iter()
+        .copied()
+        .filter(|profile| matches!(profile, LanguageProfile::Rust(_)));
+    let profile = profiles.next().ok_or_else(|| {
+        BuiltinModelError("Cargo target selection requires a Rust package profile".to_owned())
+    })?;
+    if profiles.next().is_some() {
+        return Err(BuiltinModelError(
+            "Cargo target selection has multiple Rust profiles".to_owned(),
+        ));
+    }
+    let fresh = scan
+        .compiler_sources
+        .iter()
+        .filter(|source| matches!(source.profile, LanguageProfile::Rust(_)))
+        .cloned()
+        .collect();
+    let reused = scan
+        .reused_compiler_files
+        .iter()
+        .filter(|source| matches!(source.profile, LanguageProfile::Rust(_)))
+        .cloned()
+        .collect();
+    let sources = ingest::admit_compiler_sources_for_scan(
+        context.source_root,
+        &scan.revision_fence,
+        fresh,
+        reused,
+        scan.source_admission_policy,
+        Some(cancellation.as_ref()),
+    )
+    .map_err(BuiltinModelError)?;
+    let sources = sources
+        .into_iter()
+        .map(|source| {
+            OwnedPackageSource::from_bytes(&source.relative_path, source.source)
+                .map_err(|error| BuiltinModelError(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let coordinate = crate::builtin::compiler_scope::semantic_coordinate(
+        context.package,
+        profile,
+        context.coordinate,
+    )?;
+    let request = PackageCompileRequest::new(
+        GenerateTarget {
+            correlation: context.correlation,
+            profile,
+            stage: backend_semantic::vocabulary::Stage::LowerIr,
+        },
+        coordinate,
+    )
+    .map_err(|error| BuiltinModelError(format!("Cargo target profile: {error:?}")))?;
+    let request = OwnedPackageSourceSet::new(
+        request,
+        context.source_root.to_path_buf(),
+        sources.into_boxed_slice(),
+    )
+    .and_then(|request| request.with_rust_cargo_target_name(selector.as_str()))
+    .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let (compiler_target, closure) = compiler
+        .resolve_rust_cargo_target_cancellable(&request, cancellation)
+        .map_err(|error| BuiltinModelError(format!("resolve selected Cargo target: {error}")))?;
+    let scope = backend_library::CargoTargetScope {
+        name: backend_library::CargoTargetSelector::new(closure.target_name().to_owned())
+            .map_err(|error| BuiltinModelError(error.to_owned()))?,
+        root: closure.target_root().to_owned(),
+        kinds: closure
+            .target_kinds()
+            .iter()
+            .map(|kind| kind.to_string())
+            .collect(),
+        source_closure: closure.identity(),
+        source_count: u64::try_from(closure.source_count())
+            .map_err(|_| BuiltinModelError("Cargo source closure exceeds u64".to_owned()))?,
+    };
+    scope
+        .validate()
+        .map_err(|error| BuiltinModelError(error.to_owned()))?;
+    if scope.name != *selector {
+        return Err(BuiltinModelError(
+            "Cargo resolver returned another target name".to_owned(),
+        ));
+    }
+    Ok(Some(ResolvedCargoTarget {
+        compiler_target,
+        scope,
+    }))
 }
 
 fn prepare_native_frontier_changes_for_snapshot(
@@ -394,6 +498,7 @@ pub(super) fn prepare_scan_source(
     let facts_relation = product_source_file_facts_relation(&base_snapshot)
         .map_err(|error| BuiltinModelError(format!("open product source facts: {error}")))?;
     let IndexScanWork {
+        cargo_target,
         package,
         label,
         source_root: source_root_owned,
@@ -427,7 +532,7 @@ pub(super) fn prepare_scan_source(
     // at later admission fences.
     let source_root = revision_fence.canonical_root();
     let inputs = compiler_input_admissions(source_root, &scan, compiler);
-    let semantic_context = SemanticCompilationContext::admit(
+    let mut semantic_context = SemanticCompilationContext::admit(
         package,
         &label,
         source_root,
@@ -448,6 +553,15 @@ pub(super) fn prepare_scan_source(
     live.extend(scan.native_csharp_candidates.iter().map(|source| {
         ingest::compilation_profile(source_root, &source.relative_path, source.profile)
     }));
+    let rust_target = resolve_requested_cargo_target(
+        compiler,
+        &semantic_context,
+        &scan,
+        &live,
+        cargo_target.as_ref(),
+        Arc::clone(&cancellation),
+    )?;
+    semantic_context = semantic_context.with_rust_target(rust_target.as_ref());
     let mut present =
         ingest::present_compiler_paths(&scan.compiler_sources, &scan.reused_compiler_files);
     present.extend(
@@ -532,7 +646,7 @@ pub(super) fn prepare_scan_source(
             profile,
         )
         .map_err(|error| BuiltinModelError(error.to_owned()))?;
-        let input_digest = semantic_input_digest(&scan, profile);
+        let input_digest = semantic_target_input_digest(&scan, profile, rust_target.as_ref());
         let count = scan
             .compiler_sources
             .iter()
@@ -568,6 +682,10 @@ pub(super) fn prepare_scan_source(
                     })
                     .count(),
             );
+        let count = rust_target
+            .as_ref()
+            .filter(|_| matches!(profile, LanguageProfile::Rust(_)))
+            .map_or(count, |target| target.scope.source_count as usize);
         let count = u64::try_from(count)
             .map_err(|_| BuiltinModelError("semantic source count exceeds u64".to_owned()))?;
         observations.insert(
@@ -798,6 +916,7 @@ pub(super) fn prepare_scan_source(
         }))
     };
     Ok(PreparedScanSource {
+        rust_target,
         package,
         label,
         requested_root: source_root_owned,
@@ -830,6 +949,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
     #[cfg(test)] before_materialization: &mut dyn FnMut(),
 ) -> Result<PreparedSourceScan, BuiltinModelError> {
     let PreparedScanSource {
+        rust_target,
         package,
         label,
         requested_root,
@@ -919,6 +1039,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
             return Ok(PreparedSourceScan::Capture {
                 selection,
                 continuation: SourceCompilePlan {
+                    rust_target,
                     package,
                     label,
                     project_key,
@@ -994,6 +1115,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
     Ok(PreparedSourceScan::Capture {
         selection,
         continuation: SourceCompilePlan {
+            rust_target,
             package,
             label,
             project_key,
@@ -1105,7 +1227,8 @@ impl SourceCompilePlan {
             compiler,
             self.python_environment.as_ref(),
             self.cancellation.as_ref(),
-        )?;
+        )?
+        .with_rust_target(self.rust_target.as_ref());
         prepare_deferred_compile(
             snapshot,
             self.package,
@@ -1160,7 +1283,8 @@ impl SourceCompilePlan {
             compiler,
             self.python_environment.as_ref(),
             self.cancellation.as_ref(),
-        )?;
+        )?
+        .with_rust_target(self.rust_target.as_ref());
         let route = self.route.as_ref().expect("configured route continuation");
         let mut compiled = compile_semantic_publications_for_snapshot(
             snapshot,

@@ -20,6 +20,7 @@ fn fixture() -> (PackageReference, PackageCompilerOutcomes) {
         .map(|encoded| serde_json::from_str(encoded).expect("closed TS/Python profile"))
         .collect();
     let capture = IndexSourceCaptureSummary {
+        cargo_target: None,
         producer_package: package.clone(),
         request_identity: [6; 32],
         commit_identity: [7; 32],

@@ -1743,6 +1743,9 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                 }
             };
             let mut facts = vec![format!("package {}", status.package.as_str())];
+            if let Some(target) = &status.cargo_target {
+                facts.push(format!("selected Cargo target {}", target.as_str()));
+            }
             if let Some(capture) = &status.source_capture {
                 facts.push(format!(
                     "source capture root {} at sequence {}",
@@ -2317,6 +2320,9 @@ fn compiler_outcome_rows(
                 State::Failed { reason, .. } => format!("failed: {reason}; prior generation remains stale"),
             };
             let mut tags = vec![format!("{} captured source file(s)", profile.source_count)];
+            if let Some(scope) = source_capture.cargo_target.as_ref().filter(|_| matches!(profile.profile.profile(), Ok(backend_semantic::vocabulary::LanguageProfile::Rust(_)))) {
+                tags.push(format!("Cargo target {} ({}) at {}; coverage is its selected source closure", scope.name.as_str(), scope.kinds.join(", "), scope.root));
+            }
             let mut operand = refusals.iter().find(|refusal| refusal.profile==profile.profile).and_then(|refusal| match &refusal.diagnostic {
                 Diagnostic::NotRecorded => { tags.push("no typed compiler diagnostic was recorded".to_owned()); None },
                 Diagnostic::Retained { read } => {

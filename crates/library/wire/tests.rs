@@ -781,6 +781,7 @@ fn expected_decode_rejects_forged_hash_and_context_claims() {
     let expected = CommandDto::new(
         4,
         Command::Add {
+            cargo_target: None,
             package: crate::package_key("pkg"),
             execution_intent: crate::CompileExecutionIntent::Interactive,
         },
@@ -802,6 +803,7 @@ fn add_execution_intent_has_one_strict_canonical_wire_spelling() {
     let command = CommandDto::new(
         9,
         Command::Add {
+            cargo_target: None,
             package: crate::package_key("pkg"),
             execution_intent: crate::CompileExecutionIntent::Background,
         },
@@ -843,6 +845,7 @@ fn command_dto_round_trips_every_command_variant() {
                 .with_continuation(crate::PageContinuation::from_cursor(cursor)),
         ),
         Command::Add {
+            cargo_target: None,
             package,
             execution_intent: crate::CompileExecutionIntent::Interactive,
         },

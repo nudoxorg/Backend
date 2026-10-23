@@ -1234,6 +1234,7 @@ fn admit_index_reply(
     let operation = match (command, reply) {
         (
             SurfaceCommand::IndexOperationStart {
+                cargo_target,
                 operation_key,
                 package,
                 execution_intent,
@@ -1241,7 +1242,7 @@ fn admit_index_reply(
             SurfaceReply::IndexOperationStarted(observation),
         ) => Some((
             *operation_key,
-            Some((package, *execution_intent)),
+            Some((package, *execution_intent, cargo_target.as_ref())),
             observation,
         )),
         (
@@ -1290,12 +1291,17 @@ fn admit_index_reply(
                 "index operation reply does not match the exact requested key".to_owned(),
             ));
         }
-        if let Some((package, execution_intent)) = request {
-            let digest = crate::index_operation_request_digest(package, execution_intent);
+        if let Some((package, execution_intent, cargo_target)) = request {
+            let digest = crate::index_operation_scoped_request_digest(
+                package,
+                execution_intent,
+                cargo_target,
+            );
             let matches = match observation {
                 IndexOperationObservation::Known(status) => {
                     status.package == *package
                         && status.execution_intent == execution_intent
+                        && status.cargo_target.as_ref() == cargo_target
                         && status.request_digest == digest
                 }
                 IndexOperationObservation::OutsideReceiptWindow { request_digest, .. } => {
