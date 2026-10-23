@@ -1916,6 +1916,7 @@ mod unix_journeys {
             CommandDto::new(
                 200 + index as u64,
                 Command::Add {
+                    cargo_target: None,
                     package: key,
                     execution_intent: CompileExecutionIntent::Interactive,
                 },
