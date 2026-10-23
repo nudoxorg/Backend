@@ -1344,7 +1344,7 @@ def emit_index_failure_diagnostic(owner: Owner, project: Path) -> None:
     """Retain the public compiler refusal while this failed setup still owns its state."""
     try:
         reply, _ = run_cli(owner, project, [
-            "--limit", "200", "package-profile", str(project),
+            "package-profile", str(project),
             "--compiler-outcome", '{"kind":"current"}',
         ], 10)
         print("SURFACE-INDEX-DIAGNOSTIC " + json.dumps({

@@ -19,7 +19,7 @@ class FailedIndexDiagnosticTests(unittest.TestCase):
         with patch.object(surface, "run_cli", return_value=(reply, 0.1)) as run, contextlib.redirect_stdout(io.StringIO()) as output:
             surface.emit_index_failure_diagnostic(owner, project)
         run.assert_called_once_with(owner, project, [
-            "--limit", "200", "package-profile", str(project),
+            "package-profile", str(project),
             "--compiler-outcome", '{"kind":"current"}',
         ], 10)
         packet = json.loads(output.getvalue().split(" ", 1)[1])
