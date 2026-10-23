@@ -1998,7 +1998,7 @@ fn a_references_reply_renders_sites_with_their_provenance() {
 }
 
 #[test]
-fn empty_references_result_does_not_claim_that_its_target_is_absent() {
+fn empty_references_result_does_not_claim_target_absence_or_reference_completeness() {
     let reply = backend_library::SurfaceReply::References {
         target: backend_library::ProductText::new("pkg::semantic::callee")
             .expect("reference target"),
@@ -2010,9 +2010,10 @@ fn empty_references_result_does_not_claim_that_its_target_is_absent() {
         text::product(&view, Theme::plain()),
     ] {
         assert!(
-            rendered.contains("no references found for this target at this revision"),
+            rendered.contains("no reference records captured at this revision"),
             "{rendered}"
         );
+        assert!(!rendered.contains("no references found"), "{rendered}");
         assert!(!rendered.contains("no row at this revision"), "{rendered}");
     }
     let generic = product_view(&backend_library::SurfaceReply::IndexSearch(Box::new([])));

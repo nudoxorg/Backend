@@ -626,7 +626,7 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
     }
     if view.records().is_empty() {
         let message = if view.is_references_result() {
-            "  no references found for this target at this revision"
+            "  no reference records captured at this revision"
         } else {
             "  no row at this revision"
         };

@@ -888,7 +888,7 @@ fn product_projection(
     }
     if view.records().is_empty() {
         lines.push(if view.is_references_result() {
-            "no references found for this target at this revision"
+            "no reference records captured at this revision"
         } else {
             "no row at this revision"
         });
