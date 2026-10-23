@@ -11111,11 +11111,54 @@ fn report_native_tsz_type_projection_cycle(
                     let lazy_detail = lazy.map(|item| {
                         format_native_tsz_lazy_diagnostic(checker, database, item)
                     });
+                    let application_detail = child_data.as_ref().and_then(|item| {
+                        let TypeData::Application(application_id) = item else {
+                            return None;
+                        };
+                        let application = database.type_application(*application_id);
+                        let base_data = database.lookup(application.base);
+                        let base_lazy = base_data
+                            .as_ref()
+                            .filter(|base| matches!(base, TypeData::Lazy(_)))
+                            .map(|base| {
+                                format_native_tsz_lazy_diagnostic(checker, database, base)
+                            });
+                        let base_symbol = match base_data.as_ref() {
+                            Some(TypeData::Object(shape_id) | TypeData::ObjectWithIndex(shape_id)) => {
+                                Some(database.object_shape(*shape_id).symbol)
+                            }
+                            _ => None,
+                        };
+                        let arguments = application
+                            .args
+                            .iter()
+                            .take(LIMIT)
+                            .map(|argument| {
+                                let data = database.lookup(*argument);
+                                let lazy = data
+                                    .as_ref()
+                                    .filter(|argument| matches!(argument, TypeData::Lazy(_)))
+                                    .map(|argument| {
+                                        format_native_tsz_lazy_diagnostic(
+                                            checker, database, argument,
+                                        )
+                                    });
+                                (argument.0, data.map(|data| format!("{data:?}")), lazy)
+                            })
+                            .collect::<Vec<_>>();
+                        Some(format!(
+                            "base={} base_data={:?} base_symbol={base_symbol:?} base_lazy={base_lazy:?} args={arguments:?} total_args={}",
+                            application.base.0,
+                            base_data.map(|base| format!("{base:?}")),
+                            application.args.len(),
+                        ))
+                    });
                     (
                         role,
                         child.0,
                         child_data.map(|item| format!("{item:?}")),
                         lazy_detail,
+                        application_detail,
                     )
                 })
                 .collect::<Vec<_>>();
