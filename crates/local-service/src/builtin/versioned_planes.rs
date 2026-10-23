@@ -440,6 +440,24 @@ impl OwnedSemanticAuthoritySelectionSource {
         ),
         OwnedSemanticAuthoritySelectionError,
     > {
+        self.with_current_selection(|claim, selected| {
+            let publication = SemanticAuthority::selected_plane_for_store(
+                &self.store,
+                &self.key,
+                claim,
+                &selected,
+            )?;
+            Ok((claim, selected, publication))
+        })
+    }
+
+    fn with_current_selection<T>(
+        &self,
+        admit: impl FnOnce(
+            SemanticPublicationClaim,
+            SelectedGeneration,
+        ) -> Result<T, OwnedSemanticAuthoritySelectionError>,
+    ) -> Result<T, OwnedSemanticAuthoritySelectionError> {
         let selections = self.loader.acquire_publication_read()?;
         let Some((claim, selected)) =
             super::semantic_authority::SelectedClosureImageLoader::committed_pair_optional_in(
@@ -449,9 +467,7 @@ impl OwnedSemanticAuthoritySelectionSource {
         else {
             return Err(OwnedSemanticAuthoritySelectionError::StaleSelection);
         };
-        let publication =
-            SemanticAuthority::selected_plane_for_store(&self.store, &self.key, claim, &selected)?;
-        Ok((claim, selected, publication))
+        admit(claim, selected)
     }
 }
 
@@ -644,19 +660,17 @@ impl SelectedGenerationSource for OwnedSemanticAuthoritySelectionSource {
         expected_stamp: SelectedGenerationStamp,
         image: SemanticPlaneImageKey,
     ) -> Result<bool, Self::Error> {
-        let (claim, selected, publication) = self.current_selection()?;
-        if publication.stamp() != expected_stamp
-            || publication.metadata().artifact_for_image(image).is_none()
-        {
-            return Ok(false);
-        }
-        SemanticAuthority::selected_native_image_identity_for_store(
-            &self.store,
-            claim,
-            &selected,
-            image,
-        )?;
-        Ok(true)
+        self.with_current_selection(|claim, selected| {
+            SemanticAuthority::selected_image_is_current_for_store(
+                &self.store,
+                &self.key,
+                claim,
+                &selected,
+                image,
+                expected_stamp,
+            )
+            .map_err(Into::into)
+        })
     }
 }
 

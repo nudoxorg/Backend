@@ -2369,6 +2369,58 @@ impl SemanticAuthority {
         })
     }
 
+    /// Checks one selected image against the exact publication metadata that
+    /// was reopened for its freshness check. Keep the image identity conversion
+    /// behind the stamp and catalog-membership checks: a stale selector remains
+    /// an ordinary `false`, even if an unrelated image record is malformed.
+    pub(super) fn selected_image_is_current_for_store(
+        store: &FileStore,
+        key: &ProductSemanticPublicationKey,
+        expected_claim: SemanticPublicationClaim,
+        selected: &SelectedGeneration,
+        image: backend_semantic::ir::SemanticPlaneImageKey,
+        expected_stamp: backend_replication::SelectedGenerationStamp,
+    ) -> Result<bool, BuiltinModelError> {
+        let reopened = reopen_selected_compiler_metadata(store, selected).map_err(|error| {
+            BuiltinModelError(format!("reopen selected semantic history: {error}"))
+        })?;
+        let (actual_claim, _) = reopen_record_from_metadata(selected, &reopened)?;
+        if actual_claim != expected_claim {
+            return Err(BuiltinModelError(
+                "committed semantic claim differs from its retained closure".to_owned(),
+            ));
+        }
+        let publication =
+            super::versioned_planes::SelectedVersionedPlanePublication::from_reopened(
+                key, selected, &reopened,
+            )
+            .map_err(|error| {
+                BuiltinModelError(format!("admit selected semantic plane metadata: {error}"))
+            })?;
+        if publication.stamp() != expected_stamp
+            || publication.metadata().artifact_for_image(image).is_none()
+        {
+            return Ok(false);
+        }
+        let member = reopened
+            .metadata()
+            .images()
+            .iter()
+            .find(|member| member.artifact_ordinal() == image.artifact_ordinal())
+            .ok_or_else(|| {
+                BuiltinModelError(
+                    "committed selected image has no compiler image member".to_owned(),
+                )
+            })?;
+        backend_semantic::ir::SemanticImageIdentity::try_from(*member.semantic_image_identity())
+            .map_err(|error| {
+                BuiltinModelError(format!(
+                    "committed semantic image identity is invalid: {error}"
+                ))
+            })?;
+        Ok(true)
+    }
+
     fn resolve_selected_full_image_plan(
         &self,
         key: &ProductSemanticPublicationKey,
@@ -4747,6 +4799,13 @@ fn reopen_record(
 ) -> Result<(SemanticPublicationClaim, ProductSemanticPublicationRecord), BuiltinModelError> {
     let reopened = reopen_selected_compiler_metadata(store, selected)
         .map_err(|error| BuiltinModelError(format!("reopen selected semantic history: {error}")))?;
+    reopen_record_from_metadata(selected, &reopened)
+}
+
+fn reopen_record_from_metadata(
+    selected: &SelectedGeneration,
+    reopened: &backend_extension_turso::ReopenedCompilerMetadata,
+) -> Result<(SemanticPublicationClaim, ProductSemanticPublicationRecord), BuiltinModelError> {
     let metadata = reopened.metadata();
     let mut fragment_slots = vec![None; metadata.manifest_fragment_count() as usize];
     let manifest = backend_engine::publication::manifest::CompilationManifestView::validate(
@@ -5125,7 +5184,7 @@ mod tests {
         let attempt = authority
             .begin_candidate_attempt(&key, &observation)
             .expect("begin exact compiler attempt");
-        let (_, selected) = authority
+        let (claim, selected) = authority
             .publish_staged(&key, attempt, &staged, |_| Ok(()))
             .expect("real admission counts the declared accelerator in the exact payload set");
         let reopened = reopen_selected_compiler_metadata(&authority.store, &selected)
@@ -5139,6 +5198,88 @@ mod tests {
             .expect("exact selected closure admits its typed member")
             .expect("selected optional member is present");
         assert_eq!(selected_certificate.as_bytes(), certificate.as_slice());
+        let publication =
+            super::super::versioned_planes::SelectedVersionedPlanePublication::from_reopened(
+                &key, &selected, &reopened,
+            )
+            .expect("admit exact selected plane publication");
+        let image = reopened
+            .metadata()
+            .versioned_planes()
+            .expect("published catalog")
+            .artifacts()[0]
+            .image_key();
+        assert!(
+            SemanticAuthority::selected_image_is_current_for_store(
+                &authority.store,
+                &key,
+                claim,
+                &selected,
+                image,
+                publication.stamp(),
+            )
+            .expect("current selected image identity is admitted")
+        );
+        let stale_stamp = backend_replication::SelectedGenerationStamp::checked(
+            *publication.stamp().namespace(),
+            publication.stamp().profile(),
+            *publication.stamp().source_coordinate(),
+            publication
+                .stamp()
+                .selection_revision()
+                .checked_add(1)
+                .expect("fixture selection revision increments"),
+            *publication.stamp().selected_root(),
+            *publication.stamp().closure_id(),
+            publication.stamp().catalog_root(),
+        )
+        .expect("construct an otherwise valid stale stamp");
+        assert!(
+            !SemanticAuthority::selected_image_is_current_for_store(
+                &authority.store,
+                &key,
+                claim,
+                &selected,
+                image,
+                stale_stamp,
+            )
+            .expect("wrong stamp is an ordinary mismatch")
+        );
+        let absent_image = backend_semantic::ir::SemanticPlaneImageKey::new(
+            image.artifact_ordinal() + 1,
+            image.semantic_generation(),
+            image.manifest_root(),
+        );
+        assert!(
+            !SemanticAuthority::selected_image_is_current_for_store(
+                &authority.store,
+                &key,
+                claim,
+                &selected,
+                absent_image,
+                publication.stamp(),
+            )
+            .expect("image outside the selected catalog is an ordinary mismatch")
+        );
+        let other_coordinate = PackageUrl::parse("pkg:npm/other-snapshot-member@1.0.0".to_owned())
+            .expect("admit other package coordinate");
+        let other_key = ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::Purl(other_coordinate.clone()),
+            other_coordinate,
+            profile,
+        )
+        .expect("other valid product key");
+        assert!(
+            SemanticAuthority::selected_image_is_current_for_store(
+                &authority.store,
+                &other_key,
+                claim,
+                &selected,
+                image,
+                publication.stamp(),
+            )
+            .is_err()
+        );
         drop(client);
     }
 
