@@ -2650,6 +2650,92 @@ fn typescript_source_gap_cause(
     }
 }
 
+/// Emits a bounded, opt-in explanation for one compatibility-checker source
+/// that was already accepted as a source-local coverage gap. This diagnostic
+/// is outside persisted coverage and does not affect the admission decision.
+fn report_typescript_compatibility_gap(path: &Path, terminal: &CompilerTerminal) {
+    use std::{ffi::OsStr, fmt::Write as _};
+
+    const DETAIL_LIMIT: usize = 768;
+    const PATH_LIMIT: usize = 256;
+    if std::env::var_os("NUDOX_TYPESCRIPT_COMPATIBILITY_DIAGNOSTICS").as_deref()
+        != Some(OsStr::new("1"))
+    {
+        return;
+    }
+    let CompilerTerminal::Compile { cause, .. } = terminal else {
+        return;
+    };
+    if !matches!(
+        cause,
+        CompilerCause::Lowering(_) | CompilerCause::FragmentFailure(_)
+    ) {
+        return;
+    }
+
+    let mut detail = BoundedDiagnostic::new(DETAIL_LIMIT);
+    let _ = write!(&mut detail, "{cause:?}");
+    let mut bounded_path = String::new();
+    for character in path.to_string_lossy().chars() {
+        let character = if character.is_control() {
+            '?'
+        } else {
+            character
+        };
+        if bounded_path.len().saturating_add(character.len_utf8()) > PATH_LIMIT {
+            break;
+        }
+        bounded_path.push(character);
+    }
+    eprintln!(
+        "typescript-compatibility-gap path={bounded_path:?} terminal={}{}",
+        detail.as_str(),
+        if detail.truncated() { "…" } else { "" },
+    );
+}
+
+/// A UTF-8-safe formatting sink with a strict output byte limit.
+struct BoundedDiagnostic {
+    text: String,
+    limit: usize,
+    truncated: bool,
+}
+
+impl BoundedDiagnostic {
+    fn new(limit: usize) -> Self {
+        Self {
+            text: String::with_capacity(limit),
+            limit,
+            truncated: false,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    const fn truncated(&self) -> bool {
+        self.truncated
+    }
+}
+
+impl std::fmt::Write for BoundedDiagnostic {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        let remaining = self.limit.saturating_sub(self.text.len());
+        if value.len() <= remaining {
+            self.text.push_str(value);
+            return Ok(());
+        }
+        let mut end = remaining.min(value.len());
+        while !value.is_char_boundary(end) {
+            end = end.saturating_sub(1);
+        }
+        self.text.push_str(&value[..end]);
+        self.truncated = true;
+        Err(std::fmt::Error)
+    }
+}
+
 #[cfg(test)]
 mod source_degradation_tests {
     use super::*;
@@ -5282,6 +5368,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             terminal: Box::new(terminal),
                         });
                     }
+                    report_typescript_compatibility_gap(source.relative_path, &terminal);
                     let diagnostic = typescript_source_gap_diagnostic(
                         &terminal,
                         source.source.as_bytes(),
