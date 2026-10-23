@@ -1362,7 +1362,8 @@ class SnapshotContinuationTests(unittest.TestCase):
 
 
 class InteractiveMcpTests(unittest.TestCase):
-    def test_case_accounts_proof_separately_and_retains_later_gui_usage(self):
+    def _run_phase_accounting_scenario(self, proof_peak_rss, gui_peak_rss,
+                                       gui_resident_rss):
         import contextlib, io, tempfile
         import sys
         from types import SimpleNamespace
@@ -1396,7 +1397,8 @@ class InteractiveMcpTests(unittest.TestCase):
             def exchange(call, _per_call=10):
                 events.append("proof-hop" if proof_session else "measured-hop")
                 if proof_session:
-                    state.update(cpu_seconds=99.0, peak_rss_kib=9999, resident_rss_kib=90)
+                    state.update(cpu_seconds=99.0, peak_rss_kib=proof_peak_rss,
+                                 resident_rss_kib=min(90, proof_peak_rss))
                 return {"isError": False, "structuredContent": last}
             exchange.deadline = absolute_deadline
             reply = {"isError": False, "structuredContent": first}
@@ -1423,7 +1425,10 @@ class InteractiveMcpTests(unittest.TestCase):
                     "mcp": [{"tool": "backend.outline", "arguments": {}}]}
             def gui(_owner, _project, _case):
                 events.append("gui")
-                state.update(cpu_seconds=105.0, peak_rss_kib=120, resident_rss_kib=100)
+                # /proc documents RSS/HWM as unlocked snapshots, so the
+                # sampled HWM may decrease even though no second reset ran.
+                state.update(cpu_seconds=105.0, peak_rss_kib=gui_peak_rss,
+                             resident_rss_kib=gui_resident_rss)
                 return {"answer": "gui"}, {"seconds": {}, "gui_peak_rss_kib": 10}, {}
             gui_module = SimpleNamespace(run_gui=gui)
             with patch.object(surface, "SCRATCH", root / "scratch"), \
@@ -1435,17 +1440,34 @@ class InteractiveMcpTests(unittest.TestCase):
                     patch.dict(sys.modules, {"gui_contract": gui_module}), \
                     contextlib.redirect_stdout(io.StringIO()):
                 record = surface.run_case(case, root / "bin")
+        return record, events, sessions
+
+    def test_case_accounts_proof_separately_and_tolerates_decreasing_hwm_snapshots(self):
+        record, events, sessions = self._run_phase_accounting_scenario(9999, 70, 70)
         self.assertEqual(sessions, 2)
         self.assertLess(events.index("measured-hop"), events.index("usage"))
         self.assertLess(events.index("usage"), events.index("proof-hop"))
         self.assertLess(events.index("proof-hop"), events.index("reset"))
         self.assertLess(events.index("reset"), events.index("gui"))
         self.assertEqual(record["performance"]["cpu_seconds"], 7)
-        self.assertEqual(record["performance"]["peak_rss_kib"], 120)
+        self.assertEqual(record["performance"]["peak_rss_kib"], 100)
         self.assertEqual(record["resource_phase_evidence"]["proof_cpu_seconds"], 98)
+        self.assertEqual(record["resource_phase_evidence"]["proof_peak_rss_kib"], 9999)
+        self.assertEqual(record["resource_phase_evidence"]["post_reset_peak_rss_kib"], 90)
         self.assertNotIn("resource_phase_evidence", record["performance"])
         self.assertEqual(record["resource_phase_evidence"]["post_reset_final"]["cpu_seconds"], 105)
         self.assertEqual(len(record["continuation_evidence"]), 2)
+
+        # The exact failure observed in build 600335 was a lower postproof
+        # VmHWM than the independently sampled preproof VmHWM.
+        record, _events, _sessions = self._run_phase_accounting_scenario(70, 70, 70)
+        self.assertEqual(record["performance"]["peak_rss_kib"], 100)
+        self.assertEqual(record["resource_phase_evidence"]["proof_peak_rss_kib"], 100)
+
+    def test_case_retains_a_higher_gui_hwm_sample(self):
+        record, _events, _sessions = self._run_phase_accounting_scenario(70, 120, 100)
+        self.assertEqual(record["performance"]["peak_rss_kib"], 120)
+        self.assertEqual(record["resource_phase_evidence"]["post_reset_peak_rss_kib"], 120)
 
     def test_replay_refuses_expired_original_cli_deadline(self):
         import time
@@ -1457,11 +1479,18 @@ class InteractiveMcpTests(unittest.TestCase):
 
 
 class OwnerPeakResetTests(unittest.TestCase):
+    def test_usage_refuses_an_exited_owner_before_reading_proc(self):
+        from types import SimpleNamespace
+        owner = surface.Owner.__new__(surface.Owner)
+        owner.process = SimpleNamespace(pid=123, poll=lambda: 1)
+        with self.assertRaisesRegex(RuntimeError, "owner exited before its resource sample"):
+            owner.usage_raw()
+
     def test_peak_reset_refusal_fails_closed(self):
         from types import SimpleNamespace
         from unittest.mock import patch
         owner = surface.Owner.__new__(surface.Owner)
-        owner.process = SimpleNamespace(pid=123)
+        owner.process = SimpleNamespace(pid=123, poll=lambda: None)
         writes = []
 
         def read(path):

@@ -729,11 +729,15 @@ class Owner:
 
     def usage_raw(self) -> dict:
         """Unrounded owner counters used for phase accounting."""
+        if self.process.poll() is not None:
+            raise RuntimeError("owner exited before its resource sample")
         pid = self.process.pid
         status = Path(f"/proc/{pid}/status").read_text()
         peak = int(re.search(r"VmHWM:\s+(\d+) kB", status).group(1))
         resident = int(re.search(r"VmRSS:\s+(\d+) kB", status).group(1))
         fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        if self.process.poll() is not None:
+            raise RuntimeError("owner exited during its resource sample")
         ticks = os.sysconf("SC_CLK_TCK")
         cpu = (int(fields[11]) + int(fields[12])) / ticks
         if not math.isfinite(cpu) or cpu < 0:
@@ -2382,8 +2386,6 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         _validate_owner_usage(proof_usage, "after cursor proof")
         if proof_usage["cpu_seconds"] < preproof_usage["cpu_seconds"]:
             raise RuntimeError("owner CPU counter decreased during cursor proof phase")
-        if proof_usage["peak_rss_kib"] < preproof_usage["peak_rss_kib"]:
-            raise RuntimeError("owner VmHWM decreased before the explicit reset")
         has_cursor_proof = any(require_initial_cursor_shape(item[2]["json"]) is not None
                                for item in cli_proofs)
         if case.get("mcp"):
@@ -2398,6 +2400,11 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             "preproof": preproof_usage,
             "postproof": proof_usage,
             "post_reset": reset_usage,
+            # Linux documents the /proc RSS/HWM fields as unlocked snapshots.
+            # Preserve a conservative envelope instead of requiring two
+            # independently sampled VmHWM values to be monotonic.
+            "proof_peak_rss_kib": max(
+                preproof_usage["peak_rss_kib"], proof_usage["peak_rss_kib"]),
             "proof_cpu_seconds": proof_usage["cpu_seconds"] - preproof_usage["cpu_seconds"],
             "proof_elapsed_seconds": round(proof_elapsed, 3),
             "peak_reset_method": ("locald /proc clear_refs=5; VmHWM verified equals VmRSS"
@@ -2430,12 +2437,12 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         _validate_owner_usage(final_usage, "after live/GUI phases")
         if final_usage["cpu_seconds"] < proof_usage["cpu_seconds"]:
             raise RuntimeError("owner CPU counter decreased across cursor proof and live/GUI phases")
-        if final_usage["peak_rss_kib"] < reset_usage["peak_rss_kib"]:
-            raise RuntimeError("owner VmHWM decreased after the explicit reset")
         postproof_cpu = final_usage["cpu_seconds"] - proof_usage["cpu_seconds"]
         if postproof_cpu < 0:
             raise RuntimeError("owner post-proof CPU delta is negative")
         phase_record["post_reset_final"] = final_usage
+        phase_record["post_reset_peak_rss_kib"] = max(
+            reset_usage["peak_rss_kib"], final_usage["peak_rss_kib"])
         with OUTPUT_LOCK:
             print("CI-RESOURCE-PHASE " + json.dumps({
                 **(RUN_PROVENANCE.get() or {}), "case": case["name"], "phase": "final",
@@ -2443,7 +2450,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             }, sort_keys=True), flush=True)
         record["performance"]["cpu_seconds"] = round(preproof_usage["cpu_seconds"] + postproof_cpu, 2)
         record["performance"]["peak_rss_kib"] = max(
-            preproof_usage["peak_rss_kib"], final_usage["peak_rss_kib"])
+            preproof_usage["peak_rss_kib"], phase_record["post_reset_peak_rss_kib"])
     finally:
         case_error = sys.exc_info()[1]
         try:
