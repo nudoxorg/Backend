@@ -5,7 +5,7 @@ use backend_frontend_typescript::native_project::{
     ResolutionDirEntry, ResolutionFileKind, ResolutionFileSystem,
 };
 use backend_frontend_typescript::{TszExecutionCheckpoint, TszProjectExecutionStop};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::io;
 use std::rc::Rc;
 use std::time::Duration;
@@ -20,6 +20,7 @@ struct CapturedNativeFileSystem<'resolver, 'witness, 'control> {
     deadline: Instant,
     cancelled: &'resolver AtomicBool,
     control: Option<SnapshotReplayControl<'control>>,
+    root_selection_phase: Cell<bool>,
 }
 
 impl CapturedNativeFileSystem<'_, '_, '_> {
@@ -94,7 +95,12 @@ impl ResolutionFileSystem for CapturedNativeFileSystem<'_, '_, '_> {
     }
     fn read_dir(&self, path: &Path) -> io::Result<Option<Vec<ResolutionDirEntry>>> {
         self.observe(|resolver| {
-            let Some(canonical) = resolver.observe_program_directory(path)? else {
+            let canonical = if self.root_selection_phase.get() {
+                resolver.observe_root_program_directory(path)?
+            } else {
+                resolver.observe_program_directory(path)?
+            };
+            let Some(canonical) = canonical else {
                 return Ok(None);
             };
             let entries = resolver
@@ -173,12 +179,18 @@ pub(super) fn replay_native_root_selection(
         deadline,
         cancelled: &cancelled,
         control: Some(Rc::clone(&shared_control)),
+        root_selection_phase: Cell::new(true),
     };
+    let replay_control_error = RefCell::new(None);
     let replayed = backend_frontend_typescript::native_project::replay_root_selection_controlled(
         &fs,
         &query.config_path,
         &|work| {
-            (**shared_control.borrow_mut())().map_err(|error| error.to_string())?;
+            if let Err(error) = (**shared_control.borrow_mut())() {
+                let message = error.to_string();
+                replay_control_error.borrow_mut().get_or_insert(error);
+                return Err(message);
+            }
             checkpoint
                 .checkpoint(work)
                 .map_err(|stop| format!("native TSZ admission stopped: {stop:?}"))
@@ -188,7 +200,9 @@ pub(super) fn replay_native_root_selection(
     drop(fs);
     drop(checkpoint);
     drop(shared_control);
-    if let Some(error) = filesystem_error {
+    // Preserve the first typed cancellation result without invoking the
+    // caller again after it has already stopped root/glob replay.
+    if let Some(error) = replay_control_error.into_inner().or(filesystem_error) {
         return Err(error);
     }
     let replayed = match replayed {
@@ -263,12 +277,17 @@ pub(super) fn build_direct_inputs_for_config(
         deadline,
         cancelled,
         control: None,
+        root_selection_phase: Cell::new(config.is_some()),
     };
-    let built = backend_frontend_typescript::native_project::build(
+    let built = backend_frontend_typescript::native_project::build_with_root_selection_observer(
         &fs,
         config.map(|config| config.path.as_ref()),
         &inferred_roots,
         &checkpoint,
+        &|_| {
+            fs.root_selection_phase.set(false);
+            Ok(())
+        },
     );
     if let Some(error) = fs.error.into_inner() {
         return Err(error);

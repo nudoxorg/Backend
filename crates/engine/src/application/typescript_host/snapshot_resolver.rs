@@ -80,6 +80,8 @@ struct DirectoryDto {
     path: String,
     identity: (u64, u128),
     entries: BoundedSnapshotVec<EntryDto, MAX_RESOLVER_DIRECTORY_ENTRIES>,
+    root_enumeration: bool,
+    module_enumeration: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -180,6 +182,8 @@ fn encode_directory(value: &DirectorySnapshot) -> Option<DirectoryDto> {
     Some(DirectoryDto {
         path: snapshot_path(&value.path)?,
         identity: snapshot_identity(value.identity),
+        root_enumeration: value.root_enumeration,
+        module_enumeration: value.module_enumeration,
         entries: BoundedSnapshotVec(
             value
                 .entries
@@ -232,6 +236,8 @@ fn decode_directory(value: DirectoryDto) -> Option<DirectorySnapshot> {
         path: path.into_boxed_path(),
         identity: snapshot_decode_identity(value.identity.0, value.identity.1)?,
         entries: entries.into_boxed_slice(),
+        root_enumeration: value.root_enumeration,
+        module_enumeration: value.module_enumeration,
     })
 }
 
@@ -298,7 +304,7 @@ impl TypeScriptResolverWitness {
             return None;
         }
         let dto = ResolverDto {
-            version: 2,
+            version: 3,
             project_fingerprint: self.project_fingerprint,
             digest: self.digest,
             loaded_sources: BoundedSnapshotVec(encode_map(
@@ -406,7 +412,7 @@ impl TypeScriptResolverWitness {
             return None;
         }
         let dto: ResolverDto = serde_json::from_slice(bytes).ok()?;
-        if dto.version != 2 || dto.project_fingerprint != host.fingerprint {
+        if dto.version != 3 || dto.project_fingerprint != host.fingerprint {
             return None;
         }
         let observations = ResolverObservationLedger {
@@ -582,6 +588,13 @@ fn checked_counters(
     for (path, directory) in &ledger.directories {
         if path.as_path() != directory.path.as_ref()
             || !host.path_is_admitted(path)
+            || directory.root_enumeration
+                != ledger.native_root_selection.as_ref().is_some_and(|query| {
+                    query
+                        .directories
+                        .iter()
+                        .any(|entry| entry.as_ref() == path.as_path())
+                })
             || directory.entries.len() > MAX_RESOLVER_DIRECTORY_ENTRIES
             || directory
                 .entries
@@ -892,7 +905,7 @@ mod tests {
         unknown_query["native_root_selection"] =
             serde_json::json!({"state":"absent", "unexpected":true});
         let mut future_version = original.clone();
-        future_version["version"] = serde_json::json!(3);
+        future_version["version"] = serde_json::json!(4);
         let mut bad_digest = original;
         bad_digest["digest"][0] = serde_json::json!(bad_digest["digest"][0].as_u64().unwrap() ^ 1);
         for changed in [
@@ -935,13 +948,156 @@ mod tests {
         assert!(serde_json::from_value::<NativeRootSelectionDto>(oversized).is_err());
     }
 
+    #[test]
+    fn existence_parent_regular_delta_replays_but_exact_missing_candidate_does_not() {
+        let fixture = Fixture::new();
+        let (host, witness) = fixture.capture();
+        assert!(
+            witness
+                .observations
+                .directories
+                .values()
+                .all(|directory| !directory.root_enumeration && !directory.module_enumeration)
+        );
+        let bytes = witness.encode_native_snapshot(&host).unwrap();
+        fs::write(fixture.root.join("unrelated.txt"), "").unwrap();
+        assert!(
+            TypeScriptResolverWitness::decode_native_snapshot(&bytes, &host, &mut || Ok(()))
+                .is_some()
+        );
+        let (_, fresh) = fixture.capture();
+        assert_eq!(
+            fresh.digest(),
+            witness.digest(),
+            "fresh and warm existence-only views bind the same effective inputs"
+        );
+        fs::remove_file(fixture.root.join("unrelated.txt")).unwrap();
+        assert!(
+            TypeScriptResolverWitness::decode_native_snapshot(&bytes, &host, &mut || Ok(()))
+                .is_some()
+        );
+        fs::write(fixture.root.join("missing.ts"), "export {};").unwrap();
+        assert!(
+            TypeScriptResolverWitness::decode_native_snapshot(&bytes, &host, &mut || Ok(()))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn root_only_enumeration_replays_exact_roots_and_ignores_unselected_regular_files() {
+        let fixture = Fixture::new();
+        fs::write(
+            fixture.root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"noLib":true,"types":[]},"include":["*.ts"]}"#,
+        )
+        .unwrap();
+        let (host, witness) = fixture.capture();
+        let mut resolver = TypeScriptResolverCapability {
+            witness: &host,
+            observations: witness.observations,
+        };
+        resolver
+            .try_load_source(&fixture.root.join("tsconfig.json"))
+            .unwrap()
+            .unwrap();
+        resolver
+            .observe_root_program_directory(&fixture.root)
+            .unwrap();
+        resolver
+            .record_native_root_selection(
+                &fixture.root.join("tsconfig.json"),
+                &[fixture.root.join("source.ts")],
+                &[fixture.root.clone()],
+            )
+            .unwrap();
+        let witness = resolver.seal().unwrap();
+        let bytes = witness.encode_native_snapshot(&host).unwrap();
+        assert!(
+            TypeScriptResolverWitness::decode_native_snapshot(&bytes, &host, &mut || Ok(()))
+                .is_some()
+        );
+        fs::write(fixture.root.join("unrelated.txt"), "").unwrap();
+        assert!(
+            TypeScriptResolverWitness::decode_native_snapshot(&bytes, &host, &mut || Ok(()))
+                .is_some()
+        );
+        fs::write(fixture.root.join("new-root.ts"), "export {};").unwrap();
+        assert!(
+            TypeScriptResolverWitness::decode_native_snapshot(&bytes, &host, &mut || Ok(()))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn module_enumeration_regular_delta_is_exact_including_shared_root_directory() {
+        for shared_root in [false, true] {
+            let fixture = Fixture::new();
+            fs::write(
+                fixture.root.join("tsconfig.json"),
+                r#"{"compilerOptions":{"noLib":true,"types":[]},"include":["*.ts"]}"#,
+            )
+            .unwrap();
+            let (host, witness) = fixture.capture();
+            let mut resolver = TypeScriptResolverCapability {
+                witness: &host,
+                observations: witness.observations,
+            };
+            resolver
+                .try_load_source(&fixture.root.join("tsconfig.json"))
+                .unwrap()
+                .unwrap();
+            if shared_root {
+                resolver
+                    .observe_root_program_directory(&fixture.root)
+                    .unwrap();
+                resolver
+                    .record_native_root_selection(
+                        &fixture.root.join("tsconfig.json"),
+                        &[fixture.root.join("source.ts")],
+                        &[fixture.root.clone()],
+                    )
+                    .unwrap();
+                assert!(!resolver.observations.directories[&fixture.root].module_enumeration);
+                // A later module enumeration must restore strictness even though
+                // root selection enumerated the same physical directory first.
+                resolver.observe_program_directory(&fixture.root).unwrap();
+            } else {
+                resolver.observe_program_directory(&fixture.root).unwrap();
+            }
+            let witness = resolver.seal().unwrap();
+            assert!(witness.observations.directories[&fixture.root].module_enumeration);
+            let bytes = witness.encode_native_snapshot(&host).unwrap();
+            assert!(
+                TypeScriptResolverWitness::decode_native_snapshot(&bytes, &host, &mut || Ok(()))
+                    .is_some()
+            );
+            fs::write(fixture.root.join("unrelated.txt"), "").unwrap();
+            assert!(
+                TypeScriptResolverWitness::decode_native_snapshot(&bytes, &host, &mut || Ok(()))
+                    .is_none(),
+                "module enumeration must remain exact, shared_root={shared_root}"
+            );
+            fs::remove_file(fixture.root.join("unrelated.txt")).unwrap();
+            assert!(
+                TypeScriptResolverWitness::decode_native_snapshot(&bytes, &host, &mut || Ok(()))
+                    .is_some()
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlink_retarget_and_new_directory_children_invalidate_decoded_closure() {
         let fixture = Fixture::new();
         fs::write(fixture.root.join("other.ts"), "export const other = 1;").unwrap();
         std::os::unix::fs::symlink("source.ts", fixture.root.join("link.ts")).unwrap();
-        let (host, witness) = fixture.capture();
+        let (host, mut witness) = fixture.capture();
+        let mut resolver = TypeScriptResolverCapability {
+            witness: &host,
+            observations: witness.observations,
+        };
+        resolver.observe_program_directory(&fixture.root).unwrap();
+        witness = resolver.seal().unwrap();
         let bytes = witness.encode_native_snapshot(&host).unwrap();
         fs::write(fixture.root.join("new-child.ts"), "export {};").unwrap();
         assert!(

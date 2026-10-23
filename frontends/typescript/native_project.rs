@@ -125,6 +125,18 @@ pub fn build(
     inferred_roots: &[PathBuf],
     checkpoint: &dyn ExecutionCheckpoint,
 ) -> Result<NativeProgram, String> {
+    build_with_root_selection_observer(fs, config_path, inferred_roots, checkpoint, &|_| Ok(()))
+}
+
+/// Reports completed root enumeration before module resolution can enumerate any
+/// of the same directories. Consumers retain these as separate observations.
+pub fn build_with_root_selection_observer(
+    fs: &dyn ResolutionFileSystem,
+    config_path: Option<&Path>,
+    inferred_roots: &[PathBuf],
+    checkpoint: &dyn ExecutionCheckpoint,
+    root_selection_complete: &dyn Fn(&NativeRootSelectionTranscript) -> Result<(), String>,
+) -> Result<NativeProgram, String> {
     poll(checkpoint, 0)?;
     let (config, mut program_diagnostics, paths_base_path) = match config_path {
         Some(path) => {
@@ -168,6 +180,9 @@ pub fn build(
         }
         None => (inferred_roots.to_vec(), None),
     };
+    if let Some(query) = &root_selection {
+        root_selection_complete(query)?;
+    }
     let mut resolver = ModuleResolver::with_file_system(&options, fs);
     let solution = roots.is_empty()
         && config

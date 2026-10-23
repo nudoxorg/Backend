@@ -330,6 +330,10 @@ struct DirectorySnapshot {
     path: Box<Path>,
     identity: FileIdentity,
     entries: Box<[TypeScriptDirectoryEntry]>,
+    /// A root/glob enumeration is replayed before regular entry deltas are accepted.
+    root_enumeration: bool,
+    /// Module/other enumerations retain their exact complete entry sequence.
+    module_enumeration: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -856,6 +860,11 @@ impl TypeScriptResolverCapability<'_> {
             }
             self.record_realpath(lexical, Some(canonical.clone()), identity)?;
             self.observe_directory(&canonical)?;
+            self.observations
+                .directories
+                .get_mut(&canonical)
+                .expect("enumerated directory was captured")
+                .module_enumeration = true;
             let snapshot = self
                 .observations
                 .directories
@@ -917,6 +926,21 @@ impl TypeScriptResolverCapability<'_> {
         &mut self,
         path: &Path,
     ) -> Result<Option<PathBuf>, TypeScriptProjectHostError> {
+        self.observe_program_directory_with_purpose(path, false)
+    }
+
+    pub(crate) fn observe_root_program_directory(
+        &mut self,
+        path: &Path,
+    ) -> Result<Option<PathBuf>, TypeScriptProjectHostError> {
+        self.observe_program_directory_with_purpose(path, true)
+    }
+
+    fn observe_program_directory_with_purpose(
+        &mut self,
+        path: &Path,
+        root_selection: bool,
+    ) -> Result<Option<PathBuf>, TypeScriptProjectHostError> {
         let lexical = self.witness.admit_lexical_path(path)?;
         let Some((canonical, identity)) = self.capture_realpath(&lexical)? else {
             self.record_missing(lexical, None)?;
@@ -937,6 +961,16 @@ impl TypeScriptResolverCapability<'_> {
             return Ok(None);
         }
         self.observe_directory(&canonical)?;
+        let snapshot = self
+            .observations
+            .directories
+            .get_mut(&canonical)
+            .expect("enumerated directory was captured");
+        if root_selection {
+            snapshot.root_enumeration = true;
+        } else {
+            snapshot.module_enumeration = true;
+        }
         Ok(Some(canonical))
     }
 
@@ -1003,7 +1037,7 @@ impl TypeScriptResolverCapability<'_> {
 
     pub(crate) fn resolver_witness(&self) -> Result<[u8; 32], TypeScriptProjectHostError> {
         let mut digest = Hasher::new();
-        digest.update(b"compiler.typescript.resolver-observations.v2\0");
+        digest.update(b"compiler.typescript.resolver-observations.v3\0");
         update_len(&mut digest, self.observations.observation_count());
         for input in self.observations.loaded_sources.values() {
             digest.update(&[1]);
@@ -1064,8 +1098,16 @@ impl TypeScriptResolverCapability<'_> {
         for snapshot in self.observations.directories.values() {
             digest.update(&[3]);
             update_logical_path(&mut digest, self.witness, &snapshot.path)?;
-            update_len(&mut digest, snapshot.entries.len());
-            for entry in snapshot.entries.iter() {
+            digest.update(&[
+                u8::from(snapshot.root_enumeration),
+                u8::from(snapshot.module_enumeration),
+            ]);
+            let entries = snapshot.entries.iter().filter(|entry| {
+                snapshot.module_enumeration
+                    || entry.kind != TypeScriptDirectoryEntryKind::RegularFile
+            });
+            update_len(&mut digest, entries.clone().count());
+            for entry in entries {
                 update_logical_path(&mut digest, self.witness, &entry.path)?;
                 digest.update(&[match entry.kind {
                     TypeScriptDirectoryEntryKind::RegularFile => 1,
@@ -1614,10 +1656,16 @@ fn validate_resolver_observations_with_host_controlled_and_root_replay(
     }
     for (path, expected) in &observations.directories {
         control()?;
-        let observed = capture_directory_snapshot_controlled(path, witness, control)?;
-        let replayed_root_query_matches = root_query_directories.contains(path)
+        let mut observed = capture_directory_snapshot_controlled(path, witness, control)?;
+        // Purpose is producer metadata, not filesystem metadata. Exact negative
+        // probes and positive reads are independently replayed above. A directory
+        // used only as their parent does not expose its regular sibling list.
+        observed.root_enumeration = expected.root_enumeration;
+        observed.module_enumeration = expected.module_enumeration;
+        let replayed_query_matches = !expected.module_enumeration
+            && (!expected.root_enumeration || root_query_directories.contains(path))
             && directory_snapshots_match_replayed_root_query(expected, &observed);
-        if &observed != expected && !replayed_root_query_matches {
+        if &observed != expected && !replayed_query_matches {
             return Err(TypeScriptProjectHostError::WitnessChanged {
                 path: path.clone().into_boxed_path(),
             });
@@ -1668,6 +1716,8 @@ mod replayed_root_directory_delta_tests {
                 second: 2,
             },
             entries: entries.into_boxed_slice(),
+            root_enumeration: false,
+            module_enumeration: false,
         }
     }
 
@@ -3159,6 +3209,8 @@ where
         path: canonical.into_boxed_path(),
         identity,
         entries: entries.into_boxed_slice(),
+        root_enumeration: false,
+        module_enumeration: false,
     })
 }
 

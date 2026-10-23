@@ -1287,6 +1287,7 @@ fn run_rust_target_operation(
     target: &str,
     seed: u8,
 ) -> backend_library::IndexOperationStatus {
+    eprintln!("selected Rust publication start: target={target} operation={seed:#x}");
     let operation = backend_library::IndexOperationKey::from_bytes([seed; 32]).expect("operation");
     let command = Command::Surface(backend_library::SurfaceCommand::IndexOperationStart {
         cargo_target: Some(
