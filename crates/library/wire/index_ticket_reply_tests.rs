@@ -86,6 +86,45 @@ fn partial(ticket: &IndexJobTicket) -> IndexJobPartialPublication {
     }
 }
 
+fn partial_for_target(ticket: &IndexJobTicket, target: &str) -> IndexJobPartialPublication {
+    let mut partial = partial(ticket);
+    let rust = SemanticLanguageProfile::from_name("rust").expect("Rust profile");
+    let refused = SemanticLanguageProfile::from_name("typescript").expect("TypeScript profile");
+    let mut profiles = vec![
+        IndexOperationSourceProfile {
+            profile: rust,
+            source_version: [4; 32],
+            input_digest: [5; 32],
+            observation_sequence: 2,
+            source_count: 3,
+            state: IndexOperationSemanticProfileState::Published {
+                generation: [6; 32],
+                coverage: IndexOperationSemanticCoverage::Complete,
+            },
+        },
+        IndexOperationSourceProfile {
+            profile: refused,
+            source_version: [4; 32],
+            input_digest: [7; 32],
+            observation_sequence: 2,
+            source_count: 3,
+            state: IndexOperationSemanticProfileState::Unavailable {
+                reason: IndexOperationSemanticUnavailableReason::Rejected,
+            },
+        },
+    ];
+    profiles.sort_by_key(|profile| profile.profile);
+    partial.source_capture.cargo_target = Some(crate::CargoTargetScope {
+        name: crate::CargoTargetSelector::new(target.to_owned()).expect("target selector"),
+        root: "src/main.rs".to_owned(),
+        kinds: vec!["bin".to_owned()].into_boxed_slice(),
+        source_closure: [11; 32],
+        source_count: 3,
+    });
+    partial.source_capture.profiles = profiles.into_boxed_slice();
+    partial
+}
+
 fn outcomes(ticket: &IndexJobTicket) -> Vec<IndexJobOutcome> {
     use crate::interface::{CompilerAttempt, CompilerFragmentFailure, SourceAuthority};
     use backend_semantic::ir::{BuildError, EntityId};
@@ -548,5 +587,74 @@ fn index_start_binds_packages_without_conflating_tickets_or_universal_failures()
             )
             .expect("universal failure makes no receipt claim");
         }
+    }
+}
+
+#[test]
+fn partial_publication_reply_admission_binds_explicit_cargo_target() {
+    let ticket = ticket(17, 5, "/workspace/demo");
+    let requested = crate::CargoTargetSelector::new("alpha".to_owned()).expect("selector");
+    let command = SurfaceCommand::IndexStart {
+        cargo_target: Some(requested.clone()),
+        package: ticket.package().clone(),
+        execution_intent: crate::CompileExecutionIntent::Interactive,
+    };
+    for observed in ["alpha", "beta"] {
+        let reply =
+            SurfaceReply::IndexStarted(crate::IndexStartResult::Terminal(IndexJobTerminal {
+                ticket: ticket.clone(),
+                outcome: IndexJobOutcome::PartiallyPublished(partial_for_target(&ticket, observed)),
+            }));
+        let result = crate::admit_reply(
+            &CommandDto::new(42, Command::Surface(command.clone())),
+            &decoded(reply),
+        );
+        assert_eq!(result.is_ok(), observed == "alpha");
+    }
+    let missing_scope =
+        SurfaceReply::IndexStarted(crate::IndexStartResult::Terminal(IndexJobTerminal {
+            ticket: ticket.clone(),
+            outcome: IndexJobOutcome::PartiallyPublished(partial(&ticket)),
+        }));
+    assert!(
+        crate::admit_reply(
+            &CommandDto::new(42, Command::Surface(command.clone())),
+            &decoded(missing_scope),
+        )
+        .is_err()
+    );
+    let unscoped = SurfaceCommand::IndexStart {
+        cargo_target: None,
+        package: ticket.package().clone(),
+        execution_intent: crate::CompileExecutionIntent::Interactive,
+    };
+    let foreign_scope =
+        SurfaceReply::IndexStarted(crate::IndexStartResult::Terminal(IndexJobTerminal {
+            ticket: ticket.clone(),
+            outcome: IndexJobOutcome::PartiallyPublished(partial_for_target(&ticket, "alpha")),
+        }));
+    assert!(
+        crate::admit_reply(
+            &CommandDto::new(42, Command::Surface(unscoped)),
+            &decoded(foreign_scope),
+        )
+        .is_err()
+    );
+
+    let package = crate::package_key(ticket.package().as_str());
+    for observed in ["alpha", "beta"] {
+        let command = Command::Add {
+            cargo_target: Some(requested.clone()),
+            package,
+            execution_intent: crate::CompileExecutionIntent::Interactive,
+        };
+        let reply = ReplyDto::new(
+            42,
+            CommandReply::Failed(crate::CommandFailure::PartiallyPublished(
+                partial_for_target(&ticket, observed),
+            )),
+        );
+        let result = crate::admit_reply(&CommandDto::new(42, command), &reply);
+        assert_eq!(result.is_ok(), observed == "alpha");
     }
 }

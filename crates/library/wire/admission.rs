@@ -933,7 +933,11 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
         }
 
         (
-            Command::Add { package, .. },
+            Command::Add {
+                cargo_target,
+                package,
+                ..
+            },
             CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial)),
         ) => {
             partial
@@ -942,6 +946,17 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
             if crate::package_key(partial.package.as_str()) != *package {
                 return Err(ReplyAdmissionError::Protocol(
                     "partial add reply does not match the requested package".to_owned(),
+                ));
+            }
+            if partial
+                .source_capture
+                .cargo_target
+                .as_ref()
+                .map(|scope| &scope.name)
+                != cargo_target.as_ref()
+            {
+                return Err(ReplyAdmissionError::Protocol(
+                    "partial add reply does not match the requested Cargo target".to_owned(),
                 ));
             }
             true
@@ -1227,8 +1242,8 @@ fn admit_index_reply(
     reply: &crate::SurfaceReply,
 ) -> Result<(), ReplyAdmissionError> {
     use crate::{
-        IndexJobObservation, IndexOperationObservation, IndexStartResult, SurfaceCommand,
-        SurfaceReply,
+        IndexJobObservation, IndexJobOutcome, IndexOperationObservation, IndexStartResult,
+        SurfaceCommand, SurfaceReply,
     };
 
     let operation = match (command, reply) {
@@ -1258,18 +1273,37 @@ fn admit_index_reply(
                 "index operation reply family does not match the command".to_owned(),
             ));
         }
-        (SurfaceCommand::IndexStart { package, .. }, SurfaceReply::IndexStarted(result)) => {
+        (
+            SurfaceCommand::IndexStart {
+                cargo_target,
+                package,
+                ..
+            },
+            SurfaceReply::IndexStarted(result),
+        ) => {
             let observed = match result {
                 IndexStartResult::Started { ticket, .. } => ticket.package(),
                 IndexStartResult::Terminal(terminal) => terminal.ticket.package(),
             };
-            return if package == observed {
-                Ok(())
-            } else {
-                Err(ReplyAdmissionError::Protocol(
+            if package != observed {
+                return Err(ReplyAdmissionError::Protocol(
                     "index start reply does not match the requested package".to_owned(),
-                ))
-            };
+                ));
+            }
+            if let IndexStartResult::Terminal(terminal) = result
+                && let IndexJobOutcome::PartiallyPublished(partial) = &terminal.outcome
+                && partial
+                    .source_capture
+                    .cargo_target
+                    .as_ref()
+                    .map(|scope| &scope.name)
+                    != cargo_target.as_ref()
+            {
+                return Err(ReplyAdmissionError::Protocol(
+                    "index start reply does not match the requested Cargo target".to_owned(),
+                ));
+            }
+            return Ok(());
         }
         (SurfaceCommand::IndexStart { .. }, _) => {
             return Err(ReplyAdmissionError::Protocol(
