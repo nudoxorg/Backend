@@ -2311,21 +2311,6 @@ impl DiscoverySearchIndex {
             .writer
             .as_mut()
             .ok_or_else(|| "test merge requires a durable Tantivy writer".to_owned())?;
-        for ordinal in 0..3 {
-            let identity = format!("durable-merge-test-{ordinal}");
-            let mut document = TantivyDocument::default();
-            document.add_text(self.inner.document_identity, identity.as_str());
-            document.add_text(self.inner.exact_name, "temporary merge segment");
-            writer
-                .add_document(document)
-                .map_err(|error| error.to_string())?;
-            writer.commit().map_err(|error| error.to_string())?;
-            writer.delete_term(Term::from_field_text(
-                self.inner.document_identity,
-                identity.as_str(),
-            ));
-        }
-        writer.commit().map_err(|error| error.to_string())?;
         let segment_ids = self
             .inner
             ._index
@@ -2508,6 +2493,10 @@ impl DiscoverySearchIndex {
         for (identity, document) in changed {
             lineage_changes.push(forge_lineage_release(&identity, &document)?);
             add_or_replace_forge_document(&mut self.inner, identity, document)?;
+            #[cfg(test)]
+            if FORCE_DURABLE_SEARCH_MERGE_FOR_TEST.with(std::cell::Cell::get) {
+                self.inner.commit()?;
+            }
         }
         self.inner.commit()?;
         self.lineages.apply_batch(lineage_changes)?;
