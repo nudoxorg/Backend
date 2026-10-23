@@ -4871,6 +4871,41 @@ mod rust_target_selector_admission_tests {
             Err(PackageSourceSetError::CompilationUnitMismatch)
         ));
     }
+
+    #[test]
+    fn rejected_target_resolution_releases_budget_even_if_the_caller_left() {
+        for caller_left in [false, true] {
+            let budget = StagedOutputBudget::new(16);
+            let reservation = budget.reserve(16).expect("available resolver credit");
+            let (response, returned) = sync_channel(1);
+            let returned = (!caller_left).then_some(returned);
+            reject_lane_job(
+                LaneJob::ResolveRustCargoTarget {
+                    request: rust_package()
+                        .with_rust_cargo_target_name("selector-fixture")
+                        .expect("explicit target request"),
+                    target_name: "selector-fixture".into(),
+                    response,
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                    reservation,
+                },
+                CompilerRuntimeCause::RequestOwnerStopped,
+            );
+            if let Some(returned) = returned {
+                assert!(matches!(
+                    returned.recv().expect("resolver terminal reply"),
+                    Err(PackageSemanticRuntimeError::Runtime(CompilerTerminal::Runtime {
+                        cause: CompilerRuntimeCause::RequestOwnerStopped,
+                        ..
+                    }))
+                ));
+            }
+            assert!(
+                budget.reserve(16).is_ok(),
+                "rejected resolution retained its lane admission credit"
+            );
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
