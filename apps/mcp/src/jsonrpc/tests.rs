@@ -1137,7 +1137,7 @@ impl Engine for Fake {
                 execution_intent,
             },
             |operation_key| SurfaceCommand::IndexOperationStart {
-                cargo_target,
+                cargo_target: cargo_target.clone(),
                 operation_key,
                 package: package.clone(),
                 execution_intent,
