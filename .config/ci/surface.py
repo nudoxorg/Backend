@@ -1600,6 +1600,28 @@ def write_ci_evidence(path: Path, source_sha: str, artifact_digest: str,
             temporary.unlink(missing_ok=True)
 
 
+def drain_task_volume() -> None:
+    """Finish Linux runtime-import writes before measuring product operations.
+
+    T2's Nix runtime/tool import dirties the same ext4 filesystem as the
+    private owner workspace. Its journal transaction can hold the first
+    owner's directory fsync beyond the startup bound. Drain that setup I/O
+    once, outside case measurements but inside the unchanged CI deadline.
+    Subsequent product writes retain every real durability barrier.
+    """
+    if sys.platform != "linux":
+        return
+    started = time.monotonic()
+    result = process_custody.run(
+        ["sync", "--file-system", str(ROOT)],
+        capture_output=True, text=True, timeout=60,
+    )
+    seconds = time.monotonic() - started
+    print(f"CI-TIMING lane=t2 step=filesystem-drain seconds={seconds:.3f} exit={result.returncode}", flush=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"T2 infrastructure: cannot drain runtime-import writes: {result.stderr.strip()}")
+
+
 def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     cases = json.loads((SURFACE / "cases.json").read_text())["cases"]
     if any(not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", case["name"]) for case in cases):
@@ -1611,6 +1633,8 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         if unknown:
             parser.error(f"unknown cases: {sorted(unknown)}")
         cases = [case for case in cases if case["name"] in args.case]
+    if args.ci_report:
+        drain_task_volume()
     failed = []
     report = {}
     evidence = {}

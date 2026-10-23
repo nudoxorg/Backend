@@ -9,6 +9,34 @@ surface = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(surface)
 
 
+class RuntimeImportDrainTests(unittest.TestCase):
+    def test_linux_flushes_only_task_filesystem_with_bounded_setup(self):
+        import subprocess
+        from unittest.mock import patch
+        with patch.object(surface.sys, "platform", "linux"), \
+                patch.object(surface.process_custody, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            surface.drain_task_volume()
+        run.assert_called_once_with(
+            ["sync", "--file-system", str(surface.ROOT)],
+            capture_output=True, text=True, timeout=60,
+        )
+
+    def test_drain_failure_cannot_become_a_product_pass(self):
+        import subprocess
+        from unittest.mock import patch
+        with patch.object(surface.sys, "platform", "linux"), \
+                patch.object(surface.process_custody, "run", return_value=subprocess.CompletedProcess([], 1, "", "I/O error")):
+            with self.assertRaisesRegex(RuntimeError, "infrastructure.*I/O error"):
+                surface.drain_task_volume()
+
+    def test_other_platforms_do_not_invoke_linux_syncfs(self):
+        from unittest.mock import patch
+        with patch.object(surface.sys, "platform", "darwin"), \
+                patch.object(surface.process_custody, "run") as run:
+            surface.drain_task_volume()
+        run.assert_not_called()
+
+
 class LocaldStartupDiagnosticTests(unittest.TestCase):
     def test_process_context_binds_child_pid_namespace_boot_and_cgroup(self):
         import json, tempfile

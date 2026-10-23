@@ -56,6 +56,14 @@ case passes. Each completed case is compared and reported immediately; a slower
 earlier catalog entry cannot hold back a completed peer verdict.
 Reported case wall time measures execution, excluding time waiting for a worker.
 
+In CI, after acquiring the pinned runtime/tool shell and before starting cases,
+the runner drains pending writes on the task filesystem with Linux `sync -f`.
+This is infrastructure setup, reported as `CI-TIMING ... filesystem-drain`, and
+remains inside the overall T2 deadline. It prevents bulk runtime-import journal
+writes from consuming the first owner's 30-second startup budget. Product fsync
+calls, startup bounds, snapshots and performance limits remain unchanged.
+A failed or timed-out drain fails the run; it cannot produce a passing case.
+
 `SURFACE-PERFORMANCE` lines in the retained CI event log carry schema1 JSON with
 the case name and full measured timing/CPU/memory data. The report file remains
 available while the task container exists. Answer snapshots and performance
