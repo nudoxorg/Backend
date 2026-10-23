@@ -1652,14 +1652,14 @@ fn directory_snapshots_match_replayed_root_query(
     if expected.path != observed.path || expected.identity != observed.identity {
         return false;
     }
-    let non_regular = |snapshot: &DirectorySnapshot| {
-        snapshot
+    expected
+        .entries
+        .iter()
+        .filter(|entry| entry.kind != TypeScriptDirectoryEntryKind::RegularFile)
+        .eq(observed
             .entries
             .iter()
-            .filter(|entry| entry.kind != TypeScriptDirectoryEntryKind::RegularFile)
-            .collect::<Vec<_>>()
-    };
-    non_regular(expected) == non_regular(observed)
+            .filter(|entry| entry.kind != TypeScriptDirectoryEntryKind::RegularFile))
 }
 
 #[cfg(test)]
