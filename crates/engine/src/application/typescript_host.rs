@@ -1656,10 +1656,75 @@ fn directory_snapshots_match_replayed_root_query(
         snapshot
             .entries
             .iter()
-            .filter(|entry| entry.effective_kind != Some(TypeScriptDirectoryEntryKind::RegularFile))
+            .filter(|entry| entry.kind != TypeScriptDirectoryEntryKind::RegularFile)
             .collect::<Vec<_>>()
     };
     non_regular(expected) == non_regular(observed)
+}
+
+#[cfg(test)]
+mod replayed_root_directory_delta_tests {
+    use super::*;
+
+    fn snapshot(entries: Vec<TypeScriptDirectoryEntry>) -> DirectorySnapshot {
+        DirectorySnapshot {
+            path: PathBuf::from("/workspace/src").into_boxed_path(),
+            identity: FileIdentity {
+                first: 1,
+                second: 2,
+            },
+            entries: entries.into_boxed_slice(),
+        }
+    }
+
+    fn regular(name: &str) -> TypeScriptDirectoryEntry {
+        TypeScriptDirectoryEntry {
+            path: PathBuf::from(format!("/workspace/src/{name}")).into_boxed_path(),
+            canonical_path: Some(PathBuf::from(format!("/workspace/src/{name}")).into_boxed_path()),
+            kind: TypeScriptDirectoryEntryKind::RegularFile,
+            effective_kind: Some(TypeScriptDirectoryEntryKind::RegularFile),
+            identity: FileIdentity {
+                first: 3,
+                second: 4,
+            },
+        }
+    }
+
+    fn symlink(name: &str, target: &str) -> TypeScriptDirectoryEntry {
+        TypeScriptDirectoryEntry {
+            path: PathBuf::from(format!("/workspace/src/{name}")).into_boxed_path(),
+            canonical_path: Some(
+                PathBuf::from(format!("/workspace/src/{target}")).into_boxed_path(),
+            ),
+            kind: TypeScriptDirectoryEntryKind::Symlink,
+            effective_kind: Some(TypeScriptDirectoryEntryKind::RegularFile),
+            identity: FileIdentity {
+                first: 5,
+                second: 6,
+            },
+        }
+    }
+
+    #[test]
+    fn root_query_delta_requires_symlink_add_remove_and_retarget_to_match() {
+        let baseline = snapshot(vec![regular("main.ts")]);
+        let added = snapshot(vec![symlink("alias.txt", "main.ts"), regular("main.ts")]);
+        assert!(directory_snapshots_match_replayed_root_query(
+            &baseline, &baseline
+        ));
+        assert!(!directory_snapshots_match_replayed_root_query(
+            &baseline, &added
+        ));
+        assert!(!directory_snapshots_match_replayed_root_query(
+            &added, &baseline
+        ));
+
+        let retargeted = snapshot(vec![symlink("alias.txt", "other.txt"), regular("main.ts")]);
+        assert!(!directory_snapshots_match_replayed_root_query(
+            &added,
+            &retargeted
+        ));
+    }
 }
 
 fn capture_realpath_snapshot(

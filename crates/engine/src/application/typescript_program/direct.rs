@@ -179,7 +179,7 @@ pub(super) fn replay_native_root_selection(
         boundary: witness.workspace_root(),
         deadline,
         cancelled: &cancelled,
-        control: Some(shared_control),
+        control: Some(Rc::clone(&shared_control)),
     };
     let replayed = backend_frontend_typescript::native_project::replay_root_selection(
         &fs,
