@@ -1834,7 +1834,7 @@ mod tests {
     fn nuget_registration_page_identity_count_and_bounds_are_required_for_absence() {
         for (page, descriptor, request_count) in [
             (
-                r#"{"@id":"{PAGE}","count":1,"parent":"{ROOT}","lower":"1.0.0","upper":"1.0.0","items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
+                r#"{"@id":"{PAGE}","count":1,"lower":"1.0.0","upper":"1.0.0","items":[{"catalogEntry":{"id":"demo","version":"1.0.0","listed":true}}]}"#,
                 r#""count":1,"lower":"1.0.0","upper":"1.0.0""#,
                 3,
             ),
