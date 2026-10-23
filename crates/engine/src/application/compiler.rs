@@ -29,7 +29,7 @@ use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_frontend_python::legacy::checker::CheckerError as PythonCheckerError;
 use backend_frontend_rust::legacy::{
     RustAnalysisControl, RustAuthorityError, RustCargoTarget, RustCargoTargetSourceClosureV1,
-    RustWorkspaceEditorBufferObserver,
+    RustWorkspace, RustWorkspaceEditorBufferObserver,
     RustWorkspaceFile, RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey,
     RustWorkspaceSessionLane, RustWorkspaceSessionLease,
 };
@@ -566,6 +566,7 @@ pub struct PackageSourceSet<'source> {
     python_environment:
         Option<&'source backend_frontend_python::legacy::checker::PythonEnvironmentInput>,
     native_clang_candidate: bool,
+    expected_rust_target_source_closure: Option<[u8; 32]>,
 }
 
 impl<'source> PackageSourceSet<'source> {
@@ -640,6 +641,7 @@ impl<'source> PackageSourceSet<'source> {
             go_witness_deadline_phase: None,
             python_environment: None,
             native_clang_candidate: false,
+            expected_rust_target_source_closure: None,
         })
     }
 
@@ -712,6 +714,20 @@ impl<'source> PackageSourceSet<'source> {
         self
     }
 
+    pub(crate) fn with_expected_rust_target_source_closure(
+        mut self,
+        identity: [u8; 32],
+    ) -> Result<Self, PackageSourceSetError> {
+        if !matches!(self.package_target.unit_key(), CompilationUnitKeyV2::RustCrate { .. })
+            || self.request.target.profile.language()
+                != backend_semantic::vocabulary::Language::Rust
+        {
+            return Err(PackageSourceSetError::CompilationUnitMismatch);
+        }
+        self.expected_rust_target_source_closure = Some(identity);
+        Ok(self)
+    }
+
     /// Attaches an opaque input-manifest claim to the exact admitted source frontier.
     ///
     /// This records caller-provided provenance bytes only. It does not prove the manifest
@@ -781,6 +797,13 @@ fn unit_source_matches(unit: &CompilationUnitKeyV2, relative_path: &str) -> bool
 fn package_source_input_witness(package: &PackageSourceSet<'_>) -> SemanticInputWitness {
     let mut input = blake3::Hasher::new();
     input.update(b"backend.compiler.package-source-frontier.v1\0");
+    if let CompilationUnitKeyV2::RustCrate { name, root } = package.package_target.unit_key() {
+        input.update(b"rust-cargo-target-unit.v1\0");
+        input.update(&(name.len() as u64).to_be_bytes());
+        input.update(name.as_bytes());
+        input.update(&(root.len() as u64).to_be_bytes());
+        input.update(root.as_bytes());
+    }
     if let Some(environment) = package.python_environment {
         input.update(b"installed-environment-cohort.v1\0");
         input.update(&environment.identity());
@@ -794,7 +817,18 @@ fn package_source_input_witness(package: &PackageSourceSet<'_>) -> SemanticInput
             input.update(source.source);
         }
     } else {
-        for source in package.compilation_sources() {
+        // A Rust crate's selected target compiles only its authority-proven
+        // closure, but all admitted package bytes remain input provenance.
+        // `compilation_sources()` is intentionally root-only for RustCrate.
+        let sources = if matches!(
+            package.package_target.unit_key(),
+            CompilationUnitKeyV2::RustCrate { .. }
+        ) {
+            package.sources.to_vec()
+        } else {
+            package.compilation_sources().collect::<Vec<_>>()
+        };
+        for source in sources {
             let path = source.relative_path().as_bytes();
             let contents = source.source().as_bytes();
             input.update(&(path.len() as u64).to_be_bytes());
@@ -907,6 +941,9 @@ pub enum PackageSourceSetError {
     /// The native compilation unit is unsupported for this profile or absent from the frontier.
     #[error("compilation-unit target is incompatible with the profile or source frontier")]
     CompilationUnitMismatch,
+    /// A name-only Cargo target selector was empty or used with a non-Rust profile.
+    #[error("Rust Cargo target name selector is invalid for this package profile")]
+    InvalidRustCargoTargetName,
 }
 
 /// One atomically published package generation and its reopened semantic images.
@@ -2182,6 +2219,9 @@ pub enum PackageSemanticError {
     /// A Go package's authority filesystem inputs could not be admitted.
     #[error(transparent)]
     GoAuthorityWitness(#[from] backend_frontend_go::legacy::oracle::GoPackageAuthorityWitnessError),
+    /// A fresh compiler workspace did not reproduce the closure selected before capture.
+    #[error("Rust Cargo target source closure changed after target resolution")]
+    RustTargetSourceClosureMismatch,
     /// One package-relative declaration scope was rejected.
     #[error("package declaration scope is malformed for {path}")]
     Scope {
@@ -3137,6 +3177,304 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
     pub(crate) fn with_native_work_directory(mut self, path: PathBuf) -> Self {
         self.native_work_directory = path.into_boxed_path();
         self
+    }
+
+    pub(crate) fn resolve_rust_cargo_target_name(
+        &self,
+        package: &PackageSourceSet<'_>,
+        target_name: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<(CompilerPackageTargetV2, RustCargoTargetSourceClosureV1), PackageSemanticError>
+    {
+        let Some(first_source) = package.sources.first().copied() else {
+            return Err(PackageSemanticError::Capacity {
+                lane: "Rust target resolver source frontier",
+            });
+        };
+        let application_request = ApplicationCompilerRequest {
+            profile: package.request.target.profile,
+            stage: package.request.target.stage,
+            source: first_source.source,
+        };
+        if !matches!(application_request.profile, LanguageProfile::Rust(_))
+            || target_name.is_empty()
+        {
+            return Err(PackageSemanticError::Capacity {
+                lane: "Rust target resolver request",
+            });
+        }
+        let source_authority = request_source(application_request)
+            .map_err(source_terminal)
+            .map_err(|terminal| PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(terminal),
+            })?;
+        let control =
+            self.compile_control(cancelled)
+                .map_err(|timeout| PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(CompilerTerminal::DeadlineConstruction {
+                        source: source_authority,
+                        language: application_request.profile.language(),
+                        stage: application_request.stage,
+                        timeout: *timeout,
+                    }),
+                })?;
+        let selected = self.toolchain(application_request).map_err(|cause| {
+            toolchain_terminal(source_authority, application_request, cause)
+        })?;
+        let resolved = match selected {
+            ToolchainSelection::ResolvedNative(resolved) => resolved,
+            ToolchainSelection::ExplicitlyUnavailable { tool } => {
+                return Err(PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(package_authority_terminal(
+                        package.package_target.target(),
+                        application_request,
+                        source_authority,
+                        ToolchainSelection::ExplicitlyUnavailable { tool },
+                        PackageAuthorityError::ToolchainUnavailable {
+                            profile: application_request.profile,
+                            tool,
+                        },
+                    )),
+                });
+            }
+        };
+        let external = resolved.external().map_err(|source| {
+            PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(package_authority_terminal(
+                    package.package_target.target(),
+                    application_request,
+                    source_authority,
+                    selected,
+                    PackageAuthorityError::ExternalToolchainRequired {
+                        profile: application_request.profile,
+                        source,
+                    },
+                )),
+            }
+        })?;
+        let authority = self.package_authority.rust.ok_or_else(|| {
+            PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(package_authority_terminal(
+                    package.package_target.target(),
+                    application_request,
+                    source_authority,
+                    selected,
+                    PackageAuthorityError::AdapterUnavailable {
+                        profile: application_request.profile,
+                        stage: crate::application::package_authority::PackageAuthorityStage::RustProject,
+                    },
+                )),
+            }
+        })?;
+        if authority.toolchain.selected_rustc() != external.executable() {
+            return Err(PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(package_authority_terminal(
+                    package.package_target.target(),
+                    application_request,
+                    source_authority,
+                    selected,
+                    PackageAuthorityError::RustToolchainExecutableMismatch {
+                        profile: application_request.profile,
+                        configured: authority
+                            .toolchain
+                            .selected_rustc()
+                            .to_path_buf()
+                            .into_boxed_path(),
+                        resolved: external.executable().to_path_buf().into_boxed_path(),
+                    },
+                )),
+            });
+        }
+        let rust_toolchain = authority
+            .resolve_toolchain(application_request.profile, control)
+            .map_err(|cause| {
+                package_authority_terminal(
+                    package.package_target.target(),
+                    application_request,
+                    source_authority,
+                    selected,
+                    cause,
+                )
+            })
+            .map_err(|terminal| PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(terminal),
+            })?;
+        let backend_semantic::vocabulary::LanguageProfile::Rust(edition) =
+            application_request.profile
+        else {
+            unreachable!("profile was checked above")
+        };
+        let workspace = RustWorkspace::open_with_features_and_metadata_policy(
+            package.package_root,
+            rust_toolchain,
+            edition,
+            authority.features,
+            authority.metadata_policy,
+            RustAnalysisControl {
+                cancelled,
+                maximum_source_bytes: authority.maximum_source_bytes,
+                deadline: control.deadline,
+            },
+        )
+        .map_err(|cause| {
+            package_authority_terminal(
+                package.package_target.target(),
+                application_request,
+                source_authority,
+                selected,
+                PackageAuthorityError::RustProject(cause),
+            )
+        })
+        .map_err(|terminal| PackageSemanticError::Compile {
+            path: first_source.relative_path.into(),
+            terminal: Box::new(terminal),
+        })?;
+        let target = workspace
+            .cargo_target_for_name(target_name)
+            .ok_or_else(|| {
+                package_authority_terminal(
+                    package.package_target.target(),
+                    application_request,
+                    source_authority,
+                    selected,
+                    PackageAuthorityError::RustProject(
+                        RustAuthorityError::CargoTargetMetadataMismatch,
+                    ),
+                )
+            })
+            .map_err(|terminal| PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(terminal),
+            })?;
+        let root = target.root.to_str().ok_or(PackageSemanticError::Capacity {
+            lane: "Rust Cargo target root encoding",
+        })?;
+        let target_root = target.root.to_path_buf();
+        if !package
+            .sources
+            .iter()
+            .any(|source| source.relative_path == root)
+        {
+            return Err(PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(package_authority_terminal(
+                    package.package_target.target(),
+                    application_request,
+                    source_authority,
+                    selected,
+                    PackageAuthorityError::RustProject(RustAuthorityError::SessionSourcePath {
+                        path: target.root.to_path_buf(),
+                    }),
+                )),
+            });
+        }
+        let package_target = CompilerPackageTargetV2::new(
+            package.package_target.package().clone(),
+            CompilationUnitKeyV2::RustCrate {
+                name: target.name.into(),
+                root: root.into(),
+            },
+        )
+        .map_err(|_| PackageSemanticError::Lineage)?;
+        let selected_target = RustCargoTarget {
+            name: target_name,
+            root: &target_root,
+        };
+        let source_paths = package
+            .sources
+            .iter()
+            .map(|source| PathBuf::from(source.relative_path))
+            .collect::<Vec<_>>();
+        let source_frontier = package
+            .sources
+            .iter()
+            .map(|source| RustWorkspaceFile {
+                relative_path: Path::new(source.relative_path),
+                source: source.source,
+            })
+            .collect::<Vec<_>>();
+        let key = RustWorkspaceSessionKey::new(
+            package.package_root,
+            rust_toolchain,
+            edition,
+            application_request.stage,
+            authority.features,
+            authority.metadata_policy,
+            None,
+            None,
+            None,
+            [0x5a; 32],
+            &source_paths,
+        )
+        .and_then(|key| key.with_cargo_target(selected_target))
+        .map_err(|cause| {
+            package_authority_terminal(
+                package.package_target.target(),
+                application_request,
+                source_authority,
+                selected,
+                PackageAuthorityError::RustProject(cause),
+            )
+        })
+        .map_err(|terminal| PackageSemanticError::Compile {
+            path: first_source.relative_path.into(),
+            terminal: Box::new(terminal),
+        })?;
+        let mut lane = RustWorkspaceSessionLane::default();
+        let lease = lane
+            .begin(
+                key,
+                &source_frontier,
+                RustAnalysisControl {
+                    cancelled,
+                    maximum_source_bytes: authority.maximum_source_bytes,
+                    deadline: control.deadline,
+                },
+            )
+            .map_err(|cause| {
+                package_authority_terminal(
+                    package.package_target.target(),
+                    application_request,
+                    source_authority,
+                    selected,
+                    PackageAuthorityError::RustProject(cause),
+                )
+            })
+            .map_err(|terminal| PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(terminal),
+            })?;
+        let closure = lease
+            .workspace()
+            .source_closure_for_target(
+                selected_target,
+                RustAnalysisControl {
+                    cancelled,
+                    maximum_source_bytes: authority.maximum_source_bytes,
+                    deadline: control.deadline,
+                },
+            )
+            .map_err(|cause| {
+                package_authority_terminal(
+                    package.package_target.target(),
+                    application_request,
+                    source_authority,
+                    selected,
+                    PackageAuthorityError::RustProject(cause),
+                )
+            })
+            .map_err(|terminal| PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(terminal),
+            })?;
+        Ok((package_target, closure))
     }
 
     pub(crate) fn stage_generate(
@@ -4370,6 +4708,16 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             CompilationUnitKeyV2::PackageRoot => None,
             _ => None,
         };
+        if package
+            .expected_rust_target_source_closure
+            .is_some_and(|expected| {
+                rust_target_source_closure
+                    .as_ref()
+                    .is_none_or(|observed| observed.identity() != expected)
+            })
+        {
+            return Err(PackageSemanticError::RustTargetSourceClosureMismatch);
+        }
         let rust_compilation_sources = if let Some(closure) = &rust_target_source_closure {
             if target.profile.language() != backend_semantic::vocabulary::Language::Rust {
                 return Err(PackageSemanticError::Capacity {
@@ -4403,6 +4751,24 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         } else {
             package.compilation_sources().collect::<Vec<_>>()
         };
+        if let (CompilationUnitKeyV2::RustCrate { .. }, Some(closure)) = (
+            package.package_target.unit_key(),
+            rust_target_source_closure.as_ref(),
+        ) {
+            // Bind reuse and staged identity to the exact selected target
+            // frontier, even when a direct caller supplied an input claim.
+            let mut identity = blake3::Hasher::new();
+            identity.update(b"backend.compiler.rust-target-input-frontier.v1\0");
+            identity.update(input.input_root());
+            identity.update(input.read_manifest_root().as_bytes());
+            identity.update(&closure.identity());
+            let root = *identity.finalize().as_bytes();
+            input = SemanticInputWitness::claimed_state(
+                root,
+                ScopeRoot::from_bytes(root),
+                Coverage::Partial,
+            );
+        }
         let rust_workspace_authority = if let Some(lease) = rust_workspace_lease.as_ref() {
             let source_path = package.package_root.join(first_source.relative_path);
             let toolchain = self
@@ -5554,6 +5920,17 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
 }
 
 impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
+    pub(crate) fn resolve_rust_cargo_target_name(
+        &mut self,
+        package: PackageSourceSet<'_>,
+        target_name: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<(CompilerPackageTargetV2, RustCargoTargetSourceClosureV1), PackageSemanticError>
+    {
+        self.execution()
+            .resolve_rust_cargo_target_name(&package, target_name, cancelled)
+    }
+
     /// Creates the only durable publication owner used by this configured local compiler.
     ///
     /// The caller supplies a validated explicit toolchain table, artifact directory, journal

@@ -41,7 +41,8 @@ use backend_frontend_java::legacy::harness::JdkToolchain;
 use backend_frontend_python::legacy::Pyrefly;
 use backend_frontend_python::legacy::checker::NativePythonProjectAuthority;
 use backend_frontend_rust::legacy::{
-    RustCargoMetadataPolicy, RustFeatureControl, RustToolchain, SourceByteLimit,
+    RustCargoMetadataPolicy, RustCargoTargetSourceClosureV1, RustFeatureControl, RustToolchain,
+    SourceByteLimit,
 };
 use backend_frontend_typescript::legacy::{ExplicitTypeScriptChecker, TypeScriptInvocationModeV1};
 use backend_library::interface::{
@@ -215,6 +216,8 @@ pub struct OwnedPackageSourceSet {
     go_witness_deadline_phase: Option<&'static str>,
     request: PackageCompileRequest,
     package_target: CompilerPackageTargetV2,
+    rust_cargo_target_name: Option<Box<str>>,
+    expected_rust_target_source_closure: Option<[u8; 32]>,
     package_root: Box<Path>,
     sources: Box<[OwnedPackageSource]>,
     input_claim: Option<SemanticInputWitness>,
@@ -277,6 +280,8 @@ impl OwnedPackageSourceSet {
         Ok(Self {
             request,
             package_target,
+            rust_cargo_target_name: None,
+            expected_rust_target_source_closure: None,
             package_root: package_root.into_boxed_path(),
             go_compile_deadline: None,
             go_witness_deadline_phase: None,
@@ -289,6 +294,44 @@ impl OwnedPackageSourceSet {
             native_clang_permits: Box::new([]),
             native_csharp_permits: Box::new([]),
         })
+    }
+
+    /// Selects a Rust Cargo target by its exact admitted Cargo name.
+    ///
+    /// Resolve this selector with [`LocalCompilerClient::resolve_rust_cargo_target`]
+    /// before manifest capture and compilation. The result must be used to construct
+    /// a new unit-bound source set; this package-root request remains a resolver input.
+    pub fn with_rust_cargo_target_name(
+        mut self,
+        name: impl Into<Box<str>>,
+    ) -> Result<Self, PackageSourceSetError> {
+        let name = name.into();
+        if !matches!(self.request.target.profile, LanguageProfile::Rust(_))
+            || self.package_target.unit_key() != &CompilationUnitKeyV2::PackageRoot
+            || name.is_empty()
+            || name.len() > 1024
+        {
+            return Err(PackageSourceSetError::InvalidRustCargoTargetName);
+        }
+        self.rust_cargo_target_name = Some(name);
+        Ok(self)
+    }
+
+    /// Binds later compilation to the exact source closure returned by target resolution.
+    pub fn with_expected_rust_target_source_closure(
+        mut self,
+        identity: [u8; 32],
+    ) -> Result<Self, PackageSourceSetError> {
+        if !matches!(self.request.target.profile, LanguageProfile::Rust(_))
+            || !matches!(
+                self.package_target.unit_key(),
+                CompilationUnitKeyV2::RustCrate { .. }
+            )
+        {
+            return Err(PackageSourceSetError::CompilationUnitMismatch);
+        }
+        self.expected_rust_target_source_closure = Some(identity);
+        Ok(self)
     }
 
     /// Admits a source set specifically as exact native Clang candidates.
@@ -3598,6 +3641,78 @@ impl LocalCompilerClient {
         })
     }
 
+    /// Resolves a name-only Rust Cargo selector against the compiler's admitted workspace.
+    ///
+    /// The returned target and exact captured HIR source closure must be used before
+    /// manifest capture or package compilation. This operation uses the same configured
+    /// Rust toolchain, Cargo feature policy, and metadata policy as the compile owner.
+    pub fn resolve_rust_cargo_target(
+        &self,
+        request: &OwnedPackageSourceSet,
+    ) -> Result<
+        (CompilerPackageTargetV2, RustCargoTargetSourceClosureV1),
+        PackageSemanticRuntimeError,
+    > {
+        self.resolve_rust_cargo_target_cancellable(request, Arc::new(AtomicBool::new(false)))
+    }
+
+    /// Cancellable form of [`Self::resolve_rust_cargo_target`].
+    pub fn resolve_rust_cargo_target_cancellable(
+        &self,
+        request: &OwnedPackageSourceSet,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<
+        (CompilerPackageTargetV2, RustCargoTargetSourceClosureV1),
+        PackageSemanticRuntimeError,
+    > {
+        let target_name = request
+            .rust_cargo_target_name
+            .as_deref()
+            .ok_or(PackageSourceSetError::InvalidRustCargoTargetName)?
+            .to_owned()
+            .into_boxed_str();
+        let facts = request.facts();
+        let mut lease =
+            RequestLease::acquire_with_cancelled(&self.shared, self.client_id, facts, cancelled)
+                .map_err(PackageSemanticRuntimeError::Runtime)?;
+        let mut request = request.clone();
+        request.go_compile_deadline = self
+            .wait_for_toolchain(facts, &lease.cancelled)
+            .map_err(PackageSemanticRuntimeError::Runtime)?;
+        let (response, returned) = sync_channel(1);
+        let sender = self.shared.command.as_ref().ok_or_else(|| {
+            PackageSemanticRuntimeError::Runtime(
+                facts.terminal(CompilerRuntimeCause::RequestOwnerStopped),
+            )
+        })?;
+        match sender.try_send(RuntimeCommand::ResolveRustCargoTarget {
+            request,
+            target_name,
+            response,
+            cancelled: Arc::clone(&lease.cancelled),
+        }) {
+            Ok(()) => lease.mark_dispatched(),
+            Err(TrySendError::Full(_)) => {
+                return Err(PackageSemanticRuntimeError::Runtime(facts.terminal(
+                    CompilerRuntimeCause::CommandQueueFull {
+                        capacity: u16::try_from(COMMAND_QUEUE_CAPACITY).unwrap_or(u16::MAX),
+                    },
+                )));
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                return Err(PackageSemanticRuntimeError::Runtime(
+                    facts.terminal(CompilerRuntimeCause::RequestOwnerStopped),
+                ));
+            }
+        }
+        let result = returned.recv().map_err(|_| {
+            PackageSemanticRuntimeError::Runtime(
+                facts.terminal(CompilerRuntimeCause::ResponseOwnerStopped),
+            )
+        })?;
+        lease.complete(result)
+    }
+
     /// Records only a compiler-produced fence for the binding actually selected
     /// by the publication recorder. Eviction is a cache miss, never lost coverage.
     pub fn remember_python_snapshot(
@@ -4134,6 +4249,9 @@ impl LocalCompilerClient {
         &self,
         request: OwnedPackageSourceSet,
     ) -> Result<PublishedSemanticPackage, PackageSemanticRuntimeError> {
+        if request.rust_cargo_target_name.is_some() {
+            return Err(PackageSourceSetError::InvalidRustCargoTargetName.into());
+        }
         let facts = request.facts();
         let mut lease = RequestLease::acquire(&self.shared, self.client_id, facts)
             .map_err(PackageSemanticRuntimeError::Runtime)?;
@@ -4207,6 +4325,9 @@ impl LocalCompilerClient {
         request: OwnedPackageSourceSet,
         cancelled: Arc<AtomicBool>,
     ) -> Result<StagedSemanticPackage, PackageSemanticRuntimeError> {
+        if request.rust_cargo_target_name.is_some() {
+            return Err(PackageSourceSetError::InvalidRustCargoTargetName.into());
+        }
         let facts = request.facts();
         let mut lease =
             RequestLease::acquire_with_cancelled(&self.shared, self.client_id, facts, cancelled)
@@ -4705,6 +4826,17 @@ enum RuntimeCommand {
         request: OwnedPackageSourceSet,
         go_authority_witness: Option<GoPackageAuthorityWitness>,
         response: SyncSender<Result<StagedSemanticPackage, PackageSemanticRuntimeError>>,
+        cancelled: Arc<AtomicBool>,
+    },
+    ResolveRustCargoTarget {
+        request: OwnedPackageSourceSet,
+        target_name: Box<str>,
+        response: SyncSender<
+            Result<
+                (CompilerPackageTargetV2, RustCargoTargetSourceClosureV1),
+                PackageSemanticRuntimeError,
+            >,
+        >,
         cancelled: Arc<AtomicBool>,
     },
     ActivateSemanticGeneration {
@@ -5392,6 +5524,60 @@ fn dispatch_runtime_command(
             in_flight,
             alive,
         ),
+        RuntimeCommand::ResolveRustCargoTarget {
+            request,
+            target_name,
+            response,
+            cancelled,
+        } => {
+            let facts = request.facts();
+            if cancelled.load(Ordering::Acquire) {
+                let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
+                    facts.terminal(CompilerRuntimeCause::RequestCancelled),
+                )));
+                return;
+            }
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                let operation = || -> Result<
+                    (CompilerPackageTargetV2, RustCargoTargetSourceClosureV1),
+                    PackageSemanticRuntimeError,
+                > {
+                if request.rust_cargo_target_name.as_deref() != Some(target_name.as_ref()) {
+                    return Err(PackageSourceSetError::InvalidRustCargoTargetName.into());
+                }
+                if request.package_target.unit_key() != &CompilationUnitKeyV2::PackageRoot {
+                    return Err(PackageSourceSetError::CompilationUnitMismatch.into());
+                }
+                let borrowed =
+                    borrow_package_sources(&request.sources, request.request.target.profile)?;
+                let package = PackageSourceSet::new_for_unit(
+                    &request.request,
+                    &request.package_target,
+                    &request.package_root,
+                    &borrowed,
+                )?;
+                compiler
+                    .resolve_rust_cargo_target_name(package, &target_name, &cancelled)
+                    .map_err(PackageSemanticRuntimeError::from)
+                };
+                operation()
+            }));
+            match result {
+                Ok(result) => {
+                    let _ = response.send(result);
+                }
+                Err(payload) => {
+                    let cause =
+                        backend_library::interface::CompilerRuntimePanic::capture(payload.as_ref());
+                    let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
+                        facts.terminal(CompilerRuntimeCause::WorkerPanic(cause)),
+                    )));
+                    debug_compiler_owner(6, "worker-panic-stop", "operation=resolve-rust-target");
+                    *stopping = true;
+                    alive.store(false, Ordering::Release);
+                }
+            }
+        }
         RuntimeCommand::SemanticImage {
             requested,
             response,
@@ -5965,12 +6151,16 @@ fn run_lane(
                             } else {
                                 None
                             };
-                            let package = PackageSourceSet::new_for_unit(
+                            let mut package = PackageSourceSet::new_for_unit(
                                 &request.request,
                                 &request.package_target,
                                 &request.package_root,
                                 &sources,
                             )?;
+                            if let Some(identity) = request.expected_rust_target_source_closure {
+                                package =
+                                    package.with_expected_rust_target_source_closure(identity)?;
+                            }
                             let package = match request.admission {
                                 OwnedPackageSourceAdmission::Parsed => package,
                                 OwnedPackageSourceAdmission::NativeClangCandidate => {
