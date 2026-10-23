@@ -2702,6 +2702,7 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
         cause,
         PackageCompilerFailureCause::AuthorityAdmission {
             language: CompilerLanguageFact::CSharp,
+            stage: CompilerStageFact::LowerIr,
             phase: AuthorityPhaseFact::Open,
             class: AuthorityClassFact::Authority,
             diagnostic: None,
