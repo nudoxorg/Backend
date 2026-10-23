@@ -54,7 +54,7 @@ class NativeTypeScriptOwnerEnvironmentTests(unittest.TestCase):
         self.assertFalse(surface._preparation_diagnostic_opt_in(provenance, "0"))
 
 
-class SearchPreparationRunnerOptInTests(unittest.TestCase):
+class DiagnosticRunnerEnvironmentTests(unittest.TestCase):
     def invoke_runner(self, argv, inherited):
         import os
         import subprocess
@@ -67,26 +67,26 @@ class SearchPreparationRunnerOptInTests(unittest.TestCase):
         launch.assert_called_once()
         return launch.call_args.kwargs["env"]
 
-    def test_provenance_report_opts_in_the_actual_integration_runner_launch(self):
+    def test_provenance_report_does_not_implicitly_opt_in_diagnostics(self):
         flags = (surface.SEARCH_PREPARATION_DIAGNOSTICS_ENV,
                  surface.OWNER_USAGE_DIAGNOSTICS_ENV)
         environment = self.invoke_runner([
             "test.py", "integration", "--bin-dir", "/published/bin", "--in-shell",
             "--ci-report", "/private/ci-evidence.json", "--source-sha", "a" * 40,
-        ], {flags[0]: "0", flags[1]: "0", "PATH": "/usr/bin"})
-        self.assertEqual([environment[name] for name in flags], ["1", "1"])
+        ], {"PATH": "/usr/bin"})
+        for name in flags:
+            self.assertNotIn(name, environment)
         self.assertEqual(environment["CI_T2_EXTERNAL"], "1")
 
-    def test_non_report_runs_do_not_inherit_external_opt_ins(self):
+    def test_explicit_diagnostic_values_are_preserved_for_the_harness(self):
         flags = (surface.SEARCH_PREPARATION_DIAGNOSTICS_ENV,
                  surface.OWNER_USAGE_DIAGNOSTICS_ENV)
-        for argv in (["test.py", "integration", "--bin-dir", "/published/bin", "--in-shell"],
-                     ["test.py", "smoke"]):
-            with self.subTest(argv=argv):
-                environment = self.invoke_runner(argv, {flags[0]: "1", flags[1]: "1", "PATH": "/usr/bin"})
-                for name in flags:
-                    self.assertNotIn(name, environment)
-                self.assertEqual(environment["CI_T2_EXTERNAL"], "1")
+        environment = self.invoke_runner([
+            "test.py", "integration", "--bin-dir", "/published/bin", "--in-shell",
+            "--ci-report", "/private/ci-evidence.json", "--source-sha", "a" * 40,
+        ], {flags[0]: "1", flags[1]: "0", "PATH": "/usr/bin"})
+        self.assertEqual([environment[name] for name in flags], ["1", "0"])
+        self.assertEqual(environment["CI_T2_EXTERNAL"], "1")
 
 
 class SearchPreparationReceiptTests(unittest.TestCase):
@@ -1531,9 +1531,15 @@ class InteractiveMcpTests(unittest.TestCase):
 
 class OwnerUsageDiagnosticsTests(unittest.TestCase):
     def test_diagnostics_opt_in_is_exact(self):
-        self.assertFalse(surface._owner_usage_diagnostics_enabled("true"))
-        self.assertFalse(surface._owner_usage_diagnostics_enabled("0"))
-        self.assertTrue(surface._owner_usage_diagnostics_enabled("1"))
+        self.assertFalse(surface._owner_usage_diagnostics_enabled("1"))
+        provenance = {"source_sha": "a" * 40,
+                      "artifact_manifest_sha256": "b" * 64}
+        with surface._context_value(surface.RUN_PROVENANCE, provenance):
+            self.assertFalse(surface._owner_usage_diagnostics_enabled("true"))
+            self.assertFalse(surface._owner_usage_diagnostics_enabled("0"))
+            self.assertTrue(surface._owner_usage_diagnostics_enabled("1"))
+        with surface._context_value(surface.RUN_PROVENANCE, {"source_sha": "a" * 40}):
+            self.assertFalse(surface._owner_usage_diagnostics_enabled("1"))
 
     def test_usage_sample_captures_same_pid_starttime_and_counters(self):
         from types import SimpleNamespace
@@ -1567,7 +1573,7 @@ class OwnerUsageDiagnosticsTests(unittest.TestCase):
         self.assertEqual(sample["sample_wall_time_ns"], 123456789)
         self.assertEqual(sample["sample_monotonic_ns"], 987654321)
 
-    def test_usage_sample_rejects_pid_reuse_during_proc_reads(self):
+    def test_usage_sample_records_pid_identity_change_without_replacing_counters(self):
         from types import SimpleNamespace
         from unittest.mock import patch
         owner = surface.Owner.__new__(surface.Owner)
@@ -1588,8 +1594,35 @@ class OwnerUsageDiagnosticsTests(unittest.TestCase):
         with patch.object(surface, "_owner_usage_diagnostics_enabled", return_value=True), \
              patch.object(Path, "read_text", autospec=True,
                           side_effect=lambda self, *args, **kwargs: read(self)):
-            with self.assertRaisesRegex(RuntimeError, "start_ticks_before=777 start_ticks_after=778"):
-                owner.usage_raw()
+            sample = owner.usage_raw()
+        self.assertEqual(sample["start_ticks"], 778)
+        self.assertIn("start_ticks_before=777 start_ticks_after=778",
+                      sample["diagnostic_error"])
+
+    def test_optional_sample_detail_failure_does_not_replace_required_counters(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        owner = surface.Owner.__new__(surface.Owner)
+        owner.process = SimpleNamespace(pid=123, poll=lambda: None)
+        fields = ["0"] * 20
+        fields[10], fields[11], fields[18] = "10", "20", "777"
+        stat_text = "123 (locald) R " + " ".join(fields)
+
+        def read(path):
+            if str(path) == "/proc/123/status":
+                return "Name:\tlocald\nVmHWM:\t120 kB\nVmRSS:\t100 kB\n"
+            if str(path) == "/proc/123/stat":
+                return stat_text
+            raise AssertionError(path)
+
+        with patch.object(surface, "_owner_usage_diagnostics_enabled", return_value=True), \
+             patch.object(Path, "read_text", autospec=True,
+                          side_effect=lambda self, *args, **kwargs: read(self)), \
+             patch.object(surface.time, "time_ns", side_effect=OSError("clock unavailable")):
+            sample = owner.usage_raw()
+        self.assertEqual(sample["peak_rss_kib"], 120)
+        self.assertEqual(sample["cpu_seconds"], 30 / surface.os.sysconf("SC_CLK_TCK"))
+        self.assertEqual(sample["diagnostic_error"], "sample detail unavailable: OSError")
 
     def test_reset_events_record_request_result_and_same_identity(self):
         import contextlib, io, json
@@ -1621,7 +1654,9 @@ class OwnerUsageDiagnosticsTests(unittest.TestCase):
                           side_effect=lambda self, *args, **kwargs: read(self)), \
              patch.object(Path, "write_text", autospec=True,
                           side_effect=lambda self, value: writes.append((str(self), value)) or len(value)), \
-             contextlib.redirect_stdout(output):
+             contextlib.redirect_stdout(output), \
+             surface._context_value(surface.RUN_PROVENANCE, {
+                 "source_sha": "a" * 40, "artifact_manifest_sha256": "b" * 64}):
             reset = owner.reset_peak_rss()
         self.assertEqual(writes, [("/proc/123/clear_refs", "5\n")])
         self.assertEqual((reset["peak_rss_kib"], reset["resident_rss_kib"]), (80, 80))
@@ -1633,6 +1668,29 @@ class OwnerUsageDiagnosticsTests(unittest.TestCase):
         self.assertEqual(events[0]["start_ticks"], events[1]["start_ticks"])
         self.assertEqual(events[0]["before"]["peak_rss_kib"], 120)
         self.assertEqual(events[1]["after"]["peak_rss_kib"], 80)
+
+    def test_emission_is_bounded_and_output_failure_is_best_effort(self):
+        import contextlib, io
+        from unittest.mock import patch
+        provenance = {"source_sha": "a" * 40,
+                      "artifact_manifest_sha256": "b" * 64}
+        without_provenance = io.StringIO()
+        with patch.object(surface, "_owner_usage_diagnostics_enabled", return_value=True), \
+             contextlib.redirect_stdout(without_provenance):
+            surface._emit_owner_usage_diagnostic("case-a", "unbound", value=1)
+        self.assertEqual(without_provenance.getvalue(), "")
+        output = io.StringIO()
+        with patch.object(surface, "_owner_usage_diagnostics_enabled", return_value=True), \
+             surface._context_value(surface.RUN_PROVENANCE, provenance), \
+             contextlib.redirect_stdout(output):
+            surface._emit_owner_usage_diagnostic("case-a", "oversized", detail="x" * 20000)
+        line = output.getvalue().encode("utf-8")
+        self.assertLessEqual(len(line), surface.OWNER_USAGE_DIAGNOSTIC_LIMIT + 32)
+        self.assertIn(b"exceeded its bound", line)
+        with patch.object(surface, "_owner_usage_diagnostics_enabled", return_value=True), \
+             patch("builtins.print", side_effect=OSError("closed")), \
+             surface._context_value(surface.RUN_PROVENANCE, provenance):
+            surface._emit_owner_usage_diagnostic("case-a", "write-failed", value=1)
 
 
 class OwnerPeakResetTests(unittest.TestCase):

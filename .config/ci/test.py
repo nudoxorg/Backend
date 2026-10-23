@@ -11,10 +11,6 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 CI = ROOT / ".config" / "ci"
-SEARCH_PREPARATION_DIAGNOSTICS_ENV = "NUDOX_SEARCH_PREPARATION_DIAGNOSTICS"
-OWNER_USAGE_DIAGNOSTICS_ENV = "NUDOX_OWNER_USAGE_DIAGNOSTICS"
-
-
 def plan(args: argparse.Namespace) -> list[str]:
     if args.tier == "smoke":
         command = ["nu", "--no-config-file", str(CI / "t1.nu")]
@@ -49,14 +45,9 @@ def plan(args: argparse.Namespace) -> list[str]:
 
 def runner_environment(tier: str, has_ci_report: bool,
                        inherited: dict[str, str] | None = None) -> dict[str, str]:
-    """Opt in only the provenance-bound integration runner, never its product."""
+    """Preserve explicit diagnostics while marking the separate T2 invocation."""
     environment = dict(os.environ if inherited is None else inherited)
     environment["CI_T2_EXTERNAL"] = "1"
-    environment.pop(SEARCH_PREPARATION_DIAGNOSTICS_ENV, None)
-    environment.pop(OWNER_USAGE_DIAGNOSTICS_ENV, None)
-    if tier == "integration" and has_ci_report:
-        environment[SEARCH_PREPARATION_DIAGNOSTICS_ENV] = "1"
-        environment[OWNER_USAGE_DIAGNOSTICS_ENV] = "1"
     return environment
 
 

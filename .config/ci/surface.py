@@ -57,6 +57,7 @@ TOLERANCE = {"seconds": 1.5, "peak_rss_kib": 1.25, "cpu_seconds": 1.5}
 FLOOR = {"seconds": 2.0, "peak_rss_kib": 64 * 1024, "cpu_seconds": 2.0}
 SEARCH_PREPARATION_DIAGNOSTICS_ENV = "NUDOX_SEARCH_PREPARATION_DIAGNOSTICS"
 OWNER_USAGE_DIAGNOSTICS_ENV = "NUDOX_OWNER_USAGE_DIAGNOSTICS"
+OWNER_USAGE_DIAGNOSTIC_LIMIT = 8192
 SEARCH_PREPARATION_RECEIPT = "search-preparation-worker-v1.json"
 SEARCH_PREPARATION_RECEIPT_LIMIT = 4096
 SEARCH_PREPARATION_DIAGNOSTIC_LIMIT = 4096
@@ -649,7 +650,11 @@ def stable(value):
 def _owner_usage_diagnostics_enabled(value: str | None = None) -> bool:
     if value is None:
         value = os.environ.get(OWNER_USAGE_DIAGNOSTICS_ENV)
-    return value == "1"
+    provenance = RUN_PROVENANCE.get()
+    return (isinstance(provenance, dict)
+            and _diagnostic_hex(provenance.get("source_sha"), 40)
+            and _diagnostic_hex(provenance.get("artifact_manifest_sha256"))
+            and value == "1")
 
 
 def _owner_start_ticks(stat_text: str) -> int:
@@ -660,13 +665,27 @@ def _owner_start_ticks(stat_text: str) -> int:
 
 
 def _emit_owner_usage_diagnostic(case: str | None, event: str, **fields) -> None:
+    provenance = RUN_PROVENANCE.get()
     if not _owner_usage_diagnostics_enabled():
         return
-    with OUTPUT_LOCK:
-        print("CI-OWNER-USAGE " + json.dumps({
-            **(RUN_PROVENANCE.get() or {}), "case": case, "event": event,
-            "timestamp_ns": time.time_ns(), **fields,
-        }, sort_keys=True), flush=True)
+    # Diagnostics are observational. Encoding or output failures must never
+    # replace the product verdict, and a malformed field cannot create an
+    # unbounded CI event.
+    try:
+        packet = {**provenance, "case": case, "event": event,
+                  "timestamp_ns": time.time_ns(), **fields}
+        encoded = json.dumps(packet, sort_keys=True)
+        if len(encoded.encode("utf-8")) > OWNER_USAGE_DIAGNOSTIC_LIMIT:
+            encoded = json.dumps({
+                **provenance, "case": case, "event": event,
+                "error": "owner usage diagnostic exceeded its bound",
+            }, sort_keys=True)
+        if len(encoded.encode("utf-8")) > OWNER_USAGE_DIAGNOSTIC_LIMIT:
+            return
+        with OUTPUT_LOCK:
+            print("CI-OWNER-USAGE " + encoded, flush=True)
+    except Exception:
+        return
 
 
 class Owner:
@@ -757,17 +776,27 @@ class Owner:
             raise RuntimeError("owner exited before its resource sample")
         pid = self.process.pid
         diagnostics = _owner_usage_diagnostics_enabled()
-        stat_before = Path(f"/proc/{pid}/stat").read_text() if diagnostics else None
+        stat_before = None
+        diagnostic_error = None
+        if diagnostics:
+            try:
+                stat_before = Path(f"/proc/{pid}/stat").read_text()
+            except Exception as error:
+                diagnostic_error = f"stat-before unavailable: {type(error).__name__}"
         status = Path(f"/proc/{pid}/status").read_text()
         stat_after = Path(f"/proc/{pid}/stat").read_text()
         if diagnostics:
-            start_before = _owner_start_ticks(stat_before)
-            start_after = _owner_start_ticks(stat_after)
-            if start_before != start_after:
-                raise RuntimeError(
-                    "owner PID identity changed during usage sample: "
-                    f"pid={pid} start_ticks_before={start_before} start_ticks_after={start_after}"
-                )
+            try:
+                start_before = _owner_start_ticks(stat_before) if stat_before is not None else None
+                start_after = _owner_start_ticks(stat_after)
+                if start_before is not None and start_before != start_after:
+                    diagnostic_error = (
+                        "owner PID identity changed during usage sample: "
+                        f"pid={pid} start_ticks_before={start_before} start_ticks_after={start_after}"
+                    )
+            except Exception as error:
+                start_after = None
+                diagnostic_error = f"sample identity unavailable: {type(error).__name__}"
         status_name = re.search(r"^Name:\s+(.+)$", status, re.MULTILINE)
         peak = int(re.search(r"VmHWM:\s+(\d+) kB", status).group(1))
         resident = int(re.search(r"VmRSS:\s+(\d+) kB", status).group(1))
@@ -780,25 +809,37 @@ class Owner:
             raise RuntimeError("owner CPU counter is not finite and nonnegative")
         result = {"peak_rss_kib": peak, "resident_rss_kib": resident, "cpu_seconds": cpu}
         if diagnostics:
-            result.update({
-                "pid": pid,
-                "start_ticks": start_after,
-                "comm": status_name.group(1) if status_name else None,
-                "cpu_user_ticks": int(fields[11]),
-                "cpu_system_ticks": int(fields[12]),
-                "sample_wall_time_ns": time.time_ns(),
-                "sample_monotonic_ns": time.monotonic_ns(),
-            })
+            try:
+                result.update({
+                    "pid": pid,
+                    "start_ticks": start_after,
+                    "comm": status_name.group(1) if status_name else None,
+                    "cpu_user_ticks": int(fields[11]),
+                    "cpu_system_ticks": int(fields[12]),
+                    "sample_wall_time_ns": time.time_ns(),
+                    "sample_monotonic_ns": time.monotonic_ns(),
+                })
+            except Exception as error:
+                diagnostic_error = f"sample detail unavailable: {type(error).__name__}"
+            if diagnostic_error is not None:
+                result["diagnostic_error"] = diagnostic_error
         return result
 
     def reset_peak_rss(self) -> dict:
         """Reset this locald's VmHWM and verify Linux accepted the reset."""
         case_name = getattr(self, "case_name", None)
         pid = self.process.pid
-        before = self.usage_raw() if _owner_usage_diagnostics_enabled() else None
+        before = None
+        if _owner_usage_diagnostics_enabled():
+            try:
+                before = self.usage_raw()
+            except Exception as error:
+                _emit_owner_usage_diagnostic(
+                    case_name, "clear-refs-before-sample-unavailable",
+                    pid=pid, error=type(error).__name__)
         if before is not None:
             _emit_owner_usage_diagnostic(case_name, "clear-refs-write-requested",
-                                         pid=pid, start_ticks=before["start_ticks"],
+                                         pid=pid, start_ticks=before.get("start_ticks"),
                                          before=before, value="5\n")
         written = Path(f"/proc/{pid}/clear_refs").write_text("5\n")
         reset = self.usage_raw()
