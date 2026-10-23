@@ -1235,6 +1235,7 @@ enum CallReceiver {
 struct CallSite {
     name: String,
     receiver: CallReceiver,
+    span: (usize, usize),
 }
 
 enum ImportBindingKind {
@@ -1408,6 +1409,7 @@ fn structural_excerpt_call_sites(excerpt: &str) -> Vec<CallSite> {
                         sites.push(CallSite {
                             name: name.to_owned(),
                             receiver: structural_call_receiver(excerpt, absolute_at),
+                            span: (absolute_at, absolute_at + name.len()),
                         });
                         index = after_name;
                         continue;
@@ -1781,7 +1783,7 @@ fn declares_a_nominal_type(kind: DeclarationKind) -> bool {
 
 #[path = "structural_calls.rs"]
 mod calls;
-pub(crate) use calls::{StructuralCallEndpoint, StructuralCallResidence};
+pub(crate) use calls::{StructuralCallEndpoint, StructuralCallResidence, StructuralReferenceOwners};
 
 /// Same-file and import-resolved pairs from the exact selected source facts.
 /// Graph and references share the immutable typed projection behind this view.
@@ -2092,6 +2094,83 @@ pub(crate) fn structural_call_graph_relations_resident(
     Ok(Some(relations))
 }
 
+/// Places each written call and assigns it to the nearest exact captured
+/// declaration. Missing current bytes preserve an unplaced syntactic fact;
+/// ambiguous captured ownership never invents an enclosing reference site.
+pub(crate) fn structural_reference_sites(
+    rows: &StructuralCallRows<'_>,
+    caller: &StructuralCallEndpoint,
+    callee: &StructuralCallEndpoint,
+    target_name: &str,
+    root: Option<&Path>,
+    owners: Option<&StructuralReferenceOwners>,
+    files: &mut BTreeMap<String, Option<String>>,
+) -> Result<
+    Vec<(
+        backend_engine::SymbolKey,
+        Option<backend_engine::SemanticSourceSpan>,
+    )>,
+    BuiltinModelError,
+> {
+    let Some(caller_id) = rows.mapped(caller) else {
+        return Ok(Vec::new());
+    };
+    let caller_row = rows.view.row_ref(caller_id).ok_or_else(|| {
+        BuiltinModelError("structural references site is absent from the view".to_owned())
+    })?;
+    let RowId::Symbol(caller_symbol) = caller_id else {
+        return Err(BuiltinModelError(
+            "structural references site is not a declaration row".to_owned(),
+        ));
+    };
+    let (Some(location), Some(excerpt), Some(root)) = (
+        caller_row.source.captured(),
+        caller_row.excerpt.text(),
+        root,
+    ) else {
+        return Ok(vec![(caller_symbol, None)]);
+    };
+    let mut sites = Vec::new();
+    let mut placed = false;
+    let spans = match owners.and_then(|owners| owners.call_spans(caller, callee, excerpt)) {
+        Some(Some(spans)) => spans.iter().copied().collect::<Vec<_>>(),
+        Some(None) => return Ok(Vec::new()),
+        None => structural_call_span(excerpt, target_name)
+            .into_iter()
+            .collect(),
+    };
+    for span in spans {
+        let Some((start, end)) = structural_file_span(root, location, excerpt, span, files) else {
+            continue;
+        };
+        placed = true;
+        let source = backend_engine::SemanticSourceSpan {
+            file: backend_engine::ProductText::new(location.path()).map_err(|error| {
+                BuiltinModelError(format!("structural references path: {error:?}"))
+            })?,
+            start,
+            end,
+        };
+        let endpoint = match owners {
+            Some(owners) => owners.site(caller, &source),
+            None => Some(caller),
+        };
+        let Some(RowId::Symbol(site)) = endpoint.and_then(|endpoint| rows.mapped(endpoint)) else {
+            continue;
+        };
+        sites.push((site, Some(source)));
+        if sites.len() > backend_engine::MAX_PRODUCT_ROWS {
+            return Err(BuiltinModelError(
+                "structural references exceed the bounded result contract".to_owned(),
+            ));
+        }
+    }
+    if !placed {
+        sites.push((caller_symbol, None));
+    }
+    Ok(sites)
+}
+
 /// Incoming call sites for one declaration when semantic references are absent.
 #[cfg(test)]
 pub(crate) fn structural_reference_facts(
@@ -2129,12 +2208,7 @@ pub(crate) fn structural_reference_facts_resident(
         };
         (target_row.id, target_symbol, package)
     };
-    let Some(relations) = structural_call_graph_relations_resident(
-        residence, view, sources, package, target_id, true,
-    )?
-    else {
-        return Ok(Vec::new());
-    };
+    let (pairs, owners) = residence.reference_projection(sources, package)?;
     let target_name = target
         .rsplit("::")
         .next()
@@ -2149,66 +2223,54 @@ pub(crate) fn structural_reference_facts_resident(
         .map(|project| PathBuf::from(&project.label));
     let mut files = BTreeMap::new();
     let mut facts = Vec::new();
-    for relation in relations {
-        if relation.to != target_id || relation.relation != backend_library::SemanticLinkKind::Calls
-        {
+    let rows = StructuralCallRows::new(view, package);
+    for (caller, callee) in pairs {
+        if rows.mapped(callee) != Some(target_id) {
             continue;
         }
-        let site_row = view.row_ref(relation.from).ok_or_else(|| {
-            BuiltinModelError("structural references site is absent from the view".to_owned())
-        })?;
-        let RowId::Symbol(site_symbol) = site_row.id else {
-            return Err(BuiltinModelError(
-                "structural references site is not a declaration row".to_owned(),
-            ));
-        };
-        // The place is where the call is in the file; a call the text
-        // does not show (only in a comment, or the file changed since) has
-        // no place rather than a made-up one.
-        let source = match (
-            site_row.source.captured(),
-            site_row.excerpt.text(),
+        for (site_symbol, source) in structural_reference_sites(
+            &rows,
+            caller,
+            callee,
+            target_name,
             root.as_deref(),
-        ) {
-            (Some(location), Some(excerpt), Some(root)) => {
-                structural_call_span(excerpt, target_name)
-                    .and_then(|span| {
-                        structural_file_span(root, location, excerpt, span, &mut files)
-                    })
-                    .map(|(start, end)| {
-                        Ok::<_, BuiltinModelError>(backend_engine::SemanticSourceSpan {
-                            file: backend_engine::ProductText::new(location.path()).map_err(
-                                |error| {
-                                    BuiltinModelError(format!(
-                                        "structural references path: {error:?}"
-                                    ))
-                                },
-                            )?,
-                            start,
-                            end,
-                        })
-                    })
-                    .transpose()?
+            Some(owners),
+            &mut files,
+        )? {
+            facts.push(backend_engine::ReferenceFact {
+                site: site_symbol,
+                target: backend_engine::SemanticLinkTarget::Local {
+                    declaration: target_identity,
+                },
+                relation: backend_library::SemanticLinkKind::Calls,
+                evidence: backend_engine::SemanticLinkEvidence {
+                    confidence: backend_library::SemanticConfidence::Syntactic,
+                    source,
+                },
+            });
+            if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
+                return Err(BuiltinModelError(
+                    "structural references exceed the bounded result contract".to_owned(),
+                ));
             }
-            _ => None,
-        };
-        facts.push(backend_engine::ReferenceFact {
-            site: site_symbol,
-            target: backend_engine::SemanticLinkTarget::Local {
-                declaration: target_identity,
-            },
-            relation: backend_library::SemanticLinkKind::Calls,
-            evidence: backend_engine::SemanticLinkEvidence {
-                confidence: backend_library::SemanticConfidence::Syntactic,
-                source,
-            },
-        });
-        if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
-            return Err(BuiltinModelError(
-                "structural references exceed the bounded result contract".to_owned(),
-            ));
         }
     }
+    facts.sort_by(|left, right| {
+        left.site.cmp(&right.site).then_with(|| {
+            left.evidence
+                .source
+                .as_ref()
+                .map(|span| (span.file.as_str(), span.start, span.end))
+                .cmp(
+                    &right
+                        .evidence
+                        .source
+                        .as_ref()
+                        .map(|span| (span.file.as_str(), span.start, span.end)),
+                )
+        })
+    });
+    facts.dedup();
     Ok(facts)
 }
 

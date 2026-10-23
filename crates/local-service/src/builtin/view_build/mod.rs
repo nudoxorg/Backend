@@ -114,10 +114,9 @@ pub(in crate::builtin) use source_availability::{
 #[cfg(test)]
 pub(crate) use structural::view_row_for_structural_coordinate;
 pub(crate) use structural::{
-    StructuralCallEndpoint, StructuralCallResidence, StructuralCallRows,
+    StructuralCallEndpoint, StructuralCallResidence, StructuralCallRows, StructuralReferenceOwners,
     structural_call_endpoint_relations_mapped, structural_call_graph_relations_resident,
-    structural_call_span, structural_file_span, structural_reference_facts_resident,
-    structural_symbol_identity,
+    structural_reference_facts_resident, structural_reference_sites, structural_symbol_identity,
 };
 #[cfg(test)]
 pub(crate) use structural::{

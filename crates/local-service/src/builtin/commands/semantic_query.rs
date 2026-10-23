@@ -745,6 +745,7 @@ fn project_reference_facts_from_bytes(
         project_paths,
         &borrowed_pairs,
         None,
+        None,
         &std::collections::BTreeMap::new(),
         &[],
         true,
@@ -761,6 +762,7 @@ fn project_opened_reference_facts(
         &view_build::StructuralCallEndpoint,
         &view_build::StructuralCallEndpoint,
     )],
+    owners: Option<&view_build::StructuralReferenceOwners>,
     // The package's source root, where a name-matched call's file is read
     // to place it; `None` places none.
     root: Option<&std::path::Path>,
@@ -938,68 +940,46 @@ fn project_opened_reference_facts(
         if callee_id != target_row_id {
             continue;
         }
-        let Some(caller_id) = structural_rows.mapped(caller_endpoint) else {
-            continue;
-        };
-        let caller_row = view.row_ref(caller_id).ok_or_else(|| {
-            BuiltinModelError("structural references site is absent from the view".to_owned())
-        })?;
-        let backend_engine::RowId::Symbol(caller_symbol) = caller_row.id else {
-            return Err(BuiltinModelError(
-                "structural references site is not a declaration row".to_owned(),
-            ));
-        };
-        if reference_fact_has_site_and_relation(
-            &facts,
-            caller_symbol,
-            backend_engine::SemanticLinkKind::Calls,
-        ) {
-            continue;
-        }
-        // A name-matched call is placed where it is in the file, or not at
-        // all (`view_build::structural_file_span`).
-        let source = match (
-            caller_row.source.captured(),
-            caller_row.excerpt.text(),
+        for (caller_symbol, source) in view_build::structural_reference_sites(
+            &structural_rows,
+            caller_endpoint,
+            callee_endpoint,
+            &target_name,
             root,
-        ) {
-            (Some(location), Some(excerpt), Some(root)) => {
-                view_build::structural_call_span(excerpt, &target_name)
-                    .and_then(|span| {
-                        view_build::structural_file_span(root, location, excerpt, span, &mut files)
-                    })
-                    .map(|(start, end)| {
-                        Ok::<_, BuiltinModelError>(backend_engine::SemanticSourceSpan {
-                            file: backend_engine::ProductText::new(location.path()).map_err(
-                                |error| {
-                                    BuiltinModelError(format!(
-                                        "structural references path: {error:?}"
-                                    ))
-                                },
-                            )?,
-                            start,
-                            end,
-                        })
-                    })
-                    .transpose()?
-            }
-            _ => None,
-        };
-        facts.push(backend_engine::ReferenceFact {
-            site: caller_symbol,
-            target: backend_engine::SemanticLinkTarget::Local {
-                declaration: target_identity,
-            },
-            relation: backend_engine::SemanticLinkKind::Calls,
-            evidence: backend_engine::SemanticLinkEvidence {
+            owners,
+            &mut files,
+        )? {
+            let evidence = backend_engine::SemanticLinkEvidence {
                 confidence: backend_engine::SemanticConfidence::Syntactic,
                 source,
-            },
-        });
-        if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
-            return Err(BuiltinModelError(
-                "semantic references exceed the bounded result contract".to_owned(),
-            ));
+            };
+            if reference_fact_at_site(
+                &facts,
+                caller_symbol,
+                backend_engine::SemanticLinkKind::Calls,
+                &evidence,
+            ) || (evidence.source.is_none()
+                && reference_fact_has_site_and_relation(
+                    &facts,
+                    caller_symbol,
+                    backend_engine::SemanticLinkKind::Calls,
+                ))
+            {
+                continue;
+            }
+            facts.push(backend_engine::ReferenceFact {
+                site: caller_symbol,
+                target: backend_engine::SemanticLinkTarget::Local {
+                    declaration: target_identity,
+                },
+                relation: backend_engine::SemanticLinkKind::Calls,
+                evidence,
+            });
+            if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
+                return Err(BuiltinModelError(
+                    "semantic references exceed the bounded result contract".to_owned(),
+                ));
+            }
         }
     }
     facts.sort_by(|left, right| {
@@ -1112,11 +1092,15 @@ pub(super) fn execute_references(
             })?);
         }
     }
-    let pairs = if package_indexed_in_sources(&sources, package) {
-        structural_calls.endpoint_pairs(&sources, package)?
+    let projection = if package_indexed_in_sources(&sources, package) {
+        Some(structural_calls.reference_projection(&sources, package)?)
     } else {
-        Vec::new()
+        None
     };
+    let pairs = projection
+        .as_ref()
+        .map_or(&[][..], |(pairs, _)| pairs.as_slice());
+    let owners = projection.as_ref().map(|(_, owners)| *owners);
     let root = sources
         .projects
         .get(&package.to_bytes())
@@ -1127,7 +1111,8 @@ pub(super) fn execute_references(
         package,
         target_symbol,
         &project_paths,
-        &pairs,
+        pairs,
+        owners,
         root.as_deref(),
         &available.retargeting_scopes(package, &profile_scopes),
         &activations
@@ -8874,6 +8859,7 @@ mod project_call_tests {
                 &project_paths(&[path]),
                 &pairs,
                 None,
+                None,
                 &BTreeMap::new(),
                 &[],
                 true,
@@ -8891,6 +8877,328 @@ mod project_call_tests {
             2,
             "the production opened-image reference path preserves both exact call sites"
         );
+        Ok(())
+    }
+
+    // Retained public GBA d74a03d source (106 TypeScript files). These bytes
+    // match WSL report 34's exact 6709..6720 occurrence, not a shifted sample.
+    const GBA_BUILDER: &str = include_str!("../../../tests/fixtures/report34_gba/builder-item.ts");
+    const GBA_CARDIO: &str = include_str!("../../../tests/fixtures/report34_gba/cardio-fields.ts");
+    const GBA_BUILDER_PATH: &str = "src/app/components/set-form-modal/builder-item.ts";
+    const GBA_CARDIO_PATH: &str = "src/app/components/cardio-fields/cardio-fields.ts";
+
+    #[test]
+    fn report34_gba_reference_initializer_uses_nearest_owner_with_and_without_compiler()
+    -> Result<(), String> {
+        assert_eq!(&GBA_BUILDER.as_bytes()[6709..6720], b"toCardioLog");
+        let root = tempfile::tempdir().map_err(|error| error.to_string())?;
+        for (path, text) in [
+            (GBA_BUILDER_PATH, GBA_BUILDER),
+            (GBA_CARDIO_PATH, GBA_CARDIO),
+        ] {
+            let file = root.path().join(path);
+            std::fs::create_dir_all(file.parent().ok_or("fixture parent")?)
+                .map_err(|error| error.to_string())?;
+            std::fs::write(file, text).map_err(|error| error.to_string())?;
+        }
+        let mut sources = indexed_sources(&[
+            (
+                GBA_BUILDER_PATH,
+                analyze_source(GBA_BUILDER_PATH, GBA_BUILDER)?,
+            ),
+            (
+                GBA_CARDIO_PATH,
+                analyze_source(GBA_CARDIO_PATH, GBA_CARDIO)?,
+            ),
+        ])?;
+        let package = package_key("fixture");
+        sources
+            .projects
+            .get_mut(&package.to_bytes())
+            .ok_or("project")?
+            .label = root.path().to_str().ok_or("fixture UTF-8")?.to_owned();
+        let (view, rows) = super::view_build::structural_view_for_test(&sources)?;
+        let target = rows
+            .iter()
+            .find(|row| row.label.ends_with("::toCardioLog"))
+            .ok_or("target")?;
+        let outer = rows
+            .iter()
+            .find(|row| row.label.ends_with("::toSetItem"))
+            .ok_or("outer")?;
+        let cardio = rows
+            .iter()
+            .find(|row| {
+                row.label.ends_with("::cardio") && row.parent.map(RowId::Symbol) == Some(outer.id)
+            })
+            .ok_or("nearest initializer owner")?;
+        let RowId::Symbol(cardio_symbol) = cardio.id else {
+            return Err("cardio symbol".to_owned());
+        };
+        let mut residence = super::view_build::StructuralCallResidence::default();
+        let facts = super::view_build::structural_reference_facts_resident(
+            &mut residence,
+            &view,
+            &sources,
+            &target.label,
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(
+            facts.len(),
+            1,
+            "compiler-unavailable fallback has one written occurrence"
+        );
+        assert_eq!(facts[0].site, cardio_symbol);
+        assert_eq!(
+            facts[0].evidence.confidence,
+            backend_engine::SemanticConfidence::Syntactic
+        );
+        let span = facts[0]
+            .evidence
+            .source
+            .as_ref()
+            .ok_or("captured initializer span")?;
+        assert_eq!(
+            (span.file.as_str(), span.start, span.end),
+            (GBA_BUILDER_PATH, 6709, 6720)
+        );
+        let graph = super::view_build::structural_call_graph_relations_resident(
+            &mut residence,
+            &view,
+            &sources,
+            package,
+            outer.id,
+            false,
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or("enclosing call graph")?;
+        assert!(
+            graph.iter().any(|edge| edge.to == target.id),
+            "enclosing callable context remains available in the graph"
+        );
+
+        // Supply a compiler occurrence under its own declaration identity, then
+        // exercise the real opened-image union against the same structural facts.
+        let (image, caller_version, target_version) = reference_call_image_with_span(
+            GBA_BUILDER_PATH,
+            b"cardio",
+            b"toCardioLog",
+            (6709, 6720),
+            Some(GBA_BUILDER.as_bytes()),
+        )?;
+        let mut replacement = semantic_view_rows(
+            package,
+            &[
+                (
+                    GBA_BUILDER_PATH,
+                    cardio
+                        .source
+                        .captured()
+                        .ok_or("cardio location")?
+                        .start_line(),
+                    "cardio",
+                    caller_version,
+                ),
+                (
+                    GBA_CARDIO_PATH,
+                    target
+                        .source
+                        .captured()
+                        .ok_or("target location")?
+                        .start_line(),
+                    "toCardioLog",
+                    target_version,
+                ),
+            ],
+        )?;
+        replacement[0].parent = cardio.parent;
+        replacement[0].kind = cardio.kind;
+        replacement[1].parent = target.parent;
+        replacement[1].kind = target.kind;
+        let new_cardio = semantic_symbol(package, caller_version.identity());
+        let new_target = semantic_symbol(package, target_version.identity());
+        let mut combined = rows
+            .iter()
+            .filter(|row| row.id != cardio.id && row.id != target.id)
+            .cloned()
+            .map(|mut row| {
+                if row.parent.map(RowId::Symbol) == Some(cardio.id) {
+                    row.parent = Some(new_cardio);
+                }
+                if row.parent.map(RowId::Symbol) == Some(target.id) {
+                    row.parent = Some(new_target);
+                }
+                row
+            })
+            .collect::<Vec<_>>();
+        combined.extend(replacement);
+        let combined = semantic_view(combined)?;
+        let (pairs, owners) = residence
+            .reference_projection(&sources, package)
+            .map_err(|error| error.to_string())?;
+        let opened = SemanticImageView::reopen(&image).map_err(|error| error.to_string())?;
+        let facts = super::project_opened_reference_facts(
+            &[opened],
+            &combined,
+            package,
+            semantic_symbol(package, target_version.identity()),
+            &project_paths(&[GBA_BUILDER_PATH, GBA_CARDIO_PATH]),
+            &pairs,
+            Some(owners),
+            Some(root.path()),
+            &BTreeMap::new(),
+            &[],
+            true,
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(
+            facts.len(),
+            1,
+            "same occurrence reconciles after nearest-owner projection"
+        );
+        assert_eq!(
+            facts[0].site,
+            semantic_symbol(package, caller_version.identity())
+        );
+        assert_eq!(
+            facts[0].evidence.confidence,
+            backend_engine::SemanticConfidence::Compiler
+        );
+        assert_eq!(
+            facts[0]
+                .evidence
+                .source
+                .as_ref()
+                .map(|span| (span.start, span.end)),
+            Some((6709, 6720))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn structural_reference_owners_keep_nested_and_repeated_occurrences_distinct()
+    -> Result<(), String> {
+        let path = "owners.ts";
+        let text = "function target() {}\nfunction outer() { const first = target(), second = target(); target(); function inner() { const nested = target(); target(); } target(); }\n";
+        let root = tempfile::tempdir().map_err(|error| error.to_string())?;
+        std::fs::write(root.path().join(path), text).map_err(|error| error.to_string())?;
+        let mut sources = indexed_sources(&[(path, analyze_source(path, text)?)])?;
+        let package = package_key("fixture");
+        sources
+            .projects
+            .get_mut(&package.to_bytes())
+            .ok_or("project")?
+            .label = root.path().to_str().ok_or("fixture UTF-8")?.to_owned();
+        let (view, rows) = super::view_build::structural_view_for_test(&sources)?;
+        let target = rows
+            .iter()
+            .find(|row| row.label.ends_with("::target"))
+            .ok_or("target")?;
+        let facts = super::view_build::structural_reference_facts(&view, &sources, &target.label)
+            .map_err(|error| error.to_string())?;
+        let observed = facts
+            .iter()
+            .map(|fact| {
+                let row = view.row_ref(RowId::Symbol(fact.site)).ok_or("owner row")?;
+                let span = fact.evidence.source.as_ref().ok_or("exact call span")?;
+                assert_eq!(
+                    &text.as_bytes()[span.start as usize..span.end as usize],
+                    b"target"
+                );
+                Ok((
+                    row.label
+                        .rsplit("::")
+                        .next()
+                        .ok_or("owner name")?
+                        .to_owned(),
+                    span.start,
+                    span.end,
+                ))
+            })
+            .collect::<Result<BTreeSet<_>, String>>()?;
+        let positions = text
+            .match_indices("target()")
+            .skip(1)
+            .map(|(start, _)| (start as u32, start as u32 + 6))
+            .collect::<Vec<_>>();
+        let expected = ["first", "second", "outer", "nested", "inner", "outer"]
+            .into_iter()
+            .zip(positions)
+            .map(|(owner, (start, end))| (owner.to_owned(), start, end))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            observed, expected,
+            "nested callables are not credited again to outer; repeated outer calls keep distinct spans"
+        );
+        assert_eq!(facts.len(), 6);
+        Ok(())
+    }
+
+    #[test]
+    fn structural_reference_occurrences_keep_import_alias_targets_separate() -> Result<(), String> {
+        let root = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let text = "import { target as left } from './left'; import { target as right } from './right';\nfunction outer() { const first = left(), second = right(); left(); right(); }\n";
+        let fixture = [
+            ("caller.ts", text),
+            ("left.ts", "export function target() {}\n"),
+            ("right.ts", "export function target() {}\n"),
+        ];
+        for (path, text) in fixture {
+            std::fs::write(root.path().join(path), text).map_err(|error| error.to_string())?;
+        }
+        let files = fixture
+            .iter()
+            .map(|(path, text)| Ok((*path, analyze_source(path, text)?)))
+            .collect::<Result<Vec<_>, String>>()?;
+        let mut sources = indexed_sources(&files)?;
+        let package = package_key("fixture");
+        sources
+            .projects
+            .get_mut(&package.to_bytes())
+            .ok_or("project")?
+            .label = root.path().to_str().ok_or("fixture UTF-8")?.to_owned();
+        let (view, rows) = super::view_build::structural_view_for_test(&sources)?;
+        for (path, alias, owner) in [
+            ("left.ts", "left", "first"),
+            ("right.ts", "right", "second"),
+        ] {
+            let target = rows
+                .iter()
+                .find(|row| {
+                    row.label.ends_with("::target")
+                        && row
+                            .source
+                            .captured()
+                            .is_some_and(|source| source.path() == path)
+                })
+                .ok_or("selected target")?;
+            let facts =
+                super::view_build::structural_reference_facts(&view, &sources, &target.label)
+                    .map_err(|error| error.to_string())?;
+            let sites = facts
+                .iter()
+                .map(|fact| {
+                    let span = fact
+                        .evidence
+                        .source
+                        .as_ref()
+                        .ok_or("alias occurrence span")?;
+                    assert_eq!(&text[span.start as usize..span.end as usize], alias);
+                    let row = view.row_ref(RowId::Symbol(fact.site)).ok_or("owner row")?;
+                    Ok(row
+                        .label
+                        .rsplit("::")
+                        .next()
+                        .ok_or("owner name")?
+                        .to_owned())
+                })
+                .collect::<Result<BTreeSet<_>, String>>()?;
+            assert_eq!(facts.len(), 2);
+            assert_eq!(
+                sites,
+                BTreeSet::from([owner.to_owned(), "outer".to_owned()])
+            );
+        }
         Ok(())
     }
 
@@ -8998,25 +9306,60 @@ mod project_call_tests {
     }
 
     fn local_call_image_with_span() -> Result<(Vec<u8>, EntityVersion, EntityVersion), String> {
-        const CALL_PATH: &str = "local.ts";
+        reference_call_image_with_span("local.ts", b"caller", b"callee", (12, 24), None)
+    }
+
+    fn reference_call_image_with_span(
+        call_path: &str,
+        caller_name: &[u8],
+        callee_name: &[u8],
+        span: (u32, u32),
+        source_bytes: Option<&[u8]>,
+    ) -> Result<(Vec<u8>, EntityVersion, EntityVersion), String> {
         let caller_version = fixture_version(11);
         let callee_version = fixture_version(12);
-        let source = SourceIdentity {
-            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(&[11]),
-            byte_len: 12,
+        let source = match source_bytes {
+            Some(bytes) => SourceIdentity {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(bytes),
+                byte_len: bytes
+                    .len()
+                    .try_into()
+                    .map_err(|_| "fixture source length")?,
+            },
+            None => SourceIdentity {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(&[11]),
+                byte_len: 12,
+            },
         };
         let recipe = CompileRecipeFact::derive(
-            LanguageProfile::Rust(RustEdition::Rust2024),
+            if source_bytes.is_some() {
+                LanguageProfile::TypeScript(
+                    backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+                )
+            } else {
+                LanguageProfile::Rust(RustEdition::Rust2024)
+            },
             Stage::LowerIr,
-            NativeTool::Rustc,
+            if source_bytes.is_some() {
+                NativeTool::TypeScriptCompiler
+            } else {
+                NativeTool::Rustc
+            },
             source.identity,
             ContentId::<ToolchainDomain>::from_canonical_bytes(b"fixture toolchain"),
         );
-        let coordinate = PackageUrl::parse("pkg:cargo/fixture@1.0.0".to_owned())
-            .map_err(|error| format!("fixture coordinate: {error:?}"))?;
+        let coordinate = PackageUrl::parse(
+            if source_bytes.is_some() {
+                "pkg:npm/fixture@1.0.0"
+            } else {
+                "pkg:cargo/fixture@1.0.0"
+            }
+            .to_owned(),
+        )
+        .map_err(|error| format!("fixture coordinate: {error:?}"))?;
         let mut builder = IrBuilder::new();
         builder
-            .set_image_provenance_for_package(source, recipe, &coordinate, CALL_PATH)
+            .set_image_provenance_for_package(source, recipe, &coordinate, call_path)
             .map_err(|error| error.to_string())?;
         let authority = |parentage| EntityAuthorityFacts {
             parentage,
@@ -9025,9 +9368,13 @@ mod project_call_tests {
         };
         let items = [
             TreeItemInput {
-                name: b"caller",
+                name: caller_name,
                 anonymous_callable_anchor: None,
-                kind: ItemKind::Function,
+                kind: if source_bytes.is_some() {
+                    ItemKind::Constant
+                } else {
+                    ItemKind::Function
+                },
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
                 parent: None,
@@ -9039,7 +9386,7 @@ mod project_call_tests {
                 extension: None,
             },
             TreeItemInput {
-                name: b"callee",
+                name: callee_name,
                 anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
@@ -9058,12 +9405,12 @@ mod project_call_tests {
             .map(backend_semantic::ir::AtomId::new)
             .find(|id| {
                 ir.atom(*id)
-                    .is_some_and(|bytes| bytes == CALL_PATH.as_bytes())
+                    .is_some_and(|bytes| bytes == call_path.as_bytes())
             })
             .ok_or("the fixture source path is absent from its own atom table")?;
         let mut builder = IrBuilder::new();
         builder
-            .set_image_provenance_for_package(source, recipe, &coordinate, CALL_PATH)
+            .set_image_provenance_for_package(source, recipe, &coordinate, call_path)
             .map_err(|error| error.to_string())?;
         let links = [TreeLinkInput {
             from: TreeEntityId::new(0),
@@ -9073,7 +9420,7 @@ mod project_call_tests {
             authority: OccurrenceAuthorityFacts {
                 source: FactAvailability::Captured,
             },
-            source: SourceSpan::new(path_atom, 12, 24),
+            source: SourceSpan::new(path_atom, span.0, span.1),
         }];
         builder
             .add_borrowed_tree(BorrowedTree {

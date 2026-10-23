@@ -430,12 +430,162 @@ pub(crate) enum StructuralCallEndpoint {
     LegacyCoordinate(String),
 }
 
+// Project metadata shares the semantic query projection budget, not the
+// 256-row bound on a single product reply.
+const MAX_STRUCTURAL_REFERENCE_METADATA_ITEMS: usize = super::super::MAX_SEMANTIC_QUERY_ROWS;
+
+/// Exact captured owners from the same selected file facts as the call graph.
+/// Graph edges retain enclosing callable context; reference occurrences use
+/// the nearest declaration, including variable initializers.
+pub(crate) struct StructuralReferenceOwners {
+    retained: usize,
+    limit: usize,
+    files: BTreeMap<[u8; 32], Vec<ReferenceOwner>>,
+    calls: BTreeMap<(StructuralCallBinding, StructuralCallBinding), CapturedCallSpans>,
+}
+
+struct CapturedCallSpans {
+    excerpt_digest: [u8; 32],
+    spans: BTreeSet<(usize, usize)>,
+}
+
+struct ReferenceOwner {
+    capture: backend_compile::SourceBindingCapture,
+    parent: Option<backend_compile::SourceBinding>,
+    callable: bool,
+    endpoint: StructuralCallEndpoint,
+}
+
+impl StructuralReferenceOwners {
+    fn new(limit: usize) -> Self {
+        Self {
+            retained: 0,
+            limit,
+            files: BTreeMap::new(),
+            calls: BTreeMap::new(),
+        }
+    }
+
+    fn reserve_item(&mut self) -> Result<(), BuiltinModelError> {
+        if self.retained >= self.limit {
+            return Err(BuiltinModelError(
+                "structural reference metadata exceeds the bounded result contract".to_owned(),
+            ));
+        }
+        self.retained += 1;
+        Ok(())
+    }
+
+    fn record_call(
+        &mut self,
+        caller: StructuralCallBinding,
+        callee: StructuralCallBinding,
+        excerpt_digest: [u8; 32],
+        span: (usize, usize),
+    ) -> Result<(), BuiltinModelError> {
+        let key = (caller, callee);
+        if self
+            .calls
+            .get(&key)
+            .is_some_and(|calls| calls.spans.contains(&span))
+        {
+            return Ok(());
+        }
+        self.reserve_item()?;
+        self.calls
+            .entry(key)
+            .or_insert_with(|| CapturedCallSpans {
+                excerpt_digest,
+                spans: BTreeSet::new(),
+            })
+            .spans
+            .insert(span);
+        Ok(())
+    }
+
+    /// `None` retains legacy placement; `Some(None)` refuses offsets whose
+    /// captured excerpt is no longer the mapped row's exact written basis.
+    pub(super) fn call_spans(
+        &self,
+        caller: &StructuralCallEndpoint,
+        callee: &StructuralCallEndpoint,
+        excerpt: &str,
+    ) -> Option<Option<&BTreeSet<(usize, usize)>>> {
+        let (
+            StructuralCallEndpoint::Binding { source: caller, .. },
+            StructuralCallEndpoint::Binding { source: callee, .. },
+        ) = (caller, callee)
+        else {
+            return None;
+        };
+        let calls = self.calls.get(&(*caller, *callee))?;
+        Some(
+            (blake3::hash(excerpt.as_bytes()).as_bytes() == &calls.excerpt_digest)
+                .then_some(&calls.spans),
+        )
+    }
+
+    pub(super) fn site<'a>(
+        &'a self,
+        caller: &'a StructuralCallEndpoint,
+        span: &backend_engine::SemanticSourceSpan,
+    ) -> Option<&'a StructuralCallEndpoint> {
+        let StructuralCallEndpoint::Binding {
+            source, location, ..
+        } = caller
+        else {
+            return Some(caller);
+        };
+        if location.path() != span.file.as_str() {
+            return None;
+        }
+        let Some(owners) = self.files.get(&source.file) else {
+            // Other languages retain their existing reference projection.
+            return Some(caller);
+        };
+        let mut nearest: Option<&ReferenceOwner> = None;
+        for owner in owners {
+            let (start, end) = owner.capture.owner();
+            if start > span.start || span.end > end {
+                continue;
+            }
+            match nearest {
+                None => nearest = Some(owner),
+                Some(held) if held.capture.strictly_contains(owner.capture) => {
+                    nearest = Some(owner)
+                }
+                Some(held) if owner.capture.strictly_contains(held.capture) => {}
+                // Equal or overlapping extents do not prove a unique owner.
+                Some(_) => return None,
+            }
+        }
+        let nearest = nearest?;
+        let mut current = nearest;
+        for _ in 0..256 {
+            if current.capture.binding() == source.binding {
+                return Some(&nearest.endpoint);
+            }
+            // A nested callable supplies its own edge and resolution scope.
+            // Never borrow the enclosing callable's callee resolution for it.
+            if current.callable {
+                return None;
+            }
+            let parent = current.parent?;
+            current = owners
+                .iter()
+                .find(|owner| owner.capture.binding() == parent)?;
+        }
+        None
+    }
+}
+
 pub(super) struct ProjectCalls {
     #[cfg(test)]
     resolved_specifiers: usize,
     #[cfg(test)]
     coordinates: Vec<String>,
     endpoints: Vec<StructuralCallEndpoint>,
+    reference_owners: Option<StructuralReferenceOwners>,
     by_binding: BTreeMap<StructuralCallBinding, DeclarationId>,
     by_row: BTreeMap<RowId, DeclarationId>,
     by_coordinate: BTreeMap<String, DeclarationId>,
@@ -447,6 +597,14 @@ impl ProjectCalls {
     fn build(
         sources: &IndexedSources,
         package: backend_engine::PackageKey,
+    ) -> Result<Self, BuiltinModelError> {
+        Self::build_with_references(sources, package, None)
+    }
+
+    fn build_with_references(
+        sources: &IndexedSources,
+        package: backend_engine::PackageKey,
+        reference_limit: Option<usize>,
     ) -> Result<Self, BuiltinModelError> {
         let _project = sources
             .projects
@@ -491,6 +649,7 @@ impl ProjectCalls {
             #[cfg(test)]
             coordinates: Vec::new(),
             endpoints: Vec::new(),
+            reference_owners: reference_limit.map(StructuralReferenceOwners::new),
             by_binding: BTreeMap::new(),
             by_row: BTreeMap::new(),
             by_coordinate: BTreeMap::new(),
@@ -556,6 +715,34 @@ impl ProjectCalls {
                     if parse_import_binding(declaration).is_some() {
                         name.import = Some(binding);
                     }
+                }
+                if let Some(owners) = graph.reference_owners.as_mut()
+                    && file.language == backend_engine::SourceLanguage::TypeScript
+                    && let backend_compile::SourceBindingIdentity::Exact(capture) =
+                        declaration.binding_identity()
+                    && let Some((_, parent)) = exact_scope
+                {
+                    let prepared = plan.declaration(file.key, index)?;
+                    owners.reserve_item()?;
+                    owners
+                        .files
+                        .entry(file.key)
+                        .or_default()
+                        .push(ReferenceOwner {
+                            capture,
+                            parent,
+                            callable: structural_callable(declaration.kind()),
+                            endpoint: StructuralCallEndpoint::Binding {
+                                source: StructuralCallBinding {
+                                    file: file.key,
+                                    binding: capture.binding(),
+                                },
+                                row: prepared.id,
+                                location: declaration.location().clone(),
+                                semantic_site_unique: prepared.identity_preimage.is_none(),
+                                name: declaration.name().to_owned(),
+                            },
+                        });
                 }
                 if !structural_callable(declaration.kind()) {
                     continue;
@@ -678,6 +865,13 @@ impl ProjectCalls {
                 graph.resolved_specifiers += imported.resolved_specifiers;
             }
             for &(caller, excerpt, exact_caller) in &callers[at] {
+                let excerpt_digest = if graph.reference_owners.is_some()
+                    && file.language == backend_engine::SourceLanguage::TypeScript
+                {
+                    *blake3::hash(excerpt.as_bytes()).as_bytes()
+                } else {
+                    [0; 32]
+                };
                 for call in structural_excerpt_call_sites(excerpt) {
                     let Some(callee) = imported.target(&declarations[at], &call, exact_caller)
                     else {
@@ -685,6 +879,15 @@ impl ProjectCalls {
                     };
                     if caller == callee {
                         continue;
+                    }
+                    if let Some(owners) = graph.reference_owners.as_mut()
+                        && let (
+                            StructuralCallEndpoint::Binding { source: caller, .. },
+                            StructuralCallEndpoint::Binding { source: callee, .. },
+                        ) = (&graph.endpoints[caller.0], &graph.endpoints[callee.0])
+                        && owners.files.contains_key(&caller.file)
+                    {
+                        owners.record_call(*caller, *callee, excerpt_digest, call.span)?;
                     }
                     graph.outgoing.entry(caller).or_default().insert(callee);
                     graph.incoming.entry(callee).or_default().insert(caller);
@@ -860,6 +1063,53 @@ impl StructuralCallResidence {
             .collect())
     }
 
+    pub(crate) fn reference_projection<'a>(
+        &'a mut self,
+        sources: &IndexedSources,
+        package: backend_engine::PackageKey,
+    ) -> Result<
+        (
+            Vec<(&'a StructuralCallEndpoint, &'a StructuralCallEndpoint)>,
+            &'a StructuralReferenceOwners,
+        ),
+        BuiltinModelError,
+    > {
+        // Graph-only requests never retain every occurrence. References upgrade
+        // the exact cached projection once, admitting all metadata before swap.
+        let key = sources.source_snapshot.as_ref().map(|source| SourceKey {
+            workspace: source.workspace_root(),
+            package,
+        });
+        let hit = key.is_some()
+            && self.current.as_ref().is_some_and(|current| {
+                current.key == key && current.calls.reference_owners.is_some()
+            });
+        if !hit {
+            let calls = ProjectCalls::build_with_references(
+                sources,
+                package,
+                Some(MAX_STRUCTURAL_REFERENCE_METADATA_ITEMS),
+            )?;
+            self.current = Some(CachedCalls { key, calls });
+            #[cfg(test)]
+            {
+                self.builds += 1;
+            }
+        }
+        let calls = &self
+            .current
+            .as_ref()
+            .expect("projection admitted above")
+            .calls;
+        Ok((
+            calls.endpoint_pairs().collect(),
+            calls
+                .reference_owners
+                .as_ref()
+                .expect("reference metadata admitted above"),
+        ))
+    }
+
     #[cfg(test)]
     pub(crate) fn build_count(&self) -> usize {
         self.builds
@@ -870,6 +1120,79 @@ impl StructuralCallResidence {
 mod tests {
     use super::super::super::tests::{analyze_source, cross_file_sources};
     use super::*;
+
+    #[test]
+    fn reference_metadata_is_optional_and_refuses_overflow_without_truncation() -> Result<(), String>
+    {
+        use backend_engine::SourceLanguage::TypeScript;
+        let declarations = analyze_source(
+            TypeScript,
+            "calls.ts",
+            "function target() {} function caller() { target(); target(); target(); }",
+        )?;
+        let (sources, package) = cross_file_sources(&[("calls.ts", TypeScript, declarations)])?;
+        let graph = ProjectCalls::build(&sources, package).map_err(|error| error.to_string())?;
+        assert_eq!(graph.coordinate_pairs().len(), 1);
+        assert!(
+            graph.reference_owners.is_none(),
+            "graph-only queries do not retain occurrence metadata"
+        );
+        let references = ProjectCalls::build_with_references(&sources, package, Some(5))
+            .map_err(|error| error.to_string())?;
+        assert_eq!(references.coordinate_pairs(), graph.coordinate_pairs());
+        let owners = references
+            .reference_owners
+            .as_ref()
+            .ok_or("reference metadata")?;
+        assert_eq!(
+            owners.retained, 5,
+            "two captured owners plus three distinct written calls"
+        );
+        assert_eq!(
+            owners
+                .calls
+                .values()
+                .map(|calls| calls.spans.len())
+                .sum::<usize>(),
+            3
+        );
+        let error = match ProjectCalls::build_with_references(&sources, package, Some(4)) {
+            Ok(_) => {
+                return Err("overflow must refuse the complete reference projection".to_owned());
+            }
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "structural reference metadata exceeds the bounded result contract"
+        );
+        assert_eq!(
+            graph.coordinate_pairs().len(),
+            1,
+            "reference overflow cannot alter a valid enclosing graph"
+        );
+        // A project cache must admit more occurrences than one reply page,
+        // even though each individual reference response remains bounded.
+        let body = "target();".repeat(backend_engine::MAX_PRODUCT_ROWS + 1);
+        let text = format!("function target() {{}} function caller() {{{body}}}");
+        let declarations = analyze_source(TypeScript, "many.ts", &text)?;
+        let (many_sources, package) = cross_file_sources(&[("many.ts", TypeScript, declarations)])?;
+        let many = ProjectCalls::build_with_references(
+            &many_sources,
+            package,
+            Some(MAX_STRUCTURAL_REFERENCE_METADATA_ITEMS),
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(many.coordinate_pairs().len(), 1);
+        assert_eq!(
+            many.reference_owners
+                .as_ref()
+                .ok_or("large reference metadata")?
+                .retained,
+            2 + backend_engine::MAX_PRODUCT_ROWS + 1
+        );
+        Ok(())
+    }
 
     #[test]
     fn indexed_module_resolution_preserves_paths_and_ambiguity() {
