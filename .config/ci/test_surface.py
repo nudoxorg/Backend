@@ -2178,3 +2178,23 @@ finally:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SelectedCargoTargetAdmissionTests(unittest.TestCase):
+    def test_selected_receipt_requires_exact_request_and_coverage_denominator(self):
+        import copy
+        scope = {"name": "ryu", "root": "src/lib.rs", "kinds": ["lib"], "source_count": 12, "source_closure": [1] * 32}
+        detail = {"cargo_target": "ryu", "source_capture": {"cargo_target": scope, "profiles": [{"source_count": 12}]}}
+        answer = {"json": {"index_operation": {"detail": detail}}}
+        surface.require_selected_cargo_target(answer, "ryu")
+        for mutation in ("request", "capture", "count", "digest", "root"):
+            bad = copy.deepcopy(answer)
+            row = bad["json"]["index_operation"]["detail"]
+            capture = row["source_capture"]
+            if mutation == "request": row["cargo_target"] = "bench"
+            elif mutation == "capture": capture["cargo_target"]["name"] = "bench"
+            elif mutation == "count": capture["profiles"][0]["source_count"] = 13
+            elif mutation == "digest": capture["cargo_target"]["source_closure"] = [0] * 32
+            elif mutation == "root": capture["cargo_target"]["root"] = "benches/bench.rs"
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(RuntimeError, "selected Cargo target"):
+                surface.require_selected_cargo_target(bad, "ryu")

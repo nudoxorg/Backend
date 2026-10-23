@@ -435,6 +435,7 @@
         "rust"
       ],
       "index_mode": "wait",
+      "cargo_target": "ryu",
       "authored_symbols": {
         "Buffer": "src/buffer/mod.rs",
         "format_finite": "src/buffer/mod.rs"

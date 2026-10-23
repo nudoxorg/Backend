@@ -757,6 +757,24 @@ def require_completed_index(answer: dict, profile_count: int) -> str:
     return root
 
 
+def require_selected_cargo_target(answer: dict, target: str) -> None:
+    """A scoped success must disclose the exact retained semantic denominator."""
+    detail = answer["json"].get("index_operation", {}).get("detail", {})
+    capture = detail.get("source_capture", {})
+    scope = capture.get("cargo_target") or {}
+    profiles = capture.get("profiles", [])
+    if detail.get("cargo_target") != target or scope.get("name") != target:
+        raise RuntimeError("selected Cargo target: request and captured target disagree")
+    if scope.get("root") != "src/lib.rs" or scope.get("kinds") != ["lib"]:
+        raise RuntimeError("selected Cargo target: Ryu library source root/kind disagree")
+    count = scope.get("source_count")
+    digest = scope.get("source_closure")
+    if not isinstance(count, int) or count <= 0 or len(profiles) != 1 or profiles[0].get("source_count") != count:
+        raise RuntimeError("selected Cargo target: coverage denominator disagrees with closure")
+    if not isinstance(digest, list) or len(digest) != 32 or any(type(byte) is not int or not 0 <= byte <= 255 for byte in digest) or not any(digest):
+        raise RuntimeError("selected Cargo target: missing exact source closure digest")
+
+
 def require_index_identity(answer: dict, project: Path, expected: dict | None = None) -> dict:
     """Bind fresh-client observations to the exact admitted request, never just exit zero."""
     observation = (answer.get("json") or {}).get("index_operation", {})
@@ -1386,12 +1404,25 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             if case.get("index_mode", "resumable") == "resumable":
                 answer, index_times = run_resumable_index(owner, project, len(case["languages"]), timeout)
             elif case["index_mode"] == "wait":
-                answer, seconds = run_cli(owner, project, ["add", str(project), "--wait"], timeout)
+                target_args = ["--cargo-target", case["cargo_target"]] if case.get("cargo_target") else []
+                answer, seconds = run_cli(owner, project, ["add", str(project), *target_args, "--wait"], timeout)
                 require_completed_index(answer, len(case["languages"]))
                 index_times = {"cli add": round(seconds, 2)}
             else:
                 raise RuntimeError(f"unknown index mode: {case['index_mode']}")
             published_root = require_completed_index(answer, len(case["languages"]))
+            if case.get("cargo_target"):
+                require_selected_cargo_target(answer, case["cargo_target"])
+                operation = answer["json"]["index_operation"]["detail"]
+                session, _ = run_mcp(owner, project, [{"tool": "backend.index_progress", "arguments": {"operation_key": operation["operation_key"]}}], 10)
+                if session["exit"] != 0 or len(session["calls"]) != 1:
+                    raise RuntimeError("selected Cargo target: MCP receipt session failed")
+                reply = session["calls"][0]["reply"]
+                body = reply.get("structuredContent", {})
+                projection = body.get("surface", {})
+                if reply.get("isError", False) or body.get("fault") is not None or projection.get("result") != "index-operation-status" or projection.get("data") != answer["json"]["index_operation"]:
+                    raise RuntimeError("selected Cargo target: CLI/MCP exact terminal receipts disagree")
+
         except Exception:
             emit_index_failure_diagnostic(owner, project)
             raise
