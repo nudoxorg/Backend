@@ -1338,22 +1338,36 @@ fn run_rust_target_operation(
 fn public_name_rows(fixture: &mut AdapterFixture, name: &str) -> Vec<backend_library::Row> {
     let (adapter, daemon) = fixture.parts();
     let library = daemon.engine().daemon().library();
+    let root = library.revision_root();
     let command = Command::Name(backend_library::NameQuery::new(
         name,
-        library.revision_root(),
+        root,
         backend_library::QueryLimit::new(10).expect("bounded name result"),
     ));
-    // A root-bearing public request needs the real producer's canonical
-    // preimages, not only the digest copied into NameQuery. Revision is the
-    // supported producer path for this exact immutable catalog root.
+    // Product views use their actual owner's certificate producer, rather
+    // than the catalog's optional built-in library-source certificate.
     let revision_request = backend_engine::CommandDto::new(0xb92, Command::Revision);
-    let revision = library.execute_dto(revision_request.clone());
+    let revision_body =
+        serde_json::to_vec(&revision_request).expect("actual owner revision request DTO");
+    let revision_bytes = adapter
+        .execute(daemon, &revision_body)
+        .expect("revision through the real product owner transport");
+    let revision = backend_engine::decode_reply_dto(&revision_bytes)
+        .expect("strict real product revision reply");
     backend_library::admit_reply(&revision_request, &revision)
         .expect("producer revision receipt admission");
+    let CommandReply::Revision(receipt) = &revision.reply else {
+        panic!("the real product owner returns a revision receipt");
+    };
+    assert_eq!(
+        receipt.root(),
+        root,
+        "certificate binds the original name-query root"
+    );
     let certificate = revision
         .certificate()
         .cloned()
-        .expect("real catalog revision producer certificate");
+        .expect("real product revision producer certificate");
     let dto = backend_engine::CommandDto::new(0xb93, command).with_certificate(certificate);
     let body = serde_json::to_vec(&dto).expect("actual certified public name query DTO");
     let Executed::Reply(bytes) = adapter
@@ -1368,6 +1382,22 @@ fn public_name_rows(fixture: &mut AdapterFixture, name: &str) -> Vec<backend_lib
         panic!("public name query returns admitted rows");
     };
     snapshot.root.row_refs().cloned().collect()
+}
+
+#[test]
+fn public_name_fixture_bootstraps_certificate_through_real_product_owner() {
+    let mut fixture = AdapterFixture::open(TempTree::new(), false);
+    let before = {
+        let (_, daemon) = fixture.parts();
+        daemon.engine().daemon().library().revision_root()
+    };
+    assert!(public_name_rows(&mut fixture, "absent_certificate_fixture_marker").is_empty());
+    let (_, daemon) = fixture.parts();
+    assert_eq!(
+        daemon.engine().daemon().library().revision_root(),
+        before,
+        "certified revision and name reads cannot change the product root"
+    );
 }
 
 fn run_unselected_rust_operation(
