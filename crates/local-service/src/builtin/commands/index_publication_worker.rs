@@ -1528,7 +1528,19 @@ impl PublicationWorker {
                             }
                             #[cfg(test)]
                             returned.observed.phase("retire-original-payloads");
-                            drop((returned, retired));
+                            if let Some(progress) = returned.source_observation.clone() {
+                                // Keep the tuple's original left-to-right destruction
+                                // order. The opt-in observer owns no publication
+                                // capability and distinguishes destruction from the
+                                // owner's subsequent join/poll interval.
+                                progress.phase("retire-returned-work");
+                                drop(returned);
+                                progress.phase("retire-prior-read-payloads");
+                                drop(retired);
+                                progress.phase("retirement-complete");
+                            } else {
+                                drop((returned, retired));
+                            }
                             return;
                         }
                         Err(_) => return,
