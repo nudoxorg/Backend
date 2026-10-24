@@ -61,8 +61,10 @@ impl LocalSearchLane {
                         self.failure = None;
                     } else {
                         self.retired = Some(index);
-                        self.failure = Some((active.root,
-                            "local declaration preparation changed its exact target".to_owned()));
+                        self.failure = Some((
+                            active.root,
+                            "local declaration preparation changed its exact target".to_owned(),
+                        ));
                     }
                 }
                 Ok(Err(error)) => self.failure = Some((active.root, error)),
@@ -152,7 +154,7 @@ impl LocalSearchLane {
                     }
                 }
                 let result = catch_unwind(AssertUnwindSafe(|| {
-                    LocalDeclarationSearchIndex::build_controlled(&view, Some(&control))
+                    LocalDeclarationSearchIndex::build_immutable_controlled(&view, Some(&control))
                 }))
                 .unwrap_or_else(|_| {
                     Err("local declaration preparation worker panicked".to_owned())
