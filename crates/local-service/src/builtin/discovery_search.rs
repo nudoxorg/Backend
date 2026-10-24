@@ -1756,7 +1756,7 @@ impl LineageSearchIndex {
         let facet_value_limit = self.facet_value_limit();
         if !self.releases.contains_key(key) {
             self.oversized_lineages.remove(&group_sort_key);
-            self.inner.remove_document(&group_sort_key);
+            self.inner.remove_document(&group_sort_key)?;
             return Ok(());
         }
         if self
@@ -2423,7 +2423,7 @@ impl DiscoverySearchIndex {
         }
         let forge_release_fingerprint = forge_documents_fingerprint(&next)?;
         for identity in &removed {
-            self.inner.remove_document(identity);
+            self.inner.remove_document(identity)?;
         }
         self.lineages.remove_batch(removed)?;
         let mut lineage_changes = Vec::with_capacity(changed.len());
@@ -2475,7 +2475,7 @@ impl DiscoverySearchIndex {
             self.source_pins = rebuild_forge_source_pin_index(&next)?;
         } else {
             for identity in &removed {
-                self.source_pins.remove_document(identity);
+                self.source_pins.remove_document(identity)?;
             }
             for (identity, document) in changed {
                 add_or_replace_forge_source_pin(&mut self.source_pins, identity, document)?;
@@ -3172,19 +3172,13 @@ impl LocalDeclarationSearchIndex {
             }
             let result = match delta.delta() {
                 ViewDelta::Upsert { row } => self.upsert_row(row),
-                ViewDelta::Remove { id } => {
-                    self.remove_row(*id);
-                    Ok(())
-                }
+                ViewDelta::Remove { id } => self.remove_row(*id),
                 ViewDelta::Patch { changes } => {
                     let mut result = Ok(());
                     for change in changes.iter() {
                         result = match change {
                             RowChange::Upsert(row) => self.upsert_row(row),
-                            RowChange::Remove(id) => {
-                                self.remove_row(*id);
-                                Ok(())
-                            }
+                            RowChange::Remove(id) => self.remove_row(*id),
                         };
                         if result.is_err() {
                             break;
@@ -3271,8 +3265,8 @@ impl LocalDeclarationSearchIndex {
             .external_inner
             .as_mut()
             .ok_or_else(|| "external declaration writer disappeared".to_owned())?;
-        inner.remove_document(&identity);
-        external_inner.remove_document(&identity);
+        inner.remove_document(&identity)?;
+        external_inner.remove_document(&identity)?;
         if !matches!(row.id, RowId::Symbol(_)) {
             return Ok(());
         }
@@ -3293,13 +3287,14 @@ impl LocalDeclarationSearchIndex {
         )
     }
 
-    fn remove_row(&mut self, id: RowId) {
+    fn remove_row(&mut self, id: RowId) -> Result<(), String> {
         if let Some(inner) = self.inner.as_mut() {
-            inner.remove_document(&id.stable_key());
+            inner.remove_document(&id.stable_key())?;
         }
         if let Some(inner) = self.external_inner.as_mut() {
-            inner.remove_document(&id.stable_key());
+            inner.remove_document(&id.stable_key())?;
         }
+        Ok(())
     }
 
     fn rebuild(&mut self, view: &ViewRoot) -> Result<(), String> {
@@ -3396,7 +3391,7 @@ fn local_search_text(row: &Row) -> SearchDocumentText<'_> {
 
 pub(super) struct TextSearchIndex<K> {
     _index: Index,
-    writer: Option<IndexWriter>,
+    writer: WriterState,
     reader: IndexReader,
     exact_coordinate: Field,
     exact_name: Field,
@@ -3419,6 +3414,17 @@ pub(super) struct TextSearchIndex<K> {
     substring_values: BTreeMap<String, Vec<String>>,
     local_source_paths: BTreeMap<String, String>,
     dirty: bool,
+}
+
+enum WriterState {
+    /// The index is rebuilt from an existing immutable posting list. Metadata
+    /// is reconstructed for authority checks, but no writer may be opened.
+    ReadOnly,
+    /// This index may be updated, but has not needed an IndexWriter yet.
+    WriteEligibleIdle { writer_memory_bytes: usize },
+    /// The first actual posting mutation opened this writer. It remains open
+    /// across commits so later delta batches preserve the existing update path.
+    Open(IndexWriter),
 }
 
 /// Positional Unicode grams shared by prose and separately admitted source paths.
@@ -5186,13 +5192,11 @@ impl<K: Clone> TextSearchIndex<K> {
             return Err("persisted discovery Tantivy schema is incompatible".to_owned());
         }
         let writer = if mode.writes_postings() {
-            Some(
-                index
-                    .writer_with_num_threads(1, writer_memory_bytes)
-                    .map_err(|error| error.to_string())?,
-            )
+            WriterState::WriteEligibleIdle {
+                writer_memory_bytes,
+            }
         } else {
-            None
+            WriterState::ReadOnly
         };
         let reader = index.reader().map_err(|error| error.to_string())?;
         Ok(Self {
@@ -5286,7 +5290,7 @@ impl<K: Clone> TextSearchIndex<K> {
             substring_generic: true,
             ..SearchDocumentText::default()
         };
-        self.remove_document(&identity);
+        self.remove_document(&identity)?;
         self.insert_document(identity, key, coordinate, name, search_text, None, sort_key)
     }
 
@@ -5305,7 +5309,7 @@ impl<K: Clone> TextSearchIndex<K> {
             substring_generic: true,
             ..SearchDocumentText::default()
         };
-        self.remove_document(&identity);
+        self.remove_document(&identity)?;
         self.insert_document(
             identity,
             key,
@@ -5347,7 +5351,7 @@ impl<K: Clone> TextSearchIndex<K> {
         ecosystem: &str,
         sort_key: String,
     ) -> Result<(), String> {
-        self.remove_document(&identity);
+        self.remove_document(&identity)?;
         self.insert_document(
             identity,
             key,
@@ -5374,6 +5378,10 @@ impl<K: Clone> TextSearchIndex<K> {
         }
         if self.identities.contains_key(&identity) {
             return Err("duplicate document identity in Tantivy projection".to_owned());
+        }
+        let writes_postings = !matches!(&self.writer, WriterState::ReadOnly);
+        if writes_postings {
+            self.ensure_writer()?;
         }
         let coordinate = normalize(coordinate);
         let name = normalize(name);
@@ -5438,13 +5446,17 @@ impl<K: Clone> TextSearchIndex<K> {
         self.substring
             .add(&mut document, substring_values.iter().map(String::as_str));
         substring_values.retain(|field| !field.is_empty());
-        self.dirty = true;
-        if let Some(writer) = self.writer.as_mut() {
-            writer
-                .add_document(document)
-                .map_err(|error| error.to_string())?;
-        } else {
-            self.dirty = false;
+        match &mut self.writer {
+            WriterState::Open(writer) => {
+                self.dirty = true;
+                writer
+                    .add_document(document)
+                    .map_err(|error| error.to_string())?;
+            }
+            WriterState::ReadOnly => self.dirty = false,
+            WriterState::WriteEligibleIdle { .. } => {
+                return Err("writable discovery index failed to open its writer".to_owned());
+            }
         }
         self.identities.insert(identity, sort_key.clone());
         self.standings.insert(sort_key.clone(), standing);
@@ -5454,18 +5466,56 @@ impl<K: Clone> TextSearchIndex<K> {
         Ok(())
     }
 
-    fn remove_document(&mut self, identity: &str) {
+    fn remove_document(&mut self, identity: &str) -> Result<(), String> {
+        if !self.identities.contains_key(identity) {
+            return Ok(());
+        }
+        match &self.writer {
+            WriterState::ReadOnly => {
+                // Preserve OpenAt's metadata-only reconstruction contract;
+                // this branch never creates a writer or changes postings.
+                self.remove_document_metadata(identity);
+                return Ok(());
+            }
+            WriterState::WriteEligibleIdle { .. } => self.ensure_writer()?,
+            WriterState::Open(_) => {}
+        }
+        self.remove_document_metadata(identity);
+        Ok(())
+    }
+
+    fn remove_document_metadata(&mut self, identity: &str) {
         let Some(sort_key) = self.identities.remove(identity) else {
             return;
         };
-        if let Some(writer) = self.writer.as_mut() {
+        if let WriterState::Open(writer) = &mut self.writer {
             writer.delete_term(Term::from_field_text(self.document_identity, identity));
         }
         self.keys.remove(&sort_key);
         self.standings.remove(&sort_key);
         self.substring_values.remove(&sort_key);
         self.local_source_paths.remove(&sort_key);
-        self.dirty = self.writer.is_some();
+        self.dirty = matches!(&self.writer, WriterState::Open(_));
+    }
+
+    fn ensure_writer(&mut self) -> Result<(), String> {
+        let writer_memory_bytes = match &self.writer {
+            WriterState::ReadOnly => {
+                return Err(
+                    "read-only discovery Tantivy index cannot accept postings writes".to_owned(),
+                );
+            }
+            WriterState::WriteEligibleIdle {
+                writer_memory_bytes,
+            } => *writer_memory_bytes,
+            WriterState::Open(_) => return Ok(()),
+        };
+        let writer = self
+            ._index
+            .writer_with_num_threads(1, writer_memory_bytes)
+            .map_err(|error| error.to_string())?;
+        self.writer = WriterState::Open(writer);
+        Ok(())
     }
 
     fn contains_substring(&self, sort_key: &str, needle: &str) -> bool {
@@ -5483,10 +5533,11 @@ impl<K: Clone> TextSearchIndex<K> {
         if !self.dirty {
             return Ok(());
         }
-        if let Some(writer) = self.writer.as_mut() {
-            writer.commit().map_err(|error| error.to_string())?;
-            self.reader.reload().map_err(|error| error.to_string())?;
-        }
+        let WriterState::Open(writer) = &mut self.writer else {
+            return Err("dirty discovery Tantivy index has no postings writer".to_owned());
+        };
+        writer.commit().map_err(|error| error.to_string())?;
+        self.reader.reload().map_err(|error| error.to_string())?;
         self.dirty = false;
         Ok(())
     }
@@ -8206,7 +8257,10 @@ mod tests {
         let removed_key = key(cargo, "pkg:cargo/widget-b@9999.9.9");
         let removed_identity =
             discovery_sort_key(&removed_key.source, removed_key.coordinate.as_str());
-        index.inner.remove_document(&removed_identity);
+        index
+            .inner
+            .remove_document(&removed_identity)
+            .expect("remove release posting");
         index.inner.commit().expect("commit release delete");
         index
             .lineages
@@ -9869,7 +9923,9 @@ mod tests {
                 replacement_sort.clone(),
             )
             .expect("replace first row");
-        index.remove_document(&second_identity);
+        index
+            .remove_document(&second_identity)
+            .expect("remove second document");
         index.commit().expect("delta commit");
         let current = vec![(
             "one".to_owned(),
@@ -10786,7 +10842,9 @@ mod tests {
         }
         for ordinal in CHANGED..CHANGED * 2 {
             let identity = format!("symbol:{ordinal:05}");
-            index.remove_document(&identity);
+            index
+                .remove_document(&identity)
+                .expect("remove changed document");
             rows[ordinal] = (String::new(), String::new(), String::new(), String::new());
         }
         index.commit().expect("delta commit");
@@ -10827,5 +10885,324 @@ mod tests {
 
     fn local_test_sort_key(coordinate: &str, identity: &str) -> String {
         format!("{}\u{1f}{identity}", normalize(coordinate))
+    }
+}
+
+#[cfg(test)]
+mod lazy_writer_tests {
+    use super::*;
+
+    fn hit_keys<K>(hits: Vec<SearchHit<K>>) -> Vec<K> {
+        hits.into_iter().map(|hit| hit.key).collect()
+    }
+
+    #[test]
+    fn external_local_search_writer_is_lazy_and_reinsert_matches_cold_pages() {
+        fn external_row(view: &ViewRoot, suffix: &str, signature: &str) -> Row {
+            let label = format!("fixture::external::symbol:{suffix}");
+            Row::new(
+                RowId::Symbol(backend_engine::symbol_key(&label)),
+                view.basis(),
+                label,
+            )
+            .with_signature(signature)
+        }
+
+        fn external_pages(index: &LocalDeclarationSearchIndex, query: &str) -> Vec<RowId> {
+            let mut cursor = None;
+            let mut hits = Vec::new();
+            for _ in 0..8 {
+                let page = index
+                    .page_external_after(query, 1, cursor.as_ref())
+                    .expect("bounded external page");
+                hits.extend(hit_keys(page.hits));
+                cursor = page.next_cursor;
+                if cursor.is_none() {
+                    return hits;
+                }
+            }
+            panic!("external page walk did not complete: {query}");
+        }
+
+        let (base, _) = super::super::initial_view().expect("initial view");
+        let capability = super::super::test_builtin_view_capability().expect("view capability");
+        let mut local = LocalDeclarationSearchIndex::default();
+        local.sync(&base).expect("empty local projection");
+        let inner = local.inner.as_ref().expect("local search index");
+        let external = local
+            .external_inner
+            .as_ref()
+            .expect("external search index");
+        assert!(matches!(
+            &inner.writer,
+            WriterState::WriteEligibleIdle {
+                writer_memory_bytes: WRITER_MEMORY_BYTES
+            }
+        ));
+        assert!(matches!(
+            &external.writer,
+            WriterState::WriteEligibleIdle {
+                writer_memory_bytes: WRITER_MEMORY_BYTES
+            }
+        ));
+        local
+            .inner
+            .as_mut()
+            .expect("inner index")
+            .remove_document("no-such-document")
+            .expect("empty delete is a no-op");
+        local
+            .external_inner
+            .as_mut()
+            .expect("external index")
+            .remove_document("no-such-document")
+            .expect("empty external delete is a no-op");
+        assert!(matches!(
+            &local
+                .external_inner
+                .as_ref()
+                .expect("external index")
+                .writer,
+            WriterState::WriteEligibleIdle { .. }
+        ));
+
+        let internal = Row::new(
+            RowId::Symbol(backend_engine::symbol_key("fixture::internal")),
+            base.basis(),
+            "fixture::internal",
+        )
+        .with_signature("internalneedle");
+        let prepared = base
+            .prepare(ViewDelta::Upsert { row: internal }, capability.clone())
+            .expect("prepare ordinary internal declaration");
+        let (internal_view, internal_delta) = base
+            .commit(prepared)
+            .expect("commit ordinary internal declaration");
+        local
+            .apply_committed_deltas(&[internal_delta])
+            .expect("index internal declaration");
+        assert!(matches!(
+            &local.inner.as_ref().expect("inner index").writer,
+            WriterState::Open(_)
+        ));
+        assert!(matches!(
+            &local
+                .external_inner
+                .as_ref()
+                .expect("external index")
+                .writer,
+            WriterState::WriteEligibleIdle {
+                writer_memory_bytes: WRITER_MEMORY_BYTES
+            }
+        ));
+
+        let first = external_row(&internal_view, "zeta", "externalneedle zeta");
+        let first_id = first.id;
+        let prepared = internal_view
+            .prepare(ViewDelta::Upsert { row: first }, capability.clone())
+            .expect("prepare first external row");
+        let (view_one, first_delta) = internal_view
+            .commit(prepared)
+            .expect("commit first external row");
+        local
+            .apply_committed_deltas(&[first_delta])
+            .expect("index first external row");
+        assert!(matches!(
+            &local.inner.as_ref().expect("inner index").writer,
+            WriterState::Open(_)
+        ));
+        assert!(matches!(
+            &local
+                .external_inner
+                .as_ref()
+                .expect("external index")
+                .writer,
+            WriterState::Open(_)
+        ));
+        assert_eq!(external_pages(&local, "externalneedle"), [first_id]);
+
+        let prepared = view_one
+            .prepare(ViewDelta::Remove { id: first_id }, capability.clone())
+            .expect("prepare external row removal");
+        let (view_two, removal) = view_one.commit(prepared).expect("commit external removal");
+        local
+            .apply_committed_deltas(&[removal])
+            .expect("remove external row");
+        assert!(external_pages(&local, "externalneedle").is_empty());
+
+        let second = external_row(&view_two, "beta", "reinsertedneedle beta");
+        let second_id = second.id;
+        let third = external_row(&view_two, "alpha", "reinsertedneedle alpha");
+        let third_id = third.id;
+        let fourth = external_row(&view_two, "gamma", "reinsertedneedle gamma");
+        let fourth_id = fourth.id;
+        let mut changes = vec![
+            RowChange::Upsert(Box::new(second)),
+            RowChange::Upsert(Box::new(third)),
+            RowChange::Upsert(Box::new(fourth)),
+        ];
+        changes.sort_by_key(RowChange::id);
+        let prepared = view_two
+            .prepare(
+                ViewDelta::Patch {
+                    changes: changes.into(),
+                },
+                capability,
+            )
+            .expect("prepare external reinsertion and siblings");
+        let (view_three, reinsertion) = view_two
+            .commit(prepared)
+            .expect("commit external reinsertion and siblings");
+        local
+            .apply_committed_deltas(&[reinsertion])
+            .expect("apply external reinsertion and siblings");
+
+        let mut cold = LocalDeclarationSearchIndex::default();
+        cold.sync(&view_three)
+            .expect("cold external comparison index");
+        for query in ["", "reinsertedneedle", "alpha", "beta", "gamma"] {
+            assert_eq!(
+                external_pages(&local, query),
+                external_pages(&cold, query),
+                "external ordered pages differ from cold build for {query:?}"
+            );
+        }
+        assert_eq!(external_pages(&local, ""), [third_id, second_id, fourth_id]);
+    }
+
+    #[test]
+    fn first_lazy_writer_failure_keeps_metadata_idle_and_retry_queries_exactly() {
+        let directory = tempfile::tempdir().expect("lazy writer lock fixture");
+        let mut index = TextSearchIndex::<String>::new_at(directory.path(), WRITER_MEMORY_BYTES)
+            .expect("empty writable index");
+        let locker = index
+            ._index
+            .writer_with_num_threads::<TantivyDocument>(1, WRITER_MEMORY_BYTES)
+            .expect("hold the real Tantivy writer lock");
+        let insert = |index: &mut TextSearchIndex<String>| {
+            index.insert_document(
+                "atomic-identity".into(),
+                "atomic-key".into(),
+                "fixture:local/atomic",
+                "atomicneedle",
+                SearchDocumentText {
+                    generic: vec!["atomicneedle"],
+                    local_source_path: Some("src/atomic.py"),
+                    ..SearchDocumentText::default()
+                },
+                None,
+                "atomic-sort-key".into(),
+            )
+        };
+        assert!(
+            insert(&mut index).is_err(),
+            "the held writer lock refuses first mutation"
+        );
+        assert!(matches!(
+            &index.writer,
+            WriterState::WriteEligibleIdle {
+                writer_memory_bytes: WRITER_MEMORY_BYTES
+            }
+        ));
+        assert!(!index.dirty);
+        assert!(index.keys.is_empty());
+        assert!(index.identities.is_empty());
+        assert!(index.standings.is_empty());
+        assert!(index.substring_values.is_empty());
+        assert!(index.local_source_paths.is_empty());
+        assert_eq!(index.reader.searcher().num_docs(), 0);
+        locker
+            .wait_merging_threads()
+            .expect("release real writer lock");
+        insert(&mut index).expect("retry the same first mutation after lock release");
+        assert!(matches!(&index.writer, WriterState::Open(_)));
+        index.commit().expect("commit retry");
+        assert_eq!(
+            hit_keys(
+                index
+                    .page("atomicneedle", 8)
+                    .expect("query committed retry")
+                    .hits
+            ),
+            ["atomic-key".to_owned()]
+        );
+    }
+
+    #[test]
+    fn reopened_local_search_index_stays_explicitly_read_only() {
+        let directory = tempfile::tempdir().expect("search index directory");
+        let mut build = TextSearchIndex::<String>::new_at(directory.path(), WRITER_MEMORY_BYTES)
+            .expect("build durable local index");
+        assert!(matches!(
+            &build.writer,
+            WriterState::WriteEligibleIdle { .. }
+        ));
+        build
+            .add_document(
+                "persisted".to_owned(),
+                "fixture:local/persisted",
+                "persistedneedle",
+                ["persistedneedle"],
+                "fixture:local/persisted".to_owned(),
+            )
+            .expect("write durable document");
+        assert!(matches!(&build.writer, WriterState::Open(_)));
+        build.commit().expect("commit durable document");
+        drop(build);
+
+        let mut read_only =
+            TextSearchIndex::<String>::open_at(directory.path(), WRITER_MEMORY_BYTES)
+                .expect("open immutable local index");
+        assert!(matches!(&read_only.writer, WriterState::ReadOnly));
+        read_only
+            .add_document(
+                "persisted".to_owned(),
+                "fixture:local/persisted",
+                "persistedneedle",
+                ["persistedneedle"],
+                "fixture:local/persisted".to_owned(),
+            )
+            .expect("reconstruct read-only metadata");
+        assert!(matches!(&read_only.writer, WriterState::ReadOnly));
+        assert_eq!(
+            hit_keys(
+                read_only
+                    .page("persistedneedle", 8)
+                    .expect("persisted query")
+                    .hits
+            ),
+            ["persisted".to_owned()]
+        );
+        assert!(read_only.ensure_writer().is_err());
+        assert!(matches!(&read_only.writer, WriterState::ReadOnly));
+        let persisted_documents = read_only.reader.searcher().num_docs();
+        read_only
+            .remove_document("fixture:local/persisted")
+            .expect("read-only metadata removal remains supported");
+        assert!(read_only.identities.is_empty());
+        assert_eq!(
+            read_only.reader.searcher().num_docs(),
+            persisted_documents,
+            "metadata removal cannot delete persisted postings"
+        );
+        read_only
+            .add_document(
+                "persisted".to_owned(),
+                "fixture:local/persisted",
+                "persistedneedle",
+                ["persistedneedle"],
+                "fixture:local/persisted".to_owned(),
+            )
+            .expect("reconstruct read-only metadata after removal");
+        assert!(matches!(&read_only.writer, WriterState::ReadOnly));
+        assert_eq!(
+            hit_keys(
+                read_only
+                    .page("persistedneedle", 8)
+                    .expect("retained query")
+                    .hits
+            ),
+            ["persisted".to_owned()]
+        );
     }
 }
