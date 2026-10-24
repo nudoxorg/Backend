@@ -503,7 +503,7 @@ impl CommittedSemanticSelectionLease<'_> {
             .map_err(|error| {
                 BuiltinModelError(format!("reopen committed semantic metadata: {error}"))
             })?;
-        let (claim, _) = reopen_record(&self.authority.store, &self.selected)?;
+        let (claim, _) = reopen_record_from_metadata(&self.selected, &reopened)?;
         if claim != self.claim {
             return Err(BuiltinModelError(
                 "committed semantic claim differs from its retained closure".to_owned(),
@@ -1921,7 +1921,7 @@ impl SemanticAuthority {
             reopen_selected_compiler_metadata(&self.store, &selected).map_err(|error| {
                 BuiltinModelError(format!("reopen committed semantic metadata: {error}"))
             })?;
-        let (claim, _) = reopen_record(&self.store, &selected)?;
+        let (claim, _) = reopen_record_from_metadata(&selected, &reopened)?;
         if claim != expected {
             return Err(BuiltinModelError(
                 "committed semantic claim differs from its retained closure".to_owned(),
@@ -2296,15 +2296,15 @@ impl SemanticAuthority {
         selected: &SelectedGeneration,
         image: backend_semantic::ir::SemanticPlaneImageKey,
     ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
-        let (actual_claim, _) = reopen_record(store, selected)?;
+        let reopened = reopen_selected_compiler_metadata(store, selected).map_err(|error| {
+            BuiltinModelError(format!("reopen selected semantic history: {error}"))
+        })?;
+        let (actual_claim, _) = reopen_record_from_metadata(selected, &reopened)?;
         if actual_claim != expected_claim {
             return Err(BuiltinModelError(
                 "committed native image claim differs from its retained closure".to_owned(),
             ));
         }
-        let reopened = reopen_selected_compiler_metadata(store, selected).map_err(|error| {
-            BuiltinModelError(format!("reopen committed native image metadata: {error}"))
-        })?;
         if !reopened.envelope().matches_selected(selected) {
             return Err(BuiltinModelError(
                 "committed native image envelope differs from its retained selection".to_owned(),
@@ -2352,15 +2352,15 @@ impl SemanticAuthority {
         expected_claim: SemanticPublicationClaim,
         selected: &SelectedGeneration,
     ) -> Result<super::versioned_planes::SelectedVersionedPlanePublication, BuiltinModelError> {
-        let (actual_claim, _) = reopen_record(store, selected)?;
+        let reopened = reopen_selected_compiler_metadata(store, selected).map_err(|error| {
+            BuiltinModelError(format!("reopen selected semantic history: {error}"))
+        })?;
+        let (actual_claim, _) = reopen_record_from_metadata(selected, &reopened)?;
         if actual_claim != expected_claim {
             return Err(BuiltinModelError(
                 "committed semantic claim differs from its retained closure".to_owned(),
             ));
         }
-        let reopened = reopen_selected_compiler_metadata(store, selected).map_err(|error| {
-            BuiltinModelError(format!("reopen committed semantic metadata: {error}"))
-        })?;
         super::versioned_planes::SelectedVersionedPlanePublication::from_reopened(
             key, selected, &reopened,
         )
@@ -2447,15 +2447,15 @@ impl SemanticAuthority {
         selected: &SelectedGeneration,
         stamp: backend_replication::SelectedGenerationStamp,
     ) -> Result<super::selected_full_image::SelectedFullImagePlan, BuiltinModelError> {
-        let (actual_claim, _) = reopen_record(store, selected)?;
+        let reopened = reopen_selected_compiler_metadata(store, selected).map_err(|error| {
+            BuiltinModelError(format!("reopen selected semantic history: {error}"))
+        })?;
+        let (actual_claim, _) = reopen_record_from_metadata(selected, &reopened)?;
         if actual_claim != expected_claim {
             return Err(BuiltinModelError(
                 "selected full image claim differs from the committed product root".to_owned(),
             ));
         }
-        let reopened = reopen_selected_compiler_metadata(store, selected).map_err(|error| {
-            BuiltinModelError(format!("reopen committed semantic metadata: {error}"))
-        })?;
         let publication =
             super::versioned_planes::SelectedVersionedPlanePublication::from_reopened(
                 key, selected, &reopened,
