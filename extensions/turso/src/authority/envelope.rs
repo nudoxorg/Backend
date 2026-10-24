@@ -3186,14 +3186,15 @@ mod tests {
             CompilerPublicationEnvelope::new(&attempt, &metadata).expect("selected envelope");
         let metadata_object = metadata.typed_object();
         let envelope_object = envelope.typed_object();
-        let closure = ClosureManifest::new(vec![
+        let mut closure_objects = vec![
             image_object,
             program_object,
             certificate_object.clone(),
             metadata_object,
             envelope_object,
-        ])
-        .expect("complete selected closure");
+        ];
+        closure_objects.sort_by_key(|object| (object.schema(), *object.key(), *object.version()));
+        let closure = ClosureManifest::new(closure_objects).expect("complete selected closure");
         let closure_id = store.write_closure(&closure).expect("persist closure");
         let candidate = envelope
             .candidate(attempt.clone(), *closure_id.as_bytes())
