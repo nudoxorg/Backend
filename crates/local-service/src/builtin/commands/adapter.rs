@@ -461,6 +461,8 @@ struct IndexJob {
     captured_label: String,
     requested_package: backend_engine::PackageKey,
     execution_intent: CompileExecutionIntent,
+    /// Opt-in worker timeline for this exact index job; never authority.
+    observation: Option<Arc<crate::builtin::index_work_observation::IndexWorkObservation>>,
     /// Retains a verified registry tree through the full job lifetime.
     _staged_project: Option<StagedProject>,
     work: IndexJobWork,
@@ -2733,6 +2735,7 @@ impl CommandAdapter {
             profile,
             sources,
             Arc::clone(&indexing.cancelled),
+            indexing.observation.clone(),
         );
         let worker = if let Some(error) = detach_failure {
             ProfileWorker::Returned(ProfileCompletion::returned(
@@ -2888,6 +2891,11 @@ impl CommandAdapter {
                 (empty(), Preparation::Cleanup { plan, outcome })
             }
         };
+        let finalization_observation = if matches!(&preparation, Preparation::Finalize(_)) {
+            indexing.observation.clone()
+        } else {
+            None
+        };
         let base = daemon.engine().daemon().owner().snapshot();
         let mut work = Box::new(PublicationWork::new(
             None,
@@ -2912,6 +2920,7 @@ impl CommandAdapter {
             } else {
                 Arc::clone(&indexing.cancelled)
             },
+            finalization_observation,
         ));
         let reserved = self.reserve_index_phase_writers(daemon, &mut work);
         #[cfg(test)]
@@ -4396,6 +4405,7 @@ impl CommandAdapter {
             captured_label: label.clone(),
             requested_package,
             execution_intent,
+            observation: None,
             _staged_project: None,
             work: IndexJobWork::Transition,
         };
@@ -4450,6 +4460,7 @@ impl CommandAdapter {
                 )
             })
         });
+        indexing.observation = work.observation.clone();
         self.index_input_workers
             .reserve()
             .map_err(|error| BuiltinModelError(error.to_owned()))?;
@@ -10049,6 +10060,7 @@ mod tests {
             captured_label: "pkg:cargo/fixture@1.0.0".to_owned(),
             requested_package: backend_engine::package_key("pkg:cargo/fixture@1.0.0"),
             execution_intent: CompileExecutionIntent::Interactive,
+            observation: None,
             _staged_project: None,
             work: IndexJobWork::Transition,
         });

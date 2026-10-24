@@ -99,6 +99,7 @@ fn actual_work_with_queue(fixture: &mut AdapterFixture, queued: bool) -> Profile
         profile,
         sources,
         cancel,
+        None,
     )
 }
 

@@ -239,9 +239,13 @@ impl PublicationWork {
         requested_reference: backend_library::PackageReference,
         operation_key: Option<backend_library::IndexOperationKey>,
         cancellation: Arc<AtomicBool>,
+        finalization_observation: Option<
+            Arc<crate::builtin::index_work_observation::IndexWorkObservation>,
+        >,
     ) -> Self {
         let source_observation = match &preparation {
             Preparation::Source { scan, .. } => scan.observation(),
+            Preparation::Finalize(_) => finalization_observation,
             _ => None,
         };
         let source_attempts = match &preparation {
@@ -377,8 +381,15 @@ impl PublicationWork {
             let preparation = std::mem::replace(&mut self.preparation, Preparation::Consumed);
             match preparation {
                 Preparation::Finalize(job) => {
-                    let prepared =
-                        super::super::index::finish_deferred_index_for_snapshot(&self.base, job)?;
+                    if let Some(observation) = &self.source_observation {
+                        observation.phase("deferred-index-finalize-start");
+                    }
+                    let result =
+                        super::super::index::finish_deferred_index_for_snapshot(&self.base, job);
+                    if let Some(observation) = &self.source_observation {
+                        observation.phase("deferred-index-finalize-returned");
+                    }
+                    let prepared = result?;
                     self.preparation = Preparation::SourcePrepared(prepared);
                     return Ok(());
                 }

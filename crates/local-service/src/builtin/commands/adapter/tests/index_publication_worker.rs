@@ -338,6 +338,7 @@ fn start(
         captured_label: label.clone(),
         requested_package: package,
         execution_intent: CompileExecutionIntent::Interactive,
+        observation: None,
         _staged_project: None,
         work: IndexJobWork::Transition,
     };
@@ -2673,6 +2674,7 @@ fn publication_worker_removes_native_selection_after_staging() -> Result<(), Str
         captured_label: label,
         requested_package: package,
         execution_intent: CompileExecutionIntent::Interactive,
+        observation: None,
         _staged_project: None,
         work: IndexJobWork::Transition,
     };
