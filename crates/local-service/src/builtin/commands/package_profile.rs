@@ -282,7 +282,6 @@ pub(super) fn read(
                                 package: package.clone(),
                             }));
                         }
-                        let offset = requested.offset as usize;
                         let check_source = |path: &str, identity: &[u8; 32]| {
                             let file_key =
                                 backend_engine::product_source_file_key(project_key, path);
