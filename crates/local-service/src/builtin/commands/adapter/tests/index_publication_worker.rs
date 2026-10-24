@@ -58,6 +58,34 @@ fn until(
     }
 }
 
+fn until_publication_stage(
+    fixture: &mut AdapterFixture,
+    stage: &str,
+    operation: &backend_library::IndexOperationKey,
+    ticket: Option<&backend_library::IndexJobTicket>,
+) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        tick(fixture);
+        let finished = {
+            let (adapter, _) = fixture.parts();
+            adapter.indexing.is_none()
+        };
+        if finished {
+            return;
+        }
+        if Instant::now() >= deadline {
+            let state = ticket
+                .map(|ticket| after_grant_state(fixture, Some(operation.clone()), ticket))
+                .unwrap_or_else(|| {
+                    "no owner ticket was captured after the accepted start request".to_owned()
+                });
+            panic!("actual publication stage {stage} did not finish in30s; {state}");
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 fn profile_completion_state(completion: &ProfileCompletion) -> String {
     let outcome = match &completion.outcome {
         ProfileOutcome::Cancelled => "Cancelled".to_owned(),
@@ -1304,8 +1332,21 @@ fn run_rust_target_operation(
         adapter.execute_or_defer(daemon, &body, u64::from(seed)),
         Ok(Executed::Reply(_))
     ));
-    until(fixture, |adapter, _| adapter.indexing.is_none());
+    let ticket = adapter
+        .indexing
+        .as_ref()
+        .map(|job| job.owner_ticket.clone());
+    until_publication_stage(
+        fixture,
+        &format!("selected Rust target={target} operation={seed:#x}"),
+        &operation,
+        ticket.as_ref(),
+    );
     let status = keyed_status(fixture, operation);
+    eprintln!(
+        "selected Rust publication completed: target={target} operation={seed:#x} state={:?}",
+        status.state
+    );
     assert!(
         matches!(
             &status.state,
@@ -1423,13 +1464,28 @@ fn run_unselected_rust_operation(
     });
     let body = serde_json::to_vec(&backend_engine::CommandDto::new(u64::from(seed), command))
         .expect("actual package-wide Rust index DTO");
+    eprintln!("package-wide Rust publication start: operation={seed:#x}");
     let (adapter, daemon) = fixture.parts();
     assert!(matches!(
         adapter.execute_or_defer(daemon, &body, u64::from(seed)),
         Ok(Executed::Reply(_))
     ));
-    until(fixture, |adapter, _| adapter.indexing.is_none());
-    keyed_status(fixture, operation)
+    let ticket = adapter
+        .indexing
+        .as_ref()
+        .map(|job| job.owner_ticket.clone());
+    until_publication_stage(
+        fixture,
+        &format!("package-wide Rust operation={seed:#x}"),
+        &operation,
+        ticket.as_ref(),
+    );
+    let status = keyed_status(fixture, operation);
+    eprintln!(
+        "package-wide Rust publication completed: operation={seed:#x} state={:?}",
+        status.state
+    );
+    status
 }
 
 #[test]
