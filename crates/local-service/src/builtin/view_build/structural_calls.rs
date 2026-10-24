@@ -157,11 +157,10 @@ struct FileFacts<'a> {
 #[derive(Default)]
 struct FileDeclarations<'a> {
     require_exact_imports: bool,
-    scope_parents: BTreeMap<backend_compile::SourceBinding, Option<backend_compile::SourceBinding>>,
-    parameter_names: BTreeMap<backend_compile::SourceBinding, BTreeSet<String>>,
-    unknown_parameters: BTreeSet<backend_compile::SourceBinding>,
-    scoped_names:
-        BTreeMap<&'a str, BTreeMap<Option<backend_compile::SourceBinding>, ScopedCallName>>,
+    scope_parents: BTreeMap<SourceBinding, Option<SourceBinding>>,
+    parameter_names: BTreeMap<SourceBinding, BTreeSet<String>>,
+    unknown_parameters: BTreeSet<SourceBinding>,
+    scoped_names: BTreeMap<&'a str, BTreeMap<Option<SourceBinding>, ScopedCallName>>,
     callable: BTreeMap<&'a str, BTreeSet<DeclarationId>>,
     methods: BTreeMap<&'a str, BTreeMap<&'a str, BTreeSet<DeclarationId>>>,
     nominal: BTreeSet<&'a str>,
@@ -171,18 +170,18 @@ struct FileDeclarations<'a> {
 struct ScopedCallName {
     bindings: usize,
     targets: BTreeSet<DeclarationId>,
-    import: Option<backend_compile::SourceBinding>,
+    import: Option<SourceBinding>,
 }
 
 enum LocalCallTarget {
     Unbound,
     Bound(DeclarationId),
-    Imported(backend_compile::SourceBinding),
+    Imported(SourceBinding),
     Unresolved,
 }
 
 impl FileDeclarations<'_> {
-    fn parameter_shadows(&self, caller: backend_compile::SourceBinding, name: &str) -> bool {
+    fn parameter_shadows(&self, caller: SourceBinding, name: &str) -> bool {
         let mut scope = Some(caller);
         for _ in 0..256 {
             let Some(binding) = scope else { return false; };
@@ -203,7 +202,7 @@ impl FileDeclarations<'_> {
     /// The nearest captured lexical scope that binds this name wins. An
     /// observed noncallable/ambiguous binding shadows farther declarations and
     /// imports. This remains syntactic evidence, not checker resolution.
-    fn scoped_target(&self, caller: backend_compile::SourceBinding, name: &str) -> LocalCallTarget {
+    fn scoped_target(&self, caller: SourceBinding, name: &str) -> LocalCallTarget {
         let Some(scopes) = self.scoped_names.get(name) else {
             return LocalCallTarget::Unbound;
         };
@@ -242,15 +241,15 @@ struct ImportedCalls {
     // Name-only resolution belongs to legacy imports. Exact imports must be
     // selected through the nearest captured lexical binding first.
     unqualified: BTreeMap<String, BTreeSet<DeclarationId>>,
-    exact_unqualified: BTreeMap<backend_compile::SourceBinding, BTreeSet<DeclarationId>>,
-    exact_members: BTreeMap<backend_compile::SourceBinding, BTreeMap<String, BTreeSet<DeclarationId>>>,
+    exact_unqualified: BTreeMap<SourceBinding, BTreeSet<DeclarationId>>,
+    exact_members: BTreeMap<SourceBinding, BTreeMap<String, BTreeSet<DeclarationId>>>,
     qualified: BTreeMap<String, BTreeMap<String, BTreeSet<DeclarationId>>>,
     classes: BTreeMap<String, BTreeMap<String, BTreeSet<DeclarationId>>>,
 }
 
 impl ImportedCalls {
     fn join(
-        imports: impl Iterator<Item = (ImportBinding, Option<backend_compile::SourceBinding>)>,
+        imports: impl Iterator<Item = (ImportBinding, Option<SourceBinding>)>,
         path: &str,
         modules: &ModuleIndex<'_>,
         files: &[FileDeclarations<'_>],
@@ -328,7 +327,7 @@ impl ImportedCalls {
         &self,
         local: &FileDeclarations<'_>,
         call: &CallSite,
-        exact_caller: Option<backend_compile::SourceBinding>,
+        exact_caller: Option<SourceBinding>,
     ) -> Option<DeclarationId> {
         let written_binding = match &call.receiver {
             CallReceiver::Bare => Some(call.name.as_str()),
@@ -412,7 +411,7 @@ fn unique_target(mut targets: impl Iterator<Item = DeclarationId>) -> Option<Dec
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct StructuralCallBinding {
     pub(crate) file: [u8; 32],
-    pub(crate) binding: backend_compile::SourceBinding,
+    pub(crate) binding: SourceBinding,
 }
 
 /// Call endpoints retain their authority precision. Exact row IDs come from
@@ -453,7 +452,7 @@ struct CapturedCallSpans {
 
 struct ReferenceOwner {
     capture: backend_compile::SourceBindingCapture,
-    parent: Option<backend_compile::SourceBinding>,
+    parent: Option<SourceBinding>,
     callable: bool,
     endpoint: StructuralCallEndpoint,
 }
@@ -464,7 +463,7 @@ struct ReferenceOwner {
 #[derive(Default)]
 struct ReferenceFileOwners {
     owners: Vec<ReferenceOwner>,
-    by_binding: BTreeMap<backend_compile::SourceBinding, usize>,
+    by_binding: BTreeMap<SourceBinding, usize>,
     leaf_base: usize,
     max_end: Vec<u32>,
 }
@@ -801,10 +800,10 @@ impl ProjectCalls {
                 .declarations
                 .iter()
                 .filter_map(|owner| match owner.binding_identity() {
-                    backend_compile::SourceBindingIdentity::Exact(binding) => {
+                    SourceBindingIdentity::Exact(binding) => {
                         Some((binding.binding(), owner.name()))
                     }
-                    backend_compile::SourceBindingIdentity::Legacy => None,
+                    SourceBindingIdentity::Legacy => None,
                 })
                 .collect::<BTreeMap<_, _>>();
             for (index, declaration) in file.declarations.iter().enumerate() {
@@ -812,11 +811,10 @@ impl ProjectCalls {
                     lookup.nominal.insert(declaration.name());
                 }
                 let exact_scope = match (declaration.binding_identity(), declaration.container()) {
-                    (
-                        backend_compile::SourceBindingIdentity::Exact(capture),
-                        Container::Binding { binding },
-                    ) => Some((capture.binding(), Some(*binding))),
-                    (backend_compile::SourceBindingIdentity::Exact(capture), Container::Module) => {
+                    (SourceBindingIdentity::Exact(capture), Container::Binding { binding }) => {
+                        Some((capture.binding(), Some(*binding)))
+                    }
+                    (SourceBindingIdentity::Exact(capture), Container::Module) => {
                         Some((capture.binding(), None))
                     }
                     _ => None,
@@ -830,9 +828,9 @@ impl ProjectCalls {
                 let lexical_scope = exact_scope.filter(|_| {
                     file.language != backend_engine::SourceLanguage::TypeScript
                         || !matches!(declaration.kind(),
-                            backend_compile::DeclarationKind::Method
-                                | backend_compile::DeclarationKind::Field
-                                | backend_compile::DeclarationKind::Property)
+                            DeclarationKind::Method
+                                | DeclarationKind::Field
+                                | DeclarationKind::Property)
                 });
                 if let Some((binding, scope)) = lexical_scope {
                     let name = lookup
@@ -848,8 +846,7 @@ impl ProjectCalls {
                 }
                 if let Some(owners) = graph.reference_owners.as_mut()
                     && file.language == backend_engine::SourceLanguage::TypeScript
-                    && let backend_compile::SourceBindingIdentity::Exact(capture) =
-                        declaration.binding_identity()
+                    && let SourceBindingIdentity::Exact(capture) = declaration.binding_identity()
                     && let Some((_, parent)) = exact_scope
                 {
                     let prepared = plan.declaration(file.key, index)?;
@@ -883,14 +880,14 @@ impl ProjectCalls {
                     let parameters = if declaration.source_excerpt().extent()
                         == Some(backend_compile::SourceExcerptExtent::Complete) {
                         declaration.source_excerpt().text().and_then(|excerpt|
-                            ts_parameters.as_ref()?.callable_parameter_names(std::path::Path::new(file.path), declaration.kind(), excerpt).ok().flatten())
+                            ts_parameters.as_ref()?.callable_parameter_names(Path::new(file.path), declaration.kind(), excerpt).ok().flatten())
                     } else { None };
                     if let Some(names) = parameters { lookup.parameter_names.insert(binding, names); }
                     else { lookup.unknown_parameters.insert(binding); }
                 }
                 let prepared = plan.declaration(file.key, index)?;
                 let id = match declaration.binding_identity() {
-                    backend_compile::SourceBindingIdentity::Exact(capture) => {
+                    SourceBindingIdentity::Exact(capture) => {
                         let source = StructuralCallBinding {
                             file: file.key,
                             binding: capture.binding(),
@@ -913,7 +910,7 @@ impl ProjectCalls {
                             id
                         }
                     }
-                    backend_compile::SourceBindingIdentity::Legacy => {
+                    SourceBindingIdentity::Legacy => {
                         if let Some(&id) = graph.by_coordinate.get(&prepared.coordinate) {
                             id
                         } else {
@@ -985,10 +982,8 @@ impl ProjectCalls {
                 file.declarations.iter().filter_map(|declaration| {
                     let import = parse_import_binding(declaration)?;
                     let binding = match declaration.binding_identity() {
-                        backend_compile::SourceBindingIdentity::Exact(capture) => {
-                            Some(capture.binding())
-                        }
-                        backend_compile::SourceBindingIdentity::Legacy => None,
+                        SourceBindingIdentity::Exact(capture) => Some(capture.binding()),
+                        SourceBindingIdentity::Legacy => None,
                     };
                     Some((import, binding))
                 }),
@@ -1270,9 +1265,7 @@ mod tests {
         let mut owners = StructuralReferenceOwners::new(MAX_STRUCTURAL_REFERENCE_METADATA_ITEMS);
         let mut index = ReferenceFileOwners::default();
         for declaration in declarations.iter() {
-            let backend_compile::SourceBindingIdentity::Exact(capture) =
-                declaration.binding_identity()
-            else {
+            let SourceBindingIdentity::Exact(capture) = declaration.binding_identity() else {
                 continue;
             };
             let parent = match declaration.container() {
@@ -1355,7 +1348,7 @@ mod tests {
             .expect("nonempty test capture");
         ReferenceOwner {
             capture,
-            parent: parent.and_then(|start| backend_compile::SourceBinding::new(start, start + 1)),
+            parent: parent.and_then(|start| SourceBinding::new(start, start + 1)),
             callable,
             endpoint: StructuralCallEndpoint::Binding {
                 source: StructuralCallBinding {

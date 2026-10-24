@@ -74,8 +74,8 @@ impl CoverageResidence {
         let value = load()?.map(Arc::new);
         // Include bounded LRU node/key/Arc/hash-table slack, not just payload paths.
         let bytes = value.as_ref().map_or(0, |value| value.retained_bytes())
-            + std::mem::size_of::<CoverageSelection>()
-            + std::mem::size_of::<Resident>()
+            + size_of::<CoverageSelection>()
+            + size_of::<Resident>()
             + 1024;
         if bytes.saturating_add(1024) > MAX_BYTES {
             return Err(BuiltinModelError(

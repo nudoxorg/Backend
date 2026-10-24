@@ -234,9 +234,7 @@ impl ProfileWorker {
 
     pub(super) fn spawn_with(
         work: ProfileWork,
-        spawn: impl FnOnce(
-            std::sync::mpsc::Receiver<ProfileWork>,
-        ) -> std::io::Result<JoinHandle<ProfileCompletion>>,
+        spawn: impl FnOnce(Receiver<ProfileWork>) -> std::io::Result<JoinHandle<ProfileCompletion>>,
     ) -> Result<Self, (ProfileWork, std::io::Error)> {
         // No authority enters the closure until spawn has succeeded. Failed
         // channel transfer returns the exact work rather than dropping it.

@@ -943,7 +943,7 @@ pub(crate) fn foreign_package_call_retarget(
     if foreign.kind == Some(ItemKind::Record)
         && matches!(
             image.image_facts().provenance,
-            backend_semantic::ir::ImageProvenance::Captured { recipe, .. }
+            ImageProvenance::Captured { recipe, .. }
                 if matches!(recipe.profile, backend_semantic::vocabulary::LanguageProfile::Python(_))
         )
     {
@@ -3078,7 +3078,7 @@ mod python_native_call_tests {
         // A captured unrelated language may have partial declaration authority;
         // its recipe still proves that it is outside the Python source frontier.
         let ts_source = "class AppService { getHello(): string { return ''; } }";
-        let (ts_bytes, _) = super::tsz_source_coordinate_tests::source_image_with_capture(
+        let (ts_bytes, _) = tsz_source_coordinate_tests::source_image_with_capture(
             "src/service.ts",
             ts_source,
             71,
@@ -3096,7 +3096,7 @@ mod python_native_call_tests {
         assert!(index.python_program_identity.is_some());
         // Unavailable provenance has neither a source path nor a language
         // recipe. The index must refuse it rather than guess from a suffix.
-        let (unavailable_bytes, _) = super::tsz_source_coordinate_tests::source_image_with_capture(
+        let (unavailable_bytes, _) = tsz_source_coordinate_tests::source_image_with_capture(
             "src/service.ts",
             ts_source,
             72,

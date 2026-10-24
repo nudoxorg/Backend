@@ -17,12 +17,8 @@ fn product_store_registry_admits_every_persisted_product_relation() {
     for schema in [
         backend_version::SchemaIdentity::of_relation::<BuiltinWorkspaceRelation>(),
         backend_version::SchemaIdentity::of_relation::<BuiltinSemanticRelation>(),
-        backend_version::SchemaIdentity::of_relation::<
-            backend_engine::builtin::ProductSemanticCaptureRelation,
-        >(),
-        backend_version::SchemaIdentity::of_relation::<
-            backend_engine::builtin::ProductSourceFileFactsRelation,
-        >(),
+        backend_version::SchemaIdentity::of_relation::<ProductSemanticCaptureRelation>(),
+        backend_version::SchemaIdentity::of_relation::<ProductSourceFileFactsRelation>(),
     ] {
         assert!(
             registry.contains_schema(schema),
@@ -51,12 +47,8 @@ pub(super) fn open_daemon(workspace: &Path) -> super::super::ProductDaemon {
 
 fn try_open_daemon(workspace: &Path) -> Result<super::super::ProductDaemon, crate::LocaldError> {
     let profile = profile_descriptor(BuiltinProfile::Product).expect("product profile");
-    let dispatcher = super::super::builtin_dispatcher(
-        Some(super::super::ECHO_AUTHORITY_SECRET),
-        Arc::clone(&profile),
-        60_000,
-    )
-    .expect("test dispatcher");
+    let dispatcher = builtin_dispatcher(Some(ECHO_AUTHORITY_SECRET), Arc::clone(&profile), 60_000)
+        .expect("test dispatcher");
     let registry = super::super::product_relation_registry().expect("product relation registry");
     crate::Locald::open_with_dispatcher_and_registry(
         workspace,
@@ -441,7 +433,7 @@ fn resolved_frontier(
         .lookup(&project_key)
         .expect("read project row")
         .expect("project row exists");
-    super::resolve_project_file_keys(project_key, &project, |page_key| {
+    resolve_project_file_keys(project_key, &project, |page_key| {
         relation
             .lookup(page_key)
             .map_err(|error| BuiltinModelError(format!("read membership page: {error}")))
@@ -466,7 +458,7 @@ fn assert_complete_frontier(
     assert_eq!(records.len(), expected.len());
     for (key, record) in expected.iter().copied().zip(records) {
         let record = record.expect("every selected file row exists");
-        super::validate_project_file(package.to_bytes(), key, &record)
+        validate_project_file(package.to_bytes(), key, &record)
             .expect("selected file row has its exact owning project and path key");
     }
 }
@@ -1040,7 +1032,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
     let prepared_request_identity = prepared.request_identity();
     assert_ne!(
         prepared_request_identity,
-        backend_engine::WorkspaceModel::request_id(&BuiltinModel, &unbound_intent),
+        WorkspaceModel::request_id(&BuiltinModel, &unbound_intent),
         "adding the capture basis changes the canonical request identity"
     );
     super::super::commands::commit_prepared_builtin_intent(&mut daemon, 1, prepared)
@@ -1133,7 +1125,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
                     .is_empty(),
                 "the regression has no source or semantic relation delta to count"
             );
-            let actual = super::admit_persisted_intent(persisted.closure_manifest().objects())
+            let actual = admit_persisted_intent(persisted.closure_manifest().objects())
                 .expect("selected capture-only intent");
             assert!(actual.changes().is_empty());
             assert!(actual.semantic_changes().is_empty());
@@ -1321,7 +1313,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
                     .is_empty(),
                 "cold refusal recovery cannot rely on any ordinary relation delta"
             );
-            let actual = super::admit_persisted_intent(persisted.closure_manifest().objects())
+            let actual = admit_persisted_intent(persisted.closure_manifest().objects())
                 .expect("selected typed compiler refusal intent");
             assert_eq!(actual.capture_changes().len(), 1);
             assert_eq!(
@@ -1358,9 +1350,8 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         basis_before_unrelated.capture_root(),
     )
     .expect("well-shaped hybrid basis with current root/sequence and old closure");
-    let hybrid_error =
-        super::validate_capture_basis_closure_id(hybrid_basis, selected_base.closure())
-            .expect_err("a valid alternate old closure is not the selected base descriptor");
+    let hybrid_error = validate_capture_basis_closure_id(hybrid_basis, selected_base.closure())
+        .expect_err("a valid alternate old closure is not the selected base descriptor");
     assert!(
         hybrid_error
             .to_string()
@@ -1389,9 +1380,8 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
             let persisted_objects = store
                 .read_workspace_root_closure(selected.descriptor().closure())
                 .expect("read exact selected persisted closure");
-            let actual_intent =
-                super::admit_persisted_intent(persisted.closure_manifest().objects())
-                    .expect("decode the intent from the actual selected transition");
+            let actual_intent = admit_persisted_intent(persisted.closure_manifest().objects())
+                .expect("decode the intent from the actual selected transition");
             assert_eq!(
                 actual_intent.capture_basis(),
                 Some(basis_after_unrelated),
@@ -1417,7 +1407,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
                 .clone()
                 .with_capture_basis(hybrid_basis)
                 .expect("construct the same-manifest/current-sequence hybrid BPI9 intent");
-            super::validate_persisted_capture_changes(
+            validate_persisted_capture_changes(
                 persisted,
                 store,
                 &forged_intent,

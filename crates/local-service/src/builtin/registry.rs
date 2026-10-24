@@ -1098,8 +1098,8 @@ impl RegistryGateway {
         hasher.update(&[u8::from(self.advisory.persistence_is_uncertain())]);
         let now = advisory_now();
         for source in &self.advisory_config.sources {
-            let source_identity = backend_engine::serde_json::to_vec(&source.source)
-                .map_err(|error| error.to_string())?;
+            let source_identity =
+                serde_json::to_vec(&source.source).map_err(|error| error.to_string())?;
             hasher.update(&source_identity);
             match self.advisory.frontier(source.source) {
                 Some(frontier) => {
@@ -1123,7 +1123,7 @@ impl RegistryGateway {
                 }
             }
         }
-        let osv_scope = backend_engine::serde_json::to_vec(&self.advisory_config.osv_scope)
+        let osv_scope = serde_json::to_vec(&self.advisory_config.osv_scope)
             .map_err(|error| error.to_string())?;
         hasher.update(&(osv_scope.len() as u64).to_be_bytes());
         hasher.update(&osv_scope);
@@ -1428,20 +1428,12 @@ impl RegistryGateway {
                 Ok(result.artifact.bytes().to_vec())
             }
             TypedAcquisitionOutcome::NegativeFact(fact) => match fact.kind {
-                backend_engine::acquisition::NegativeFactKind::Yanked => {
-                    Err(RegistryAddError::ReleasePolicy(
-                        backend_engine::registry::ReleaseStanding::Yanked,
-                    ))
-                }
-                backend_engine::acquisition::NegativeFactKind::AdvisoryBlocked => {
-                    Err(RegistryAddError::SecurityPolicy)
-                }
-                backend_engine::acquisition::NegativeFactKind::Unsupported => {
-                    Err(RegistryAddError::UnsupportedArchive)
-                }
-                backend_engine::acquisition::NegativeFactKind::NotFound => {
-                    Err(RegistryAddError::NotFound)
-                }
+                NegativeFactKind::Yanked => Err(RegistryAddError::ReleasePolicy(
+                    backend_engine::registry::ReleaseStanding::Yanked,
+                )),
+                NegativeFactKind::AdvisoryBlocked => Err(RegistryAddError::SecurityPolicy),
+                NegativeFactKind::Unsupported => Err(RegistryAddError::UnsupportedArchive),
+                NegativeFactKind::NotFound => Err(RegistryAddError::NotFound),
             },
             TypedAcquisitionOutcome::RetryAt(retry) => Err(RegistryAddError::RetryAfter(
                 Duration::from_millis(retry.at_millis.saturating_sub(current_millis())),
@@ -2368,7 +2360,7 @@ fn read_rustsec_tree(
     impl FileStamp {
         /// Captures the size, times, and object identity of the file `file`
         /// holds open. The identity comes from the handle, never from a name.
-        fn capture(file: &std::fs::File) -> Result<Self, String> {
+        fn capture(file: &File) -> Result<Self, String> {
             let metadata = file.metadata().map_err(|error| error.to_string())?;
             #[cfg(unix)]
             {
@@ -3846,15 +3838,15 @@ mod tests {
             endpoint,
         )
         .expect("loopback registry endpoint");
-        let source = backend_engine::registry::RegistrySource::new(endpoint).with_native(false);
-        let sources = backend_engine::registry::RegistrySourceSet::empty()
+        let source = RegistrySource::new(endpoint).with_native(false);
+        let sources = RegistrySourceSet::empty()
             .with_source(source)
             .expect("canonical test registry source");
         RegistryConfig {
             sources,
             endpoint: None,
             authentication: None,
-            policy: backend_engine::registry::AcquisitionPolicy::Online,
+            policy: AcquisitionPolicy::Online,
             native: false,
             limits: backend_engine::registry::AcquisitionLimits::default(),
             advisory_gate: backend_engine::advisory::AcquisitionGate {
@@ -4480,22 +4472,18 @@ mod tests {
             backend_library::RegistryEcosystem::Cargo,
             [5; 32],
         )];
-        let original = std::sync::Arc::new(
-            super::super::product_state::CatalogLookupIndex::from_catalog(&catalog),
-        );
+        let original =
+            Arc::new(super::super::product_state::CatalogLookupIndex::from_catalog(&catalog));
         let identity = original.search_identity().expect("Tantivy projection");
         let reused = if same_catalog_search_revision(&old_key, &freshness_advanced) {
-            std::sync::Arc::clone(&original)
+            Arc::clone(&original)
         } else {
-            std::sync::Arc::new(
-                super::super::product_state::CatalogLookupIndex::from_catalog(&catalog),
-            )
+            Arc::new(super::super::product_state::CatalogLookupIndex::from_catalog(&catalog))
         };
-        assert!(std::sync::Arc::ptr_eq(&original, &reused));
+        assert!(Arc::ptr_eq(&original, &reused));
         assert_eq!(reused.search_identity(), Some(identity));
-        let rebuilt = std::sync::Arc::new(
-            super::super::product_state::CatalogLookupIndex::from_catalog(&catalog),
-        );
+        let rebuilt =
+            Arc::new(super::super::product_state::CatalogLookupIndex::from_catalog(&catalog));
         assert_ne!(rebuilt.search_identity(), Some(identity));
     }
 
@@ -6129,7 +6117,7 @@ mod tests {
             "http://{}",
             alpha_listener.local_addr().expect("alpha address")
         ));
-        let beta = backend_engine::registry::RegistrySource::new(
+        let beta = RegistrySource::new(
             backend_engine::registry::RegistryEndpoint::new(
                 backend_library::RegistryEcosystem::Npm,
                 format!(

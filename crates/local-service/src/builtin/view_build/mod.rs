@@ -1090,25 +1090,24 @@ pub fn execute() {}
                 analysis.declarations().as_ref()
             );
         }
-        let project_rows =
-            |sources: &super::super::IndexedSources| -> Result<Vec<backend_engine::Row>, String> {
-                let plan = StructuralProjectionPlan::of(sources, &BTreeSet::new())
+        let project_rows = |sources: &super::super::IndexedSources| -> Result<Vec<Row>, String> {
+            let plan = StructuralProjectionPlan::of(sources, &BTreeSet::new())
+                .map_err(|error| error.to_string())?;
+            let (initial, _) = initial_view().map_err(|error| error.to_string())?;
+            let targets = super::SemanticTargets::default();
+            let scratch = std::env::temp_dir();
+            let mut projection =
+                SourceRowProjection::new(&initial, sources, 64, &targets, &plan, &scratch)
                     .map_err(|error| error.to_string())?;
-                let (initial, _) = initial_view().map_err(|error| error.to_string())?;
-                let targets = super::SemanticTargets::default();
-                let scratch = std::env::temp_dir();
-                let mut projection =
-                    SourceRowProjection::new(&initial, sources, 64, &targets, &plan, &scratch)
-                        .map_err(|error| error.to_string())?;
-                for (key, file) in &sources.files {
-                    projection
-                        .append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new())
-                        .map_err(|error| error.to_string())?;
-                }
+            for (key, file) in &sources.files {
                 projection
-                    .finish(Vec::new())
-                    .map_err(|error| error.to_string())
-            };
+                    .append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new())
+                    .map_err(|error| error.to_string())?;
+            }
+            projection
+                .finish(Vec::new())
+                .map_err(|error| error.to_string())
+        };
         let rows = project_rows(&sources)?;
         assert_eq!(
             rows.len(),
@@ -1197,7 +1196,7 @@ pub fn execute() {}
             Arc::from(reordered),
         )?;
         let reverse_rows = project_rows(&reversed)?;
-        let graph = |rows: &[backend_engine::Row]| {
+        let graph = |rows: &[Row]| {
             rows.iter()
                 .map(|row| (row.id, row.parent))
                 .collect::<BTreeMap<_, _>>()
@@ -3325,7 +3324,7 @@ pub fn decoy_mention() { let _ = "parse_config("; }
             assert_eq!(outgoing, vec![edge.clone()]);
             assert_eq!(incoming, vec![edge]);
             let label = view.row_ref(target).ok_or("target row")?.label.as_str();
-            let references = super::structural_reference_facts(&view, &sources, label)
+            let references = structural_reference_facts(&view, &sources, label)
                 .map_err(|error| error.to_string())?;
             let RowId::Symbol(caller_symbol) = caller else {
                 return Err("caller symbol".to_owned());

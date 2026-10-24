@@ -5610,7 +5610,7 @@ impl OwnerCompilerClusterRuntime {
             .map_err(|error| ClusterDispatchError::AckRejected(error.to_string()))
     }
 
-    fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+    fn block_on<F: Future>(&self, future: F) -> F::Output {
         self.runtime.block_on(future)
     }
 }

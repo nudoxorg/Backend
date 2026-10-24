@@ -30,7 +30,7 @@ fn owed_reply(
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn calls(path: &std::path::Path, purpose: u64) -> usize {
+fn calls(path: &Path, purpose: u64) -> usize {
     fs::read_to_string(path)
         .expect("actual protocol log")
         .lines()
@@ -125,11 +125,7 @@ fn local_semantic_deferred_shared_pressure_yields_optional_cache_before_reply_an
     assert!(adapter.semantic_search_replies.is_empty());
 }
 
-fn enter_held_query(
-    adapter: &mut CommandAdapter,
-    daemon: &mut ProductDaemon,
-    entered: &std::path::Path,
-) {
+fn enter_held_query(adapter: &mut CommandAdapter, daemon: &mut ProductDaemon, entered: &Path) {
     let deadline = std::time::Instant::now() + Duration::from_secs(12);
     while !entered.exists() {
         assert!(adapter.poll_deferred(daemon).is_empty());

@@ -1049,7 +1049,7 @@ mod tests {
     fn deferred_peer_probe_errors_preserve_response_delivery() {
         let (mut owner, mut client) =
             backend_engine::LocalStream::pair().expect("local stream pair");
-        let waiter = super::ResponseWaiter::for_stream(&owner).expect("response capability");
+        let waiter = ResponseWaiter::for_stream(&owner).expect("response capability");
         for kind in [
             io::ErrorKind::Interrupted,
             io::ErrorKind::Other,
@@ -1065,8 +1065,7 @@ mod tests {
             .write_all(b"reply")
             .expect("connected response remains deliverable");
         let mut reply = [0_u8; 5];
-        std::io::Read::read_exact(&mut client, &mut reply)
-            .expect("receive response after probe errors");
+        io::Read::read_exact(&mut client, &mut reply).expect("receive response after probe errors");
         assert_eq!(&reply, b"reply");
         drop(client);
         assert!(
@@ -2158,7 +2157,7 @@ mod tests {
     #[test]
     fn an_owner_with_inflight_work_retires_only_after_its_worker_finishes() {
         struct Compiling {
-            worker: Option<thread::JoinHandle<()>>,
+            worker: Option<JoinHandle<()>>,
             polls: Arc<AtomicUsize>,
         }
         impl OwnerService for Compiling {
@@ -2186,9 +2185,9 @@ mod tests {
             }
         }
         struct RunningListener {
-            shutdown: super::ListenerShutdown,
+            shutdown: ListenerShutdown,
             release: Option<SyncSender<()>>,
-            worker: Option<thread::JoinHandle<Result<(usize, bool), super::ListenerError>>>,
+            worker: Option<JoinHandle<Result<(usize, bool), ListenerError>>>,
         }
         impl Drop for RunningListener {
             fn drop(&mut self) {
@@ -2261,19 +2260,13 @@ mod tests {
             .send(())
             .unwrap_or_else(|_| panic!("release actual worker"));
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !running
-            .worker
-            .as_ref()
-            .is_some_and(thread::JoinHandle::is_finished)
+        while !running.worker.as_ref().is_some_and(JoinHandle::is_finished)
             && Instant::now() < deadline
         {
             thread::sleep(Duration::from_millis(1));
         }
         assert!(
-            running
-                .worker
-                .as_ref()
-                .is_some_and(thread::JoinHandle::is_finished),
+            running.worker.as_ref().is_some_and(JoinHandle::is_finished),
             "finished work must not keep an idle owner resident"
         );
         let (connections, retired) = running
@@ -2368,8 +2361,8 @@ mod tests {
     #[test]
     fn a_connected_client_holds_the_idle_window_open() {
         struct RunningListener {
-            shutdown: super::ListenerShutdown,
-            worker: Option<thread::JoinHandle<Result<usize, super::ListenerError>>>,
+            shutdown: ListenerShutdown,
+            worker: Option<JoinHandle<Result<usize, ListenerError>>>,
             client: Option<backend_engine::LocalStream>,
         }
 
@@ -2417,10 +2410,7 @@ mod tests {
         // Six idle windows with the client connected. Nothing may retire.
         thread::sleep(Duration::from_millis(600));
         assert!(
-            !runner
-                .worker
-                .as_ref()
-                .is_some_and(thread::JoinHandle::is_finished),
+            !runner.worker.as_ref().is_some_and(JoinHandle::is_finished),
             "a listener retired while a client was connected"
         );
         assert!(path.exists());
@@ -2445,18 +2435,12 @@ mod tests {
         runner.client.take();
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline
-            && !runner
-                .worker
-                .as_ref()
-                .is_some_and(thread::JoinHandle::is_finished)
+            && !runner.worker.as_ref().is_some_and(JoinHandle::is_finished)
         {
             thread::sleep(Duration::from_millis(5));
         }
         assert!(
-            runner
-                .worker
-                .as_ref()
-                .is_some_and(thread::JoinHandle::is_finished),
+            runner.worker.as_ref().is_some_and(JoinHandle::is_finished),
             "a listener stayed resident after its last client left"
         );
         assert_eq!(

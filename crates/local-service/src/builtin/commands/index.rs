@@ -1637,7 +1637,7 @@ fn terminal_capture_changes(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     reason: backend_engine::builtin::SemanticUnavailableReason,
-    compiler_failure: Option<(LanguageProfile, backend_library::PackageCompilerFailure)>,
+    compiler_failure: Option<(LanguageProfile, PackageCompilerFailure)>,
 ) -> Result<Vec<BuiltinCaptureChange>, BuiltinModelError> {
     terminal_capture_changes_for_snapshot(
         &daemon.engine().daemon().owner().snapshot(),
@@ -1651,7 +1651,7 @@ fn terminal_capture_changes_for_snapshot(
     snapshot: &WorkspaceSnapshot,
     captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     reason: backend_engine::builtin::SemanticUnavailableReason,
-    compiler_failure: Option<(LanguageProfile, backend_library::PackageCompilerFailure)>,
+    compiler_failure: Option<(LanguageProfile, PackageCompilerFailure)>,
 ) -> Result<Vec<BuiltinCaptureChange>, BuiltinModelError> {
     let relation = semantic_capture_relation(&snapshot)
         .map_err(|error| BuiltinModelError(format!("open pending semantic captures: {error}")))?
@@ -1902,7 +1902,7 @@ pub(super) fn commit_pending_capture_failure(
     request_id: u64,
     captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     reason: backend_engine::builtin::SemanticUnavailableReason,
-    compiler_failure: Option<(LanguageProfile, backend_library::PackageCompilerFailure)>,
+    compiler_failure: Option<(LanguageProfile, PackageCompilerFailure)>,
 ) -> Result<(), BuiltinModelError> {
     let changes = terminal_capture_changes(daemon, captures, reason, compiler_failure)?;
     commit_semantic_terminal(daemon, package, label, request_id, changes)
@@ -2075,10 +2075,7 @@ impl CapturedProjectFileFrontier {
             let (key, record) = row?;
             super::super::profile::validate_project_file(project_key, key, record)?;
             encoded.clear();
-            <BuiltinWorkspaceRelation as backend_engine::Relation>::encode_value(
-                record,
-                &mut encoded,
-            );
+            <BuiltinWorkspaceRelation as Relation>::encode_value(record, &mut encoded);
             let encoded_len = u64::try_from(encoded.len()).map_err(|_| {
                 BuiltinModelError("project source file row length exceeds u64".to_owned())
             })?;
@@ -3589,8 +3586,7 @@ fn compile_semantic_publications_for_snapshot(
                     environment,
                     PythonProjectControl {
                         cancelled: context.cancellation,
-                        deadline: std::time::Instant::now()
-                            + std::time::Duration::from_secs(15 * 60),
+                        deadline: Instant::now() + std::time::Duration::from_secs(15 * 60),
                     },
                 )?;
                 let package_lineage = PackageLineageId::from_canonical_parts(
@@ -5257,7 +5253,7 @@ impl backend_engine::compiler_cluster_transport::WorkspaceSnapshotSourceV2
                         if self.control.cancelled.load(Ordering::Acquire) {
                             return Err(std::io::Error::other(ingest::INDEX_SCAN_CANCELLED));
                         }
-                        if std::time::Instant::now() >= self.control.deadline {
+                        if Instant::now() >= self.control.deadline {
                             return Err(std::io::Error::other(
                                 "Python environment capture deadline expired",
                             ));
@@ -7027,7 +7023,7 @@ pub(super) fn semantic_version_record(
 }
 
 pub(super) fn selected_project_source_frontier(
-    snapshot: &backend_engine::WorkspaceSnapshot,
+    snapshot: &WorkspaceSnapshot,
     package: &backend_engine::PackageReference,
 ) -> Result<Option<backend_engine::SelectedProjectSourceFrontier>, BuiltinModelError> {
     let backend_engine::PackageReference::Local(label) = package else {
@@ -7104,7 +7100,7 @@ pub(super) fn package_source_membership_page(
 }
 
 pub(in crate::builtin) fn package_source_membership_page_from_snapshot(
-    snapshot: &backend_engine::WorkspaceSnapshot,
+    snapshot: &WorkspaceSnapshot,
     request: &backend_library::PackageSourceMembershipPageRequestV1,
 ) -> Result<backend_library::PackageSourceMembershipPageResultV1, BuiltinModelError> {
     use backend_engine::ProductProjectFileMembership;

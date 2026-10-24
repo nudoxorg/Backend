@@ -2347,7 +2347,7 @@ mod tests {
         );
         drop(history);
         drop(store);
-        std::fs::remove_dir_all(directory).expect("remove history workspace");
+        fs::remove_dir_all(directory).expect("remove history workspace");
     }
 
     #[test]
@@ -2410,7 +2410,7 @@ mod tests {
     #[test]
     fn owned_selection_source_classifies_an_absent_committed_marker_as_stale() {
         let directory = path();
-        std::fs::create_dir_all(&directory).expect("create semantic authority workspace");
+        fs::create_dir_all(&directory).expect("create semantic authority workspace");
         let package = backend_engine::PackageReference::parse(
             "pkg:cargo/native-history-selection@1.0.0".to_owned(),
         )
@@ -2422,9 +2422,7 @@ mod tests {
         let key = ProductSemanticPublicationKey::new(
             package,
             coordinate,
-            backend_semantic::ir::LanguageProfile::Rust(
-                backend_semantic::ir::RustEdition::Rust2021,
-            ),
+            LanguageProfile::Rust(RustEdition::Rust2021),
         )
         .expect("valid product selection key");
         let authority = SemanticAuthority::open(&directory).expect("open semantic authority");
@@ -2442,13 +2440,13 @@ mod tests {
 
         drop(source);
         drop(authority);
-        std::fs::remove_dir_all(directory).expect("remove temporary authority workspace");
+        fs::remove_dir_all(directory).expect("remove temporary authority workspace");
     }
 
     #[test]
     fn native_history_pair_distinguishes_absence_from_selector_lock_failure() {
         let directory = path();
-        std::fs::create_dir_all(&directory).expect("create semantic authority workspace");
+        fs::create_dir_all(&directory).expect("create semantic authority workspace");
         let package = backend_engine::PackageReference::parse(
             "pkg:cargo/native-history-pair-state@1.0.0".to_owned(),
         )
@@ -2460,9 +2458,7 @@ mod tests {
         let key = ProductSemanticPublicationKey::new(
             package,
             coordinate,
-            backend_semantic::ir::LanguageProfile::Rust(
-                backend_semantic::ir::RustEdition::Rust2021,
-            ),
+            LanguageProfile::Rust(RustEdition::Rust2021),
         )
         .expect("valid product selection key");
         let authority = SemanticAuthority::open(&directory).expect("open semantic authority");
@@ -2490,7 +2486,7 @@ mod tests {
         ));
 
         drop(authority);
-        std::fs::remove_dir_all(directory).expect("remove temporary authority workspace");
+        fs::remove_dir_all(directory).expect("remove temporary authority workspace");
     }
 
     struct FakeSelectedImageRangePublisher {
@@ -2588,7 +2584,7 @@ mod tests {
         fn verified_remote_segments(
             &self,
             _store: &FileStore,
-            _selected: &backend_extension_turso::SelectedGeneration,
+            _selected: &SelectedGeneration,
         ) -> Result<
             Option<super::super::s3_publication::VerifiedRemoteSegmentSet>,
             super::super::s3_publication::PublicationError,
@@ -2720,7 +2716,7 @@ mod tests {
         fn verified_remote_segments(
             &self,
             _store: &FileStore,
-            _selected: &backend_extension_turso::SelectedGeneration,
+            _selected: &SelectedGeneration,
         ) -> Result<
             Option<super::super::s3_publication::VerifiedRemoteSegmentSet>,
             super::super::s3_publication::PublicationError,

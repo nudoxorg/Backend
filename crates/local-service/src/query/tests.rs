@@ -181,8 +181,7 @@ fn rows_and_evidence_that_do_not_pair_are_left_out_and_said_not_fatal() {
     let (workspace, view) = selected_view();
     let full = semantic_evidence(workspace, &view);
     let capability = view.capability().expect("view capability");
-    let missing =
-        backend_engine::RowId::Symbol(backend_engine::symbol_key("alpha::prefix")).stable_key();
+    let missing = RowId::Symbol(backend_engine::symbol_key("alpha::prefix")).stable_key();
     let mut facts = full
         .facts()
         .iter()
@@ -195,8 +194,7 @@ fn rows_and_evidence_that_do_not_pair_are_left_out_and_said_not_fatal() {
         .find(|fact| fact.presentation().id == missing)
         .expect("the fact to move");
     let mut presentation = moved.presentation().clone();
-    presentation.id =
-        backend_engine::RowId::Symbol(backend_engine::symbol_key("nowhere::stray")).stable_key();
+    presentation.id = RowId::Symbol(backend_engine::symbol_key("nowhere::stray")).stable_key();
     facts.push(backend_extension_trustfall::SemanticQueryFact::new(
         moved.evidence().clone(),
         presentation,

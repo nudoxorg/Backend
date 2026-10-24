@@ -143,7 +143,7 @@ impl LocalHostEnvironment for EmbeddedCompilerEnvironment {
     ) -> backend_engine::application::LocalHostCargoHomeSelection {
         self.compiler_environment.as_ref().map_or(
             backend_engine::application::LocalHostCargoHomeSelection::Strict,
-            backend_engine::application::ClosedLocalHostEnvironmentSnapshot::cargo_home_selection,
+            ClosedLocalHostEnvironmentSnapshot::cargo_home_selection,
         )
     }
 

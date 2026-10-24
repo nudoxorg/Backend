@@ -81,8 +81,7 @@ fn absolute_path_spelling(path: &Path) -> Result<PathBuf, String> {
 /// One complete, deterministic project scan before comparison with the
 /// selected versioned relation.
 pub(super) struct IndexSnapshot {
-    pub(super) python_environment:
-        Option<backend_frontend_python::legacy::checker::PythonEnvironmentInput>,
+    pub(super) python_environment: Option<PythonEnvironmentInput>,
     pub(super) source_version: [u8; 32],
     /// Separate discovery evidence, not a compiler or supported-source member.
     pub(super) source_selection: backend_library::SourceSelectionObservation,
@@ -4417,8 +4416,8 @@ mod tests {
         let unique = format!(
             "backend-confined-ingest-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .map_err(|error| error.to_string())?
                 .as_nanos()
         );
@@ -4495,8 +4494,8 @@ mod tests {
         let unique = format!(
             "backend-source-identity-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .map_err(|error| error.to_string())?
                 .as_nanos()
         );
@@ -4543,8 +4542,8 @@ mod tests {
         let unique = format!(
             "backend-syntax-reuse-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .map_err(|error| error.to_string())?
                 .as_nanos()
         );
@@ -4587,9 +4586,7 @@ mod tests {
     fn retained_compiler_handle_bytes(scan: &IndexSnapshot) -> usize {
         scan.compiler_sources
             .iter()
-            .map(|source| {
-                std::mem::size_of::<CompilerSourceHandle>() + source.relative_path.capacity()
-            })
+            .map(|source| size_of::<CompilerSourceHandle>() + source.relative_path.capacity())
             .sum()
     }
 
@@ -4617,8 +4614,8 @@ mod tests {
         let unique = format!(
             "backend-ingest-delta-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .map_err(|error| error.to_string())?
                 .as_nanos()
         );
@@ -4774,8 +4771,8 @@ mod tests {
         let unique = format!(
             "backend-ingest-unavailable-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .map_err(|error| error.to_string())?
                 .as_nanos()
         );
@@ -4807,8 +4804,8 @@ mod tests {
         let unique = format!(
             "backend-ingest-duplicate-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .map_err(|error| error.to_string())?
                 .as_nanos()
         );
@@ -4856,8 +4853,8 @@ mod tests {
         let unique = format!(
             "backend-indexed-source-recovery-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .map_err(|error| error.to_string())?
                 .as_nanos()
         );
@@ -4925,8 +4922,8 @@ mod tests {
         let unique = format!(
             "backend-ingest-symlink-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .map_err(|error| error.to_string())?
                 .as_nanos()
         );
@@ -4962,8 +4959,8 @@ mod tests {
         let unique = format!(
             "backend-ingest-{label}-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .map_err(|error| error.to_string())?
                 .as_nanos()
         );
@@ -6561,8 +6558,8 @@ mod row_capacity_tests {
         let unique = format!(
             "backend-row-capacity-{label}-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .map_err(|error| error.to_string())?
                 .as_nanos()
         );
@@ -6692,10 +6689,7 @@ mod row_capacity_tests {
                 )
             })?;
         assert!(
-            matches!(
-                declaration.source_excerpt(),
-                backend_compile::SourceExcerpt::Captured { .. }
-            ),
+            matches!(declaration.source_excerpt(), SourceExcerpt::Captured { .. }),
             "a file that fits must keep its captured excerpt"
         );
         Ok(())
@@ -6758,8 +6752,8 @@ mod robustness_tests {
         let unique = format!(
             "backend-robust-{label}-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .map_err(|error| error.to_string())?
                 .as_nanos()
         );
@@ -7333,8 +7327,8 @@ mod profile_tests {
         let unique = format!(
             "backend-profile-{label}-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .map_err(|error| error.to_string())?
                 .as_nanos()
         );

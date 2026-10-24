@@ -147,7 +147,7 @@ fn staged_semantic_and_capture_descriptors_leave_the_queue_but_replay_exactly() 
         evidence.hydrate(Some(&selected)).is_err(),
         "exact base fence refuses stale replay"
     );
-    let assert_rows = |snapshot: &backend_engine::WorkspaceSnapshot| -> Result<(), String> {
+    let assert_rows = |snapshot: &WorkspaceSnapshot| -> Result<(), String> {
         let semantic = snapshot
             .relation::<BuiltinSemanticRelation>()
             .test_value()?;
@@ -844,8 +844,8 @@ fn staged_large_parser_facts_use_small_queue_exact_shared_cas_and_cold_replay() 
         let orphan_bytes = BuiltinIntent::add(PackageKey::from_value(orphan_label), orphan_label)
             .test_value()?
             .encode();
-        let orphan = backend_store::TypedObject::from_value(
-            &backend_version::ObjectKey::<BuiltinIntentSchema>::from_value(&orphan_bytes),
+        let orphan = TypedObject::from_value(
+            &ObjectKey::<BuiltinIntentSchema>::from_value(&orphan_bytes),
             &orphan_bytes,
         );
         let store = before.durable_store().test_value()?;

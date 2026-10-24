@@ -888,7 +888,7 @@ mod tests {
             backend_engine::RelationState::<backend_engine::ProductSourceRelation>::empty(
                 super::super::admitted_coverage().expect("coverage"),
             );
-        let snapshot = super::store_relation(relation, "empty".to_owned()).expect("snapshot");
+        let snapshot = store_relation(relation, "empty".to_owned()).expect("snapshot");
         let sources = super::super::read_indexed_sources(&snapshot).expect("page");
         assert!(sources.projects.is_empty());
         assert!(sources.files.is_empty());
@@ -908,7 +908,7 @@ mod tests {
             super::super::admitted_coverage().expect("coverage"),
         )
         .expect("relation");
-        let snapshot = super::store_relation(relation, "miskeyed".to_owned()).expect("snapshot");
+        let snapshot = store_relation(relation, "miskeyed".to_owned()).expect("snapshot");
         let Err(error) = super::super::read_indexed_sources(&snapshot) else {
             panic!("miskeyed project must be rejected");
         };
@@ -996,8 +996,8 @@ mod tests {
                 super::super::admitted_coverage().expect("coverage"),
             )
             .expect("relation with missing page");
-        let snapshot = super::store_relation(relation, "missing-membership-page".to_owned())
-            .expect("snapshot");
+        let snapshot =
+            store_relation(relation, "missing-membership-page".to_owned()).expect("snapshot");
         let Err(error) = super::super::read_indexed_sources(&snapshot) else {
             panic!("missing membership page must reject the source page");
         };
@@ -1024,7 +1024,7 @@ mod tests {
             )
             .expect("relation with orphan page");
         let snapshot =
-            super::store_relation(relation, "orphan-membership-page".to_owned()).expect("snapshot");
+            store_relation(relation, "orphan-membership-page".to_owned()).expect("snapshot");
         let Err(error) = super::super::read_indexed_sources(&snapshot) else {
             panic!("unreferenced membership page must reject the source page");
         };

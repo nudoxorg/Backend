@@ -310,7 +310,7 @@ fn stale_selected_head_rebuild_keeps_only_the_lineage_checked_cursor_sequence() 
 
     // A partial final header is repaired, and the complete checked snapshot
     // still supplies its sequence without carrying its old root or view.
-    let mut tail = fs::OpenOptions::new()
+    let mut tail = OpenOptions::new()
         .append(true)
         .open(&path)
         .expect("open journal tail");

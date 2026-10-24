@@ -234,7 +234,7 @@ fn unsupported_vue_count_change_publishes_without_supported_source_change_and_un
         );
         let snapshot = daemon.engine().daemon().owner().snapshot();
         let relation = snapshot
-            .relation::<crate::builtin::BuiltinWorkspaceRelation>()
+            .relation::<BuiltinWorkspaceRelation>()
             .map_err(|error| error.to_string())?;
         let row = relation
             .lookup(&package.to_bytes())
@@ -300,12 +300,11 @@ fn close_journal_fixture(fixture: &mut AdapterFixture) {
 
 fn reopen_journal_owner(
     workspace: &Path,
-) -> Result<backend_engine::WorkspaceOwner<crate::builtin::BuiltinModel>, Box<dyn std::error::Error>>
-{
+) -> Result<backend_engine::WorkspaceOwner<BuiltinModel>, Box<dyn std::error::Error>> {
     Ok(backend_engine::WorkspaceOwner::open_with_registry(
         workspace,
-        crate::builtin::BuiltinModel,
-        crate::builtin::genesis()?,
+        BuiltinModel,
+        genesis()?,
         crate::builtin::product_relation_registry()?,
     )?)
 }
@@ -336,13 +335,13 @@ fn prepared_summary(
         request: persisted.request(),
         transaction: persisted.transaction(),
         manifest_bytes: persisted.manifest_bytes().len() as u64,
-        manifest_digest: *backend_engine::blake3::hash(persisted.manifest_bytes()).as_bytes(),
+        manifest_digest: *blake3::hash(persisted.manifest_bytes()).as_bytes(),
         delta_bytes: persisted.delta_bytes().len() as u64,
-        delta_digest: *backend_engine::blake3::hash(persisted.delta_bytes()).as_bytes(),
+        delta_digest: *blake3::hash(persisted.delta_bytes()).as_bytes(),
         commit_bytes: persisted.commit_bytes().len() as u64,
-        commit_digest: *backend_engine::blake3::hash(persisted.commit_bytes()).as_bytes(),
+        commit_digest: *blake3::hash(persisted.commit_bytes()).as_bytes(),
         closure_bytes: closure.len() as u64,
-        closure_digest: *backend_engine::blake3::hash(closure).as_bytes(),
+        closure_digest: *blake3::hash(closure).as_bytes(),
     }
 }
 

@@ -270,7 +270,7 @@ pub(super) fn read_advisory(
     let advisory = catalog_index
         .first_coordinate(catalog, package)?
         .map(|record| record.advisory.clone())
-        .unwrap_or_else(backend_engine::AdvisoryPackageDto::unknown);
+        .unwrap_or_else(AdvisoryPackageDto::unknown);
     let advisory = override_evidence.map_or(advisory.clone(), |evidence| {
         advisory.with_override(evidence, unix_seconds())
     });
@@ -2142,7 +2142,7 @@ fn product_forge_package_detail(
         dependencies: detail.manifest.dependencies.clone(),
         python_metadata: detail.manifest.python_metadata.clone(),
     };
-    let metadata = backend_library::ForgeRepositoryMetadataRecord {
+    let metadata = ForgeRepositoryMetadataRecord {
         owner: fact(&detail.repository_metadata.owner, |value| Ok(value.clone()))?,
         description: fact(&detail.repository_metadata.description, |value| {
             Ok(value.clone())
@@ -3220,7 +3220,7 @@ impl CatalogLookupIndex {
         catalog: &[RegistryPackageRecord],
         query: &str,
         limit: usize,
-        continuation: Option<&super::discovery_search::SearchContinuation>,
+        continuation: Option<&SearchContinuation>,
     ) -> Result<SearchPage<usize>, String> {
         if self.catalog_len != catalog.len() {
             return Err("catalog lookup index does not match the catalog".to_owned());
@@ -6030,7 +6030,7 @@ mod tests {
             DiscoveryStore::open(discovery_path.clone()).expect("open discovery journal");
         let first_cursor = DiscoveryCursor::new(b"first".to_vec()).expect("first cursor");
         let first_coordinate =
-            backend_engine::ProductPackageCoordinate::parse("pkg:cargo/fastpathmarker-one@1.0.0")
+            ProductPackageCoordinate::parse("pkg:cargo/fastpathmarker-one@1.0.0")
                 .expect("first package coordinate");
         discovery
             .commit(DiscoveryBatch {
@@ -6243,7 +6243,7 @@ mod tests {
             SurfaceReply::IndexSearchPage(page)
                 if page.hits.iter().any(|hit| matches!(
                     hit,
-                    backend_library::RegistrySearchHit::ForgeSourcePin(pin)
+                    RegistrySearchHit::ForgeSourcePin(pin)
                         if matches!(
                             &pin.manifest.name,
                             backend_library::ForgeFact::Recorded(name)
@@ -6264,7 +6264,7 @@ mod tests {
 
         let second_cursor = DiscoveryCursor::new(b"second".to_vec()).expect("second cursor");
         let second_coordinate =
-            backend_engine::ProductPackageCoordinate::parse("pkg:cargo/fastpathmarker-two@1.0.0")
+            ProductPackageCoordinate::parse("pkg:cargo/fastpathmarker-two@1.0.0")
                 .expect("second package coordinate");
         let previous_search_root = product
             .discovery_search
@@ -6350,11 +6350,11 @@ mod tests {
         let last = bytes.last_mut().expect("nonempty metadata file");
         *last ^= 1;
         fs::write(&metadata_path, bytes).expect("same-size in-place mutation");
-        std::fs::OpenOptions::new()
+        fs::OpenOptions::new()
             .write(true)
             .open(&metadata_path)
             .expect("open mutated metadata")
-            .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+            .set_times(fs::FileTimes::new().set_modified(original_modified))
             .expect("restore mtime after same-size mutation");
         let mutated_metadata = fs::metadata(&metadata_path).expect("mutated metadata file");
         assert_eq!(mutated_metadata.len(), original_metadata.len());
@@ -6399,9 +6399,8 @@ mod tests {
         let source = discovery_source_identity(&endpoint);
         let observed = DiscoveryObservedAt::from_unix_millis(discovery_now());
         let mut discovery = DiscoveryStore::open(path).expect("discovery journal");
-        let discovery_coordinate =
-            backend_engine::ProductPackageCoordinate::parse("pkg:cargo/needle@1.0.0")
-                .expect("discovered coordinate");
+        let discovery_coordinate = ProductPackageCoordinate::parse("pkg:cargo/needle@1.0.0")
+            .expect("discovered coordinate");
         let discovery_cursor = DiscoveryCursor::new(b"1".to_vec()).expect("cursor");
         let expected_base_sequence = discovery.sequence(source).unwrap_or(0);
         discovery
@@ -6514,7 +6513,7 @@ mod tests {
             assert_eq!(page.hits.len(), 1);
             match &page.hits[0] {
                 RegistrySearchHit::PackageGroup(group)
-                    if group.kind == backend_library::RegistrySearchGroupKind::Discovered =>
+                    if group.kind == RegistrySearchGroupKind::Discovered =>
                 {
                     assert_eq!(group.lineage.as_str(), "needle");
                     assert_eq!(group.source, source.id());
@@ -6538,7 +6537,7 @@ mod tests {
                     identities.push("local");
                 }
                 RegistrySearchHit::PackageGroup(group)
-                    if group.kind == backend_library::RegistrySearchGroupKind::Acquired =>
+                    if group.kind == RegistrySearchGroupKind::Acquired =>
                 {
                     assert_eq!(group.lineage.as_str(), "needle");
                     assert_eq!(group.source, [0x35; 32]);
@@ -6729,10 +6728,7 @@ mod tests {
             let Some(RegistrySearchHit::PackageGroup(group)) = page.hits.first() else {
                 panic!("acquired page must yield one lineage group");
             };
-            assert_eq!(
-                group.kind,
-                backend_library::RegistrySearchGroupKind::Acquired
-            );
+            assert_eq!(group.kind, RegistrySearchGroupKind::Acquired);
             actual.push(group.lineage.as_str().to_owned());
             if page_number == 96 {
                 deep_work = Some(work);
@@ -6758,9 +6754,8 @@ mod tests {
             .expect("Cargo discovery source");
         let source = discovery_source_identity(&endpoint);
         let observed = DiscoveryObservedAt::from_unix_millis(discovery_now());
-        let coordinate =
-            backend_engine::ProductPackageCoordinate::parse("pkg:cargo/rare-needle@2.0.0")
-                .expect("discovered coordinate");
+        let coordinate = ProductPackageCoordinate::parse("pkg:cargo/rare-needle@2.0.0")
+            .expect("discovered coordinate");
         let cursor = |value: &str| DiscoveryCursor::new(value.as_bytes().to_vec()).expect("cursor");
         let mut discovery = DiscoveryStore::open(path.clone()).expect("discovery journal");
         let expected_base_sequence = discovery.sequence(source).unwrap_or(0);
@@ -6890,10 +6885,8 @@ mod tests {
         let cursor = |value: &str| DiscoveryCursor::new(value.as_bytes().to_vec()).expect("cursor");
         let fact = |name: &str, observed_at| DiscoveryFact {
             source,
-            coordinate: backend_engine::ProductPackageCoordinate::parse(format!(
-                "pkg:cargo/{name}@1.0.0"
-            ))
-            .expect("coordinate"),
+            coordinate: ProductPackageCoordinate::parse(format!("pkg:cargo/{name}@1.0.0"))
+                .expect("coordinate"),
             standing: DiscoveryStanding::Published,
             observed_at,
             source_event: DiscoverySourceEvent::Snapshot,

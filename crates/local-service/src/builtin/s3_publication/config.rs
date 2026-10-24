@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn fully_configured_env_owner_starts_with_large_pack_route() {
-        if std::env::var_os(CHILD_MODE_ENV).is_some() {
+        if env::var_os(CHILD_MODE_ENV).is_some() {
             let publisher = S3ClosurePublisher::from_env(Path::new("/tmp/backend-s3-owner"))
                 .expect("fully configured environment is valid");
             assert!(publisher.is_some());
@@ -95,7 +95,7 @@ mod tests {
         // child exercises the real owner configuration path with all S3
         // settings present; using the 160 MiB pack ceiling also ensures this
         // fails if startup regresses to the 64 MiB ordinary-object route.
-        let executable = std::env::current_exe().expect("resolve unit-test executable");
+        let executable = env::current_exe().expect("resolve unit-test executable");
         let status = Command::new(executable)
             .arg("--exact")
             .arg(concat!(

@@ -37,7 +37,7 @@ pub(super) struct PublicationWork {
     current_cursor: backend_engine::Cursor,
     compiler: LocalCompilerClient,
     deployment: crate::builtin::SemanticDeployment,
-    workspace: std::path::PathBuf,
+    workspace: PathBuf,
     prior: Option<PublishedRoots>,
     prepared: PreparedProductSelection,
     requested_reference: backend_library::PackageReference,
@@ -71,15 +71,15 @@ pub(super) enum Preparation {
     },
     Source {
         scan: IndexScanResult,
-        route: Option<super::super::index::SourceRoute>,
+        route: Option<SourceRoute>,
     },
-    Cluster(super::super::index::SourceCompilePlan),
+    Cluster(SourceCompilePlan),
     Finalize(DeferredIndex),
     Cleanup {
-        plan: super::super::index::CaptureFailurePlan,
+        plan: CaptureFailurePlan,
         outcome: backend_library::IndexJobOutcome,
     },
-    SourcePlan(super::super::index::SourceCompilePlan),
+    SourcePlan(SourceCompilePlan),
     SourcePrepared(PreparedProductSelection),
     SourceCaptured {
         continuation: PreparedIndex,
@@ -190,7 +190,7 @@ pub(super) struct PublicationWorker {
 #[cfg(test)]
 struct TestObservation {
     started: std::time::Instant,
-    phase: std::sync::Mutex<&'static str>,
+    phase: Mutex<&'static str>,
     granted: AtomicBool,
 }
 
@@ -199,7 +199,7 @@ impl TestObservation {
     fn new() -> Self {
         Self {
             started: std::time::Instant::now(),
-            phase: std::sync::Mutex::new("reserved"),
+            phase: Mutex::new("reserved"),
             granted: AtomicBool::new(false),
         }
     }
@@ -232,7 +232,7 @@ impl PublicationWork {
         current_cursor: backend_engine::Cursor,
         compiler: LocalCompilerClient,
         deployment: crate::builtin::SemanticDeployment,
-        workspace: std::path::PathBuf,
+        workspace: PathBuf,
         prior: Option<PublishedRoots>,
         prepared: PreparedProductSelection,
         preparation: Preparation,
@@ -313,7 +313,7 @@ impl PublicationWork {
 
     pub(super) fn admit_workspace(
         &mut self,
-        workspace: Result<std::path::PathBuf, BuiltinModelError>,
+        workspace: Result<PathBuf, BuiltinModelError>,
     ) -> Result<(), BuiltinModelError> {
         self.workspace = workspace?;
         Ok(())
@@ -708,17 +708,29 @@ impl PublicationWork {
             let mut busy = false;
             #[cfg(test)]
             observed.phase("prepare-selector");
-            self.semantic.as_mut().expect("original semantic writer").authority_mut()
+            self.semantic
+                .as_mut()
+                .expect("original semantic writer")
+                .authority_mut()
                 .commit_product_selection_changes(self.prepared.selected.clone(), removals, || {
                     if matches!(head, Head::Writer(_)) {
                         #[cfg(test)]
                         observed.phase("publication-barrier");
                         if !source_capture && !cleanup_phase {
-                        prepare_publication_barrier(journal, operation_key, Some(request),
-                            base_root, base_sequence, plan).map_err(|e| match e {
+                            prepare_publication_barrier(
+                                journal,
+                                operation_key,
+                                Some(request),
+                                base_root,
+                                base_sequence,
+                                plan,
+                            )
+                            .map_err(|e| match e {
                                 FinishAddError::PublicationBusy => {
                                     busy = true;
-                                    BuiltinModelError("durable publication is temporarily busy".to_owned())
+                                    BuiltinModelError(
+                                        "durable publication is temporarily busy".to_owned(),
+                                    )
                                 }
                                 FinishAddError::Failed(e) => e,
                             })?;
@@ -726,8 +738,13 @@ impl PublicationWork {
                     }
                     if matches!(head, Head::Writer(_)) {
                         #[cfg(test)]
-                        if test_hook.as_ref().is_some_and(|hook| hook.stage == TestStage::BeforeGrantValidation) {
-                            let hook = test_hook.take().expect("one-shot post-barrier validation seam");
+                        if test_hook
+                            .as_ref()
+                            .is_some_and(|hook| hook.stage == TestStage::BeforeGrantValidation)
+                        {
+                            let hook = test_hook
+                                .take()
+                                .expect("one-shot post-barrier validation seam");
                             (hook.run)();
                         }
                         // The durable Prepared barrier may block. Revalidate
@@ -737,15 +754,38 @@ impl PublicationWork {
                         // during the asynchronous owner-grant handoff. The
                         // selected candidate still owns exact captured bytes.
                         if let Some(fence) = fence.as_ref()
-                            && !super::super::super::ingest::compiler_revision_is_current_with_cancellation(
-                                fence, Some(cancellation.as_ref()),
-                            ).map_err(BuiltinModelError)? {
-                            return Err(BuiltinModelError("compiler source or configuration changed before product selection".to_owned()));
+                            && !ingest::compiler_revision_is_current_with_cancellation(
+                                fence,
+                                Some(cancellation.as_ref()),
+                            )
+                            .map_err(BuiltinModelError)?
+                        {
+                            return Err(BuiltinModelError(
+                                "compiler source or configuration changed before product selection"
+                                    .to_owned(),
+                            ));
                         }
                     }
-                    select_head(head, candidate, events, grant_accepted,
-                        #[cfg(test)] test_hook, cancellation, source_observation.as_deref(), #[cfg(test)] observed)
-                }).map_err(|e| if busy { FinishAddError::PublicationBusy } else { e.into() })?;
+                    select_head(
+                        head,
+                        candidate,
+                        events,
+                        grant_accepted,
+                        #[cfg(test)]
+                        test_hook,
+                        cancellation,
+                        source_observation.as_deref(),
+                        #[cfg(test)]
+                        observed,
+                    )
+                })
+                .map_err(|e| {
+                    if busy {
+                        FinishAddError::PublicationBusy
+                    } else {
+                        e.into()
+                    }
+                })?;
             self.semantic_committed = true;
             #[cfg(test)]
             self.run_test_hook(TestStage::AfterSelection);
@@ -975,7 +1015,7 @@ impl PublicationWork {
             #[cfg(test)]
             self.run_test_hook(TestStage::BeforeGrantValidation);
             if let Some(fence) = self.prepared.revision_fence.as_ref()
-                && !super::super::super::ingest::compiler_revision_is_current_with_cancellation(
+                && !ingest::compiler_revision_is_current_with_cancellation(
                     fence,
                     Some(self.cancellation.as_ref()),
                 )

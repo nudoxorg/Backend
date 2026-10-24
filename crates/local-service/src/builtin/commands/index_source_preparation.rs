@@ -1314,7 +1314,7 @@ impl SourceCompilePlan {
         // compiler-completed milestone.
         compiled
             .admitted
-            .extend(super::reused_capture_publications_for_snapshot(
+            .extend(reused_capture_publications_for_snapshot(
                 snapshot,
                 &self.captures,
                 &self.reused_profiles,
@@ -1381,18 +1381,14 @@ impl SourceCompilePlan {
                     .to_owned(),
             ));
         }
-        let admitted = super::reused_capture_publications_for_snapshot(
+        let admitted = reused_capture_publications_for_snapshot(
             snapshot,
             &self.captures,
             &self.reused_profiles,
             self.operation_key,
         )?;
-        let completed = super::completed_capture_changes_for_snapshot(
-            snapshot,
-            &self.captures,
-            &[],
-            &admitted,
-        )?;
+        let completed =
+            completed_capture_changes_for_snapshot(snapshot, &self.captures, &[], &admitted)?;
         let mut intent = BuiltinIntent::index_with_capture(
             self.package,
             &self.label,
@@ -1407,7 +1403,7 @@ impl SourceCompilePlan {
             intent: Some(intent),
             selected: admitted
                 .iter()
-                .map(super::AdmittedCapturePublication::selected_claim)
+                .map(AdmittedCapturePublication::selected_claim)
                 .collect(),
             revision_fence: Some(self.revision_fence.clone()),
             profile_refusals: Box::new([]),
@@ -1429,7 +1425,7 @@ pub(in crate::builtin::commands) struct CaptureFailurePlan {
         BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     pub(in crate::builtin::commands) reason: backend_engine::builtin::SemanticUnavailableReason,
     pub(in crate::builtin::commands) compiler_failure:
-        Option<(LanguageProfile, backend_library::PackageCompilerFailure)>,
+        Option<(LanguageProfile, PackageCompilerFailure)>,
 }
 
 impl CaptureFailurePlan {

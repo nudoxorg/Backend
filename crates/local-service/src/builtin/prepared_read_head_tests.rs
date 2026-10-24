@@ -343,7 +343,7 @@ fn prepared_read_head_admission_unwind_returns_both_ungranted_writers() {
                 &candidate,
                 view,
                 cursor,
-                &|_: &backend_engine::WorkspaceSnapshot, _: &ViewRoot| -> Result<(), String> {
+                &|_: &WorkspaceSnapshot, _: &ViewRoot| -> Result<(), String> {
                     panic!("controlled producer admission panic")
                 },
                 None

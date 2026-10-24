@@ -388,8 +388,8 @@ pub(in crate::builtin) struct CommandAdapter {
     published_view_root: Option<backend_library::ViewStateRoot>,
     manifests: super::super::local_manifest::LocalManifestResidence,
     project_roots: super::super::project_root_residence::ProjectRootResidence,
-    image_rows: super::super::view_build::ImageRowResidence,
-    structural_calls: super::super::view_build::StructuralCallResidence,
+    image_rows: view_build::ImageRowResidence,
+    structural_calls: view_build::StructuralCallResidence,
     generations: super::super::generation_residence::SemanticGenerationResidence,
     semantic_authority: super::super::semantic_authority::SemanticAuthority,
     semantic_source_plan: Option<super::semantic_source::SourceReadPlan>,
@@ -844,7 +844,7 @@ impl CommandAdapter {
         remote_semantic: super::super::query::RemoteSemantic,
         published: Option<super::super::view_publish::PublishedRoots>,
         published_view_root: Option<backend_library::ViewStateRoot>,
-        image_rows: super::super::view_build::ImageRowResidence,
+        image_rows: view_build::ImageRowResidence,
         generations: super::super::generation_residence::SemanticGenerationResidence,
         semantic_authority: super::super::semantic_authority::SemanticAuthority,
         owner_cluster: Option<Arc<super::super::cluster_dispatch::OwnerCompilerClusterRuntime>>,
@@ -888,7 +888,7 @@ impl CommandAdapter {
             manifests: super::super::local_manifest::LocalManifestResidence::default(),
             project_roots: super::super::project_root_residence::ProjectRootResidence::default(),
             image_rows,
-            structural_calls: super::super::view_build::StructuralCallResidence::default(),
+            structural_calls: view_build::StructuralCallResidence::default(),
             generations,
             semantic_authority,
             semantic_source_plan: None,
@@ -956,7 +956,7 @@ impl CommandAdapter {
             ) if let Some(witness) = page.outline_witness() => {
                 let recipe_id = backend_library::encode_id(witness.recipe().as_bytes());
                 let mut preimages = certificate.claims.iter().filter_map(|claim| match claim {
-                    backend_library::WireClaim::KeyBytes {
+                    WireClaim::KeyBytes {
                         schema: backend_library::WireSchema::ViewRecipe,
                         id,
                         value,
@@ -1303,9 +1303,7 @@ impl CommandAdapter {
             let bytes = body
                 .len()
                 .checked_mul(2) // Raw request plus its retained typed query text/cursor.
-                .and_then(|bytes| {
-                    bytes.checked_add(std::mem::size_of::<PendingSemanticSearchReply>())
-                })
+                .and_then(|bytes| bytes.checked_add(size_of::<PendingSemanticSearchReply>()))
                 .and_then(|bytes| bytes.checked_add(1024))
                 .and_then(|bytes| u64::try_from(bytes).ok())
                 .ok_or_else(|| BuiltinModelError("semantic reply extent overflow".to_owned()))?;
@@ -3696,9 +3694,7 @@ impl CommandAdapter {
                                 let owner = daemon.engine().daemon().owner();
                                 let library = daemon.engine().daemon().library();
                                 let approved = if cancellation.load(Ordering::Acquire) {
-                                    Err(BuiltinModelError(
-                                        super::super::ingest::INDEX_SCAN_CANCELLED.to_owned(),
-                                    ))
+                                    Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned()))
                                 } else if owner.head().root().as_bytes() != &base_root
                                     || owner.head().sequence() != base_sequence
                                     || library.view().root().as_bytes() != &base_view_root
@@ -4643,7 +4639,7 @@ impl CommandAdapter {
             removals,
             || {
                     if let Some(revision_fence) = revision_fence.as_ref()
-                        && !super::super::ingest::compiler_revision_is_current(revision_fence)
+                        && !ingest::compiler_revision_is_current(revision_fence)
                             .map_err(BuiltinModelError)?
                     {
                         return Err(BuiltinModelError(
@@ -5545,7 +5541,7 @@ impl CommandAdapter {
                 .then_some(fields)
         })?;
         let source_identity = fields.source_identity?;
-        super::super::ingest::recover_indexed_excerpt(
+        ingest::recover_indexed_excerpt(
             &source_root,
             fields.path,
             source_identity,
@@ -6604,7 +6600,7 @@ impl CommandAdapter {
                     .project_roots
                     .roots(&daemon.engine().daemon().owner().snapshot())?;
                 self.manifests
-                    .refresh(roots.iter().map(std::path::PathBuf::as_path))
+                    .refresh(roots.iter().map(PathBuf::as_path))
                     .map_err(BuiltinModelError)?;
                 let local_witness = self.manifests.witness();
                 let observed_catalog = self
@@ -7345,7 +7341,7 @@ fn admitted_project_source_root(
     package: backend_engine::PackageKey,
     project_label: &str,
     workspace: &Path,
-) -> Option<std::path::PathBuf> {
+) -> Option<PathBuf> {
     if backend_engine::PackageKey::from_value(project_label) != package {
         return None;
     }
@@ -7479,10 +7475,7 @@ mod tests {
         }
     }
 
-    fn catalog_reply_fixture(
-        text: &str,
-        family: u8,
-    ) -> (backend_library::Command, backend_library::ReplyDto) {
+    fn catalog_reply_fixture(text: &str, family: u8) -> (Command, backend_library::ReplyDto) {
         use backend_library::{
             Cursor, Fragment, Frontier, Library, NameQuery, PageRequest, Query, QueryLimit, Row,
             RowId, SymbolAddress, ViewRoot, symbol_key, view_key,
@@ -7503,17 +7496,17 @@ mod tests {
         let library = Library::from_view(root.clone(), Cursor::for_view_root(&root))
             .expect("real Library catalog");
         let command = match family {
-            0 => backend_library::Command::Name(NameQuery::new(
+            0 => Command::Name(NameQuery::new(
                 "Thing",
                 library.revision_root(),
                 QueryLimit::default(),
             )),
-            1 => backend_library::Command::Search(Query::new(
+            1 => Command::Search(Query::new(
                 "Thing",
                 library.revision_root(),
                 QueryLimit::default(),
             )),
-            _ => backend_library::Command::GraphPage {
+            _ => Command::GraphPage {
                 symbol: SymbolAddress::canonical(symbol),
                 page: PageRequest::new(library.revision_root(), QueryLimit::default()),
             },
@@ -7581,15 +7574,14 @@ mod tests {
                     assert!(!catalog.basis().matches(foreign_root));
                     let foreign = backend_library::CommandDto::new(
                         7,
-                        backend_library::Command::Name(backend_library::NameQuery::new(
+                        Command::Name(backend_library::NameQuery::new(
                             "Thing",
                             foreign_root,
                             backend_library::QueryLimit::default(),
                         )),
                     );
                     assert!(backend_library::admit_reply(&foreign, &refused).is_err());
-                    let unrelated =
-                        backend_library::CommandDto::new(7, backend_library::Command::Health);
+                    let unrelated = backend_library::CommandDto::new(7, Command::Health);
                     assert!(backend_library::admit_reply(&unrelated, &refused).is_err());
                 }
             }
@@ -7653,7 +7645,7 @@ mod tests {
             CommandAdapter::bound_catalog_reply(Some(catalog), &failed).is_err(),
             "an application failure must not become ReplyTooLarge"
         );
-        let mutation = backend_library::Command::Remove {
+        let mutation = Command::Remove {
             package: backend_library::package_key("mutation"),
         };
         let witness = CatalogReplyRequest::from_command(&mutation);
@@ -7997,7 +7989,7 @@ mod tests {
                 panic!("manifest fixture");
             };
             let original_path = manifest.path().as_ptr();
-            let intent = crate::builtin::BuiltinIntent::index_with_capture(
+            let intent = BuiltinIntent::index_with_capture(
                 package,
                 label,
                 Vec::new(),
@@ -9115,7 +9107,7 @@ mod tests {
                 };
                 assert_eq!(dto.request_id, request);
                 match (offset, dto.reply) {
-                    (0 | 1, backend_engine::CommandReply::Surface(R::Package(rows))) => {
+                    (0 | 1, CommandReply::Surface(R::Package(rows))) => {
                         assert_eq!(rows.len(), 1);
                         assert_eq!(rows[0].coordinate, coordinate);
                         assert_eq!(rows[0].name.as_str(), "httpie");
@@ -9123,9 +9115,7 @@ mod tests {
                     }
                     (
                         2 | 3,
-                        backend_engine::CommandReply::Surface(R::Dependencies(
-                            DependencyFacts::Known(rows),
-                        )),
+                        CommandReply::Surface(R::Dependencies(DependencyFacts::Known(rows))),
                     ) => {
                         assert_eq!(rows.len(), 27);
                         assert_eq!(
@@ -9145,7 +9135,7 @@ mod tests {
                     }
                     (
                         4,
-                        backend_engine::CommandReply::Surface(R::PackageProfile {
+                        CommandReply::Surface(R::PackageProfile {
                             source_metadata: Some(metadata),
                             ..
                         }),
@@ -9170,7 +9160,7 @@ mod tests {
                             5
                         );
                     }
-                    (5, backend_engine::CommandReply::Surface(R::IndexSearchPage(page))) => {
+                    (5, CommandReply::Surface(R::IndexSearchPage(page))) => {
                         assert!(
                             page.hits.is_empty(),
                             "graph-only fixture cannot invent native declarations"
@@ -9280,7 +9270,7 @@ mod tests {
         );
     }
     #[derive(Clone)]
-    struct MixedNativeEnvironment(std::path::PathBuf);
+    struct MixedNativeEnvironment(PathBuf);
 
     impl backend_engine::application::LocalHostEnvironment for MixedNativeEnvironment {
         fn value(
@@ -10505,14 +10495,14 @@ mod tests {
         daemon.engine().daemon().library().cursor()
     }
 
-    fn label(path: &std::path::Path) -> String {
+    fn label(path: &Path) -> String {
         path.to_string_lossy().into_owned()
     }
 
     /// Creates a directory symlink. Windows needs Developer Mode or the
     /// symbolic-link privilege; a refusal fails the test loudly rather than
     /// skipping the case.
-    fn symlink_dir(original: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+    fn symlink_dir(original: &Path, link: &Path) -> std::io::Result<()> {
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(original, link)
@@ -10524,7 +10514,7 @@ mod tests {
     }
 
     /// Creates a file symlink; see [`symlink_dir`] for the Windows requirement.
-    fn symlink_file(original: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+    fn symlink_file(original: &Path, link: &Path) -> std::io::Result<()> {
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(original, link)
@@ -10633,7 +10623,7 @@ mod tests {
             .workspace_path()
             .expect("workspace")
             .join("index-operations-v1.turso");
-        let mut foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
+        let mut foreign = IndexOperationJournal::open(path).expect("foreign journal");
         let prepared = backend_library::IndexOperationKey::from_bytes([91; 32]).expect("key");
         let new_key = backend_library::IndexOperationKey::from_bytes([92; 32]).expect("new key");
         let reference = backend_library::PackageReference::parse(label.clone()).expect("package");
@@ -10734,7 +10724,7 @@ mod tests {
         // The worker's real Pending completion is the only progress below;
         // background readiness notifications cannot authorize an implicit retry.
         adapter.journal_readiness.close();
-        let mut foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
+        let mut foreign = IndexOperationJournal::open(path).expect("foreign journal");
         foreign
             .accept(other_key, package, CompileExecutionIntent::Interactive)
             .expect("foreign accept");
@@ -10922,7 +10912,7 @@ mod tests {
             .workspace_path()
             .expect("workspace")
             .join("index-operations-v1.turso");
-        let foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
+        let foreign = IndexOperationJournal::open(path).expect("foreign journal");
         adapter.journal_readiness.close();
         let mut writer = foreign.connection_for_test();
         let (locked, lock_ready) = std::sync::mpsc::sync_channel(1);
@@ -10934,7 +10924,7 @@ mod tests {
                     .await
                     .expect("hold independent writer");
                 locked.send(()).expect("writer ready");
-                let _ = released.recv_timeout(std::time::Duration::from_secs(10));
+                let _ = released.recv_timeout(Duration::from_secs(10));
                 transaction
                     .rollback()
                     .await
@@ -10942,7 +10932,7 @@ mod tests {
             })
         });
         lock_ready
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(Duration::from_secs(10))
             .expect("independent transaction acquired");
         let mut indexing = adapter.indexing.take().expect("job");
         indexing.operation_key = Some(operation);
@@ -11107,7 +11097,7 @@ mod tests {
             .workspace_path()
             .expect("workspace")
             .join("index-operations-v1.turso");
-        let mut foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
+        let mut foreign = IndexOperationJournal::open(path).expect("foreign journal");
         foreign
             .accept(
                 operation,
@@ -11128,7 +11118,7 @@ mod tests {
         adapter.journal_readiness.lose_notifications();
         adapter.journal_readiness.refresh();
         adapter.journal_readiness.poll();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while !adapter.journal_readiness.prepared_hint() && std::time::Instant::now() < deadline {
             adapter.journal_readiness.poll();
             std::thread::yield_now();
@@ -11144,17 +11134,17 @@ mod tests {
                     .await
                     .expect("hold independent writer");
                 locked.send(()).expect("writer ready");
-                let _ = released.recv_timeout(std::time::Duration::from_secs(10));
+                let _ = released.recv_timeout(Duration::from_secs(10));
                 transaction.rollback().await.expect("release writer");
             })
         });
         lock_ready
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(Duration::from_secs(10))
             .expect("writer acquired");
         let started = std::time::Instant::now();
         assert!(adapter.poll_deferred(daemon).is_empty());
         assert!(
-            started.elapsed() >= std::time::Duration::from_millis(200),
+            started.elapsed() >= Duration::from_millis(200),
             "the actual orphan receipt persistence hit bounded SQL busy"
         );
         assert!(matches!(
@@ -11194,7 +11184,7 @@ mod tests {
             Ok(Executed::Deferred)
         ));
         let mut ready = Vec::new();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while ready.len() < 2 && std::time::Instant::now() < deadline {
             ready.extend(adapter.poll_deferred(daemon));
             std::thread::yield_now();
@@ -11254,7 +11244,7 @@ mod tests {
             .workspace_path()
             .expect("workspace")
             .join("index-operations-v1.turso");
-        let mut foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
+        let mut foreign = IndexOperationJournal::open(path).expect("foreign journal");
         foreign
             .accept(foreign_key, package, CompileExecutionIntent::Interactive)
             .expect("foreign acceptance");
@@ -11289,7 +11279,7 @@ mod tests {
         );
         adapter.indexing = Some(indexing);
         adapter.journal_readiness.refresh();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while adapter.indexing.is_some() && std::time::Instant::now() < deadline {
             adapter.poll_deferred(daemon);
             std::thread::yield_now();
@@ -11330,7 +11320,7 @@ mod tests {
             .workspace_path()
             .expect("workspace")
             .join("index-operations-v1.turso");
-        let mut foreign = super::IndexOperationJournal::open(path).expect("independent journal");
+        let mut foreign = IndexOperationJournal::open(path).expect("independent journal");
         let operation = backend_library::IndexOperationKey::from_bytes([88; 32]).expect("key");
         foreign
             .accept(
@@ -11402,7 +11392,7 @@ mod tests {
             .workspace_path()
             .expect("workspace")
             .join("index-operations-v1.turso");
-        let mut foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
+        let mut foreign = IndexOperationJournal::open(path).expect("foreign journal");
         let operation = backend_library::IndexOperationKey::from_bytes([108; 32]).expect("key");
         foreign
             .accept(
@@ -11417,7 +11407,7 @@ mod tests {
         adapter.journal_readiness.exhaust_notifications();
         adapter.journal_readiness.refresh();
         adapter.journal_readiness.poll();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while !adapter.journal_readiness.prepared_hint() && std::time::Instant::now() < deadline {
             adapter.journal_readiness.poll();
             std::thread::yield_now();
@@ -12388,7 +12378,7 @@ mod tests {
             .workspace_path()
             .expect("workspace")
             .join("index-operations-v1.turso");
-        let mut foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
+        let mut foreign = IndexOperationJournal::open(path).expect("foreign journal");
         foreign
             .accept(
                 other,
@@ -12731,12 +12721,12 @@ mod tests {
         let mut fixture = AdapterFixture::new();
         let (package, label) = fixture.add_target();
         fs::write(
-            std::path::Path::new(&label).join("pyproject.toml"),
+            Path::new(&label).join("pyproject.toml"),
             "[project]\nname=\"refused_capture\"\nversion=\"1.0.0\"\n",
         )
         .expect("write Python manifest");
         fs::write(
-            std::path::Path::new(&label).join("source.py"),
+            Path::new(&label).join("source.py"),
             "def captured_name() -> str:\n    return \"captured\"\n",
         )
         .expect("write source captured before unavailable compiler refusal");
@@ -12777,10 +12767,11 @@ mod tests {
                     .search(daemon, &query, None)
                     .expect("Pending owner query");
                 match reply {
-                    backend_engine::CommandReply::Search(_) => {}
-                    backend_engine::CommandReply::Failed(
-                        backend_engine::CommandFailure::QueryPreparation { basis, state },
-                    ) => {
+                    CommandReply::Search(_) => {}
+                    CommandReply::Failed(backend_engine::CommandFailure::QueryPreparation {
+                        basis,
+                        state,
+                    }) => {
                         assert_eq!(basis, view.root());
                         assert_eq!(
                             state,
@@ -12847,10 +12838,7 @@ mod tests {
         let (reply, _) = adapter
             .search(daemon, &query, None)
             .expect("owner query reply");
-        assert!(
-            matches!(reply, backend_engine::CommandReply::Search(_)),
-            "{reply:?}"
-        );
+        assert!(matches!(reply, CommandReply::Search(_)), "{reply:?}");
         assert!(adapter.poll_deferred(daemon).is_empty());
         assert_eq!(
             daemon.engine().daemon().library().view().capability(),
@@ -12910,7 +12898,7 @@ mod tests {
         let mut fixture = AdapterFixture::new();
         let (canonical_package, canonical_label) = fixture.add_target();
         fs::write(
-            std::path::Path::new(&canonical_label).join("module.py"),
+            Path::new(&canonical_label).join("module.py"),
             "class Session:\n    pass\n",
         )
         .expect("real Python source");
@@ -12920,7 +12908,7 @@ mod tests {
         let profile = backend_semantic::vocabulary::LanguageProfile::Python(
             backend_semantic::vocabulary::PythonVersion::Python314,
         );
-        let key = backend_engine::builtin::ProductSemanticPublicationKey::new(
+        let key = ProductSemanticPublicationKey::new(
             backend_engine::PackageReference::parse(canonical_label.clone())
                 .expect("physical package reference"),
             crate::builtin::compiler_scope::semantic_coordinate(canonical_package, profile, None)
@@ -13972,7 +13960,7 @@ mod tests {
             .expect("real cold preparation is held before projection");
         let cancelled = adapter.search_lane.active_cancellation();
         let release_journal = adapter.journal_readiness.hold_reader();
-        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let closed = Arc::new(AtomicBool::new(false));
         let closing = Arc::clone(&closed);
         let observed = Arc::clone(&cancelled);
         // Both real workers are held before shutdown. The observer always
@@ -14922,7 +14910,7 @@ mod tests {
         let reply = backend_library::ReplyDto::decode_with_certificate(&bytes, Some(capability))
             .expect("strict cancelled page with actual selected producer coverage");
         assert_eq!(reply.request_id, 803);
-        let backend_library::CommandReply::GraphQueryPage(page) = reply.reply else {
+        let CommandReply::GraphQueryPage(page) = reply.reply else {
             panic!("cancellation must return its typed page");
         };
         cancelled
@@ -15132,7 +15120,7 @@ fn partial_publication_for_snapshot(
             } => Some((profile.profile, generation)),
             _ => None,
         })
-        .collect::<std::collections::BTreeMap<_, _>>();
+        .collect::<BTreeMap<_, _>>();
     if published != expected_selected {
         return Err(BuiltinModelError(
             "partial publication receipt differs from selected compiler candidates".to_owned(),

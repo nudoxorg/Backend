@@ -358,10 +358,10 @@ fn prepared_writer_model_unwind_keeps_the_exclusive_lease_recoverable() {
         }
         fn prepare(
             &self,
-            base: &backend_engine::WorkspaceSnapshot,
+            base: &WorkspaceSnapshot,
             intent: &BuiltinIntent,
-            transaction: backend_engine::TransactionId,
-        ) -> Result<backend_engine::PreparedTransition, BuiltinModelError> {
+            transaction: TransactionId,
+        ) -> Result<PreparedTransition, BuiltinModelError> {
             if !self.0.swap(true, Ordering::AcqRel) {
                 panic!("controlled candidate preparation unwind");
             }
@@ -370,14 +370,14 @@ fn prepared_writer_model_unwind_keeps_the_exclusive_lease_recoverable() {
         fn admit_persisted(
             &self,
             persisted: &backend_engine::PersistedTransition,
-        ) -> Result<backend_engine::PreparedTransition, BuiltinModelError> {
+        ) -> Result<PreparedTransition, BuiltinModelError> {
             BuiltinModel.admit_persisted(persisted)
         }
         fn admit_persisted_with_store(
             &self,
             persisted: &backend_engine::PersistedTransition,
             store: &backend_engine::FileStore,
-        ) -> Result<backend_engine::PreparedTransition, BuiltinModelError> {
+        ) -> Result<PreparedTransition, BuiltinModelError> {
             BuiltinModel.admit_persisted_with_store(persisted, store)
         }
     }
@@ -736,23 +736,23 @@ fn assert_selected_head_recovery_failure_returns_writer(panic_recovery: bool) {
         }
         fn prepare(
             &self,
-            base: &backend_engine::WorkspaceSnapshot,
+            base: &WorkspaceSnapshot,
             intent: &BuiltinIntent,
-            transaction: backend_engine::TransactionId,
-        ) -> Result<backend_engine::PreparedTransition, BuiltinModelError> {
+            transaction: TransactionId,
+        ) -> Result<PreparedTransition, BuiltinModelError> {
             BuiltinModel.prepare(base, intent, transaction)
         }
         fn admit_persisted(
             &self,
             persisted: &backend_engine::PersistedTransition,
-        ) -> Result<backend_engine::PreparedTransition, BuiltinModelError> {
+        ) -> Result<PreparedTransition, BuiltinModelError> {
             BuiltinModel.admit_persisted(persisted)
         }
         fn admit_persisted_with_store(
             &self,
             persisted: &backend_engine::PersistedTransition,
             store: &backend_engine::FileStore,
-        ) -> Result<backend_engine::PreparedTransition, BuiltinModelError> {
+        ) -> Result<PreparedTransition, BuiltinModelError> {
             if self.0.swap(false, Ordering::AcqRel) {
                 if self.1 {
                     panic!("controlled selected-head recovery model unwind");

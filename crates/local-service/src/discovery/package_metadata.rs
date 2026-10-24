@@ -690,7 +690,7 @@ fn parse_object(
             if version != admitted.version().as_str() || time.is_empty() {
                 return Err(DiscoveryStoreError::Decode);
             }
-            backend_engine::registry::DiscoveryTimestamp::parse_nuget_catalog_timestamp(time)?;
+            DiscoveryTimestamp::parse_nuget_catalog_timestamp(time)?;
             let metadata = DiscoveryMetadata {
                 published_at: DiscoveryFacet::Known(time.to_owned()),
                 downloads: DiscoveryFacet::Absent,

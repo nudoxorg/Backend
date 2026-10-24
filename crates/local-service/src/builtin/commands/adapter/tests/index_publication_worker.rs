@@ -594,7 +594,7 @@ fn index_publication_worker_selected_unwind_retains_writer_until_explicit_retry(
             })
         )
     });
-    let diagnostic_bytes = std::fs::read(
+    let diagnostic_bytes = fs::read(
         fixture.root.0.join("workspace/index-publication-pending-v1.json"),
     )
     .expect("selected failure retains a bounded private diagnostic");
@@ -1218,7 +1218,7 @@ fn keyed_status(
 
 fn install_installed_rust_compiler(fixture: &mut AdapterFixture) {
     #[derive(Clone)]
-    struct FixtureHost(std::path::PathBuf);
+    struct FixtureHost(PathBuf);
     impl backend_engine::application::LocalHostEnvironment for FixtureHost {
         fn value(
             &self,
@@ -2595,7 +2595,7 @@ fn index_publication_worker_selected_sink_error_is_observed_without_a_terminal()
     until(&mut fixture, |_, _| entered.try_recv().is_ok());
     // The real selected view sink will get an I/O refusal. This is not a
     // compiler oracle, a forged selected head, or a synthetic terminal result.
-    std::fs::create_dir(&journal_path).expect("block only the owned test view sink");
+    fs::create_dir(&journal_path).expect("block only the owned test view sink");
     release.now();
     until(&mut fixture, |adapter, _| {
         matches!(
@@ -2609,7 +2609,7 @@ fn index_publication_worker_selected_sink_error_is_observed_without_a_terminal()
             })
         )
     });
-    let bytes = std::fs::read(
+    let bytes = fs::read(
         fixture.root.0.join("workspace/index-publication-pending-v1.json"),
     ).expect("actual sink failure diagnostic");
     assert!(bytes.len() <= 8192);
@@ -2660,7 +2660,7 @@ fn index_publication_worker_selected_sink_error_is_observed_without_a_terminal()
     // protocol read, rather than depending on timing or filesystem events.
     fixture.adapter.as_mut().expect("adapter").journal_readiness.close();
     let retry = fixture.adapter.as_ref().expect("adapter").journal_readiness.retry_token();
-    std::fs::remove_dir(&journal_path).expect("restore the owned test sink");
+    fs::remove_dir(&journal_path).expect("restore the owned test sink");
     for _ in 0..32 {
         tick(&mut fixture);
     }

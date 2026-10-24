@@ -423,8 +423,8 @@ pub(super) struct NativeHistoryPublicationWork {
 
 #[cfg(test)]
 struct NativeHistoryFenceGate {
-    reached: std::sync::mpsc::SyncSender<NativeHistoryFenceDiagnostic>,
-    release: std::sync::mpsc::Receiver<()>,
+    reached: SyncSender<NativeHistoryFenceDiagnostic>,
+    release: mpsc::Receiver<()>,
 }
 
 #[cfg(test)]
@@ -440,7 +440,7 @@ pub(super) struct SelectedClosureImageLoader {
     #[cfg(test)]
     native_history_fence_gate: Mutex<Option<NativeHistoryFenceGate>>,
     #[cfg(test)]
-    native_history_writer_probe: Mutex<Option<std::sync::mpsc::SyncSender<bool>>>,
+    native_history_writer_probe: Mutex<Option<SyncSender<bool>>>,
 }
 
 /// Immutable exact binding proofs paired with their CAS reader. A captured
@@ -532,8 +532,8 @@ impl SelectedClosureImageLoader {
     #[cfg(test)]
     pub(super) fn install_native_history_fence_gate(
         &self,
-        reached: std::sync::mpsc::SyncSender<NativeHistoryFenceDiagnostic>,
-        release: std::sync::mpsc::Receiver<()>,
+        reached: SyncSender<NativeHistoryFenceDiagnostic>,
+        release: mpsc::Receiver<()>,
     ) {
         *self
             .native_history_fence_gate
@@ -575,10 +575,7 @@ impl SelectedClosureImageLoader {
     }
 
     #[cfg(test)]
-    pub(super) fn install_native_history_writer_probe(
-        &self,
-        sender: std::sync::mpsc::SyncSender<bool>,
-    ) {
+    pub(super) fn install_native_history_writer_probe(&self, sender: SyncSender<bool>) {
         *self
             .native_history_writer_probe
             .lock()
@@ -995,7 +992,7 @@ fn load_selected_images(
         let mappings = sources
             .sources()
             .filter_map(|row| row.package_path.map(|path| (path, row.source)))
-            .collect::<std::collections::BTreeMap<_, _>>();
+            .collect::<BTreeMap<_, _>>();
         for image in &images {
             let view = image
                 .reopen()
@@ -1956,8 +1953,8 @@ impl SemanticAuthority {
     #[cfg(test)]
     pub(super) fn install_native_history_fence_gate(
         &self,
-        reached: std::sync::mpsc::SyncSender<NativeHistoryFenceDiagnostic>,
-        release: std::sync::mpsc::Receiver<()>,
+        reached: SyncSender<NativeHistoryFenceDiagnostic>,
+        release: mpsc::Receiver<()>,
     ) {
         self.image_loader
             .install_native_history_fence_gate(reached, release);
@@ -5054,7 +5051,7 @@ mod tests {
             .selections
             .write()
             .expect("actual writer/native-history fence");
-        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        let (send, receive) = mpsc::sync_channel(1);
         let reader = std::thread::spawn(move || {
             let keys = authority.selected_product_keys_for_package(worker_test_key().package_key());
             let captured = authority.capture_image_loader();
@@ -5354,10 +5351,7 @@ mod tests {
         let original_lock = package_root.join("Cargo.lock");
         assert!(!original_lock.exists(), "the real package starts lockless");
 
-        let rustc = std::env::var_os("RUSTC").map_or_else(
-            || std::path::PathBuf::from("rustc"),
-            std::path::PathBuf::from,
-        );
+        let rustc = std::env::var_os("RUSTC").map_or_else(|| PathBuf::from("rustc"), PathBuf::from);
         let rust_toolchain = RustToolchain::discover(rustc).expect("discover Rust toolchain");
         let version = Command::new(&rust_toolchain.tool)
             .arg("--version")
@@ -5568,7 +5562,7 @@ mod tests {
             .selections
             .write()
             .expect("hold mutable publication/native-history fence");
-        let (loaded_tx, loaded_rx) = std::sync::mpsc::sync_channel(1);
+        let (loaded_tx, loaded_rx) = mpsc::sync_channel(1);
         let read_key = key.clone();
         let reader = std::thread::spawn(move || {
             loaded_tx
@@ -5653,7 +5647,7 @@ mod tests {
         assert!(ensure_recovered_coverage_matches(partial, partial).is_ok());
     }
 
-    struct ScratchWorkspace(std::path::PathBuf);
+    struct ScratchWorkspace(PathBuf);
 
     impl ScratchWorkspace {
         fn new() -> Self {
@@ -5679,8 +5673,8 @@ mod tests {
         let workspace = ScratchWorkspace::new();
         let mut authority = SemanticAuthority::open(&workspace.0).expect("open authority");
         let reader_loader = Arc::clone(&authority.image_loader);
-        let (attempted_sender, attempted_receiver) = std::sync::mpsc::channel();
-        let (acquired_sender, acquired_receiver) = std::sync::mpsc::channel();
+        let (attempted_sender, attempted_receiver) = mpsc::channel();
+        let (acquired_sender, acquired_receiver) = mpsc::channel();
         let mut reader = None;
 
         authority
@@ -5698,7 +5692,7 @@ mod tests {
                         .expect("signal selection read lease");
                 }));
                 attempted_receiver
-                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .recv_timeout(Duration::from_secs(2))
                     .expect("reader attempts during durable marker callback");
                 assert!(
                     matches!(
@@ -5712,7 +5706,7 @@ mod tests {
             .expect("commit empty marker transaction");
 
         acquired_receiver
-            .recv_timeout(std::time::Duration::from_secs(2))
+            .recv_timeout(Duration::from_secs(2))
             .expect("selection reader proceeds after marker and selector publication");
         reader
             .expect("reader thread started")
@@ -5721,7 +5715,7 @@ mod tests {
     }
 
     struct RejectingS3Publisher {
-        seen: Arc<std::sync::Mutex<Option<PublicationFence>>>,
+        seen: Arc<Mutex<Option<PublicationFence>>>,
     }
 
     impl SelectedClosurePublisher for RejectingS3Publisher {
@@ -5744,9 +5738,9 @@ mod tests {
         fn hydrate_object(
             &self,
             _store: &FileStore,
-            _selected: super::super::s3_publication::RemoteClosureSelection,
+            _selected: RemoteClosureSelection,
             _object_id: UntrustedObjectId,
-            _expected_schema: backend_version::SchemaIdentity,
+            _expected_schema: SchemaIdentity,
             _expected_payload_len: u64,
         ) -> Result<Vec<u8>, super::super::s3_publication::PublicationError> {
             Err(super::super::s3_publication::PublicationError::Remote)
@@ -5755,7 +5749,7 @@ mod tests {
         fn has_durable_selected_closure(
             &self,
             _store: &FileStore,
-            _selected: super::super::s3_publication::RemoteClosureSelection,
+            _selected: RemoteClosureSelection,
         ) -> Result<bool, super::super::s3_publication::PublicationError> {
             Ok(false)
         }
@@ -5802,7 +5796,7 @@ mod tests {
         stream_payload::<CompilerImagePayloadSchema>(&mut builder, b"local selected image")
             .expect("store test selected object");
         let pin = builder.seal_pinned().expect("seal test selected closure");
-        let seen = Arc::new(std::sync::Mutex::new(None));
+        let seen = Arc::new(Mutex::new(None));
         authority.s3_publisher = Some(Arc::new(RejectingS3Publisher {
             seen: Arc::clone(&seen),
         }));

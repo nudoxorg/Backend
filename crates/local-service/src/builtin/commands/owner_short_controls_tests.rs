@@ -11,7 +11,7 @@ fn short_control_reply(
     daemon: &mut ProductDaemon,
     request_id: u64,
     command: backend_library::SurfaceCommand,
-) -> backend_engine::CommandReply {
+) -> CommandReply {
     let body = short_control_body(request_id, command);
     let Executed::Reply(bytes) = adapter.execute_or_defer(daemon, &body, request_id + 10_000)
         .expect("short owner control") else {

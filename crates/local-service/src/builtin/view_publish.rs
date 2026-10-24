@@ -1800,7 +1800,7 @@ mod tests {
             IndexedSources {
                 projects,
                 files,
-                cargo_aliases: std::collections::BTreeMap::new(),
+                cargo_aliases: BTreeMap::new(),
                 source_snapshot: None,
             },
             package,
@@ -1996,12 +1996,7 @@ mod tests {
         assert_eq!(error, RowSpliceError::UnscopedSemantic);
     }
 
-    fn semantic_row(
-        initial: &backend_engine::ViewRoot,
-        package: PackageKey,
-        path: &str,
-        name: &str,
-    ) -> Row {
+    fn semantic_row(initial: &ViewRoot, package: PackageKey, path: &str, name: &str) -> Row {
         let location = backend_compile::SourceLocation::new(path, 1).expect("location");
         Row::in_package(
             RowId::Symbol(backend_engine::symbol_key(&format!(

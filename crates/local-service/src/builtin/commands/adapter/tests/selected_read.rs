@@ -72,8 +72,8 @@ fn local_adapter_rehydrates_pc5_outline_witness_before_library_dispatch() {
         .map(|index| {
             let symbol =
                 backend_library::symbol_key(&format!("{}::outline::{index}", fixture.label));
-            backend_library::Row::in_package(
-                backend_library::RowId::Symbol(symbol),
+            Row::in_package(
+                RowId::Symbol(symbol),
                 fixture
                     .daemon
                     .as_ref()
@@ -163,48 +163,47 @@ fn local_adapter_rehydrates_pc5_outline_witness_before_library_dispatch() {
     let mut certificate = revision_certificate.clone();
     for claim in &page_certificate.claims {
         let keep = match claim {
-            backend_library::WireClaim::Root { schema, id, .. }
+            WireClaim::Root { schema, id, .. }
                 if *schema == backend_library::WireSchema::ViewRelation && id == &page_root_id =>
             {
-                certificate =
-                    certificate.with_claim_once(backend_library::WireClaim::RootCommitment {
-                        schema: *schema,
-                        id: id.clone(),
-                    });
+                certificate = certificate.with_claim_once(WireClaim::RootCommitment {
+                    schema: *schema,
+                    id: id.clone(),
+                });
                 false
             }
-            backend_library::WireClaim::RootCommitment { schema, id }
+            WireClaim::RootCommitment { schema, id }
                 if *schema == backend_library::WireSchema::ViewRelation && id == &page_root_id =>
             {
                 certificate = certificate.with_claim_once(claim.clone());
                 false
             }
-            backend_library::WireClaim::KeyBytes {
+            WireClaim::KeyBytes {
                 schema: backend_library::WireSchema::ViewRecipe,
                 id,
                 ..
             } if id == &recipe_id => true,
-            backend_library::WireClaim::Version {
+            WireClaim::Version {
                 schema: backend_library::WireSchema::ViewVersion,
                 id,
                 ..
             } if id == &backend_library::encode_id(cursor.version().as_bytes()) => true,
-            backend_library::WireClaim::Key {
+            WireClaim::Key {
                 schema: backend_library::WireSchema::Branch,
                 id,
                 ..
             } if id == &backend_library::encode_id(cursor.branch().as_bytes()) => true,
-            backend_library::WireClaim::Key {
+            WireClaim::Key {
                 schema: backend_library::WireSchema::Log,
                 id,
                 ..
             } if id == &backend_library::encode_id(cursor.log().as_bytes()) => true,
-            backend_library::WireClaim::Key {
+            WireClaim::Key {
                 schema: backend_library::WireSchema::Package,
                 id,
                 ..
             } if id == &backend_library::encode_id(package.as_bytes()) => true,
-            backend_library::WireClaim::Cursor { .. } => true,
+            WireClaim::Cursor { .. } => true,
             _ => false,
         };
         if keep {
@@ -231,7 +230,7 @@ fn local_adapter_rehydrates_pc5_outline_witness_before_library_dispatch() {
         request_certificate
             .claims
             .iter()
-            .filter(|claim| matches!(claim, backend_library::WireClaim::Cursor { .. }))
+            .filter(|claim| matches!(claim, WireClaim::Cursor { .. }))
             .count(),
         2,
         "PC5 preserves separate owner and page-continuation cursor claims"
@@ -239,13 +238,13 @@ fn local_adapter_rehydrates_pc5_outline_witness_before_library_dispatch() {
     let page_only_claims = request_certificate
         .claims
         .iter()
-        .filter(|claim| {
-            !matches!(claim, backend_library::WireClaim::Cursor { root, .. } if root == &owner_cursor_id)
-        })
+        .filter(
+            |claim| !matches!(claim, WireClaim::Cursor { root, .. } if root == &owner_cursor_id),
+        )
         .cloned()
         .collect::<Vec<_>>();
     let portable_token_request = CommandDto::new(1208, request.command.clone()).with_certificate(
-        backend_library::WireCertificate::from_claims(page_only_claims.into_boxed_slice()),
+        WireCertificate::from_claims(page_only_claims.into_boxed_slice()),
     );
     let portable_token_body =
         backend_library::encode_binary_certificate_command(&portable_token_request)
@@ -257,13 +256,13 @@ fn local_adapter_rehydrates_pc5_outline_witness_before_library_dispatch() {
     let mut tampered_claims = request_certificate.claims.to_vec();
     let owner_claim = tampered_claims
         .iter_mut()
-        .find(|claim| matches!(claim, backend_library::WireClaim::Cursor { root, .. } if root == &owner_cursor_id))
+        .find(|claim| matches!(claim, WireClaim::Cursor { root, .. } if root == &owner_cursor_id))
         .expect("retained owner cursor claim");
-    if let backend_library::WireClaim::Cursor { sequence, .. } = owner_claim {
+    if let WireClaim::Cursor { sequence, .. } = owner_claim {
         *sequence ^= 1;
     }
     let tampered_request = CommandDto::new(1204, request.command.clone()).with_certificate(
-        backend_library::WireCertificate::from_claims(tampered_claims.into_boxed_slice()),
+        WireCertificate::from_claims(tampered_claims.into_boxed_slice()),
     );
     let tampered_body = serde_json::to_vec(&tampered_request).expect("tampered request wire body");
     assert!(
@@ -273,14 +272,12 @@ fn local_adapter_rehydrates_pc5_outline_witness_before_library_dispatch() {
     let page_claim_index = request_certificate
         .claims
         .iter()
-        .position(|claim| {
-            matches!(claim, backend_library::WireClaim::Cursor { root, .. } if root == &page_root_id)
-        })
+        .position(|claim| matches!(claim, WireClaim::Cursor { root, .. } if root == &page_root_id))
         .expect("retained page cursor claim");
     let mut duplicate_claims = request_certificate.claims.to_vec();
     duplicate_claims.push(duplicate_claims[page_claim_index].clone());
     let duplicate_request = CommandDto::new(1206, request.command.clone()).with_certificate(
-        backend_library::WireCertificate::from_claims(duplicate_claims.into_boxed_slice()),
+        WireCertificate::from_claims(duplicate_claims.into_boxed_slice()),
     );
     let duplicate_body = serde_json::to_vec(&duplicate_request).expect("duplicate claim body");
     assert!(
@@ -289,11 +286,11 @@ fn local_adapter_rehydrates_pc5_outline_witness_before_library_dispatch() {
     );
     let mut mismatched_page_claims = request_certificate.claims.to_vec();
     let page_claim = &mut mismatched_page_claims[page_claim_index];
-    if let backend_library::WireClaim::Cursor { root, .. } = page_claim {
+    if let WireClaim::Cursor { root, .. } = page_claim {
         *root = owner_cursor_id.clone();
     }
     let mismatched_page_request = CommandDto::new(1207, request.command.clone()).with_certificate(
-        backend_library::WireCertificate::from_claims(mismatched_page_claims.into_boxed_slice()),
+        WireCertificate::from_claims(mismatched_page_claims.into_boxed_slice()),
     );
     let mismatched_page_body =
         serde_json::to_vec(&mismatched_page_request).expect("mismatched page claim body");
@@ -341,51 +338,51 @@ fn local_adapter_rehydrates_pc5_outline_witness_before_library_dispatch() {
     let mut third_certificate = revision_certificate;
     for claim in &second_page_certificate.claims {
         let keep = match claim {
-            backend_library::WireClaim::Root { schema, id, .. }
+            WireClaim::Root { schema, id, .. }
                 if *schema == backend_library::WireSchema::ViewRelation
                     && id == &second_page_root_id =>
             {
                 third_certificate = third_certificate.with_claim_once(
-                    backend_library::WireClaim::RootCommitment {
+                    WireClaim::RootCommitment {
                         schema: *schema,
                         id: id.clone(),
                     },
                 );
                 false
             }
-            backend_library::WireClaim::RootCommitment { schema, id }
+            WireClaim::RootCommitment { schema, id }
                 if *schema == backend_library::WireSchema::ViewRelation
                     && id == &second_page_root_id =>
             {
                 third_certificate = third_certificate.with_claim_once(claim.clone());
                 false
             }
-            backend_library::WireClaim::KeyBytes {
+            WireClaim::KeyBytes {
                 schema: backend_library::WireSchema::ViewRecipe,
                 id,
                 ..
             } if id == &second_recipe_id => true,
-            backend_library::WireClaim::Version {
+            WireClaim::Version {
                 schema: backend_library::WireSchema::ViewVersion,
                 id,
                 ..
             } if id == &backend_library::encode_id(second_cursor.version().as_bytes()) => true,
-            backend_library::WireClaim::Key {
+            WireClaim::Key {
                 schema: backend_library::WireSchema::Branch,
                 id,
                 ..
             } if id == &backend_library::encode_id(second_cursor.branch().as_bytes()) => true,
-            backend_library::WireClaim::Key {
+            WireClaim::Key {
                 schema: backend_library::WireSchema::Log,
                 id,
                 ..
             } if id == &backend_library::encode_id(second_cursor.log().as_bytes()) => true,
-            backend_library::WireClaim::Key {
+            WireClaim::Key {
                 schema: backend_library::WireSchema::Package,
                 id,
                 ..
             } if id == &backend_library::encode_id(package.as_bytes()) => true,
-            backend_library::WireClaim::Cursor {
+            WireClaim::Cursor {
                 recipe,
                 version,
                 branch,

@@ -11437,7 +11437,7 @@ mod references_tests {
         let links = [TreeLinkInput {
             from: calling_site,
             target: TreeLinkTarget::Local(called_target),
-            kind: backend_semantic::ir::LinkKind::Calls,
+            kind: LinkKind::Calls,
             confidence: backend_semantic::ir::Confidence::Compiler,
             authority: OccurrenceAuthorityFacts {
                 source: FactAvailability::Unavailable,
@@ -11473,7 +11473,7 @@ mod references_tests {
             let links = [TreeLinkInput {
                 from: calling_site,
                 target: TreeLinkTarget::Local(called_target),
-                kind: backend_semantic::ir::LinkKind::Calls,
+                kind: LinkKind::Calls,
                 confidence: backend_semantic::ir::Confidence::Compiler,
                 authority: OccurrenceAuthorityFacts {
                     source: FactAvailability::Captured,
@@ -11499,10 +11499,7 @@ mod references_tests {
     -> Result<(), String> {
         use backend_semantic::ir::DeclarationPublicationRole as Role;
         let package = backend_engine::package_key("fixture");
-        let callee = super::super::super::view_build::semantic_symbol(
-            package,
-            fixture_version(2).identity(),
-        );
+        let callee = view_build::semantic_symbol(package, fixture_version(2).identity());
         for (roles, expected) in [
             ([Role::PrimaryOwned, Role::ReferenceOnly], 1),
             ([Role::ReferenceOnly, Role::PrimaryOwned], 0),
@@ -11522,10 +11519,7 @@ mod references_tests {
     fn a_call_occurrence_answers_as_a_reference_with_its_source_span() -> Result<(), String> {
         let bytes = fixture_image()?;
         let package = backend_engine::package_key("fixture");
-        let callee_symbol = super::super::super::view_build::semantic_symbol(
-            package,
-            fixture_version(2).identity(),
-        );
+        let callee_symbol = view_build::semantic_symbol(package, fixture_version(2).identity());
         let mut facts = Vec::new();
         let image = backend_semantic::ir::SemanticImageView::reopen(&bytes)
             .map_err(|error| error.to_string())?;
@@ -11535,12 +11529,7 @@ mod references_tests {
             return Err(format!("expected one reference fact, got {}", facts.len()));
         }
         let fact = &facts[0];
-        if fact.site
-            != super::super::super::view_build::semantic_symbol(
-                package,
-                fixture_version(1).identity(),
-            )
-        {
+        if fact.site != view_build::semantic_symbol(package, fixture_version(1).identity()) {
             return Err("the reference site is not the calling declaration".to_owned());
         }
         if fact.relation != backend_engine::SemanticLinkKind::Calls {
@@ -11577,10 +11566,7 @@ mod references_tests {
         let bytes = fixture_image()?;
         let package = backend_engine::package_key("fixture");
         // A declaration the fixture never compiled.
-        let absent = super::super::super::view_build::semantic_symbol(
-            package,
-            fixture_version(9).identity(),
-        );
+        let absent = view_build::semantic_symbol(package, fixture_version(9).identity());
         let mut facts = Vec::new();
         let image = backend_semantic::ir::SemanticImageView::reopen(&bytes)
             .map_err(|error| error.to_string())?;

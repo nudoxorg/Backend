@@ -222,7 +222,7 @@ fn publication_transport_capability_only_rebind_uses_authenticated_reset() {
     assert_eq!(deltas.len(), 1);
     assert_eq!(deltas[0].changed_row_count(), 0);
     assert!(!deltas[0].is_compact_replayable());
-    assert!(projection::certificate_for_compact_event(&deltas[0]).is_err());
+    assert!(certificate_for_compact_event(&deltas[0]).is_err());
     let target = owner.daemon().engine().daemon().library().view().clone();
     let expected = owner.daemon().engine().daemon().library().cursor();
     // Reconstruct the prior compact producer representation from this actual

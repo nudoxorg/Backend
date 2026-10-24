@@ -108,7 +108,7 @@ fn wait_until(mut ready: impl FnMut() -> bool) {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn query_calls(path: &std::path::Path) -> usize {
+fn query_calls(path: &Path) -> usize {
     fs::read_to_string(path)
         .expect("producer raw call log")
         .lines()
@@ -189,10 +189,7 @@ fn local_semantic_unix_default_first_reply_waits_and_cancelled_waiter_reuses_wor
         .join()
         .expect("first client joined")
         .expect("one ordinary first-call result");
-    assert!(matches!(
-        reply.reply,
-        backend_library::CommandReply::Search(_)
-    ));
+    assert!(matches!(reply.reply, CommandReply::Search(_)));
     assert_eq!(
         reply.semantic_search_status(),
         Some(backend_library::SemanticSearchStatus::Available)

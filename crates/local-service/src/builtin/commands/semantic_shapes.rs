@@ -2163,27 +2163,24 @@ mod tests {
             assert_eq!(projected_value.as_str(), expected_value);
         }
 
-        let expected_fact =
-            backend_engine::SemanticTypeFact::Known(backend_engine::SemanticTypeExpr::Object(
-                expected_keys
-                    .iter()
-                    .cloned()
-                    .zip(expected)
-                    .map(
-                        |(key, value)| backend_engine::SemanticObjectMember::Property {
-                            key,
-                            ty: backend_engine::SemanticTypeFact::Known(
-                                backend_engine::SemanticTypeExpr::Literal(
-                                    backend_engine::SemanticLiteral::String(source_atom(value)),
-                                ),
-                            ),
-                            optional: false,
-                            readonly: false,
-                        },
-                    )
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            ));
+        let expected_fact = backend_engine::SemanticTypeFact::Known(SemanticTypeExpr::Object(
+            expected_keys
+                .iter()
+                .cloned()
+                .zip(expected)
+                .map(
+                    |(key, value)| backend_engine::SemanticObjectMember::Property {
+                        key,
+                        ty: backend_engine::SemanticTypeFact::Known(SemanticTypeExpr::Literal(
+                            backend_engine::SemanticLiteral::String(source_atom(value)),
+                        )),
+                        optional: false,
+                        readonly: false,
+                    },
+                )
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        ));
         let root = backend_engine::view_state_root(&[]);
         let basis = backend_engine::Basis::new(root, backend_engine::object_version(b"shape-test"));
         let frontier =

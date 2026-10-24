@@ -507,7 +507,7 @@ mod tests {
                 .filter_map(|result| result.as_ref().ok())
                 .any(|created| created.endpoint_id() == persisted.endpoint_id())
         );
-        let remaining_names = std::fs::read_dir(&scratch.0)
+        let remaining_names = fs::read_dir(&scratch.0)
             .expect("list private owner directory")
             .map(|entry| {
                 entry

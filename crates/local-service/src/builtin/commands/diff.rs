@@ -1586,7 +1586,7 @@ mod semantic_diff_tests {
         let key = StableLinkKey {
             from: source.0,
             target: backend_semantic::ir::DeclarationLinkTarget::Local(target.0),
-            kind: backend_semantic::ir::LinkKind::Calls,
+            kind: LinkKind::Calls,
         };
         let source_path = backend_engine::ProductText::new("src/lib.rs")
             .map_err(|error| BuiltinModelError(error.to_string()))?;
@@ -1710,10 +1710,7 @@ mod semantic_diff_tests {
         let after = package_snapshot_from_image(&reversed_image)?;
         assert_eq!(before.links.len(), 2);
         assert_eq!(before.links[0].key, before.links[1].key);
-        assert_eq!(
-            before.links[0].key.kind,
-            backend_semantic::ir::LinkKind::Calls
-        );
+        assert_eq!(before.links[0].key.kind, LinkKind::Calls);
         assert!(matches!(
             before.links[0].key.target,
             backend_semantic::ir::DeclarationLinkTarget::Foreign(identity)
@@ -2690,7 +2687,7 @@ mod semantic_diff_tests {
         )?;
         let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
             &workspace,
-            crate::builtin::BuiltinModel,
+            BuiltinModel,
             crate::builtin::genesis().map_err(|error| error.to_string())?,
             dispatcher,
             backend_engine::DaemonConfig::default(),

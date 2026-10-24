@@ -843,20 +843,16 @@ impl LocalAnswer {
         let bytes = self
             .matches
             .capacity()
-            .checked_mul(std::mem::size_of::<(EntityId, lexical::Relevance)>())
+            .checked_mul(size_of::<(EntityId, lexical::Relevance)>())
             .and_then(|bytes| {
                 bytes.checked_add(
                     self.rows
                         .len()
-                        .checked_mul(std::mem::size_of::<(RowId, Option<lexical::Relevance>)>())?,
+                        .checked_mul(size_of::<(RowId, Option<lexical::Relevance>)>())?,
                 )
             })
             .and_then(|bytes| {
-                bytes.checked_add(
-                    self.lanes
-                        .len()
-                        .checked_mul(std::mem::size_of::<LaneReport>())?,
-                )
+                bytes.checked_add(self.lanes.len().checked_mul(size_of::<LaneReport>())?)
             })
             .and_then(|bytes| bytes.checked_add(3 * 256))
             .ok_or(super::LocalSemanticError::CorpusEnvelope)?;
@@ -2160,7 +2156,7 @@ impl QueryCoordinator {
                 .view
                 .row_ref(selected.row)
                 .ok_or(QueryError::InvalidView)?;
-            let mut bytes = std::mem::size_of::<Row>();
+            let mut bytes = size_of::<Row>();
             for extent in [
                 row.label.len(),
                 row.signature.as_ref().map_or(0, String::len),
@@ -2168,7 +2164,7 @@ impl QueryCoordinator {
                     .map_or(0, |preimage| preimage.as_str().len()),
                 row.document
                     .len()
-                    .checked_mul(std::mem::size_of::<backend_engine::Fragment>())
+                    .checked_mul(size_of::<backend_engine::Fragment>())
                     .ok_or(QueryError::CorpusLimit)?,
                 row.facts
                     .deprecation
@@ -2618,8 +2614,8 @@ mod prepared_corpus_tests {
     #[derive(Debug)]
     struct ViewFixtureError(backend_library::ViewError);
 
-    impl std::fmt::Display for ViewFixtureError {
-        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    impl fmt::Display for ViewFixtureError {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
             write!(formatter, "renamed view fixture rejected: {:?}", self.0)
         }
     }

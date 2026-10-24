@@ -6938,7 +6938,7 @@ mod tests {
         }
     }
 
-    fn temp_journal_path() -> std::path::PathBuf {
+    fn temp_journal_path() -> PathBuf {
         std::env::temp_dir().join(format!(
             "backend-discovery-search-{}-{}.journal",
             std::process::id(),
@@ -6985,11 +6985,11 @@ mod tests {
         sorted[index]
     }
 
-    fn file_sha256(path: &std::path::Path) -> String {
+    fn file_sha256(path: &Path) -> String {
         use sha2::{Digest, Sha256};
         use std::io::Read;
 
-        let mut file = std::fs::File::open(path).expect("open benchmark executable");
+        let mut file = File::open(path).expect("open benchmark executable");
         let mut digest = Sha256::new();
         let mut buffer = [0u8; 64 * 1024];
         loop {
@@ -7020,8 +7020,8 @@ mod tests {
         None
     }
 
-    fn measured_directory_bytes(path: &std::path::Path) -> u64 {
-        let Ok(entries) = std::fs::read_dir(path) else {
+    fn measured_directory_bytes(path: &Path) -> u64 {
+        let Ok(entries) = fs::read_dir(path) else {
             return 0;
         };
         entries
@@ -7033,9 +7033,9 @@ mod tests {
                 if file_type.is_dir() {
                     measured_directory_bytes(&entry.path())
                 } else if file_type.is_file() {
-                    std::fs::symlink_metadata(entry.path())
+                    fs::symlink_metadata(entry.path())
                         .ok()
-                        .filter(std::fs::Metadata::is_file)
+                        .filter(fs::Metadata::is_file)
                         .map_or(0, |metadata| metadata.len())
                 } else {
                     0
@@ -7122,19 +7122,19 @@ mod tests {
     fn direct_maven_discovery_index_benchmark_from_pinned_inputs() {
         use sha2::{Digest, Sha256};
 
-        let journal_path = std::path::PathBuf::from(
+        let journal_path = PathBuf::from(
             std::env::var_os("BACKEND_DISCOVERY_BENCH_JOURNAL")
                 .expect("BACKEND_DISCOVERY_BENCH_JOURNAL"),
         );
-        let labels_path = std::path::PathBuf::from(
+        let labels_path = PathBuf::from(
             std::env::var_os("BACKEND_DISCOVERY_BENCH_LABELS")
                 .expect("BACKEND_DISCOVERY_BENCH_LABELS"),
         );
-        let cache_root = std::path::PathBuf::from(
+        let cache_root = PathBuf::from(
             std::env::var_os("BACKEND_DISCOVERY_BENCH_CACHE")
                 .expect("BACKEND_DISCOVERY_BENCH_CACHE"),
         );
-        let report_path = std::path::PathBuf::from(
+        let report_path = PathBuf::from(
             std::env::var_os("BACKEND_DISCOVERY_BENCH_REPORT")
                 .expect("BACKEND_DISCOVERY_BENCH_REPORT"),
         );
@@ -7142,18 +7142,17 @@ mod tests {
             .unwrap_or_else(|_| "unspecified".to_owned());
         let executable_path = std::env::current_exe().expect("resolve benchmark test executable");
         let executable_sha256 = file_sha256(&executable_path);
-        let executable_bytes = std::fs::metadata(&executable_path)
+        let executable_bytes = fs::metadata(&executable_path)
             .expect("inspect benchmark test executable")
             .len();
-        let cargo_lock_path =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
+        let cargo_lock_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
         let cargo_lock_sha256 = file_sha256(&cargo_lock_path);
         const EXPECTED_JOURNAL_SHA256: &str =
             "7b156608e0427b60a7fd394f1d4d0c4b68aa7d7df6d55f0b12a1da80f9f36899";
         const WARM_CHAINS_PER_QUERY: usize = 100;
         const PAGE_LIMIT: usize = 10;
 
-        let journal_bytes = std::fs::read(&journal_path).expect("read pinned journal copy");
+        let journal_bytes = fs::read(&journal_path).expect("read pinned journal copy");
         let journal_sha256 = hex(&Sha256::digest(&journal_bytes));
         assert_eq!(
             journal_bytes.len(),
@@ -7166,7 +7165,7 @@ mod tests {
         );
         let journal_size = journal_bytes.len();
         drop(journal_bytes);
-        let labels_bytes = std::fs::read(&labels_path).expect("read independent query labels");
+        let labels_bytes = fs::read(&labels_path).expect("read independent query labels");
         let labels_sha256 = hex(&Sha256::digest(&labels_bytes));
         let labels: serde_json::Value =
             serde_json::from_slice(&labels_bytes).expect("decode independent query labels");
@@ -7478,9 +7477,9 @@ mod tests {
             "queries": timed_queries,
         });
         if let Some(parent) = report_path.parent() {
-            std::fs::create_dir_all(parent).expect("create benchmark report directory");
+            fs::create_dir_all(parent).expect("create benchmark report directory");
         }
-        std::fs::write(
+        fs::write(
             &report_path,
             serde_json::to_vec_pretty(&report).expect("serialize benchmark report"),
         )
@@ -8695,8 +8694,8 @@ mod tests {
         assert_eq!(rebuilt.snapshot_root(), root);
         drop(rebuilt);
         drop(reopened);
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("journal.lock"));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("journal.lock"));
     }
 
     #[test]
@@ -8791,8 +8790,8 @@ mod tests {
 
         drop(cold);
         drop(reopened);
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("journal.lock"));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("journal.lock"));
     }
 
     #[test]
@@ -8940,11 +8939,11 @@ mod tests {
 
         drop(cold);
         drop(reopened);
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("journal.lock"));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("journal.lock"));
         let mut lock_path = path.as_os_str().to_owned();
         lock_path.push(".lock");
-        let _ = std::fs::remove_file(std::path::PathBuf::from(lock_path));
+        let _ = fs::remove_file(PathBuf::from(lock_path));
     }
 
     #[test]
@@ -9113,8 +9112,8 @@ mod tests {
         drop(changed);
         drop(rebuilt);
         drop(reopened);
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("journal.lock"));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("journal.lock"));
     }
 
     #[test]
@@ -9202,7 +9201,7 @@ mod tests {
         let selected = cache
             .join(SEARCH_PROJECTION_DIRECTORY)
             .join(hex(&updated_root));
-        std::fs::write(
+        fs::write(
             selected.join(SEARCH_PROJECTION_MANIFEST),
             b"truncated durable manifest",
         )
@@ -9210,7 +9209,7 @@ mod tests {
         let incomplete = cache
             .join(SEARCH_PROJECTION_DIRECTORY)
             .join(format!(".{}.building-1-1", "0".repeat(64)));
-        std::fs::create_dir(&incomplete).expect("simulated interrupted build");
+        fs::create_dir(&incomplete).expect("simulated interrupted build");
 
         let recovered = DiscoverySearchIndex::open_forge_only_with_source_pins_at(
             &cache,
@@ -9235,7 +9234,7 @@ mod tests {
         assert!(expected_key(&rollback, "ambercachemarker92").is_empty());
         drop(rollback);
 
-        let _ = std::fs::remove_dir_all(cache);
+        let _ = fs::remove_dir_all(cache);
     }
 
     #[test]
@@ -9300,7 +9299,7 @@ mod tests {
             "pkg:cargo/mergecase7@1.0.0"
         );
         drop(index);
-        let _ = std::fs::remove_dir_all(cache);
+        let _ = fs::remove_dir_all(cache);
     }
 
     #[test]
@@ -9374,7 +9373,7 @@ mod tests {
             "pkg:cargo/budgeted@1.0.0"
         );
         drop(reopened);
-        let _ = std::fs::remove_dir_all(cache);
+        let _ = fs::remove_dir_all(cache);
     }
 
     #[cfg(unix)]
@@ -9469,14 +9468,14 @@ mod tests {
             "released old root becomes evictable"
         );
 
-        std::fs::set_permissions(&latest_root, std::fs::Permissions::from_mode(0o000))
+        fs::set_permissions(&latest_root, fs::Permissions::from_mode(0o000))
             .expect("make selected root unreadable where permissions are enforced");
         let transient = DiscoverySearchIndex::open_forge_only_with_source_pins_at(
             &cache,
             std::slice::from_ref(&latest_document),
             &[],
         );
-        std::fs::set_permissions(&latest_root, std::fs::Permissions::from_mode(0o700))
+        fs::set_permissions(&latest_root, fs::Permissions::from_mode(0o700))
             .expect("restore selected root permissions");
         match transient {
             Err(error) => {
@@ -9493,9 +9492,9 @@ mod tests {
         }
 
         let external = cache.join("external-manifest-sentinel");
-        std::fs::write(&external, b"outside bytes remain unchanged").expect("sentinel");
+        fs::write(&external, b"outside bytes remain unchanged").expect("sentinel");
         let manifest = latest_root.join(SEARCH_PROJECTION_MANIFEST);
-        std::fs::remove_file(&manifest).expect("remove selected manifest");
+        fs::remove_file(&manifest).expect("remove selected manifest");
         std::os::unix::fs::symlink(&external, &manifest).expect("install final symlink");
         let tiny_budget = DurableCacheBudget::new(1).expect("nonzero cache budget");
         let refused = DiscoverySearchIndex::open_forge_only_with_source_pins_at_with_budget(
@@ -9516,14 +9515,14 @@ mod tests {
             "refusal must leave the selected path intact"
         );
         assert!(
-            std::fs::symlink_metadata(&manifest)
+            fs::symlink_metadata(&manifest)
                 .expect("invalid manifest remains for retry")
                 .file_type()
                 .is_symlink(),
             "a refused repair must not change the selected manifest entry"
         );
         assert_eq!(
-            std::fs::read(&external).expect("external target remains unchanged after refusal"),
+            fs::read(&external).expect("external target remains unchanged after refusal"),
             b"outside bytes remain unchanged"
         );
         let rebuilt = DiscoverySearchIndex::open_forge_only_with_source_pins_at(
@@ -9548,7 +9547,7 @@ mod tests {
             "pkg:cargo/pinned@1.0.0"
         );
         assert_eq!(
-            std::fs::read(&external).expect("external target remains readable"),
+            fs::read(&external).expect("external target remains readable"),
             b"outside bytes remain unchanged"
         );
         drop(rebuilt);
@@ -9567,7 +9566,7 @@ mod tests {
         .expect("recover oversized manifest without unbounded read");
         assert_eq!(recovered.snapshot_root, latest_snapshot_root);
         drop(recovered);
-        let _ = std::fs::remove_dir_all(cache);
+        let _ = fs::remove_dir_all(cache);
     }
 
     #[test]
@@ -10770,10 +10769,10 @@ mod tests {
         );
         drop(rebuilt);
         drop(reopened);
-        let _ = std::fs::remove_file(&path);
+        let _ = fs::remove_file(&path);
         let mut lock_path = path.as_os_str().to_owned();
         lock_path.push(".lock");
-        let _ = std::fs::remove_file(std::path::PathBuf::from(lock_path));
+        let _ = fs::remove_file(PathBuf::from(lock_path));
     }
 
     #[test]
@@ -10830,7 +10829,7 @@ mod tests {
         const SAMPLES: usize = 21;
         let journal = std::env::var_os("DISCOVERY_SEARCH_OWNER_JOURNAL")
             .expect("set DISCOVERY_SEARCH_OWNER_JOURNAL to a cloned owner's catalog journal");
-        let store = DiscoveryStore::open(std::path::PathBuf::from(journal))
+        let store = DiscoveryStore::open(PathBuf::from(journal))
             .expect("open cloned live-owner discovery journal");
         let cold_started = std::time::Instant::now();
         let index = DiscoverySearchIndex::open(&store).expect("rebuild owner search projection");

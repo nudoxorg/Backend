@@ -172,7 +172,7 @@ fn source_declaration_ranking_native_python_import_types_keep_real_function_firs
         for entity in session.canonical_entities() {
             let entity = entity.expect("native entity");
             let identity = entity.entity.version.identity();
-            let row_id = RowId::Symbol(identity::semantic_symbol(package, identity));
+            let row_id = RowId::Symbol(semantic_symbol(package, identity));
             let row = rows.get(&row_id).expect("projected native row");
             let name = semantic_display_name(entity.name)
                 .expect("native name")
@@ -187,10 +187,8 @@ fn source_declaration_ranking_native_python_import_types_keep_real_function_firs
             );
             if let Some(parent) = entity.entity.parent {
                 let parent = session.entity(parent).expect("native parent");
-                presentation.parent = Some(identity::query_semantic_id(
-                    package,
-                    parent.entity.version.identity(),
-                ));
+                presentation.parent =
+                    Some(query_semantic_id(package, parent.entity.version.identity()));
             }
             facts.insert(
                 presentation.id.clone(),
@@ -226,9 +224,9 @@ fn source_declaration_ranking_native_python_import_types_keep_real_function_firs
             }
         }
         for (_, (target, external)) in externals {
-            let row_id = RowId::Symbol(identity::external_semantic_symbol(package, digest, target));
+            let row_id = RowId::Symbol(external_semantic_symbol(package, digest, target));
             let row = rows.get(&row_id).expect("projected external row");
-            let name = call_join::foreign_display_name(&image, external)
+            let name = foreign_display_name(&image, external)
                 .expect("target display")
                 .unwrap_or_else(|| "external semantic target".to_owned());
             let presentation = display(row, name, "external".to_owned(), Some(package_id.clone()));

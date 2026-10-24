@@ -257,7 +257,7 @@ fn settle_then_write(fixture: &mut AdapterFixture, completion: ProfileCompletion
         "pkg:pypi/next-worker-write@1.0.0".to_owned(),
     )
     .expect("admitted namespace");
-    let key = backend_engine::builtin::ProductSemanticPublicationKey::new(
+    let key = ProductSemanticPublicationKey::new(
         backend_library::PackageReference::Purl(coordinate.clone()),
         coordinate,
         backend_semantic::vocabulary::LanguageProfile::Python(

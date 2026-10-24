@@ -2046,9 +2046,8 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(initial_bytes.len(), 2);
         assert_eq!(replacement_bytes.len(), 1);
-        let initial_weight = super::resident_weight(initial.images()).expect("initial weight");
-        let replacement_weight =
-            super::resident_weight(replacement.images()).expect("replacement weight");
+        let initial_weight = resident_weight(initial.images()).expect("initial weight");
+        let replacement_weight = resident_weight(replacement.images()).expect("replacement weight");
         assert!(initial_weight.bytes > replacement_weight.bytes);
         assert!(initial_bytes.iter().all(|bytes| !bytes.is_empty()));
         assert!(!replacement_bytes[0].is_empty());
@@ -2129,7 +2128,7 @@ mod tests {
             .iter()
             .map(|image| image.as_ref().to_vec())
             .collect::<Vec<_>>();
-        let total_bytes = super::resident_weight(expected.images())
+        let total_bytes = resident_weight(expected.images())
             .expect("generation weight")
             .bytes;
         assert!(total_bytes > 1);
@@ -2524,7 +2523,7 @@ mod tests {
                 .test_value()?;
         }
         let cancelled = daemon.engine().daemon().owner().snapshot();
-        let mut generations = super::SemanticGenerationResidence::default();
+        let mut generations = SemanticGenerationResidence::default();
         authority.install_image_loader(&mut generations);
         let active = [(key.package_key(), key.profile())].into_iter().collect();
         assert_eq!(

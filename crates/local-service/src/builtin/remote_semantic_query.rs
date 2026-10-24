@@ -524,7 +524,7 @@ fn lock_usage_ledger(ledger: &GrantUsageLedger) -> io::Result<File> {
         .open_private_file_read_write(&lock_name, true)?;
     #[cfg(unix)]
     if file.metadata()?.permissions().mode() & 0o777 != 0o600 {
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
     file.lock()?;
     Ok(file)
@@ -1482,13 +1482,7 @@ mod tests {
         drop(usage);
 
         let reopened = RemoteIndexUsage::open(&path, owner).expect("cold-reopened ledger");
-        assert!(
-            RemoteIndexUsage::open(
-                &path,
-                backend_engine::cluster_transport::SecretKey::from_bytes(&[99; 32]).public(),
-            )
-            .is_err()
-        );
+        assert!(RemoteIndexUsage::open(&path, SecretKey::from_bytes(&[99; 32]).public(),).is_err());
         reopened
             .charge_request(&capability)
             .expect("second request");

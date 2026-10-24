@@ -4197,7 +4197,7 @@ fn recognized_nix_parallel_cargo(
 fn match_nix_path_template(
     template: &[u8],
     actual: &[u8],
-) -> Option<std::collections::BTreeMap<&'static str, PathBuf>> {
+) -> Option<BTreeMap<&'static str, PathBuf>> {
     const MARKERS: [(&str, &[u8]); 8] = [
         ("cargo", b"@cargo@"),
         ("git", b"@git@"),
@@ -4209,7 +4209,7 @@ fn match_nix_path_template(
         ("provenance", b"@provenance@"),
     ];
 
-    let mut captures = std::collections::BTreeMap::new();
+    let mut captures = BTreeMap::new();
     let mut template_offset = 0;
     let mut actual_offset = 0;
     loop {
@@ -9596,14 +9596,14 @@ fn witness(files: &[PathBuf]) -> [u8; 32] {
 pub(super) fn captured_project_tree(
     snapshot: &backend_engine::WorkspaceSnapshot,
     root: &backend_library::ProductText,
-) -> Result<backend_library::browse::ProjectTree, super::BuiltinModelError> {
+) -> Result<ProjectTree, super::BuiltinModelError> {
     if !Path::new(root.as_str()).is_absolute() {
         return Err(super::BuiltinModelError("project-tree needs an absolute project directory".to_owned()));
     }
-    let package = backend_library::PackageReference::Local(root.clone());
+    let package = PackageReference::Local(root.clone());
     let request = backend_library::PackageSourceMembershipPageRequestV1::first(package);
     let page = super::commands::package_source_membership_page_from_snapshot(snapshot, &request)?;
-    backend_library::browse::ProjectTree::from_captured_membership(root.as_str().to_owned(), page)
+    ProjectTree::from_captured_membership(root.as_str().to_owned(), page)
         .ok_or_else(|| super::BuiltinModelError("captured project-tree membership is malformed or belongs to another root".to_owned()))
 }
 

@@ -41,7 +41,7 @@ impl OwnerService for FakeOwner {
 fn an_unprepared_owner_cannot_mutate_a_durable_subscription() {
     let limits = FrameLimits::default();
     let mut service = LocaldService::new(FakeOwner::default(), limits).expect("service");
-    let request = EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+    let request = EngineRequest::Subscription(LocalSubscriptionRequest {
         request_id: 47,
         operation: backend_engine::LocalSubscriptionOperation::Open {
             cursor: Box::default(),

@@ -543,7 +543,7 @@ impl LocalSemantic {
                 // Merge ownership moves payloads, but its three pre-reserved descriptor
                 // allocations coexist. Charge actual layout rather than a per-row guess.
                 bytes.checked_add(
-                    u64::try_from(std::mem::size_of::<Option<super::local::RankedRow>>())
+                    u64::try_from(size_of::<Option<super::local::RankedRow>>())
                         .ok()?
                         .checked_mul(3)?
                         .checked_mul(u64::try_from(retained_rows).ok()?.checked_add(256)?)?,
@@ -695,7 +695,7 @@ impl ProjectionEnvelope {
         )?;
         represent(
             ProjectionAllocation::EntryDescriptors,
-            count as u128 * std::mem::size_of::<(u64, Vec<u8>)>() as u128,
+            count as u128 * size_of::<(u64, Vec<u8>)>() as u128,
             isize::MAX as u128,
         )?;
         let total = represent(

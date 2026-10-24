@@ -2375,8 +2375,8 @@ mod tests {
         std::env::temp_dir().join(format!(
             "backend-registry-discovery-{name}-{}-{}.journal",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .expect("clock")
                 .as_nanos()
         ))
@@ -2578,7 +2578,7 @@ mod tests {
         let address = listener.local_addr().expect("fixture address");
         let mut project_index = br#"{"meta":{},"projects":[{"name":"requests"}]}"#.to_vec();
         project_index.resize(MAX_SOURCE_BODY_BYTES + 1, b' ');
-        let server = std::thread::spawn(move || {
+        let server = thread::spawn(move || {
             let mut requests = Vec::new();
             for body in [
                 project_index,
@@ -2592,7 +2592,7 @@ mod tests {
                             if Instant::now() >= accept_deadline {
                                 return requests;
                             }
-                            std::thread::sleep(Duration::from_millis(5));
+                            thread::sleep(Duration::from_millis(5));
                         }
                         Err(error) => panic!("fixture request: {error}"),
                     }
@@ -2655,7 +2655,7 @@ mod tests {
             br#"{"response":{"numFound":2,"docs":[{"g":"org.example","a":"alpha","latestVersion":"1.0.0","timestamp":100},{"g":"org.example","a":"beta","latestVersion":"1.0.0","timestamp":90}]}}"#.to_vec(),
             br#"{"response":{"numFound":3,"docs":[{"g":"org.example","a":"newest","latestVersion":"1.0.0","timestamp":110},{"g":"org.example","a":"alpha","latestVersion":"1.0.0","timestamp":100},{"g":"org.example","a":"beta","latestVersion":"1.0.0","timestamp":90}]}}"#.to_vec(),
         ];
-        let server = std::thread::spawn(move || {
+        let server = thread::spawn(move || {
             let mut requests = Vec::new();
             for body in snapshots {
                 let (mut stream, _) = listener.accept().expect("fixture request");
@@ -2863,7 +2863,7 @@ mod tests {
             },
         )
         .expect("serialize valid legacy-version transaction shape");
-        let mut hasher = backend_engine::blake3::Hasher::new();
+        let mut hasher = blake3::Hasher::new();
         hasher.update(b"backend.registry.discovery.transaction.v1\0");
         hasher.update(&payload);
         let checksum = *hasher.finalize().as_bytes();

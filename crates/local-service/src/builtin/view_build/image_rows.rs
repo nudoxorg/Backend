@@ -1592,7 +1592,7 @@ mod tests {
         initial: &backend_engine::ViewRoot,
         sites: &[&backend_compile::SourceDeclaration],
     ) -> Vec<Row> {
-        let projected = super::project_image_rows(
+        let projected = project_image_rows(
             image,
             super::image_digest(image.as_ref()),
             project,
@@ -1621,7 +1621,7 @@ mod tests {
             site_declarations: sites,
             native_source: None,
         };
-        super::apply_projected_image(&projected, &mut sink).expect("apply direct projection");
+        apply_projected_image(&projected, &mut sink).expect("apply direct projection");
         rows
     }
 

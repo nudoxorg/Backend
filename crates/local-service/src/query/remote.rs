@@ -195,13 +195,7 @@ impl RemoteSemantic {
     pub(crate) fn admit_local_reply(
         &self,
         bytes: u64,
-    ) -> Result<
-        (
-            backend_compile::EmbeddingMemoryReservation,
-            std::time::Instant,
-        ),
-        LocalSemanticError,
-    > {
+    ) -> Result<(backend_compile::EmbeddingMemoryReservation, Instant), LocalSemanticError> {
         match self {
             Self::Local(owner) => owner.admit_reply(bytes),
             _ => Err(LocalSemanticError::CorpusEnvelope),
@@ -2195,8 +2189,8 @@ mod tests {
             .iter()
             .map(|document| document.row.stable_key())
             .collect::<Vec<_>>();
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .expect("fixture clock")
             .as_nanos();
         let directory = std::env::temp_dir().join(format!(
@@ -2269,8 +2263,8 @@ mod tests {
     fn duplicate_document_payloads_share_one_exact_producer_result() {
         use std::os::unix::fs::PermissionsExt;
 
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
         let directory = std::env::temp_dir().join(format!(
@@ -2438,8 +2432,8 @@ printf '{{"abi":1,"dimensions":2,"values":[1.0,0.0]}}'
     fn qdrant_bem2_documents_share_one_supervised_batch() {
         use std::os::unix::fs::PermissionsExt;
 
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
         let directory = std::env::temp_dir().join(format!(

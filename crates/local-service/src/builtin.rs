@@ -1153,7 +1153,7 @@ fn view_for_workspace(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &backend_engine::application::LocalCompilerClient,
     deployment: SemanticDeployment,
-    filesystem_workspace: &std::path::Path,
+    filesystem_workspace: &Path,
     image_rows: &mut view_build::ImageRowResidence,
     generations: &mut SemanticGenerationResidence,
 ) -> Result<(ViewRoot, coverage::ActivatedProfiles, usize), BuiltinModelError> {
@@ -1175,7 +1175,7 @@ fn view_for_snapshot(
     snapshot: &WorkspaceSnapshot,
     compiler: &backend_engine::application::LocalCompilerClient,
     deployment: SemanticDeployment,
-    filesystem_workspace: &std::path::Path,
+    filesystem_workspace: &Path,
     image_rows: &mut view_build::ImageRowResidence,
     generations: &mut SemanticGenerationResidence,
 ) -> Result<(ViewRoot, coverage::ActivatedProfiles, usize), BuiltinModelError> {
@@ -1251,7 +1251,7 @@ fn prepare_builtin_view(
     current: ViewRoot,
     compiler: &backend_engine::application::LocalCompilerClient,
     deployment: SemanticDeployment,
-    filesystem_workspace: &std::path::Path,
+    filesystem_workspace: &Path,
     prior: Option<&view_publish::PublishedRoots>,
     edit: Option<&BuiltinIntent>,
     image_rows: &mut view_build::ImageRowResidence,
@@ -1323,7 +1323,7 @@ fn publish_builtin_view(
     daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &backend_engine::application::LocalCompilerClient,
     deployment: SemanticDeployment,
-    filesystem_workspace: &std::path::Path,
+    filesystem_workspace: &Path,
     prior: Option<&view_publish::PublishedRoots>,
     edit: Option<&BuiltinIntent>,
     image_rows: &mut view_build::ImageRowResidence,
@@ -1401,7 +1401,7 @@ fn prepare_builtin_view_inner(
     preparation: &mut BuiltinViewPreparation,
     compiler: &backend_engine::application::LocalCompilerClient,
     deployment: SemanticDeployment,
-    filesystem_workspace: &std::path::Path,
+    filesystem_workspace: &Path,
     prior: Option<&view_publish::PublishedRoots>,
     edit: Option<&BuiltinIntent>,
     image_rows: &mut view_build::ImageRowResidence,
@@ -1485,7 +1485,7 @@ fn prepare_package_view(
     preparation: &mut BuiltinViewPreparation,
     compiler: &backend_engine::application::LocalCompilerClient,
     deployment: SemanticDeployment,
-    filesystem_workspace: &std::path::Path,
+    filesystem_workspace: &Path,
     prior: Option<&view_publish::PublishedRoots>,
     package: backend_engine::PackageKey,
     edit: Option<&BuiltinIntent>,
@@ -3074,10 +3074,7 @@ mod owner_fairness_tests {
         for turn in 1..=5 {
             assert!(OwnerService::serve_one(&mut owner));
             if turn < 5 {
-                assert!(matches!(
-                    query.try_recv(),
-                    Err(std::sync::mpsc::TryRecvError::Empty)
-                ));
+                assert!(matches!(query.try_recv(), Err(TryRecvError::Empty)));
             }
         }
         assert_eq!(remote_progress.polled.load(Ordering::Acquire), 4);

@@ -1117,7 +1117,7 @@ impl IndexOperationJournal {
                         }
                         StoredOperationState::Failed { .. }
                             if entry.pending_source_capture().is_some() => IndexOperationState::Unresolved {
-                                reason: backend_library::IndexOperationUnresolvedReason::SemanticWorkInterruptedAfterCapture,
+                                reason: IndexOperationUnresolvedReason::SemanticWorkInterruptedAfterCapture,
                                 detail: ProductText::from_static(
                                     "the original failure is durable, but its source capture still requires explicit recovery",
                                 ),
@@ -2069,7 +2069,7 @@ mod tests {
         IndexOperationKey::from_bytes(bytes).expect("key")
     }
 
-    fn open(path: &std::path::Path) -> IndexOperationJournal {
+    fn open(path: &Path) -> IndexOperationJournal {
         IndexOperationJournal::open(path).expect("open index-operation database")
     }
 
@@ -2149,7 +2149,7 @@ mod tests {
         .expect("checked source-capture receipt")
     }
 
-    fn cleanup(path: &std::path::Path) {
+    fn cleanup(path: &Path) {
         if let Some(parent) = path.parent()
             && let Some(root) = parent.parent()
         {
@@ -2983,7 +2983,7 @@ mod tests {
                 .accept(key(value), package(), CompileExecutionIntent::Interactive)
                 .expect("accept");
         }
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let barrier = Arc::new(std::sync::Barrier::new(2));
         let (ready, readiness) = std::sync::mpsc::sync_channel(2);
         let mut releases = Vec::new();
         let workers: Vec<_> = [80, 81]
@@ -3108,7 +3108,7 @@ mod tests {
         let Some(path) = std::env::var_os(MULTIPROCESS_WRITER_PATH) else {
             return;
         };
-        let mut journal = open(std::path::Path::new(&path));
+        let mut journal = open(Path::new(&path));
         journal
             .accept(key(71), package(), CompileExecutionIntent::Interactive)
             .expect("accept from independent process");

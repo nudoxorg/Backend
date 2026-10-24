@@ -805,7 +805,7 @@ mod tests {
             }
             recovered.extend(page.rows.iter().map(|row| row.path().to_owned()));
             next = match page.next {
-                Some(backend_library::PackageCompilerOutcomeRead::Coverage(next)) => {
+                Some(PackageCompilerOutcomeRead::Coverage(next)) => {
                     assert_eq!(next.offset as usize, recovered.len());
                     Some(next)
                 }

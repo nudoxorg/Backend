@@ -885,7 +885,7 @@ fn local_semantic_joined_shutdown_is_quiescent_and_cannot_restart() -> TestResul
         Some(backend_library::QueryPreparationState::Preparing)
     );
     provider.request_close_local();
-    assert!(cancelled.load(std::sync::atomic::Ordering::Acquire));
+    assert!(cancelled.load(Ordering::Acquire));
     assert_eq!(
         provider.local_preparation(),
         Some(backend_library::QueryPreparationState::Retiring),
@@ -919,12 +919,12 @@ fn local_semantic_joined_shutdown_is_quiescent_and_cannot_restart() -> TestResul
     assert_eq!(
         answer.status,
         SemanticSearchStatus::Unavailable {
-            reason: backend_library::SemanticSearchReason::NoActiveProjection
+            reason: SemanticSearchReason::NoActiveProjection
         },
         "closed admission cannot start a replacement inference worker"
     );
     drop(answer);
-    assert!(!fresh_cancellation.load(std::sync::atomic::Ordering::Acquire));
+    assert!(!fresh_cancellation.load(Ordering::Acquire));
     assert!(provider.local_preparation().is_none());
     assert_eq!(runtime.memory_budget().used(), retired_credits);
     assert_eq!(std::fs::read_to_string(&fixture.log)?, calls);
@@ -1179,7 +1179,7 @@ fn settle_page(
 }
 
 #[cfg(unix)]
-fn wait_for_fixture_marker(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+fn wait_for_fixture_marker(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let deadline = Instant::now() + Duration::from_secs(4);
     while !path.exists() {
         if Instant::now() >= deadline {
@@ -1264,7 +1264,7 @@ fn local_semantic_real_protocol_fixture_contributes_exact_canonical_rows_and_sha
     let runtime = fixture.provision.runtime().ok_or("shared runtime")?;
     if let crate::builtin::query::RemoteSemantic::Local(local) = &provider {
         assert!(
-            std::sync::Arc::ptr_eq(local.admitted_runtime(), &runtime),
+            Arc::ptr_eq(local.admitted_runtime(), &runtime),
             "factory must retain exact compiler owner, not equivalent activation"
         );
         assert_eq!(

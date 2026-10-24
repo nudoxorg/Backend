@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn range_hydration_rejects_a_receipt_for_another_selected_root() {
-        let scratch = std::env::temp_dir().join(format!(
+        let scratch = env::temp_dir().join(format!(
             "backend-s3-stale-range-receipt-{}-{}",
             std::process::id(),
             NEXT_RECEIPT_TEMP.fetch_add(1, Ordering::Relaxed),
@@ -614,7 +614,7 @@ mod tests {
 
     #[test]
     fn durable_gc_receipt_lookup_ignores_hot_cache_and_rejects_stale_authority() {
-        let scratch = std::env::temp_dir().join(format!(
+        let scratch = env::temp_dir().join(format!(
             "backend-s3-durable-gc-receipt-{}-{}",
             std::process::id(),
             NEXT_RECEIPT_TEMP.fetch_add(1, Ordering::Relaxed),
@@ -704,7 +704,7 @@ mod tests {
         use backend_store::{ClosureCompositionBudget, ClosureMembershipChange, TypedObject};
         use backend_version::ObjectKey;
 
-        let scratch = std::env::temp_dir().join(format!(
+        let scratch = env::temp_dir().join(format!(
             "backend-s3-owner-range-{}-{}",
             std::process::id(),
             NEXT_RECEIPT_TEMP.fetch_add(1, Ordering::Relaxed)

@@ -3208,10 +3208,9 @@ mod tests {
         std::fs::create_dir_all(&cargo_home).expect("isolated Cargo home");
         let config_paths = super::super::cargo_config_paths_with(&package, &cargo_home, None)
             .expect("request-CWD Cargo config paths");
-        let sccache_paths = super::super::sccache_configuration_paths(&package)
-            .expect("request-CWD sccache config paths");
-        let rustup_paths =
-            super::super::rustup_selection_paths(&package).expect("request-CWD rustup selectors");
+        let sccache_paths =
+            sccache_configuration_paths(&package).expect("request-CWD sccache config paths");
+        let rustup_paths = rustup_selection_paths(&package).expect("request-CWD rustup selectors");
         let document = CargoMetadataDocument::parse(&metadata).expect("bounded metadata inputs");
         let watched = document
             .inputs
@@ -3221,7 +3220,7 @@ mod tests {
         assert!(watched.contains(&workspace.join("Cargo.toml")));
         assert!(!watched.contains(&workspace_config));
         assert!(!watched.contains(&workspace_toolchain));
-        super::super::observation_witness_with_context(&workspace, &watched, [1; 32], [2; 32])
+        observation_witness_with_context(&workspace, &watched, [1; 32], [2; 32])
             .expect("the strict source witness reads only selected CWD config and toolchain paths");
 
         let excluded_metadata = serde_json::to_vec(&serde_json::json!({
