@@ -3345,6 +3345,64 @@ impl LocalDeclarationSearchIndex {
             super::check_search_preparation(cancelled, point).map_err(|error| error.to_string())
         };
         check("local-declaration-start")?;
+        if immutable {
+            let mut inner = TextSearchIndex::new()?;
+            for row in view.row_refs() {
+                check("local-declaration-row")?;
+                if !matches!(row.id, RowId::Symbol(_)) || is_external_placeholder(row) {
+                    continue;
+                }
+                let name = row.label.rsplit("::").next().unwrap_or(&row.label);
+                inner.insert_document(
+                    row.id.stable_key(),
+                    row.id,
+                    row.label.as_str(),
+                    name,
+                    local_search_text(row),
+                    None,
+                    local_sort_key(row.id, row.label.as_str()),
+                )?;
+            }
+            check("local-declaration-before-commit")?;
+            inner.commit()?;
+            check("local-declaration-after-commit")?;
+            check("local-declaration-before-inner-seal")?;
+            inner.seal_writer()?;
+            check("local-declaration-after-inner-seal")?;
+
+            let mut external_inner = TextSearchIndex::new()?;
+            for row in view.row_refs() {
+                // This boundary is reached only after the inner writer has
+                // been sealed, so cancellation here proves the serial phase.
+                check("local-declaration-external-row")?;
+                if !matches!(row.id, RowId::Symbol(_)) || !is_external_placeholder(row) {
+                    continue;
+                }
+                let name = row.label.rsplit("::").next().unwrap_or(&row.label);
+                external_inner.insert_document(
+                    row.id.stable_key(),
+                    row.id,
+                    row.label.as_str(),
+                    name,
+                    local_search_text(row),
+                    None,
+                    local_sort_key(row.id, row.label.as_str()),
+                )?;
+            }
+            check("local-declaration-before-external-commit")?;
+            external_inner.commit()?;
+            check("local-declaration-after-external-commit")?;
+            check("local-declaration-before-external-seal")?;
+            external_inner.seal_writer()?;
+            check("local-declaration-after-external-seal")?;
+            check("local-declaration-before-publish")?;
+            return Ok(Self {
+                root: Some(view.root()),
+                inner: Some(inner),
+                external_inner: Some(external_inner),
+            });
+        }
+
         let mut inner = TextSearchIndex::new()?;
         let mut external_inner = TextSearchIndex::new()?;
         for row in view.row_refs() {
@@ -3373,17 +3431,6 @@ impl LocalDeclarationSearchIndex {
         inner.commit()?;
         external_inner.commit()?;
         check("local-declaration-after-commit")?;
-        if immutable {
-            check("local-declaration-before-inner-seal")?;
-            inner.seal_writer()?;
-            check("local-declaration-after-inner-seal")?;
-            check("local-declaration-before-external-seal")?;
-            external_inner.seal_writer()?;
-            check("local-declaration-after-external-seal")?;
-        }
-        if immutable {
-            check("local-declaration-before-publish")?;
-        }
         Ok(Self {
             root: Some(view.root()),
             inner: Some(inner),
@@ -11157,6 +11204,9 @@ mod lazy_writer_tests {
             "local-declaration-after-commit",
             "local-declaration-before-inner-seal",
             "local-declaration-after-inner-seal",
+            "local-declaration-external-row",
+            "local-declaration-before-external-commit",
+            "local-declaration-after-external-commit",
             "local-declaration-before-external-seal",
             "local-declaration-after-external-seal",
             "local-declaration-before-publish",
