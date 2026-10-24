@@ -333,6 +333,31 @@ pub struct TantivySource {
     last_binding_work: BindingWork,
 }
 
+/// A durable root lease kept alive without retaining its Tantivy reader.
+/// Dropping this guard releases the shared root pin used by cache pruning.
+#[must_use = "dropping the guard releases the durable root pin"]
+pub(super) struct DurableRootPin {
+    _lease: File,
+}
+
+pub(super) fn detach_durable_root_pin(
+    mut source: TantivySource,
+) -> Result<DurableRootPin, TantivySourceError> {
+    if !source.durable {
+        return Err(TantivySourceError::Corrupt(
+            "previous durable source did not own a durable root pin",
+        ));
+    }
+    let lease = source
+        ._root_lease
+        .take()
+        .ok_or(TantivySourceError::Corrupt(
+            "previous durable source is missing its root pin",
+        ))?;
+    drop(source);
+    Ok(DurableRootPin { _lease: lease })
+}
+
 struct TopHits {
     hits: Vec<RankedHit>,
     limit: usize,
@@ -1273,6 +1298,10 @@ impl TantivySource {
         let previous_path = version_root.join(&previous_key);
         let (previous_source, _) =
             Self::open_or_build_locked(previous, limits, namespace, cache_budget, cancelled)?;
+        // Keep the exact shared root lease while staging and publication run,
+        // but release the duplicate Tantivy reader before copying/admitting the
+        // staged and final roots. A missing pin is an invariant failure.
+        let previous_pin = detach_durable_root_pin(previous_source)?;
         let prepared = retry_while_denied(|| {
             let stage_id = NEXT_DURABLE_STAGE.fetch_add(1, AtomicOrdering::Relaxed);
             let stage_name = format!(".{next_key}.building-{}-{stage_id}", std::process::id());
@@ -1348,7 +1377,7 @@ impl TantivySource {
         })
         .map_err(StagePreparationFailure::into_error)?;
         let Some((stage, revision)) = prepared else {
-            drop(previous_source);
+            drop(previous_pin);
             return Self::open_or_build_locked(next, limits, namespace, cache_budget, cancelled)
                 .map(|(source, action)| (source, None, action));
         };
@@ -1367,7 +1396,7 @@ impl TantivySource {
             stage
                 .discard_under(&fence)
                 .map_err(|source| TantivySourceError::Io(source.into_io_error()))?;
-            drop(previous_source);
+            drop(previous_pin);
             let source =
                 Self::retain_selected_root(source, namespace, &selected, cache_budget, &fence)?;
             fence.verify_for(namespace)?;
@@ -1395,7 +1424,7 @@ impl TantivySource {
 
         sample_test_cancel_after_publication();
         check_projection_cancelled(cancelled)?;
-        drop(previous_source);
+        drop(previous_pin);
         let source = Self::open_selected_root(
             next,
             limits,

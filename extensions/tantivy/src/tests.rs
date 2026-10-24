@@ -2840,6 +2840,77 @@ fn durable_root_pin_survives_cross_process_pruning_then_releases_for_eviction() 
 }
 
 #[test]
+fn detached_previous_root_pin_keeps_postings_until_release_then_allows_pruning() {
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-detached-root-pin-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let previous = state_for(
+        vec![(document(1), vec![("name".into(), "previouspin".into())])],
+        [61; 32],
+    );
+    let source = TantivySource::open_or_build_in_dir(&previous, Limits::default(), &root)
+        .expect("publish previous binding");
+    let previous_key = hex_fingerprint(projection_fingerprint(previous.binding()));
+    let previous_root = root.join(DURABLE_ROOTS_DIRECTORY).join(previous_key);
+    let pin = engine::detach_durable_root_pin(source).expect("detach the production root lease");
+
+    for ordinal in 2..=8 {
+        let next = state_for(
+            vec![(
+                document(ordinal),
+                vec![("name".into(), format!("detachedrevision{ordinal}"))],
+            )],
+            [ordinal as u8; 32],
+        );
+        let source = TantivySource::open_or_build_in_dir(&next, Limits::default(), &root)
+            .expect("publish a newer immutable root while the detached pin is held");
+        drop(source);
+    }
+    assert!(previous_root.is_dir(), "the detached pin prevents eviction");
+    let old = TantivySource::open_in_dir(&previous, Limits::default(), &previous_root)
+        .expect("previous binding remains admitted while pinned");
+    let old_query = Query::new(vec!["previouspin".into()], Limits::default()).expect("query");
+    let old_page = old
+        .fetch(&QueryRequest {
+            binding: previous.binding(),
+            query: old_query,
+            cursor: None,
+            limit: 8,
+        })
+        .expect("previous binding still answers");
+    assert_eq!(old_page.binding, previous.binding());
+    assert_eq!(old_page.hits[0].document, document(1));
+    drop(old);
+
+    drop(pin);
+    let current = state_for(
+        vec![(document(9), vec![("name".into(), "currentpin".into())])],
+        [9; 32],
+    );
+    let reopened = TantivySource::open_or_build_in_dir(&current, Limits::default(), &root)
+        .expect("prune after detached pin release");
+    assert!(!previous_root.exists(), "released previous root is evictable");
+    let current_query = Query::new(vec!["currentpin".into()], Limits::default()).expect("query");
+    let current_page = reopened
+        .fetch(&QueryRequest {
+            binding: current.binding(),
+            query: current_query,
+            cursor: None,
+            limit: 8,
+        })
+        .expect("current binding answers after pruning");
+    assert_eq!(current_page.binding, current.binding());
+    assert_eq!(current_page.hits[0].document, document(9));
+    drop(reopened);
+    std::fs::remove_dir_all(root).expect("remove detached pin fixture");
+}
+
+#[test]
 fn inactive_maintenance_reads_metadata_and_selected_admission_checks_payloads() {
     let root = std::env::temp_dir().join(format!(
         "backend-tantivy-metadata-prune-{}-{}",
