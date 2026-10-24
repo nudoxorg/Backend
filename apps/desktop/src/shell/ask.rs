@@ -2021,9 +2021,23 @@ mod tests {
         rig.repaint();
         let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("forced native Ask tree");
         let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
-        assert!(tree["nodes"].as_object().expect("native nodes").values().any(|node|
-            node["aria"]["role"].as_str() == Some("Status") && node["aria"]["label"].as_str().is_some_and(|label| label.contains(words))),
-            "the active query exposes actionable refusal words to native accessibility");
+        let status_labels = tree["nodes"].as_object().expect("native nodes").values()
+            .filter(|node| node["aria"]["role"].as_str() == Some("Status"))
+            .filter_map(|node| node["aria"]["label"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        let (refusal_words, read_status, serving, admission_phase) = ask.read_with(rig.cx, |ask, cx| {
+            let refusal = ask.refusal.as_ref().map(|refusal| refusal.words().to_string());
+            let status = ask.read_status(cx).0.map(|status| status.to_string());
+            let (serving, phase) = ask.search_resource(cx).map_or((false, None), |(resource, root, serving)| {
+                let phase = crate::core::admit_resource(&resource, root, serving).phase();
+                (serving, Some(format!("{phase:?}")))
+            });
+            (refusal, status, serving, phase)
+        });
+        assert!(status_labels.iter().any(|label| label.contains(words)),
+            "the active query exposes actionable refusal words to native accessibility; expected={words:?}; \
+             status_labels={status_labels:?}; refusal_words={refusal_words:?}; read_status={read_status:?}; \
+             owner_serving={serving}; admission_phase={admission_phase:?}");
         assert!(rig.cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)), "the retained editor keeps native focus");
     }
 
