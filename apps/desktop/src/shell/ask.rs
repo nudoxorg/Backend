@@ -1130,13 +1130,13 @@ impl Ask {
             let revision = self.revision.get();
             let input = self.input.clone();
             let query = self.draft.query().cloned();
-            let retired_destination = choice.source_route.is_some();
+            let stale = choice.stale;
             let refusal = choice.unavailable.clone().unwrap_or_else(|| format!("{} has no page yet", choice.name).into());
             row = row.on_click(move |_, _, cx| {
                 let _ = weak.update(cx, |ask, cx| {
                     if ask.revision.get() == revision && ask.links.snapshot(cx).overlay() == Some(Overlay::CommandPalette)
                         && query.as_ref().is_some_and(|query| current_input_query(&input, query, cx)) {
-                        let outcome = if retired_destination { stale_submission() }
+                        let outcome = if stale { stale_submission() }
                             else { SubmissionOutcome::Refused(SubmitRefusal::NoDestination(refusal.clone())) };
                         ask.complete_submission(outcome, cx);
                     }
@@ -2001,6 +2001,77 @@ mod tests {
         assert!(ask.read_with(rig.cx, |ask, _| ask.refusal.is_none()), "editing retires the old submission refusal");
     }
 
+    #[gpui::test]
+    fn failed_retained_row_pointer_matches_enter_refusal(cx: &mut TestAppContext) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct FailedRefresh(Arc<AtomicUsize>);
+        impl PageReader for FailedRefresh {
+            fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+                if matches!(request, ReadRequest::Search(_))
+                    && self.0.fetch_add(1, Ordering::SeqCst) > 0
+                {
+                    return Err(ReadFailure::Fault(crate::core::ErrorValue::new(
+                        crate::core::FaultCode::Transport,
+                        "fixture search owner disconnected",
+                    )));
+                }
+                Fixture.read(request, context)
+            }
+        }
+
+        for pointer in [false, true] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let reader_calls = Arc::clone(&calls);
+            let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0,
+                ReadPool::start(1, move |_| FailedRefresh(Arc::clone(&reader_calls))).expect("fixture pool"));
+            native_ask(&mut rig);
+            rig.cx.simulate_input("RelationLabel");
+            rig.settle();
+            let route = rig.route();
+            let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+            let query = ask.read_with(rig.cx, |ask, _| ask.draft.query().cloned().expect("current query"));
+            assert!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx)[0].route.is_some()),
+                "the first result is routable before the retained failure");
+
+            rig.graph.store.update(rig.cx, |store, cx| store.retry(PageKey::Search(query.clone()), cx));
+            rig.settle();
+            assert_eq!(calls.load(Ordering::SeqCst), 2, "one refresh fails after the current result was retained");
+            let expected = ask.read_with(rig.cx, |ask, cx| {
+                let choice = &ask.choices(cx)[0];
+                assert!(choice.source_route.is_some());
+                assert!(choice.route.is_none(), "failed retained rows have no navigation authority");
+                assert!(!choice.stale, "a terminal failed read is not the retained-pending state");
+                choice.unavailable.clone().expect("specific terminal refusal")
+            });
+
+            if pointer {
+                let bounds = rig.cx.debug_bounds("ask-result-row").expect("failed retained row bounds");
+                rig.cx.simulate_event(gpui::MouseDownEvent { position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
+                // Keep the press across a paint, matching the native held-pointer coverage.
+                rig.repaint();
+                let retained_bounds = rig.cx.debug_bounds("ask-result-row").expect("retained failed row bounds");
+                rig.cx.simulate_event(gpui::MouseMoveEvent { position: retained_bounds.center(),
+                    pressed_button: Some(gpui::MouseButton::Left), modifiers: gpui::Modifiers::none() });
+                rig.cx.simulate_event(gpui::MouseUpEvent { position: retained_bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1 });
+                rig.settle();
+            } else {
+                rig.keys("enter");
+            }
+
+            assert_eq!(rig.route(), route, "a failed retained destination cannot navigate");
+            assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+                Some(crate::navigation::Overlay::CommandPalette));
+            assert!(ask.read_with(rig.cx, |ask, _| matches!(ask.refusal.as_ref(),
+                Some(SubmitRefusal::NoDestination(words)) if words == &expected)),
+                "pointer={pointer} should preserve the keyboard refusal class and exact failure detail");
+            let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+            assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "RelationLabel");
+            assert!(rig.cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)),
+                "a failed retained refusal keeps focus in the query");
+        }
+    }
+
 
     struct EmptySearch;
     impl PageReader for EmptySearch {
@@ -2114,6 +2185,9 @@ mod tests {
         rig.settle();
         assert_eq!(rig.route(), route);
         assert_refusal(&mut rig, "RelationLabel", "no longer verified by the current index");
+        assert!(ask.read_with(rig.cx, |ask, _| matches!(&ask.refusal,
+            Some(SubmitRefusal::StaleResult(words)) if words.as_ref().contains("no longer verified by the current index"))),
+            "a row routed at pointer-down but retired before release remains a generic stale-result refusal");
     }
 
 
