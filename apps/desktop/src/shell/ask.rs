@@ -1402,7 +1402,7 @@ mod tests {
         let a = page_route("A");
         let b = page_route("B");
         let c = page_route("C");
-        let choice = |route: Route, occurrence| Choice {
+        let choice = |route: crate::navigation::Route, occurrence| Choice {
             name: "result".into(),
             matched: None,
             place: "fixture".into(),
