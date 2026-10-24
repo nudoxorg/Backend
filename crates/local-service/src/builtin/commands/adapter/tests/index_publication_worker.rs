@@ -1343,8 +1343,19 @@ fn public_name_rows(fixture: &mut AdapterFixture, name: &str) -> Vec<backend_lib
         library.revision_root(),
         backend_library::QueryLimit::new(10).expect("bounded name result"),
     ));
-    let dto = backend_engine::CommandDto::new(0xb93, command);
-    let body = serde_json::to_vec(&dto).expect("actual public name query DTO");
+    // A root-bearing public request needs the real producer's canonical
+    // preimages, not only the digest copied into NameQuery. Revision is the
+    // supported producer path for this exact immutable catalog root.
+    let revision_request = backend_engine::CommandDto::new(0xb92, Command::Revision);
+    let revision = library.execute_dto(revision_request.clone());
+    backend_library::admit_reply(&revision_request, &revision)
+        .expect("producer revision receipt admission");
+    let certificate = revision
+        .certificate()
+        .cloned()
+        .expect("real catalog revision producer certificate");
+    let dto = backend_engine::CommandDto::new(0xb93, command).with_certificate(certificate);
+    let body = serde_json::to_vec(&dto).expect("actual certified public name query DTO");
     let Executed::Reply(bytes) = adapter
         .execute_or_defer(daemon, &body, 0xb93)
         .expect("public name query")
