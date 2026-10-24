@@ -6,6 +6,8 @@
 //! one link; a link count above one would let another name mutate supposedly
 //! immutable bytes.
 
+#[cfg(unix)]
+use super::ArtifactObjectClaim;
 use super::{ClosureId, FileStore, ObjectId, StoreError, io_error, lock_error};
 use crate::UntrustedObjectId;
 #[cfg(not(unix))]
@@ -35,6 +37,15 @@ static TEST_LINK_BARRIERS: std::sync::Mutex<
         std::sync::mpsc::Receiver<()>,
     )>,
 > = std::sync::Mutex::new(Vec::new());
+#[cfg(all(test, unix))]
+static TEST_PAIR_BARRIERS: std::sync::Mutex<
+    Vec<(
+        std::thread::ThreadId,
+        u8,
+        std::sync::mpsc::Sender<()>,
+        std::sync::mpsc::Receiver<()>,
+    )>,
+> = std::sync::Mutex::new(Vec::new());
 
 #[cfg(test)]
 pub(super) fn set_test_fault(point: u8) {
@@ -42,6 +53,14 @@ pub(super) fn set_test_fault(point: u8) {
         let owner = std::thread::current().id();
         faults.retain(|(thread, _)| *thread != owner);
         faults.push((owner, point));
+    }
+}
+
+#[cfg(all(test, unix))]
+pub(super) fn clear_test_fault(point: u8) {
+    if let Ok(mut faults) = TEST_FAULTS.lock() {
+        let owner = std::thread::current().id();
+        faults.retain(|(thread, pending)| *thread != owner || *pending != point);
     }
 }
 
@@ -54,6 +73,44 @@ pub(super) fn set_test_link_barrier(
         let owner = std::thread::current().id();
         barriers.retain(|(thread, _, _)| *thread != owner);
         barriers.push((owner, reached, release));
+    }
+}
+
+#[cfg(all(test, unix))]
+pub(super) fn set_test_pair_barrier(
+    point: u8,
+    reached: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+) {
+    if let Ok(mut barriers) = TEST_PAIR_BARRIERS.lock() {
+        let owner = std::thread::current().id();
+        barriers
+            .retain(|(thread, barrier_point, _, _)| *thread != owner || *barrier_point != point);
+        barriers.push((owner, point, reached, release));
+    }
+}
+
+#[cfg(all(test, unix))]
+pub(super) fn clear_test_pair_barrier(point: u8) {
+    if let Ok(mut barriers) = TEST_PAIR_BARRIERS.lock() {
+        let owner = std::thread::current().id();
+        barriers
+            .retain(|(thread, barrier_point, _, _)| *thread != owner || *barrier_point != point);
+    }
+}
+
+#[cfg(all(test, unix))]
+fn wait_test_pair_barrier(point: u8) {
+    let barrier = TEST_PAIR_BARRIERS.lock().ok().and_then(|mut barriers| {
+        let owner = std::thread::current().id();
+        barriers
+            .iter()
+            .position(|(thread, barrier_point, _, _)| *thread == owner && *barrier_point == point)
+            .map(|index| barriers.remove(index))
+    });
+    if let Some((_, _, reached, release)) = barrier {
+        let _ = reached.send(());
+        let _ = release.recv();
     }
 }
 
@@ -345,6 +402,216 @@ mod imp {
             path: store.root.clone(),
         };
         open_dir_at(&root, name)
+    }
+
+    /// One held objects directory used by an initial two-object publication.
+    /// It is opened and checked before either staging file is created.
+    #[cfg(unix)]
+    pub(in crate::durable) struct InitialPairPublication {
+        objects: ArtifactDirectory,
+    }
+
+    /// Holds the exact objects directory and refuses the pair fast path when
+    /// either member already exists. This check is read-only; normal streaming
+    /// handles existing objects and remains the fallback.
+    #[cfg(unix)]
+    pub(in crate::durable) fn prepare_initial_pair(
+        store: &FileStore,
+        ids: [ObjectId; 2],
+    ) -> Result<Option<InitialPairPublication>, StoreError> {
+        let objects = store_dir(store, "objects")?;
+        for id in ids {
+            let name = format!("{}.object", super::super::hex(id.as_bytes()));
+            if open_file_at(&objects.file, &name, OFlags::RDONLY)?.is_some() {
+                return Ok(None);
+            }
+        }
+        Ok(Some(InitialPairPublication { objects }))
+    }
+
+    /// Publishes two already encoded, single-link stage files through one held
+    /// objects directory. Every file is sealed and fully verified before any
+    /// link is installed. The returned booleans are accounting only and are
+    /// returned after both directory barriers and stage removals complete.
+    #[cfg(unix)]
+    pub(in crate::durable) fn publish_initial_pair(
+        store: &FileStore,
+        publication: InitialPairPublication,
+        staging: &ArtifactDirectory,
+        names: [&str; 2],
+        files: [&File; 2],
+        ids: [ObjectId; 2],
+        claims: [ArtifactObjectClaim; 2],
+    ) -> Result<[bool; 2], StoreError> {
+        let mut identities = [(0_u64, 0_u64); 2];
+        for index in 0..2 {
+            let staged = open_file_at(&staging.file, names[index], OFlags::RDONLY)?
+                .ok_or(StoreError::Corrupt)?;
+            validate_single_link_file(&staged)?;
+            let staged_metadata = staged.metadata().map_err(|error| io_error(&error))?;
+            let source_metadata = files[index].metadata().map_err(|error| io_error(&error))?;
+            if staged_metadata.dev() != source_metadata.dev()
+                || staged_metadata.ino() != source_metadata.ino()
+            {
+                return Err(StoreError::UnsafePath);
+            }
+            identities[index] = (source_metadata.dev(), source_metadata.ino());
+            drop(staged);
+            seal_immutable_file(files[index])?;
+            #[cfg(test)]
+            if take_test_fault(20 + u8::try_from(index).map_err(|_| StoreError::Bounds)?) {
+                return Err(StoreError::Io(
+                    "injected interruption after pair member file barrier".to_owned(),
+                ));
+            }
+            let mut verify = files[index].try_clone().map_err(|error| io_error(&error))?;
+            verify
+                .seek(SeekFrom::Start(0))
+                .map_err(|error| io_error(&error))?;
+            super::super::artifact::verify_object_file_handle_for_claim(
+                store,
+                ids[index],
+                claims[index],
+                verify,
+            )?;
+        }
+
+        let mut linked = [false; 2];
+        #[cfg(test)]
+        wait_test_pair_barrier(0);
+        for index in 0..2 {
+            let object_name = format!("{}.object", super::super::hex(ids[index].as_bytes()));
+            let staged = open_file_at(&staging.file, names[index], OFlags::RDONLY)?
+                .ok_or(StoreError::Corrupt)?;
+            validate_single_link_file(&staged)?;
+            let staged_metadata = staged.metadata().map_err(|error| io_error(&error))?;
+            let source_metadata = files[index].metadata().map_err(|error| io_error(&error))?;
+            if staged_metadata.dev() != source_metadata.dev()
+                || staged_metadata.ino() != source_metadata.ino()
+            {
+                return Err(StoreError::UnsafePath);
+            }
+            drop(staged);
+            match linkat(
+                &staging.file,
+                names[index],
+                &publication.objects.file,
+                &object_name,
+                AtFlags::empty(),
+            ) {
+                Ok(()) => {
+                    linked[index] = true;
+                    verify_pair_link(&publication.objects, &object_name, files[index])?;
+                }
+                Err(Errno::EXIST) => {
+                    let existing =
+                        open_file_at(&publication.objects.file, &object_name, OFlags::RDONLY)?
+                            .ok_or(StoreError::Corrupt)?;
+                    let metadata = existing.metadata().map_err(|error| io_error(&error))?;
+                    identities[index] = (metadata.dev(), metadata.ino());
+                    let mut verify = existing.try_clone().map_err(|error| io_error(&error))?;
+                    verify
+                        .seek(SeekFrom::Start(0))
+                        .map_err(|error| io_error(&error))?;
+                    super::super::artifact::verify_object_file_handle_for_claim(
+                        store,
+                        ids[index],
+                        claims[index],
+                        verify,
+                    )?;
+                    seal_immutable_read(&existing)?;
+                }
+                Err(error) => return Err(self::error(error)),
+            }
+            #[cfg(test)]
+            if index == 0 {
+                wait_test_pair_barrier(1);
+                if take_test_fault(22) {
+                    return Err(StoreError::Io(
+                        "injected interruption between pair object links".to_owned(),
+                    ));
+                }
+            }
+        }
+
+        publication.objects.sync_all()?;
+        #[cfg(test)]
+        if take_test_fault(23) {
+            return Err(StoreError::Io(
+                "injected interruption after pair objects directory barrier".to_owned(),
+            ));
+        }
+
+        for index in 0..2 {
+            let object_name = format!("{}.object", super::super::hex(ids[index].as_bytes()));
+            if linked[index] {
+                unlink_published_stage_file(
+                    staging,
+                    names[index],
+                    &publication.objects,
+                    &object_name,
+                    files[index],
+                )?;
+            } else {
+                unlink_stage_file(staging, names[index], files[index])?;
+            }
+            verify_pair_final_object(&publication.objects, &object_name, identities[index])?;
+        }
+        staging.sync_all()?;
+        #[cfg(test)]
+        if take_test_fault(24) {
+            return Err(StoreError::Io(
+                "injected interruption after pair staging directory barrier".to_owned(),
+            ));
+        }
+        Ok(linked)
+    }
+
+    #[cfg(unix)]
+    fn verify_pair_link(
+        objects: &ArtifactDirectory,
+        name: &str,
+        source: &File,
+    ) -> Result<(), StoreError> {
+        let published = openat(
+            &objects.file,
+            name,
+            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map(File::from)
+        .map_err(path_error)?;
+        let source_metadata = source.metadata().map_err(|error| io_error(&error))?;
+        let published_metadata = published.metadata().map_err(|error| io_error(&error))?;
+        if !published_metadata.is_file()
+            || published_metadata.dev() != source_metadata.dev()
+            || published_metadata.ino() != source_metadata.ino()
+            || published_metadata.nlink() != 2
+            || source_metadata.nlink() != 2
+            || published_metadata.mode() & 0o7777 != 0o400
+        {
+            return Err(StoreError::UnsafePath);
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn verify_pair_final_object(
+        objects: &ArtifactDirectory,
+        name: &str,
+        identity: (u64, u64),
+    ) -> Result<(), StoreError> {
+        let published =
+            open_file_at(&objects.file, name, OFlags::RDONLY)?.ok_or(StoreError::Corrupt)?;
+        let published_metadata = published.metadata().map_err(|error| io_error(&error))?;
+        if published_metadata.dev() != identity.0
+            || published_metadata.ino() != identity.1
+            || published_metadata.nlink() != 1
+            || published_metadata.mode() & 0o7777 != 0o400
+        {
+            return Err(StoreError::UnsafePath);
+        }
+        Ok(())
     }
 
     fn validate_single_link_file(file: &File) -> Result<(), StoreError> {
@@ -2455,6 +2722,9 @@ pub(super) use imp::{
     open_object, open_store_file, prepare_staging_root, reap_stale_sessions, unlink_stage_file,
     write_closure_descriptor,
 };
+
+#[cfg(unix)]
+pub(super) use imp::{InitialPairPublication, prepare_initial_pair, publish_initial_pair};
 
 #[cfg(windows)]
 pub(super) use imp::{DurabilityRepair, open_directory_file};

@@ -3919,25 +3919,39 @@ impl SemanticAuthority {
         let envelope = CompilerPublicationEnvelope::new(&attempt, &metadata).map_err(|error| {
             BuiltinModelError(format!("build semantic publication envelope: {error}"))
         })?;
-        let metadata_object = metadata.typed_object();
-        let envelope_object = envelope.typed_object();
+        let metadata_objects = [metadata.typed_object(), envelope.typed_object()];
         let mut metadata_builder = self
             .store
             .begin_streaming_closure(streaming_budget())
             .map_err(|error| {
                 BuiltinModelError(format!("begin semantic metadata closure: {error:?}"))
             })?;
-        for object in [&metadata_object, &envelope_object] {
-            let stored = stream_typed_object(&mut metadata_builder, object)?;
-            if stored != object.id() {
-                return Err(BuiltinModelError(
-                    "streamed semantic metadata differs from its typed identity".to_owned(),
-                ));
+        let pair_ids = metadata_builder
+            .try_write_initial_typed_pair(&metadata_objects)
+            .map_err(|error| {
+                BuiltinModelError(format!("write semantic metadata pair: {error:?}"))
+            })?;
+        if let Some(stored_ids) = pair_ids {
+            for (stored, object) in stored_ids.iter().zip(&metadata_objects) {
+                if *stored != object.id() {
+                    return Err(BuiltinModelError(
+                        "paired semantic metadata differs from its typed identity".to_owned(),
+                    ));
+                }
+            }
+        } else {
+            for object in &metadata_objects {
+                let stored = stream_typed_object(&mut metadata_builder, object)?;
+                if stored != object.id() {
+                    return Err(BuiltinModelError(
+                        "streamed semantic metadata differs from its typed identity".to_owned(),
+                    ));
+                }
             }
         }
         let mut changes = vec![
-            ClosureMembershipChange::add(metadata_object.id()),
-            ClosureMembershipChange::add(envelope_object.id()),
+            ClosureMembershipChange::add(metadata_objects[0].id()),
+            ClosureMembershipChange::add(metadata_objects[1].id()),
         ];
         changes.sort_unstable_by_key(|change| change.object_id());
         let compose_budget = closure_composition_budget(changes.len())?;
@@ -3955,8 +3969,8 @@ impl SemanticAuthority {
             })?;
         // The streaming builder's GC pin protects both metadata objects until
         // composition has fully verified and pinned the selected closure.
-        // Object streaming completed its normal durable-admission checks; the
-        // composer repeats full member verification and publishes the descriptor.
+        // Both typed metadata objects completed their durable admission checks;
+        // the composer repeats full member verification and publishes the descriptor.
         drop(metadata_builder);
         let closure_id = *selected_pin.receipt().closure().as_bytes();
         let _source_pin = source_pin;

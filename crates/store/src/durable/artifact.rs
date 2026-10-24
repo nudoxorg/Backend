@@ -1927,6 +1927,37 @@ pub(super) fn verify_object_file_handle(
     .map(|_| ())
 }
 
+/// Authenticates a staged or held object file against one exact typed claim.
+///
+/// The verifier consumes the supplied descriptor and checks the full envelope,
+/// payload version, and physical object identity. The caller remains
+/// responsible for proving that the descriptor is the expected filesystem
+/// member and for retaining any required directory barriers.
+#[cfg(unix)]
+pub(super) fn verify_object_file_handle_for_claim(
+    store: &FileStore,
+    id: ObjectId,
+    claim: ArtifactObjectClaim,
+    file: File,
+) -> Result<(), StoreError> {
+    let expected = ArtifactObjectClaim::new(
+        claim.schema(),
+        *claim.key(),
+        *claim.version(),
+        claim.length(),
+    )
+    .with_object_id(UntrustedObjectId::from_bytes(*id.as_bytes()));
+    verify_object_reader_limited_with_payload(
+        store,
+        UntrustedObjectId::from_bytes(*id.as_bytes()),
+        Some(expected),
+        None,
+        &mut |_| Ok(()),
+        file,
+    )
+    .map(|_| ())
+}
+
 fn verify_object_reader_limited_with_payload(
     store: &FileStore,
     claim: UntrustedObjectId,
