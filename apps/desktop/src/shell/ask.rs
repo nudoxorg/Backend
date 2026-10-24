@@ -2164,11 +2164,24 @@ mod tests {
         let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
         assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).len()), 1, "one actual painted fixture row");
         let bounds = rig.cx.debug_bounds("ask-result-row").expect("actual painted row bounds");
-        rig.cx.simulate_event(gpui::MouseDownEvent { position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
-        // Retire producer authority between the painted press and release;
-        // retain the actual old dispatch frame until its native callback fires.
-        rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("postpaint attachment retired".into()), cx));
-        rig.cx.simulate_event(gpui::MouseUpEvent { position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1 });
+        let store = rig.graph.store.clone();
+        rig.cx.update(|window, cx| {
+            let painted_frame = window.a11y_frame_number();
+            window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
+                click_count: 1, first_mouse: false,
+            }), cx);
+            // One native dispatch transaction deliberately retains the painted
+            // frame: separate outer updates eagerly repaint dirty GPUI test windows.
+            store.update(cx, |store, cx| store.owner_failed(
+                &crate::runtime::owner::OwnerFault::Lost("postpaint attachment retired".into()), cx));
+            assert!(!store.read(cx).owner_serving(), "the actual owner is already revoked before release");
+            assert_eq!(window.a11y_frame_number(), painted_frame, "release still addresses the originally painted row");
+            window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+            }), cx);
+            assert_eq!(window.a11y_frame_number(), painted_frame, "input dispatch does not replace the held frame");
+        });
         rig.settle();
         assert_eq!(rig.route(), route);
         assert_refusal(&mut rig, "RelationLabel", "no longer verified by the current index");
