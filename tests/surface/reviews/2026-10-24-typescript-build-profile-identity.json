@@ -1,0 +1,40 @@
+{
+  "accepted_answer_paths": [
+    "cli outline/json/page/source_root",
+    "cli packages/json/revision",
+    "mcp/calls/2/reply/structuredContent/page/source_root"
+  ],
+  "artifact_manifest_sha256": "d329aaf91ff9b14add0fbf57173c61e748c70c3a1e3f16df5498bbda7c7c138f",
+  "native_authority_input_count": 2552,
+  "new_native_authority": "dfcf1f0c677b90d07763fdaf02bdebbac8b88bcbb6efb9985bca3f3fbd5dd53a",
+  "new_root": "fae4f8583b5873ed8999e3c755cfbd116940ca86d5c5830831cbc7044543b683",
+  "normal_t2_build": 608876,
+  "old_native_authority": "a86631d0076bb477b35a93ae53da4a703f88c58b61efdf06fc3ba87fb9c4996c",
+  "old_root": "107c84847833a969cb0322b9fecab2ee80950c188fe94159b1227576f13a1750",
+  "pinned_uninstrumented_repeat_build": 609019,
+  "reason": "The native TypeScript authority build hashes all root Cargo.toml bytes. Reviewed dev optimization profile changes alter that admitted compiler identity, which feeds the direct program environment and derived publication root. Normal T2 and the original uninstrumented full repeat agree on exactly these three fields.",
+  "repeat_conditions": {
+    "same_task_tomli": "Observed Tomli GUI failed its unchanged 120-second stale-result deadline; this task does not establish Tomli acceptance.",
+    "typescript": "Original full surface.run_case after resetting environment and CLI observation wrappers; no index-work or search-preparation opt-in."
+  },
+  "required_before_merge": "Normal full T2 on the final exact head must independently match these identities and pass all original correctness and performance checks.",
+  "reviewers": [
+    "Codex / GPT-6",
+    "Codex sub-agent / GPT-6.1-sol"
+  ],
+  "source_review_paths": [
+    "frontends/typescript/build.rs",
+    "crates/engine/src/application/typescript_host.rs",
+    "crates/engine/src/application/typescript_program/direct.rs",
+    "crates/engine/src/application/compiler.rs"
+  ],
+  "source_sha": "334fab93f8a6a84e39178f4b4dd28aafbfee545e",
+  "task": "W2",
+  "unchanged": {
+    "other_nested_answers": true,
+    "package_rows": 3175,
+    "performance_baseline_bytes": true,
+    "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
+    "tolerances_deadlines_coverage": true
+  }
+}
