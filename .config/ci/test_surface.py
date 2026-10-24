@@ -313,6 +313,76 @@ class FailedIndexDiagnosticTests(unittest.TestCase):
                     raise
 
 
+class CliTimingTests(unittest.TestCase):
+    def test_diagnostic_logging_does_not_enter_cli_operation_time(self):
+        import subprocess
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        clock = [0.0]
+        messages = []
+        diagnostics = {}
+        owner = SimpleNamespace(bin_dir=Path("/published/bin"),
+                                endpoint=Path("/case/locald.sock"), env={})
+
+        def slow_log(message):
+            messages.append(message)
+            clock[0] += 5.0 if len(messages) == 1 else 7.0
+
+        def cli(command, **options):
+            self.assertEqual(options["timeout"], 3)
+            clock[0] += 2.0
+            return subprocess.CompletedProcess(command, 0, '{"ok":true}', "")
+
+        token = surface.CASE_DIAGNOSTICS.set(diagnostics)
+        try:
+            with patch.object(surface.time, "monotonic", side_effect=lambda: clock[0]), \
+                    patch.object(surface, "log", side_effect=slow_log), \
+                    patch.object(surface.process_custody, "run", side_effect=cli):
+                answer, seconds = surface.run_cli(owner, Path("/project"), ["add", "--wait"], 3)
+        finally:
+            surface.CASE_DIAGNOSTICS.reset(token)
+
+        self.assertEqual(answer, {"exit": 0, "json": {"ok": True}})
+        self.assertEqual(seconds, 2.0)
+        self.assertEqual(messages[-1], "cli add: completed after 2.000s")
+        self.assertEqual(diagnostics["cli_add_timing"], {
+            "outcome": "completed", "subprocess_seconds": 2.0,
+            "start_log_seconds": 5.0, "completion_log_seconds": 7.0,
+            "old_log_inclusive_seconds": 14.0,
+        })
+
+    def test_slow_logs_preserve_original_timeout_and_failure(self):
+        import subprocess
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        for failure, outcome in [(subprocess.TimeoutExpired("cli", 3), "timed out"),
+                                 (RuntimeError("original child failure"), "raised")]:
+            with self.subTest(outcome=outcome):
+                clock = [0.0]
+                messages = []
+                owner = SimpleNamespace(bin_dir=Path("/published/bin"),
+                                        endpoint=Path("/case/locald.sock"), env={})
+
+                def slow_log(message):
+                    messages.append(message)
+                    clock[0] += 5.0
+
+                def cli(_command, **options):
+                    self.assertEqual(options["timeout"], 3)
+                    clock[0] += 3.0
+                    raise failure
+
+                with patch.object(surface.time, "monotonic", side_effect=lambda: clock[0]), \
+                        patch.object(surface, "log", side_effect=slow_log), \
+                        patch.object(surface.process_custody, "run", side_effect=cli), \
+                        self.assertRaises(type(failure)) as caught:
+                    surface.run_cli(owner, Path("/project"), ["add", "--wait"], 3)
+                self.assertIs(caught.exception, failure)
+                self.assertEqual(messages[-1], f"cli add: {outcome} after 3.000s")
+
+
 class RuntimeImportDrainTests(unittest.TestCase):
     def test_main_activates_owned_process_custody_before_setup_drain(self):
         import contextlib

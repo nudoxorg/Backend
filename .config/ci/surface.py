@@ -917,9 +917,10 @@ def isolated_env(home: Path, bin_dir: Path) -> dict[str, str]:
 
 
 def run_cli(owner: Owner, project: Path, args: list[str], timeout: float) -> tuple[dict, float]:
-    started = time.monotonic()
     operation = f"cli {args[0]}" if args else "cli"
+    before_log = time.monotonic()
     log(f"{operation}: started (timeout={timeout:g}s)")
+    started = time.monotonic()
     outcome = "completed"
     try:
         result = process_custody.run(
@@ -938,8 +939,25 @@ def run_cli(owner: Owner, project: Path, args: list[str], timeout: float) -> tup
         outcome = "raised"
         raise
     finally:
-        log(f"{operation}: {outcome} after {time.monotonic() - started:.3f}s")
-    seconds = time.monotonic() - started
+        finished = time.monotonic()
+        seconds = finished - started
+        log(f"{operation}: {outcome} after {seconds:.3f}s")
+        # Full continuation evidence shares the output lock. Its lock/flush
+        # waits are runner work, outside the shipped CLI's measured lifetime.
+        # Keep both intervals in CI diagnostics without changing any budget.
+        try:
+            diagnostics = CASE_DIAGNOSTICS.get()
+            if args and args[0] == "add" and isinstance(diagnostics, dict):
+                after_log = time.monotonic()
+                diagnostics["cli_add_timing"] = {
+                    "outcome": outcome,
+                    "subprocess_seconds": seconds,
+                    "start_log_seconds": started - before_log,
+                    "completion_log_seconds": after_log - finished,
+                    "old_log_inclusive_seconds": after_log - before_log,
+                }
+        except Exception:
+            pass  # Observational retention cannot replace the CLI result.
     try:
         body = json.loads(result.stdout) if result.stdout.strip() else None
     except json.JSONDecodeError:
