@@ -2721,6 +2721,31 @@ def drain_task_volume() -> None:
             ["sync", "--file-system", str(ROOT)],
             capture_output=True, text=True, timeout=60,
         )
+    except process_custody._RetirementDeadline as error:
+        seconds = time.monotonic() - started
+        original_timeout = error.__context__
+        command = ["sync", "--file-system", str(ROOT)]
+        timed_out = isinstance(original_timeout, subprocess.TimeoutExpired)
+        print(f"CI-TIMING lane=t2 step=filesystem-drain seconds={seconds:.3f} "
+              f"exit={'timeout' if timed_out else 'failed'} retirement=incomplete", flush=True)
+        diagnostic = {
+            "command": command,
+            "command_timeout_seconds": 60,
+            "command_timeout_observed": timed_out,
+            "retirement": "incomplete",
+            "retirement_error": str(error)[:160],
+        }
+        if timed_out:
+            timed_out_command = original_timeout.cmd
+            diagnostic["original_timeout"] = {
+                "command": ([str(value)[:256] for value in timed_out_command]
+                            if isinstance(timed_out_command, (list, tuple))
+                            else str(timed_out_command)[:512]),
+                "seconds": original_timeout.timeout,
+            }
+        print("CI-DRAIN-CUSTODY " + json.dumps(diagnostic, sort_keys=True,
+                                               separators=(",", ":")), flush=True)
+        raise
     except subprocess.TimeoutExpired as error:
         seconds = time.monotonic() - started
         print(f"CI-TIMING lane=t2 step=filesystem-drain seconds={seconds:.3f} exit=timeout", flush=True)

@@ -484,6 +484,73 @@ class RuntimeImportDrainTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "infrastructure.*exceeded 60 seconds"):
                 surface.drain_task_volume()
 
+    def test_retirement_deadline_reports_timed_out_drain_and_aborts_before_cases(self):
+        import contextlib
+        import io
+        import json
+        import subprocess
+        import sys
+        import tempfile
+        import types
+        from unittest.mock import patch
+
+        events = []
+        cpu_placement = types.ModuleType("cpu_placement")
+        cpu_placement.measurement_placement = lambda: self.fail("placement ran after drain retirement failure")
+        retirement = surface.process_custody._RetirementDeadline(
+            "owned session retirement incomplete at existing deadline")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def timeout_then_retirement(command, **options):
+                self.assertEqual(command, ["sync", "--file-system", str(root)])
+                self.assertEqual(options["timeout"], 60)
+                try:
+                    raise subprocess.TimeoutExpired(command, options["timeout"])
+                except subprocess.TimeoutExpired:
+                    raise retirement
+
+            with patch.object(surface.sys, "argv", [
+                    "surface.py", "--bin-dir", str(root / "bin"),
+                    "--ci-report", str(root / "evidence.json"),
+                    "--source-sha", "a" * 40]), \
+                    patch.object(surface.sys, "platform", "linux"), \
+                    patch.object(surface, "ROOT", root), \
+                    patch.object(surface, "SCRATCH", root / "scratch"), \
+                    patch.object(surface, "evidence_artifact", return_value="b" * 64), \
+                    patch.object(surface.process_custody, "activate",
+                                 side_effect=lambda: events.append("activate")), \
+                    patch.object(surface.process_custody, "run", side_effect=timeout_then_retirement), \
+                    patch.object(surface, "compare_cases") as compare, \
+                    patch.dict(sys.modules, {"cpu_placement": cpu_placement}), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                with self.assertRaises(surface.process_custody._RetirementDeadline) as caught:
+                    surface.main()
+
+        self.assertIs(caught.exception, retirement, "the original custody failure remains the raised exception")
+        timeout = retirement.__context__
+        self.assertIsInstance(timeout, subprocess.TimeoutExpired)
+        self.assertEqual(timeout.cmd, ["sync", "--file-system", str(root)])
+        self.assertEqual(timeout.timeout, 60)
+        self.assertEqual(events, ["activate"])
+        compare.assert_not_called()
+        lines = output.getvalue().splitlines()
+        timing = next(line for line in lines if line.startswith("CI-TIMING lane=t2 step=filesystem-drain "))
+        self.assertIn("exit=timeout retirement=incomplete", timing)
+        packet = json.loads(next(line.removeprefix("CI-DRAIN-CUSTODY ") for line in lines
+                                 if line.startswith("CI-DRAIN-CUSTODY ")))
+        self.assertEqual(packet, {
+            "command": ["sync", "--file-system", str(root)],
+            "command_timeout_seconds": 60,
+            "command_timeout_observed": True,
+            "original_timeout": {
+                "command": ["sync", "--file-system", str(root)],
+                "seconds": 60,
+            },
+            "retirement": "incomplete",
+            "retirement_error": str(retirement),
+        })
+
     def test_other_platforms_do_not_invoke_linux_syncfs(self):
         from unittest.mock import patch
         with patch.object(surface.sys, "platform", "darwin"), \
