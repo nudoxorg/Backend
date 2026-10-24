@@ -718,7 +718,10 @@ fn target_contains(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ArtifactBudget, ClosureManifest, GcLimits, GcRoot, GcRoots, TypedObject};
+    use crate::{
+        ArtifactBudget, ArtifactObjectClaim, ClosureManifest, GcLimits, GcRoot, GcRoots,
+        StreamingClosureBudget, StreamingClosureBuilder, TypedObject,
+    };
     use backend_version::{
         LazyTree, LazyTreeUpdateBudget, ObjectKey, PersistedTreeRoot, Schema, TreeChange,
     };
@@ -776,6 +779,22 @@ mod tests {
     fn object(payload: &[u8]) -> TypedObject {
         let key = ObjectKey::<BytesSchema>::from_value(payload);
         TypedObject::from_value(&key, payload)
+    }
+
+    fn stream_object(builder: &mut StreamingClosureBuilder, object: &TypedObject) -> ObjectId {
+        let claim = ArtifactObjectClaim::new(
+            object.schema(),
+            *object.key(),
+            *object.version(),
+            u64::try_from(object.bytes().len()).expect("test payload length fits u64"),
+        );
+        let mut stream = builder.begin_object(claim).expect("begin metadata object");
+        stream.write(object.bytes()).expect("write metadata object");
+        stream.finish().expect("finish metadata object")
+    }
+
+    fn stream_budget() -> StreamingClosureBudget {
+        StreamingClosureBudget::new(8, 1024 * 1024, 1024 * 1024, 16 * 1024, 1024, 1024 * 1024)
     }
 
     fn manifest(mut objects: Vec<TypedObject>) -> ClosureManifest {
@@ -855,6 +874,194 @@ mod tests {
             index
                 .contains_object_id(second_id)
                 .expect("second membership")
+        );
+    }
+
+    #[test]
+    fn unsealed_metadata_capture_composes_the_same_canonical_closure_and_transfers_gc_pin() {
+        let payload = object(b"base semantic payload");
+        let metadata = object(b"publication metadata");
+        let envelope = object(b"publication envelope");
+        let metadata_only = manifest(vec![metadata.clone(), envelope.clone()]);
+        let expected = manifest(vec![payload.clone(), metadata.clone(), envelope.clone()]);
+        let changes = [
+            ClosureMembershipChange::add(metadata.id()),
+            ClosureMembershipChange::add(envelope.id()),
+        ];
+
+        // Reference path: independently seal metadata before composing it.
+        let reference = TestStore::new();
+        reference
+            .store
+            .write_object(&payload)
+            .expect("write reference payload");
+        let reference_payload = compose(
+            &reference.store,
+            None,
+            &[ClosureMembershipChange::add(payload.id())],
+        );
+        let mut reference_metadata = reference
+            .store
+            .begin_streaming_closure(stream_budget())
+            .expect("begin reference metadata capture");
+        assert_eq!(
+            stream_object(&mut reference_metadata, &metadata),
+            metadata.id()
+        );
+        assert_eq!(
+            stream_object(&mut reference_metadata, &envelope),
+            envelope.id()
+        );
+        let reference_metadata_pin = reference_metadata
+            .seal_pinned()
+            .expect("seal standalone metadata closure");
+        assert!(
+            reference
+                .store
+                .read_closure_index(metadata_only.id())
+                .is_ok()
+        );
+        let reference_selected = compose(
+            &reference.store,
+            Some(reference_payload.receipt().closure()),
+            &changes,
+        );
+        assert_eq!(reference_selected.receipt().closure(), expected.id());
+        assert_eq!(reference_selected.receipt().object_count(), 3);
+
+        // Candidate path: keep the original streaming pin until final composition
+        // has verified all additions and returned the selected closure pin.
+        let candidate = TestStore::new();
+        candidate
+            .store
+            .write_object(&payload)
+            .expect("write candidate payload");
+        let candidate_payload = compose(
+            &candidate.store,
+            None,
+            &[ClosureMembershipChange::add(payload.id())],
+        );
+        let mut candidate_metadata = candidate
+            .store
+            .begin_streaming_closure(stream_budget())
+            .expect("begin unsealed metadata capture");
+        assert_eq!(
+            stream_object(&mut candidate_metadata, &metadata),
+            metadata.id()
+        );
+        assert_eq!(
+            stream_object(&mut candidate_metadata, &envelope),
+            envelope.id()
+        );
+        let candidate_selected = compose(
+            &candidate.store,
+            Some(candidate_payload.receipt().closure()),
+            &changes,
+        );
+        drop(candidate_metadata);
+        assert_eq!(
+            candidate_selected.receipt().closure(),
+            reference_selected.receipt().closure()
+        );
+        assert_eq!(candidate_selected.receipt().closure(), expected.id());
+        assert_eq!(candidate_selected.receipt().object_count(), 3);
+        assert!(
+            candidate
+                .store
+                .read_closure_index(metadata_only.id())
+                .is_err()
+        );
+        let cold = FileStore::open(&candidate.path, 1024 * 1024).expect("cold reopen candidate");
+        let index = cold
+            .read_closure_index(expected.id())
+            .expect("read composed candidate closure after builder drop");
+        for item in [&payload, &metadata, &envelope] {
+            assert!(
+                index
+                    .contains_object_id(item.id())
+                    .expect("candidate membership")
+            );
+        }
+        drop(cold);
+        drop(candidate_payload);
+
+        let store = candidate.store.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let collector = thread::spawn(move || {
+            let _ = started_tx.send(());
+            let result = store.collect_garbage(&GcRoots::new(), GcLimits::default());
+            let _ = done_tx.send(result);
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("candidate GC thread started");
+        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        assert!(
+            candidate
+                .store
+                .contains_object(metadata.id())
+                .expect("selected pin retains metadata after builder drop")
+        );
+        drop(candidate_selected);
+        done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("GC resumes after selected receipt drop")
+            .expect("collect after selection pin release");
+        collector.join().expect("join candidate collector");
+        assert!(
+            !candidate
+                .store
+                .contains_object(metadata.id())
+                .expect("metadata is collectable after selected pin drop")
+        );
+
+        drop(reference_selected);
+        drop(reference_metadata_pin);
+        drop(reference_payload);
+    }
+
+    #[test]
+    fn failed_composition_releases_unsealed_metadata_capture_for_gc() {
+        let test = TestStore::new();
+        let metadata = object(b"unselected metadata after composer failure");
+        let missing = object(b"member is intentionally absent");
+        let mut builder = test
+            .store
+            .begin_streaming_closure(stream_budget())
+            .expect("begin metadata capture");
+        let metadata_id = stream_object(&mut builder, &metadata);
+        assert!(
+            test.store
+                .compose_closure_index(
+                    None,
+                    &[
+                        ClosureMembershipChange::add(metadata_id),
+                        ClosureMembershipChange::add(missing.id()),
+                    ],
+                    budget(),
+                )
+                .is_err()
+        );
+        assert!(
+            test.store
+                .contains_object(metadata_id)
+                .expect("builder pin protects object before cleanup")
+        );
+        drop(builder);
+        test.store
+            .collect_garbage(&GcRoots::new(), GcLimits::default())
+            .expect("collect unselected metadata after builder drop");
+        assert!(
+            !test
+                .store
+                .contains_object(metadata_id)
+                .expect("failed composition leaves no retained pin")
+        );
+        assert!(
+            test.store
+                .read_closure_index(manifest(vec![metadata, missing]).id())
+                .is_err()
         );
     }
 

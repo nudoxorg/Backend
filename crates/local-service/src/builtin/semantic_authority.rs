@@ -3935,9 +3935,6 @@ impl SemanticAuthority {
                 ));
             }
         }
-        let metadata_pin = metadata_builder.seal_pinned().map_err(|error| {
-            BuiltinModelError(format!("seal pinned semantic metadata: {error:?}"))
-        })?;
         let mut changes = vec![
             ClosureMembershipChange::add(metadata_object.id()),
             ClosureMembershipChange::add(envelope_object.id()),
@@ -3956,8 +3953,12 @@ impl SemanticAuthority {
             .map_err(|error| {
                 BuiltinModelError(format!("compose semantic publication closure: {error:?}"))
             })?;
+        // The streaming builder's GC pin protects both metadata objects until
+        // composition has fully verified and pinned the selected closure.
+        // Object streaming completed its normal durable-admission checks; the
+        // composer repeats full member verification and publishes the descriptor.
+        drop(metadata_builder);
         let closure_id = *selected_pin.receipt().closure().as_bytes();
-        let _metadata_closure_id = metadata_pin.receipt().closure();
         let _source_pin = source_pin;
         let _evidence_pin = evidence_pin;
 
