@@ -112,6 +112,8 @@ struct Choice {
     /// Repeated matches for one exact destination remain separate stops.
     route_occurrence: usize,
     unavailable: Option<SharedString>,
+    /// This row is visible only as a retained result from another authority.
+    stale: bool,
     group: Group,
 }
 
@@ -176,11 +178,12 @@ impl ResultScrollMap {
 
 /// A submission refusal belongs to the current draft, not navigation.
 #[derive(Clone)]
-enum SubmitRefusal { NoMatch, Unavailable(SharedString), NoDestination(SharedString) }
+enum SubmitRefusal { NoMatch, Unavailable(SharedString), NoDestination(SharedString), StaleResult(SharedString) }
 impl SubmitRefusal {
     fn words(&self) -> SharedString {
         match self { Self::NoMatch => "No result matches this query. Try a declaration name or different words.".into(),
-            Self::Unavailable(words) | Self::NoDestination(words) => words.clone() }
+            Self::Unavailable(words) | Self::NoDestination(words) => words.clone(),
+            Self::StaleResult(words) => words.clone() }
     }
 }
 
@@ -236,6 +239,9 @@ impl Ask {
         let landed = cx.subscribe(&store, |ask: &mut Self, _, event: &StoreEvent, cx| {
             let search_changed = matches!((event, ask.draft.query()),
                 (StoreEvent::Resource(PageKey::Search(query)), Some(mine)) if query == mine);
+            if search_changed {
+                ask.clear_stale_refusal_for_current_search(cx);
+            }
             let publication_changed = event.is_branch(Branch::Root)
                 || event.is_branch(Branch::Owner)
                 || matches!(event, StoreEvent::PackagesPublished(_));
@@ -554,6 +560,8 @@ impl Ask {
                         SubmissionOutcome::CommitPreview
                     } else { SubmissionOutcome::Navigate(route) }
                 }
+                None if choice.stale => SubmissionOutcome::Refused(SubmitRefusal::StaleResult(
+                    choice.unavailable.clone().unwrap_or_else(|| format!("{} has no page yet", choice.name).into()))),
                 None => SubmissionOutcome::Refused(SubmitRefusal::NoDestination(choice.unavailable.clone()
                     .unwrap_or_else(|| format!("{} has no page yet", choice.name).into()))),
             },
@@ -576,6 +584,20 @@ impl Ask {
             SubmissionOutcome::Refused(reason) => { self.refusal = Some(reason); cx.notify(); }
             SubmissionOutcome::Superseded => {}
         }
+    }
+
+    /// Only a fresh, admitted result for this exact draft resolves its stale-row refusal.
+    fn clear_stale_refusal_for_current_search(&mut self, cx: &App) -> bool {
+        if !matches!(self.refusal.as_ref(), Some(SubmitRefusal::StaleResult(_))) {
+            return false;
+        }
+        let current = self.draft.query().is_some_and(|query| {
+            current_search(&self.links, query, cx, |_| true)
+        });
+        if current {
+            self.refusal = None;
+        }
+        current
     }
 
     /// ⌘↵ opens Find only while this exact query has a current served page.
@@ -634,19 +656,19 @@ impl Ask {
         let here = route_package(snapshot.committed_route()).map(str::to_owned);
         let Some((results, root, serving)) = self.search_resource(cx) else { return Vec::new() };
         let admission = admit_resource(&results, root, serving);
-        let (page, unavailable) = match admission {
-            ResourceAdmission::Current(page) => (page, None),
+        let (page, unavailable, stale) = match admission {
+            ResourceAdmission::Current(page) => (page, None, false),
             ResourceAdmission::Retained { value, reason } =>
-                (value, Some(format!("Earlier result; {}; cannot open until verified", read_hold_words(reason)).into())),
+                (value, Some(format!("Earlier result; {}; cannot open until verified", read_hold_words(reason)).into()), true),
             ResourceAdmission::Failed { retained: Some(value), .. } =>
-                (value, Some("Search failed; earlier result cannot be opened".into())),
+                (value, Some("Search failed; earlier result cannot be opened".into()), false),
             ResourceAdmission::Pending(_) | ResourceAdmission::Failed { retained: None, .. } => return Vec::new(),
         };
         if page.query.as_ref() != query.text.as_ref() { return Vec::new(); }
         // Ask is the first-page preview. Find may append thousands of later
         // rows to this shared resource; they must not be rebuilt per frame.
         let mut rows: Vec<Choice> = page.rows.iter().take(usize::from(query.limit))
-            .map(|row| result_choice(row, &query.text, here.as_deref(), unavailable.clone())).collect();
+            .map(|row| result_choice(row, &query.text, here.as_deref(), unavailable.clone(), stale)).collect();
         // Stable: the producer's order within each group.
         rows.sort_by_key(|choice| choice.group == Group::Everywhere);
         let mut shown = Vec::with_capacity(rows.len());
@@ -734,7 +756,13 @@ fn route_package(route: &Route) -> Option<&str> {
     }
 }
 
-fn result_choice(row: &SearchRow, query: &str, here: Option<&str>, hold: Option<SharedString>) -> Choice {
+fn result_choice(
+    row: &SearchRow,
+    query: &str,
+    here: Option<&str>,
+    hold: Option<SharedString>,
+    stale: bool,
+) -> Choice {
     let name = row.decl.name.to_string();
     let matched = matched_range(&name, query);
     let reason = match row.reason {
@@ -780,6 +808,7 @@ fn result_choice(row: &SearchRow, query: &str, here: Option<&str>, hold: Option<
         route,
         route_occurrence: 0,
         unavailable,
+        stale,
         group,
     }
 }
@@ -806,7 +835,7 @@ fn current_input_query(input: &Entity<InputState>, query: &SearchQuery, cx: &App
 }
 
 fn stale_submission() -> SubmissionOutcome {
-    SubmissionOutcome::Refused(SubmitRefusal::Unavailable(
+    SubmissionOutcome::Refused(SubmitRefusal::StaleResult(
         "That search result is no longer verified by the current index. Search again.".into()))
 }
 
@@ -1142,7 +1171,7 @@ fn group_head(words: String, count: usize, measure: &Measure, palette: &facet::P
 
 #[cfg(test)]
 mod tests {
-    use super::{Choice, Group, QueryDraft, QueryReject, SubmitRefusal, current_input_query, matched_range, step_index};
+    use super::{Choice, Group, PageKey, QueryDraft, QueryReject, SubmitRefusal, current_input_query, matched_range, step_index};
     use gpui_component::input::InputEvent;
     use crate::core::{LocalProjectId, VersionedRoot};
     use crate::model::{AppSnapshot, SessionState};
@@ -1370,6 +1399,7 @@ mod tests {
             route: Some(route),
             route_occurrence: occurrence,
             unavailable: None,
+            stale: false,
             group: Group::Everywhere,
         };
         // B held native focus at index 1 in the preceding frame; its current
@@ -1798,6 +1828,129 @@ mod tests {
         let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
         assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "RelationLabel");
         assert_eq!(rig.route(), route, "a publication does not navigate or edit the query");
+    }
+
+    #[gpui::test]
+    fn stale_enter_refusal_clears_only_after_fresh_current_search_lands(cx: &mut TestAppContext) {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        struct PausingSearch {
+            calls: Arc<AtomicUsize>,
+            refresh_started: Arc<AtomicBool>,
+            release_refresh: Arc<AtomicBool>,
+        }
+        impl PageReader for PausingSearch {
+            fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+                if matches!(request, ReadRequest::Search(query) if query.text.as_ref() == "RelationLabel")
+                    && self.calls.fetch_add(1, Ordering::SeqCst) == 1
+                {
+                    self.refresh_started.store(true, Ordering::SeqCst);
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    while !self.release_refresh.load(Ordering::SeqCst) && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                }
+                Fixture.read(request, context)
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let refresh_started = Arc::new(AtomicBool::new(false));
+        let release_refresh = Arc::new(AtomicBool::new(false));
+        let reads = Arc::clone(&calls);
+        let started = Arc::clone(&refresh_started);
+        let release = Arc::clone(&release_refresh);
+        let mut rig = rig_with_reads(cx, None, 1440.0, 900.0,
+            ReadPool::start(1, move |_| PausingSearch {
+                calls: Arc::clone(&reads),
+                refresh_started: Arc::clone(&started),
+                release_refresh: Arc::clone(&release),
+            }).expect("pool"));
+        rig.keys("secondary-k");
+        rig.cx.simulate_input("RelationLabel");
+        rig.settle();
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        let query = ask.read_with(rig.cx, |ask, _| ask.draft.query().cloned().expect("current query"));
+        let route_before = rig.route();
+        let expected_route = ask.read_with(rig.cx, |ask, cx| ask.choices(cx).first()
+            .and_then(|choice| choice.route.clone()).expect("current search result has a route"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let root = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("publication".into(), "fresh".into())]), 14,
+        );
+        rig.graph.store.update(rig.cx, |store, cx| {
+            let snapshot = store.snapshot();
+            store.admit_snapshot(Arc::new(snapshot.with_key(root, None)), cx);
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !refresh_started.load(Ordering::SeqCst) && Instant::now() < deadline {
+            rig.draw();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(refresh_started.load(Ordering::SeqCst), "publication started the normal fresh search");
+        assert!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).iter().any(|choice| choice.stale && choice.route.is_none())),
+            "the old row remains visible but unavailable while the fresh read is working");
+
+        // Drive the same native GPUI Return gesture without `Rig::keys`' settle,
+        // because this test intentionally holds the replacement read in flight.
+        rig.cx.simulate_keystrokes("enter");
+        let keystroke = gpui::Keystroke::parse("enter").expect("Enter keystroke");
+        rig.cx.simulate_event(gpui::KeyUpEvent { keystroke });
+        rig.draw();
+        assert!(ask.read_with(rig.cx, |ask, _| matches!(ask.refusal.as_ref(), Some(SubmitRefusal::StaleResult(_)))));
+        assert_eq!(rig.route(), route_before, "a retained result cannot navigate");
+        assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.input.read_with(cx, |input, _| input.value().to_string())),
+            query.text.to_string(), "the refusal keeps the exact query");
+        assert!(rig.cx.update(|window, cx| ask.read(cx).input.read(cx).focus_handle(cx).is_focused(window)),
+            "a stale refusal leaves native focus in the query field");
+
+        // A different query's resource event is not authority to clear this refusal.
+        let unrelated = crate::model::pages::SearchQuery::new("DifferentQuery", 50).expect("unrelated query");
+        rig.graph.store.update(rig.cx, |store, cx| { store.ensure(PageKey::Search(unrelated), cx); });
+        rig.draw();
+        assert!(ask.read_with(rig.cx, |ask, _| matches!(ask.refusal.as_ref(), Some(SubmitRefusal::StaleResult(_)))));
+
+        // An owner-observation transition emits a matching resource update,
+        // but the current-search admission must reject it while unserved.
+        rig.graph.store.update(rig.cx, |store, cx| store.owner_observing(cx));
+        rig.draw();
+        assert!(ask.read_with(rig.cx, |ask, _| matches!(ask.refusal.as_ref(), Some(SubmitRefusal::StaleResult(_)))),
+            "an unserved owner cannot clear the stale-result refusal");
+
+        release_refresh.store(true, Ordering::SeqCst);
+        rig.settle();
+        rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
+        rig.settle();
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.search(&query).value_root()), Some(root));
+        assert!(ask.read_with(rig.cx, |ask, _| ask.refusal.is_none()),
+            "only the fresh current result clears the stale-row refusal");
+        assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.input.read_with(cx, |input, _| input.value().to_string())),
+            query.text.to_string());
+        assert!(rig.cx.update(|window, cx| ask.read(cx).input.read(cx).focus_handle(cx).is_focused(window)),
+            "fresh results keep native input focus");
+        assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).first().and_then(|choice| choice.route.clone())),
+            Some(expected_route.clone()));
+        assert_eq!(rig.route(), route_before, "fresh results do not navigate by themselves");
+
+        // Ordinary no-match, owner-unavailable, and no-destination feedback is
+        // not the typed stale-result refusal and must survive matching reads.
+        for refusal in [
+            SubmitRefusal::NoMatch,
+            SubmitRefusal::Unavailable("Search owner unavailable".into()),
+            SubmitRefusal::NoDestination("No page for this row".into()),
+        ] {
+            ask.update(rig.cx, |ask, _| ask.refusal = Some(refusal.clone()));
+            rig.graph.store.update(rig.cx, |store, cx| store.retry(PageKey::Search(query.clone()), cx));
+            rig.settle();
+            assert!(ask.read_with(rig.cx, |ask, _| match (&ask.refusal, &refusal) {
+                (Some(SubmitRefusal::NoMatch), SubmitRefusal::NoMatch) => true,
+                (Some(SubmitRefusal::Unavailable(actual)), SubmitRefusal::Unavailable(expected)) => actual == expected,
+                (Some(SubmitRefusal::NoDestination(actual)), SubmitRefusal::NoDestination(expected)) => actual == expected,
+                _ => false,
+            }), "a current search event does not erase non-stale refusal feedback");
+        }
+        rig.keys("enter");
+        assert_eq!(rig.route(), expected_route, "Enter now opens the verified current destination");
     }
 
     struct FailedSearch;
