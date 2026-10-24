@@ -5203,13 +5203,20 @@ impl CommandAdapter {
                 cargo_target,
                 package,
                 execution_intent,
-            } => self.add(
-                daemon,
-                package,
-                execution_intent,
-                certificate.as_ref(),
-                request_id,
-            ),
+            } => {
+                if cargo_target.is_some() {
+                    return Err(BuiltinModelError(
+                        "explicit Cargo target requires the owner deferred command lane".to_owned(),
+                    ));
+                }
+                self.add(
+                    daemon,
+                    package,
+                    execution_intent,
+                    certificate.as_ref(),
+                    request_id,
+                )
+            },
             Command::Remove { package } => {
                 self.remove(daemon, package, certificate.as_ref(), request_id)
             }
@@ -10403,6 +10410,85 @@ mod tests {
             .with_certificate(certificate),
         )
         .expect("encode certified add command")
+    }
+
+    fn add_body_with_cargo_target(
+        request_id: u64,
+        package: backend_engine::PackageKey,
+        label: &str,
+        target: &str,
+    ) -> Vec<u8> {
+        let certificate = WireCertificate::new().with_claim(WireClaim::Key {
+            schema: backend_engine::WireSchema::Package,
+            id: backend_engine::encode_id(package.as_bytes()),
+            value: label.to_owned(),
+        });
+        serde_json::to_vec(
+            &backend_engine::CommandDto::new(
+                request_id,
+                Command::Add {
+                    cargo_target: Some(
+                        backend_library::CargoTargetSelector::new(target.to_owned())
+                            .expect("valid Cargo target selector"),
+                    ),
+                    package,
+                    execution_intent: CompileExecutionIntent::Interactive,
+                },
+            )
+            .with_certificate(certificate),
+        )
+        .expect("encode certified target-specific add command")
+    }
+
+    #[test]
+    fn explicit_cargo_target_add_requires_deferred_lane_and_is_preserved_there() {
+        let mut fixture = AdapterFixture::new();
+        let (package, label) = fixture.add_target();
+        let source_root = Path::new(&label);
+        fs::create_dir_all(source_root.join("src")).expect("Cargo source directory");
+        fs::write(
+            source_root.join("Cargo.toml"),
+            "[package]\nname = \"targeted_add\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[[bin]]\nname = \"selected\"\npath = \"src/selected.rs\"\n",
+        )
+        .expect("single real Cargo binary target declaration");
+        fs::write(source_root.join("src/selected.rs"), "fn main() {}\n")
+            .expect("actual selected target source");
+        let body = add_body_with_cargo_target(0xca01, package, &label, "selected");
+        let before = owner_cursor(fixture.daemon.as_ref().expect("daemon"));
+
+        {
+            let (adapter, daemon) = fixture.parts();
+            let error = adapter
+                .execute(daemon, &body)
+                .expect_err("synchronous Add must reject an explicit target selector");
+            assert_eq!(
+                error.0,
+                "explicit Cargo target requires the owner deferred command lane"
+            );
+            assert!(adapter.indexing.is_none(), "synchronous refusal starts no scan");
+            assert!(!project_is_admitted(daemon, package), "refusal admits no package");
+            assert_eq!(owner_cursor(daemon), before, "refusal publishes no owner state");
+        }
+
+        {
+            let (adapter, daemon) = fixture.parts();
+            assert!(matches!(
+                adapter.execute_or_defer(daemon, &body, 0xca02),
+                Ok(Executed::Deferred)
+            ));
+            let selected = backend_library::CargoTargetSelector::new("selected".to_owned())
+                .expect("target selector");
+            assert_eq!(
+                adapter.indexing.as_ref().and_then(|job| job.cargo_target.as_ref()),
+                Some(&selected),
+                "the target-aware deferred Add path retains the caller's exact selector"
+            );
+            assert_eq!(
+                adapter.indexing.as_ref().and_then(|job| job.legacy_add),
+                Some((0xca02, 0xca01)),
+                "the deferred reply ticket stays paired with the original Add request"
+            );
+        }
     }
 
     fn project_is_admitted(daemon: &ProductDaemon, package: backend_engine::PackageKey) -> bool {
