@@ -1339,6 +1339,11 @@ fn public_name_rows(fixture: &mut AdapterFixture, name: &str) -> Vec<backend_lib
     let (adapter, daemon) = fixture.parts();
     let library = daemon.engine().daemon().library();
     let root = library.revision_root();
+    let capability = library.view().capability();
+    assert!(
+        capability.is_some(),
+        "the product owner's current view supplies its admitted coverage capability"
+    );
     let command = Command::Name(backend_library::NameQuery::new(
         name,
         root,
@@ -1352,8 +1357,11 @@ fn public_name_rows(fixture: &mut AdapterFixture, name: &str) -> Vec<backend_lib
     let revision_bytes = adapter
         .execute(daemon, &revision_body)
         .expect("revision through the real product owner transport");
-    let revision = backend_engine::decode_reply_dto(&revision_bytes)
-        .expect("strict real product revision reply");
+    let revision = backend_library::ReplyDto::decode_with_certificate(
+        &revision_bytes,
+        capability.clone(),
+    )
+    .expect("strict real product revision reply with the owner's admitted capability");
     backend_library::admit_reply(&revision_request, &revision)
         .expect("producer revision receipt admission");
     let CommandReply::Revision(receipt) = &revision.reply else {
@@ -1376,7 +1384,8 @@ fn public_name_rows(fixture: &mut AdapterFixture, name: &str) -> Vec<backend_lib
     else {
         panic!("name query is a read");
     };
-    let reply = backend_engine::decode_reply_dto(&bytes).expect("strict public name reply");
+    let reply = backend_library::ReplyDto::decode_with_certificate(&bytes, capability)
+        .expect("strict public name reply with the same admitted owner capability");
     backend_library::admit_reply(&dto, &reply).expect("public name query admission");
     let CommandReply::Names(snapshot) = reply.reply else {
         panic!("public name query returns admitted rows");
