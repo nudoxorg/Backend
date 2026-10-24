@@ -35,13 +35,17 @@ class NativeTypeScriptOwnerEnvironmentTests(unittest.TestCase):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {
                 surface.SEARCH_PREPARATION_DIAGNOSTICS_ENV: "1",
+                surface.VIEW_ROW_CENSUS_DIAGNOSTICS_ENV: "1",
                 surface.OWNER_USAGE_DIAGNOSTICS_ENV: "1",
                 "BACKEND_JOURNEY_SEARCH_PREPARATION": "untrusted-inherited-value",
+                "BACKEND_JOURNEY_VIEW_ROW_CENSUS": "untrusted-inherited-value",
         }, clear=True):
             env = surface.isolated_env(Path(temporary) / "home", Path("/published/bin"))
         self.assertNotIn(surface.SEARCH_PREPARATION_DIAGNOSTICS_ENV, env)
+        self.assertNotIn(surface.VIEW_ROW_CENSUS_DIAGNOSTICS_ENV, env)
         self.assertNotIn(surface.OWNER_USAGE_DIAGNOSTICS_ENV, env)
         self.assertNotIn("BACKEND_JOURNEY_SEARCH_PREPARATION", env)
+        self.assertNotIn("BACKEND_JOURNEY_VIEW_ROW_CENSUS", env)
 
     def test_search_preparation_diagnostics_require_exact_ci_report_opt_in(self):
         self.assertFalse(surface._preparation_diagnostic_opt_in(None, "1"))
@@ -69,7 +73,8 @@ class DiagnosticRunnerEnvironmentTests(unittest.TestCase):
 
     def test_provenance_report_does_not_implicitly_opt_in_diagnostics(self):
         flags = (surface.SEARCH_PREPARATION_DIAGNOSTICS_ENV,
-                 surface.OWNER_USAGE_DIAGNOSTICS_ENV)
+                 surface.OWNER_USAGE_DIAGNOSTICS_ENV,
+                 surface.VIEW_ROW_CENSUS_DIAGNOSTICS_ENV)
         environment = self.invoke_runner([
             "test.py", "integration", "--bin-dir", "/published/bin", "--in-shell",
             "--ci-report", "/private/ci-evidence.json", "--source-sha", "a" * 40,
@@ -80,16 +85,37 @@ class DiagnosticRunnerEnvironmentTests(unittest.TestCase):
 
     def test_explicit_diagnostic_values_are_preserved_for_the_harness(self):
         flags = (surface.SEARCH_PREPARATION_DIAGNOSTICS_ENV,
-                 surface.OWNER_USAGE_DIAGNOSTICS_ENV)
+                 surface.OWNER_USAGE_DIAGNOSTICS_ENV,
+                 surface.VIEW_ROW_CENSUS_DIAGNOSTICS_ENV)
         environment = self.invoke_runner([
             "test.py", "integration", "--bin-dir", "/published/bin", "--in-shell",
             "--ci-report", "/private/ci-evidence.json", "--source-sha", "a" * 40,
-        ], {flags[0]: "1", flags[1]: "0", "PATH": "/usr/bin"})
-        self.assertEqual([environment[name] for name in flags], ["1", "0"])
+        ], {flags[0]: "1", flags[1]: "0", flags[2]: "1", "PATH": "/usr/bin"})
+        self.assertEqual([environment[name] for name in flags], ["1", "0", "1"])
         self.assertEqual(environment["CI_T2_EXTERNAL"], "1")
 
 
 class SearchPreparationReceiptTests(unittest.TestCase):
+    def test_full_row_census_requires_separate_source_and_artifact_bound_opt_in(self):
+        self.assertFalse(surface._view_row_census_opt_in(None, "1"))
+        self.assertFalse(surface._view_row_census_opt_in({"source_sha": "a" * 40}, "1"))
+        provenance = {"source_sha": "a" * 40, "artifact_manifest_sha256": "b" * 64}
+        self.assertFalse(surface._view_row_census_opt_in(provenance, "true"))
+        self.assertFalse(surface._view_row_census_opt_in(provenance, "0"))
+        self.assertTrue(surface._view_row_census_opt_in(provenance, "1"))
+        from unittest.mock import patch
+        with patch.dict(surface.os.environ, {
+                surface.VIEW_ROW_CENSUS_DIAGNOSTICS_ENV: "1",
+                surface.SEARCH_PREPARATION_DIAGNOSTICS_ENV: "0"}, clear=False):
+            self.assertTrue(surface._search_worker_diagnostics_opt_in(provenance))
+            self.assertFalse(surface._preparation_diagnostic_opt_in(provenance))
+            environment = {}
+            surface._configure_search_worker_diagnostic_env(environment, provenance)
+            self.assertEqual(environment, {
+                "BACKEND_JOURNEY_SEARCH_PREPARATION": "1",
+                "BACKEND_JOURNEY_VIEW_ROW_CENSUS": "1",
+            })
+
     @staticmethod
     def receipt(pid=42):
         return {
@@ -132,7 +158,54 @@ class SearchPreparationReceiptTests(unittest.TestCase):
         raw = json.dumps(value, separators=(",", ":")).encode()
         path = Path(directory) / surface.SEARCH_PREPARATION_RECEIPT
         path.write_bytes(raw)
+        path.chmod(0o600)
         return path, raw
+
+    def write_census(self, directory, receipt=None, manifest_changes=None):
+        import json
+        value = self.receipt() if receipt is None else receipt
+        rows = [
+            {"stable_id": "package:" + "1" * 64, "row_class": "package",
+             "declaration_kind": None},
+            {"stable_id": "symbol:" + "2" * 64, "row_class": "symbol",
+             "declaration_kind": "function"},
+            {"stable_id": "object:" + "3" * 64, "row_class": "object",
+             "declaration_kind": None},
+        ]
+        lines = [json.dumps(row, separators=(",", ":")).encode() + b"\n" for row in rows]
+        chunks = []
+        prefix = "search-view-census-v1-42-3"
+        for index, raw_chunk in enumerate((b"".join(lines[:2]), lines[2])):
+            filename = f"{prefix}-{index:04}.ndjson"
+            path = Path(directory) / filename
+            path.write_bytes(raw_chunk)
+            path.chmod(0o600)
+            chunks.append({"index": index, "file": filename, "bytes": len(raw_chunk),
+                           "sha256": hashlib.sha256(raw_chunk).hexdigest()})
+        stream = b"".join(lines)
+        source = value["source"]
+        manifest = {
+            "schema": "nudox.view-row-census.v1", "process_id": 42, "record_id": 3,
+            "workspace": value["workspace"], "view": value["view"],
+            "view_version": value["view_version"], "source": source,
+            "state": "complete", "reason": None, "expected_rows": 3,
+            "observed_rows": 3,
+            "row_class_counts": {"package": 1, "symbol": 1, "object": 1},
+            "declaration_kind_counts": {"function": 1},
+            "stream_sha256": hashlib.sha256(stream).hexdigest(), "chunks": chunks,
+        }
+        if manifest_changes:
+            manifest.update(manifest_changes)
+        manifest_name = f"{prefix}.json"
+        manifest_path = Path(directory) / manifest_name
+        manifest_path.write_text(json.dumps(manifest, separators=(",", ":")))
+        manifest_path.chmod(0o600)
+        value["row_census"] = {
+            "state": "complete", "manifest": manifest_name,
+            "expected_rows": 3, "observed_rows": 3,
+            "stream_sha256": manifest["stream_sha256"], "reason": None,
+        }
+        return manifest, chunks, value
 
     def test_captures_exact_private_owner_receipt_as_bounded_identities_and_scalars(self):
         import contextlib
@@ -181,6 +254,171 @@ class SearchPreparationReceiptTests(unittest.TestCase):
             retired = surface.capture_search_preparation_diagnostic(owner, {
                 "source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}, {})
             self.assertEqual(retired["reason"], "owner-not-live")
+
+    def test_captures_complete_chunked_canonical_row_census_bound_to_answer_view(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self.owner(directory)
+            receipt = self.receipt()
+            receipt["selection"]["view_rows"] = 3
+            _, _, receipt = self.write_census(directory, receipt)
+            self.write_receipt(directory, receipt)
+            captured = surface.capture_search_preparation_diagnostic(owner, {
+                "source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}, {
+                    "revision": "b" * 64, "projects": [], "readiness": "ready",
+                    "rows": 3, "coverage": [],
+                })
+            census = captured["row_census_artifact"]
+            self.assertEqual(census["state"], "complete")
+            self.assertEqual(census["aggregate_view_binding"], "unverified")
+            self.assertEqual(census["expected_rows"], 3)
+            self.assertEqual(census["row_class_counts"], {"package": 1, "symbol": 1, "object": 1})
+            self.assertEqual([row["row_class"] for row in census["rows"]],
+                             ["package", "symbol", "object"])
+            self.assertEqual(census["rows"][1]["declaration_kind"], "function")
+            self.assertNotIn("label", census["rows"][0])
+
+    def test_row_census_refuses_changed_view_corrupt_chunk_and_incomplete_manifest(self):
+        import tempfile
+        provenance = {"source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}
+        answer = {
+            "revision": "b" * 64, "projects": [], "readiness": "ready",
+            "rows": 3, "coverage": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self.owner(directory)
+            receipt = self.receipt()
+            receipt["selection"]["view_rows"] = 3
+            self.write_census(directory, receipt, {"view": "9" * 64})
+            self.write_receipt(directory, receipt)
+            captured = surface.capture_search_preparation_diagnostic(owner, provenance, answer)
+            self.assertEqual(captured["row_census_artifact"]["reason"],
+                             "census-manifest-identity-or-count-mismatch")
+
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self.owner(directory)
+            receipt = self.receipt()
+            receipt["selection"]["view_rows"] = 3
+            _, chunks, receipt = self.write_census(directory, receipt)
+            chunk_path = Path(directory) / chunks[0]["file"]
+            chunk_path.write_bytes(chunk_path.read_bytes() + b"corruption")
+            chunk_path.chmod(0o600)
+            self.write_receipt(directory, receipt)
+            captured = surface.capture_search_preparation_diagnostic(owner, provenance, answer)
+            self.assertEqual(captured["row_census_artifact"]["reason"],
+                             "census-chunk-digest-mismatch")
+
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self.owner(directory)
+            receipt = self.receipt()
+            receipt["row_census"] = {"state": "incomplete", "expected_rows": 3,
+                                     "observed_rows": 2, "reason": "census-byte-limit"}
+            self.write_receipt(directory, receipt)
+            captured = surface.capture_search_preparation_diagnostic(owner, provenance, answer)
+            self.assertEqual(captured["row_census_artifact"]["state"], "incomplete")
+            self.assertNotIn("rows", captured["row_census_artifact"])
+
+    def test_row_census_refuses_symlinked_chunk_and_replaced_parent_directory(self):
+        import os
+        import tempfile
+        from unittest.mock import patch
+        provenance = {"source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}
+        answer = {
+            "revision": "b" * 64, "projects": [], "readiness": "ready",
+            "rows": 3, "coverage": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self.owner(directory)
+            receipt = self.receipt()
+            receipt["selection"]["view_rows"] = 3
+            _, chunks, receipt = self.write_census(directory, receipt)
+            outside = Path(directory) / "outside.ndjson"
+            outside.write_bytes((Path(directory) / chunks[0]["file"]).read_bytes())
+            outside.chmod(0o600)
+            chunk_path = Path(directory) / chunks[0]["file"]
+            chunk_path.unlink()
+            chunk_path.symlink_to(outside)
+            self.write_receipt(directory, receipt)
+            captured = surface.capture_search_preparation_diagnostic(owner, provenance, answer)
+            self.assertEqual(captured["row_census_artifact"]["reason"],
+                             "census-file-not-private-regular-file")
+
+        with tempfile.TemporaryDirectory() as parent:
+            workspace = Path(parent) / "workspace"
+            workspace.mkdir(mode=0o700)
+            owner = self.owner(workspace)
+            receipt = self.receipt()
+            receipt["selection"]["view_rows"] = 3
+            self.write_census(workspace, receipt)
+            self.write_receipt(workspace, receipt)
+            moved = Path(parent) / "moved-workspace"
+            real_open = os.open
+            replaced = False
+
+            def replace_after_open(target, flags, *args, **kwargs):
+                nonlocal replaced
+                descriptor = real_open(target, flags, *args, **kwargs)
+                if Path(target) == workspace and not replaced:
+                    os.rename(workspace, moved)
+                    workspace.mkdir(mode=0o700)
+                    replaced = True
+                return descriptor
+
+            with patch.object(surface.os, "open", side_effect=replace_after_open):
+                captured = surface.capture_search_preparation_diagnostic(owner, provenance, answer)
+            self.assertTrue(replaced)
+            self.assertIn(captured["row_census_artifact"]["reason"], {
+                "census-workspace-changed-before-read", "census-workspace-changed-during-read"})
+
+    def test_row_census_regular_to_fifo_replacement_opens_nonblocking_and_refuses(self):
+        import os
+        import tempfile
+        from unittest.mock import patch
+        provenance = {"source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}
+        answer = {"revision": "b" * 64, "projects": [], "readiness": "ready",
+                  "rows": 3, "coverage": []}
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self.owner(directory)
+            receipt = self.receipt()
+            receipt["selection"]["view_rows"] = 3
+            _, chunks, receipt = self.write_census(directory, receipt)
+            self.write_receipt(directory, receipt)
+            chunk_name = chunks[0]["file"]
+            real_open = os.open
+            replaced = False
+
+            def fifo_then_open(target, flags, *args, **kwargs):
+                nonlocal replaced
+                if target == chunk_name and not replaced:
+                    self.assertTrue(flags & getattr(os, "O_NONBLOCK", 0))
+                    directory_fd = kwargs["dir_fd"]
+                    os.unlink(target, dir_fd=directory_fd)
+                    os.mkfifo(target, mode=0o600, dir_fd=directory_fd)
+                    replaced = True
+                return real_open(target, flags, *args, **kwargs)
+
+            with patch.object(surface.os, "open", side_effect=fifo_then_open):
+                captured = surface.capture_search_preparation_diagnostic(owner, provenance, answer)
+            self.assertTrue(replaced)
+            self.assertIn(captured["row_census_artifact"]["reason"], {
+                "census-file-changed-before-read", "census-workspace-changed-during-read"})
+
+    def test_owner_retirement_during_census_is_reported(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self.owner(directory)
+            receipt = self.receipt()
+            receipt["selection"]["view_rows"] = 3
+            _, _, receipt = self.write_census(directory, receipt)
+            self.write_receipt(directory, receipt)
+            owner.process.poll.side_effect = [None, None, 0]
+            captured = surface.capture_search_preparation_diagnostic(owner, {
+                "source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}, {
+                    "revision": "b" * 64, "projects": [], "readiness": "ready",
+                    "rows": 3, "coverage": [],
+                })
+            self.assertEqual(captured, {
+                "state": "unavailable", "reason": "owner-retired-during-census"})
 
     def test_diagnostic_emission_failure_cannot_change_the_case_verdict(self):
         from unittest.mock import patch
@@ -240,11 +478,13 @@ class SearchPreparationReceiptTests(unittest.TestCase):
             mismatch = surface.capture_search_preparation_diagnostic(owner, provenance, {
                 "answer": "records", "view": "9" * 64})
             self.assertEqual(mismatch, {
-                "state": "unavailable", "reason": "search-answer-identity-mismatch"})
+                "state": "unavailable", "reason": "search-answer-identity-mismatch",
+                "mismatched_fields": ["view"]})
             source_mismatch = surface.capture_search_preparation_diagnostic(owner, provenance, {
                 "answer": "records", "page": {"source_root": "9" * 64}})
             self.assertEqual(source_mismatch, {
-                "state": "unavailable", "reason": "search-answer-identity-mismatch"})
+                "state": "unavailable", "reason": "search-answer-identity-mismatch",
+                "mismatched_fields": ["source.root"]})
 
 
 class FailedIndexDiagnosticTests(unittest.TestCase):

@@ -1,6 +1,8 @@
 //! Opt-in bounded worker observations, never query or coverage authority.
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -8,16 +10,28 @@ use std::time::{Duration, Instant};
 const FILE_NAME: &str = "search-preparation-worker-v1.json";
 const MAX_BYTES: usize = 4096;
 const MAX_RECORDS_PER_PROCESS: usize = 64;
+const MAX_CENSUS_CHUNK_BYTES: usize = 64 * 1024;
+const MAX_CENSUS_PROCESS_BYTES: usize = 32 * 1024 * 1024;
+const MAX_CENSUS_CHUNKS: usize = MAX_CENSUS_PROCESS_BYTES / MAX_CENSUS_CHUNK_BYTES;
 static RECORDS: AtomicUsize = AtomicUsize::new(0);
+static CENSUS_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 fn requested(value: Option<&std::ffi::OsStr>) -> bool {
     value.and_then(std::ffi::OsStr::to_str) == Some("1")
 }
 
-fn reserve_record(records: &AtomicUsize) -> bool {
+fn reserve_record(records: &AtomicUsize) -> Option<usize> {
     records
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
             (count < MAX_RECORDS_PER_PROCESS).then_some(count + 1)
+        })
+        .ok()
+}
+
+fn reserve_bytes(counter: &AtomicUsize, amount: usize, limit: usize) -> bool {
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(amount).filter(|next| *next <= limit)
         })
         .is_ok()
 }
@@ -117,6 +131,9 @@ pub(super) struct Diagnostic {
     started: Instant,
     #[serde(skip)]
     destination: Option<PathBuf>,
+    #[serde(skip)]
+    census_view: Option<backend_library::ViewRoot>,
+    record_id: usize,
     before: Counts,
     pub(super) phases: Phases,
     pub(super) corpus: Option<Corpus>,
@@ -124,6 +141,50 @@ pub(super) struct Diagnostic {
     generation_before: Generations,
     pub(super) lexical_binding: Option<LexicalBinding>,
     pub(super) selection: Option<SelectionTrace>,
+}
+
+#[derive(Serialize)]
+struct CensusReceipt {
+    state: &'static str,
+    manifest: Option<String>,
+    expected_rows: u64,
+    observed_rows: u64,
+    stream_sha256: Option<String>,
+    reason: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+struct CensusChunk {
+    index: usize,
+    file: String,
+    bytes: usize,
+    sha256: String,
+}
+
+#[derive(Serialize)]
+struct CensusManifest {
+    schema: &'static str,
+    process_id: u32,
+    record_id: usize,
+    workspace: String,
+    view: String,
+    view_version: String,
+    source: Source,
+    state: &'static str,
+    reason: Option<&'static str>,
+    expected_rows: u64,
+    observed_rows: u64,
+    row_class_counts: BTreeMap<&'static str, u64>,
+    declaration_kind_counts: BTreeMap<String, u64>,
+    stream_sha256: String,
+    chunks: Vec<CensusChunk>,
+}
+
+#[derive(Serialize)]
+struct CensusRow {
+    stable_id: String,
+    row_class: &'static str,
+    declaration_kind: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -266,12 +327,15 @@ struct Receipt<'a> {
     outcome: Outcome,
     // Worker completion precedes the control owner's current-view admission.
     authority: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    row_census: Option<&'a CensusReceipt>,
 }
 
 impl Diagnostic {
     pub(super) fn capture(
         capture: &super::Capture,
         projection: &super::SearchSnapshotOwner,
+        record_id: usize,
     ) -> Self {
         Self {
             schema: "nudox.search-preparation-worker.v1",
@@ -285,6 +349,9 @@ impl Diagnostic {
                 .diagnostic_workspace
                 .as_ref()
                 .map(|path| path.join(FILE_NAME)),
+            census_view: requested(std::env::var_os("BACKEND_JOURNEY_VIEW_ROW_CENSUS").as_deref())
+                .then(|| capture.view.clone()),
+            record_id,
             before: Counts::capture(projection),
             phases: Phases {
                 indexed_sources: Phase::NotRun,
@@ -306,7 +373,7 @@ impl Diagnostic {
         if !requested(std::env::var_os("BACKEND_JOURNEY_SEARCH_PREPARATION").as_deref()) {
             return None;
         }
-        reserve_record(&RECORDS).then(|| Self::capture(capture, projection))
+        reserve_record(&RECORDS).map(|record_id| Self::capture(capture, projection, record_id))
     }
 
     fn bytes(
@@ -314,6 +381,7 @@ impl Diagnostic {
         after: Counts,
         outcome: Outcome,
         elapsed: Duration,
+        row_census: Option<&CensusReceipt>,
     ) -> Result<Vec<u8>, serde_json::Error> {
         serde_json::to_vec(&Receipt {
             diagnostic: self,
@@ -321,7 +389,172 @@ impl Diagnostic {
             after,
             outcome,
             authority: "worker-observation-only",
+            row_census,
         })
+    }
+
+    fn publish_row_census(&self) -> Option<CensusReceipt> {
+        let view = self.census_view.as_ref()?;
+        let expected_rows = view.row_count();
+        let mut digest = Sha256::new();
+        let mut chunks = Vec::new();
+        let mut chunk = Vec::with_capacity(MAX_CENSUS_CHUNK_BYTES);
+        let mut row_class_counts =
+            BTreeMap::from([("package", 0_u64), ("symbol", 0_u64), ("object", 0_u64)]);
+        let mut declaration_kind_counts = BTreeMap::new();
+        let mut observed_rows = 0_u64;
+        let mut stream_bytes = 0_usize;
+        let mut reason = None;
+        let Some(destination) = self.destination.as_deref() else {
+            return Some(incomplete_census(
+                expected_rows,
+                observed_rows,
+                None,
+                "private-diagnostic-workspace-unavailable",
+            ));
+        };
+        let Some(directory) = destination.parent() else {
+            return Some(incomplete_census(
+                expected_rows,
+                observed_rows,
+                None,
+                "private-diagnostic-workspace-unavailable",
+            ));
+        };
+        let prefix = format!(
+            "search-view-census-v1-{}-{}",
+            std::process::id(),
+            self.record_id
+        );
+        for row in view.row_refs() {
+            let census_row = census_row(row);
+            let row_class = census_row.row_class;
+            let class_count = row_class_counts.get_mut(row_class);
+            let Some(class_count) = class_count else {
+                reason = Some("row-class-count-unavailable");
+                break;
+            };
+            let encoded = match serde_json::to_vec(&census_row) {
+                Ok(encoded) => encoded,
+                Err(_) => {
+                    reason = Some("row-encoding-failed");
+                    break;
+                }
+            };
+            let Some(line_bytes) = encoded.len().checked_add(1) else {
+                reason = Some("census-size-overflow");
+                break;
+            };
+            if line_bytes > MAX_CENSUS_CHUNK_BYTES
+                || stream_bytes.saturating_add(line_bytes) > MAX_CENSUS_PROCESS_BYTES
+                || chunks.len() >= MAX_CENSUS_CHUNKS
+                || !reserve_bytes(&CENSUS_BYTES, line_bytes, MAX_CENSUS_PROCESS_BYTES)
+            {
+                reason = Some("census-byte-limit");
+                break;
+            }
+            if !chunk.is_empty() && chunk.len().saturating_add(line_bytes) > MAX_CENSUS_CHUNK_BYTES
+            {
+                if chunks.len() + 1 >= MAX_CENSUS_CHUNKS {
+                    reason = Some("census-byte-limit");
+                    break;
+                }
+                if !publish_census_chunk(directory, &prefix, &mut chunks, &mut chunk) {
+                    reason = Some("census-chunk-write-failed");
+                    break;
+                }
+            }
+            chunk.extend_from_slice(&encoded);
+            chunk.push(b'\n');
+            digest.update(&encoded);
+            digest.update(b"\n");
+            stream_bytes += line_bytes;
+            observed_rows = observed_rows.saturating_add(1);
+            *class_count = class_count.saturating_add(1);
+            if let Some(kind) = census_row.declaration_kind.as_deref() {
+                let count = declaration_kind_counts
+                    .entry(kind.to_owned())
+                    .or_insert(0_u64);
+                *count = count.saturating_add(1);
+            }
+        }
+        if reason != Some("census-chunk-write-failed")
+            && chunks.len() < MAX_CENSUS_CHUNKS
+            && !chunk.is_empty()
+            && !publish_census_chunk(directory, &prefix, &mut chunks, &mut chunk)
+        {
+            reason = Some("census-chunk-write-failed");
+        }
+        let stream_sha256 = sha256_hex(&digest.finalize());
+        if reason == Some("census-chunk-write-failed") {
+            return Some(incomplete_census(
+                expected_rows,
+                observed_rows,
+                Some(stream_sha256),
+                "census-chunk-write-failed",
+            ));
+        }
+        let complete = reason.is_none() && observed_rows == expected_rows;
+        if !complete && reason.is_none() {
+            reason = Some("census-row-count-mismatch");
+        }
+        let state = if complete { "complete" } else { "incomplete" };
+        let manifest_name = format!("{prefix}.json");
+        let manifest = CensusManifest {
+            schema: "nudox.view-row-census.v1",
+            process_id: std::process::id(),
+            record_id: self.record_id,
+            workspace: self.workspace.clone(),
+            view: self.view.clone(),
+            view_version: self.view_version.clone(),
+            source: Source::from_basis(view.basis()),
+            state,
+            reason,
+            expected_rows,
+            observed_rows,
+            row_class_counts,
+            declaration_kind_counts,
+            stream_sha256: stream_sha256.clone(),
+            chunks,
+        };
+        let published = match serde_json::to_vec(&manifest) {
+            Ok(bytes) => backend_platform::durable::write_private_atomic_unflushed(
+                &directory.join(&manifest_name),
+                &bytes,
+            )
+            .is_ok(),
+            Err(_) => false,
+        };
+        if !published {
+            return Some(incomplete_census(
+                expected_rows,
+                observed_rows,
+                Some(stream_sha256),
+                "census-manifest-write-failed",
+            ));
+        }
+        Some(CensusReceipt {
+            state,
+            manifest: Some(manifest_name),
+            expected_rows,
+            observed_rows,
+            stream_sha256: Some(stream_sha256),
+            reason,
+        })
+    }
+
+    fn row_census_for_result(&self, result: &Result<(), super::Failure>) -> Option<CensusReceipt> {
+        let view = self.census_view.as_ref()?;
+        if result.is_ok() {
+            self.publish_row_census()
+        } else {
+            Some(incomplete_census(
+                view.row_count(),
+                0,
+                None,
+                "preparation-did-not-complete",
+            ))
+        }
     }
 
     pub(super) fn emit(
@@ -329,10 +562,12 @@ impl Diagnostic {
         projection: &super::SearchSnapshotOwner,
         result: &Result<(), super::Failure>,
     ) {
+        let row_census = self.row_census_for_result(result);
         if let Ok(bytes) = self.bytes(
             Counts::capture(projection),
             Outcome::from(result),
             self.started.elapsed(),
+            row_census.as_ref(),
         ) {
             // Diagnostics never replace the genuine result, including a
             // closed stderr. All fields are fixed identities and scalars.
@@ -347,6 +582,71 @@ impl Diagnostic {
             }
         }
     }
+}
+
+fn publish_census_chunk(
+    directory: &Path,
+    prefix: &str,
+    chunks: &mut Vec<CensusChunk>,
+    bytes: &mut Vec<u8>,
+) -> bool {
+    if bytes.is_empty() || bytes.len() > MAX_CENSUS_CHUNK_BYTES {
+        return false;
+    }
+    let index = chunks.len();
+    let file = format!("{prefix}-{index:04}.ndjson");
+    let sha256 = sha256_hex(&Sha256::digest(bytes.as_slice()));
+    if backend_platform::durable::write_private_atomic_unflushed(&directory.join(&file), bytes)
+        .is_err()
+    {
+        return false;
+    }
+    chunks.push(CensusChunk {
+        index,
+        file,
+        bytes: bytes.len(),
+        sha256,
+    });
+    bytes.clear();
+    true
+}
+
+fn census_row(row: &backend_library::Row) -> CensusRow {
+    let row_class = match row.id {
+        backend_library::RowId::Package(_) => "package",
+        backend_library::RowId::Symbol(_) => "symbol",
+        backend_library::RowId::Object(_) => "object",
+    };
+    CensusRow {
+        stable_id: row.id.stable_key(),
+        row_class,
+        declaration_kind: row.kind.map(|kind| kind.name().to_owned()),
+    }
+}
+
+fn incomplete_census(
+    expected_rows: u64,
+    observed_rows: u64,
+    stream_sha256: Option<String>,
+    reason: &'static str,
+) -> CensusReceipt {
+    CensusReceipt {
+        state: "incomplete",
+        manifest: None,
+        expected_rows,
+        observed_rows,
+        stream_sha256,
+        reason: Some(reason),
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
 }
 
 fn publish(destination: Option<&Path>, bytes: &[u8]) {
@@ -408,6 +708,179 @@ mod tests {
     }
 
     #[test]
+    fn census_uses_all_canonical_row_classes_without_filling_row_cache() {
+        let source_root = backend_library::view_state_root(&[]);
+        let basis = backend_library::Basis::new(
+            source_root,
+            backend_library::object_version(b"census source"),
+        );
+        let package = backend_library::package_key("census-package");
+        let rows = vec![
+            backend_library::Row::new(
+                backend_library::RowId::Package(package),
+                basis,
+                "package label",
+            ),
+            backend_library::Row::new(
+                backend_library::RowId::Symbol(backend_library::symbol_key("census-symbol")),
+                basis,
+                "symbol label",
+            )
+            .with_kind(backend_library::DeclarationKind::Function),
+            backend_library::Row::new(
+                backend_library::RowId::Object(backend_library::object_version(b"census object")),
+                basis,
+                "object label",
+            ),
+        ];
+        let view = backend_library::ViewRoot::new_incomplete(
+            backend_library::view_key(b"complete-row-census"),
+            basis,
+            backend_library::Cursor::at(source_root, 0).frontier(),
+            rows,
+            Vec::new(),
+        )
+        .expect("three typed canonical rows");
+        assert_eq!(view.row_count(), 3);
+        assert!(!view.compatibility_rows_are_materialized());
+        let census = view.row_refs().map(census_row).collect::<Vec<_>>();
+        assert_eq!(census.len() as u64, view.row_count());
+        assert_eq!(
+            census.iter().map(|row| row.row_class).collect::<Vec<_>>(),
+            ["package", "symbol", "object"],
+        );
+        assert_eq!(census[1].declaration_kind.as_deref(), Some("function"));
+        assert!(census[0].declaration_kind.is_none());
+        assert!(census[2].declaration_kind.is_none());
+        assert!(census.iter().all(|row| row.stable_id.len() > 8));
+        assert!(!view.compatibility_rows_are_materialized());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn actual_census_publisher_writes_bounded_multichunk_inventory_and_manifest_last() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let source_root = backend_library::view_state_root(&[]);
+        let basis = backend_library::Basis::new(
+            source_root,
+            backend_library::object_version(b"multi-chunk census source"),
+        );
+        let rows = (0..1400)
+            .map(|index| {
+                backend_library::Row::new(
+                    backend_library::RowId::Symbol(backend_library::symbol_key(&format!(
+                        "multi-chunk-census-{index:04}"
+                    ))),
+                    basis,
+                    "fixture label is not included in the census",
+                )
+                .with_kind(backend_library::DeclarationKind::Function)
+            })
+            .collect();
+        let view = backend_library::ViewRoot::new_incomplete(
+            backend_library::view_key(b"actual-multichunk-row-census"),
+            basis,
+            backend_library::Cursor::at(source_root, 0).frontier(),
+            rows,
+            Vec::new(),
+        )
+        .expect("bounded multi-chunk fixture view");
+        assert_eq!(view.row_count(), 1400);
+
+        let directory = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .expect("private census workspace");
+        CENSUS_BYTES.store(0, Ordering::Relaxed);
+        let diagnostic = Diagnostic {
+            schema: "nudox.search-preparation-worker.v1",
+            process_id: std::process::id(),
+            workspace: "a".repeat(64),
+            view: backend_engine::encode_id(view.root().as_bytes()),
+            view_version: backend_engine::encode_id(view.version().as_bytes()),
+            source: Source::from_basis(view.basis()),
+            started: Instant::now(),
+            destination: Some(directory.path().join(FILE_NAME)),
+            census_view: Some(view),
+            record_id: 7,
+            before: Counts {
+                corpus_builds: 0,
+                projection_builds: 0,
+                projection_opens: 0,
+            },
+            phases: Phases {
+                indexed_sources: Phase::NotRun,
+                semantic_corpus: Phase::NotRun,
+                lexical_projection: Phase::NotRun,
+            },
+            corpus: None,
+            generation_after: None,
+            generation_before: Generations {
+                owner_calls: 0,
+                hits: 0,
+                resident_encoded_image_bytes: 0,
+                resident_images: 0,
+            },
+            lexical_binding: None,
+            selection: None,
+        };
+
+        let receipt = diagnostic.publish_row_census().expect("opted-in census");
+        assert_eq!(receipt.state, "complete");
+        assert_eq!(receipt.expected_rows, 1400);
+        assert_eq!(receipt.observed_rows, 1400);
+        let manifest_name = receipt.manifest.expect("manifest published");
+        let manifest_path = directory.path().join(&manifest_name);
+        let manifest_bytes = std::fs::read(&manifest_path).expect("manifest follows chunks");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&manifest_bytes).expect("valid manifest");
+        assert_eq!(manifest["state"], "complete");
+        assert_eq!(manifest["expected_rows"], 1400);
+        let chunks = manifest["chunks"].as_array().expect("chunk list");
+        assert!(chunks.len() > 1);
+        assert!(chunks.len() <= MAX_CENSUS_CHUNKS);
+        let mut stream = Vec::new();
+        for (index, chunk) in chunks.iter().enumerate() {
+            assert_eq!(chunk["index"], index);
+            let filename = chunk["file"].as_str().expect("bounded chunk filename");
+            let bytes = std::fs::read(directory.path().join(filename)).expect("chunk file");
+            assert_eq!(chunk["bytes"], bytes.len());
+            assert_eq!(chunk["sha256"], sha256_hex(&Sha256::digest(&bytes)));
+            stream.extend(bytes);
+        }
+        assert_eq!(stream.iter().filter(|byte| **byte == b'\n').count(), 1400);
+        assert_eq!(
+            Some(sha256_hex(&Sha256::digest(&stream))),
+            receipt.stream_sha256
+        );
+        assert_eq!(
+            manifest["stream_sha256"],
+            sha256_hex(&Sha256::digest(&stream))
+        );
+        assert_eq!(manifest["row_class_counts"]["symbol"], 1400);
+        assert_eq!(manifest["declaration_kind_counts"]["function"], 1400);
+        assert!(!String::from_utf8_lossy(&stream).contains("fixture label"));
+        let published_files = std::fs::read_dir(directory.path())
+            .expect("published census files")
+            .count();
+        let cancelled: Result<(), super::super::Failure> = Err(super::super::Failure::Cancelled);
+        let refused = diagnostic
+            .row_census_for_result(&cancelled)
+            .expect("failed preparation census marker");
+        assert_eq!(refused.state, "incomplete");
+        assert_eq!(refused.expected_rows, 1400);
+        assert_eq!(refused.observed_rows, 0);
+        assert_eq!(refused.reason, Some("preparation-did-not-complete"));
+        assert_eq!(
+            std::fs::read_dir(directory.path())
+                .expect("cancellation creates no more artifacts")
+                .count(),
+            published_files,
+        );
+    }
+
+    #[test]
     fn diagnostic_requires_exact_explicit_opt_in() {
         use std::ffi::OsStr;
         assert!(!requested(None));
@@ -420,11 +893,20 @@ mod tests {
     #[test]
     fn diagnostic_record_reservation_is_process_bounded() {
         let records = AtomicUsize::new(0);
-        for _ in 0..MAX_RECORDS_PER_PROCESS {
-            assert!(reserve_record(&records));
+        for expected in 0..MAX_RECORDS_PER_PROCESS {
+            assert_eq!(reserve_record(&records), Some(expected));
         }
-        assert!(!reserve_record(&records));
+        assert_eq!(reserve_record(&records), None);
         assert_eq!(records.load(Ordering::Relaxed), MAX_RECORDS_PER_PROCESS);
+    }
+
+    #[test]
+    fn census_byte_reservation_is_total_and_fails_closed_at_the_bound() {
+        let bytes = AtomicUsize::new(0);
+        assert!(reserve_bytes(&bytes, 6, 10));
+        assert!(!reserve_bytes(&bytes, 5, 10));
+        assert!(reserve_bytes(&bytes, 4, 10));
+        assert_eq!(bytes.load(Ordering::Relaxed), 10);
     }
 
     #[test]
@@ -469,6 +951,8 @@ mod tests {
             },
             started: Instant::now(),
             destination: Some(PathBuf::from("path must never be serialized")),
+            census_view: None,
+            record_id: MAX_RECORDS_PER_PROCESS - 1,
             before,
             phases: Phases {
                 indexed_sources: Phase::Observed {
@@ -531,8 +1015,21 @@ mod tests {
                 maintenance: Some("rebound"),
             }),
         };
+        let census = CensusReceipt {
+            state: "incomplete",
+            manifest: Some("search-view-census-v1-4294967295-63.json".to_owned()),
+            expected_rows: u64::MAX,
+            observed_rows: u64::MAX,
+            stream_sha256: Some(hex.clone()),
+            reason: Some("census-byte-limit"),
+        };
         let bytes = observation
-            .bytes(before, Outcome::Cancelled, observation.started.elapsed())
+            .bytes(
+                before,
+                Outcome::Cancelled,
+                observation.started.elapsed(),
+                Some(&census),
+            )
             .expect("bounded fixture receipt");
         assert!(
             bytes.len() <= 4096,
@@ -556,6 +1053,9 @@ mod tests {
         assert_eq!(json["before"]["projection_opens"], u64::MAX);
         assert_eq!(json["after"]["projection_opens"], u64::MAX);
         assert_eq!(json["process_id"], u32::MAX);
+        assert_eq!(json["row_census"]["state"], "incomplete");
+        assert_eq!(json["row_census"]["expected_rows"], u64::MAX);
+        assert_eq!(json["row_census"]["stream_sha256"], hex);
         assert_eq!(
             json["generation_before"]["resident_encoded_image_bytes"],
             usize::MAX
@@ -574,7 +1074,7 @@ mod tests {
         observation.lexical_binding = None;
         let refused: serde_json::Value = serde_json::from_slice(
             &observation
-                .bytes(before, Outcome::CaptureRefused, Duration::ZERO)
+                .bytes(before, Outcome::CaptureRefused, Duration::ZERO, None)
                 .expect("partial diagnostic receipt"),
         )
         .expect("typed refused receipt");

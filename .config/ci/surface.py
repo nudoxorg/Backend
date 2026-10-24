@@ -56,11 +56,16 @@ TOLERANCE = {"seconds": 1.5, "peak_rss_kib": 1.25, "cpu_seconds": 1.5}
 # Below these floors noise dominates and a change is not a regression.
 FLOOR = {"seconds": 2.0, "peak_rss_kib": 64 * 1024, "cpu_seconds": 2.0}
 SEARCH_PREPARATION_DIAGNOSTICS_ENV = "NUDOX_SEARCH_PREPARATION_DIAGNOSTICS"
+VIEW_ROW_CENSUS_DIAGNOSTICS_ENV = "NUDOX_VIEW_ROW_CENSUS_DIAGNOSTICS"
 OWNER_USAGE_DIAGNOSTICS_ENV = "NUDOX_OWNER_USAGE_DIAGNOSTICS"
 OWNER_USAGE_DIAGNOSTIC_LIMIT = 8192
 SEARCH_PREPARATION_RECEIPT = "search-preparation-worker-v1.json"
 SEARCH_PREPARATION_RECEIPT_LIMIT = 4096
 SEARCH_PREPARATION_DIAGNOSTIC_LIMIT = 4096
+VIEW_ROW_CENSUS_MANIFEST_LIMIT = 256 * 1024
+VIEW_ROW_CENSUS_CHUNK_LIMIT = 64 * 1024
+VIEW_ROW_CENSUS_TOTAL_LIMIT = 32 * 1024 * 1024
+VIEW_ROW_CENSUS_CHUNK_COUNT = VIEW_ROW_CENSUS_TOTAL_LIMIT // VIEW_ROW_CENSUS_CHUNK_LIMIT
 # Values that legitimately change from run to run.
 VOLATILE_KEYS = {"elapsed_ms", "duration_ms", "timestamp", "started_at", "finished_at", "generated_at", "pid"}
 
@@ -436,6 +441,29 @@ def _preparation_diagnostic_opt_in(provenance: dict | None, value: str | None = 
             and value.casefold() in {"1", "true"})
 
 
+def _view_row_census_opt_in(provenance: dict | None, value: str | None = None) -> bool:
+    """Require a separate exact opt-in for full private row inventories."""
+    if value is None:
+        value = os.environ.get(VIEW_ROW_CENSUS_DIAGNOSTICS_ENV)
+    return (isinstance(provenance, dict)
+            and _diagnostic_hex(provenance.get("source_sha"), 40)
+            and _diagnostic_hex(provenance.get("artifact_manifest_sha256"))
+            and value == "1")
+
+
+def _search_worker_diagnostics_opt_in(provenance: dict | None) -> bool:
+    return (_preparation_diagnostic_opt_in(provenance)
+            or _view_row_census_opt_in(provenance))
+
+
+def _configure_search_worker_diagnostic_env(env: dict[str, str], provenance: dict | None) -> None:
+    if _view_row_census_opt_in(provenance):
+        env["BACKEND_JOURNEY_SEARCH_PREPARATION"] = "1"
+        env["BACKEND_JOURNEY_VIEW_ROW_CENSUS"] = "1"
+    elif _preparation_diagnostic_opt_in(provenance):
+        env["BACKEND_JOURNEY_SEARCH_PREPARATION"] = "1"
+
+
 def _diagnostic_hex(value: object, length: int = 64) -> bool:
     return isinstance(value, str) and re.fullmatch(rf"[0-9a-f]{{{length}}}", value) is not None
 
@@ -487,8 +515,9 @@ def _search_answer_identities(content: dict) -> dict | None:
     found = {}
 
     def add(target: str, value: object) -> bool:
-        if not _diagnostic_hex(value) and not (target == "source.schema" and type(value) is int
-                                                and 0 <= value <= 65535):
+        if (not _diagnostic_hex(value)
+                and not (target == "source.schema" and type(value) is int
+                         and 0 <= value <= 65535)):
             return False
         if target in found and found[target] != value:
             return False
@@ -516,6 +545,269 @@ def _search_answer_identities(content: dict) -> dict | None:
                 if external in container and not add(f"source.{internal}", container[external]):
                     return None
     return found
+
+
+def _census_custody(value: os.stat_result) -> tuple[int, int, int, int, int, int, int, int]:
+    return (value.st_uid, stat.S_IMODE(value.st_mode), value.st_nlink, value.st_dev,
+            value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
+def _open_private_census_directory(directory: Path) -> tuple[int | None, tuple | None, str | None]:
+    try:
+        before = directory.lstat()
+        if (not stat.S_ISDIR(before.st_mode) or before.st_uid != os.getuid()
+                or stat.S_IMODE(before.st_mode) & 0o077 or before.st_nlink < 2):
+            return None, None, "census-workspace-not-private-directory"
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0) \
+            | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(directory, flags)
+        opened = os.fstat(descriptor)
+        if (_census_custody(opened) != _census_custody(before)
+                or not stat.S_ISDIR(opened.st_mode)):
+            os.close(descriptor)
+            return None, None, "census-workspace-changed-before-read"
+        return descriptor, _census_custody(opened), None
+    except OSError:
+        return None, None, "census-workspace-open-failed"
+
+
+def _read_private_census_file(directory_fd: int, directory: Path, directory_identity: tuple,
+                             filename: str, limit: int) -> tuple[bytes | None, str | None]:
+    """Read one named private artifact without following or trusting a path."""
+    if not isinstance(filename, str) or Path(filename).name != filename:
+        return None, "census-file-name-invalid"
+    try:
+        directory_opened = os.fstat(directory_fd)
+        directory_path = directory.lstat()
+        if (_census_custody(directory_opened) != directory_identity
+                or _census_custody(directory_path) != directory_identity):
+            return None, "census-workspace-changed-during-read"
+        before = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                or stat.S_IMODE(before.st_mode) & 0o077 or before.st_nlink != 1):
+            return None, "census-file-not-private-regular-file"
+        if before.st_size > limit:
+            return None, "census-file-over-limit"
+        flags = (os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        descriptor = os.open(filename, flags, dir_fd=directory_fd)
+        with os.fdopen(descriptor, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid()
+                    or stat.S_IMODE(opened.st_mode) & 0o077 or opened.st_nlink != 1
+                    or _census_custody(opened) != _census_custody(before)
+                    or opened.st_size > limit):
+                return None, "census-file-changed-before-read"
+            raw = stream.read(limit + 1)
+            finished = os.fstat(stream.fileno())
+        after = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+        directory_finished = os.fstat(directory_fd)
+        directory_path_finished = directory.lstat()
+        if (len(raw) > limit or len(raw) != opened.st_size
+                or _census_custody(finished) != _census_custody(opened)
+                or _census_custody(after) != _census_custody(opened)
+                or _census_custody(directory_finished) != directory_identity
+                or _census_custody(directory_path_finished) != directory_identity):
+            return None, "census-file-changed-during-read"
+        return raw, None
+    except FileNotFoundError:
+        return None, "census-file-not-found"
+    except OSError:
+        return None, "census-file-read-failed"
+
+
+def _capture_view_row_census_from_directory(directory: Path, directory_fd: int,
+                                            directory_identity: tuple, receipt: dict,
+                                            pid: int, source: dict,
+                                            selection: dict | None, provenance: dict) -> dict | None:
+    pointer = receipt.get("row_census")
+    if pointer is None:
+        return None
+
+    def refused(reason: str, state: str = "unavailable") -> dict:
+        return {"state": state, "reason": reason}
+
+    if not isinstance(pointer, dict):
+        return refused("census-receipt-invalid")
+    state = pointer.get("state")
+    expected_rows = pointer.get("expected_rows")
+    observed_rows = pointer.get("observed_rows")
+    if (state not in {"complete", "incomplete"}
+            or type(expected_rows) is not int or not 0 <= expected_rows <= 1_000_000_000
+            or type(observed_rows) is not int or not 0 <= observed_rows <= expected_rows):
+        return refused("census-receipt-invalid")
+    if state == "incomplete":
+        return {
+            "state": "incomplete",
+            "expected_rows": expected_rows,
+            "observed_rows": observed_rows,
+            "reason": pointer.get("reason") if isinstance(pointer.get("reason"), str) else "census-incomplete",
+        }
+    manifest_name = pointer.get("manifest")
+    match = (re.fullmatch(r"search-view-census-v1-(\d+)-(\d+)\.json", manifest_name)
+             if isinstance(manifest_name, str) else None)
+    if (match is None or int(match.group(1)) != pid or not 0 <= int(match.group(2)) < 64
+            or type(pointer.get("stream_sha256")) is not str
+            or not _diagnostic_hex(pointer.get("stream_sha256"))
+            or pointer.get("reason") is not None
+            or observed_rows != expected_rows):
+        return refused("census-pointer-invalid")
+    if manifest_name != f"search-view-census-v1-{pid}-{int(match.group(2))}.json":
+        return refused("census-pointer-invalid")
+    raw_manifest, read_error = _read_private_census_file(
+        directory_fd, directory, directory_identity, manifest_name,
+        VIEW_ROW_CENSUS_MANIFEST_LIMIT)
+    if read_error is not None:
+        return refused(read_error)
+    try:
+        manifest = json.loads(raw_manifest)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return refused("census-manifest-malformed")
+    record_id = int(match.group(2))
+    if (not isinstance(manifest, dict)
+            or manifest.get("schema") != "nudox.view-row-census.v1"
+            or manifest.get("process_id") != pid or manifest.get("record_id") != record_id
+            or manifest.get("workspace") != receipt.get("workspace")
+            or manifest.get("view") != receipt.get("view")
+            or manifest.get("view_version") != receipt.get("view_version")
+            or manifest.get("source") != source
+            or manifest.get("state") != "complete" or manifest.get("reason") is not None
+            or type(manifest.get("expected_rows")) is not int
+            or type(manifest.get("observed_rows")) is not int
+            or type(manifest.get("record_id")) is not int
+            or type(manifest.get("process_id")) is not int
+            or manifest.get("expected_rows") != expected_rows
+            or manifest.get("observed_rows") != expected_rows
+            or manifest.get("stream_sha256") != pointer.get("stream_sha256")):
+        return refused("census-manifest-identity-or-count-mismatch")
+    if (selection is not None and selection.get("view_rows") is not None
+            and selection["view_rows"] != expected_rows):
+        return refused("census-selection-count-mismatch")
+    chunks = manifest.get("chunks")
+    if not isinstance(chunks, list) or len(chunks) > VIEW_ROW_CENSUS_CHUNK_COUNT:
+        return refused("census-chunk-list-invalid")
+    prefix = f"search-view-census-v1-{pid}-{record_id}"
+    stream_parts = []
+    rows = []
+    class_counts = {"package": 0, "symbol": 0, "object": 0}
+    kind_counts = {}
+    seen = set()
+    total_bytes = 0
+    allowed_kinds = {
+        "module", "class", "function", "method", "interface", "type", "macro",
+        "constant", "field", "property", "constructor", "enum", "struct", "trait",
+        "union", "variable", "import", "variant", "unknown",
+    }
+    for index, chunk in enumerate(chunks):
+        if (not isinstance(chunk, dict) or chunk.get("index") != index
+                or type(chunk.get("index")) is not int
+                or chunk.get("file") != f"{prefix}-{index:04}.ndjson"
+                or type(chunk.get("bytes")) is not int
+                or not 0 < chunk["bytes"] <= VIEW_ROW_CENSUS_CHUNK_LIMIT
+                or not _diagnostic_hex(chunk.get("sha256"))):
+            return refused("census-chunk-descriptor-invalid")
+        raw_chunk, read_error = _read_private_census_file(
+            directory_fd, directory, directory_identity, chunk["file"],
+            VIEW_ROW_CENSUS_CHUNK_LIMIT)
+        if read_error is not None:
+            return refused(read_error)
+        if (len(raw_chunk) != chunk["bytes"]
+                or hashlib.sha256(raw_chunk).hexdigest() != chunk["sha256"]):
+            return refused("census-chunk-digest-mismatch")
+        total_bytes += len(raw_chunk)
+        if total_bytes > VIEW_ROW_CENSUS_TOTAL_LIMIT:
+            return refused("census-over-total-limit")
+        stream_parts.append(raw_chunk)
+        for line in raw_chunk.splitlines(keepends=True):
+            if not line.endswith(b"\n") or line == b"\n":
+                return refused("census-row-line-invalid")
+            try:
+                row = json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return refused("census-row-malformed")
+            if (not isinstance(row, dict)
+                    or list(row) != ["stable_id", "row_class", "declaration_kind"]):
+                return refused("census-row-shape-invalid")
+            stable_id = row.get("stable_id")
+            row_class = row.get("row_class")
+            declaration_kind = row.get("declaration_kind")
+            if (not isinstance(stable_id, str)
+                    or re.fullmatch(r"(?:package|symbol|object):[0-9a-f]{64}", stable_id) is None
+                    or not isinstance(row_class, str) or row_class not in class_counts
+                    or not stable_id.startswith(row_class + ":")
+                    or (declaration_kind is not None
+                        and (row_class != "symbol" or not isinstance(declaration_kind, str)
+                             or declaration_kind not in allowed_kinds))
+                    or stable_id in seen):
+                return refused("census-row-identity-invalid")
+            canonical = json.dumps(row, separators=(",", ":"), ensure_ascii=False).encode("utf-8") + b"\n"
+            if canonical != line:
+                return refused("census-row-not-canonical")
+            seen.add(stable_id)
+            class_counts[row_class] += 1
+            if declaration_kind is not None:
+                kind_counts[declaration_kind] = kind_counts.get(declaration_kind, 0) + 1
+            rows.append(row)
+    stream = b"".join(stream_parts)
+    stream_digest = hashlib.sha256(stream).hexdigest()
+    manifest_class_counts = manifest.get("row_class_counts")
+    manifest_kind_counts = manifest.get("declaration_kind_counts")
+    counts_valid = (
+        isinstance(manifest_class_counts, dict)
+        and set(manifest_class_counts) == set(class_counts)
+        and all(type(count) is int and count >= 0 for count in manifest_class_counts.values())
+        and isinstance(manifest_kind_counts, dict)
+        and all(isinstance(kind, str) and kind in allowed_kinds
+                and type(count) is int and count >= 0
+                for kind, count in manifest_kind_counts.items())
+    )
+    if (stream_digest != manifest.get("stream_sha256")
+            or stream_digest != pointer.get("stream_sha256")
+            or len(rows) != expected_rows
+            or not counts_valid
+            or manifest_class_counts != class_counts
+            or manifest_kind_counts != kind_counts):
+        return refused("census-stream-count-or-digest-mismatch")
+    return {
+        "state": "complete",
+        "binding_level": "captured-view-root-version-source-pid-private-workspace",
+        "source_sha": provenance["source_sha"],
+        "artifact_manifest_sha256": provenance["artifact_manifest_sha256"],
+        "owner_pid": pid,
+        "workspace": receipt["workspace"],
+        "aggregate_view_binding": "unverified",
+        "view": receipt["view"],
+        "view_version": receipt["view_version"],
+        "source": source,
+        "expected_rows": expected_rows,
+        "observed_rows": len(rows),
+        "row_class_counts": class_counts,
+        "declaration_kind_counts": kind_counts,
+        "stream_sha256": stream_digest,
+        "manifest_sha256": hashlib.sha256(raw_manifest).hexdigest(),
+        "rows": rows,
+    }
+
+
+def _capture_view_row_census(directory: Path, receipt: dict, pid: int,
+                             source: dict,
+                             selection: dict | None, provenance: dict) -> dict | None:
+    descriptor, identity, error = _open_private_census_directory(directory)
+    if error is not None:
+        return {"state": "unavailable", "reason": error}
+    try:
+        result = _capture_view_row_census_from_directory(
+            directory, descriptor, identity, receipt, pid, source,
+            selection, provenance)
+        try:
+            if (_census_custody(os.fstat(descriptor)) != identity
+                    or _census_custody(directory.lstat()) != identity):
+                return {"state": "unavailable", "reason": "census-workspace-changed-during-read"}
+        except OSError:
+            return {"state": "unavailable", "reason": "census-workspace-changed-during-read"}
+        return result
+    finally:
+        os.close(descriptor)
 
 
 def capture_search_preparation_diagnostic(owner, provenance: dict, answer_content: dict) -> dict:
@@ -584,8 +876,12 @@ def capture_search_preparation_diagnostic(owner, provenance: dict, answer_conten
             "view_version": receipt["view_version"],
             **{f"source.{key}": source[key] for key in ("root", "object", "branch", "log", "schema")},
         }
-        if any(worker_identities[key] != value for key, value in answer_identities.items()):
-            return unavailable("search-answer-identity-mismatch")
+        mismatched_answer_fields = sorted(
+            key for key, value in answer_identities.items()
+            if key in worker_identities and worker_identities[key] != value)
+        if mismatched_answer_fields:
+            return {"state": "unavailable", "reason": "search-answer-identity-mismatch",
+                    "mismatched_fields": mismatched_answer_fields}
         outcome = receipt.get("outcome")
         outcomes = {"prepared", "capture-refused", "projection-refused", "cancelled", "panicked", "stopped"}
         elapsed = receipt.get("elapsed_ns")
@@ -602,7 +898,7 @@ def capture_search_preparation_diagnostic(owner, provenance: dict, answer_conten
         selection = _diagnostic_selection(receipt.get("selection"))
         if receipt.get("selection") is not None and selection is None:
             return unavailable("receipt-selection-invalid")
-        return {
+        captured = {
             "state": "captured",
             "source_sha": provenance["source_sha"],
             "artifact_manifest_sha256": provenance["artifact_manifest_sha256"],
@@ -620,6 +916,15 @@ def capture_search_preparation_diagnostic(owner, provenance: dict, answer_conten
             "phases": bounded_phases,
             "selection": selection,
         }
+        row_census = _capture_view_row_census(
+            directory, receipt, pid,
+            {key: source[key] for key in ("root", "object", "branch", "log", "schema")},
+            selection, provenance)
+        if owner.process.poll() is not None:
+            return unavailable("owner-retired-during-census")
+        if row_census is not None:
+            captured["row_census_artifact"] = row_census
+        return captured
     except FileNotFoundError:
         return unavailable("receipt-not-found")
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -705,10 +1010,9 @@ class Owner:
         self.workspace = state / "workspace"
         self.endpoint = case_root / "locald.sock"
         self.env = isolated_env(self.home, bin_dir)
-        if _preparation_diagnostic_opt_in(RUN_PROVENANCE.get()):
-            # isolated_env strips inherited BACKEND_* overrides; this one is
-            # explicitly reintroduced only for a provenance-bound CI report.
-            self.env["BACKEND_JOURNEY_SEARCH_PREPARATION"] = "1"
+        # isolated_env strips inherited BACKEND_* overrides; the helper
+        # reintroduces only exact provenance-bound diagnostic requests.
+        _configure_search_worker_diagnostic_env(self.env, RUN_PROVENANCE.get())
         if cargo_vendor is not None:
             # Pinned lockfile sources are outside the upstream project. Keep
             # the owner offline and give this case its own writable Cargo home.
@@ -891,6 +1195,7 @@ def isolated_env(home: Path, bin_dir: Path) -> dict[str, str]:
         if not name.startswith(("BACKEND_", "FORGEJO_", "NUDOX_WORKSPACE", "NUDOX_PROJECT"))
         and name not in {
             "NIX_BUILDER_KEY", SEARCH_PREPARATION_DIAGNOSTICS_ENV,
+            VIEW_ROW_CENSUS_DIAGNOSTICS_ENV,
             OWNER_USAGE_DIAGNOSTICS_ENV,
         }
     }
@@ -2339,11 +2644,21 @@ def run_case(case: dict, bin_dir: Path) -> dict:
     def capture_first_full_search_diagnostic(answer_content: dict) -> None:
         nonlocal preparation_diagnostic_captured
         provenance = RUN_PROVENANCE.get()
-        if preparation_diagnostic_captured or not _preparation_diagnostic_opt_in(provenance):
+        if preparation_diagnostic_captured or not _search_worker_diagnostics_opt_in(provenance):
             return
         preparation_diagnostic_captured = True
         diagnostic = capture_search_preparation_diagnostic(owner, provenance, answer_content)
+        row_census = diagnostic.pop("row_census_artifact", None)
+        if isinstance(row_census, dict):
+            diagnostic["row_census"] = {
+                key: row_census.get(key) for key in (
+                    "state", "reason", "aggregate_view_binding", "expected_rows",
+                    "observed_rows", "stream_sha256",
+                ) if key in row_census
+            }
         record["search_preparation_diagnostic"] = diagnostic
+        if row_census is not None:
+            record["view_row_census"] = row_census
         emit_search_preparation_diagnostic(diagnostic, case["name"])
     try:
         try:
@@ -2780,8 +3095,21 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
 
     def emit_evidence(case: dict, entry: dict) -> None:
         if args.ci_report:
+            verdict = entry
+            census = entry.get("view_row_census")
+            if isinstance(census, dict):
+                verdict = dict(entry)
+                verdict.pop("view_row_census", None)
+                verdict["view_row_census"] = {
+                    key: census.get(key) for key in (
+                        "state", "binding_level", "aggregate_view_binding", "view",
+                        "view_version", "expected_rows", "observed_rows",
+                        "row_class_counts", "declaration_kind_counts", "stream_sha256",
+                        "manifest_sha256", "reason",
+                    ) if key in census
+                }
             print("SURFACE-CASE-EVIDENCE " + json.dumps({
-                **provenance, "case": case["name"], "verdict": entry,
+                **provenance, "case": case["name"], "verdict": verdict,
             }, sort_keys=True, separators=(",", ":")), flush=True)
 
     def record_result(case: dict, future) -> None:
@@ -2854,6 +3182,8 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
                 entry["index_delta_percent"] = round((indexed / baseline - 1) * 100, 2)
             problems = []
             if reviewed["answers"] != record["answers"]:
+                if isinstance(record.get("view_row_census"), dict):
+                    entry["view_row_census"] = record["view_row_census"]
                 old = json.dumps(reviewed["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
                 new = json.dumps(record["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
                 diff = "\n".join(difflib.unified_diff(old, new, "reviewed", "this change", lineterm="", n=2))
