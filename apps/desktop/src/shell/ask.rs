@@ -109,6 +109,9 @@ struct Choice {
     reason: Option<SharedString>,
     kind: icons::Kind,
     route: Option<Route>,
+    /// Keeps the native row identity through authority loss. Only `route`
+    /// supplies an admitted navigation destination.
+    source_route: Option<Route>,
     /// Repeated matches for one exact destination remain separate stops.
     route_occurrence: usize,
     unavailable: Option<SharedString>,
@@ -660,8 +663,8 @@ impl Ask {
             ResourceAdmission::Current(page) => (page, None, false),
             ResourceAdmission::Retained { value, reason } =>
                 (value, Some(format!("Earlier result; {}; cannot open until verified", read_hold_words(reason)).into()), true),
-            ResourceAdmission::Failed { retained: Some(value), .. } =>
-                (value, Some("Search failed; earlier result cannot be opened".into()), false),
+            ResourceAdmission::Failed { retained: Some(value), terminal } =>
+                (value, Some(format!("{} Earlier result cannot be opened.", failed_search_words(terminal)).into()), false),
             ResourceAdmission::Pending(_) | ResourceAdmission::Failed { retained: None, .. } => return Vec::new(),
         };
         if page.query.as_ref() != query.text.as_ref() { return Vec::new(); }
@@ -681,8 +684,8 @@ impl Ask {
             }
         }
         for index in 0..shown.len() {
-            if let Some(route) = shown[index].route.clone() {
-                shown[index].route_occurrence = shown[..index].iter().filter(|earlier| earlier.route.as_ref() == Some(&route)).count();
+            if let Some(route) = shown[index].source_route.clone() {
+                shown[index].route_occurrence = shown[..index].iter().filter(|earlier| earlier.source_route.as_ref() == Some(&route)).count();
             }
         }
         shown
@@ -718,14 +721,18 @@ impl Ask {
                 }), None)
             }
             ResourceAdmission::Failed { terminal, retained } => {
-                let detail = match terminal {
-                    ResourceTerminal::Fault(error) => format!("Search failed: {}", error.message()),
-                    ResourceTerminal::Unavailable(_) => "The index does not provide search.".to_owned(),
-                    ResourceTerminal::Complete | ResourceTerminal::Partial => "Search is unavailable.".to_owned(),
-                };
+                let detail = failed_search_words(terminal);
                 (Some(format!("{detail}{}", if retained.is_some() { " Earlier results are shown without links." } else { "" }).into()), None)
             }
         }
+    }
+}
+
+fn failed_search_words(terminal: &ResourceTerminal) -> String {
+    match terminal {
+        ResourceTerminal::Fault(error) => format!("Search failed: {}", error.message()),
+        ResourceTerminal::Unavailable(_) => "The index does not provide search.".to_owned(),
+        ResourceTerminal::Complete | ResourceTerminal::Partial => "Search is unavailable.".to_owned(),
     }
 }
 
@@ -789,7 +796,8 @@ fn result_choice(
             }
         },
     );
-    let route = hold.is_none().then(|| row_route(row)).flatten();
+    let source_route = row_route(row);
+    let route = hold.is_none().then(|| source_route.clone()).flatten();
     let unavailable = if route.is_none() {
         Some(hold.unwrap_or_else(|| {
             if package.is_none() {
@@ -806,6 +814,7 @@ fn result_choice(
         reason: reason.map(SharedString::from),
         kind: kind_of(row.decl.kind),
         route,
+        source_route,
         route_occurrence: 0,
         unavailable,
         stale,
@@ -1061,7 +1070,7 @@ impl Ask {
             }
             None => words = words.child(text(ty::MONO_ROW, measure, ink).child(name.clone())),
         }
-        let id: SharedString = choice.route.as_ref().map_or_else(
+        let id: SharedString = choice.source_route.as_ref().map_or_else(
             || format!("ask-unavailable-{index}"),
             |route| format!("ask-row-{route:?}-{}", choice.route_occurrence),
         ).into();
@@ -1121,12 +1130,15 @@ impl Ask {
             let revision = self.revision.get();
             let input = self.input.clone();
             let query = self.draft.query().cloned();
+            let retired_destination = choice.source_route.is_some();
             let refusal = choice.unavailable.clone().unwrap_or_else(|| format!("{} has no page yet", choice.name).into());
             row = row.on_click(move |_, _, cx| {
                 let _ = weak.update(cx, |ask, cx| {
                     if ask.revision.get() == revision && ask.links.snapshot(cx).overlay() == Some(Overlay::CommandPalette)
                         && query.as_ref().is_some_and(|query| current_input_query(&input, query, cx)) {
-                        ask.complete_submission(SubmissionOutcome::Refused(SubmitRefusal::NoDestination(refusal.clone())), cx);
+                        let outcome = if retired_destination { stale_submission() }
+                            else { SubmissionOutcome::Refused(SubmitRefusal::NoDestination(refusal.clone())) };
+                        ask.complete_submission(outcome, cx);
                     }
                 });
             });
@@ -1390,12 +1402,13 @@ mod tests {
         let a = page_route("A");
         let b = page_route("B");
         let c = page_route("C");
-        let choice = |route, occurrence| Choice {
+        let choice = |route: Route, occurrence| Choice {
             name: "result".into(),
             matched: None,
             place: "fixture".into(),
             reason: None,
             kind: facet::icons::Kind::Enum,
+            source_route: Some(route.clone()),
             route: Some(route),
             route_occurrence: occurrence,
             unavailable: None,
@@ -2103,6 +2116,38 @@ mod tests {
         assert_refusal(&mut rig, "RelationLabel", "no longer verified by the current index");
     }
 
+
+    #[gpui::test]
+    fn actual_held_pointer_on_retired_search_row_keeps_identity_across_redraw(cx: &mut TestAppContext) {
+        let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0,
+            ReadPool::start(1, |_| Fixture).expect("search reader"));
+        native_ask(&mut rig);
+        rig.cx.simulate_input("RelationLabel");
+        rig.settle();
+        let route = rig.route();
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).len()), 1, "one actual painted fixture row");
+        let bounds = rig.cx.debug_bounds("ask-result-row").expect("actual painted row bounds");
+        rig.cx.simulate_event(gpui::MouseDownEvent { position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
+        // A replacement paint must keep the held row's presentation identity,
+        // while its revoked route remains unavailable for navigation.
+        rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("postpaint attachment retired".into()), cx));
+        rig.repaint();
+        assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).len()), 1,
+            "the same retained row remains mounted after replacement paint");
+        assert!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).iter().all(|choice|
+            choice.source_route.is_some() && choice.route.is_none())),
+            "retained rows keep presentation identities without navigation authority");
+        let retained_bounds = rig.cx.debug_bounds("ask-result-row").expect("retained painted row bounds");
+        // Follow the actual retained row if the new status text changed layout.
+        // Releasing outside that row would correctly cancel the native click.
+        rig.cx.simulate_event(gpui::MouseMoveEvent { position: retained_bounds.center(),
+            pressed_button: Some(gpui::MouseButton::Left), modifiers: gpui::Modifiers::none() });
+        rig.cx.simulate_event(gpui::MouseUpEvent { position: retained_bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1 });
+        rig.settle();
+        assert_eq!(rig.route(), route);
+        assert_refusal(&mut rig, "RelationLabel", "no longer verified by the current index");
+    }
 
     /// Reads and native dispatch are real; only the package/search bytes
     /// come from the existing Fixture behind the worker pool.
