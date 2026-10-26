@@ -73,7 +73,7 @@ def main []: nothing -> nothing {
             # the managed wrapper's per-process bound; CI can lower it with
             # CI_T1_CARGO_JOBS. Two left a cold build at ~23 min on a 20-thread
             # host (pr-t1 615449: 1,128 crates in 1339s).
-            let jobs = ($env.CI_T1_CARGO_JOBS? | default "4")
+            let jobs = $env.CI_T1_CARGO_JOBS? | default "4"
             if not ($jobs =~ '^[1-4]$') {
                 error make {msg: $"CI_T1_CARGO_JOBS must be 1 through 4, got ($jobs)"}
             }
