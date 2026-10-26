@@ -69,15 +69,23 @@ def main []: nothing -> nothing {
     let build_args = $SURFACES | each {|surface| ["--package" $surface.package "--bin" $surface.bin] } | flatten
     let built = if $capacity {
         ci-step "t1" "build cli, mcp, desktop, locald" {||
-            # Keep this lane conservative regardless of ambient shell settings.
+            # Fix the job count regardless of ambient shell settings. Four is
+            # the managed wrapper's per-process bound; CI can lower it with
+            # CI_T1_CARGO_JOBS. Two left a cold build at ~23 min on a 20-thread
+            # host (pr-t1 615449: 1,128 crates in 1339s).
+            let jobs = ($env.CI_T1_CARGO_JOBS? | default "4")
+            if not ($jobs =~ '^[1-4]$') {
+                error make {msg: $"CI_T1_CARGO_JOBS must be 1 through 4, got ($jobs)"}
+            }
             # Cached CI must explain an unexpected rebuild. This does not
             # change compiler flags or freshness decisions; Cargo emits the
             # first invalidating dependency instead of a bare Compiling line.
             let fingerprint_log = ($env.CARGO_LOG? | default (
                 if ($cache | is-not-empty) { "cargo::core::compiler::fingerprint=info" } else { "" }
             ))
-            with-env {CARGO_BUILD_JOBS: "2", CARGO_LOG: $fingerprint_log} {
-                run-bounded 30min $cargo "build" "--locked" "--jobs" "2" ...$build_args
+            print $"T1 cargo jobs: ($jobs)"
+            with-env {CARGO_BUILD_JOBS: $jobs, CARGO_LOG: $fingerprint_log} {
+                run-bounded 30min $cargo "build" "--locked" "--jobs" $jobs ...$build_args
             }
         }
     } else { false }
