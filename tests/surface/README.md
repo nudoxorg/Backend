@@ -757,3 +757,22 @@ The diagnostic had different TS environment overrides, so equality was checked
 against the actual official answer before adopting this candidate.
 GUI failures now retain bounded already-captured native pixels and OCR in
 CI-GUI-FAILURE; they neither extend the deadline nor replace the original error.
+
+### Concurrent case slots and GUI-serving owner usage (W2, 2026-10-27)
+
+Concurrent cases now each run on their own whole physical cores
+(`SURFACE-CPU-SLOTS`; on ilo, logical CPUs 0–5 and 6–11). On the #681 heads
+(pr-t2 1956–1972, all P-core placed, other CI paused), python-blinker's
+`cli add` took about 4.5s alone and 8.6–9.2s when it overlapped polyglot's
+indexing. Tomli's took 5.05–6.08s in 14/14 runs. With slots (pr-t2/2119) they
+took 3.97s and 2.42s. No answer, owner baseline, tolerance or floor changed.
+
+Tomli's owner baseline (2.84s CPU, 283560KiB) was seeded by expansion run
+489752 before its GUI probe ran. The owner's work serving the desktop is now
+measured separately as `gui_owner_cpu_seconds` and `gui_owner_peak_rss_kib`.
+The owner's VmHWM is reset before the GUI phase, so that peak is attributable
+to it. In the same 14 runs, non-GUI owner CPU was 2.14–2.74s and peak was
+279168–291804KiB, all inside the unchanged baseline. GUI-serving owner CPU was
+0.99–2.38s and peak was 326612–363812KiB. Its first baseline is the slowest
+sample of each, 2.38s and 363812KiB, under the existing ratios and floors.
+(Robert chose separate accounting over re-baselining the owner, 2026-10-27.)

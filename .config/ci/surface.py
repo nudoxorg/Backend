@@ -2553,16 +2553,33 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             record["performance"]["seconds"].update(
                 run_live_contracts(owner, project, case["live_contracts"], published_root)
             )
+        gui_owner = None
         if case.get("gui"):
             from gui_contract import run_gui
+            # The owner baselines predate the GUI probe, so the owner's work
+            # serving the desktop is measured on its own (gui_owner_*) rather
+            # than folded into cpu_seconds/peak_rss_kib.
+            final_usage = owner.usage_raw()
+            _validate_owner_usage(final_usage, "before GUI phase")
+            gui_reset = owner.reset_peak_rss()
+            _validate_owner_usage(gui_reset, "after GUI VmHWM reset")
             answer, usage, evidence = run_gui(owner, project, case["gui"])
             record["answers"]["gui"] = answer
             record["performance"]["seconds"].update(usage.pop("seconds"))
             record["performance"].update(usage)
             with OUTPUT_LOCK:
                 print("CI-GUI-EVIDENCE " + json.dumps({**(RUN_PROVENANCE.get() or {}), **evidence}, sort_keys=True), flush=True)
-        final_usage = owner.usage_raw()
-        _validate_owner_usage(final_usage, "after live/GUI phases")
+            after_gui = owner.usage_raw()
+            _validate_owner_usage(after_gui, "after GUI phase")
+            if after_gui["cpu_seconds"] < final_usage["cpu_seconds"]:
+                raise RuntimeError("owner CPU counter decreased during GUI phase")
+            gui_owner = {"cpu_seconds": after_gui["cpu_seconds"] - final_usage["cpu_seconds"],
+                         "peak_rss_kib": max(gui_reset["peak_rss_kib"], after_gui["peak_rss_kib"])}
+            record["performance"]["gui_owner_cpu_seconds"] = round(gui_owner["cpu_seconds"], 2)
+            record["performance"]["gui_owner_peak_rss_kib"] = gui_owner["peak_rss_kib"]
+        else:
+            final_usage = owner.usage_raw()
+            _validate_owner_usage(final_usage, "after live phases")
         if final_usage["cpu_seconds"] < proof_usage["cpu_seconds"]:
             raise RuntimeError("owner CPU counter decreased across cursor proof and live/GUI phases")
         if (_owner_usage_diagnostics_enabled()
@@ -2580,6 +2597,8 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         phase_record["post_reset_final"] = final_usage
         phase_record["post_reset_peak_rss_kib"] = max(
             reset_usage["peak_rss_kib"], final_usage["peak_rss_kib"])
+        if gui_owner is not None:
+            phase_record["gui_owner"] = gui_owner
         with OUTPUT_LOCK:
             print("CI-RESOURCE-PHASE " + json.dumps({
                 **(RUN_PROVENANCE.get() or {}), "case": case["name"], "phase": "final",
@@ -2614,9 +2633,10 @@ def regressions(baseline: dict, measured: dict) -> list[str]:
     for name, old in baseline.get("seconds", {}).items():
         if name in measured["seconds"]:
             check("seconds", f"seconds[{name}]", old, measured["seconds"][name])
-    for metric in ("peak_rss_kib", "cpu_seconds", "gui_peak_rss_kib", "gui_cpu_seconds"):
+    for metric in ("peak_rss_kib", "cpu_seconds", "gui_peak_rss_kib", "gui_cpu_seconds",
+                   "gui_owner_peak_rss_kib", "gui_owner_cpu_seconds"):
         if metric in baseline and metric in measured:
-            policy = metric.removeprefix("gui_")
+            policy = metric.removeprefix("gui_").removeprefix("owner_")
             check(policy, metric, baseline[metric], measured[metric])
     return found
 

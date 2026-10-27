@@ -1570,13 +1570,16 @@ class InteractiveMcpTests(unittest.TestCase):
         self.assertLess(events.index("usage"), events.index("proof-hop"))
         self.assertLess(events.index("proof-hop"), events.index("reset"))
         self.assertLess(events.index("reset"), events.index("gui"))
-        self.assertEqual(record["performance"]["cpu_seconds"], 7)
+        # GUI-serving owner CPU (99 -> 105) is its own metric, not owner CPU.
+        self.assertEqual(record["performance"]["cpu_seconds"], 1)
+        self.assertEqual(record["performance"]["gui_owner_cpu_seconds"], 6)
         self.assertEqual(record["performance"]["peak_rss_kib"], 100)
         self.assertEqual(record["resource_phase_evidence"]["proof_cpu_seconds"], 98)
         self.assertEqual(record["resource_phase_evidence"]["proof_peak_rss_kib"], 9999)
         self.assertEqual(record["resource_phase_evidence"]["post_reset_peak_rss_kib"], 90)
         self.assertNotIn("resource_phase_evidence", record["performance"])
-        self.assertEqual(record["resource_phase_evidence"]["post_reset_final"]["cpu_seconds"], 105)
+        self.assertEqual(record["resource_phase_evidence"]["post_reset_final"]["cpu_seconds"], 99)
+        self.assertEqual(record["resource_phase_evidence"]["gui_owner"]["cpu_seconds"], 6)
         self.assertEqual(len(record["continuation_evidence"]), 2)
 
         # The exact failure observed in build 600335 was a lower postproof
@@ -1585,10 +1588,22 @@ class InteractiveMcpTests(unittest.TestCase):
         self.assertEqual(record["performance"]["peak_rss_kib"], 100)
         self.assertEqual(record["resource_phase_evidence"]["proof_peak_rss_kib"], 100)
 
-    def test_case_retains_a_higher_gui_hwm_sample(self):
-        record, _events, _sessions = self._run_phase_accounting_scenario(70, 120, 100)
-        self.assertEqual(record["performance"]["peak_rss_kib"], 120)
-        self.assertEqual(record["resource_phase_evidence"]["post_reset_peak_rss_kib"], 120)
+    def test_gui_phase_peak_is_retained_as_gui_owner_peak(self):
+        record, events, _sessions = self._run_phase_accounting_scenario(70, 120, 100)
+        self.assertEqual(record["performance"]["peak_rss_kib"], 100)
+        self.assertEqual(record["performance"]["gui_owner_peak_rss_kib"], 120)
+        self.assertEqual(record["resource_phase_evidence"]["post_reset_peak_rss_kib"], 70)
+        # VmHWM is reset again right before the GUI so its peak is attributable.
+        self.assertEqual(events[events.index("gui") - 1], "reset")
+
+    def test_gui_owner_metrics_use_owner_tolerances(self):
+        baseline = {"seconds": {}, "gui_owner_cpu_seconds": 2.38, "gui_owner_peak_rss_kib": 363812}
+        within = {"seconds": {}, "gui_owner_cpu_seconds": 3.5, "gui_owner_peak_rss_kib": 450000}
+        over = {"seconds": {}, "gui_owner_cpu_seconds": 3.6, "gui_owner_peak_rss_kib": 460000}
+        self.assertEqual(surface.regressions(baseline, within), [])
+        failures = surface.regressions(baseline, over)
+        self.assertTrue(any("gui_owner_cpu_seconds" in item for item in failures))
+        self.assertTrue(any("gui_owner_peak_rss_kib" in item for item in failures))
 
     def test_replay_refuses_expired_original_cli_deadline(self):
         import time

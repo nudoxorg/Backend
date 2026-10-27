@@ -4234,6 +4234,8 @@
   },
   "performance": {
     "cpu_seconds": 2.84,
+    "gui_owner_cpu_seconds": 2.38,
+    "gui_owner_peak_rss_kib": 363812,
     "peak_rss_kib": 283560,
     "seconds": {
       "cli add": 3.07,
