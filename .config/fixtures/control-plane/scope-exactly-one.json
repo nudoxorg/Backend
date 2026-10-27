@@ -32,6 +32,7 @@
       "Formula": "package-distribution",
       "server": "server-tooling",
       "vendor/gpui_ce_components_base": "vendored-source",
+      "vendor/gpui_ce_linux": "vendored-source",
       "vendor/gpui_ce_macos": "vendored-source",
       "vendor/gpui_ce_platform": "vendored-source",
       "vendor/gpui_ce_scheduler": "vendored-source",
@@ -55,9 +56,12 @@
       "tests/cargo-shared-cache.sh",
       "tests/test_build_census.py",
       "tests/test_ci_disk_reserve.py",
+      "tests/nix-shell-cargo-umask.sh",
       "tests/test_fleet_capacity_census.py",
+      "tests/test_linux_exiting_witness.py",
       "tests/test_linux_proc_race.py",
       "tests/test_nix_runtime_overlay_guard.py",
+      "tools/benchmark_pc4_page_root.py",
       "tools/observe-rust-ra-reads.sh"
     ]
   },
