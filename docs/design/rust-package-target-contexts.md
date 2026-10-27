@@ -113,3 +113,30 @@ source/target counts, and ambiguity refusal when a target cannot be proven.
 The current 19/27 partial result is truthful under the existing package
 contract; the eight files must not be removed from the expected frontier or
 reclassified as successful without this contract change.
+
+## Selected-target product contract (W2, October 2026)
+
+Robert selected direction 1 (D17/Q18). `add --cargo-target NAME` and MCP
+`cargo_target` explicitly narrow the Rust semantic result to one admitted Cargo
+target. An unset selector retains the package-scoped behavior and its ownership
+refusals. A name that is absent or appears in multiple target rows is refused;
+there is no implicit library target.
+
+The compiler owner resolves the name using its configured Rust toolchain and
+admitted Cargo metadata before source capture. The exact target name, kinds,
+root, and complete captured HIR module closure are retained. An active target
+module that is outside the package or missing from captured inputs refuses the
+operation. Staging recomputes that closure and refuses a changed identity.
+
+There is one latest selected Rust context per package/profile. Selecting a
+different target replaces that context; immutable generations remain historical.
+The durable caller request, compiler input observation, source capture, manifest,
+and publication bind the selected context, and package-profile/operation receipts
+show the target and source-closure identity/count. Coverage counts the selected
+target closure. All acquired package inputs remain in source provenance, including
+files explicitly outside the selected semantic context. A later unscoped add
+returns to the original package-scoped contract.
+
+Selected-target compilation uses the checked local compiler route while the
+remote protocol lacks the pre-resolved source-closure pin. It does not substitute
+a detached analysis context or claim remote full-workspace authority.

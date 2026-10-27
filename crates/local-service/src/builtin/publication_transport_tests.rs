@@ -488,6 +488,7 @@ fn publish_capability_change(owner: &mut EmptyOwner) -> Vec<backend_engine::Comm
         Vec::new(),
         Vec::new(),
         vec![BuiltinCaptureChange {
+            cargo_target: None,
             key,
             expected: None,
             capture: SemanticSourceCapture::new(None, [0xC1; 32], [0xC2; 32], 1, 1)

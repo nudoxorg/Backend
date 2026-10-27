@@ -303,6 +303,8 @@ pub enum Request {
     Index(String),
     /// Submit an Add request with a non-default compile execution class.
     IndexWithExecutionIntent {
+        /// Explicit Cargo target name, resolved by the compiler authority.
+        cargo_target: Option<backend_library::CargoTargetSelector>,
         /// Project root to add.
         path: String,
         /// Requested compilation execution class.
@@ -488,10 +490,12 @@ pub fn lower_with_opener(
         CommandId::Add => {
             let execution_intent = compile_execution_intent(invocation)?;
             let path = path_or(invocation, project);
-            if execution_intent == CompileExecutionIntent::Interactive {
+            let cargo_target = cargo_target_selector(invocation)?;
+            if execution_intent == CompileExecutionIntent::Interactive && cargo_target.is_none() {
                 Ok(Request::Index(path))
             } else {
                 Ok(Request::IndexWithExecutionIntent {
+                    cargo_target,
                     path,
                     execution_intent,
                 })
@@ -688,6 +692,18 @@ fn optional_index_search_cursor(
             .map(Some)
             .map_err(|error| Fault::admission(error, Operand::Argument("cursor".to_owned())))
     })
+}
+
+fn cargo_target_selector(
+    invocation: &Invocation,
+) -> Result<Option<backend_library::CargoTargetSelector>, Fault> {
+    invocation
+        .option("cargo-target")
+        .map(|name| {
+            backend_library::CargoTargetSelector::new(name.to_owned())
+                .map_err(|message| Fault::usage("cargo-target", message))
+        })
+        .transpose()
 }
 
 fn compile_execution_intent(invocation: &Invocation) -> Result<CompileExecutionIntent, Fault> {
@@ -925,6 +941,7 @@ fn surface(
         },
         CommandId::IndexStart if invocation.option("operation-key").is_some() => {
             SurfaceCommand::IndexOperationStart {
+                cargo_target: cargo_target_selector(invocation)?,
                 operation_key: backend_library::IndexOperationKey::parse_hex(
                     invocation.option("operation-key").unwrap_or_default(),
                 )
@@ -936,6 +953,7 @@ fn surface(
             }
         }
         CommandId::IndexStart => SurfaceCommand::IndexStart {
+            cargo_target: cargo_target_selector(invocation)?,
             package: package(invocation, 0)?,
             execution_intent: compile_execution_intent(invocation)?,
         },

@@ -209,14 +209,16 @@ impl Engine for SessionProduct {
         &mut self,
         package: PackageReference,
         execution_intent: CompileExecutionIntent,
+        cargo_target: Option<backend_library::CargoTargetSelector>,
     ) -> Result<SurfaceReply, ClientError> {
         let context = self.0.request_context().cloned();
-        backend_client::index_with_journal_wait(
+        backend_client::index_with_journal_recovery_wait_for_target(
             &self.1,
             package,
             execution_intent,
+            cargo_target,
             context.as_ref(),
-            |command| self.0.surface(command),
+            |dispatch| self.0.surface(dispatch.command()),
         )
     }
     fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
@@ -592,6 +594,48 @@ fn map_runtime_startup_error(
         }
     }
     map_runtime_connect_error(error)
+}
+
+/// The named package-profile tool treats `.` as the MCP session's selected
+/// project. Keep the generic `backend.surface` escape hatch source-exact.
+fn normalize_named_package_profile_dot(request: Request, project: &str) -> Result<Request, Fault> {
+    let Request::Surface(command) = request else {
+        return Ok(request);
+    };
+    let (label, compiler_outcome) = match *command {
+        SurfaceCommand::PackageProfile {
+            package: PackageReference::Local(label),
+            compiler_outcome,
+        } if label.as_str() == "." => (label, compiler_outcome),
+        other => return Ok(Request::Surface(Box::new(other))),
+    };
+    let selected = std::path::Path::new(project);
+    if !selected.is_absolute() {
+        return Ok(Request::Surface(Box::new(SurfaceCommand::PackageProfile {
+            package: PackageReference::Local(label),
+            compiler_outcome,
+        })));
+    }
+    let selected = backend_runtime::normalize_surface_path(selected);
+    let Some(selected) = selected.to_str() else {
+        return Ok(Request::Surface(Box::new(SurfaceCommand::PackageProfile {
+            package: PackageReference::Local(label),
+            compiler_outcome,
+        })));
+    };
+    let package = PackageReference::from_kind(
+        backend_library::PackageReferenceKind::Local,
+        selected.to_owned(),
+    )
+    .map_err(|error| Fault::admission(error, backend_present::Operand::Argument(".".to_owned())))?;
+    let command = SurfaceCommand::PackageProfile {
+        package,
+        compiler_outcome,
+    };
+    command.admit().map_err(|error| {
+        Fault::admission(error, backend_present::Operand::Argument(".".to_owned()))
+    })?;
+    Ok(Request::Surface(Box::new(command)))
 }
 
 /// Runs newline-delimited MCP stdio until the client closes stdin.
@@ -1164,7 +1208,14 @@ impl<P: Product> Server<P> {
         let opener = self.opener()?;
         let planned = validate_registry_arguments(grammar, &command_arguments)
             .and_then(|()| Invocation::from_json(grammar, &command_arguments))
-            .and_then(|invocation| lower_with_opener(&invocation, &self.project, opener));
+            .and_then(|invocation| lower_with_opener(&invocation, &self.project, opener))
+            .and_then(|request| {
+                if name == "backend.package_profile" {
+                    normalize_named_package_profile_dot(request, &self.project)
+                } else {
+                    Ok(request)
+                }
+            });
         match planned {
             Ok(request)
                 if matches!(&request, Request::Surface(command)
@@ -1762,11 +1813,27 @@ impl<P: Product> Server<P> {
             INDEX_START_TOOL => {
                 no_extra(
                     arguments,
-                    &["package", "execution_intent", "operation_key", "detail"],
+                    &[
+                        "package",
+                        "cargo_target",
+                        "execution_intent",
+                        "operation_key",
+                        "detail",
+                    ],
                 )?;
                 let spelling = string(arguments, "package")?.to_owned();
                 let package = PackageReference::parse(spelling)
                     .map_err(|error| RpcError::invalid(error.to_string()))?;
+                let cargo_target = arguments
+                    .get("cargo_target")
+                    .map(|value| {
+                        let name = value
+                            .as_str()
+                            .ok_or_else(|| RpcError::invalid("cargo_target must be a string"))?;
+                        backend_library::CargoTargetSelector::new(name.to_owned())
+                            .map_err(|error| RpcError::invalid(error.to_owned()))
+                    })
+                    .transpose()?;
                 let execution_intent = match arguments.get("execution_intent") {
                     None => CompileExecutionIntent::Interactive,
                     Some(value) => serde_json::from_value::<CompileExecutionIntent>(value.clone())
@@ -1776,6 +1843,7 @@ impl<P: Product> Server<P> {
                 };
                 match arguments.get("operation_key") {
                     Some(key) => SurfaceCommand::IndexOperationStart {
+                        cargo_target: cargo_target.clone(),
                         operation_key:
                             serde_json::from_value::<backend_library::IndexOperationKey>(
                                 key.clone(),
@@ -1790,7 +1858,7 @@ impl<P: Product> Server<P> {
                         // request is observed rather than queued under a new key.
                         let reply = self
                             .product
-                            .index(package.clone(), execution_intent)
+                            .index(package.clone(), execution_intent, cargo_target.clone())
                             .map_err(|error| {
                                 RpcError::from_fault(&Fault::from_client_error(
                                     &error,
@@ -1829,6 +1897,7 @@ impl<P: Product> Server<P> {
                                 _ => package,
                             };
                             SurfaceCommand::IndexOperationStart {
+                                cargo_target,
                                 operation_key,
                                 package,
                                 execution_intent,

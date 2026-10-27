@@ -1178,6 +1178,7 @@ fn capture_only_generation_rebind_cold_recovers_then_retains_compact_events() {
         Vec::new(),
         Vec::new(),
         vec![super::super::BuiltinCaptureChange {
+            cargo_target: None,
             key,
             expected: None,
             capture: SemanticSourceCapture::new(None, [0xB3; 32], [0xB4; 32], 1, 1)
@@ -1592,7 +1593,7 @@ fn journal_v3_refuses_unknown_versions_fields_proof_basis_and_descriptor_changes
 
 #[test]
 fn journal_v3_native_v21_fixture_appends_checked_current_and_reopens_twice() {
-    assert_eq!(backend_library::DTO_VERSION, 38);
+    assert_eq!(backend_library::DTO_VERSION, 39);
     // Exact historical codec output: native ARM64 source 9b0001b3af, whose
     // production persisted grammar is still v21. No field/version rewrite.
     let native = include_bytes!("fixtures/view-journal-v3-native-v21.bin");

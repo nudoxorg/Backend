@@ -9,7 +9,6 @@ use source_preparation::{
 };
 #[path = "index_source_preparation.rs"]
 mod source_preparation;
-use backend_engine::WorkspaceSnapshot;
 use backend_engine::application::{
     CaptureWorkspaceIdentityV2, CapturedFullWorkspaceV2, CompilerBalancingRequest,
     CompilerByteCredits, CompilerCpuCredits, CompilerDemand, CompilerInputAdmissionError,
@@ -22,13 +21,15 @@ use backend_engine::application::{
     VerifierAcceptedFullWorkspaceInput, capture_full_workspace_v2_with_prior,
 };
 use backend_engine::builtin::{
-    PartialSemanticCoverage, ProductSemanticCaptureOutcome, ProductSemanticPublicationKey,
-    ProductSemanticPublicationRecord, ProductSourceFileFactsRecord, ProductSourceFileFactsRelation,
-    ProductSourceFileFactsUpdate, SemanticPublicationClaim, SemanticPublicationCoverage,
-    SemanticPublicationVersion, SemanticSourceCapture,
-    product_source_file_facts_record_key, product_source_file_facts_relation,
-    product_source_file_facts_row_keys, semantic_capture_relation,
+    PartialSemanticCoverage, ProductNativeFrontierRecord, ProductNativeFrontierRelation,
+    ProductSemanticCaptureOutcome, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
+    ProductSourceFileFactsRecord, ProductSourceFileFactsRelation, ProductSourceFileFactsUpdate,
+    SemanticPublicationClaim, SemanticPublicationCoverage, SemanticPublicationVersion,
+    SemanticSourceCapture, product_source_file_facts_record_key,
+    product_source_file_facts_relation, product_source_file_facts_row_keys,
+    semantic_capture_relation,
 };
+use backend_engine::{Relation, WorkspaceSnapshot};
 #[cfg(test)]
 use backend_engine::builtin::SemanticPublicationSelection;
 use backend_extension_turso::SourceObservationReceipt;
@@ -356,6 +357,7 @@ pub(super) fn capture_index_scan(
         reusable.insert(key, record);
     }
     Ok(IndexScanWork {
+        cargo_target: None,
         package,
         label: label.to_owned(),
         source_root: source_root.to_path_buf(),
@@ -494,6 +496,7 @@ pub(super) fn finish_index_scan(
 ) -> Result<PreparedIndex, BuiltinModelError> {
     let base_snapshot = daemon.engine().daemon().owner().snapshot();
     let PreparedScanSource {
+        rust_target,
         package,
         label,
         requested_root: requested_root_owned,
@@ -506,6 +509,8 @@ pub(super) fn finish_index_scan(
         mut file_keys,
         mut changes,
         mut source_facts_changes,
+        mut native_frontier_changes,
+        native_frontier,
         revision_fence: final_revision_fence,
         python_environment,
         cancellation,
@@ -531,7 +536,8 @@ pub(super) fn finish_index_scan(
         compiler,
         python_environment.as_ref(),
         cancellation.as_ref(),
-    )?;
+    )?
+    .with_rust_target(rust_target.as_ref());
     let (
         semantic_changes,
         selected,
@@ -652,6 +658,9 @@ pub(super) fn finish_index_scan(
                 captures,
                 reused_profiles,
                 pending_changes,
+                native_clang_candidates,
+                native_csharp_candidates,
+                native_frontier: _,
             } = *compilation;
             // The synchronous reference path commits the independently
             // admitted source/Pending frontier before materializing inputs.
@@ -676,6 +685,16 @@ pub(super) fn finish_index_scan(
             if !source_facts_changes.is_empty() {
                 capture_intent =
                     capture_intent.with_source_facts(std::mem::take(&mut source_facts_changes))?;
+            }
+            if !native_frontier_changes.is_empty() {
+                if capture_intent.has_capture_changes() && capture_intent.capture_basis().is_none()
+                {
+                    capture_intent = capture_intent.with_capture_basis(
+                        super::super::capture_basis_for_snapshot(&base_snapshot)?,
+                    )?;
+                }
+                capture_intent = capture_intent
+                    .with_native_frontier(std::mem::take(&mut native_frontier_changes))?;
             }
             let capture_intent = match operation_key {
                 Some(key) => capture_intent.with_operation_key(key)?,
@@ -724,17 +743,19 @@ pub(super) fn finish_index_scan(
             file_keys = captured_file_keys.clone();
             let before_capture = Some(captured_project.clone());
 
-            let sources = ingest::admit_compiler_sources_for_scan(
+            let admission = ingest::admit_compiler_sources_with_native_candidates_for_scan(
                 requested_root,
                 revision_fence,
                 fresh,
                 reused,
+                native_clang_candidates,
+                native_csharp_candidates,
                 source_admission_policy,
                 Some(cancellation.as_ref()),
             )
             .map_err(BuiltinModelError);
-            let sources = match sources {
-                Ok(sources) => sources,
+            let (sources, native_candidate_profiles) = match admission {
+                Ok(admitted) => admitted,
                 Err(error) => {
                     let terminal = terminal_capture_changes(
                         daemon,
@@ -759,6 +780,13 @@ pub(super) fn finish_index_scan(
                     Vec::new(),
                     &semantic_context,
                     sources,
+                    native_candidate_profiles.clone(),
+                    source_preparation::native_candidate_permits(
+                        &daemon.engine().daemon().owner().snapshot(),
+                        project_key,
+                        &native_frontier,
+                        &native_candidate_profiles,
+                    )?,
                     revision_fence.clone(),
                     &observations,
                     captures,
@@ -773,6 +801,13 @@ pub(super) fn finish_index_scan(
                 daemon,
                 &semantic_context,
                 sources,
+                &native_candidate_profiles,
+                &source_preparation::native_candidate_permits(
+                    &daemon.engine().daemon().owner().snapshot(),
+                    project_key,
+                    &native_frontier,
+                    &native_candidate_profiles,
+                )?,
                 &revision_fence,
                 &observations,
                 semantic_authority,
@@ -868,10 +903,11 @@ pub(super) fn finish_index_scan(
         && semantic_changes.is_empty()
         && capture_changes.is_empty()
         && source_facts_changes.is_empty()
+        && native_frontier_changes.is_empty()
     {
         None
     } else {
-        let intent = if !source_facts_changes.is_empty() {
+        let mut intent = if !source_facts_changes.is_empty() {
             BuiltinIntent::index_with_source_facts(
                 package,
                 &label,
@@ -891,6 +927,14 @@ pub(super) fn finish_index_scan(
                 capture_changes,
             )?
         };
+        if !native_frontier_changes.is_empty() {
+            if intent.has_capture_changes() && intent.capture_basis().is_none() {
+                intent = intent.with_capture_basis(super::super::capture_basis_for_snapshot(
+                    &daemon.engine().daemon().owner().snapshot(),
+                )?)?;
+            }
+            intent = intent.with_native_frontier(native_frontier_changes)?;
+        }
         Some(intent)
     };
     Ok(PreparedIndex::Ready(PreparedProductSelection {
@@ -1263,6 +1307,10 @@ fn prepare_source_capture_changes_for_snapshot(
             })?
             .flatten();
         changes.push(BuiltinCaptureChange {
+            cargo_target: context
+                .rust_target
+                .filter(|_| matches!(profile, LanguageProfile::Rust(_)))
+                .map(|target| target.scope.clone()),
             key: key.clone(),
             expected,
             capture,
@@ -1373,6 +1421,10 @@ pub(super) fn source_capture_receipt_for_snapshot(
             summary.workspace_sequence,
             summary.profiles,
         )
+        .map(|mut receipt| {
+            receipt.cargo_target = summary.cargo_target;
+            receipt
+        })
         .map_err(|error| BuiltinModelError(error.to_string()))
     })
     .transpose()
@@ -1409,6 +1461,7 @@ pub(super) fn source_capture_summary_for_snapshot(
     let operation_key = operation_key.map(|key| key.to_bytes());
     let mut profiles = Vec::new();
     let mut capture_basis = None;
+    let mut cargo_target = None;
     let mut after = None;
     loop {
         let page = relation
@@ -1425,6 +1478,16 @@ pub(super) fn source_capture_summary_for_snapshot(
                     .is_some_and(|expected| record.request_identity() != &expected)
             {
                 continue;
+            }
+            if let Some(scope) = record.cargo_target() {
+                if !matches!(key.profile(), LanguageProfile::Rust(_))
+                    || cargo_target.as_ref().is_some_and(|prior| prior != scope)
+                {
+                    return Err(BuiltinModelError(
+                        "selected Cargo scope disagrees across profile markers".to_owned(),
+                    ));
+                }
+                cargo_target = Some(scope.clone());
             }
             let capture = record.capture();
             let state = match record.outcome() {
@@ -1487,6 +1550,7 @@ pub(super) fn source_capture_summary_for_snapshot(
         return Ok(None);
     };
     let summary = backend_library::IndexSourceCaptureSummary {
+        cargo_target,
         producer_package: backend_library::PackageReference::parse(package.as_str())
             .map_err(|error| BuiltinModelError(error.to_string()))?,
         request_identity,
@@ -1619,6 +1683,7 @@ fn terminal_capture_changes_for_snapshot(
             }
         };
         changes.push(BuiltinCaptureChange {
+            cargo_target: None,
             key: key.clone(),
             expected: Some(current),
             capture: *capture,
@@ -1781,6 +1846,7 @@ pub(super) fn completed_capture_changes_for_snapshot(
             }
         };
         changes.push(BuiltinCaptureChange {
+            cargo_target: None,
             key: key.clone(),
             expected: Some(expected),
             capture: *capture,
@@ -1874,6 +1940,7 @@ fn staged_cargo_alias_evidence(
 
 /// Owner-captured immutable inputs for one filesystem scan.
 pub(super) struct IndexScanWork {
+    pub(super) cargo_target: Option<backend_library::CargoTargetSelector>,
     package: backend_engine::PackageKey,
     label: String,
     source_root: PathBuf,
@@ -2273,6 +2340,71 @@ impl DeferredIndex {
 /// Begins the local compile of every profile the sources name, exactly as
 /// the in-place local route does (`compile_semantic_publications` with no
 /// compiler cluster), stopping short of the compile itself.
+fn admitted_native_candidate_source_set(
+    request: PackageCompileRequest,
+    package_root: PathBuf,
+    sources: Box<[OwnedPackageSource]>,
+    profile: LanguageProfile,
+    candidate_profiles: &ingest::NativeCandidateProfiles,
+    permits: &source_preparation::NativeCandidatePermits,
+    rust_target: Option<&ResolvedCargoTarget>,
+) -> Result<OwnedPackageSourceSet, BuiltinModelError> {
+    if candidate_profiles.clang.contains(&profile) {
+        OwnedPackageSourceSet::new_native_clang_candidate(
+            request,
+            package_root,
+            sources,
+            permits.project.ok_or_else(|| {
+                BuiltinModelError("native frontier project is missing".to_owned())
+            })?,
+            permits.selected_root.ok_or_else(|| {
+                BuiltinModelError("selected native frontier root is missing".to_owned())
+            })?,
+            permits
+                .clang_by_profile
+                .get(&profile)
+                .cloned()
+                .ok_or_else(|| {
+                    BuiltinModelError("checked Clang candidate permits are missing".to_owned())
+                })?,
+        )
+    } else if candidate_profiles.csharp.contains(&profile) {
+        OwnedPackageSourceSet::new_native_csharp_candidate(
+            request,
+            package_root,
+            sources,
+            permits.project.ok_or_else(|| {
+                BuiltinModelError("native frontier project is missing".to_owned())
+            })?,
+            permits.selected_root.ok_or_else(|| {
+                BuiltinModelError("selected native frontier root is missing".to_owned())
+            })?,
+            permits
+                .csharp_by_profile
+                .get(&profile)
+                .cloned()
+                .ok_or_else(|| {
+                    BuiltinModelError("checked C# candidate permits are missing".to_owned())
+                })?,
+        )
+    } else if let Some(selected) =
+        rust_target.filter(|_| matches!(profile, LanguageProfile::Rust(_)))
+    {
+        OwnedPackageSourceSet::new_for_unit(
+            request,
+            selected.compiler_target.clone(),
+            package_root,
+            sources,
+        )
+        .and_then(|sources| {
+            sources.with_expected_rust_target_source_closure(selected.scope.source_closure)
+        })
+    } else {
+        OwnedPackageSourceSet::new(request, package_root, sources)
+    }
+    .map_err(|error| BuiltinModelError(error.to_string()))
+}
+
 fn prepare_deferred_compile(
     snapshot: &WorkspaceSnapshot,
     package: backend_engine::PackageKey,
@@ -2285,6 +2417,8 @@ fn prepare_deferred_compile(
     source_changes: Vec<BuiltinSourceChange>,
     context: &SemanticCompilationContext<'_>,
     sources: Vec<ingest::CompilerSource>,
+    native_candidate_profiles: ingest::NativeCandidateProfiles,
+    native_candidate_permits: source_preparation::NativeCandidatePermits,
     revision_fence: ingest::CompilerRevisionFence,
     observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
     captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
@@ -2313,8 +2447,13 @@ fn prepare_deferred_compile(
     for (profile, sources) in by_profile {
         let mut attempt_for_error = None;
         let prepared = (|| {
-            let expected_artifacts = u32::try_from(sources.len())
-                .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
+            let expected_artifacts = u32::try_from(
+                context
+                    .rust_target
+                    .filter(|_| matches!(profile, LanguageProfile::Rust(_)))
+                    .map_or(sources.len() as u64, |target| target.scope.source_count),
+            )
+            .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
             let coordinate = super::super::compiler_scope::semantic_coordinate(
                 context.package,
                 profile,
@@ -2358,13 +2497,16 @@ fn prepare_deferred_compile(
                 ScopeRoot::from_bytes(scan_input_digest),
                 Coverage::Partial,
             );
-            let sources = OwnedPackageSourceSet::new(
+            let source_set = admitted_native_candidate_source_set(
                 request,
                 context.source_root.to_path_buf(),
                 sources.into_boxed_slice(),
-            )
-            .map_err(|error| BuiltinModelError(error.to_string()))?
-            .with_input_claim(input_claim);
+                profile,
+                &native_candidate_profiles,
+                &native_candidate_permits,
+                context.rust_target,
+            )?;
+            let sources = source_set.with_input_claim(input_claim);
             let sources = match context
                 .python_environment
                 .filter(|_| matches!(profile, LanguageProfile::Python(_)))
@@ -2862,7 +3004,14 @@ pub(super) fn finish_deferred_index_for_snapshot(
     })
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct ResolvedCargoTarget {
+    compiler_target: CompilerPackageTargetV2,
+    scope: backend_library::CargoTargetScope,
+}
+
 struct SemanticCompilationContext<'request> {
+    rust_target: Option<&'request ResolvedCargoTarget>,
     package: backend_engine::PackageKey,
     package_reference: backend_engine::PackageReference,
     source_root: &'request Path,
@@ -3238,6 +3387,11 @@ fn selected_semantic_binding_for_snapshot(
 }
 
 impl<'request> SemanticCompilationContext<'request> {
+    fn with_rust_target(mut self, target: Option<&'request ResolvedCargoTarget>) -> Self {
+        self.rust_target = target;
+        self
+    }
+
     fn admit(
         package: backend_engine::PackageKey,
         package_label: &str,
@@ -3258,6 +3412,7 @@ impl<'request> SemanticCompilationContext<'request> {
             ));
         }
         Ok(Self {
+            rust_target: None,
             package,
             package_reference,
             source_root,
@@ -3283,6 +3438,8 @@ fn compile_semantic_publications(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     context: &SemanticCompilationContext<'_>,
     sources: Vec<ingest::CompilerSource>,
+    native_candidate_profiles: &ingest::NativeCandidateProfiles,
+    native_candidate_permits: &source_preparation::NativeCandidatePermits,
     revision_fence: &ingest::CompilerRevisionFence,
     observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
@@ -3295,6 +3452,8 @@ fn compile_semantic_publications(
         &daemon.engine().daemon().owner().snapshot(),
         context,
         sources,
+        native_candidate_profiles,
+        native_candidate_permits,
         revision_fence,
         observations,
         semantic_authority,
@@ -3313,6 +3472,8 @@ fn compile_semantic_publications_for_snapshot(
     snapshot: &WorkspaceSnapshot,
     context: &SemanticCompilationContext<'_>,
     sources: Vec<ingest::CompilerSource>,
+    native_candidate_profiles: &ingest::NativeCandidateProfiles,
+    native_candidate_permits: &source_preparation::NativeCandidatePermits,
     revision_fence: &ingest::CompilerRevisionFence,
     observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
@@ -3352,8 +3513,13 @@ fn compile_semantic_publications_for_snapshot(
         if context.cancellation.load(Ordering::Acquire) {
             return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned()));
         }
-        let expected_artifacts = u32::try_from(sources.len())
-            .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
+        let expected_artifacts = u32::try_from(
+            context
+                .rust_target
+                .filter(|_| matches!(profile, LanguageProfile::Rust(_)))
+                .map_or(sources.len() as u64, |target| target.scope.source_count),
+        )
+        .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
         let coordinate = super::super::compiler_scope::semantic_coordinate(
             context.package,
             profile,
@@ -3384,9 +3550,17 @@ fn compile_semantic_publications_for_snapshot(
         })?;
         let source_paths = source_paths_by_profile.remove(&profile).unwrap_or_default();
         let mut captured_work = None;
-        let observation = if let (Some(owner), Some(snapshot)) = (owner_cluster, workspace_snapshot)
+        let observation = if !native_candidate_profiles.contains(&profile)
+            && !(context.rust_target.is_some() && matches!(profile, LanguageProfile::Rust(_)))
+            && let (Some(owner), Some(snapshot)) = (owner_cluster, workspace_snapshot)
         {
-            let compiler_target = CompilerPackageTargetV2::for_package(key.coordinate().clone());
+            let compiler_target = context
+                .rust_target
+                .filter(|_| matches!(profile, LanguageProfile::Rust(_)))
+                .map_or_else(
+                    || CompilerPackageTargetV2::for_package(key.coordinate().clone()),
+                    |target| target.compiler_target.clone(),
+                );
             let execution_identity = context
                 .compiler
                 .execution_identity(
@@ -3952,12 +4126,15 @@ fn compile_semantic_publications_for_snapshot(
                     ScopeRoot::from_bytes(scan_input_digest),
                     Coverage::Partial,
                 );
-                let source_set = OwnedPackageSourceSet::new(
+                let source_set = admitted_native_candidate_source_set(
                     request,
                     context.source_root.to_path_buf(),
                     sources.into_boxed_slice(),
-                )
-                .map_err(|error| BuiltinModelError(error.to_string()))?
+                    profile,
+                    native_candidate_profiles,
+                    native_candidate_permits,
+                    context.rust_target,
+                )?
                 .with_input_claim(local_input_claim);
                 let source_set = match context
                     .python_environment
@@ -4675,6 +4852,7 @@ mod admitted_capture_publication_tests {
             Vec::new(),
             Vec::new(),
             vec![BuiltinCaptureChange {
+                cargo_target: None,
                 key: key.clone(),
                 expected: None,
                 capture,
@@ -6522,6 +6700,23 @@ fn is_compiler_configuration(path: &str) -> bool {
     ) || path.ends_with(".csproj")
 }
 
+fn semantic_target_input_digest(
+    scan: &ingest::IndexSnapshot,
+    profile: LanguageProfile,
+    target: Option<&ResolvedCargoTarget>,
+) -> [u8; 32] {
+    let input = semantic_input_digest(scan, profile);
+    let Some(target) = target.filter(|_| matches!(profile, LanguageProfile::Rust(_))) else {
+        return input;
+    };
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"backend.local-service.semantic-input.rust-cargo-target.v1\0");
+    hash.update(&input);
+    hash.update(target.compiler_target.target().as_ref());
+    hash.update(&target.scope.source_closure);
+    *hash.finalize().as_bytes()
+}
+
 fn semantic_input_digest(scan: &ingest::IndexSnapshot, profile: LanguageProfile) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(if matches!(profile, LanguageProfile::Python(_)) {
@@ -6536,6 +6731,19 @@ fn semantic_input_digest(scan: &ingest::IndexSnapshot, profile: LanguageProfile)
         if let Some(environment) = &scan.python_environment {
             hasher.update(&environment.identity());
         }
+    }
+    for record in scan.native_frontier.iter().filter(|record| {
+        record.owner().1 == profile
+            && matches!(
+                record,
+                ProductNativeFrontierRecord::Profile { .. }
+                    | ProductNativeFrontierRecord::Path { .. }
+            )
+    }) {
+        let mut encoded = Vec::new();
+        ProductNativeFrontierRelation::encode_value(record, &mut encoded);
+        hasher.update(&(encoded.len() as u64).to_le_bytes());
+        hasher.update(&encoded);
     }
     if matches!(
         profile,
@@ -6617,7 +6825,7 @@ mod typescript_snapshot_input_tests {
     use std::fs;
 
     #[test]
-    fn exact_typescript_input_does_not_depend_on_fresh_or_reused_scan_partition()
+    fn typescript_input_ignores_unrelated_text_but_tracks_source_and_configuration_changes()
     -> Result<(), String> {
         use crate::test_support::TestValue as _;
         let directory =
@@ -6625,6 +6833,11 @@ mod typescript_snapshot_input_tests {
         let root = directory.path();
         fs::write(root.join("a.ts"), "export const a = 1;").test_value()?;
         fs::write(root.join("b.ts"), "export const b = 2;").test_value()?;
+        fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"strict":false},"files":["a.ts","b.ts"]}"#,
+        )
+        .test_value()?;
         let text = root.to_str().test_value()?;
         let cold = ingest::scan_project(text, [27; 32], &BTreeMap::new()).test_value()?;
         let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
@@ -6634,6 +6847,46 @@ mod typescript_snapshot_input_tests {
         assert!(warm.compiler_sources.is_empty());
         assert_eq!(warm.reused_compiler_files.len(), 2);
         assert_eq!(input, semantic_input_digest(&warm, profile));
+
+        fs::write(root.join("unrelated.txt"), "").test_value()?;
+        let with_unrelated_text = ingest::scan_project(text, [27; 32], &rows).test_value()?;
+        assert_eq!(
+            with_unrelated_text.source_version,
+            cold.source_version,
+            "an unsupported text file is outside the indexed source version"
+        );
+        assert_eq!(
+            input,
+            semantic_input_digest(&with_unrelated_text, profile),
+            "the production TypeScript input key is stable across unrelated text capture-root churn"
+        );
+        fs::remove_file(root.join("unrelated.txt")).test_value()?;
+        let after_unrelated_text_removal =
+            ingest::scan_project(text, [27; 32], &rows).test_value()?;
+        assert_eq!(
+            input,
+            semantic_input_digest(&after_unrelated_text_removal, profile),
+            "removing an unsupported text file preserves the same TypeScript input key"
+        );
+
+        fs::write(root.join("new.ts"), "export const newSource = true;").test_value()?;
+        let with_new_source = ingest::scan_project(text, [27; 32], &rows).test_value()?;
+        assert_ne!(input, semantic_input_digest(&with_new_source, profile));
+        fs::remove_file(root.join("new.ts")).test_value()?;
+
+        fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"strict":true},"files":["a.ts","b.ts"]}"#,
+        )
+        .test_value()?;
+        let changed_configuration = ingest::scan_project(text, [27; 32], &rows).test_value()?;
+        assert_ne!(input, semantic_input_digest(&changed_configuration, profile));
+        fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"strict":false},"files":["a.ts","b.ts"]}"#,
+        )
+        .test_value()?;
+
         fs::write(root.join("a.ts"), "export const a = 'changed';").test_value()?;
         let changed = ingest::scan_project(text, [27; 32], &rows).test_value()?;
         assert_ne!(input, semantic_input_digest(&changed, profile));

@@ -58,6 +58,7 @@ fn staged_semantic_and_capture_descriptors_leave_the_queue_but_replay_exactly() 
     let captures = keys
         .iter()
         .map(|key| BuiltinCaptureChange {
+            cargo_target: None,
             key: key.clone(),
             expected: None,
             capture,
@@ -1522,6 +1523,7 @@ fn capture_only_refusal_survives_cold_reopen_and_qualifies_retained_indexed_rows
         Vec::new(),
         Vec::new(),
         vec![BuiltinCaptureChange {
+            cargo_target: None,
             key: key.clone(),
             expected: None,
             capture,
@@ -1589,6 +1591,7 @@ fn capture_only_refusal_survives_cold_reopen_and_qualifies_retained_indexed_rows
         Vec::new(),
         Vec::new(),
         vec![BuiltinCaptureChange {
+            cargo_target: None,
             key: key.clone(),
             expected: Some(pending_row),
             capture,
@@ -1859,6 +1862,7 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
             Vec::new(),
             semantic_changes,
             vec![BuiltinCaptureChange {
+                cargo_target: None,
                 key: key.clone(),
                 expected,
                 capture,
@@ -2298,6 +2302,7 @@ fn one_package_state_seeks_its_typed_prefix_without_folding_foreign_refusals() -
                 changes,
                 selected,
                 vec![BuiltinCaptureChange {
+                    cargo_target: None,
                     key,
                     expected: None,
                     capture,
@@ -2374,6 +2379,7 @@ fn one_package_state_seeks_its_typed_prefix_without_folding_foreign_refusals() -
         Vec::new(),
         Vec::new(),
         vec![BuiltinCaptureChange {
+            cargo_target: None,
             key: key.clone(),
             expected: Some(expected),
             capture: target_capture.test_value()?,

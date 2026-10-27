@@ -1,0 +1,113 @@
+{
+  "acceptance": "Fresh exact-head official T2 comparison is required; this review does not constitute a green verdict.",
+  "answer_review": [
+    "NewString and ParseBytes retain the authored version4.go:21 and uuid.go:120 sites; related test helper matches are real source.",
+    "CLI and MCP source guards, bounded prefixes and live continuation checks were exercised before candidate emission. Exact answers repeat in a separate frozen-artifact run.",
+    "Shelf counts are observed native row counts, including semantic carriers; changed counts are not treated as counts of authored Go declarations. No count, identity, coverage or continuation field was normalized away.",
+    "Native semantic coverage remains tied to the published receipt. Embedding semantic search remains unavailable/unconfigured."
+  ],
+  "case": "go-uuid",
+  "evidence": {
+    "initial_build": 1807,
+    "initial_global_build": 594865,
+    "initial_source_sha": "ee8d0c27be6bf9f58e1f88ae525b123c50d49ee3",
+    "repeat_answers_equal": true,
+    "repeat_artifact_manifest_sha256": "ef72be73ed53be65418dcd3953bbf701632843e0486d6e7b85d2bab7e4f65dfc",
+    "repeat_build": 596340,
+    "repeat_scope": "diagnostic-only frozen-artifact replay; no official T2 verdict or performance acceptance",
+    "repeat_source_sha": "ad0cde8367f4f3beb373c5f9a613302075d2d404"
+  },
+  "normalization": "No normalizer or public assertion changed.",
+  "outline": {
+    "observations": "All outline names matched independently parsed source identifiers, real source filenames for module rows, or positional _1/_2 signature carriers. Go lowering documents unnamed parameter/result carriers explicitly. This checks visible names and source anchors; it does not independently reconstruct semantic IDs or every compiler-generated row.",
+    "page_evidence_sha256": "f0f1046edfae8b0cd38159e5c14208038d95823c1127bb095ac1bd4c3caaaeec",
+    "pages": 13,
+    "terminal_extent": "complete",
+    "unique_visible_rows": 455
+  },
+  "performance": {
+    "action": "Original performance suffix retained byte-for-byte; no new baseline or guard adopted. Diagnostic replay is not performance acceptance.",
+    "preserved_suffix_sha256": "4d1d34eb1976e6327de1d4f369846cf1db7cf4aa0afa511796d2f17f88b51758"
+  },
+  "reviewer": "Codex / GPT-6.1, 2026-10-23",
+  "schema": 1,
+  "scope": "Explicit answer-only review of queried source sites and complete diagnostic outline; original performance bytes preserved.",
+  "source": {
+    "coordinate": "golang:github.com/google/uuid@v1.6.0",
+    "files_sha256": {
+      "dce.go": "6a4b89e7f6165a673e76f00bebaabf8d0d7eb4356a672c6cb771d95a45fb2695",
+      "doc.go": "0b286e2af61ede9f58d2455781ea254284c477b7fce2447aab3203992cc51f9f",
+      "hash.go": "afe975c3f3e8b9a972c66165f06e978cc5c2f8ea5a4809dae4c46b4cfebbadce",
+      "json_test.go": "926ba4423017608e600f815ca73c03deb00225b036fe2fa3ed3f8970545bd2de",
+      "marshal.go": "933eb226d049268e17809fd37f777c650b9ec8cb3fa988534b792610a64dcc43",
+      "node.go": "73a93d192ca24078e0f93b8c1675e13adb442421252d3974d697b0821c4832cf",
+      "node_js.go": "334b6ac9f50339341696319aaf9b912ea8007d0aacf0e909a48a0bb02d982d6d",
+      "node_net.go": "78e274b465de8da8690f4ab06281f41025b142c1d093e337fda1d6726b35662b",
+      "null.go": "791638f42d54fcf07ac752df6b2df92593f7da308f944465e2cda443dc3346cf",
+      "null_test.go": "4c39d6fa1f64f1f98792f22f58c1468114b9de879ae83ec7b8f4128442cde5c5",
+      "seq_test.go": "6ad9e9722a9add93984ce7e1d2eeb8dcd72c32134f06bb4b0b7c7ef293338585",
+      "sql.go": "29281b11e8f97f1ddf73d087854cb401ba42a87c4f59ce45fc69763a4d927f2f",
+      "sql_test.go": "fd85e05f2d1779639689877366779e0275826e4fcd8d9a03382e4ab822826353",
+      "time.go": "e07999a07de5b667dd1dd5792b544ea933e7e839eca03b3469527f86a8bc2881",
+      "util.go": "755f50afafb13dd89ae6177da7eb6dc31ae650ece2f9ba52821021e9f8de044e",
+      "uuid.go": "0edec8e34c6b6fe0db31b71a29069a09ed832e3fd04ee0175916b58f2b60e5c1",
+      "uuid_test.go": "facfccf9bba767c4bb9dc6a46503d49645b2afb3659083eb8ba43b772f3bb85a",
+      "version1.go": "38a2c229a2aad4bb72d45529304f210b1f31e8ef60bbd2605690a10f0d8a8242",
+      "version4.go": "f252aeb4028659d83cbf7b037d4524f7c9b76cde1fdca1f6f7de310dab6f4dcd",
+      "version6.go": "013cc9f4a9e606746d38d53f8e651b9222f5042fde567484588ec1d7a0c54905",
+      "version7.go": "8002748cc22a032c3782b42f7653a947189b8566c50d246b4a3beb2e075f8d62"
+    },
+    "method": "Verified pinned zip SHA-256; independently parsed every Go file with go/parser and go/ast. Exact queried anchors checked by name, file and line.",
+    "verified_archive_hash": "sha256-0PAvN3IX9CcC4lloTgZEHtv1FA3dzDS6m+pWA4s4pu0="
+  },
+  "verified_source_anchors": [
+    [
+      "cli search NewString",
+      "NewString",
+      "version4.go",
+      21
+    ],
+    [
+      "cli search ParseBytes",
+      "ParseBytes",
+      "uuid.go",
+      120
+    ],
+    [
+      "cli search ParseBytes",
+      "parseBytesCopy",
+      "uuid_test.go",
+      673
+    ],
+    [
+      "cli search ParseBytes",
+      "parseBytesUnsafe",
+      "uuid_test.go",
+      659
+    ],
+    [
+      "backend.search",
+      "NewString",
+      "version4.go",
+      21
+    ],
+    [
+      "backend.search",
+      "ParseBytes",
+      "uuid.go",
+      120
+    ],
+    [
+      "backend.search",
+      "parseBytesCopy",
+      "uuid_test.go",
+      673
+    ],
+    [
+      "backend.search",
+      "parseBytesUnsafe",
+      "uuid_test.go",
+      659
+    ]
+  ]
+}

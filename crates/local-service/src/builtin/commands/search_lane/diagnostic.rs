@@ -2,13 +2,24 @@
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 const FILE_NAME: &str = "search-preparation-worker-v1.json";
 const MAX_BYTES: usize = 4096;
+const MAX_RECORDS_PER_PROCESS: usize = 64;
+static RECORDS: AtomicUsize = AtomicUsize::new(0);
 
 fn requested(value: Option<&std::ffi::OsStr>) -> bool {
     value.and_then(std::ffi::OsStr::to_str) == Some("1")
+}
+
+fn reserve_record(records: &AtomicUsize) -> bool {
+    records
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+            (count < MAX_RECORDS_PER_PROCESS).then_some(count + 1)
+        })
+        .is_ok()
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
@@ -112,6 +123,7 @@ pub(super) struct Diagnostic {
     pub(super) generation_after: Option<Generations>,
     generation_before: Generations,
     pub(super) lexical_binding: Option<LexicalBinding>,
+    pub(super) selection: Option<SelectionTrace>,
 }
 
 #[derive(Serialize)]
@@ -160,6 +172,49 @@ pub(super) struct LexicalBinding {
     authority: String,
     read_manifest: String,
     frontier: String,
+}
+
+#[derive(Serialize)]
+pub(super) struct SelectionTrace {
+    row_evidence_join_ns: Option<u128>,
+    relation_state_ns: Option<u128>,
+    document_state_ns: Option<u128>,
+    projection_open_advance_ns: Option<u128>,
+    view_rows: Option<u64>,
+    evidence_facts: Option<usize>,
+    lexical_documents: Option<usize>,
+    selected_entities: Option<usize>,
+    previous_view: Option<String>,
+    previous_binding: Option<LexicalBinding>,
+    same_view: Option<bool>,
+    same_workspace: Option<bool>,
+    same_relation_root: Option<bool>,
+    same_binding: Option<bool>,
+    maintenance: Option<&'static str>,
+}
+
+impl SelectionTrace {
+    pub(super) fn capture(
+        observed: super::super::super::query::SelectionPreparationDiagnostic,
+    ) -> Self {
+        Self {
+            row_evidence_join_ns: observed.row_evidence_join_ns,
+            relation_state_ns: observed.relation_state_ns,
+            document_state_ns: observed.document_state_ns,
+            projection_open_advance_ns: observed.projection_open_advance_ns,
+            view_rows: observed.view_rows,
+            evidence_facts: observed.evidence_facts,
+            lexical_documents: observed.lexical_documents,
+            selected_entities: observed.selected_entities,
+            previous_view: observed.previous_view,
+            previous_binding: observed.previous_binding.map(LexicalBinding::capture),
+            same_view: observed.same_view,
+            same_workspace: observed.same_workspace,
+            same_relation_root: observed.same_relation_root,
+            same_binding: observed.same_binding,
+            maintenance: observed.maintenance,
+        }
+    }
 }
 
 impl LexicalBinding {
@@ -240,6 +295,7 @@ impl Diagnostic {
             generation_before: Generations::capture(&capture.generations),
             generation_after: None,
             lexical_binding: None,
+            selection: None,
         }
     }
 
@@ -247,8 +303,10 @@ impl Diagnostic {
         capture: &super::Capture,
         projection: &super::SearchSnapshotOwner,
     ) -> Option<Self> {
-        requested(std::env::var_os("BACKEND_JOURNEY_SEARCH_PREPARATION").as_deref())
-            .then(|| Self::capture(capture, projection))
+        if !requested(std::env::var_os("BACKEND_JOURNEY_SEARCH_PREPARATION").as_deref()) {
+            return None;
+        }
+        reserve_record(&RECORDS).then(|| Self::capture(capture, projection))
     }
 
     fn bytes(
@@ -360,6 +418,16 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_record_reservation_is_process_bounded() {
+        let records = AtomicUsize::new(0);
+        for _ in 0..MAX_RECORDS_PER_PROCESS {
+            assert!(reserve_record(&records));
+        }
+        assert!(!reserve_record(&records));
+        assert_eq!(records.load(Ordering::Relaxed), MAX_RECORDS_PER_PROCESS);
+    }
+
+    #[test]
     fn phase_observation_distinguishes_not_run_returned_error_and_unwind() {
         let mut skipped = Phase::NotRun;
         assert_eq!(measure(None, || 7), 7);
@@ -437,6 +505,30 @@ mod tests {
                 authority: hex.clone(),
                 read_manifest: hex.clone(),
                 frontier: hex.clone(),
+            }),
+            selection: Some(SelectionTrace {
+                row_evidence_join_ns: Some(u128::MAX),
+                relation_state_ns: Some(u128::MAX),
+                document_state_ns: Some(u128::MAX),
+                projection_open_advance_ns: Some(u128::MAX),
+                view_rows: Some(u64::MAX),
+                evidence_facts: Some(usize::MAX),
+                lexical_documents: Some(usize::MAX),
+                selected_entities: Some(usize::MAX),
+                previous_view: Some(hex.clone()),
+                previous_binding: Some(LexicalBinding {
+                    workspace: hex.clone(),
+                    root: hex.clone(),
+                    recipe: hex.clone(),
+                    authority: hex.clone(),
+                    read_manifest: hex.clone(),
+                    frontier: hex.clone(),
+                }),
+                same_view: Some(false),
+                same_workspace: Some(false),
+                same_relation_root: Some(false),
+                same_binding: Some(false),
+                maintenance: Some("rebound"),
             }),
         };
         let bytes = observation

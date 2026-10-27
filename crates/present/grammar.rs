@@ -744,6 +744,9 @@ pub const GRAMMARS: [CommandGrammar; 54] = [
             "execution_intent",
             ArgumentKind::ExecutionIntent,
             "Compilation class: interactive protects local latency; background permits bounded remote calibration. Defaults to interactive.",
+        ), ArgumentSpec::optional_with_json_name(
+            "cargo-target", "cargo_target", ArgumentKind::Text,
+            "Explicit Cargo target name. Index only its compiler-proven source closure; package input provenance is retained. Missing or duplicate target names refuse.",
         )],
         when: "Pass the absolute local project directory to index or re-index it. The CLI also accepts index as an alias for add. Call it when packages does not list the project, or when its source changed. Use background execution when the request may be calibrated remotely.",
     },
@@ -1408,6 +1411,8 @@ pub const GRAMMARS: [CommandGrammar; 54] = [
             "Local package path or exact version-pinned package URL.",
         )],
         options: &[
+            ArgumentSpec::optional_with_json_name("cargo-target", "cargo_target", ArgumentKind::Text,
+                "Explicit Cargo target name; the selected target replaces the package's previous Rust context."),
             ArgumentSpec::optional_with_json_name(
                 "execution-intent",
                 "execution_intent",

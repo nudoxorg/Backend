@@ -28,7 +28,8 @@ use backend_compile::{
 use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_frontend_python::legacy::checker::CheckerError as PythonCheckerError;
 use backend_frontend_rust::legacy::{
-    RustAnalysisControl, RustAuthorityError, RustWorkspaceEditorBufferObserver, RustWorkspaceFile,
+    RustAnalysisControl, RustAuthorityError, RustCargoTarget, RustCargoTargetSourceClosureV1,
+    RustWorkspace, RustWorkspaceEditorBufferObserver, RustWorkspaceFile,
     RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey, RustWorkspaceSessionLane,
     RustWorkspaceSessionLease,
 };
@@ -75,6 +76,7 @@ use std::{
 };
 use thiserror::Error;
 
+use backend_frontend_java::legacy::harness::JavaSource;
 use backend_replication::{
     ProducedSemanticTypedPlaneContentV3, SemanticTypedPlaneBoundaryPoliciesV3,
     produce_semantic_typed_plane_content_v3,
@@ -403,6 +405,7 @@ pub struct PackageSource<'source> {
 
 /// Why one exact package source contributed provenance but no semantic artifact.
 pub use backend_semantic::ir::SourceCoverageGapCause as PackageSourceCoverageGapCause;
+pub use backend_semantic::ir::SourceCoverageGapDiagnostic;
 
 /// Exact source retained in the input frontier but omitted from semantic lowering.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -414,6 +417,7 @@ pub struct PackageSourceCoverageGap {
         Option<backend_frontend_python::legacy::checker::PythonProjectSourceStatus>,
     native_python_diagnostics:
         Box<[backend_frontend_python::legacy::checker::PythonProjectDiagnostic]>,
+    typescript_diagnostic: Option<SourceCoverageGapDiagnostic>,
 }
 
 impl PackageSourceCoverageGap {
@@ -431,6 +435,12 @@ impl PackageSourceCoverageGap {
         &self,
     ) -> &[backend_frontend_python::legacy::checker::PythonProjectDiagnostic] {
         &self.native_python_diagnostics
+    }
+
+    /// Exact owner context when TypeScript lowering observed a source-bound type cycle.
+    #[must_use]
+    pub fn typescript_diagnostic(&self) -> Option<&SourceCoverageGapDiagnostic> {
+        self.typescript_diagnostic.as_ref()
     }
 
     /// Returns the exact source identity and byte length committed by the package input frontier.
@@ -555,6 +565,8 @@ pub struct PackageSourceSet<'source> {
     go_witness_deadline_phase: Option<&'static str>,
     python_environment:
         Option<&'source backend_frontend_python::legacy::checker::PythonEnvironmentInput>,
+    native_clang_candidate: bool,
+    expected_rust_target_source_closure: Option<[u8; 32]>,
 }
 
 impl<'source> PackageSourceSet<'source> {
@@ -628,7 +640,29 @@ impl<'source> PackageSourceSet<'source> {
             go_compile_deadline: None,
             go_witness_deadline_phase: None,
             python_environment: None,
+            native_clang_candidate: false,
+            expected_rust_target_source_closure: None,
         })
+    }
+
+    /// Marks this exact checked package frontier as compiler-only native Clang input.
+    /// The owned-runtime admission boundary requires selected-frontier permits before
+    /// calling this method; it is not available to public callers.
+    pub(crate) fn with_native_clang_candidate(mut self) -> Result<Self, PackageSourceSetError> {
+        if !matches!(
+            self.request.target.profile,
+            LanguageProfile::C(_) | LanguageProfile::Cxx(_)
+        ) {
+            return Err(PackageSourceSetError::NativeClangProfileMismatch);
+        }
+        self.native_clang_candidate = true;
+        Ok(self)
+    }
+
+    /// Whether this package crossed the distinct checked native-candidate admission route.
+    #[must_use]
+    pub const fn is_native_clang_candidate(&self) -> bool {
+        self.native_clang_candidate
     }
 
     pub(super) fn with_python_raw_sources(
@@ -678,6 +712,22 @@ impl<'source> PackageSourceSet<'source> {
     ) -> Self {
         self.python_environment = environment;
         self
+    }
+
+    pub(crate) fn with_expected_rust_target_source_closure(
+        mut self,
+        identity: [u8; 32],
+    ) -> Result<Self, PackageSourceSetError> {
+        if !matches!(
+            self.package_target.unit_key(),
+            CompilationUnitKeyV2::RustCrate { .. }
+        ) || self.request.target.profile.language()
+            != backend_semantic::vocabulary::Language::Rust
+        {
+            return Err(PackageSourceSetError::CompilationUnitMismatch);
+        }
+        self.expected_rust_target_source_closure = Some(identity);
+        Ok(self)
     }
 
     /// Attaches an opaque input-manifest claim to the exact admitted source frontier.
@@ -749,6 +799,13 @@ fn unit_source_matches(unit: &CompilationUnitKeyV2, relative_path: &str) -> bool
 fn package_source_input_witness(package: &PackageSourceSet<'_>) -> SemanticInputWitness {
     let mut input = blake3::Hasher::new();
     input.update(b"backend.compiler.package-source-frontier.v1\0");
+    if let CompilationUnitKeyV2::RustCrate { name, root } = package.package_target.unit_key() {
+        input.update(b"rust-cargo-target-unit.v1\0");
+        input.update(&(name.len() as u64).to_be_bytes());
+        input.update(name.as_bytes());
+        input.update(&(root.len() as u64).to_be_bytes());
+        input.update(root.as_bytes());
+    }
     if let Some(environment) = package.python_environment {
         input.update(b"installed-environment-cohort.v1\0");
         input.update(&environment.identity());
@@ -762,7 +819,18 @@ fn package_source_input_witness(package: &PackageSourceSet<'_>) -> SemanticInput
             input.update(source.source);
         }
     } else {
-        for source in package.compilation_sources() {
+        // A Rust crate's selected target compiles only its authority-proven
+        // closure, but all admitted package bytes remain input provenance.
+        // `compilation_sources()` is intentionally root-only for RustCrate.
+        let sources = if matches!(
+            package.package_target.unit_key(),
+            CompilationUnitKeyV2::RustCrate { .. }
+        ) {
+            package.sources.to_vec()
+        } else {
+            package.compilation_sources().collect::<Vec<_>>()
+        };
+        for source in sources {
             let path = source.relative_path().as_bytes();
             let contents = source.source().as_bytes();
             input.update(&(path.len() as u64).to_be_bytes());
@@ -773,6 +841,40 @@ fn package_source_input_witness(package: &PackageSourceSet<'_>) -> SemanticInput
     }
     let root = *input.finalize().as_bytes();
     SemanticInputWitness::claimed_state(root, ScopeRoot::from_bytes(root), Coverage::Partial)
+}
+
+fn rust_target_input_witness(
+    input: SemanticInputWitness,
+    expected: Option<[u8; 32]>,
+    observed: Option<[u8; 32]>,
+    has_input_claim: bool,
+) -> Result<SemanticInputWitness, PackageSemanticError> {
+    if !expected.is_none_or(|expected| observed == Some(expected)) {
+        return Err(PackageSemanticError::RustTargetSourceClosureMismatch);
+    }
+    let Some(closure_identity) = observed else {
+        return Ok(input);
+    };
+    let preserve_prebound_claim = expected.is_some() && has_input_claim;
+    if preserve_prebound_claim {
+        // The selected-target admission path supplies a source observation
+        // already salted with the admitted target identity and source closure.
+        // The recomputed closure is checked against that admission separately;
+        // wrapping the claim again would make the staged root differ from the
+        // exact CandidateAttempt that owns it.
+        return Ok(input);
+    }
+    let mut identity = blake3::Hasher::new();
+    identity.update(b"backend.compiler.rust-target-input-frontier.v1\0");
+    identity.update(input.input_root());
+    identity.update(input.read_manifest_root().as_bytes());
+    identity.update(&closure_identity);
+    let root = *identity.finalize().as_bytes();
+    Ok(SemanticInputWitness::claimed_state(
+        root,
+        ScopeRoot::from_bytes(root),
+        Coverage::Partial,
+    ))
 }
 
 fn semantic_embedding_identity(
@@ -846,6 +948,12 @@ pub enum PackageSourceSetError {
     /// The decoded and raw frontiers did not describe the same exact bytes.
     #[error("decoded source differs from the retained raw Python frontier")]
     RawSourceMismatch,
+    /// The distinct native Clang candidate route was requested for a non-C/C++ profile.
+    #[error("native Clang source candidates require a C or C++ profile and UTF-8 bytes")]
+    NativeClangProfileMismatch,
+    /// The distinct native C# candidate route was requested for a non-C# profile.
+    #[error("native C# source candidates require a C# profile and UTF-8 bytes")]
+    NativeCSharpProfileMismatch,
     /// Package roots must have host-independent absolute identity.
     #[error("package source root is relative")]
     RelativeRoot,
@@ -869,6 +977,9 @@ pub enum PackageSourceSetError {
     /// The native compilation unit is unsupported for this profile or absent from the frontier.
     #[error("compilation-unit target is incompatible with the profile or source frontier")]
     CompilationUnitMismatch,
+    /// A name-only Cargo target selector was empty or used with a non-Rust profile.
+    #[error("Rust Cargo target name selector is invalid for this package profile")]
+    InvalidRustCargoTargetName,
 }
 
 /// One atomically published package generation and its reopened semantic images.
@@ -1516,6 +1627,22 @@ mod typescript_snapshot_outcome_tests {
 }
 
 impl StagedSemanticPackage {
+    pub(crate) const fn typescript_snapshot_runtime_local_authority(&self) -> Option<[u8; 32]> {
+        self.staged.typescript_runtime_local_authority
+    }
+
+    pub(crate) fn typescript_snapshot_program_environments(&self) -> Option<&[[u8; 32]]> {
+        self.staged.typescript_program_environments.as_deref()
+    }
+
+    /// Encodes a bounded native TypeScript read witness for storage only in the
+    /// authenticated metadata member of this staged publication.
+    pub fn typescript_snapshot_certificate(&self, input: [u8; 32]) -> Option<Vec<u8>> {
+        let host = self.staged.typescript_witness.as_ref()?;
+        let root = host.native_project_root()?;
+        super::runtime::encode_staged_snapshot_certificate(self, root, input)
+    }
+
     pub(crate) fn typescript_snapshot_witness(
         &self,
         root: &Path,
@@ -1660,6 +1787,15 @@ impl StagedSemanticPackage {
     #[must_use]
     pub fn cargo_workspace_facts(&self) -> Option<&RustCargoWorkspaceFactsV1> {
         self.staged.cargo_workspace_facts.as_deref()
+    }
+
+    /// Exact Rust target and captured source closure used for this staged profile.
+    ///
+    /// Package inputs outside this closure remain committed by the input witness,
+    /// but do not contribute semantic source rows or gaps for the selected target.
+    #[must_use]
+    pub fn rust_target_source_closure(&self) -> Option<&RustCargoTargetSourceClosureV1> {
+        self.staged.rust_target_source_closure.as_ref()
     }
 
     /// Rust language profile whose workspace preflight produced these facts.
@@ -2119,6 +2255,9 @@ pub enum PackageSemanticError {
     /// A Go package's authority filesystem inputs could not be admitted.
     #[error(transparent)]
     GoAuthorityWitness(#[from] backend_frontend_go::legacy::oracle::GoPackageAuthorityWitnessError),
+    /// A fresh compiler workspace did not reproduce the closure selected before capture.
+    #[error("Rust Cargo target source closure changed after target resolution")]
+    RustTargetSourceClosureMismatch,
     /// One package-relative declaration scope was rejected.
     #[error("package declaration scope is malformed for {path}")]
     Scope {
@@ -2334,6 +2473,17 @@ impl DegradedSources {
         source: SourceAuthority,
         gaps: &mut Vec<PackageSourceCoverageGap>,
     ) -> Result<(), PackageSemanticError> {
+        self.degrade_with_diagnostic(terminal, path, source, None, gaps)
+    }
+
+    fn degrade_with_diagnostic(
+        &mut self,
+        terminal: CompilerTerminal,
+        path: &str,
+        source: SourceAuthority,
+        typescript_diagnostic: Option<SourceCoverageGapDiagnostic>,
+        gaps: &mut Vec<PackageSourceCoverageGap>,
+    ) -> Result<(), PackageSemanticError> {
         let Some(cause) = source_gap_cause(&terminal) else {
             return Err(PackageSemanticError::Compile {
                 path: path.into(),
@@ -2347,7 +2497,7 @@ impl DegradedSources {
             "source degraded to a coverage gap; the rest of the package keeps its facts"
         );
         self.deadline_passed |= cause == PackageSourceCoverageGapCause::CompileDeadlineExceeded;
-        self.push_gap(path, source, cause, gaps);
+        self.push_gap(path, source, cause, typescript_diagnostic, gaps);
         self.first.get_or_insert_with(|| (path.into(), terminal));
         Ok(())
     }
@@ -2363,6 +2513,7 @@ impl DegradedSources {
             path,
             source,
             PackageSourceCoverageGapCause::CompileDeadlineExceeded,
+            None,
             gaps,
         );
     }
@@ -2372,6 +2523,7 @@ impl DegradedSources {
         path: &str,
         source: SourceAuthority,
         cause: PackageSourceCoverageGapCause,
+        typescript_diagnostic: Option<SourceCoverageGapDiagnostic>,
         gaps: &mut Vec<PackageSourceCoverageGap>,
     ) {
         gaps.push(PackageSourceCoverageGap {
@@ -2380,6 +2532,7 @@ impl DegradedSources {
             cause,
             python_source_status: None,
             native_python_diagnostics: Box::new([]),
+            typescript_diagnostic,
         });
     }
 
@@ -2423,6 +2576,86 @@ fn source_gap_cause(terminal: &CompilerTerminal) -> Option<PackageSourceCoverage
     }
 }
 
+/// Projects the existing exact owner spans of a TSZ cycle into a bounded,
+/// source-bounded coverage diagnostic. The caller passes the exact bytes for
+/// the current compile input. These are owner coordinates;
+/// the TSZ handle is deliberately kept opaque and is never presented as a name.
+fn typescript_source_gap_diagnostic(
+    terminal: &CompilerTerminal,
+    source: &[u8],
+) -> Option<SourceCoverageGapDiagnostic> {
+    use backend_semantic::vocabulary::{
+        LoweringUnsupported, ProjectionAdmissionFault, ProjectionSpan,
+    };
+
+    let CompilerTerminal::Compile {
+        cause: CompilerCause::Lowering(lowering),
+        ..
+    } = terminal
+    else {
+        return None;
+    };
+    let LoweringUnsupported::FactRejected {
+        cause:
+            ProjectionAdmissionFault::TypeProjectionCycle {
+                type_id,
+                owner_span: Some(ProjectionSpan { start, end }),
+                owner_name_span:
+                    Some(ProjectionSpan {
+                        start: name_start,
+                        end: name_end,
+                    }),
+            },
+        ..
+    } = &**lowering
+    else {
+        return None;
+    };
+
+    let raw_source = std::str::from_utf8(source).ok()?;
+    let _owner = raw_source.get(usize::try_from(*start).ok()?..usize::try_from(*end).ok()?)?;
+    let owner_name = raw_source
+        .get(usize::try_from(*name_start).ok()?..usize::try_from(*name_end).ok()?)?;
+    if owner_name.is_empty()
+        || *start >= *end
+        || *name_start < *start
+        || *name_end > *end
+        || owner_name.len() != name_end.saturating_sub(*name_start) as usize
+        || owner_name.len() > 256
+        || owner_name.chars().any(char::is_control)
+    {
+        return None;
+    }
+    let prefix = raw_source.get(..usize::try_from(*start).ok()?)?;
+    let mut line = 1u32;
+    let mut column = 1u32;
+    let mut chars = prefix.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '\r' {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            line = line.checked_add(1)?;
+            column = 1;
+        } else if matches!(character, '\n' | '\u{2028}' | '\u{2029}') {
+            line = line.checked_add(1)?;
+            column = 1;
+        } else {
+            column = column.checked_add(1)?;
+        }
+    }
+    Some(SourceCoverageGapDiagnostic::TypeProjectionCycle {
+        type_id: *type_id,
+        owner_start: *start,
+        owner_end: *end,
+        owner_name_start: *name_start,
+        owner_name_end: *name_end,
+        line,
+        column,
+        owner_name: owner_name.to_owned(),
+    })
+}
+
 /// TypeScript projects may retain siblings only when lowering or validating
 /// this source's own fragment failed. Authority failures can describe a broken
 /// source/project/session binding, so they must remain package refusals.
@@ -2441,6 +2674,101 @@ fn typescript_source_gap_cause(
             Some(PackageSourceCoverageGapCause::SourceNotRepresentable)
         }
         _ => None,
+    }
+}
+
+/// Emits a bounded, opt-in explanation for one compatibility-checker source
+/// that was already accepted as a source-local coverage gap. This diagnostic
+/// is outside persisted coverage and does not affect the admission decision.
+fn report_typescript_compatibility_gap(path: &str, terminal: &CompilerTerminal) {
+    use std::{ffi::OsStr, fmt::Write as _};
+
+    const DETAIL_LIMIT: usize = 768;
+    const PATH_LIMIT: usize = 256;
+    if std::env::var_os("NUDOX_TYPESCRIPT_COMPATIBILITY_DIAGNOSTICS").as_deref()
+        != Some(OsStr::new("1"))
+    {
+        return;
+    }
+    let CompilerTerminal::Compile { cause, .. } = terminal else {
+        return;
+    };
+    if !matches!(
+        cause,
+        CompilerCause::Lowering(_) | CompilerCause::FragmentFailure(_)
+    ) {
+        return;
+    }
+    static EMITTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    if EMITTED
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+            (count < 32).then_some(count + 1)
+        })
+        .is_err()
+    {
+        return;
+    }
+
+    let mut detail = BoundedDiagnostic::new(DETAIL_LIMIT);
+    let _ = write!(&mut detail, "{cause:?}");
+    let mut bounded_path = String::new();
+    for character in path.chars() {
+        let character = if character.is_control() {
+            '?'
+        } else {
+            character
+        };
+        if bounded_path.len().saturating_add(character.len_utf8()) > PATH_LIMIT {
+            break;
+        }
+        bounded_path.push(character);
+    }
+    eprintln!(
+        "typescript-compatibility-gap path={bounded_path:?} terminal={}{}",
+        detail.as_str(),
+        if detail.truncated() { "…" } else { "" },
+    );
+}
+
+/// A UTF-8-safe formatting sink with a strict output byte limit.
+struct BoundedDiagnostic {
+    text: String,
+    limit: usize,
+    truncated: bool,
+}
+
+impl BoundedDiagnostic {
+    fn new(limit: usize) -> Self {
+        Self {
+            text: String::with_capacity(limit),
+            limit,
+            truncated: false,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    const fn truncated(&self) -> bool {
+        self.truncated
+    }
+}
+
+impl std::fmt::Write for BoundedDiagnostic {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        let remaining = self.limit.saturating_sub(self.text.len());
+        if value.len() <= remaining {
+            self.text.push_str(value);
+            return Ok(());
+        }
+        let mut end = remaining.min(value.len());
+        while !value.is_char_boundary(end) {
+            end = end.saturating_sub(1);
+        }
+        self.text.push_str(&value[..end]);
+        self.truncated = true;
+        Err(std::fmt::Error)
     }
 }
 
@@ -2661,6 +2989,173 @@ mod source_degradation_tests {
             None
         );
     }
+
+    #[test]
+    fn tsz_cycle_gap_diagnostic_uses_only_validated_owner_source_spans() {
+        use backend_semantic::vocabulary::{
+            LoweringUnsupported, ProjectionAdmissionFault, ProjectionSpan,
+        };
+
+        let source = "  export type Layout = string;\n";
+        let start = 2;
+        let end = source.find('\n').expect("owner line") as u32;
+        let name_start = source.find("Layout").expect("owner name") as u32;
+        let name_end = name_start + "Layout".len() as u32;
+        let terminal = compile(CompilerCause::Lowering(
+            backend_library::interface::LoweringCause::new(
+                LoweringUnsupported::FactRejected {
+                    fact: 0,
+                    name_len: u64::from(name_end - name_start),
+                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                        type_id: 0xfeed,
+                        owner_span: Some(ProjectionSpan { start, end }),
+                        owner_name_span: Some(ProjectionSpan {
+                            start: name_start,
+                            end: name_end,
+                        }),
+                    },
+                },
+            ),
+        ));
+
+        assert!(matches!(
+            typescript_source_gap_diagnostic(&terminal, source.as_bytes()),
+            Some(SourceCoverageGapDiagnostic::TypeProjectionCycle {
+                type_id: 0xfeed,
+                owner_start: 2,
+                owner_end,
+                owner_name_start,
+                owner_name_end,
+                line: 1,
+                column: 3,
+                owner_name,
+            }) if owner_end == end && owner_name_start == name_start && owner_name_end == name_end && owner_name == "Layout"
+        ));
+        let out_of_bounds = compile(CompilerCause::Lowering(
+            backend_library::interface::LoweringCause::new(
+                LoweringUnsupported::FactRejected {
+                    fact: 0,
+                    name_len: u64::from(name_end - name_start),
+                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                        type_id: 0xfeed,
+                        owner_span: Some(ProjectionSpan {
+                            start,
+                            end: source.len() as u32 + 1,
+                        }),
+                        owner_name_span: Some(ProjectionSpan {
+                            start: name_start,
+                            end: name_end,
+                        }),
+                    },
+                },
+            ),
+        ));
+        assert!(typescript_source_gap_diagnostic(&out_of_bounds, source.as_bytes()).is_none());
+
+        let out_of_bounds_name = compile(CompilerCause::Lowering(
+            backend_library::interface::LoweringCause::new(
+                LoweringUnsupported::FactRejected {
+                    fact: 0,
+                    name_len: 1,
+                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                        type_id: 0xfeed,
+                        owner_span: Some(ProjectionSpan { start, end }),
+                        owner_name_span: Some(ProjectionSpan {
+                            start: source.len() as u32,
+                            end: source.len() as u32 + 1,
+                        }),
+                    },
+                },
+            ),
+        ));
+        assert!(typescript_source_gap_diagnostic(&out_of_bounds_name, source.as_bytes()).is_none());
+
+        let unicode_source = "  export type Layout = \"λ\";\n";
+        let lambda_byte = unicode_source.find('λ').expect("unicode fixture") as u32;
+        let invalid_utf8_name = compile(CompilerCause::Lowering(
+            backend_library::interface::LoweringCause::new(
+                LoweringUnsupported::FactRejected {
+                    fact: 0,
+                    name_len: 1,
+                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                        type_id: 0xfeed,
+                        owner_span: Some(ProjectionSpan {
+                            start,
+                            end: unicode_source.find('\n').expect("owner line") as u32,
+                        }),
+                        owner_name_span: Some(ProjectionSpan {
+                            start: lambda_byte + 1,
+                            end: lambda_byte + 2,
+                        }),
+                    },
+                },
+            ),
+        ));
+        assert!(
+            typescript_source_gap_diagnostic(&invalid_utf8_name, unicode_source.as_bytes())
+                .is_none()
+        );
+
+        let source_with_tail = format!("{source}extra");
+        let tail_start = source_with_tail.find("extra").expect("tail fixture") as u32;
+        let not_contained = compile(CompilerCause::Lowering(
+            backend_library::interface::LoweringCause::new(
+                LoweringUnsupported::FactRejected {
+                    fact: 0,
+                    name_len: 5,
+                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                        type_id: 0xfeed,
+                        owner_span: Some(ProjectionSpan { start, end }),
+                        owner_name_span: Some(ProjectionSpan {
+                            start: tail_start,
+                            end: tail_start + 5,
+                        }),
+                    },
+                },
+            ),
+        ));
+        assert!(
+            typescript_source_gap_diagnostic(&not_contained, source_with_tail.as_bytes()).is_none()
+        );
+    }
+
+    #[test]
+    fn tsz_cycle_gap_diagnostic_counts_ecmascript_line_terminators_and_scalar_columns() {
+        use backend_semantic::vocabulary::{
+            LoweringUnsupported, ProjectionAdmissionFault, ProjectionSpan,
+        };
+
+        let source = "α\r\nx\ry\u{2028}z\u{2029}  export type Layout = string;\n";
+        let start = source.find("export").expect("owner declaration") as u32;
+        let end = source.find('\n').expect("owner line") as u32;
+        let name_start = source.find("Layout").expect("owner name") as u32;
+        let name_end = name_start + "Layout".len() as u32;
+        let terminal = compile(CompilerCause::Lowering(
+            backend_library::interface::LoweringCause::new(
+                LoweringUnsupported::FactRejected {
+                    fact: 0,
+                    name_len: u64::from(name_end - name_start),
+                    cause: ProjectionAdmissionFault::TypeProjectionCycle {
+                        type_id: 0xfeed,
+                        owner_span: Some(ProjectionSpan { start, end }),
+                        owner_name_span: Some(ProjectionSpan {
+                            start: name_start,
+                            end: name_end,
+                        }),
+                    },
+                },
+            ),
+        ));
+        assert!(matches!(
+            typescript_source_gap_diagnostic(&terminal, source.as_bytes()),
+            Some(SourceCoverageGapDiagnostic::TypeProjectionCycle {
+                line: 5,
+                column: 3,
+                owner_name,
+                ..
+            }) if owner_name == "Layout"
+        ));
+    }
 }
 
 fn package_compile_host_hint(terminal: &CompilerTerminal) -> &'static str {
@@ -2770,7 +3265,10 @@ pub(crate) struct StagedPackageCompilation {
     input: SemanticInputWitness,
     execution_identity: Option<LocalCompilerExecutionIdentity>,
     plane_execution_identity: Option<LocalCompilerPlaneExecutionIdentity>,
+    typescript_runtime_local_authority: Option<[u8; 32]>,
+    typescript_program_environments: Option<Vec<[u8; 32]>>,
     cargo_workspace_facts: Option<std::sync::Arc<RustCargoWorkspaceFactsV1>>,
+    rust_target_source_closure: Option<RustCargoTargetSourceClosureV1>,
     typescript_witness:
         Option<std::sync::Arc<crate::application::typescript_host::TypeScriptProjectWitness>>,
     typescript_closure_witness: Option<
@@ -2810,6 +3308,304 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
     pub(crate) fn with_native_work_directory(mut self, path: PathBuf) -> Self {
         self.native_work_directory = path.into_boxed_path();
         self
+    }
+
+    pub(crate) fn resolve_rust_cargo_target_name(
+        &self,
+        package: &PackageSourceSet<'_>,
+        target_name: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<(CompilerPackageTargetV2, RustCargoTargetSourceClosureV1), PackageSemanticError>
+    {
+        let Some(first_source) = package.sources.first().copied() else {
+            return Err(PackageSemanticError::Capacity {
+                lane: "Rust target resolver source frontier",
+            });
+        };
+        let application_request = ApplicationCompilerRequest {
+            profile: package.request.target.profile,
+            stage: package.request.target.stage,
+            source: first_source.source,
+        };
+        if !matches!(application_request.profile, LanguageProfile::Rust(_))
+            || target_name.is_empty()
+        {
+            return Err(PackageSemanticError::Capacity {
+                lane: "Rust target resolver request",
+            });
+        }
+        let source_authority = request_source(application_request)
+            .map_err(source_terminal)
+            .map_err(|terminal| PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(terminal),
+            })?;
+        let control =
+            self.compile_control(cancelled)
+                .map_err(|timeout| PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(CompilerTerminal::DeadlineConstruction {
+                        source: source_authority,
+                        language: application_request.profile.language(),
+                        stage: application_request.stage,
+                        timeout: *timeout,
+                    }),
+                })?;
+        let selected = self
+            .toolchain(application_request)
+            .map_err(|cause| toolchain_terminal(source_authority, application_request, cause))
+            .map_err(|terminal| PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(terminal),
+            })?;
+        let resolved = match selected {
+            ToolchainSelection::ResolvedNative(resolved) => resolved,
+            ToolchainSelection::ExplicitlyUnavailable { tool } => {
+                return Err(PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(package_authority_terminal(
+                        package.package_target.target(),
+                        application_request,
+                        source_authority,
+                        ToolchainSelection::ExplicitlyUnavailable { tool },
+                        PackageAuthorityError::ToolchainUnavailable {
+                            profile: application_request.profile,
+                            tool,
+                        },
+                    )),
+                });
+            }
+        };
+        let external = resolved
+            .external()
+            .map_err(|source| PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(package_authority_terminal(
+                    package.package_target.target(),
+                    application_request,
+                    source_authority,
+                    selected,
+                    PackageAuthorityError::ExternalToolchainRequired {
+                        profile: application_request.profile,
+                        source,
+                    },
+                )),
+            })?;
+        let authority = self.package_authority.rust.ok_or_else(|| {
+            PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(package_authority_terminal(
+                    package.package_target.target(),
+                    application_request,
+                    source_authority,
+                    selected,
+                    PackageAuthorityError::AdapterUnavailable {
+                        profile: application_request.profile,
+                        stage: crate::application::package_authority::PackageAuthorityStage::RustProject,
+                    },
+                )),
+            }
+        })?;
+        if authority.toolchain.selected_rustc() != external.executable() {
+            return Err(PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(package_authority_terminal(
+                    package.package_target.target(),
+                    application_request,
+                    source_authority,
+                    selected,
+                    PackageAuthorityError::RustToolchainExecutableMismatch {
+                        profile: application_request.profile,
+                        configured: authority
+                            .toolchain
+                            .selected_rustc()
+                            .to_path_buf()
+                            .into_boxed_path(),
+                        resolved: external.executable().to_path_buf().into_boxed_path(),
+                    },
+                )),
+            });
+        }
+        let rust_toolchain = authority
+            .resolve_toolchain(application_request.profile, control)
+            .map_err(|cause| {
+                package_authority_terminal(
+                    package.package_target.target(),
+                    application_request,
+                    source_authority,
+                    selected,
+                    cause,
+                )
+            })
+            .map_err(|terminal| PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(terminal),
+            })?;
+        let backend_semantic::vocabulary::LanguageProfile::Rust(edition) =
+            application_request.profile
+        else {
+            unreachable!("profile was checked above")
+        };
+        let target = RustWorkspace::select_cargo_target_metadata(
+            package.package_root,
+            rust_toolchain,
+            authority.features,
+            authority.metadata_policy,
+            target_name,
+            RustAnalysisControl {
+                cancelled,
+                maximum_source_bytes: authority.maximum_source_bytes,
+                deadline: control.deadline,
+            },
+        )
+        .map_err(|cause| {
+            package_authority_terminal(
+                package.package_target.target(),
+                application_request,
+                source_authority,
+                selected,
+                PackageAuthorityError::RustProject(cause),
+            )
+        })
+        .map_err(|terminal| PackageSemanticError::Compile {
+            path: first_source.relative_path.into(),
+            terminal: Box::new(terminal),
+        })?;
+        let root = target
+            .root()
+            .to_str()
+            .ok_or(PackageSemanticError::Capacity {
+                lane: "Rust Cargo target root encoding",
+            })?;
+        let target_root = target.root().to_path_buf();
+        if !package
+            .sources
+            .iter()
+            .any(|source| source.relative_path == root)
+        {
+            return Err(PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(package_authority_terminal(
+                    package.package_target.target(),
+                    application_request,
+                    source_authority,
+                    selected,
+                    PackageAuthorityError::RustProject(RustAuthorityError::SessionSourcePath {
+                        path: target.root().to_path_buf(),
+                    }),
+                )),
+            });
+        }
+        let package_target = CompilerPackageTargetV2::new(
+            package.package_target.package().clone(),
+            CompilationUnitKeyV2::RustCrate {
+                name: target.name().into(),
+                root: root.into(),
+            },
+        )
+        .map_err(|_| PackageSemanticError::Lineage)?;
+        let selected_target = RustCargoTarget {
+            name: target_name,
+            root: &target_root,
+        };
+        let source_paths = package
+            .sources
+            .iter()
+            .map(|source| PathBuf::from(source.relative_path))
+            .collect::<Vec<_>>();
+        let source_frontier = package
+            .sources
+            .iter()
+            .map(|source| RustWorkspaceFile {
+                relative_path: Path::new(source.relative_path),
+                source: source.source,
+            })
+            .collect::<Vec<_>>();
+        let mut resolver_frontier = blake3::Hasher::new();
+        resolver_frontier.update(b"backend.engine.rust-target-resolver-frontier.v1\0");
+        resolver_frontier.update(package_target.target().as_ref());
+        for source in package.sources {
+            resolver_frontier.update(&(source.relative_path.len() as u64).to_be_bytes());
+            resolver_frontier.update(source.relative_path.as_bytes());
+            resolver_frontier.update(&(source.source.as_bytes().len() as u64).to_be_bytes());
+            resolver_frontier.update(source.source.as_bytes());
+        }
+        let resolver_frontier_identity = *resolver_frontier.finalize().as_bytes();
+        let key = RustWorkspaceSessionKey::new(
+            package.package_root,
+            rust_toolchain,
+            edition,
+            application_request.stage,
+            authority.features,
+            authority.metadata_policy,
+            None,
+            None,
+            None,
+            resolver_frontier_identity,
+            &source_paths,
+        )
+        .and_then(|key| key.with_cargo_target(selected_target))
+        .map_err(|cause| {
+            package_authority_terminal(
+                package.package_target.target(),
+                application_request,
+                source_authority,
+                selected,
+                PackageAuthorityError::RustProject(cause),
+            )
+        })
+        .map_err(|terminal| PackageSemanticError::Compile {
+            path: first_source.relative_path.into(),
+            terminal: Box::new(terminal),
+        })?;
+        let mut lane = RustWorkspaceSessionLane::default();
+        let lease = lane
+            .begin(
+                key,
+                &source_frontier,
+                RustAnalysisControl {
+                    cancelled,
+                    maximum_source_bytes: authority.maximum_source_bytes,
+                    deadline: control.deadline,
+                },
+            )
+            .map_err(|cause| {
+                package_authority_terminal(
+                    package.package_target.target(),
+                    application_request,
+                    source_authority,
+                    selected,
+                    PackageAuthorityError::RustProject(cause),
+                )
+            })
+            .map_err(|terminal| PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(terminal),
+            })?;
+        let closure = lease
+            .workspace()
+            .source_closure_for_target(
+                selected_target,
+                RustAnalysisControl {
+                    cancelled,
+                    maximum_source_bytes: authority.maximum_source_bytes,
+                    deadline: control.deadline,
+                },
+            )
+            .map_err(|cause| {
+                package_authority_terminal(
+                    package.package_target.target(),
+                    application_request,
+                    source_authority,
+                    selected,
+                    PackageAuthorityError::RustProject(cause),
+                )
+            })
+            .map_err(|terminal| PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(terminal),
+            })?;
+        Ok((package_target, closure))
     }
 
     pub(crate) fn stage_generate(
@@ -2922,6 +3718,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             package_root: &resolved.package_root,
             source_path: &resolved.source_path,
             source: &resolved.bytes,
+            java_sourcepath: &[],
             unit_key: &unit_key,
             profile: application_request.profile,
             toolchain,
@@ -3199,6 +3996,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut persist_configured_programs = false;
         let mut independent_project_set = false;
         let mut typescript_project_execution_fingerprint = None;
+        let mut typescript_program_environments = None;
         if let Some(project) = typescript_project.as_ref() {
             let inputs = project.inputs();
             let package_sources = package.compilation_sources().collect::<Vec<_>>();
@@ -3229,6 +4027,13 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     )),
                 }
             })?;
+            typescript_program_environments = Some(
+                forest
+                    .nodes
+                    .iter()
+                    .map(|node| *node.native.options.environment.as_bytes())
+                    .collect(),
+            );
             typescript_project_execution_fingerprint = Some(
                 crate::application::typescript_program::native_program_execution_fingerprint(
                     inputs.fingerprint,
@@ -3533,6 +4338,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         package_root: package.package_root,
                         source_path: &first_source_path,
                         source: first_source.source.as_bytes(),
+                        java_sourcepath: &[],
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
                         toolchain,
@@ -3764,6 +4570,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         .filter(|diagnostic| diagnostic.relative_path.as_ref() == raw.relative_path)
                         .cloned()
                         .collect(),
+                    typescript_diagnostic: None,
                 });
             }
         }
@@ -3919,6 +4726,16 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     *package.package_target.target().as_ref(),
                     &source_paths,
                 )
+                .and_then(|key| match package.package_target.unit_key() {
+                    CompilationUnitKeyV2::RustCrate { name, root } => {
+                        key.with_cargo_target(RustCargoTarget {
+                            name: name.as_ref(),
+                            root: Path::new(root.as_ref()),
+                        })
+                    }
+                    CompilationUnitKeyV2::PackageRoot => Ok(key),
+                    _ => unreachable!("Rust package authority validates its compilation-unit key"),
+                })
                 .map_err(|cause| {
                     package_authority_terminal(
                         package.package_target.target(),
@@ -3969,6 +4786,102 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             } else {
                 None
             };
+        let rust_target_source_closure = match package.package_target.unit_key() {
+            CompilationUnitKeyV2::RustCrate { name, root } => {
+                let lease =
+                    rust_workspace_lease
+                        .as_ref()
+                        .ok_or(PackageSemanticError::Capacity {
+                            lane: "selected Rust Cargo target workspace",
+                        })?;
+                let selected_target = RustCargoTarget {
+                    name: name.as_ref(),
+                    root: Path::new(root.as_ref()),
+                };
+                let toolchain = self
+                    .toolchain(first_application_request)
+                    .map_err(|cause| {
+                        toolchain_terminal(first_authority, first_application_request, cause)
+                    })
+                    .map_err(|terminal| PackageSemanticError::Compile {
+                        path: first_source.relative_path.into(),
+                        terminal: Box::new(terminal),
+                    })?;
+                Some(
+                    lease
+                        .workspace()
+                        .source_closure_for_target(
+                            selected_target,
+                            RustAnalysisControl {
+                                cancelled: control.cancelled,
+                                maximum_source_bytes: self
+                                    .package_authority
+                                    .rust
+                                    .ok_or(PackageSemanticError::Capacity {
+                                        lane: "Rust target closure authority configuration",
+                                    })?
+                                    .maximum_source_bytes,
+                                deadline: control.deadline,
+                            },
+                        )
+                        .map_err(|cause| {
+                            package_authority_terminal(
+                                package.package_target.target(),
+                                first_application_request,
+                                first_authority,
+                                toolchain,
+                                PackageAuthorityError::RustProject(cause),
+                            )
+                        })
+                        .map_err(|terminal| PackageSemanticError::Compile {
+                            path: first_source.relative_path.into(),
+                            terminal: Box::new(terminal),
+                        })?,
+                )
+            }
+            CompilationUnitKeyV2::PackageRoot => None,
+            _ => None,
+        };
+        input = rust_target_input_witness(
+            input,
+            package.expected_rust_target_source_closure,
+            rust_target_source_closure
+                .as_ref()
+                .map(|closure| closure.identity()),
+            package.input_claim.is_some(),
+        )?;
+        let rust_compilation_sources = if let Some(closure) = &rust_target_source_closure {
+            if target.profile.language() != backend_semantic::vocabulary::Language::Rust {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "Rust target closure profile binding",
+                });
+            }
+            let mut selected = Vec::with_capacity(closure.source_count());
+            for member in closure.sources() {
+                let source = package
+                    .sources
+                    .binary_search_by(|source| source.relative_path().cmp(member.relative_path()))
+                    .ok()
+                    .and_then(|index| package.sources.get(index).copied())
+                    .ok_or(PackageSemanticError::Capacity {
+                        lane: "Rust target closure source membership",
+                    })?;
+                let observed =
+                    backend_semantic::ir::SourceIdentity::from_bytes(source.source().as_bytes())
+                        .ok_or(PackageSemanticError::Capacity {
+                            lane: "Rust target closure source identity",
+                        })?;
+                if observed != member.source() {
+                    return Err(PackageSemanticError::Capacity {
+                        lane: "Rust target closure source binding",
+                    });
+                }
+                selected.push(source);
+            }
+            selected
+        } else {
+            package.compilation_sources().collect::<Vec<_>>()
+        };
         let rust_workspace_authority = if let Some(lease) = rust_workspace_lease.as_ref() {
             let source_path = package.package_root.join(first_source.relative_path);
             let toolchain = self
@@ -3986,6 +4899,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         package_root: package.package_root,
                         source_path: &source_path,
                         source: first_source.source.as_bytes(),
+                        java_sourcepath: &[],
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
                         toolchain,
@@ -4051,6 +4965,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         package_root: package.package_root,
                         source_path: &go_first_source_path,
                         source: first_source.source.as_bytes(),
+                        java_sourcepath: &[],
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
                         toolchain,
@@ -4075,7 +4990,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             None
         };
 
-        for source in package.compilation_sources() {
+        for source in rust_compilation_sources.iter().copied() {
             if cancelled.load(Ordering::Acquire) {
                 return Err(PackageSemanticError::Compile {
                     path: source.relative_path.into(),
@@ -4149,6 +5064,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         cause: PackageSourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
                         python_source_status: None,
                         native_python_diagnostics: Box::new([]),
+                        typescript_diagnostic: None,
                     });
                     continue;
                 }
@@ -4170,6 +5086,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             cause: PackageSourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted,
                             python_source_status: None,
                             native_python_diagnostics: Box::new([]),
+                            typescript_diagnostic: None,
                         });
                         continue;
                     }
@@ -4209,6 +5126,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             })
                             .cloned()
                             .collect(),
+                        typescript_diagnostic: None,
                     });
                     continue;
                 }
@@ -4227,6 +5145,18 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     }
                 })?;
             let source_path = package.package_root.join(source.relative_path);
+            let java_sourcepath = if matches!(target.profile, LanguageProfile::Java(_)) {
+                package
+                    .compilation_sources()
+                    .filter(|captured| captured.relative_path() != source.relative_path)
+                    .map(|captured| JavaSource {
+                        name: Path::new(captured.relative_path()),
+                        bytes: captured.source().as_bytes(),
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
             let go_owner = match go_authority.as_mut() {
                 Some(go) => match go.owner(&source_path) {
                     Ok(owner) => Some(owner),
@@ -4261,6 +5191,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             package_root: package.package_root,
                             source_path: &source_path,
                             source: source.source.as_bytes(),
+                            java_sourcepath: &java_sourcepath,
                             unit_key: package.package_target.unit_key(),
                             profile: target.profile,
                             toolchain,
@@ -4377,6 +5308,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                                 PackageSourceCoverageGapCause::TypeScriptSourceWorkBudgetExhausted,
                             python_source_status: None,
                             native_python_diagnostics: Box::new([]),
+                            typescript_diagnostic: None,
                         });
                         continue;
                     }
@@ -4425,6 +5357,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         cause: PackageSourceCoverageGapCause::RustSourceOutsideActiveCargoTarget,
                         python_source_status: None,
                         native_python_diagnostics: Box::new([]),
+                        typescript_diagnostic: None,
                     });
                     continue;
                 }
@@ -4441,10 +5374,16 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             terminal: Box::new(terminal),
                         });
                     }
-                    degraded.degrade(
+                    report_typescript_compatibility_gap(source.relative_path, &terminal);
+                    let diagnostic = typescript_source_gap_diagnostic(
+                        &terminal,
+                        source.source.as_bytes(),
+                    );
+                    degraded.degrade_with_diagnostic(
                         terminal,
                         source.relative_path,
                         source_authority,
+                        diagnostic,
                         &mut coverage_gaps,
                     )?;
                     continue;
@@ -4760,6 +5699,16 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 )
             })
         });
+        let typescript_runtime_local_authority = if typescript_project.is_some() {
+            execution_identity
+                .map(LocalCompilerExecutionIdentity::local_authority_fingerprint)
+                .or_else(|| {
+                    plane_execution_seed
+                        .map(|seed| seed.bind_input(input).local_authority_fingerprint())
+                })
+        } else {
+            None
+        };
         let (execution_identity, plane_execution_seed) = if typescript_project.is_some() {
             let project = project_plane_seed.ok_or(PackageSemanticError::Capacity {
                 lane: "admitted TypeScript project runtime identity",
@@ -4888,6 +5837,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     source: *gap.source().identity.as_ref(),
                     byte_len: gap.source().byte_len,
                     cause: gap.cause(),
+                    diagnostic: gap.typescript_diagnostic().cloned(),
                 }));
                 SourceCoverageManifest::new(
                     *input.input_root(),
@@ -4921,12 +5871,15 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             execution_identity,
             plane_execution_identity: rust_plane_execution_identity
                 .or_else(|| plane_execution_seed.map(|seed| seed.bind_input(input))),
+            typescript_runtime_local_authority,
+            typescript_program_environments,
             cargo_workspace_facts: rust_workspace_lease.as_ref().and_then(|lease| {
                 lease
                     .workspace()
                     .cargo_workspace_facts()
                     .map(std::sync::Arc::clone)
             }),
+            rust_target_source_closure,
             typescript_witness: typescript_project
                 .as_ref()
                 .map(|project| std::sync::Arc::clone(project.witness())),
@@ -5081,6 +6034,17 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
 }
 
 impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
+    pub(crate) fn resolve_rust_cargo_target_name(
+        &mut self,
+        package: PackageSourceSet<'_>,
+        target_name: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<(CompilerPackageTargetV2, RustCargoTargetSourceClosureV1), PackageSemanticError>
+    {
+        self.execution()
+            .resolve_rust_cargo_target_name(&package, target_name, cancelled)
+    }
+
     /// Creates the only durable publication owner used by this configured local compiler.
     ///
     /// The caller supplies a validated explicit toolchain table, artifact directory, journal
@@ -6246,10 +7210,6 @@ fn package_authority_terminal(
             target,
             phase: PackageCompilePhase::Authority,
         },
-        PackageAuthorityError::AdapterUnavailable { .. } => CompilerTerminal::Unavailable {
-            language: request.profile.language(),
-            stage: request.stage,
-        },
         PackageAuthorityError::ToolchainUnavailable { tool, .. } => CompilerTerminal::Toolchain {
             source,
             language: request.profile.language(),
@@ -6277,6 +7237,7 @@ fn package_authority_terminal(
             let mut diagnostic_bytes =
                 [0; backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES];
             let diagnostic = rust_authority_diagnostic(Some(&mut diagnostic_bytes), &cause, false);
+            let rust_scope = crate::application::terminal::rust_source_scope_failure(&cause);
             let failure = AuthorityFailure::Rust { diagnostic, cause };
             let projection = failure.projection();
             let diagnostic = backend_library::interface::CompilerDiagnostic::from_native(
@@ -6284,6 +7245,17 @@ fn package_authority_terminal(
                 projection.diagnostic.observed,
                 projection.diagnostic.truncated,
             );
+            let diagnostic = match (diagnostic, rust_scope) {
+                (Some(diagnostic), Some(scope)) => {
+                    Some(diagnostic.with_rust_source_scope_failure(scope))
+                }
+                (None, Some(scope)) => Some(
+                    backend_library::interface::CompilerDiagnostic::from_rust_source_scope_failure(
+                        scope,
+                    ),
+                ),
+                (diagnostic, None) => diagnostic,
+            };
             compiler_attempt_terminal(
                 request,
                 source,
@@ -6296,6 +7268,11 @@ fn package_authority_terminal(
             )
         }
         cause => {
+            // An absent configured producer is an admission refusal, not a
+            // compiler missing from this build. Preserve its exact source and
+            // stage diagnostic without claiming a recipe was attempted.
+            let adapter_unavailable =
+                matches!(&cause, PackageAuthorityError::AdapterUnavailable { .. });
             let pre_recipe_typescript_admission =
                 matches!(&cause, PackageAuthorityError::TypeScriptProjectHost(_))
                     && request.profile.language()
@@ -6374,7 +7351,7 @@ fn package_authority_terminal(
                     },
                 },
             });
-            if pre_recipe_typescript_admission {
+            if adapter_unavailable || pre_recipe_typescript_admission {
                 CompilerTerminal::AuthorityAdmission {
                     source,
                     language: request.profile.language(),
@@ -6864,9 +7841,11 @@ mod tests {
         AuthorityDiagnosticClass, AuthorityPhase, CompilerCause, CorrelationId, GenerateTarget,
         PackageCompileRequest,
     };
+    use backend_semantic::ir::SemanticInputWitness;
     use backend_semantic::registry::AdapterRoute;
     use backend_semantic::vocabulary::NativeTool;
     use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, RustEdition, Stage};
+    use backend_version::{Coverage, ScopeRoot};
     use thiserror::Error;
 
     use crate::application::{LocalToolchainSet, LocalToolchainSetError, PackageAuthorityError};
@@ -7311,6 +8290,65 @@ mod tests {
         let encoded = serde_json::to_string(&failure).unwrap();
         assert!(encoded.contains("dependency_package_load"));
         assert!(!encoded.contains("/toolchain"));
+    }
+
+    #[test]
+    fn csharp_missing_roslyn_authority_is_configuration_admission_not_absent_build_support() {
+        use backend_semantic::vocabulary::{CSharpVersion, Language};
+
+        let request = super::ApplicationCompilerRequest {
+            profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
+            stage: Stage::LowerIr,
+            source: "public sealed class Library {}",
+        };
+        let source = request_source(request).unwrap();
+        let target = ContentId::from_canonical_bytes(b"missing Roslyn authority");
+        let toolchain = ResolvedToolchain::from_version(
+            NativeTool::CSharpCompiler,
+            host_path("/toolchain/bin/dotnet"),
+            b"10.0.100",
+        )
+        .unwrap();
+        let terminal = package_authority_terminal(
+            target,
+            request,
+            source,
+            ToolchainSelection::ResolvedNative(toolchain),
+            PackageAuthorityError::AdapterUnavailable {
+                profile: request.profile,
+                stage: crate::application::package_authority::PackageAuthorityStage::CSharpRoslyn,
+            },
+        );
+        let CompilerTerminal::AuthorityAdmission {
+            source: retained_source,
+            language: Language::CSharp,
+            stage: Stage::LowerIr,
+            phase: AuthorityPhase::Open,
+            class: AuthorityDiagnosticClass::Authority,
+            diagnostic: Some(diagnostic),
+        } = &terminal
+        else {
+            panic!("configured dotnet cannot substitute for the missing Roslyn producer");
+        };
+        assert_eq!(*retained_source, source);
+        let diagnostic = std::str::from_utf8(diagnostic.retained_bytes_for_local_debug()).unwrap();
+        assert!(diagnostic.contains("no C# package authority is configured"));
+        assert!(diagnostic.contains("running the C# compiler"));
+        let text = format!(
+            "{}",
+            super::super::compiler_terminal_text::TerminalText::new("Library.cs", &terminal)
+        );
+        assert!(!text.contains("in this build"), "{text}");
+        let failure =
+            backend_library::PackageCompilerFailure::from_package_terminal("Library.cs", &terminal)
+                .unwrap()
+                .expect("authority refusal must retain a typed package outcome");
+        assert_eq!(failure.recipe_identity(), None);
+        let encoded = failure.encode_bounded_json().unwrap();
+        assert_eq!(
+            backend_library::PackageCompilerFailure::decode_bounded_json(&encoded).unwrap(),
+            failure
+        );
     }
 
     #[test]
@@ -8178,12 +9216,12 @@ mod tests {
                     diagnostic: Some(diagnostic),
                 },
             ..
-        } = terminal
+        } = &terminal
         else {
             panic!("Rust package refusal must keep its concrete authority projection");
         };
-        assert_eq!(phase, AuthorityPhase::Resolve);
-        assert_eq!(class, AuthorityDiagnosticClass::SourceScope);
+        assert_eq!(*phase, AuthorityPhase::Resolve);
+        assert_eq!(*class, AuthorityDiagnosticClass::SourceScope);
         assert!(!diagnostic.truncated);
         let message = &diagnostic.bytes[..diagnostic.byte_len];
         assert!(message.starts_with(
@@ -8194,6 +9232,37 @@ mod tests {
                 .windows(b"/cache/".len())
                 .any(|window| window == b"/cache/")
         );
+
+        let failure = backend_library::PackageCompilerFailure::from_package_terminal(
+            "src/detached.rs",
+            &terminal,
+        )
+        .expect("bounded package failure")
+        .expect("Rust package refusal");
+        let encoded = failure
+            .encode_bounded_json()
+            .expect("bounded canonical package failure");
+        let wire = String::from_utf8(encoded.clone()).expect("failure JSON is UTF-8");
+        assert!(!wire.contains("/cache/toml-0.8.23"));
+        let reopened = backend_library::PackageCompilerFailure::decode_bounded_json(&encoded)
+            .expect("typed package diagnostic survives bounded roundtrip");
+        let backend_library::PackageCompilerFailureCause::Authority {
+            diagnostic: Some(facts),
+            ..
+        } = reopened.cause()
+        else {
+            panic!("Rust package failure retains its typed scope diagnostic");
+        };
+        assert_eq!(
+            facts.rust_source_scope_failure,
+            Some(
+                backend_library::interface::RustSourceScopeFailureKind::DetachedSource {
+                    active_hir_root_count: 4,
+                }
+            )
+        );
+        assert!(reopened.detail().contains("4 active roots observed"));
+        assert!(!reopened.detail().contains("/cache/toml-0.8.23"));
     }
 
     #[test]
@@ -8321,6 +9390,67 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["src/b.rs"]
         );
+        let unit_a_input = super::package_source_input_witness(&unit_a);
+        let unit_b_input = super::package_source_input_witness(&unit_b);
+        assert_ne!(unit_a_input.input_root(), unit_b_input.input_root());
+        let changed_unselected_sources = [
+            sources[0],
+            PackageSource::new("src/b.rs", "pub fn changed() {}")
+                .expect("changed source path remains normalized"),
+        ];
+        let changed_unit_a = PackageSourceSet::new_for_unit(
+            &request,
+            &target_a,
+            host_path("/workspace"),
+            &changed_unselected_sources,
+        )
+        .expect("unchanged selected root remains present");
+        assert_ne!(
+            unit_a_input.input_root(),
+            super::package_source_input_witness(&changed_unit_a).input_root(),
+            "out-of-scope package inputs remain part of provenance"
+        );
+        let admitted_target_input = SemanticInputWitness::claimed_state(
+            [11; 32],
+            ScopeRoot::from_bytes([12; 32]),
+            Coverage::Partial,
+        );
+        let selected_target_input = super::rust_target_input_witness(
+            admitted_target_input,
+            Some([7; 32]),
+            Some([7; 32]),
+            true,
+        )
+        .expect("matching selected closure preserves its admitted source claim");
+        assert_eq!(
+            selected_target_input, admitted_target_input,
+            "a prebound source observation is preserved after its closure matches"
+        );
+        assert!(matches!(
+            super::rust_target_input_witness(
+                admitted_target_input,
+                Some([7; 32]),
+                Some([8; 32]),
+                true,
+            ),
+            Err(PackageSemanticError::RustTargetSourceClosureMismatch)
+        ));
+
+        let fallback_input = super::package_source_input_witness(&unit_a);
+        let fallback_a =
+            super::rust_target_input_witness(fallback_input, None, Some([7; 32]), false)
+                .expect("unclaimed fallback binds closure A");
+        let fallback_b =
+            super::rust_target_input_witness(fallback_input, None, Some([8; 32]), false)
+                .expect("unclaimed fallback binds closure B");
+        assert_ne!(fallback_a.input_root(), fallback_b.input_root());
+        let unpinned_claim =
+            super::rust_target_input_witness(admitted_target_input, None, Some([7; 32]), true)
+                .expect("direct caller claim still binds its observed closure");
+        assert_ne!(
+            unpinned_claim.input_root(),
+            admitted_target_input.input_root()
+        );
 
         let wrong_unit = CompilerPackageTargetV2::new(
             request.as_ref().clone(),
@@ -8339,6 +9469,42 @@ mod tests {
             .err(),
             Some(PackageSourceSetError::CompilationUnitMismatch)
         );
+    }
+
+    #[test]
+    fn expected_rust_target_closure_requires_exact_recomputed_identity() {
+        // Exercise the identity guard without fabricating a frontend-owned
+        // closure witness. Production takes this identity only from the
+        // freshly recomputed, checked source closure above.
+        let recomputed_identity = [11; 32];
+        let input = SemanticInputWitness::claimed_state(
+            [10; 32],
+            ScopeRoot::from_bytes([10; 32]),
+            Coverage::Partial,
+        );
+        assert_eq!(
+            super::rust_target_input_witness(
+                input,
+                Some([11; 32]),
+                Some(recomputed_identity),
+                true,
+            )
+            .expect("the exact recomputed closure is admitted"),
+            input
+        );
+        assert!(matches!(
+            super::rust_target_input_witness(
+                input,
+                Some([12; 32]),
+                Some(recomputed_identity),
+                true,
+            ),
+            Err(PackageSemanticError::RustTargetSourceClosureMismatch)
+        ));
+        assert!(matches!(
+            super::rust_target_input_witness(input, Some([11; 32]), None, true),
+            Err(PackageSemanticError::RustTargetSourceClosureMismatch)
+        ));
     }
 
     #[test]

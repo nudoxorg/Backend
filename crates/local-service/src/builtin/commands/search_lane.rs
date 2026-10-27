@@ -226,25 +226,33 @@ impl SearchLane {
                         coverage,
                         corpus,
                     };
+                    let mut selection_diagnostic = diagnostic
+                        .as_ref()
+                        .map(|_| super::super::query::SelectionPreparationDiagnostic::default());
                     let prepare = || {
                         projection
-                            .select_controlled(
+                            .select_controlled_observed(
                                 selection.workspace,
                                 selection.view,
                                 selection.capability,
                                 selection.coverage,
                                 selection.corpus,
                                 Some(&control),
+                                selection_diagnostic.as_mut(),
                             )
                             .map(|selected| selected.preparation_diagnostic_binding())
                     };
-                    let prepared = diagnostic::measure(
+                    let selected = diagnostic::measure(
                         diagnostic
                             .as_mut()
                             .map(|observation| &mut observation.phases.lexical_projection),
                         prepare,
-                    )
-                    .map(|binding| {
+                    );
+                    if let Some(observation) = diagnostic.as_mut() {
+                        observation.selection =
+                            selection_diagnostic.map(diagnostic::SelectionTrace::capture);
+                    }
+                    let prepared = selected.map(|binding| {
                         if let Some(observation) = diagnostic.as_mut() {
                             observation.lexical_binding =
                                 Some(diagnostic::LexicalBinding::capture(binding));

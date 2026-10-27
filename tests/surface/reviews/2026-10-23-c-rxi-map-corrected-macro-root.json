@@ -1,0 +1,44 @@
+{
+  "acceptance": "Fresh official exact-head comparison required; no normalization/guard change or green claim.",
+  "case": "c-rxi-map",
+  "evidence": {
+    "artifact_manifest_sha256": "be60188f3f39c66c101dd918ea88249683c0193046be998ad69d6e06415fe863",
+    "diagnostic_build": 597028,
+    "frozen_diagnostic_answers_equal": true,
+    "official_build": 1851,
+    "official_global_build": 596839,
+    "source_sha": "9819cef0cb1a0ced34a7392f103f871d0f7dbace"
+  },
+  "exact_changed_paths": [
+    [
+      "cli packages",
+      "json",
+      "revision"
+    ],
+    [
+      "cli outline",
+      "json",
+      "page",
+      "source_root"
+    ],
+    [
+      "mcp",
+      "calls",
+      2,
+      "reply",
+      "structuredContent",
+      "page",
+      "source_root"
+    ]
+  ],
+  "performance": {
+    "action": "Previous performance suffix preserved byte-for-byte.",
+    "preserved_suffix_sha256": "0965dfa3b6cbac58d00aeff14b1736e2ee6c0d6ee6f2d1ff032cf16b80357cc5"
+  },
+  "product_fix": "9819cef0cb1a0ced34a7392f103f871d0f7dbace",
+  "review": "Preprocessing declarations now truthfully have no storage class, rather than passing opaque macro data to the native function/variable API. This changes the native semantic image and derived publication root. All coordinates, names, source lines, children, counts, coverage, ordering and budgets recursively equal the independently reviewed previous C golden.",
+  "reviewer": "Codex / GPT-6.1, 2026-10-23",
+  "schema": 1,
+  "scope": "Only corrected-native-fact derived publication root/revision update; every other answer field and prior performance byte unchanged.",
+  "source_review": "2026-10-23-c-rxi-map-initial-linux.json"
+}

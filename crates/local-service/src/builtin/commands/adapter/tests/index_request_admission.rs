@@ -90,6 +90,7 @@ fn active_unkeyed_start_joins_exact_request_without_second_scan_or_ticket() {
             &mut fixture,
             501,
             SurfaceCommand::IndexOperationStart {
+                cargo_target: None,
                 operation_key: operation,
                 package: package.clone(),
                 execution_intent: CompileExecutionIntent::Interactive,
@@ -111,6 +112,7 @@ fn active_unkeyed_start_joins_exact_request_without_second_scan_or_ticket() {
                 &mut fixture,
                 id,
                 SurfaceCommand::IndexStart {
+                    cargo_target: None,
                     package: package.clone(),
                     execution_intent: CompileExecutionIntent::Interactive,
                 },
@@ -153,6 +155,7 @@ fn closed_failed_receipt_survives_unkeyed_replacement_cold_reopen_and_remove() {
         &mut fixture,
         504,
         SurfaceCommand::IndexOperationStart {
+            cargo_target: None,
             operation_key: operation,
             package: package.clone(),
             execution_intent: CompileExecutionIntent::Interactive,
@@ -189,6 +192,7 @@ fn closed_failed_receipt_survives_unkeyed_replacement_cold_reopen_and_remove() {
             &mut fixture,
             505,
             SurfaceCommand::IndexStart {
+                cargo_target: None,
                 package: package.clone(),
                 execution_intent: CompileExecutionIntent::Interactive,
             },
@@ -254,6 +258,7 @@ fn closed_failed_receipt_survives_unkeyed_replacement_cold_reopen_and_remove() {
         &mut fixture,
         507,
         SurfaceCommand::IndexOperationStart {
+            cargo_target: None,
             operation_key: fresh,
             package,
             execution_intent: CompileExecutionIntent::Interactive,
@@ -277,6 +282,7 @@ fn overlap_join_does_not_conflate_other_project_intent_or_durable_key() {
         &mut fixture,
         508,
         SurfaceCommand::IndexOperationStart {
+            cargo_target: None,
             operation_key: operation,
             package: package.clone(),
             execution_intent: CompileExecutionIntent::Interactive,
@@ -295,6 +301,7 @@ fn overlap_join_does_not_conflate_other_project_intent_or_durable_key() {
         (
             511,
             SurfaceCommand::IndexStart {
+                cargo_target: None,
                 package: other,
                 execution_intent: CompileExecutionIntent::Interactive,
             },
@@ -302,6 +309,7 @@ fn overlap_join_does_not_conflate_other_project_intent_or_durable_key() {
         (
             512,
             SurfaceCommand::IndexStart {
+                cargo_target: None,
                 package: package.clone(),
                 execution_intent: CompileExecutionIntent::Background,
             },
@@ -309,6 +317,7 @@ fn overlap_join_does_not_conflate_other_project_intent_or_durable_key() {
         (
             513,
             SurfaceCommand::IndexOperationStart {
+                cargo_target: None,
                 operation_key: other_key,
                 package,
                 execution_intent: CompileExecutionIntent::Interactive,
@@ -370,6 +379,7 @@ fn queued_remove_is_an_ordering_barrier_for_later_matching_start() {
         &mut fixture,
         520,
         SurfaceCommand::IndexOperationStart {
+            cargo_target: None,
             operation_key: operation,
             package: package.clone(),
             execution_intent: CompileExecutionIntent::Interactive,
@@ -397,6 +407,7 @@ fn queued_remove_is_an_ordering_barrier_for_later_matching_start() {
                 &mut fixture,
                 522,
                 SurfaceCommand::IndexStart {
+                    cargo_target: None,
                     package,
                     execution_intent: CompileExecutionIntent::Interactive,
                 }

@@ -1,0 +1,55 @@
+{
+  "answers_reviewed": [
+    "CLI add exits0 only after the existing harness proves complete native profile publication; the original receipt is checked live, not fabricated or snapshotted.",
+    "CLI and MCP search include map_deinit_ at map.c:111 and declaration at map.h:62; the related map_deinit macro is authored at map.h:37. All are ready C rows.",
+    "CLI and MCP search include map_get_ at map.c:127 and map.h:63; the related map_get macro is authored at map.h:41, and map_getref at map.c:95. The MCP limit3 result truthfully offers continuation, already consumed by the existing harness.",
+    "CLI outline contains25 visible rows; MCP contains50 visible rows. Every displayed name is present in the independently attributed C AST or authored header macros. Bounded pages retain more=true and a live-validated cursor. The complete shelf reports148 rows; this review does not claim all148 are authored declarations or independently enumerate every continuation page.",
+    "Function-named variable children are the non-void result carriers explicitly emitted by driver/lower/clang.rs, not extra authored local variables. They keep semantic identities and have no fabricated source location. Parameters and record fields agree with the pinned source; original order, carrier rows, identities, source-root/branch/log values and wire-budget fields are all retained.",
+    "MCP initialize/tools listing and all3 calls exit0 with no error reply; source locations and kinds above remain visible through both transports."
+  ],
+  "case": "c-rxi-map",
+  "evidence": {
+    "artifact_manifest_sha256": "ecebb531d2b88ff9e6cfc4aa245d2840181a7d7593d7f36090a74b3b7d8456c2",
+    "build": 1807,
+    "candidate_sha256": "d6a2a91476b3a295bfe4278e6177a9f5917554bb31148a601c30b4d3138ff9bd",
+    "global_build": 594865,
+    "job": "pr-t2",
+    "pipeline": "nudox-backend-t1-pr",
+    "source_sha": "ee8d0c27be6bf9f58e1f88ae525b123c50d49ee3"
+  },
+  "normalization": "None added. Candidate bytes use the existing harness normalization only. No existing golden or baseline changed.",
+  "performance": {
+    "accepted_initial_linux_sample": {
+      "cpu_seconds": 2.37,
+      "peak_rss_kib": 335836,
+      "seconds": {
+        "cli add": 2.47,
+        "cli outline": 0.46,
+        "cli packages": 0.39,
+        "cli search map_deinit_": 0.21,
+        "cli search map_get_": 0.21,
+        "mcp": 0.68
+      }
+    },
+    "comparison_sample": {
+      "build": 1810,
+      "cli_add_seconds": 2.49,
+      "cpu_seconds": 2.47,
+      "peak_rss_kib": 342264,
+      "source_sha": "909cf43c3ccf9ac99b0a2f8bb9bb2ecf070294e4"
+    },
+    "limits": "Use the original1807 measurements without maxima or tolerance changes. The1810 sample is from different product source, so it is qualified variability evidence only, not exact-source answer stability. Existing1.5 wall/CPU and1.25 RSS ratios and floors remain unchanged; fresh exact-head comparison required."
+  },
+  "reviewer": "Codex / GPT-6.1, 2026-10-23",
+  "schema": 1,
+  "source_review": {
+    "archive_sha256": "cc9fa016bf615c5d9e6c0e5c37aa698daed64e39ce3910167f9ccca1ef3a4259",
+    "independent_check": "Downloaded the exact pinned archive and verified SHA-256; read both complete authored C files; Apple clang17 AST from syntax-only analysis independently confirms the function, record, field and parameter names/types. This is source review, not substitute Linux runtime/performance evidence.",
+    "source_files": {
+      "src/map.c": "b1b4ab54c68d8c24775a1d2c1bafc99afd5704803cb5a3c8cdeaa3130e01a2a8",
+      "src/map.h": "c7e70b858fa070f1c49313f32a05ab719accafd30acf496d8bbeb21b3efc61b5"
+    },
+    "url": "https://github.com/rxi/map/archive/d6c355fcfb35e5bf71905c0c28ccee34694b4a95.tar.gz"
+  },
+  "status": "initial Linux answer snapshot reviewed; fresh exact-head CI comparison pending"
+}

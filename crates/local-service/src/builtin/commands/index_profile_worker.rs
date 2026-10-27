@@ -41,6 +41,7 @@ pub(super) struct ProfileWork {
     profile: Option<DeferredProfileTicket>,
     sources: Option<OwnedPackageSourceSet>,
     cancelled: Arc<AtomicBool>,
+    observation: Option<Arc<crate::builtin::index_work_observation::IndexWorkObservation>>,
 }
 
 impl ProfileWork {
@@ -53,6 +54,7 @@ impl ProfileWork {
         profile: DeferredProfileTicket,
         sources: OwnedPackageSourceSet,
         cancelled: Arc<AtomicBool>,
+        observation: Option<Arc<crate::builtin::index_work_observation::IndexWorkObservation>>,
     ) -> Self {
         let identity = ProfileIdentity {
             attempt: profile.candidate_attempt().clone(),
@@ -70,6 +72,7 @@ impl ProfileWork {
             profile: Some(profile),
             sources: Some(sources),
             cancelled,
+            observation,
         }
     }
 
@@ -79,6 +82,9 @@ impl ProfileWork {
     }
 
     fn run_inner(&mut self) -> ProfileOutcome {
+        if let Some(observation) = &self.observation {
+            observation.phase("deferred-compile-start");
+        }
         let compiled = run_deferred_compile(
             &self.compiler,
             self.sources
@@ -86,10 +92,16 @@ impl ProfileWork {
                 .expect("single-use compiler source frontier"),
             Arc::clone(&self.cancelled),
         );
+        if let Some(observation) = &self.observation {
+            observation.phase("deferred-compile-returned");
+        }
         if self.cancelled.load(Ordering::Acquire) || deferred_compile_was_cancelled(&compiled) {
             return ProfileOutcome::Cancelled;
         }
-        ProfileOutcome::Admitted(finish_deferred_profile_for_snapshot(
+        if let Some(observation) = &self.observation {
+            observation.phase("deferred-profile-admission-start");
+        }
+        let result = finish_deferred_profile_for_snapshot(
             &self.snapshot,
             self.semantic
                 .as_mut()
@@ -98,7 +110,11 @@ impl ProfileWork {
             &mut self.job,
             self.profile.take().expect("single-use compiler profile"),
             compiled,
-        ))
+        );
+        if let Some(observation) = &self.observation {
+            observation.phase("deferred-profile-admission-returned");
+        }
+        ProfileOutcome::Admitted(result)
     }
 
     fn run(self) -> ProfileCompletion {
@@ -209,9 +225,16 @@ impl ProfileWorker {
             .name("locald-index-compile".to_owned())
             .spawn(move || {
                 let Ok(work) = receive.recv() else { return };
+                let observation = work.observation.clone();
                 if completed.send(work.run()).is_ok() {
                     if let Ok(retired) = retirement.recv() {
-                        drop(retired);
+                        if let Some(observation) = observation {
+                            observation.phase("profile-retirement-start");
+                            drop(retired);
+                            observation.phase("profile-retirement-complete");
+                        } else {
+                            drop(retired);
+                        }
                     }
                 }
             }) {

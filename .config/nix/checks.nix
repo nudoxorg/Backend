@@ -175,6 +175,10 @@ in
         cp ${../ci/perf_context.py} .config/ci/perf_context.py
         cp ${../ci/test_perf_context.py} .config/ci/test_perf_context.py
         python3 .config/ci/test_perf_context.py
+        # test_surface imports the public tier runner to verify its exact
+        # environment contract. Install a writable sibling before that import
+        # and do not later overwrite a store-derived read-only destination.
+        install -m 0644 ${../ci/test.py} .config/ci/test.py
         cp ${../ci/surface.py} .config/ci/surface.py
         cp ${../ci/process_custody.py} .config/ci/process_custody.py
         cp ${../ci/test_surface.py} .config/ci/test_surface.py
@@ -188,7 +192,6 @@ in
         python3 .config/ci/test_cli_contract.py
         cp ${../ci/catalog.py} .config/ci/catalog.py
         cp ${../ci/test_catalog.py} .config/ci/test_catalog.py
-        cp ${../ci/test.py} .config/ci/test.py
         python3 .config/ci/test_catalog.py
         cp ${../ci/test_tiers.py} .config/ci/test_tiers.py
         cp ${../ci/selection.py} .config/ci/selection.py

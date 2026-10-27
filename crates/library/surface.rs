@@ -1217,6 +1217,9 @@ pub struct IndexOperationSourceProfile {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndexOperationSourceCaptureReceipt {
+    /// Explicit selected Rust target and its compiler-proven source closure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cargo_target: Option<crate::CargoTargetScope>,
     /// Caller-owned operation identity bound into the source workspace intent.
     pub operation_key: IndexOperationKey,
     /// Exact selected source-capture commit identity.
@@ -1244,8 +1247,14 @@ impl IndexOperationSourceCaptureReceipt {
         workspace_sequence: u64,
         profiles: Box<[IndexOperationSourceProfile]>,
     ) -> Result<Self, ProductAdmissionError> {
-        admit_source_capture_parts(commit_identity, workspace_root, workspace_sequence, &profiles)?;
+        admit_source_capture_parts(
+            commit_identity,
+            workspace_root,
+            workspace_sequence,
+            &profiles,
+        )?;
         Ok(Self {
+            cargo_target: None,
             operation_key,
             commit_identity,
             workspace_root,
@@ -1285,6 +1294,7 @@ impl IndexOperationSourceCaptureReceipt {
     }
 
     fn admit(&self, operation_key: IndexOperationKey) -> Result<(), ProductAdmissionError> {
+        admit_cargo_source_scope(self.cargo_target.as_ref(), &self.profiles)?;
         if self.operation_key != operation_key {
             return Err(ProductAdmissionError::IndexOperationShape);
         }
@@ -1449,10 +1459,12 @@ impl IndexOperationProfileRefusal {
             }
             failure.encode_bounded_json()?;
             if let PackageCompilerFailureCause::Authority {
+                class,
                 diagnostic: Some(facts),
                 ..
             }
             | PackageCompilerFailureCause::AuthorityAdmission {
+                class,
                 diagnostic: Some(facts),
                 ..
             } = failure.cause()
@@ -1464,6 +1476,10 @@ impl IndexOperationProfileRefusal {
                         && language != backend_semantic::vocabulary::Language::TypeScript)
                     || (facts.go_failure.is_some()
                         && language != backend_semantic::vocabulary::Language::Go)
+                    || (facts.rust_source_scope_failure.is_some()
+                        && language != backend_semantic::vocabulary::Language::Rust)
+                    || (facts.rust_source_scope_failure.is_some()
+                        && *class != AuthorityClassFact::SourceScope)
                     || matches!(
                         facts.python_failure,
                         Some(crate::interface::PythonAuthorityFailureKind::Cancelled)
@@ -1578,6 +1594,9 @@ pub enum IndexOperationUnresolvedReason {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndexOperationStatus {
+    /// Explicit target requested by the caller, when target scope was selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cargo_target: Option<crate::CargoTargetSelector>,
     /// Caller-owned durable operation identity.
     pub operation_key: IndexOperationKey,
     /// Hash of the canonical package and execution request.
@@ -1605,6 +1624,7 @@ impl IndexOperationStatus {
         state: IndexOperationState,
     ) -> Self {
         Self {
+            cargo_target: None,
             operation_key,
             request_digest: index_operation_request_digest(&package, execution_intent),
             package,
@@ -1612,6 +1632,18 @@ impl IndexOperationStatus {
             state,
             source_capture: None,
         }
+    }
+
+    /// Binds the target selector and recomputes this exact request's digest.
+    #[must_use]
+    pub fn with_cargo_target(mut self, target: Option<crate::CargoTargetSelector>) -> Self {
+        self.cargo_target = target;
+        self.request_digest = index_operation_scoped_request_digest(
+            &self.package,
+            self.execution_intent,
+            self.cargo_target.as_ref(),
+        );
+        self
     }
 
     /// Adds the exact source capture independently of the operation outcome.
@@ -1655,6 +1687,14 @@ impl IndexOperationObservation {
             Self::Known(status) => {
                 if let Some(source_capture) = &status.source_capture {
                     source_capture.admit(status.operation_key)?;
+                    if source_capture
+                        .cargo_target
+                        .as_ref()
+                        .map(|scope| &scope.name)
+                        != status.cargo_target.as_ref()
+                    {
+                        return Err(ProductAdmissionError::IndexOperationShape);
+                    }
                     let any_pending = source_capture.profiles().iter().any(|profile| {
                         matches!(
                             profile.state,
@@ -1729,7 +1769,11 @@ impl IndexOperationObservation {
                     _ => {}
                 }
                 if status.request_digest
-                    != index_operation_request_digest(&status.package, status.execution_intent)
+                    != index_operation_scoped_request_digest(
+                        &status.package,
+                        status.execution_intent,
+                        status.cargo_target.as_ref(),
+                    )
                 {
                     return Err(ProductAdmissionError::IndexOperationShape);
                 }
@@ -1755,6 +1799,26 @@ pub fn index_operation_request_digest(
         crate::CompileExecutionIntent::Interactive => 1,
         crate::CompileExecutionIntent::Background => 2,
     }]);
+    *hasher.finalize().as_bytes()
+}
+
+/// Request identity including an explicit Cargo context. Unset requests keep
+/// their existing digest so saved legacy operations remain reconcilable.
+#[must_use]
+pub fn index_operation_scoped_request_digest(
+    package: &PackageReference,
+    execution_intent: crate::CompileExecutionIntent,
+    cargo_target: Option<&crate::CargoTargetSelector>,
+) -> [u8; 32] {
+    let prior = index_operation_request_digest(package, execution_intent);
+    let Some(target) = cargo_target else {
+        return prior;
+    };
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.library.index-operation-cargo-target.v1\0");
+    hasher.update(&prior);
+    hasher.update(&(target.as_str().len() as u64).to_be_bytes());
+    hasher.update(target.as_str().as_bytes());
     *hasher.finalize().as_bytes()
 }
 
@@ -2263,7 +2327,9 @@ impl PackageCompilerFailure {
             diagnostic: Some(facts),
             ..
         } = &self.cause
-            && (facts.typescript_admission.is_some() || facts.typescript_cause.is_some())
+            && (facts.typescript_admission.is_some()
+                || facts.typescript_cause.is_some()
+                || facts.rust_source_scope_failure.is_some())
         {
             let expected = detail_for_package_cause(&self.cause);
             if (self.detail.as_str(), self.detail_truncated) != (expected.0.as_str(), expected.1) {
@@ -2681,6 +2747,41 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
     if let PackageCompilerFailureCause::Authority {
         diagnostic:
             Some(CompilerAuthorityDiagnosticFacts {
+                rust_source_scope_failure: Some(failure),
+                ..
+            }),
+        ..
+    }
+    | PackageCompilerFailureCause::AuthorityAdmission {
+        diagnostic:
+            Some(CompilerAuthorityDiagnosticFacts {
+                rust_source_scope_failure: Some(failure),
+                ..
+            }),
+        ..
+    } = cause
+    {
+        use crate::interface::RustSourceScopeFailureKind as R;
+        let detail = match failure {
+            R::DetachedSource {
+                active_hir_root_count,
+            } => format!(
+                "Rust source scope is detached from active package HIR roots ({active_hir_root_count} active roots observed)"
+            ),
+            R::AmbiguousSourceOwner {
+                definition_count,
+                omitted_definition_count,
+                target_resolution,
+            } => format!(
+                "Rust source scope has {definition_count} active owner definitions ({omitted_definition_count} omitted); Cargo target resolution: {}",
+                target_resolution.diagnostic_label(),
+            ),
+        };
+        return sanitize_package_compiler_detail(&detail, false);
+    }
+    if let PackageCompilerFailureCause::Authority {
+        diagnostic:
+            Some(CompilerAuthorityDiagnosticFacts {
                 python_failure: Some(failure),
                 ..
             }),
@@ -2820,6 +2921,7 @@ fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
         | PackageCompilerFailureCause::Lowering(_) => true,
         PackageCompilerFailureCause::AuthorityAdmission {
             language,
+            class,
             diagnostic: Some(facts),
             ..
         } => {
@@ -2830,11 +2932,17 @@ fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
                     || *language == CompilerLanguageFact::TypeScript)
                 && (facts.go_failure.is_none()
                     || *language == CompilerLanguageFact::Go)
+                && (facts.rust_source_scope_failure.is_none()
+                    || (*language == CompilerLanguageFact::Rust
+                        && *class == AuthorityClassFact::SourceScope))
         }
         PackageCompilerFailureCause::Authority {
+            class,
             diagnostic: Some(facts),
             ..
-        } => authority_diagnostic_facts_are_valid(facts),
+        } => authority_diagnostic_facts_are_valid(facts)
+            && (facts.rust_source_scope_failure.is_none()
+                || *class == AuthorityClassFact::SourceScope),
         PackageCompilerFailureCause::Authority {
             diagnostic: None, ..
         }
@@ -2849,6 +2957,7 @@ fn authority_diagnostic_facts_are_valid(facts: &CompilerAuthorityDiagnosticFacts
         facts.python_failure.is_some(),
         facts.typescript_failure.is_some(),
         facts.go_failure.is_some(),
+        facts.rust_source_scope_failure.is_some(),
     ]
     .into_iter()
     .filter(|present| *present)
@@ -2868,6 +2977,16 @@ fn authority_diagnostic_facts_are_valid(facts: &CompilerAuthorityDiagnosticFacts
                     crate::interface::TypeScriptAuthorityFailureKind::is_program_execution_failure,
                 )
         })
+        && facts
+            .rust_source_scope_failure
+            .is_none_or(|failure| match failure {
+                crate::interface::RustSourceScopeFailureKind::DetachedSource { .. } => true,
+                crate::interface::RustSourceScopeFailureKind::AmbiguousSourceOwner {
+                    definition_count,
+                    omitted_definition_count,
+                    ..
+                } => definition_count >= 2 && omitted_definition_count <= definition_count,
+            })
 }
 
 #[cfg(test)]
@@ -3007,6 +3126,9 @@ fn lower_hex_nibble(value: u8) -> Option<u8> {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndexSourceCaptureSummary {
+    /// Explicit selected Rust context; source counts refer to this target closure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cargo_target: Option<crate::CargoTargetScope>,
     /// Immutable producer namespace whose selected profile markers were read.
     pub producer_package: PackageReference,
     /// Source intent identity retained in each selected profile marker.
@@ -3024,10 +3146,35 @@ pub struct IndexSourceCaptureSummary {
     pub profiles: Box<[IndexOperationSourceProfile]>,
 }
 
+fn admit_cargo_source_scope(
+    scope: Option<&crate::CargoTargetScope>,
+    profiles: &[IndexOperationSourceProfile],
+) -> Result<(), ProductAdmissionError> {
+    if let Some(scope) = scope {
+        scope
+            .validate()
+            .map_err(|_| ProductAdmissionError::IndexOperationShape)?;
+        let mut rust = profiles.iter().filter(|profile| {
+            matches!(
+                profile.profile.profile(),
+                Ok(backend_semantic::vocabulary::LanguageProfile::Rust(_))
+            )
+        });
+        let Some(profile) = rust.next() else {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        };
+        if rust.next().is_some() || profile.source_count != scope.source_count {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        }
+    }
+    Ok(())
+}
+
 impl IndexSourceCaptureSummary {
     /// Checks the exact source basis and canonical bounded profile tuples.
     /// This is structural admission; authority comes from selected owner rows.
     pub fn admit(&self) -> Result<(), ProductAdmissionError> {
+        admit_cargo_source_scope(self.cargo_target.as_ref(), &self.profiles)?;
         if self.request_identity.iter().all(|byte| *byte == 0) {
             return Err(ProductAdmissionError::IndexOperationShape);
         }
@@ -3655,6 +3802,9 @@ pub enum SurfaceCommand {
     },
     /// Start indexing one local project without waiting for compilation.
     IndexStart {
+        /// Explicit Cargo target name, resolved only against admitted Cargo facts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cargo_target: Option<crate::CargoTargetSelector>,
         /// Local project directory or pinned package coordinate.
         package: PackageReference,
         /// Requested compiler execution class.
@@ -3662,6 +3812,9 @@ pub enum SurfaceCommand {
     },
     /// Start or replay one operation under a caller-persisted durable key.
     IndexOperationStart {
+        /// Explicit Cargo target, retained in the durable request identity.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cargo_target: Option<crate::CargoTargetSelector>,
         /// Durable identity created and persisted by the caller before dispatch.
         operation_key: IndexOperationKey,
         /// Local project directory or pinned package coordinate.
@@ -6336,7 +6489,7 @@ mod tests {
         let decoded: SurfaceReply = serde_json::from_value(wire).expect("same protocol roundtrip");
         assert_eq!(decoded, reply);
         let envelope = crate::ReplyDto::new(41, crate::CommandReply::Surface(reply));
-        let encoded = serde_json::to_vec(&envelope).expect("current live DTO38 envelope");
+        let encoded = serde_json::to_vec(&envelope).expect("current live DTO39 envelope");
         assert!(encoded.len() <= crate::MAX_REPLY_BODY);
         assert_eq!(
             crate::decode_reply_body(&encoded).expect("strict current wire"),
@@ -7052,6 +7205,196 @@ mod tests {
         assert_eq!(reopened, failure);
         assert_eq!(reopened.kind_tag(), failure.kind_tag());
         assert!(reopened.retained_diagnostic_for_local_debug().is_none());
+    }
+
+    #[test]
+    fn rust_source_scope_refusal_keeps_only_closed_path_free_facts() {
+        use crate::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,
+            CompilerDiagnostic, CompilerTerminal, RustSourceScopeFailureKind as R,
+            RustTargetResolutionKind as T, SourceAuthority,
+        };
+        let attempt = CompilerAttempt {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"rust bytes"),
+                byte_len: 10,
+            },
+            recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"rust recipe"),
+        };
+        let terminal = CompilerTerminal::Compile {
+            attempted: attempt,
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::Resolve,
+                class: AuthorityDiagnosticClass::SourceScope,
+                diagnostic: Some(CompilerDiagnostic::from_rust_source_scope_failure(
+                    R::AmbiguousSourceOwner {
+                        definition_count: 7,
+                        omitted_definition_count: 3,
+                        target_resolution: T::DuplicateExactTarget,
+                    },
+                )),
+            },
+        };
+        let failure = PackageCompilerFailure::from_package_terminal("src/lib.rs", &terminal)
+            .expect("bounded Rust failure projection")
+            .expect("authority refusal");
+        assert_eq!(failure.kind_tag(), "rust_source_scope_failure");
+        assert!(failure.detail().contains("7 active owner definitions"));
+        assert!(failure.detail().contains("duplicate_exact_target"));
+
+        let encoded = failure
+            .encode_bounded_json()
+            .expect("canonical refusal facts");
+        let wire = String::from_utf8(encoded.clone()).expect("JSON UTF-8");
+        assert!(!wire.contains("/private"));
+        assert!(!wire.contains("stderr"));
+        let align_detail = |wire: &mut serde_json::Value| {
+            let cause: PackageCompilerFailureCause =
+                serde_json::from_value(wire["cause"].clone()).expect("closed cause variant");
+            let (detail, truncated) = detail_for_package_cause(&cause);
+            wire["detail"] = serde_json::json!(detail);
+            wire["detail_truncated"] = serde_json::json!(truncated);
+        };
+        for (field, invalid_count) in [("definition_count", 1), ("omitted_definition_count", 8)] {
+            let mut malformed: serde_json::Value =
+                serde_json::from_slice(&encoded).expect("valid failure JSON");
+            malformed["cause"]["fault"]["diagnostic"]["rust_source_scope_failure"][field] =
+                serde_json::json!(invalid_count);
+            align_detail(&mut malformed);
+            let malformed = serde_json::to_vec(&malformed).expect("mutated failure JSON");
+            assert!(
+                PackageCompilerFailure::decode_bounded_json(&malformed).is_err(),
+                "authority decoder rejects impossible {field}"
+            );
+        }
+        let reopened = PackageCompilerFailure::decode_bounded_json(&encoded)
+            .expect("typed Rust diagnostic survives cold decoding");
+        assert_eq!(reopened, failure);
+        let PackageCompilerFailureCause::Authority {
+            diagnostic: Some(facts),
+            ..
+        } = reopened.cause()
+        else {
+            panic!("Rust scope cause remains structured");
+        };
+        assert_eq!(
+            facts.rust_source_scope_failure,
+            Some(R::AmbiguousSourceOwner {
+                definition_count: 7,
+                omitted_definition_count: 3,
+                target_resolution: T::DuplicateExactTarget,
+            })
+        );
+
+        let setup_terminal = CompilerTerminal::AuthorityAdmission {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"rust setup bytes"),
+                byte_len: 16,
+            },
+            language: backend_semantic::vocabulary::Language::Rust,
+            stage: backend_semantic::vocabulary::Stage::LowerIr,
+            phase: AuthorityPhase::Resolve,
+            class: AuthorityDiagnosticClass::SourceScope,
+            diagnostic: Some(CompilerDiagnostic::from_rust_source_scope_failure(
+                R::DetachedSource {
+                    active_hir_root_count: 2,
+                },
+            )),
+        };
+        let setup =
+            PackageCompilerFailure::from_package_terminal("src/detached.rs", &setup_terminal)
+                .expect("pre-recipe refusal projection")
+                .expect("Rust setup refusal");
+        assert_eq!(setup.recipe_identity(), None);
+        let setup_wire = setup.encode_bounded_json().expect("pre-recipe fact codec");
+        let mut malformed_setup: serde_json::Value =
+            serde_json::from_slice(&setup_wire).expect("valid setup failure JSON");
+        malformed_setup["cause"]["fault"]["diagnostic"]["rust_source_scope_failure"] = serde_json::json!({
+            "kind": "ambiguous_source_owner",
+            "definition_count": 2,
+            "omitted_definition_count": 3,
+            "target_resolution": "exact_cargo_target",
+        });
+        align_detail(&mut malformed_setup);
+        let malformed_setup =
+            serde_json::to_vec(&malformed_setup).expect("mutated setup failure JSON");
+        assert!(
+            PackageCompilerFailure::decode_bounded_json(&malformed_setup).is_err(),
+            "authority-admission decoder rejects omitted definitions exceeding total"
+        );
+        let reopened_setup = PackageCompilerFailure::decode_bounded_json(&setup_wire)
+            .expect("pre-recipe cold failure reader");
+        let PackageCompilerFailureCause::AuthorityAdmission {
+            diagnostic: Some(setup_facts),
+            ..
+        } = reopened_setup.cause()
+        else {
+            panic!("pre-recipe Rust cause remains an admission failure");
+        };
+        assert_eq!(
+            setup_facts.rust_source_scope_failure,
+            Some(R::DetachedSource {
+                active_hir_root_count: 2,
+            })
+        );
+        assert!(reopened_setup.detail().contains("2 active roots observed"));
+
+        let zero_root_terminal = CompilerTerminal::AuthorityAdmission {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"zero roots"),
+                byte_len: 10,
+            },
+            language: backend_semantic::vocabulary::Language::Rust,
+            stage: backend_semantic::vocabulary::Stage::LowerIr,
+            phase: AuthorityPhase::Resolve,
+            class: AuthorityDiagnosticClass::SourceScope,
+            diagnostic: Some(CompilerDiagnostic::from_rust_source_scope_failure(
+                R::DetachedSource {
+                    active_hir_root_count: 0,
+                },
+            )),
+        };
+        let zero_root =
+            PackageCompilerFailure::from_package_terminal("src/no-root.rs", &zero_root_terminal)
+                .expect("zero-root refusal projection")
+                .expect("zero-root source scope refusal");
+        let zero_root_wire = zero_root
+            .encode_bounded_json()
+            .expect("zero detached roots remain a valid closed fact");
+        assert!(PackageCompilerFailure::decode_bounded_json(&zero_root_wire).is_ok());
+
+        // Old causes retain their prior canonical shape: the new optional fact
+        // is explicitly omitted when no typed Rust scope evidence exists.
+        let legacy = CompilerDiagnostic::from_native(b"bounded", 7, false)
+            .expect("bounded prior diagnostic");
+        let legacy_terminal = CompilerTerminal::Compile {
+            attempted: attempt,
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::Resolve,
+                class: AuthorityDiagnosticClass::SourceScope,
+                diagnostic: Some(legacy),
+            },
+        };
+        let legacy = PackageCompilerFailure::from_package_terminal("src/lib.rs", &legacy_terminal)
+            .expect("legacy failure projection")
+            .expect("authority refusal");
+        let legacy_bytes = legacy
+            .encode_bounded_json()
+            .expect("legacy canonical facts");
+        let legacy_json: serde_json::Value =
+            serde_json::from_slice(&legacy_bytes).expect("legacy JSON");
+        assert!(
+            legacy_json["cause"]["fault"]["diagnostic"]
+                .get("rust_source_scope_failure")
+                .is_none()
+        );
+        assert_eq!(
+            PackageCompilerFailure::decode_bounded_json(&legacy_bytes)
+                .expect("old row still decodes")
+                .encode_bounded_json()
+                .expect("legacy row reencodes canonically"),
+            legacy_bytes
+        );
     }
 
     #[test]
@@ -7773,6 +8116,7 @@ mod tests {
         .expect("genesis no-op still names a valid selected revision");
         assert!(genesis_no_op.request_identity().is_none());
         let status = IndexOperationStatus {
+            cargo_target: None,
             operation_key: key,
             request_digest: index_operation_request_digest(
                 &PackageReference::parse("/workspace/demo").expect("package"),
@@ -7814,6 +8158,7 @@ mod tests {
         );
 
         let command = SurfaceCommand::IndexOperationStart {
+            cargo_target: None,
             operation_key: key,
             package: PackageReference::parse("/workspace/demo").expect("package"),
             execution_intent: crate::CompileExecutionIntent::Interactive,
@@ -7913,11 +8258,16 @@ mod tests {
         let IndexOperationState::PartiallyPublished { receipt, refused_profiles } = &status.state else { unreachable!() };
         let captured = status.source_capture.as_ref().expect("source capture");
         let partial = IndexJobPartialPublication {
-            package: status.package.clone(), receipt: receipt.clone(),
+            package: status.package.clone(),
+            receipt: receipt.clone(),
             source_capture: IndexSourceCaptureSummary {
-                producer_package: status.package.clone(), request_identity: [21; 32],
-                commit_identity: *captured.commit_identity(), workspace_root: *captured.workspace_root(),
-                workspace_sequence: captured.workspace_sequence(), profiles: captured.profiles.clone(),
+                cargo_target: None,
+                producer_package: status.package.clone(),
+                request_identity: [21; 32],
+                commit_identity: *captured.commit_identity(),
+                workspace_root: *captured.workspace_root(),
+                workspace_sequence: captured.workspace_sequence(),
+                profiles: captured.profiles.clone(),
             },
             refused_profiles: refused_profiles.clone(),
         };
@@ -7929,19 +8279,41 @@ mod tests {
         assert!(serde_json::from_value::<IndexJobPartialPublication>(foreign_profile).is_err(),
             "a published outcome cannot smuggle an unknown compiler profile past refusal validation");
 
-        let reply = crate::ReplyDto::new(42, crate::CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial.clone())));
-        let requested = crate::CommandDto::new(42, crate::Command::Add {
-            package: crate::package_key(partial.package.as_str()), execution_intent: crate::CompileExecutionIntent::Interactive });
+        let reply = crate::ReplyDto::new(
+            42,
+            crate::CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial.clone())),
+        );
+        let requested = crate::CommandDto::new(
+            42,
+            crate::Command::Add {
+                cargo_target: None,
+                package: crate::package_key(partial.package.as_str()),
+                execution_intent: crate::CompileExecutionIntent::Interactive,
+            },
+        );
         crate::admit_reply(&requested, &reply).expect("exact legacy Add caller binding");
         let encoded_reply = serde_json::to_vec(&reply).expect("full wire partial");
         let decoded_reply = crate::wire::decode_reply_body(&encoded_reply).expect("strict partial wire decode");
         crate::admit_reply(&requested, &decoded_reply).expect("decoded exact Add");
-        assert!(crate::reply_memory_bound(&reply) >= encoded_reply.len(), "partial bound includes every profile and compiler refusal");
-        for command in [crate::Command::Health,
-            crate::Command::Remove { package: crate::package_key(partial.package.as_str()) },
-            crate::Command::Add { package: crate::package_key("/workspace/foreign"), execution_intent: crate::CompileExecutionIntent::Interactive }] {
-            assert!(crate::admit_reply(&crate::CommandDto::new(42, command), &decoded_reply).is_err(),
-                "generic Failed arm cannot authorize a partial publication for another request");
+        assert!(
+            crate::reply_memory_bound(&reply) >= encoded_reply.len(),
+            "partial bound includes every profile and compiler refusal"
+        );
+        for command in [
+            crate::Command::Health,
+            crate::Command::Remove {
+                package: crate::package_key(partial.package.as_str()),
+            },
+            crate::Command::Add {
+                cargo_target: None,
+                package: crate::package_key("/workspace/foreign"),
+                execution_intent: crate::CompileExecutionIntent::Interactive,
+            },
+        ] {
+            assert!(
+                crate::admit_reply(&crate::CommandDto::new(42, command), &decoded_reply).is_err(),
+                "generic Failed arm cannot authorize a partial publication for another request"
+            );
         }
 
         let terminal = IndexJobTerminal {
@@ -8272,6 +8644,7 @@ mod tests {
         )
         .expect("checked publication receipt");
         let status = IndexOperationStatus {
+            cargo_target: None,
             operation_key: key,
             request_digest: index_operation_request_digest(
                 &package,
@@ -8350,6 +8723,7 @@ mod tests {
             package.clone(),
         );
         let command = SurfaceCommand::IndexStart {
+            cargo_target: None,
             package: package.clone(),
             execution_intent: crate::CompileExecutionIntent::Interactive,
         };

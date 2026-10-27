@@ -1327,3 +1327,43 @@ fn source_at(source: &[u8], span: SourceSpan) -> &[u8] {
         None => &[],
     }
 }
+
+/// Preprocessor records have no declaration storage class. Their opaque cursor
+/// data must never be interpreted as a function/variable declaration.
+#[test]
+fn macro_storage_stays_absent_while_declaration_storage_is_retained() -> Result<(), TestError> {
+    let source =
+        b"#define PUGIXML_HEADER_ONLY\nstatic int local_value;\nextern int external_value;\n";
+    for _ in 0..8 {
+        with_scratch(|scratch| {
+            let facts = collect(
+                ClangInput::C {
+                    file_name: c"macro-storage.c",
+                    source,
+                    standard: CStandard::C23,
+                },
+                scratch,
+            )?;
+            let macros = facts
+                .declarations
+                .iter()
+                .filter(|row| row.kind == DeclarationKind::Macro)
+                .collect::<Vec<_>>();
+            assert!(!macros.is_empty());
+            assert!(macros.iter().all(|row| row.storage == StorageClass::None));
+            for (name, storage) in [
+                (b"local_value".as_slice(), StorageClass::Static),
+                (b"external_value".as_slice(), StorageClass::Extern),
+            ] {
+                let row = facts
+                    .declarations
+                    .iter()
+                    .find(|row| row.name.is_some_and(|span| source_at(source, span) == name))
+                    .expect("authored variable");
+                assert_eq!(row.storage, storage);
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
+}

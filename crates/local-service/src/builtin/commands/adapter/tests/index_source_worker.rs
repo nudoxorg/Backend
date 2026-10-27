@@ -890,6 +890,7 @@ fn no_op_refresh_control(cancel_before_approval: bool) {
     Session::connect(&wire.endpoint)
         .expect("actual no-op start session")
         .surface(backend_library::SurfaceCommand::IndexOperationStart {
+            cargo_target: None,
             operation_key: wire.operation,
             package,
             execution_intent: CompileExecutionIntent::Interactive,
@@ -1031,6 +1032,7 @@ fn no_op_refresh_control(cancel_before_approval: bool) {
         Session::connect(&wire.endpoint)
             .expect("next actual writer session")
             .surface(backend_library::SurfaceCommand::IndexOperationStart {
+                cargo_target: None,
                 operation_key: wire.operation,
                 package,
                 execution_intent: CompileExecutionIntent::Interactive,

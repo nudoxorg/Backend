@@ -2416,6 +2416,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![BuiltinCaptureChange {
+                cargo_target: None,
                 key: key.clone(),
                 expected: None,
                 capture,
@@ -2447,6 +2448,7 @@ mod tests {
                 after: Some(selected.clone()),
             }],
             vec![BuiltinCaptureChange {
+                cargo_target: None,
                 key: key.clone(),
                 expected: Some(pending_record),
                 capture,
@@ -2507,6 +2509,7 @@ mod tests {
                 Vec::new(),
                 Vec::new(),
                 vec![BuiltinCaptureChange {
+                    cargo_target: None,
                     key: key.clone(),
                     expected,
                     capture: cancelled_capture,

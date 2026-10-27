@@ -1,0 +1,109 @@
+{
+  "acceptance": "Exact-head official T2 snapshot/performance comparison remains required; diagnostic repetition is not a green verdict.",
+  "answer_review": [
+    "Nonnull is the annotation declaration beginning with @Documented atNonnull.java:18; its name token is on21. Nullable begins atNullable.java:25. The line is the javac declaration extent including annotations, not an invented name-token line.",
+    "Checked all6distinct visible source-backed anchors acrossCLI/MCP against independent AST names/file/startlines. Fully qualified annotation names bind to the same authored declarations; Checker and forConstantValue source sites also match.",
+    "Native annotation declarations keep existing Interface kinds; annotation members use existingMethod kinds. No new product enum or source-binding authority was invented.",
+    "Outline changes from complete126 to a bounded50row prefix with live-validated pc4 continuation, page provenance and semantic identity fields. Every visible name matches source declarations after Java qualification, except package project, compiler-synthesized <init>, and int/java.lang.String result carriers. Constructors/carriers are semantic rows, not newly authored source declarations.",
+    "Nonnull/Nullable query matches include real related annotations andChecker method declarations; result ranking includes docs such as Nullable mentioning Nonnull. Existing authored-symbol, native complete-coverage and actual continuation-consumption assertions passed.",
+    "The review covers visible query answers/prefixes and their source anchors; it does not independently enumerate every later outline page or reconstruct semantic hashes."
+  ],
+  "case": "java-jsr305",
+  "evidence": {
+    "answers_equal": true,
+    "artifact_manifest_sha256": "be3ebf4236d6a06f9f1137777c382d614afb7cdd5f133c25350a887e441ea55a",
+    "build": 1844,
+    "diagnostic_scope": "diagnostic-only frozen-artifact replay; no official T2 verdict or performance acceptance",
+    "global_build": 596519,
+    "independent_diagnostic_build": 596497,
+    "source_sha": "4fdf93137a114bfd2f04b00bf5e8a31d7a8eb91e"
+  },
+  "normalization": "No normalizer or public assertion changed.",
+  "performance": {
+    "action": "Original performance JSON suffix retained byte-for-byte. No timing, ratio or floor updated.",
+    "preserved_suffix_sha256": "b02ceffd57c6845b47a919b797a204089733910f7e5ea321e8932fa9730c96a3"
+  },
+  "reviewer": "Codex / GPT-6.1, 2026-10-23",
+  "schema": 1,
+  "scope": "Explicit answer-only review of Java source sites and bounded semantic outline, after repairing missing annotation syntax captures.",
+  "source": {
+    "coordinate": "maven:com.google.code.findbugs:jsr305@3.0.2",
+    "files_sha256": {
+      "javax/annotation/CheckForNull.java": "98b383462507dad3feb5377f7ffaa541e337d032d44667af206e833265ea9524",
+      "javax/annotation/CheckForSigned.java": "27732e166bc393fefb070be95f9d064235348b8967bb4fcef6a02096ab86dcdf",
+      "javax/annotation/CheckReturnValue.java": "d58b3e52a3d2846de36d12e03919054c3e65d6bc1a9db50c38d1976d2f440c30",
+      "javax/annotation/Detainted.java": "7d272cf814d47c8cf89dd0d2f283ddfc88a26405122fd98f2842dbcb0789ed0e",
+      "javax/annotation/MatchesPattern.java": "02583021e7642ff75ca7387332027b4cf13077283954eaad1cce34643f29232c",
+      "javax/annotation/Nonnegative.java": "b3feccdcebafcb344d4750b37e8816aa6c300f2959daf6335a8509c606ab9c4e",
+      "javax/annotation/Nonnull.java": "f70f7145344cd816e4736ce1ee67b82243028644625bc706d44e31b9528c9bd7",
+      "javax/annotation/Nullable.java": "8074e653a5ebf6fe2be74a1c523539025b4957d25bf4e158973f9fc96eb6e1ce",
+      "javax/annotation/OverridingMethodsMustInvokeSuper.java": "97f11bc7663df500d078ab19ec02b8b094f38965c975ea652007a3b91b632cd8",
+      "javax/annotation/ParametersAreNonnullByDefault.java": "8945240e670935d851c87f94a0bdaa3a69cc940ccef2654fe500d913e2f07768",
+      "javax/annotation/ParametersAreNullableByDefault.java": "6862c66a93247ab643dd763cf7cd147ab618e594cd0d704ac10bc29b868365fa",
+      "javax/annotation/PropertyKey.java": "5559001d0f69e49487f1cc0cfa82d37e064b04436ccc7026a3d8a5aa30215d7d",
+      "javax/annotation/RegEx.java": "d2bf8105a40a375d1dba6e2dcd45525d3f7f2ae234a13dd9810972b8a2de932a",
+      "javax/annotation/Signed.java": "79e8743d80ed11cddc453b4ce4f0c3cab781ba028d4df9873e01dd4644a895f7",
+      "javax/annotation/Syntax.java": "f6fb21f5426b234560927e13fd6889d6d86d1d6187cbdda61c074b80d730baaa",
+      "javax/annotation/Tainted.java": "94c3aa818f1c78608519d5cdb98e16215638c3bf346979b0fc739a9fe096acf1",
+      "javax/annotation/Untainted.java": "97673f92582a2b26b129237d0ff67d9ae098c5b2f33ee56612e5e5e520f718e4",
+      "javax/annotation/WillClose.java": "f786bf866cf67ab480b9d675c2833cbfeb5562ec3256b523e28c6487f8f0b2af",
+      "javax/annotation/WillCloseWhenClosed.java": "501f9eeba51c1a0a63c667b52aeffd76c08a6efffb006611da92518cd2d6de5c",
+      "javax/annotation/WillNotClose.java": "8f26b3e0200b27dc0da99a649a740505693f983b403370b14d9c426427669d15",
+      "javax/annotation/concurrent/GuardedBy.java": "394a92efceb1e774e5fcb3a2636fef41eee51042d26673bb6350fe46ae0f6a17",
+      "javax/annotation/concurrent/Immutable.java": "6f95c78b0412c79b82eb34a44a5f2667d6e10bfe6af2471f3d9202a5e6633724",
+      "javax/annotation/concurrent/NotThreadSafe.java": "4f87edf90c26f47873aa8199310b18d9b4786304119cfe795a9ada526888c519",
+      "javax/annotation/concurrent/ThreadSafe.java": "58c3192ce6f8ec7b54d20af2781f56ab54a5b8a12ff87e179e4f1b9ed419eaeb",
+      "javax/annotation/meta/Exclusive.java": "c25892e795a9d188e03f88279765125859f0ad5b6243b0b56a0ed8944eb6ea25",
+      "javax/annotation/meta/Exhaustive.java": "ce17b852bd5deb71d65c3c807642261fe94e01a24b7dda0b5ac2a211a8bc2e01",
+      "javax/annotation/meta/TypeQualifier.java": "6dcbd3db773d5a4e3de5633c5241caa94406241b8c0e99ddec6406087a33a533",
+      "javax/annotation/meta/TypeQualifierDefault.java": "27faa048d7c23bd6d79d3515816ec1f356758ae140c0edc702a74b91f9215395",
+      "javax/annotation/meta/TypeQualifierNickname.java": "6fe78a809a57a852ed744a8ebed15e88d54f55d07bafff6fea2c5a55eb682111",
+      "javax/annotation/meta/TypeQualifierValidator.java": "4d1e2ca6f465ce130a8233086053acc991e5fd389f7e31c88a0cd19ef32c666a",
+      "javax/annotation/meta/When.java": "d79dfa99e03fa1eb6d0e6f024833ef16c1029b98975e2e767f760b2dbf4d8790"
+    },
+    "hash": "sha256-HJ6F4nLQcIxqWR3HSCjHFgMFO0jMda6DzOVpEqKqBjs=",
+    "kind": "jarsrc",
+    "lane": "java",
+    "method": "Recomputed pinned source-jar SHA-256, read annotation declarations, parsed all31Java files independently using JDK21 JavacTask.parse and TreeScanner; no product facts used to construct source index.",
+    "review_program_sha256": "e81f0ac1923791d9a8860cfb5dbfcf1b1827ced4633928f59dcfcd94276612e5",
+    "url": "https://repo1.maven.org/maven2/com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2-sources.jar"
+  },
+  "verified_source_anchors": [
+    [
+      "forConstantValue",
+      "javax/annotation/Nonnull.java",
+      26,
+      true
+    ],
+    [
+      "javax.annotation.Nonnull",
+      "javax/annotation/Nonnull.java",
+      18,
+      true
+    ],
+    [
+      "javax.annotation.Nonnull.Checker",
+      "javax/annotation/Nonnull.java",
+      24,
+      true
+    ],
+    [
+      "javax.annotation.Nullable",
+      "javax/annotation/Nullable.java",
+      25,
+      true
+    ],
+    [
+      "javax.annotation.ParametersAreNonnullByDefault",
+      "javax/annotation/ParametersAreNonnullByDefault.java",
+      23,
+      true
+    ],
+    [
+      "javax.annotation.ParametersAreNullableByDefault",
+      "javax/annotation/ParametersAreNullableByDefault.java",
+      25,
+      true
+    ]
+  ]
+}

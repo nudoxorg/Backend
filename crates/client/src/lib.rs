@@ -90,7 +90,10 @@ pub use index_operation::{
     surface_with_index_journal,
 };
 #[cfg(any(unix, windows))]
-pub use index_operation::{index_with_journal_recovery_wait, index_with_journal_wait};
+pub use index_operation::{
+    index_with_journal_recovery_wait, index_with_journal_recovery_wait_for_target,
+    index_with_journal_wait,
+};
 pub use index_progress::{
     IndexCompilerProgressUpdate, IndexObservationFingerprint, IndexOperationProgress,
     IndexOperationWaitResult, IndexOperationWaitStop, IndexProgressRead, IndexProgressReference,
@@ -1409,6 +1412,7 @@ impl Session {
         let package = package_key(coordinate);
         self.send_success(
             Command::Add {
+                cargo_target: None,
                 package,
                 execution_intent,
             },
@@ -2278,6 +2282,7 @@ impl Session {
         execution_intent: CompileExecutionIntent,
     ) -> Result<IndexStartResult, ClientError> {
         match self.surface(SurfaceCommand::IndexStart {
+            cargo_target: None,
             package,
             execution_intent,
         })? {
@@ -2305,6 +2310,7 @@ impl Session {
         execution_intent: CompileExecutionIntent,
     ) -> Result<IndexOperationObservation, ClientError> {
         match self.surface(SurfaceCommand::IndexOperationStart {
+            cargo_target: None,
             operation_key,
             package,
             execution_intent,
@@ -3797,6 +3803,7 @@ mod tests {
         let add = CommandDto::new(
             2,
             Command::Add {
+                cargo_target: None,
                 package: package_key("/tmp/project"),
                 execution_intent: CompileExecutionIntent::Interactive,
             },
@@ -3822,6 +3829,7 @@ mod tests {
         let accepted = CommandDto::new(
             3,
             Command::Surface(SurfaceCommand::IndexOperationStart {
+                cargo_target: None,
                 operation_key: IndexOperationKey::from_bytes([0x51; 32]).expect("durable key"),
                 package: PackageReference::parse("/tmp/project").expect("package"),
                 execution_intent: CompileExecutionIntent::Interactive,

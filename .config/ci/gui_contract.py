@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import base64
+import json
 import os
 from pathlib import Path
 import re
@@ -10,6 +12,7 @@ import shutil
 import subprocess
 import process_custody
 import time
+from collections.abc import Callable
 
 from smoke import drew_a_frame
 
@@ -22,6 +25,133 @@ def require_visible(text: str, expected: list[str]) -> None:
     missing = [value for value in expected if ' '.join(value.casefold().split()) not in normalized]
     if missing:
         raise RuntimeError('GUI window is missing visible source: ' + ', '.join(missing))
+
+
+_RETAINED_RESULT_MARKERS = ('earlier result', 'index changed', 'links unavailable')
+
+
+def require_current_result(text: str, query: str, filename: str) -> None:
+    """A retained row can repeat both the query and its filename; reject it."""
+    require_visible(text, [query, filename])
+    normalized = ' '.join(text.casefold().split())
+    if any(marker in normalized for marker in _RETAINED_RESULT_MARKERS):
+        raise RuntimeError('GUI search result is retained from an earlier index')
+
+
+def require_navigation_breadcrumb(
+    window_text: str, topbar_text: str, project_name: str, query: str
+) -> None:
+    """Prove Ask closed onto this project's selected symbol before a shell key."""
+    if len(topbar_text.encode('utf-8')) > 32768:
+        raise RuntimeError('GUI top-bar OCR response exceeds its bound')
+    normalized_topbar = ' '.join(topbar_text.casefold().split())
+    normalized_project = ' '.join(project_name.casefold().split())
+    normalized_query = ' '.join(query.casefold().split())
+    if normalized_project not in normalized_topbar or normalized_query not in normalized_topbar:
+        raise RuntimeError('GUI project and selected symbol breadcrumb is not visible after Return')
+    normalized_window = ' '.join(window_text.casefold().split())
+    if any(marker in normalized_window for marker in _RETAINED_RESULT_MARKERS):
+        raise RuntimeError('GUI Ask retained an earlier-index result after Return')
+
+
+def open_current_result(
+    capture: Callable[[], str],
+    topbar: Callable[[], str],
+    press_return: Callable[[], None],
+    project_name: str,
+    query: str,
+    filename: str,
+    deadline: float,
+    *,
+    on_ready: Callable[[], None] | None = None,
+    now: Callable[[], float] = time.monotonic,
+    pause: Callable[[float], None] = time.sleep,
+) -> str:
+    """Retry stale Ask rows within the original GUI deadline, returning only after dismissal."""
+    last_error = None
+    return_sent = False
+    while now() < deadline:
+        observed = capture()
+        # Once Return has been issued, its route transition may complete after
+        # the first settled OCR sample. Recheck the positive route proof before
+        # treating the already-open page as though it were still an Ask row.
+        if return_sent:
+            try:
+                require_navigation_breadcrumb(observed, topbar(), project_name, query)
+                return observed
+            except RuntimeError as error:
+                last_error = error
+        try:
+            require_current_result(observed, query, filename)
+        except RuntimeError as error:
+            last_error = error
+            pause(min(0.5, max(0, deadline - now())))
+            continue
+
+        if on_ready is not None:
+            on_ready()
+        press_return()
+        return_sent = True
+        # Keep the existing settle interval, then check the whole window and
+        # the top-center navigation breadcrumb independently. A stale Return
+        # leaves Ask open without this project+symbol route, so no plain `s`
+        # can be typed into the input.
+        pause(min(0.5, max(0, deadline - now())))
+        opened = capture()
+        try:
+            require_navigation_breadcrumb(opened, topbar(), project_name, query)
+            return opened
+        except RuntimeError as error:
+            last_error = error
+            pause(min(0.5, max(0, deadline - now())))
+    raise RuntimeError(f'GUI did not open a current search result before its deadline: {last_error}')
+
+
+def wait_for_symbol_details(
+    capture: Callable[[], str], query: str, deadline: float, *,
+    now: Callable[[], float] = time.monotonic,
+    pause: Callable[[float], None] = time.sleep,
+) -> str:
+    """The route can land before its declaration body can handle PeelSource."""
+    last_error = None
+    while now() < deadline:
+        text = capture()
+        try:
+            require_visible(text, [query, 'What you can do with it'])
+            if 'opening page' in ' '.join(text.casefold().split()):
+                raise RuntimeError('GUI declaration body is still opening')
+            return text
+        except RuntimeError as error:
+            last_error = error
+            pause(min(0.2, max(0, deadline - now())))
+    raise RuntimeError(f'GUI declaration details did not load before its deadline: {last_error}')
+
+
+def emit_failure_evidence(root: Path, error: Exception) -> None:
+    """Retain the already observed window without extending the GUI deadline."""
+    try:
+        packet = {"observer": "owned native X11 window pixels, English OCR", "error": str(error)[:2048], "captures": []}
+        for name in ("search-result.png", "opened-result.png", "window.png"):
+            path = root / name
+            if not path.is_file():
+                continue
+            with path.open("rb") as image:
+                data = image.read(512 * 1024 + 1)
+            if len(data) <= 512 * 1024:
+                packet["captures"].append({"name": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "png_base64": base64.b64encode(data).decode("ascii")})
+        text = root / "window.txt"
+        if text.is_file():
+            with text.open("rb") as ocr:
+                contents = ocr.read(32769)
+            if len(contents) <= 32768:
+                packet["last_ocr"] = contents.decode("utf-8", errors="replace")
+        print("CI-GUI-FAILURE " + json.dumps(packet, sort_keys=True), flush=True)
+    except Exception as evidence_error:
+        # Evidence cannot replace the original product/harness failure.
+        try:
+            print("CI-GUI-FAILURE evidence unavailable: " + str(evidence_error)[:512], flush=True)
+        except Exception:
+            pass
 
 
 def product_usage(pid: int) -> dict:
@@ -99,6 +229,25 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
             (root / 'window.txt').write_text(result)
             return result
 
+        def topbar_pixels():
+            # The opened route's project+symbol breadcrumb occupies the
+            # top-center bar. This distinguishes it from Ask's query input
+            # and from matching source text below.
+            window_width = int(width.group(1))
+            crop_width = max(1, int(window_width * 0.6))
+            crop_x = (window_width - crop_width) // 2
+            crop = root / 'topbar.png'
+            # Keep exact symbol matching: improve the small breadcrumb pixels
+            # rather than admitting a different declaration one edit away.
+            command('magick', 'import', '-silent', '-window', window, '-crop',
+                    f'{crop_width}x64+{crop_x}+0', '+repage', '-resize', '300%', crop)
+            if crop.stat().st_size > 512 * 1024:
+                raise RuntimeError('GUI top-bar capture exceeds512KiB')
+            result = command('tesseract', crop, 'stdout', '-l', 'eng', '--psm', '11').stdout
+            if len(result.encode('utf-8')) > 32768:
+                raise RuntimeError('GUI top-bar OCR exceeds32KiB')
+            return result
+
         # The project is selected through the desktop's normal launch contract,
         # on the same native owner used by this case's CLI and MCP checks.
         last_error = None
@@ -131,24 +280,21 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
                 time.sleep(0.2)
         else:
             raise RuntimeError('GUI Ask field did not display the typed query')
-        # Wait for a real result, whose source filename is not the typed query.
-        while time.monotonic() < deadline:
-            try:
-                require_visible(pixels(), [spec['query'], spec['result_filename']])
-                break
-            except RuntimeError:
-                time.sleep(1)
-        else:
-            raise RuntimeError('GUI search did not show the authored source result')
-        shutil.copyfile(root / 'window.png', root / 'search-result.png')
-        command('xdotool', 'key', '--clearmodifiers', 'Return')
-        # Enter commits the result and dismisses Ask itself. Escape here would
-        # back out of that newly opened declaration before its code is read.
-        time.sleep(0.5)
-        pixels()
+        # A retained result can still show both the query and source filename.
+        # Retry until the row is current, then verify the project+symbol route
+        # breadcrumb before sending the shell's plain `s` binding.
+        open_current_result(
+            pixels, topbar_pixels,
+            lambda: command('xdotool', 'key', '--clearmodifiers', 'Return'),
+            spec['project_name'], spec['query'], spec['result_filename'], deadline,
+            on_ready=lambda: shutil.copyfile(root / 'window.png', root / 'search-result.png'))
         shutil.copyfile(root / 'window.png', root / 'opened-result.png')
-        # Ask has committed and dismissed. PeelSource uses the shell's plain
-        # `s` binding (shell/keys.rs), revealing this declaration's source.
+        # A route breadcrumb may already show the selected symbol while the body
+        # still says "Opening page". Wait for its actual declaration details so
+        # the plain `s` action has a current source operand to open.
+        wait_for_symbol_details(pixels, spec['query'], deadline)
+        shutil.copyfile(root / 'window.png', root / 'opened-result.png')
+        # PeelSource uses the shell's plain `s` binding (shell/keys.rs).
         command('xdotool', 'key', '--clearmodifiers', 's')
         command('xdotool', 'key', '--clearmodifiers', 'ctrl+equal', 'ctrl+equal')
         expected = [spec['project_name'], *spec['visible_source']]
@@ -172,6 +318,9 @@ def run_gui(owner, project: Path, spec: dict, budget: float = 120) -> tuple[dict
         usage['seconds'] = {'gui read project': round(time.monotonic() - started, 2)}
         return ({'project': spec['project_name'], 'symbol': spec['query'],
                  'visible_source': spec['visible_source'], 'quit_exit': 0}, usage, evidence)
+    except Exception as error:
+        emit_failure_evidence(root, error)
+        raise
     finally:
         if app is not None:
             process_custody.stop(app)

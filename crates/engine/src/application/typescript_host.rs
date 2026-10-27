@@ -17,13 +17,16 @@ use backend_version::{ContentId, SourceFactDomain};
 use blake3::Hasher;
 use thiserror::Error;
 
+#[path = "typescript_host/snapshot_resolver.rs"]
+mod snapshot_resolver;
+
 use crate::application::{ToolchainProbeError, ToolchainProbeLimits};
 use crate::driver::{ResolvedToolchain, ToolchainResolutionError};
 
 pub(crate) const MAX_PROJECT_ANCESTORS: usize = 32;
 const MAX_PACKAGE_MANIFEST_BYTES: usize = 64 * 1024;
 const MAX_PNPM_WORKSPACE_BYTES: usize = 64 * 1024;
-const MAX_PROJECT_CONFIG_FILES: usize = 256;
+pub(super) const MAX_PROJECT_CONFIG_FILES: usize = 256;
 const MAX_PROJECT_CONFIG_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ANGULAR_WORKSPACE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_RESOLVED_SOURCE_FILES: usize = 4096;
@@ -261,12 +264,10 @@ impl TypeScriptProjectInputs<'_> {
     }
     /// Starts an isolated observation ledger for one compiler program.
     pub(crate) fn resolver(&self) -> TypeScriptResolverCapability<'_> {
-        TypeScriptResolverCapability {
-            witness: self.witness,
-            observations: ResolverObservationLedger::default(),
-        }
+        self.witness.resolver()
     }
 
+    #[cfg(test)]
     pub(crate) fn load_source(
         &self,
         path: &Path,
@@ -329,6 +330,17 @@ struct DirectorySnapshot {
     path: Box<Path>,
     identity: FileIdentity,
     entries: Box<[TypeScriptDirectoryEntry]>,
+    /// A root/glob enumeration is replayed before regular entry deltas are accepted.
+    root_enumeration: bool,
+    /// Module/other enumerations retain their exact complete entry sequence.
+    module_enumeration: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NativeRootSelectionObservation {
+    pub(crate) config_path: Box<Path>,
+    pub(crate) root_names: Box<[Box<Path>]>,
+    pub(crate) directories: Box<[Box<Path>]>,
 }
 
 #[derive(Debug)]
@@ -344,6 +356,7 @@ struct ResolverObservationLedger {
     loaded_sources: std::collections::BTreeMap<PathBuf, TypeScriptFileInput>,
     missing_paths: std::collections::BTreeMap<PathBuf, Option<PathBuf>>,
     directories: std::collections::BTreeMap<PathBuf, DirectorySnapshot>,
+    native_root_selection: Option<NativeRootSelectionObservation>,
     external_negative_parents: std::collections::BTreeMap<PathBuf, RealpathSnapshot>,
     external_absent_directories: std::collections::BTreeMap<PathBuf, RealpathSnapshot>,
     captured_peer_manifests: std::collections::BTreeMap<PathBuf, CapturedPeerManifest>,
@@ -363,6 +376,7 @@ impl ResolverObservationLedger {
             .len()
             .saturating_add(self.missing_paths.len())
             .saturating_add(self.directories.len())
+            .saturating_add(usize::from(self.native_root_selection.is_some()))
             .saturating_add(self.realpaths.len())
             .saturating_add(self.external_negative_parents.len())
             .saturating_add(self.external_absent_directories.len())
@@ -433,11 +447,18 @@ impl TypeScriptResolverWitness {
                 path: witness.project_root.clone(),
             });
         }
-        validate_resolver_observations_with_host_controlled(
+        let root_query_directories = match &self.observations.native_root_selection {
+            Some(query) => {
+                super::typescript_program::replay_native_root_selection(witness, query, control)?
+            }
+            None => std::collections::BTreeSet::new(),
+        };
+        validate_resolver_observations_with_host_controlled_and_root_replay(
             witness,
             &self.observations,
             Some(host),
             control,
+            &root_query_directories,
         )
     }
 }
@@ -453,6 +474,108 @@ pub(crate) struct TypeScriptResolverCapability<'a> {
 }
 
 impl TypeScriptResolverCapability<'_> {
+    pub(crate) fn record_native_root_selection(
+        &mut self,
+        config_path: &Path,
+        root_names: &[PathBuf],
+        directories: &[PathBuf],
+    ) -> Result<(), TypeScriptProjectHostError> {
+        let normalized_config = normalize_absolute_path(config_path).ok_or_else(|| {
+            TypeScriptProjectHostError::SourceOutsideCapability {
+                path: config_path.to_path_buf().into_boxed_path(),
+            }
+        })?;
+        if normalized_config != config_path
+            || captured_root_source_target(&normalized_config, &self.observations, self.witness)
+                .is_none()
+            || self.observations.native_root_selection.is_some()
+            || self.observations.observation_count() >= MAX_RESOLVER_OBSERVATIONS
+            || root_names.len() > MAX_RESOLVED_SOURCE_FILES
+            || directories.len() > MAX_RESOLVER_DIRECTORIES
+        {
+            return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                detail:
+                    "native root-selection transcript is incomplete or outside its host witness"
+                        .into(),
+            });
+        }
+        let mut checked_roots = Vec::with_capacity(root_names.len());
+        for path in root_names {
+            let canonical = normalize_absolute_path(path).ok_or_else(|| {
+                TypeScriptProjectHostError::SourceOutsideCapability {
+                    path: path.clone().into_boxed_path(),
+                }
+            })?;
+            if canonical != *path
+                || captured_root_source_target(&canonical, &self.observations, self.witness)
+                    .is_none()
+            {
+                return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                    detail: "native root-selection transcript contains an unadmitted root".into(),
+                });
+            }
+            checked_roots.push(canonical.into_boxed_path());
+        }
+        if checked_roots.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                detail: "native root-selection transcript roots are not sorted and unique".into(),
+            });
+        }
+        let mut checked_directories = Vec::with_capacity(directories.len());
+        for path in directories {
+            let canonical = normalize_absolute_path(path).ok_or_else(|| {
+                TypeScriptProjectHostError::SourceOutsideCapability {
+                    path: path.clone().into_boxed_path(),
+                }
+            })?;
+            if canonical != *path
+                || !self.witness.path_is_admitted(&canonical)
+                || !self.observations.directories.contains_key(&canonical)
+            {
+                return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                    detail:
+                        "native root-selection transcript omits a complete directory observation"
+                            .into(),
+                });
+            }
+            checked_directories.push(canonical.into_boxed_path());
+        }
+        if checked_directories
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                detail: "native root-selection transcript directories are not sorted and unique"
+                    .into(),
+            });
+        }
+        let charge = checked_roots
+            .iter()
+            .chain(checked_directories.iter())
+            .try_fold(
+                native_snapshot_path_bytes(&normalized_config),
+                |total, path| total.checked_add(native_snapshot_path_bytes(path)),
+            )
+            .ok_or_else(|| TypeScriptProjectHostError::ResolverObservationLimit {
+                observed: usize::MAX,
+                maximum: MAX_RESOLVER_METADATA_BYTES,
+            })?;
+        ensure_metadata_capacity(&self.observations, charge, &normalized_config)?;
+        self.observations.retained_metadata_bytes = self
+            .observations
+            .retained_metadata_bytes
+            .checked_add(charge)
+            .ok_or_else(|| TypeScriptProjectHostError::ResolverObservationLimit {
+                observed: usize::MAX,
+                maximum: MAX_RESOLVER_METADATA_BYTES,
+            })?;
+        self.observations.native_root_selection = Some(NativeRootSelectionObservation {
+            config_path: normalized_config.into_boxed_path(),
+            root_names: checked_roots.into_boxed_slice(),
+            directories: checked_directories.into_boxed_slice(),
+        });
+        Ok(())
+    }
     pub(crate) fn try_load_source<'a>(
         &'a mut self,
         path: &Path,
@@ -737,6 +860,11 @@ impl TypeScriptResolverCapability<'_> {
             }
             self.record_realpath(lexical, Some(canonical.clone()), identity)?;
             self.observe_directory(&canonical)?;
+            self.observations
+                .directories
+                .get_mut(&canonical)
+                .expect("enumerated directory was captured")
+                .module_enumeration = true;
             let snapshot = self
                 .observations
                 .directories
@@ -798,6 +926,21 @@ impl TypeScriptResolverCapability<'_> {
         &mut self,
         path: &Path,
     ) -> Result<Option<PathBuf>, TypeScriptProjectHostError> {
+        self.observe_program_directory_with_purpose(path, false)
+    }
+
+    pub(crate) fn observe_root_program_directory(
+        &mut self,
+        path: &Path,
+    ) -> Result<Option<PathBuf>, TypeScriptProjectHostError> {
+        self.observe_program_directory_with_purpose(path, true)
+    }
+
+    fn observe_program_directory_with_purpose(
+        &mut self,
+        path: &Path,
+        root_selection: bool,
+    ) -> Result<Option<PathBuf>, TypeScriptProjectHostError> {
         let lexical = self.witness.admit_lexical_path(path)?;
         let Some((canonical, identity)) = self.capture_realpath(&lexical)? else {
             self.record_missing(lexical, None)?;
@@ -818,6 +961,16 @@ impl TypeScriptResolverCapability<'_> {
             return Ok(None);
         }
         self.observe_directory(&canonical)?;
+        let snapshot = self
+            .observations
+            .directories
+            .get_mut(&canonical)
+            .expect("enumerated directory was captured");
+        if root_selection {
+            snapshot.root_enumeration = true;
+        } else {
+            snapshot.module_enumeration = true;
+        }
         Ok(Some(canonical))
     }
 
@@ -884,7 +1037,7 @@ impl TypeScriptResolverCapability<'_> {
 
     pub(crate) fn resolver_witness(&self) -> Result<[u8; 32], TypeScriptProjectHostError> {
         let mut digest = Hasher::new();
-        digest.update(b"compiler.typescript.resolver-observations.v2\0");
+        digest.update(b"compiler.typescript.resolver-observations.v3\0");
         update_len(&mut digest, self.observations.observation_count());
         for input in self.observations.loaded_sources.values() {
             digest.update(&[1]);
@@ -945,8 +1098,16 @@ impl TypeScriptResolverCapability<'_> {
         for snapshot in self.observations.directories.values() {
             digest.update(&[3]);
             update_logical_path(&mut digest, self.witness, &snapshot.path)?;
-            update_len(&mut digest, snapshot.entries.len());
-            for entry in snapshot.entries.iter() {
+            digest.update(&[
+                u8::from(snapshot.root_enumeration),
+                u8::from(snapshot.module_enumeration),
+            ]);
+            let entries = snapshot.entries.iter().filter(|entry| {
+                snapshot.module_enumeration
+                    || entry.kind != TypeScriptDirectoryEntryKind::RegularFile
+            });
+            update_len(&mut digest, entries.clone().count());
+            for entry in entries {
                 update_logical_path(&mut digest, self.witness, &entry.path)?;
                 digest.update(&[match entry.kind {
                     TypeScriptDirectoryEntryKind::RegularFile => 1,
@@ -970,6 +1131,18 @@ impl TypeScriptResolverCapability<'_> {
                         digest.update(&[0]);
                     }
                 }
+            }
+        }
+        if let Some(query) = &self.observations.native_root_selection {
+            digest.update(&[7]);
+            update_logical_path(&mut digest, self.witness, &query.config_path)?;
+            update_len(&mut digest, query.root_names.len());
+            for path in query.root_names.iter() {
+                update_logical_path(&mut digest, self.witness, path)?;
+            }
+            update_len(&mut digest, query.directories.len());
+            for path in query.directories.iter() {
+                update_logical_path(&mut digest, self.witness, path)?;
             }
         }
         for snapshot in self.observations.realpaths.values() {
@@ -1398,6 +1571,22 @@ fn validate_resolver_observations_with_host_controlled(
     host: Option<&ValidatedTypeScriptHost<'_>>,
     control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
 ) -> Result<(), TypeScriptProjectHostError> {
+    validate_resolver_observations_with_host_controlled_and_root_replay(
+        witness,
+        observations,
+        host,
+        control,
+        &std::collections::BTreeSet::new(),
+    )
+}
+
+fn validate_resolver_observations_with_host_controlled_and_root_replay(
+    witness: &TypeScriptProjectWitness,
+    observations: &ResolverObservationLedger,
+    host: Option<&ValidatedTypeScriptHost<'_>>,
+    control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+    root_query_directories: &std::collections::BTreeSet<PathBuf>,
+) -> Result<(), TypeScriptProjectHostError> {
     control()?;
     if host.is_some_and(|host| !std::ptr::eq(host.witness, witness)) {
         return Err(TypeScriptProjectHostError::WitnessChanged {
@@ -1467,8 +1656,16 @@ fn validate_resolver_observations_with_host_controlled(
     }
     for (path, expected) in &observations.directories {
         control()?;
-        let observed = capture_directory_snapshot_controlled(path, witness, control)?;
-        if &observed != expected {
+        let mut observed = capture_directory_snapshot_controlled(path, witness, control)?;
+        // Purpose is producer metadata, not filesystem metadata. Exact negative
+        // probes and positive reads are independently replayed above. A directory
+        // used only as their parent does not expose its regular sibling list.
+        observed.root_enumeration = expected.root_enumeration;
+        observed.module_enumeration = expected.module_enumeration;
+        let replayed_query_matches = !expected.module_enumeration
+            && (!expected.root_enumeration || root_query_directories.contains(path))
+            && directory_snapshots_match_replayed_root_query(expected, &observed);
+        if &observed != expected && !replayed_query_matches {
             return Err(TypeScriptProjectHostError::WitnessChanged {
                 path: path.clone().into_boxed_path(),
             });
@@ -1488,6 +1685,90 @@ fn validate_resolver_observations_with_host_controlled(
     }
     control()?;
     Ok(())
+}
+
+fn directory_snapshots_match_replayed_root_query(
+    expected: &DirectorySnapshot,
+    observed: &DirectorySnapshot,
+) -> bool {
+    if expected.path != observed.path || expected.identity != observed.identity {
+        return false;
+    }
+    expected
+        .entries
+        .iter()
+        .filter(|entry| entry.kind != TypeScriptDirectoryEntryKind::RegularFile)
+        .eq(observed
+            .entries
+            .iter()
+            .filter(|entry| entry.kind != TypeScriptDirectoryEntryKind::RegularFile))
+}
+
+#[cfg(test)]
+mod replayed_root_directory_delta_tests {
+    use super::*;
+
+    fn snapshot(entries: Vec<TypeScriptDirectoryEntry>) -> DirectorySnapshot {
+        DirectorySnapshot {
+            path: PathBuf::from("/workspace/src").into_boxed_path(),
+            identity: FileIdentity {
+                first: 1,
+                second: 2,
+            },
+            entries: entries.into_boxed_slice(),
+            root_enumeration: false,
+            module_enumeration: false,
+        }
+    }
+
+    fn regular(name: &str) -> TypeScriptDirectoryEntry {
+        TypeScriptDirectoryEntry {
+            path: PathBuf::from(format!("/workspace/src/{name}")).into_boxed_path(),
+            canonical_path: Some(PathBuf::from(format!("/workspace/src/{name}")).into_boxed_path()),
+            kind: TypeScriptDirectoryEntryKind::RegularFile,
+            effective_kind: Some(TypeScriptDirectoryEntryKind::RegularFile),
+            identity: FileIdentity {
+                first: 3,
+                second: 4,
+            },
+        }
+    }
+
+    fn symlink(name: &str, target: &str) -> TypeScriptDirectoryEntry {
+        TypeScriptDirectoryEntry {
+            path: PathBuf::from(format!("/workspace/src/{name}")).into_boxed_path(),
+            canonical_path: Some(
+                PathBuf::from(format!("/workspace/src/{target}")).into_boxed_path(),
+            ),
+            kind: TypeScriptDirectoryEntryKind::Symlink,
+            effective_kind: Some(TypeScriptDirectoryEntryKind::RegularFile),
+            identity: FileIdentity {
+                first: 5,
+                second: 6,
+            },
+        }
+    }
+
+    #[test]
+    fn root_query_delta_requires_symlink_add_remove_and_retarget_to_match() {
+        let baseline = snapshot(vec![regular("main.ts")]);
+        let added = snapshot(vec![symlink("alias.txt", "main.ts"), regular("main.ts")]);
+        assert!(directory_snapshots_match_replayed_root_query(
+            &baseline, &baseline
+        ));
+        assert!(!directory_snapshots_match_replayed_root_query(
+            &baseline, &added
+        ));
+        assert!(!directory_snapshots_match_replayed_root_query(
+            &added, &baseline
+        ));
+
+        let retargeted = snapshot(vec![symlink("alias.txt", "other.txt"), regular("main.ts")]);
+        assert!(!directory_snapshots_match_replayed_root_query(
+            &added,
+            &retargeted
+        ));
+    }
 }
 
 fn capture_realpath_snapshot(
@@ -1590,6 +1871,29 @@ fn record_realpath_ledger(
     Ok(())
 }
 
+fn native_snapshot_path_bytes(path: &Path) -> usize {
+    path.as_os_str().as_encoded_bytes().len()
+}
+
+/// Resolves a transcript's lexical config/root path to its source only through
+/// the exact realpath edge captured by this resolver ledger.
+fn captured_root_source_target<'a>(
+    path: &Path,
+    observations: &'a ResolverObservationLedger,
+    witness: &TypeScriptProjectWitness,
+) -> Option<&'a Path> {
+    if normalize_absolute_path(path).as_deref() != Some(path) || !witness.path_is_admitted(path) {
+        return None;
+    }
+    let canonical = observations
+        .realpaths
+        .get(path)?
+        .canonical_path
+        .as_deref()?;
+    (witness.path_is_admitted(canonical) && observations.loaded_sources.contains_key(canonical))
+        .then_some(canonical)
+}
+
 fn directory_snapshot_metadata_cost(snapshot: &DirectorySnapshot) -> usize {
     snapshot.path.as_os_str().as_encoded_bytes().len()
         + snapshot
@@ -1657,6 +1961,32 @@ struct TypeScriptCompilerApiWitness {
 }
 
 impl TypeScriptProjectWitness {
+    /// Starts an isolated observation ledger for native construction or replay.
+    pub(crate) fn resolver(&self) -> TypeScriptResolverCapability<'_> {
+        TypeScriptResolverCapability {
+            witness: self,
+            observations: ResolverObservationLedger::default(),
+        }
+    }
+
+    pub(crate) fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
+    /// Exact native host identity forwarded through admitted project inputs and
+    /// combined with ordered TSZ environments for project execution authority.
+    /// Compiler API selection and resource identities use a separate recipe.
+    pub(crate) fn native_project_fingerprint(&self) -> Option<[u8; 32]> {
+        (matches!(self.authority, TypeScriptWitnessAuthority::Native)
+            && self.resource_proof.is_none())
+        .then_some(self.fingerprint)
+    }
+
+    pub(crate) fn native_project_root(&self) -> Option<&Path> {
+        matches!(self.authority, TypeScriptWitnessAuthority::Native)
+            .then_some(self.project_root.as_ref())
+    }
+
     pub(crate) fn is_native_for_root(&self, root: &Path) -> bool {
         matches!(self.authority, TypeScriptWitnessAuthority::Native)
             && self.project_root.as_ref() == root
@@ -1665,9 +1995,23 @@ impl TypeScriptProjectWitness {
     /// Conservative payload and allocation accounting for the native-only cache.
     /// Native hosts retain no Compiler API invocation or resource-bundle payload.
     pub(crate) fn retained_native_bytes(&self) -> Option<usize> {
+        let loaded_source_files = self.loaded_source_files.lock().ok()?;
         if !matches!(self.authority, TypeScriptWitnessAuthority::Native)
             || self.resource_proof.is_some()
             || !self.typescript_files.is_empty()
+            || self.files.len() > MAX_PROJECT_CONFIG_FILES
+            || self.config_candidates.len() > MAX_PROJECT_CONFIG_FILES
+            || self.config_candidates.iter().any(|config| {
+                config.extends.len() > MAX_PROJECT_ANCESTORS
+                    || config.references.len() > MAX_PROJECT_ANCESTORS
+            })
+            || self.selected_build_config_paths.len() > MAX_PROJECT_CONFIG_FILES
+            || self.config_paths.len() > MAX_PROJECT_CONFIG_FILES
+            || loaded_source_files.len() > MAX_RESOLVED_SOURCE_FILES
+            || self
+                .workspace
+                .as_ref()
+                .is_some_and(|workspace| workspace.files.len() > MAX_PROJECT_CONFIG_FILES)
         {
             return None;
         }
@@ -1710,14 +2054,232 @@ impl TypeScriptProjectWitness {
                 .saturating_add(std::mem::size_of::<Box<Path>>())
                 .saturating_add(path_bytes(path));
         }
-        for (path, file) in self.loaded_source_files.lock().ok()?.iter() {
+        for (path, file) in loaded_source_files.iter() {
             // Charge both paths plus a conservative per-entry tree allocation.
             bytes = bytes
                 .saturating_add(1024)
                 .saturating_add(path.capacity())
-                .saturating_add(path_bytes(&file.path));
+                .saturating_add(path_bytes(&file.path))
+                .saturating_add(usize::try_from(file.length).unwrap_or(usize::MAX));
         }
         Some(bytes)
+    }
+
+    /// Encodes only the exhaustively represented native host witness. The caller must
+    /// store these bytes in the authenticated selected-compiler publication member.
+    #[cfg(test)]
+    pub(crate) fn encode_native_snapshot(&self) -> Option<Vec<u8>> {
+        self.encode_native_snapshot_with_limit(64 * 1024 * 1024)
+    }
+
+    pub(crate) fn encode_native_snapshot_with_limit(&self, max_bytes: usize) -> Option<Vec<u8>> {
+        if self.retained_native_bytes()? > 64 * 1024 * 1024
+            || max_bytes > 64 * 1024 * 1024
+            || !matches!(self.authority, TypeScriptWitnessAuthority::Native)
+            || self.resource_proof.is_some()
+            || !self.typescript_files.is_empty()
+        {
+            return None;
+        }
+        let loaded_source_files = self.loaded_source_files.lock().ok()?;
+        let dto = NativeTypeScriptHostSnapshotDto {
+            version: 1,
+            project_root: snapshot_path(&self.project_root)?,
+            home_root: match self.home_root.as_deref() {
+                Some(path) => SnapshotOption::Present(snapshot_path(path)?),
+                None => SnapshotOption::Absent,
+            },
+            module_root: snapshot_path(&self.module_root)?,
+            workspace: match self.workspace.as_ref() {
+                Some(workspace) => SnapshotOption::Present(snapshot_workspace(workspace)?),
+                None => SnapshotOption::Absent,
+            },
+            workspace_root: snapshot_path(&self.workspace_root)?,
+            files: BoundedSnapshotVec(
+                self.files
+                    .iter()
+                    .map(snapshot_file)
+                    .collect::<Option<_>>()?,
+            ),
+            typescript_files: BoundedSnapshotVec(Vec::new()),
+            config_candidates: BoundedSnapshotVec(
+                self.config_candidates
+                    .iter()
+                    .map(snapshot_config)
+                    .collect::<Option<_>>()?,
+            ),
+            selected_build_config_paths: BoundedSnapshotVec(
+                self.selected_build_config_paths
+                    .iter()
+                    .map(|path| snapshot_path(path))
+                    .collect::<Option<_>>()?,
+            ),
+            config_paths: BoundedSnapshotVec(
+                self.config_paths
+                    .iter()
+                    .map(|path| snapshot_path(path))
+                    .collect::<Option<_>>()?,
+            ),
+            loaded_source_files: BoundedSnapshotVec(
+                loaded_source_files
+                    .iter()
+                    .map(|(path, file)| Some((snapshot_path(path)?, snapshot_file(file)?)))
+                    .collect::<Option<_>>()?,
+            ),
+            fingerprint: self.fingerprint,
+        };
+        snapshot_resolver::encode_json_with_limit(&dto, max_bytes)
+    }
+
+    /// Decodes a complete versioned native host ledger. The returned opaque witness is
+    /// still untrusted until `validated_controlled` replays every captured host fence.
+    pub(crate) fn decode_native_snapshot(bytes: &[u8]) -> Option<Self> {
+        if bytes.is_empty() || bytes.len() > 64 * 1024 * 1024 {
+            return None;
+        }
+        let dto: NativeTypeScriptHostSnapshotDto = serde_json::from_slice(bytes).ok()?;
+        if dto.version != 1
+            || !dto.typescript_files.0.is_empty()
+            || matches!(&dto.workspace, SnapshotOption::Present(workspace) if {
+                workspace.files.0.len() > MAX_PROJECT_CONFIG_FILES
+            })
+        {
+            return None;
+        }
+        let project_root = snapshot_decode_path(dto.project_root)?;
+        let home_root = match dto.home_root {
+            SnapshotOption::Present(path) => Some(snapshot_decode_path(path)?),
+            SnapshotOption::Absent => None,
+        };
+        let module_root = snapshot_decode_path(dto.module_root)?;
+        let workspace = match dto.workspace {
+            SnapshotOption::Present(workspace) => Some(snapshot_decode_workspace(workspace)?),
+            SnapshotOption::Absent => None,
+        };
+        let workspace_root = snapshot_decode_path(dto.workspace_root)?;
+        let files = dto
+            .files
+            .0
+            .into_iter()
+            .map(snapshot_decode_file)
+            .collect::<Option<Vec<_>>>()?
+            .into_boxed_slice();
+        let config_candidates = dto
+            .config_candidates
+            .0
+            .into_iter()
+            .map(snapshot_decode_config)
+            .collect::<Option<Vec<_>>>()?
+            .into_boxed_slice();
+        let selected_build_config_paths = dto
+            .selected_build_config_paths
+            .0
+            .into_iter()
+            .map(snapshot_decode_path)
+            .collect::<Option<Vec<_>>>()?
+            .into_iter()
+            .map(PathBuf::into_boxed_path)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let config_paths = dto
+            .config_paths
+            .0
+            .into_iter()
+            .map(snapshot_decode_path)
+            .collect::<Option<Vec<_>>>()?
+            .into_iter()
+            .map(PathBuf::into_boxed_path)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let mut loaded_source_files = std::collections::BTreeMap::new();
+        for (key, value) in dto.loaded_source_files.0 {
+            let key = snapshot_decode_path(key)?;
+            let file = snapshot_decode_file(value)?;
+            if key.as_path() != file.path.as_ref()
+                || file.length > MAX_SOURCE_FILE_BYTES
+                || loaded_source_files.insert(key, file).is_some()
+            {
+                return None;
+            }
+        }
+        if loaded_source_files
+            .values()
+            .try_fold(0u64, |total, file| total.checked_add(file.length))?
+            > MAX_RESOLVED_SOURCE_BYTES
+        {
+            return None;
+        }
+        if module_root != workspace_root
+            || workspace
+                .as_ref()
+                .map_or(project_root.as_path(), |workspace| workspace.root.as_ref())
+                != workspace_root
+            || project_root != workspace_root && !project_root.starts_with(&workspace_root)
+            || files.windows(2).any(|pair| pair[0].path >= pair[1].path)
+            || config_candidates
+                .windows(2)
+                .any(|pair| pair[0].path >= pair[1].path)
+            || config_paths.len() != config_candidates.len()
+            || config_candidates
+                .iter()
+                .zip(config_paths.iter())
+                .any(|(config, path)| config.path != *path)
+            || selected_build_config_paths
+                .iter()
+                .map(|path| path.as_ref())
+                .collect::<std::collections::BTreeSet<_>>()
+                != config_candidates
+                    .iter()
+                    .filter(|config| config.selected_build_config)
+                    .map(|config| config.path.as_ref())
+                    .collect::<std::collections::BTreeSet<_>>()
+            || config_candidates.iter().any(|config| {
+                files
+                    .binary_search_by(|file| file.path.cmp(&config.path))
+                    .ok()
+                    .is_none_or(|index| files[index] != snapshot_from_config(config))
+            })
+            || workspace.as_ref().is_some_and(|workspace| {
+                workspace.files.iter().any(|file| {
+                    files
+                        .binary_search_by(|candidate| candidate.path.cmp(&file.path))
+                        .ok()
+                        .is_none_or(|index| files[index] != *file)
+                })
+            })
+            || config_candidates.iter().try_fold(0u64, |total, config| {
+                total.checked_add(config.bytes.len() as u64)
+            })? > MAX_PROJECT_CONFIG_BYTES
+        {
+            return None;
+        }
+        let mut fingerprint = Hasher::new();
+        fingerprint.update(b"typescript.native-tsz-project.v1\0");
+        fingerprint.update(backend_frontend_typescript::TSZ_NATIVE_AUTHORITY_IDENTITY);
+        fingerprint.update(&witness_fingerprint(&files));
+        if *fingerprint.finalize().as_bytes() != dto.fingerprint {
+            return None;
+        }
+        let witness = Self {
+            authority: TypeScriptWitnessAuthority::Native,
+            project_root: project_root.into_boxed_path(),
+            home_root: home_root.map(PathBuf::into_boxed_path),
+            module_root: module_root.into_boxed_path(),
+            workspace,
+            workspace_root: workspace_root.into_boxed_path(),
+            files,
+            typescript_files: Box::new([]),
+            config_candidates,
+            selected_build_config_paths,
+            config_paths,
+            loaded_source_files: std::sync::Mutex::new(loaded_source_files),
+            fingerprint: dto.fingerprint,
+            resource_proof: None,
+        };
+        if witness.retained_native_bytes()? > 64 * 1024 * 1024 {
+            return None;
+        }
+        return Some(witness);
     }
 
     fn selection_fingerprint(&self) -> [u8; 32] {
@@ -2031,6 +2593,7 @@ impl TypeScriptProjectWitness {
         })
     }
 
+    #[cfg(test)]
     fn load_source(&self, path: &Path) -> Result<TypeScriptFileInput, TypeScriptProjectHostError> {
         if !path.is_absolute() {
             return Err(TypeScriptProjectHostError::SourceOutsideCapability {
@@ -2646,6 +3209,8 @@ where
         path: canonical.into_boxed_path(),
         identity,
         entries: entries.into_boxed_slice(),
+        root_enumeration: false,
+        module_enumeration: false,
     })
 }
 
@@ -3911,6 +4476,302 @@ fn strip_jsonc(text: &str) -> Option<String> {
         }
     }
     String::from_utf8(compact).ok()
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "state",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+enum SnapshotOption<T> {
+    Absent,
+    Present(T),
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeTypeScriptHostSnapshotDto {
+    version: u32,
+    project_root: String,
+    home_root: SnapshotOption<String>,
+    module_root: String,
+    workspace: SnapshotOption<NativeWorkspaceSnapshotDto>,
+    workspace_root: String,
+    files: BoundedSnapshotVec<NativeFileSnapshotDto, MAX_PROJECT_CONFIG_FILES>,
+    typescript_files: BoundedSnapshotVec<NativeSourceSnapshotDto, 0>,
+    config_candidates: BoundedSnapshotVec<NativeConfigSnapshotDto, MAX_PROJECT_CONFIG_FILES>,
+    selected_build_config_paths: BoundedSnapshotVec<String, MAX_PROJECT_CONFIG_FILES>,
+    config_paths: BoundedSnapshotVec<String, MAX_PROJECT_CONFIG_FILES>,
+    loaded_source_files:
+        BoundedSnapshotVec<(String, NativeFileSnapshotDto), MAX_RESOLVED_SOURCE_FILES>,
+    fingerprint: [u8; 32],
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeFileSnapshotDto {
+    path: String,
+    identity_first: u64,
+    identity_second: u128,
+    length: u64,
+    digest: [u8; 32],
+    content_id: [u8; 32],
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeSourceSnapshotDto {
+    path: String,
+    bytes: BoundedSnapshotVec<u8, { MAX_SOURCE_FILE_BYTES as usize }>,
+    content_id: [u8; 32],
+    identity_first: u64,
+    identity_second: u128,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeConfigSnapshotDto {
+    path: String,
+    bytes: BoundedSnapshotVec<u8, { MAX_PROJECT_CONFIG_BYTES as usize }>,
+    content_id: [u8; 32],
+    identity_first: u64,
+    identity_second: u128,
+    project_candidate: bool,
+    selected_build_config: bool,
+    dependency_authority: u8,
+    extends: BoundedSnapshotVec<String, MAX_PROJECT_ANCESTORS>,
+    references: BoundedSnapshotVec<String, MAX_PROJECT_ANCESTORS>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeWorkspaceSnapshotDto {
+    root: String,
+    files: BoundedSnapshotVec<NativeFileSnapshotDto, MAX_PROJECT_CONFIG_FILES>,
+}
+
+#[derive(Debug)]
+struct BoundedSnapshotVec<T, const MAX: usize>(Vec<T>);
+
+impl<T: serde::Serialize, const MAX: usize> serde::Serialize for BoundedSnapshotVec<T, MAX> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serde::Serialize::serialize(&self.0, serializer)
+    }
+}
+
+impl<'de, T: serde::Deserialize<'de>, const MAX: usize> serde::Deserialize<'de>
+    for BoundedSnapshotVec<T, MAX>
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct BoundedVisitor<T, const MAX: usize>(std::marker::PhantomData<T>);
+        impl<'de, T: serde::Deserialize<'de>, const MAX: usize> serde::de::Visitor<'de>
+            for BoundedVisitor<T, MAX>
+        {
+            type Value = BoundedSnapshotVec<T, MAX>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(formatter, "at most {MAX} bounded snapshot records")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut values = Vec::new();
+                while values.len() < MAX {
+                    let Some(value) = seq.next_element()? else {
+                        return Ok(BoundedSnapshotVec(values));
+                    };
+                    values.push(value);
+                }
+                if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    return Err(serde::de::Error::custom(
+                        "snapshot record count exceeds bound",
+                    ));
+                }
+                Ok(BoundedSnapshotVec(values))
+            }
+        }
+        deserializer.deserialize_seq(BoundedVisitor::<T, MAX>(std::marker::PhantomData))
+    }
+}
+
+fn snapshot_path(path: &Path) -> Option<String> {
+    path.to_str().map(str::to_owned)
+}
+
+fn snapshot_decode_path(path: String) -> Option<PathBuf> {
+    if path.is_empty() {
+        return None;
+    }
+    let decoded = PathBuf::from(&path);
+    (decoded.is_absolute() && decoded.to_str() == Some(path.as_str())).then_some(decoded)
+}
+
+fn snapshot_identity(identity: FileIdentity) -> (u64, u128) {
+    (identity.first, identity.second.into())
+}
+
+fn snapshot_decode_identity(first: u64, second: u128) -> Option<FileIdentity> {
+    Some(FileIdentity {
+        first,
+        second: second.try_into().ok()?,
+    })
+}
+
+fn snapshot_file(file: &FileSnapshot) -> Option<NativeFileSnapshotDto> {
+    let (identity_first, identity_second) = snapshot_identity(file.identity);
+    Some(NativeFileSnapshotDto {
+        path: snapshot_path(&file.path)?,
+        identity_first,
+        identity_second,
+        length: file.length,
+        digest: file.digest,
+        content_id: *file.content_id.as_ref(),
+    })
+}
+
+fn snapshot_decode_file(file: NativeFileSnapshotDto) -> Option<FileSnapshot> {
+    Some(FileSnapshot {
+        path: snapshot_decode_path(file.path)?.into_boxed_path(),
+        identity: snapshot_decode_identity(file.identity_first, file.identity_second)?,
+        length: file.length,
+        digest: file.digest,
+        content_id: ContentId::<SourceFactDomain>::try_from(file.content_id).ok()?,
+    })
+}
+
+fn snapshot_source(file: &TypeScriptFileInput) -> Option<NativeSourceSnapshotDto> {
+    let (identity_first, identity_second) = snapshot_identity(file.identity);
+    Some(NativeSourceSnapshotDto {
+        path: snapshot_path(&file.path)?,
+        bytes: BoundedSnapshotVec(file.bytes.to_vec()),
+        content_id: *file.content_id.as_ref(),
+        identity_first,
+        identity_second,
+    })
+}
+
+fn snapshot_decode_source(file: NativeSourceSnapshotDto) -> Option<TypeScriptFileInput> {
+    if ContentId::<SourceFactDomain>::from_canonical_bytes(&file.bytes.0).as_ref()
+        != &file.content_id
+    {
+        return None;
+    }
+    Some(TypeScriptFileInput {
+        path: snapshot_decode_path(file.path)?.into_boxed_path(),
+        bytes: file.bytes.0.into_boxed_slice(),
+        content_id: ContentId::<SourceFactDomain>::try_from(file.content_id).ok()?,
+        identity: snapshot_decode_identity(file.identity_first, file.identity_second)?,
+    })
+}
+
+fn snapshot_config(config: &TypeScriptConfigInput) -> Option<NativeConfigSnapshotDto> {
+    let (identity_first, identity_second) = snapshot_identity(config.identity);
+    Some(NativeConfigSnapshotDto {
+        path: snapshot_path(&config.path)?,
+        bytes: BoundedSnapshotVec(config.bytes.to_vec()),
+        content_id: *config.content_id.as_ref(),
+        identity_first,
+        identity_second,
+        project_candidate: config.project_candidate,
+        selected_build_config: config.selected_build_config,
+        dependency_authority: match config.dependency_authority {
+            TypeScriptConfigDependencyAuthority::Unselected => 0,
+            TypeScriptConfigDependencyAuthority::Inheritance => 1,
+            TypeScriptConfigDependencyAuthority::Program => 2,
+        },
+        extends: BoundedSnapshotVec(
+            config
+                .extends
+                .iter()
+                .map(|path| snapshot_path(path))
+                .collect::<Option<_>>()?,
+        ),
+        references: BoundedSnapshotVec(
+            config
+                .references
+                .iter()
+                .map(|path| snapshot_path(path))
+                .collect::<Option<_>>()?,
+        ),
+    })
+}
+
+fn snapshot_decode_config(config: NativeConfigSnapshotDto) -> Option<TypeScriptConfigInput> {
+    if ContentId::<SourceFactDomain>::from_canonical_bytes(&config.bytes.0).as_ref()
+        != &config.content_id
+    {
+        return None;
+    }
+    Some(TypeScriptConfigInput {
+        path: snapshot_decode_path(config.path)?.into_boxed_path(),
+        bytes: config.bytes.0.into_boxed_slice(),
+        content_id: ContentId::<SourceFactDomain>::try_from(config.content_id).ok()?,
+        identity: snapshot_decode_identity(config.identity_first, config.identity_second)?,
+        project_candidate: config.project_candidate,
+        selected_build_config: config.selected_build_config,
+        dependency_authority: match config.dependency_authority {
+            0 => TypeScriptConfigDependencyAuthority::Unselected,
+            1 => TypeScriptConfigDependencyAuthority::Inheritance,
+            2 => TypeScriptConfigDependencyAuthority::Program,
+            _ => return None,
+        },
+        extends: config
+            .extends
+            .0
+            .into_iter()
+            .map(snapshot_decode_path)
+            .collect::<Option<Vec<_>>>()?
+            .into_iter()
+            .map(PathBuf::into_boxed_path)
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+        references: config
+            .references
+            .0
+            .into_iter()
+            .map(snapshot_decode_path)
+            .collect::<Option<Vec<_>>>()?
+            .into_iter()
+            .map(PathBuf::into_boxed_path)
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    })
+}
+
+fn snapshot_workspace(workspace: &WorkspaceBoundary) -> Option<NativeWorkspaceSnapshotDto> {
+    Some(NativeWorkspaceSnapshotDto {
+        root: snapshot_path(&workspace.root)?,
+        files: BoundedSnapshotVec(
+            workspace
+                .files
+                .iter()
+                .map(snapshot_file)
+                .collect::<Option<_>>()?,
+        ),
+    })
+}
+
+fn snapshot_decode_workspace(workspace: NativeWorkspaceSnapshotDto) -> Option<WorkspaceBoundary> {
+    Some(WorkspaceBoundary {
+        root: snapshot_decode_path(workspace.root)?.into_boxed_path(),
+        files: workspace
+            .files
+            .0
+            .into_iter()
+            .map(snapshot_decode_file)
+            .collect::<Option<Vec<_>>>()?
+            .into_boxed_slice(),
+    })
 }
 
 #[cfg(test)]
@@ -5814,6 +6675,11 @@ mod tests {
         .unwrap();
         let host = TypeScriptProjectHost::direct(None, Fixture::limits());
         let baseline = host.admit(&fixture.0).unwrap().unwrap();
+        assert_eq!(
+            baseline.witness().native_project_fingerprint(),
+            Some(baseline.inputs().fingerprint),
+            "cold replay hashes the same host identity as native project execution"
+        );
         let mut full_steps = 0usize;
         let controlled = host
             .admit_controlled(&fixture.0, &mut || {
@@ -7861,6 +8727,45 @@ printf 'Version 5.9.3\n'
             "next stage/publish boundary recaptures every shared file"
         );
         assert!(sealed.validate_current(&witness).is_err());
+    }
+
+    #[test]
+    fn native_host_snapshot_codec_is_complete_strict_and_replayable_after_decode() {
+        let fixture = Fixture::new();
+        fs::write(
+            fixture.0.join("package.json"),
+            r#"{"name":"snapshot-fixture"}"#,
+        )
+        .unwrap();
+        let witness = TypeScriptProjectWitness::capture_native(&fixture.0, None).unwrap();
+        let encoded = witness
+            .encode_native_snapshot()
+            .expect("encode native host");
+        let decoded = TypeScriptProjectWitness::decode_native_snapshot(&encoded)
+            .expect("decode complete host witness");
+        assert_eq!(
+            decoded.encode_native_snapshot().as_deref(),
+            Some(encoded.as_slice())
+        );
+        decoded
+            .validate_current()
+            .expect("replay host witness against current files");
+
+        let mut corrupt = encoded.clone();
+        corrupt[0] ^= 0x20;
+        assert!(TypeScriptProjectWitness::decode_native_snapshot(&corrupt).is_none());
+
+        let mut incomplete: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        incomplete
+            .as_object_mut()
+            .unwrap()
+            .remove("config_candidates");
+        assert!(
+            TypeScriptProjectWitness::decode_native_snapshot(
+                &serde_json::to_vec(&incomplete).unwrap()
+            )
+            .is_none()
+        );
     }
 
     #[test]

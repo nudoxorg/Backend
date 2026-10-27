@@ -378,11 +378,12 @@ impl<E: Endpoint> Engine for Reconnecting<E> {
         &mut self,
         package: backend_library::PackageReference,
         execution_intent: backend_library::CompileExecutionIntent,
+        cargo_target: Option<backend_library::CargoTargetSelector>,
     ) -> Result<SurfaceReply, ClientError> {
         // The journal owns reconciliation on the next explicit invocation;
         // a disconnected mutation never submits an automatic replacement.
         self.attempt(Repeatable::No, |product| {
-            product.index(package.clone(), execution_intent)
+            product.index(package.clone(), execution_intent, cargo_target.clone())
         })
     }
     fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
@@ -1864,6 +1865,7 @@ mod tests {
         );
         assert_eq!(
             surface_is_repeatable(&SurfaceCommand::IndexOperationStart {
+                cargo_target: None,
                 operation_key: IndexOperationKey::from_bytes([8; 32]).expect("operation key"),
                 package: backend_library::PackageReference::parse("serde")
                     .expect("package reference"),

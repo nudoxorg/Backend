@@ -169,6 +169,10 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.ra_ap_syntax]
 opt-level = 2
+# Fresh compiler admission parses dependency sources through this crate too.
+# Retain dev assertions/overflow checks while matching the syntax/HIR tier.
+[profile.dev.package.ra_ap_parser]
+opt-level = 2
 [profile.dev.package.backend-local-service]
 opt-level = 2
 # 2026-09-28 night: over again (-134 MB against the 128 MB range, W-Open I2). The next largest
@@ -178,6 +182,12 @@ opt-level = 2
 [profile.dev.package.turso_core]
 opt-level = 2
 [profile.dev.package.tantivy]
+opt-level = 2
+[profile.dev.package.tantivy-fst]
+opt-level = 2
+# Durable projection admission/rebinding runs in this wrapper around Tantivy.
+# Keep its full validation/publication path at the same optimization tier.
+[profile.dev.package.backend-extension-tantivy]
 opt-level = 2
 [profile.dev.package.iroh]
 opt-level = 2

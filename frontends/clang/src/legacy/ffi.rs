@@ -439,9 +439,25 @@ impl TranslationUnit {
         (is_const, is_volatile, is_restrict)
     }
 
-    /// Returns the cursor's directly classified storage binding.
+    /// Returns storage only for native function or variable declarations.
     pub(crate) fn storage_class(cursor: CXCursor) -> clang_sys::CX_StorageClass {
-        // SAFETY: cursor was supplied by this live translation unit.
+        // A preprocessing cursor carries opaque preprocessor data, not a Decl.
+        // Passing a macro cursor to the native declaration API produced changing
+        // storage facts for identical PUGIXML_HEADER_ONLY inputs. Keep all
+        // non-function/non-variable cursor data outside that API.
+        if !matches!(
+            cursor.kind,
+            clang_sys::CXCursor_FunctionDecl
+                | clang_sys::CXCursor_VarDecl
+                | clang_sys::CXCursor_ParmDecl
+                | clang_sys::CXCursor_CXXMethod
+                | clang_sys::CXCursor_Constructor
+                | clang_sys::CXCursor_Destructor
+                | clang_sys::CXCursor_ConversionFunction
+        ) {
+            return clang_sys::CX_SC_Invalid;
+        }
+        // SAFETY: cursor is a function or variable from this live translation unit.
         unsafe { clang_sys::clang_Cursor_getStorageClass(cursor) }
     }
 
@@ -1220,5 +1236,30 @@ mod tests {
             relative_path(b"/work/pkg/build/src/x.c", b"/work/pkg/build"),
             Some(&b"src/x.c"[..])
         );
+    }
+}
+
+#[cfg(test)]
+mod storage_class_cursor_tests {
+    use super::TranslationUnit;
+
+    #[test]
+    fn preprocessing_cursors_never_enter_the_declaration_storage_api() {
+        // No libclang is loaded: a call into the native storage API is a failure.
+        // Preprocessing cursor data is not a Decl pointer and must stay opaque.
+        for kind in [
+            clang_sys::CXCursor_MacroDefinition,
+            clang_sys::CXCursor_InclusionDirective,
+        ] {
+            let cursor = clang_sys::CXCursor {
+                kind,
+                xdata: 0,
+                data: [core::ptr::null(); 3],
+            };
+            assert_eq!(
+                TranslationUnit::storage_class(cursor),
+                clang_sys::CX_SC_Invalid
+            );
+        }
     }
 }

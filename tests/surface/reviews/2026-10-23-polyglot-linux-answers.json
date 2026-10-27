@@ -1,0 +1,103 @@
+{
+  "acceptance": "Fresh exact-head official T2 comparison required; not a green verdict.",
+  "answer_review": [
+    "All seven search results match authored names, paths, lines, kinds and languages. Java/C# classes are classes and member functions are methods, matching independent compiler syntax trees.",
+    "Complete outline has18rows; former19th row was the duplicate TypeScript turing return-value carrier, not another authored declaration. Existing Java implicit constructor, string/type/result carriers and C++ include module are retained semantic carriers, not extra authored source sites.",
+    "Exact current selected-symbol identities, source/page provenance, package revision, counts, ordering and live-checked continuation markers retained. Independently reviewing compiler hashes or all semantic carrier encoding is outside this review.",
+    "Strict method contract passed bounded reference, CLI/MCP3page rank order/no lost or duplicated rows, malformed cursor refusal and owner-health checks in official1862 and diagnostic597289."
+  ],
+  "case": "polyglot",
+  "evidence": {
+    "answers_equal": true,
+    "artifact_manifest_sha256": "f6b4d7246f42604e4837598bf8ec694a28b00e26ba7475e3fb4f21948c0015fb",
+    "official_build": 1862,
+    "official_global_build": 597370,
+    "repeat_diagnostic_build": 597289,
+    "scope": "Official1862 answers exactly match frozen981 diagnostic597289. Diagnostic TS compatibility overrides were cleared; equality is measured, not assumed across those environments.",
+    "source_sha": "250b55d50597c670b671d9beafa75f9be5ba2e42"
+  },
+  "performance": {
+    "action": "Original performance JSON suffix retained byte-for-byte; official add36.93s and diagnostic add202.57s do not replace it.",
+    "preserved_suffix_sha256": "49f04521da28858a2478b7de5d1b11c8645d7894c03c9357236c5949f42b93a1"
+  },
+  "reviewer": "Codex / GPT-6.1, 2026-10-23",
+  "schema": 1,
+  "scope": "Explicit answer-only review of repository-owned seven-language fixture; prior performance bytes retained.",
+  "source": {
+    "files_sha256": {
+      "Cargo.toml": "1e935c786e778387c5ca7c7ec62b552590564a1eb9e30d9c7e0a562a96632e94",
+      "go.mod": "8c6c7972849b1242b4f18784b6cba95a6b4f99a2c32670896696702ebf51907a",
+      "go/main.go": "8fb71359ab57260f15600bfc1f96b8f6af3ab8ff0965dbe1f7aca8b240e3eb8c",
+      "src/Duke.java": "ea5b30246e843a7480e3d29246947f7f19e781cd7496efc9331bd171a707c4eb",
+      "src/Main.cs": "1a111bcf9309031976729135711bda33a76cdb1d0b31314e480461c6dad42ee3",
+      "src/lib.rs": "1d54c7484312131ca9799fe58cfcb10d5b1166b28fd8f0df3b06df1bd0ad2426",
+      "src/main.cpp": "5ed51ca5e67b2984791079b15a025415769d0f08128236ee633a5d5d22c6f319",
+      "src/main.py": "eee3e7f46e6376c2f9b85de0ebd99040e0901bcf8ea41290991483fe4e6583a7",
+      "src/main.ts": "841b7e6e77f67eaa4f6f24a41546068697ecceca5860540e5bf23d6abd79f2cf"
+    },
+    "method": "Read all seven source fixtures; independently parse Java with JavacTask, C++ with Clang AST, C# with Roslyn, Rust with Syn, Go with go/parser, Python with ast. TypeScript turing declaration reviewed directly in its two-line source.",
+    "source_sha": "250b55d50597c670b671d9beafa75f9be5ba2e42"
+  },
+  "verified_source_anchors": [
+    [
+      "ferris",
+      "src/lib.rs",
+      2,
+      "function"
+    ],
+    [
+      "monty",
+      "src/main.py",
+      1,
+      "function"
+    ],
+    [
+      "turing",
+      "src/main.ts",
+      2,
+      "function"
+    ],
+    [
+      "Gopher",
+      "go/main.go",
+      4,
+      "function"
+    ],
+    [
+      "Duke",
+      "src/Duke.java",
+      1,
+      "class"
+    ],
+    [
+      "language",
+      "src/Duke.java",
+      2,
+      "method"
+    ],
+    [
+      "Anders",
+      "src/Main.cs",
+      1,
+      "class"
+    ],
+    [
+      "Language",
+      "src/Main.cs",
+      2,
+      "method"
+    ],
+    [
+      "Bjarne",
+      "src/main.cpp",
+      3,
+      "struct"
+    ],
+    [
+      "language",
+      "src/main.cpp",
+      4,
+      "method"
+    ]
+  ]
+}

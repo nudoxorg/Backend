@@ -469,6 +469,7 @@ fn partial_publication_keeps_useful_languages_all_refusals_and_exact_machine_bas
         )
         .expect("receipt"),
         source_capture: IndexSourceCaptureSummary {
+            cargo_target: None,
             producer_package: package.clone(),
             request_identity: [1; 32],
             commit_identity: [2; 32],

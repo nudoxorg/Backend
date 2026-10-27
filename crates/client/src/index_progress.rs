@@ -1151,6 +1151,7 @@ mod tests {
         assert!(
             IndexProgressRead::new(
                 SurfaceCommand::IndexStart {
+                    cargo_target: None,
                     package: status.package,
                     execution_intent: status.execution_intent
                 },

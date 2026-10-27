@@ -255,8 +255,10 @@ pub trait Engine {
         &mut self,
         package: backend_library::PackageReference,
         execution_intent: CompileExecutionIntent,
+        cargo_target: Option<backend_library::CargoTargetSelector>,
     ) -> Result<SurfaceReply, ClientError> {
         self.surface(SurfaceCommand::IndexStart {
+            cargo_target,
             package,
             execution_intent,
         })
@@ -370,11 +372,12 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
         }
         Request::Shelf => shelf(engine),
         Request::Status => status(engine),
-        Request::Index(path) => index(engine, path, CompileExecutionIntent::Interactive),
+        Request::Index(path) => index(engine, path, CompileExecutionIntent::Interactive, None),
         Request::IndexWithExecutionIntent {
+            cargo_target,
             path,
             execution_intent,
-        } => index(engine, path, *execution_intent),
+        } => index(engine, path, *execution_intent, cargo_target.clone()),
         Request::Remove(path) => remove(engine, path),
         Request::Page(at) => page(engine, at, None).map(Box::new).map(Answer::Page),
         Request::ResumePage { selector, cursor } => {
@@ -709,11 +712,12 @@ fn index(
     engine: &mut dyn Engine,
     path: &str,
     execution_intent: CompileExecutionIntent,
+    cargo_target: Option<backend_library::CargoTargetSelector>,
 ) -> Result<Answer, Fault> {
     let package = backend_library::PackageReference::parse(path.to_owned())
         .map_err(|error| Fault::admission(error, Operand::Path(path.to_owned())))?;
     let reply = engine
-        .index(package, execution_intent)
+        .index(package, execution_intent, cargo_target)
         .map_err(|error| Fault::from_client_error(&error, Operand::Path(path.to_owned())))?;
     Ok(Answer::Product(Box::new(crate::product_view(&reply))))
 }

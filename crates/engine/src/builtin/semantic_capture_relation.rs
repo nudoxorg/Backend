@@ -19,7 +19,8 @@ use backend_version::{
 use core::num::NonZeroU32;
 
 const LEGACY_MAGIC: &[u8; 4] = b"PSC1";
-const MAGIC: &[u8; 4] = b"PSC2";
+const FAILURE_MAGIC: &[u8; 4] = b"PSC2";
+const MAGIC: &[u8; 4] = b"PSC3";
 const ROOT_KEY: [u8; 32] = [0x53; 32];
 
 /// Outcome retained independently from the selected semantic publication.
@@ -56,6 +57,7 @@ pub enum ProductSemanticCaptureOutcome {
 /// Exact source and operation evidence for one package/profile capture.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProductSemanticCaptureRecord {
+    cargo_target: Option<backend_library::CargoTargetScope>,
     operation_key: Option<[u8; 32]>,
     request_identity: [u8; 32],
     capture: SemanticSourceCapture,
@@ -153,6 +155,7 @@ impl ProductSemanticCaptureRecord {
             .transpose()?
             .map(Vec::into_boxed_slice);
         Ok(Self {
+            cargo_target: None,
             operation_key,
             request_identity,
             capture,
@@ -165,6 +168,27 @@ impl ProductSemanticCaptureRecord {
             compiler_failure,
             compiler_failure_bytes,
         })
+    }
+
+    /// Binds this capture to one explicit Cargo target and exact source closure.
+    pub fn with_cargo_target(
+        mut self,
+        scope: Option<backend_library::CargoTargetScope>,
+    ) -> Result<Self, &'static str> {
+        if let Some(scope) = &scope {
+            scope.validate()?;
+            if scope.source_count != self.capture.source_count() {
+                return Err("Cargo source closure count differs from captured frontier");
+            }
+        }
+        self.cargo_target = scope;
+        Ok(self)
+    }
+
+    /// Exact selected Cargo target; None retains the package-scoped contract.
+    #[must_use]
+    pub fn cargo_target(&self) -> Option<&backend_library::CargoTargetScope> {
+        self.cargo_target.as_ref()
     }
 
     /// Caller-owned operation identity bound by the marker.
@@ -248,7 +272,8 @@ impl ProductSemanticCaptureRecord {
             self.source_commit,
             outcome,
             self.compiler_failure.clone(),
-        )
+        )?
+        .with_cargo_target(self.cargo_target.clone())
     }
 
     /// Adds the compiler fault that explains an unavailable or failed
@@ -272,7 +297,8 @@ impl ProductSemanticCaptureRecord {
             self.source_commit,
             self.outcome,
             Some(failure),
-        )
+        )?
+        .with_cargo_target(self.cargo_target.clone())
     }
 }
 
@@ -328,6 +354,15 @@ impl Relation for ProductSemanticCaptureRelation {
                 encode_claim(claim, output);
             }
         }
+        match &value.cargo_target {
+            Some(scope) => {
+                output.push(1);
+                let bytes = serde_json::to_vec(scope).expect("admitted Cargo target scope");
+                output.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+                output.extend_from_slice(&bytes);
+            }
+            None => output.push(0),
+        }
         match &value.compiler_failure_bytes {
             Some(bytes) => {
                 output.push(1);
@@ -354,13 +389,16 @@ impl CanonicalRelation for ProductSemanticCaptureRelation {
     }
 
     fn decode_value(bytes: &[u8]) -> Result<Self::Value, RelationDecodeError> {
-        let (mut rest, has_failure_slot) = if let Some(rest) = bytes.strip_prefix(MAGIC) {
-            (rest, true)
-        } else if let Some(rest) = bytes.strip_prefix(LEGACY_MAGIC) {
-            (rest, false)
-        } else {
-            return Err(RelationDecodeError::Malformed);
-        };
+        let (mut rest, has_scope_slot, has_failure_slot) =
+            if let Some(rest) = bytes.strip_prefix(MAGIC) {
+                (rest, true, true)
+            } else if let Some(rest) = bytes.strip_prefix(FAILURE_MAGIC) {
+                (rest, false, true)
+            } else if let Some(rest) = bytes.strip_prefix(LEGACY_MAGIC) {
+                (rest, false, false)
+            } else {
+                return Err(RelationDecodeError::Malformed);
+            };
         let (&operation_key_tag, next) =
             rest.split_first().ok_or(RelationDecodeError::Malformed)?;
         rest = next;
@@ -425,6 +463,36 @@ impl CanonicalRelation for ProductSemanticCaptureRelation {
             }
             _ => return Err(RelationDecodeError::Malformed),
         };
+        let (cargo_target, rest) = if has_scope_slot {
+            let (&tag, rest) = rest.split_first().ok_or(RelationDecodeError::Malformed)?;
+            match tag {
+                0 => (None, rest),
+                1 => {
+                    let (length, rest) = take::<4>(rest)?;
+                    let length = u32::from_be_bytes(length) as usize;
+                    if length > 8192 {
+                        return Err(RelationDecodeError::Malformed);
+                    }
+                    let (bytes, rest) = rest
+                        .split_at_checked(length)
+                        .ok_or(RelationDecodeError::Malformed)?;
+                    let scope: backend_library::CargoTargetScope = serde_json::from_slice(bytes)
+                        .map_err(|_| RelationDecodeError::Malformed)?;
+                    scope
+                        .validate()
+                        .map_err(|_| RelationDecodeError::Malformed)?;
+                    if serde_json::to_vec(&scope).map_err(|_| RelationDecodeError::Malformed)?
+                        != bytes
+                    {
+                        return Err(RelationDecodeError::Malformed);
+                    }
+                    (Some(scope), rest)
+                }
+                _ => return Err(RelationDecodeError::Malformed),
+            }
+        } else {
+            (None, rest)
+        };
         let compiler_failure = if has_failure_slot {
             let (&tag, rest) = rest.split_first().ok_or(RelationDecodeError::Malformed)?;
             match tag {
@@ -472,6 +540,7 @@ impl CanonicalRelation for ProductSemanticCaptureRelation {
             outcome,
             compiler_failure,
         )
+        .and_then(|record| record.with_cargo_target(cargo_target))
         .map_err(|_| RelationDecodeError::Malformed)
     }
 }
@@ -696,12 +765,58 @@ mod tests {
         ProductSemanticCaptureRelation::encode_value(&record, &mut encoded);
         assert_eq!(encoded.get(..4), Some(MAGIC.as_slice()));
         encoded[..4].copy_from_slice(LEGACY_MAGIC);
-        assert_eq!(encoded.pop(), Some(0));
+        assert_eq!(encoded.pop(), Some(0)); // compiler-failure slot
+        assert_eq!(encoded.pop(), Some(0)); // Cargo target scope slot
 
         let decoded = ProductSemanticCaptureRelation::decode_value(&encoded)
             .expect("legacy PSC1 unavailable capture");
         assert_eq!(decoded.outcome(), record.outcome());
         assert!(decoded.compiler_failure().is_none());
+    }
+
+    #[test]
+    fn selected_cargo_scope_round_trips_and_survives_terminal_updates() {
+        let scope = backend_library::CargoTargetScope {
+            name: backend_library::CargoTargetSelector::new("library".to_owned()).expect("name"),
+            root: "src/lib.rs".to_owned(),
+            kinds: vec!["lib".to_owned()].into_boxed_slice(),
+            source_closure: [8; 32],
+            source_count: 1,
+        };
+        let record = capture_record(None)
+            .with_cargo_target(Some(scope.clone()))
+            .expect("scope");
+        let mut bytes = Vec::new();
+        ProductSemanticCaptureRelation::encode_value(&record, &mut bytes);
+        assert_eq!(
+            ProductSemanticCaptureRelation::decode_value(&bytes).expect("scope codec"),
+            record
+        );
+        assert_eq!(
+            record
+                .with_outcome(record.outcome())
+                .expect("terminal")
+                .cargo_target(),
+            Some(&scope)
+        );
+        let mut wrong = scope.clone();
+        wrong.source_count = 2;
+        assert!(capture_record(None).with_cargo_target(Some(wrong)).is_err());
+        bytes.push(0);
+        assert!(ProductSemanticCaptureRelation::decode_value(&bytes).is_err());
+    }
+
+    #[test]
+    fn legacy_psc2_capture_rows_remain_unscoped() {
+        let record = capture_record(None);
+        let mut bytes = Vec::new();
+        ProductSemanticCaptureRelation::encode_value(&record, &mut bytes);
+        let scope_slot = bytes.len() - 2;
+        assert_eq!(bytes.remove(scope_slot), 0);
+        bytes[..4].copy_from_slice(FAILURE_MAGIC);
+        let legacy = ProductSemanticCaptureRelation::decode_value(&bytes).expect("legacy PSC2");
+        assert_eq!(legacy, record);
+        assert!(legacy.cargo_target().is_none());
     }
 
     #[test]

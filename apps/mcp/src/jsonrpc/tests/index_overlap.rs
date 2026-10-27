@@ -30,6 +30,7 @@ impl CommandTransport for Owner {
         state.commands.push(command.clone());
         let reply = match command {
             SurfaceCommand::IndexOperationStart {
+                cargo_target: None,
                 operation_key,
                 package,
                 execution_intent,
@@ -58,6 +59,7 @@ impl CommandTransport for Owner {
                 SurfaceReply::IndexOperationStarted(IndexOperationObservation::Known(status))
             }
             SurfaceCommand::IndexStart {
+                cargo_target: None,
                 package,
                 execution_intent,
             } => {

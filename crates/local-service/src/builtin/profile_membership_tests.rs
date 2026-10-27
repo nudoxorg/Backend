@@ -126,6 +126,7 @@ fn inherited_capture_pointer_survives_source_commit_and_two_cold_reopens() {
         Vec::new(),
         Vec::new(),
         vec![BuiltinCaptureChange {
+            cargo_target: None,
             key: key.clone(),
             expected: None,
             capture,
@@ -161,10 +162,21 @@ fn inherited_capture_pointer_survives_source_commit_and_two_cold_reopens() {
     assert_eq!(capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
         .expect("first cold basis"), after);
     let expected = semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
-        .expect("selected relation").expect("capture exists")
-        .lookup(&key).expect("read pending receipt").expect("pending row");
-    let terminal = BuiltinIntent::index_with_capture(package, label, Vec::new(), Vec::new(), vec![
-        BuiltinCaptureChange { key, expected: Some(expected), capture,
+        .expect("selected relation")
+        .expect("capture exists")
+        .lookup(&key)
+        .expect("read pending receipt")
+        .expect("pending row");
+    let terminal = BuiltinIntent::index_with_capture(
+        package,
+        label,
+        Vec::new(),
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            cargo_target: None,
+            key,
+            expected: Some(expected),
+            capture,
             outcome: ProductSemanticCaptureOutcome::Unavailable {
                 reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
             }, compiler_failure: None }
@@ -995,6 +1007,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         ],
         Vec::new(),
         vec![BuiltinCaptureChange {
+            cargo_target: None,
             key: capture_key.clone(),
             expected: None,
             capture,
@@ -1072,6 +1085,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         Vec::new(),
         Vec::new(),
         vec![BuiltinCaptureChange {
+            cargo_target: None,
             key: unrelated_capture_key.clone(),
             expected: None,
             capture: unrelated_capture,
@@ -1151,6 +1165,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         Vec::new(),
         Vec::new(),
         vec![BuiltinCaptureChange {
+            cargo_target: None,
             key: capture_key.clone(),
             expected: Some(pending_capture.clone()),
             capture,
@@ -1179,6 +1194,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         Vec::new(),
         Vec::new(),
         vec![BuiltinCaptureChange {
+            cargo_target: None,
             key: capture_key.clone(),
             expected: Some(pending_capture.clone()),
             capture,
@@ -1235,6 +1251,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         Vec::new(),
         Vec::new(),
         vec![BuiltinCaptureChange {
+            cargo_target: None,
             key: capture_key.clone(),
             expected: Some(forged_before),
             capture,
@@ -1266,6 +1283,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         Vec::new(),
         Vec::new(),
         vec![BuiltinCaptureChange {
+            cargo_target: None,
             key: capture_key.clone(),
             expected: Some(pending_capture.clone()),
             capture,

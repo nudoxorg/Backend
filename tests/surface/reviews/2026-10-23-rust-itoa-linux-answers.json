@@ -1,0 +1,97 @@
+{
+  "acceptance": "Fresh exact-head official snapshot/performance comparison remains required; no green verdict.",
+  "answer_review": [
+    "Buffer is the authored struct atsrc/lib.rs:64, format its method at98. The separately queried Buffer at124 is Integer associated type; MAX_STR_LEN116 and Integer113 are authored declarations, not duplicates of the struct.",
+    "All8distinct visible source anchors match source and independent AST. Read new/default/clone methods at90/70/80. Visible benchmark/test function names and b parameter occur in actual independent macro expansions; macro invocation and generated function are not described as separate authored declarations.",
+    "i16/isize are builtin type implementation carriers. Same-name variable children under functions are semantic result carriers, not invented source declarations. Product native complete coverage and all bounded source/transport/continuation assertions passed before candidates were emitted.",
+    "Outline complete66 becomes a bounded50row prefix with actual validated continuation, page provenance and semantic identity data. Preserve order, children, source roots, coverage and byte accounting; no identity/count normalizer or public assertion changed.",
+    "This review validates visible prefixes/queries and macro-origin names, not independent reconstruction of every compiler carrier/hash or every later page."
+  ],
+  "case": "rust-itoa",
+  "evidence": {
+    "answers_equal": true,
+    "initial_build": 1807,
+    "initial_global_build": 594865,
+    "initial_source_sha": "ee8d0c27be6bf9f58e1f88ae525b123c50d49ee3",
+    "repeat_artifact_manifest_sha256": "be3ebf4236d6a06f9f1137777c382d614afb7cdd5f133c25350a887e441ea55a",
+    "repeat_build": 1844,
+    "repeat_global_build": 596519,
+    "repeat_source_sha": "4fdf93137a114bfd2f04b00bf5e8a31d7a8eb91e"
+  },
+  "performance": {
+    "action": "Previous performance JSON suffix retained byte-for-byte; no candidate baseline, limit or floor adopted.",
+    "preserved_suffix_sha256": "bc2f2b07240dc9cf829f335745f2994c78661870808c96694cd25bce2ffcfa32"
+  },
+  "reviewer": "Codex / GPT-6.1, 2026-10-23",
+  "schema": 1,
+  "scope": "Explicit answer-only review against pinned source and independent macro expansion; original performance baseline bytes retained.",
+  "source": {
+    "coordinate": "cargo:itoa@1.0.14",
+    "expanded_sha256": {
+      "bench": "8285f4071b49fd59a6ad5b89459e409ad630948afb606f8fa7f0d0f7979ee415",
+      "test": "386f1982ea0a4be43f56aadabcc6aed5d7875e11cc14eab21d2f43da556b5fdd"
+    },
+    "files_sha256": {
+      "benches/bench.rs": "636f3093bd461210ad3063289d455f90669c4a1be3273bcd30898de39f02c641",
+      "src/lib.rs": "dda57223f32db917f3996d5294acbbdff61e4860fc7d1b284a105c6f77399e28",
+      "src/udiv128.rs": "d28c1872c37ee2185931babcb20a221b8706a5aa8abc4963419763888023ff17",
+      "tests/test.rs": "aa1e910573a1d847d39773b4a2e4c597a8d3810070332673df0f6864cab24807"
+    },
+    "hash": "sha256-11oqSxsZCvtvVCXxD2qPlZ0uoLnCsdeVU1UYUFOeRnQ=",
+    "kind": "crate",
+    "lane": "rust",
+    "method": "Verified exact crate archive SHA-256, read queried declarations, independently parsed all4Rust sources with syn2.0.119. Expanded bench/test macros with pinned rustc1.97.1(-Zunpretty=expanded, RUSTC_BOOTSTRAP=1 only for standalone source review), then independently parsed expansions. No product output used to build source index.",
+    "review_program_sha256": "558138165dadf5a77be25dfe6b4e5bbfbb629220d2279ae3466a9a5a9565d979",
+    "url": "https://static.crates.io/crates/itoa/itoa-1.0.14.crate"
+  },
+  "verified_source_anchors": [
+    [
+      "Buffer",
+      "src/lib.rs",
+      64,
+      true
+    ],
+    [
+      "Buffer",
+      "src/lib.rs",
+      124,
+      true
+    ],
+    [
+      "Integer",
+      "src/lib.rs",
+      113,
+      true
+    ],
+    [
+      "MAX_STR_LEN",
+      "src/lib.rs",
+      116,
+      true
+    ],
+    [
+      "clone",
+      "src/lib.rs",
+      80,
+      true
+    ],
+    [
+      "default",
+      "src/lib.rs",
+      70,
+      true
+    ],
+    [
+      "format",
+      "src/lib.rs",
+      98,
+      true
+    ],
+    [
+      "new",
+      "src/lib.rs",
+      90,
+      true
+    ]
+  ]
+}

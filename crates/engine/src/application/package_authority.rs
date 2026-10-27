@@ -171,6 +171,8 @@ pub struct PackageAuthorityRequest<'request, 'config> {
     pub source_path: &'request Path,
     /// Exact source bytes read by the package resolver.
     pub source: &'request [u8],
+    /// Exact captured Java siblings available to javac without becoming explicit image inputs.
+    pub java_sourcepath: &'request [JavaSource<'request>],
     /// Exact native compilation unit selected by the admitted package target.
     pub unit_key: &'request CompilationUnitKeyV2,
     /// Closed language profile that determines the one allowed authority.
@@ -219,6 +221,8 @@ pub enum PackageAuthorityOwner<'workspace> {
         workspace: RustWorkspace,
         /// Original bounded source admission policy.
         maximum_source_bytes: SourceByteLimit,
+        /// Exact admitted Cargo target key preserved through HIR ownership selection.
+        unit_key: CompilationUnitKeyV2,
     },
     /// Borrowed lane-owned analyzer workspace retained by an in-progress session lease.
     RustBorrowed {
@@ -228,6 +232,8 @@ pub enum PackageAuthorityOwner<'workspace> {
         workspace: &'workspace RustWorkspace,
         /// Original bounded source admission policy.
         maximum_source_bytes: SourceByteLimit,
+        /// Exact admitted Cargo target key preserved through HIR ownership selection.
+        unit_key: CompilationUnitKeyV2,
     },
     /// Go authority image owned for the driver's borrowed image input.
     Go {
@@ -254,6 +260,21 @@ pub enum PackageAuthorityOwner<'workspace> {
     },
 }
 
+fn rust_cargo_target(
+    unit_key: &CompilationUnitKeyV2,
+) -> Option<backend_frontend_rust::legacy::RustCargoTarget<'_>> {
+    match unit_key {
+        CompilationUnitKeyV2::RustCrate { name, root } => {
+            Some(backend_frontend_rust::legacy::RustCargoTarget {
+                name: name.as_ref(),
+                root: Path::new(root.as_ref()),
+            })
+        }
+        CompilationUnitKeyV2::PackageRoot => None,
+        _ => unreachable!("Rust package authority validates its compilation-unit key"),
+    }
+}
+
 impl PackageAuthorityOwner<'_> {
     /// Borrows this retained authority in the exact shape accepted by the
     /// driver. C/C++ use the exact retained project and selected libclang
@@ -270,19 +291,23 @@ impl PackageAuthorityOwner<'_> {
             Self::Rust {
                 workspace,
                 maximum_source_bytes,
+                unit_key,
                 ..
             } => SemanticAuthorityInput::RustWorkspace {
                 workspace,
                 source_path,
+                target: rust_cargo_target(unit_key),
                 maximum_source_bytes: *maximum_source_bytes,
             },
             Self::RustBorrowed {
                 workspace,
                 maximum_source_bytes,
+                unit_key,
                 ..
             } => SemanticAuthorityInput::RustWorkspace {
                 workspace: *workspace,
                 source_path,
+                target: rust_cargo_target(unit_key),
                 maximum_source_bytes: *maximum_source_bytes,
             },
             Self::Go { image, .. } => SemanticAuthorityInput::Go { image },
@@ -804,7 +829,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         resolved: resolved.as_ref().to_path_buf().into_boxed_path(),
                     });
                 }
-                match request.unit_key {
+                match &request.unit_key {
                     CompilationUnitKeyV2::PackageRoot => {}
                     CompilationUnitKeyV2::RustCrate { root, .. } => {
                         let selected = request.package_root.join(root.as_ref());
@@ -855,6 +880,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         profile: request.profile,
                         workspace,
                         maximum_source_bytes: configuration.maximum_source_bytes,
+                        unit_key: request.unit_key.clone(),
                     }
                 } else {
                     let workspace = RustWorkspace::open_with_features_and_metadata_policy(
@@ -879,6 +905,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         profile: request.profile,
                         workspace,
                         maximum_source_bytes: configuration.maximum_source_bytes,
+                        unit_key: request.unit_key.clone(),
                     }
                 }
             }
@@ -972,15 +999,22 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                     name: relative,
                     bytes: request.source,
                 }];
+                let captured_sourcepath = request
+                    .java_sourcepath
+                    .iter()
+                    .copied()
+                    .filter(|dependency| dependency.name != relative)
+                    .collect::<Vec<_>>();
                 let mut image = Vec::new();
                 session
-                    .image(
+                    .image_with_captured_sourcepath(
                         configuration.toolchain,
                         HarnessRequest {
                             sources: &source,
                             classpath: configuration.classpath,
                             release: profile,
                         },
+                        &captured_sourcepath,
                         &mut image,
                     )
                     .map_err(PackageAuthorityError::JavaHarness)?;
@@ -1420,6 +1454,18 @@ pub enum PackageAuthorityError {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn rust_crate_authority_forwards_exact_cargo_target_name_and_root() {
+        let key = CompilationUnitKeyV2::RustCrate {
+            name: "ryu-bench".into(),
+            root: "benches/bench.rs".into(),
+        };
+        let target = rust_cargo_target(&key).expect("crate key carries target identity");
+        assert_eq!(target.name, "ryu-bench");
+        assert_eq!(target.root, std::path::Path::new("benches/bench.rs"));
+        assert!(rust_cargo_target(&CompilationUnitKeyV2::PackageRoot).is_none());
+    }
+
+    #[test]
     fn go_native_module_requirement_cannot_fall_back_to_an_older_profile() {
         use backend_semantic::vocabulary::{GoVersion, LanguageProfile};
         let go125 = LanguageProfile::Go(GoVersion::Go125);
@@ -1556,6 +1602,7 @@ mod tests {
             package_root: &root,
             source_path: &source_path,
             source,
+            java_sourcepath: &[],
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::Go(GoVersion::Go125),
             toolchain: ToolchainSelection::ResolvedNative(go_toolchain()),
@@ -1594,6 +1641,7 @@ mod tests {
             package_root: &root,
             source_path: &entry,
             source: b"int main(void) { return 0; }",
+            java_sourcepath: &[],
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::C(CStandard::C11),
             toolchain: ToolchainSelection::ResolvedNative(clang_toolchain()),
@@ -1622,6 +1670,7 @@ mod tests {
             package_root: Path::new("/packages/example"),
             source_path: Path::new("/packages/example/main.c"),
             source: b"int main(void) { return 0; }",
+            java_sourcepath: &[],
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::C(CStandard::C11),
             toolchain: ToolchainSelection::ResolvedNative(clang_toolchain()),
@@ -1651,6 +1700,7 @@ mod tests {
             package_root: Path::new("/packages/example"),
             source_path: Path::new("/packages/example/Library.cs"),
             source: b"public sealed class Library {}",
+            java_sourcepath: &[],
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
             toolchain: ToolchainSelection::ResolvedNative(csharp_toolchain()),

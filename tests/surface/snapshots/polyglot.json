@@ -8,11 +8,11 @@
       "json": {
         "answer": "outline",
         "budget": {
-          "bytes": 4081,
+          "bytes": 7402,
           "bytesPerToken": 4,
-          "estimatedTokens": 1021
+          "estimatedTokens": 1851
         },
-        "declarations": 19,
+        "declarations": 18,
         "detail": "summary",
         "extent": "complete",
         "package": {
@@ -24,6 +24,34 @@
           "shape": "package",
           "trail": "project"
         },
+        "page": {
+          "branch": "4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f",
+          "coverage": [
+            {
+              "lane": "exact",
+              "state": "complete"
+            },
+            {
+              "lane": "names",
+              "state": "complete"
+            },
+            {
+              "lane": "graph",
+              "state": "complete"
+            },
+            {
+              "lane": "semantic",
+              "state": "complete"
+            }
+          ],
+          "limit": 200,
+          "log": "12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760",
+          "more": false,
+          "schema": 3,
+          "sequence": 2,
+          "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
+          "source_root": "af50fd7504c23e7bac575ff6f0df3c688e039b55238761fd03f4ccd485ac3538"
+        },
         "roots": [
           {
             "children": [
@@ -33,25 +61,173 @@
                     "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::f218d50b09b36a0348632bc1e4fe6e3ec60fec02d07fab42f32e18d466daeafc::java.lang.String",
                     "key": "86b3a1cd",
                     "kind": "variable",
-                    "name": "java.lang.String"
+                    "name": "java.lang.String",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        134,
+                        179,
+                        161,
+                        205,
+                        36,
+                        151,
+                        15,
+                        148,
+                        225,
+                        166,
+                        223,
+                        167,
+                        166,
+                        92,
+                        63,
+                        132,
+                        89,
+                        202,
+                        70,
+                        247,
+                        236,
+                        180,
+                        120,
+                        115,
+                        223,
+                        242,
+                        170,
+                        218,
+                        178,
+                        119,
+                        118,
+                        231
+                      ]
+                    }
                   }
                 ],
                 "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6e8790ddc2dd39caf6365bc29f0ad1f1d01d6469f926d32592768321a7b34980::language",
                 "key": "f71a2950",
-                "kind": "function",
-                "name": "language"
+                "kind": "method",
+                "name": "language",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    247,
+                    26,
+                    41,
+                    80,
+                    193,
+                    240,
+                    139,
+                    217,
+                    223,
+                    33,
+                    117,
+                    86,
+                    179,
+                    42,
+                    128,
+                    127,
+                    179,
+                    161,
+                    135,
+                    63,
+                    78,
+                    238,
+                    33,
+                    63,
+                    110,
+                    47,
+                    246,
+                    80,
+                    114,
+                    45,
+                    33,
+                    186
+                  ]
+                }
               },
               {
                 "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::7c477c80b27a745b2b757f73d6002f045337f69e8da027b97d0663a19de55565::<init>",
                 "key": "36995985",
-                "kind": "function",
-                "name": "<init>"
+                "kind": "method",
+                "name": "<init>",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    54,
+                    153,
+                    89,
+                    133,
+                    88,
+                    75,
+                    206,
+                    29,
+                    26,
+                    22,
+                    58,
+                    20,
+                    209,
+                    219,
+                    194,
+                    14,
+                    112,
+                    193,
+                    14,
+                    255,
+                    42,
+                    191,
+                    57,
+                    172,
+                    253,
+                    7,
+                    22,
+                    12,
+                    197,
+                    10,
+                    213,
+                    204
+                  ]
+                }
               }
             ],
             "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::14df8e6d1fd4b1c5d6d2eb7562af648797e58489b4264de96595fcdf97ef2ab7::Duke",
             "key": "c0c37545",
-            "kind": "struct",
-            "name": "Duke"
+            "kind": "class",
+            "name": "Duke",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                192,
+                195,
+                117,
+                69,
+                22,
+                146,
+                177,
+                205,
+                135,
+                135,
+                21,
+                13,
+                216,
+                229,
+                79,
+                72,
+                82,
+                162,
+                95,
+                126,
+                238,
+                68,
+                200,
+                97,
+                31,
+                63,
+                21,
+                186,
+                39,
+                168,
+                124,
+                141
+              ]
+            }
           },
           {
             "children": [
@@ -61,19 +237,130 @@
                     "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::78eb7eb2e97460b2df61a482670fec9c9650e8ddbc168f82fb8a742146f95646::string",
                     "key": "39d7fc56",
                     "kind": "variable",
-                    "name": "string"
+                    "name": "string",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        57,
+                        215,
+                        252,
+                        86,
+                        87,
+                        47,
+                        16,
+                        62,
+                        227,
+                        55,
+                        27,
+                        9,
+                        9,
+                        32,
+                        123,
+                        102,
+                        186,
+                        51,
+                        241,
+                        114,
+                        255,
+                        24,
+                        203,
+                        134,
+                        48,
+                        123,
+                        114,
+                        235,
+                        51,
+                        205,
+                        41,
+                        226
+                      ]
+                    }
                   }
                 ],
                 "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::537c4870565c4938eaa2c7d92fd0f14328f2f9b213259d4064e735270864b274::Language",
                 "key": "ce3210be",
-                "kind": "function",
-                "name": "Language"
+                "kind": "method",
+                "name": "Language",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    206,
+                    50,
+                    16,
+                    190,
+                    176,
+                    167,
+                    146,
+                    179,
+                    1,
+                    229,
+                    101,
+                    28,
+                    187,
+                    110,
+                    103,
+                    131,
+                    152,
+                    150,
+                    54,
+                    152,
+                    75,
+                    124,
+                    55,
+                    209,
+                    167,
+                    90,
+                    44,
+                    131,
+                    235,
+                    237,
+                    223,
+                    97
+                  ]
+                }
               }
             ],
             "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::9353b5e09e4c927e31ad6d6f0210e16c5dc0055e332bcddbd7c1f84974197d02::Anders",
             "key": "d5d356dd",
-            "kind": "struct",
-            "name": "Anders"
+            "kind": "class",
+            "name": "Anders",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                213,
+                211,
+                86,
+                221,
+                49,
+                149,
+                181,
+                197,
+                127,
+                110,
+                192,
+                109,
+                155,
+                159,
+                101,
+                106,
+                21,
+                213,
+                195,
+                69,
+                116,
+                243,
+                158,
+                26,
+                155,
+                112,
+                65,
+                187,
+                39,
+                116,
+                154,
+                122
+              ]
+            }
           },
           {
             "children": [
@@ -83,33 +370,218 @@
                     "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::648281f6edf9643f51aee2934716454117c85fde0b657fcb74283e59bdf4934b::language",
                     "key": "bc8e5613",
                     "kind": "variable",
-                    "name": "language"
+                    "name": "language",
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        188,
+                        142,
+                        86,
+                        19,
+                        119,
+                        49,
+                        33,
+                        173,
+                        216,
+                        120,
+                        192,
+                        96,
+                        164,
+                        191,
+                        107,
+                        96,
+                        27,
+                        209,
+                        76,
+                        86,
+                        41,
+                        33,
+                        172,
+                        83,
+                        152,
+                        219,
+                        95,
+                        209,
+                        202,
+                        130,
+                        31,
+                        129
+                      ]
+                    }
                   }
                 ],
                 "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::39ee5dde14bfc4ee7d64692b95c404eef0e21e7a6fa75125d3223dd74e29e75e::language",
                 "key": "6832c672",
-                "kind": "function",
-                "name": "language"
+                "kind": "method",
+                "name": "language",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    104,
+                    50,
+                    198,
+                    114,
+                    28,
+                    35,
+                    171,
+                    166,
+                    70,
+                    25,
+                    45,
+                    226,
+                    248,
+                    183,
+                    98,
+                    62,
+                    249,
+                    15,
+                    215,
+                    235,
+                    34,
+                    68,
+                    62,
+                    242,
+                    121,
+                    156,
+                    252,
+                    239,
+                    102,
+                    124,
+                    149,
+                    39
+                  ]
+                }
               }
             ],
             "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6810d146dca47541fd405bff629354dd67646b8cce1912abaef0052dbf6433f5::Bjarne",
             "key": "6b232e6a",
             "kind": "struct",
-            "name": "Bjarne"
+            "name": "Bjarne",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                107,
+                35,
+                46,
+                106,
+                146,
+                238,
+                100,
+                47,
+                255,
+                176,
+                23,
+                249,
+                162,
+                135,
+                206,
+                28,
+                205,
+                58,
+                213,
+                136,
+                65,
+                107,
+                11,
+                218,
+                121,
+                150,
+                15,
+                157,
+                38,
+                169,
+                69,
+                11
+              ]
+            }
           },
           {
             "children": [
               {
-                "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::0353c8546b7dcc9eb61f7437daf8e171fb9b85b48bd2b6938f08b6364d666d69::_",
-                "key": "10b05a1a",
+                "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6d1a79480e49430ecac9bd290a27d0f0fb9b85b48bd2b6938f08b6364d666d69::_",
+                "key": "1b44036a",
                 "kind": "variable",
-                "name": "_"
+                "name": "_",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    27,
+                    68,
+                    3,
+                    106,
+                    233,
+                    218,
+                    66,
+                    123,
+                    16,
+                    215,
+                    10,
+                    185,
+                    45,
+                    159,
+                    117,
+                    99,
+                    54,
+                    170,
+                    225,
+                    53,
+                    62,
+                    36,
+                    15,
+                    84,
+                    145,
+                    192,
+                    193,
+                    114,
+                    151,
+                    254,
+                    60,
+                    206
+                  ]
+                }
               }
             ],
-            "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::9eee4f803fd11b29079f40c668c96ca0fa48dc32b53ad946b94d3ec159c74445::Gopher",
-            "key": "2b29681e",
+            "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6146df368b528e088137e9ac48a79827fa48dc32b53ad946b94d3ec159c74445::Gopher",
+            "key": "2f0ecb47",
             "kind": "function",
-            "name": "Gopher"
+            "name": "Gopher",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                47,
+                14,
+                203,
+                71,
+                108,
+                66,
+                149,
+                112,
+                66,
+                106,
+                26,
+                120,
+                226,
+                189,
+                46,
+                6,
+                164,
+                40,
+                211,
+                192,
+                133,
+                40,
+                13,
+                3,
+                252,
+                234,
+                101,
+                23,
+                41,
+                46,
+                6,
+                50
+              ]
+            }
           },
           {
             "children": [
@@ -117,13 +589,87 @@
                 "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::4c6611a46a2a8e7fee449668c24f600efa89ab1d4d68c85cae005527c783bb4c::ferris",
                 "key": "bf0b54f4",
                 "kind": "variable",
-                "name": "ferris"
+                "name": "ferris",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    191,
+                    11,
+                    84,
+                    244,
+                    199,
+                    132,
+                    137,
+                    77,
+                    33,
+                    79,
+                    101,
+                    164,
+                    179,
+                    25,
+                    204,
+                    87,
+                    127,
+                    14,
+                    142,
+                    213,
+                    38,
+                    165,
+                    185,
+                    102,
+                    6,
+                    156,
+                    220,
+                    147,
+                    21,
+                    14,
+                    170,
+                    67
+                  ]
+                }
               }
             ],
             "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::ef50602bb73121801eebfb4a0bdf09fb05c9af6f8f13ef9eb04d0be5012fcabf::ferris",
             "key": "6aa95e91",
             "kind": "function",
-            "name": "ferris"
+            "name": "ferris",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                106,
+                169,
+                94,
+                145,
+                29,
+                227,
+                132,
+                22,
+                176,
+                237,
+                94,
+                28,
+                238,
+                106,
+                9,
+                223,
+                127,
+                72,
+                118,
+                43,
+                211,
+                97,
+                167,
+                46,
+                250,
+                110,
+                67,
+                102,
+                84,
+                9,
+                158,
+                154
+              ]
+            }
           },
           {
             "children": [
@@ -131,33 +677,173 @@
                 "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::88e50d81b3304c02d18ca73922c1b5e5ac067f0ee9079dfdc60baa58175bd961::monty",
                 "key": "1f65ca58",
                 "kind": "variable",
-                "name": "monty"
+                "name": "monty",
+                "semantic_data": {
+                  "kind": "selected-symbol-id",
+                  "value": [
+                    31,
+                    101,
+                    202,
+                    88,
+                    48,
+                    228,
+                    23,
+                    20,
+                    106,
+                    18,
+                    235,
+                    200,
+                    22,
+                    39,
+                    79,
+                    57,
+                    171,
+                    210,
+                    146,
+                    167,
+                    90,
+                    132,
+                    86,
+                    157,
+                    107,
+                    153,
+                    145,
+                    251,
+                    163,
+                    105,
+                    179,
+                    233
+                  ]
+                }
               }
             ],
             "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::71b7a4f4aa3a7687c9a98a206360c8a7414a3ddb8a438bf15d225110ea63525f::monty",
             "key": "3a2f153c",
             "kind": "function",
-            "name": "monty"
+            "name": "monty",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                58,
+                47,
+                21,
+                60,
+                166,
+                123,
+                159,
+                235,
+                226,
+                87,
+                129,
+                129,
+                243,
+                132,
+                105,
+                147,
+                68,
+                194,
+                7,
+                166,
+                29,
+                166,
+                10,
+                165,
+                28,
+                32,
+                30,
+                61,
+                5,
+                170,
+                236,
+                211
+              ]
+            }
           },
           {
-            "children": [
-              {
-                "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::5e8bf980bc2fcf2a3f6de632cf633729a274bd4d66c3571983ad1f5cf2548fdf::turing",
-                "key": "9a8352ec",
-                "kind": "variable",
-                "name": "turing"
-              }
-            ],
-            "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::cf56b7632af29977342a6b4a3d3430a52a203fea468161eb2861a8f800a99a0e::turing",
+            "coordinate": "/tmp/nudox-surface/polyglot/project::src/main.ts:2::turing",
             "key": "43f36291",
             "kind": "function",
-            "name": "turing"
+            "name": "turing",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                67,
+                243,
+                98,
+                145,
+                93,
+                78,
+                88,
+                133,
+                223,
+                13,
+                185,
+                53,
+                121,
+                145,
+                103,
+                43,
+                170,
+                121,
+                88,
+                107,
+                53,
+                147,
+                98,
+                169,
+                97,
+                207,
+                92,
+                77,
+                120,
+                32,
+                167,
+                5
+              ]
+            }
           },
           {
             "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::983eeae49997d5dec76877a35a6153223e3355dca14774d437584687bceff42b::string_view",
             "key": "d112b5a2",
             "kind": "module",
-            "name": "string_view"
+            "name": "string_view",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                209,
+                18,
+                181,
+                162,
+                47,
+                254,
+                167,
+                117,
+                155,
+                120,
+                49,
+                19,
+                63,
+                129,
+                100,
+                42,
+                207,
+                6,
+                92,
+                152,
+                226,
+                18,
+                178,
+                230,
+                176,
+                100,
+                206,
+                77,
+                41,
+                188,
+                228,
+                97
+              ]
+            }
           }
         ],
         "unnamed": 0
@@ -168,9 +854,9 @@
       "json": {
         "answer": "shelf",
         "budget": {
-          "bytes": 376,
+          "bytes": 407,
           "bytesPerToken": 4,
-          "estimatedTokens": 94
+          "estimatedTokens": 102
         },
         "detail": "summary",
         "projects": [
@@ -188,7 +874,9 @@
             "readiness": "ready"
           }
         ],
-        "revision": "dd43357f"
+        "readiness": "ready",
+        "revision": "af50fd75",
+        "rows": 24
       }
     },
     "cli search Anders": {
@@ -196,9 +884,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 950,
+          "bytes": 922,
           "bytesPerToken": 4,
-          "estimatedTokens": 238
+          "estimatedTokens": 231
         },
         "coverage": [
           {
@@ -215,8 +903,7 @@
           },
           {
             "lane": "semantic",
-            "reason": "unconfigured",
-            "state": "unavailable"
+            "state": "complete"
           }
         ],
         "detail": "summary",
@@ -271,9 +958,9 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/Main.cs:1 › Anders"
+              "trail": "project \u203a src/Main.cs:1 \u203a Anders"
             },
-            "kind": "struct",
+            "kind": "class",
             "language": "csharp",
             "score": 4294967295,
             "state": "ready"
@@ -290,9 +977,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 944,
+          "bytes": 917,
           "bytesPerToken": 4,
-          "estimatedTokens": 236
+          "estimatedTokens": 230
         },
         "coverage": [
           {
@@ -309,8 +996,7 @@
           },
           {
             "lane": "semantic",
-            "reason": "unconfigured",
-            "state": "unavailable"
+            "state": "complete"
           }
         ],
         "detail": "summary",
@@ -365,7 +1051,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/main.cpp:3 › Bjarne"
+              "trail": "project \u203a src/main.cpp:3 \u203a Bjarne"
             },
             "kind": "struct",
             "language": "cpp",
@@ -384,9 +1070,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 935,
+          "bytes": 907,
           "bytesPerToken": 4,
-          "estimatedTokens": 234
+          "estimatedTokens": 227
         },
         "coverage": [
           {
@@ -403,8 +1089,7 @@
           },
           {
             "lane": "semantic",
-            "reason": "unconfigured",
-            "state": "unavailable"
+            "state": "complete"
           }
         ],
         "detail": "summary",
@@ -459,9 +1144,9 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/Duke.java:1 › Duke"
+              "trail": "project \u203a src/Duke.java:1 \u203a Duke"
             },
-            "kind": "struct",
+            "kind": "class",
             "language": "java",
             "score": 4294967295,
             "state": "ready"
@@ -478,9 +1163,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 985,
+          "bytes": 953,
           "bytesPerToken": 4,
-          "estimatedTokens": 247
+          "estimatedTokens": 239
         },
         "coverage": [
           {
@@ -497,8 +1182,7 @@
           },
           {
             "lane": "semantic",
-            "reason": "unconfigured",
-            "state": "unavailable"
+            "state": "complete"
           }
         ],
         "detail": "summary",
@@ -508,7 +1192,7 @@
         "records": [
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::9eee4f803fd11b29079f40c668c96ca0fa48dc32b53ad946b94d3ec159c74445::Gopher",
+              "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6146df368b528e088137e9ac48a79827fa48dc32b53ad946b94d3ec159c74445::Gopher",
               "line": 4,
               "name": "Gopher",
               "path": "go/main.go",
@@ -518,42 +1202,42 @@
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  43,
-                  41,
-                  104,
-                  30,
-                  97,
-                  16,
-                  37,
-                  252,
-                  15,
-                  219,
-                  153,
-                  255,
-                  28,
-                  168,
-                  192,
-                  236,
-                  3,
-                  229,
-                  40,
-                  184,
-                  119,
-                  44,
-                  44,
-                  233,
-                  109,
-                  236,
+                  47,
                   14,
-                  225,
-                  182,
-                  130,
-                  145,
-                  45
+                  203,
+                  71,
+                  108,
+                  66,
+                  149,
+                  112,
+                  66,
+                  106,
+                  26,
+                  120,
+                  226,
+                  189,
+                  46,
+                  6,
+                  164,
+                  40,
+                  211,
+                  192,
+                  133,
+                  40,
+                  13,
+                  3,
+                  252,
+                  234,
+                  101,
+                  23,
+                  41,
+                  46,
+                  6,
+                  50
                 ]
               },
               "shape": "semantic",
-              "trail": "project › go/main.go:4 › Gopher"
+              "trail": "project \u203a go/main.go:4 \u203a Gopher"
             },
             "kind": "function",
             "language": "go",
@@ -573,9 +1257,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 982,
+          "bytes": 955,
           "bytesPerToken": 4,
-          "estimatedTokens": 246
+          "estimatedTokens": 239
         },
         "coverage": [
           {
@@ -592,8 +1276,7 @@
           },
           {
             "lane": "semantic",
-            "reason": "unconfigured",
-            "state": "unavailable"
+            "state": "complete"
           }
         ],
         "detail": "summary",
@@ -648,7 +1331,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/lib.rs:2 › ferris"
+              "trail": "project \u203a src/lib.rs:2 \u203a ferris"
             },
             "kind": "function",
             "language": "rust",
@@ -668,9 +1351,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 982,
+          "bytes": 955,
           "bytesPerToken": 4,
-          "estimatedTokens": 246
+          "estimatedTokens": 239
         },
         "coverage": [
           {
@@ -687,8 +1370,7 @@
           },
           {
             "lane": "semantic",
-            "reason": "unconfigured",
-            "state": "unavailable"
+            "state": "complete"
           }
         ],
         "detail": "summary",
@@ -743,7 +1425,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project › src/main.py:1 › monty"
+              "trail": "project \u203a src/main.py:1 \u203a monty"
             },
             "kind": "function",
             "language": "python",
@@ -763,9 +1445,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 994,
+          "bytes": 909,
           "bytesPerToken": 4,
-          "estimatedTokens": 249
+          "estimatedTokens": 228
         },
         "coverage": [
           {
@@ -782,8 +1464,7 @@
           },
           {
             "lane": "semantic",
-            "reason": "unconfigured",
-            "state": "unavailable"
+            "state": "complete"
           }
         ],
         "detail": "summary",
@@ -793,7 +1474,7 @@
         "records": [
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::cf56b7632af29977342a6b4a3d3430a52a203fea468161eb2861a8f800a99a0e::turing",
+              "coordinate": "/tmp/nudox-surface/polyglot/project::src/main.ts:2::turing",
               "line": 2,
               "name": "turing",
               "path": "src/main.ts",
@@ -837,8 +1518,8 @@
                   5
                 ]
               },
-              "shape": "semantic",
-              "trail": "project › src/main.ts:2 › turing"
+              "shape": "declaration",
+              "trail": "project \u203a src/main.ts:2 \u203a turing"
             },
             "kind": "function",
             "language": "typescript",
@@ -865,9 +1546,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 1942,
+                "bytes": 1748,
                 "bytesPerToken": 4,
-                "estimatedTokens": 486,
+                "estimatedTokens": 437,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -878,7 +1559,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓1 names✓1 graph✓1 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `ferris` · function · rust\n  `/tmp/nudox-surface/polyglot/project::semantic::ef50602bb73121801eebfb4a0bdf09fb05c9af6f8f13ef9eb04d0be5012fcabf::ferris`\n1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "text": "~lanes exact\u27131 names\u27131 graph\u27131 semantic\u27131\n\u2022 `ferris` \u00b7 function \u00b7 rust\n  `/tmp/nudox-surface/polyglot/project::semantic::ef50602bb73121801eebfb4a0bdf09fb05c9af6f8f13ef9eb04d0be5012fcabf::ferris`\n1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],
@@ -886,9 +1567,9 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 982,
+                "bytes": 955,
                 "bytesPerToken": 4,
-                "estimatedTokens": 246
+                "estimatedTokens": 239
               },
               "coverage": [
                 {
@@ -905,8 +1586,7 @@
                 },
                 {
                   "lane": "semantic",
-                  "reason": "unconfigured",
-                  "state": "unavailable"
+                  "state": "complete"
                 }
               ],
               "detail": "summary",
@@ -961,7 +1641,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project › src/lib.rs:2 › ferris"
+                    "trail": "project \u203a src/lib.rs:2 \u203a ferris"
                   },
                   "kind": "function",
                   "language": "rust",
@@ -987,9 +1667,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 1943,
+                "bytes": 1744,
                 "bytesPerToken": 4,
-                "estimatedTokens": 486,
+                "estimatedTokens": 436,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -1000,7 +1680,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓1 names✓1 graph✓1 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `Gopher` · function · go\n  `/tmp/nudox-surface/polyglot/project::semantic::9eee4f803fd11b29079f40c668c96ca0fa48dc32b53ad946b94d3ec159c74445::Gopher`\n1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
+                "text": "~lanes exact\u27131 names\u27131 graph\u27131 semantic\u27131\n\u2022 `Gopher` \u00b7 function \u00b7 go\n  `/tmp/nudox-surface/polyglot/project::semantic::6146df368b528e088137e9ac48a79827fa48dc32b53ad946b94d3ec159c74445::Gopher`\n1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],
@@ -1008,9 +1688,9 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 985,
+                "bytes": 953,
                 "bytesPerToken": 4,
-                "estimatedTokens": 247
+                "estimatedTokens": 239
               },
               "coverage": [
                 {
@@ -1027,8 +1707,7 @@
                 },
                 {
                   "lane": "semantic",
-                  "reason": "unconfigured",
-                  "state": "unavailable"
+                  "state": "complete"
                 }
               ],
               "detail": "summary",
@@ -1038,7 +1717,7 @@
               "records": [
                 {
                   "identity": {
-                    "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::9eee4f803fd11b29079f40c668c96ca0fa48dc32b53ad946b94d3ec159c74445::Gopher",
+                    "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6146df368b528e088137e9ac48a79827fa48dc32b53ad946b94d3ec159c74445::Gopher",
                     "line": 4,
                     "name": "Gopher",
                     "path": "go/main.go",
@@ -1048,42 +1727,42 @@
                     "semantic_data": {
                       "kind": "selected-symbol-id",
                       "value": [
-                        43,
-                        41,
-                        104,
-                        30,
-                        97,
-                        16,
-                        37,
-                        252,
-                        15,
-                        219,
-                        153,
-                        255,
-                        28,
-                        168,
-                        192,
-                        236,
-                        3,
-                        229,
-                        40,
-                        184,
-                        119,
-                        44,
-                        44,
-                        233,
-                        109,
-                        236,
+                        47,
                         14,
-                        225,
-                        182,
-                        130,
-                        145,
-                        45
+                        203,
+                        71,
+                        108,
+                        66,
+                        149,
+                        112,
+                        66,
+                        106,
+                        26,
+                        120,
+                        226,
+                        189,
+                        46,
+                        6,
+                        164,
+                        40,
+                        211,
+                        192,
+                        133,
+                        40,
+                        13,
+                        3,
+                        252,
+                        234,
+                        101,
+                        23,
+                        41,
+                        46,
+                        6,
+                        50
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project › go/main.go:4 › Gopher"
+                    "trail": "project \u203a go/main.go:4 \u203a Gopher"
                   },
                   "kind": "function",
                   "language": "go",
@@ -1107,9 +1786,9 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 5832,
+                "bytes": 8571,
                 "bytesPerToken": 4,
-                "estimatedTokens": 1458,
+                "estimatedTokens": 2143,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "scope": "complete_jsonrpc_line",
@@ -1120,7 +1799,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/polyglot/project`\n\nƒ Gopher  `go/main.go:4 › Gopher`\n  ▫ _  `_`\nƒ monty  `src/main.py:1 › monty`\n  ▫ monty  `monty`\nƒ turing  `src/main.ts:2 › turing`\n  ▫ turing  `turing`\nƒ ferris  `src/lib.rs:2 › ferris`\n  ▫ ferris  `ferris`\n▣ Bjarne  `src/main.cpp:3 › Bjarne`\n  ƒ language  `src/main.cpp:4 › language`\n    ▫ language  `language`\n▣ Duke  `src/Duke.java:1 › Duke`\n  ƒ <init>  `<init>`\n  ƒ language  `src/Duke.java:2 › language`\n    ▫ java.lang.String  `java.lang.String`\n▦ string_view  `string_view`\n▣ Anders  `src/Main.cs:1 › Anders`\n  ƒ Language  `src/Main.cs:2 › Language`\n    ▫ string  `string`\n19 declaration(s) · complete\n",
+                "text": "# project\n`/tmp/nudox-surface/polyglot/project`\n\n\u25c6 Duke  `src/Duke.java:1 \u203a Duke`\n  \u0192 language  `src/Duke.java:2 \u203a language`\n    \u25ab java.lang.String  `java.lang.String`\n  \u0192 <init>  `<init>`\n\u25c6 Anders  `src/Main.cs:1 \u203a Anders`\n  \u0192 Language  `src/Main.cs:2 \u203a Language`\n    \u25ab string  `string`\n\u25a3 Bjarne  `src/main.cpp:3 \u203a Bjarne`\n  \u0192 language  `src/main.cpp:4 \u203a language`\n    \u25ab language  `language`\n\u0192 Gopher  `go/main.go:4 \u203a Gopher`\n  \u25ab _  `_`\n\u0192 ferris  `src/lib.rs:2 \u203a ferris`\n  \u25ab ferris  `ferris`\n\u0192 monty  `src/main.py:1 \u203a monty`\n  \u25ab monty  `monty`\n\u0192 turing  `src/main.ts:2 \u203a turing`\n\u25a6 string_view  `string_view`\n18 declaration(s) \u00b7 complete\n",
                 "type": "text"
               }
             ],
@@ -1128,11 +1807,11 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytes": 4639,
+                "bytes": 7402,
                 "bytesPerToken": 4,
-                "estimatedTokens": 1160
+                "estimatedTokens": 1851
               },
-              "declarations": 19,
+              "declarations": 18,
               "detail": "summary",
               "extent": "complete",
               "package": {
@@ -1161,8 +1840,7 @@
                   },
                   {
                     "lane": "semantic",
-                    "reason": "unconfigured",
-                    "state": "unavailable"
+                    "state": "complete"
                   }
                 ],
                 "limit": 200,
@@ -1171,120 +1849,184 @@
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "dd43357f79b1ef5ea7df1e4fd34fabec036119528f6ebe433440487c2e42fd59"
+                "source_root": "af50fd7504c23e7bac575ff6f0df3c688e039b55238761fd03f4ccd485ac3538"
               },
               "roots": [
                 {
                   "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::0353c8546b7dcc9eb61f7437daf8e171fb9b85b48bd2b6938f08b6364d666d69::_",
-                      "key": "10b05a1a",
-                      "kind": "variable",
-                      "name": "_"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::9eee4f803fd11b29079f40c668c96ca0fa48dc32b53ad946b94d3ec159c74445::Gopher",
-                  "key": "2b29681e",
-                  "kind": "function",
-                  "name": "Gopher"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::88e50d81b3304c02d18ca73922c1b5e5ac067f0ee9079dfdc60baa58175bd961::monty",
-                      "key": "1f65ca58",
-                      "kind": "variable",
-                      "name": "monty"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::71b7a4f4aa3a7687c9a98a206360c8a7414a3ddb8a438bf15d225110ea63525f::monty",
-                  "key": "3a2f153c",
-                  "kind": "function",
-                  "name": "monty"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::5e8bf980bc2fcf2a3f6de632cf633729a274bd4d66c3571983ad1f5cf2548fdf::turing",
-                      "key": "9a8352ec",
-                      "kind": "variable",
-                      "name": "turing"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::cf56b7632af29977342a6b4a3d3430a52a203fea468161eb2861a8f800a99a0e::turing",
-                  "key": "43f36291",
-                  "kind": "function",
-                  "name": "turing"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::4c6611a46a2a8e7fee449668c24f600efa89ab1d4d68c85cae005527c783bb4c::ferris",
-                      "key": "bf0b54f4",
-                      "kind": "variable",
-                      "name": "ferris"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::ef50602bb73121801eebfb4a0bdf09fb05c9af6f8f13ef9eb04d0be5012fcabf::ferris",
-                  "key": "6aa95e91",
-                  "kind": "function",
-                  "name": "ferris"
-                },
-                {
-                  "children": [
-                    {
-                      "children": [
-                        {
-                          "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::648281f6edf9643f51aee2934716454117c85fde0b657fcb74283e59bdf4934b::language",
-                          "key": "bc8e5613",
-                          "kind": "variable",
-                          "name": "language"
-                        }
-                      ],
-                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::39ee5dde14bfc4ee7d64692b95c404eef0e21e7a6fa75125d3223dd74e29e75e::language",
-                      "key": "6832c672",
-                      "kind": "function",
-                      "name": "language"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6810d146dca47541fd405bff629354dd67646b8cce1912abaef0052dbf6433f5::Bjarne",
-                  "key": "6b232e6a",
-                  "kind": "struct",
-                  "name": "Bjarne"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::7c477c80b27a745b2b757f73d6002f045337f69e8da027b97d0663a19de55565::<init>",
-                      "key": "36995985",
-                      "kind": "function",
-                      "name": "<init>"
-                    },
                     {
                       "children": [
                         {
                           "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::f218d50b09b36a0348632bc1e4fe6e3ec60fec02d07fab42f32e18d466daeafc::java.lang.String",
                           "key": "86b3a1cd",
                           "kind": "variable",
-                          "name": "java.lang.String"
+                          "name": "java.lang.String",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              134,
+                              179,
+                              161,
+                              205,
+                              36,
+                              151,
+                              15,
+                              148,
+                              225,
+                              166,
+                              223,
+                              167,
+                              166,
+                              92,
+                              63,
+                              132,
+                              89,
+                              202,
+                              70,
+                              247,
+                              236,
+                              180,
+                              120,
+                              115,
+                              223,
+                              242,
+                              170,
+                              218,
+                              178,
+                              119,
+                              118,
+                              231
+                            ]
+                          }
                         }
                       ],
                       "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6e8790ddc2dd39caf6365bc29f0ad1f1d01d6469f926d32592768321a7b34980::language",
                       "key": "f71a2950",
-                      "kind": "function",
-                      "name": "language"
+                      "kind": "method",
+                      "name": "language",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          247,
+                          26,
+                          41,
+                          80,
+                          193,
+                          240,
+                          139,
+                          217,
+                          223,
+                          33,
+                          117,
+                          86,
+                          179,
+                          42,
+                          128,
+                          127,
+                          179,
+                          161,
+                          135,
+                          63,
+                          78,
+                          238,
+                          33,
+                          63,
+                          110,
+                          47,
+                          246,
+                          80,
+                          114,
+                          45,
+                          33,
+                          186
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::7c477c80b27a745b2b757f73d6002f045337f69e8da027b97d0663a19de55565::<init>",
+                      "key": "36995985",
+                      "kind": "method",
+                      "name": "<init>",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          54,
+                          153,
+                          89,
+                          133,
+                          88,
+                          75,
+                          206,
+                          29,
+                          26,
+                          22,
+                          58,
+                          20,
+                          209,
+                          219,
+                          194,
+                          14,
+                          112,
+                          193,
+                          14,
+                          255,
+                          42,
+                          191,
+                          57,
+                          172,
+                          253,
+                          7,
+                          22,
+                          12,
+                          197,
+                          10,
+                          213,
+                          204
+                        ]
+                      }
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::14df8e6d1fd4b1c5d6d2eb7562af648797e58489b4264de96595fcdf97ef2ab7::Duke",
                   "key": "c0c37545",
-                  "kind": "struct",
-                  "name": "Duke"
-                },
-                {
-                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::983eeae49997d5dec76877a35a6153223e3355dca14774d437584687bceff42b::string_view",
-                  "key": "d112b5a2",
-                  "kind": "module",
-                  "name": "string_view"
+                  "kind": "class",
+                  "name": "Duke",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      192,
+                      195,
+                      117,
+                      69,
+                      22,
+                      146,
+                      177,
+                      205,
+                      135,
+                      135,
+                      21,
+                      13,
+                      216,
+                      229,
+                      79,
+                      72,
+                      82,
+                      162,
+                      95,
+                      126,
+                      238,
+                      68,
+                      200,
+                      97,
+                      31,
+                      63,
+                      21,
+                      186,
+                      39,
+                      168,
+                      124,
+                      141
+                    ]
+                  }
                 },
                 {
                   "children": [
@@ -1294,19 +2036,613 @@
                           "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::78eb7eb2e97460b2df61a482670fec9c9650e8ddbc168f82fb8a742146f95646::string",
                           "key": "39d7fc56",
                           "kind": "variable",
-                          "name": "string"
+                          "name": "string",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              57,
+                              215,
+                              252,
+                              86,
+                              87,
+                              47,
+                              16,
+                              62,
+                              227,
+                              55,
+                              27,
+                              9,
+                              9,
+                              32,
+                              123,
+                              102,
+                              186,
+                              51,
+                              241,
+                              114,
+                              255,
+                              24,
+                              203,
+                              134,
+                              48,
+                              123,
+                              114,
+                              235,
+                              51,
+                              205,
+                              41,
+                              226
+                            ]
+                          }
                         }
                       ],
                       "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::537c4870565c4938eaa2c7d92fd0f14328f2f9b213259d4064e735270864b274::Language",
                       "key": "ce3210be",
-                      "kind": "function",
-                      "name": "Language"
+                      "kind": "method",
+                      "name": "Language",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          206,
+                          50,
+                          16,
+                          190,
+                          176,
+                          167,
+                          146,
+                          179,
+                          1,
+                          229,
+                          101,
+                          28,
+                          187,
+                          110,
+                          103,
+                          131,
+                          152,
+                          150,
+                          54,
+                          152,
+                          75,
+                          124,
+                          55,
+                          209,
+                          167,
+                          90,
+                          44,
+                          131,
+                          235,
+                          237,
+                          223,
+                          97
+                        ]
+                      }
                     }
                   ],
                   "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::9353b5e09e4c927e31ad6d6f0210e16c5dc0055e332bcddbd7c1f84974197d02::Anders",
                   "key": "d5d356dd",
+                  "kind": "class",
+                  "name": "Anders",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      213,
+                      211,
+                      86,
+                      221,
+                      49,
+                      149,
+                      181,
+                      197,
+                      127,
+                      110,
+                      192,
+                      109,
+                      155,
+                      159,
+                      101,
+                      106,
+                      21,
+                      213,
+                      195,
+                      69,
+                      116,
+                      243,
+                      158,
+                      26,
+                      155,
+                      112,
+                      65,
+                      187,
+                      39,
+                      116,
+                      154,
+                      122
+                    ]
+                  }
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::648281f6edf9643f51aee2934716454117c85fde0b657fcb74283e59bdf4934b::language",
+                          "key": "bc8e5613",
+                          "kind": "variable",
+                          "name": "language",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              188,
+                              142,
+                              86,
+                              19,
+                              119,
+                              49,
+                              33,
+                              173,
+                              216,
+                              120,
+                              192,
+                              96,
+                              164,
+                              191,
+                              107,
+                              96,
+                              27,
+                              209,
+                              76,
+                              86,
+                              41,
+                              33,
+                              172,
+                              83,
+                              152,
+                              219,
+                              95,
+                              209,
+                              202,
+                              130,
+                              31,
+                              129
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::39ee5dde14bfc4ee7d64692b95c404eef0e21e7a6fa75125d3223dd74e29e75e::language",
+                      "key": "6832c672",
+                      "kind": "method",
+                      "name": "language",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          104,
+                          50,
+                          198,
+                          114,
+                          28,
+                          35,
+                          171,
+                          166,
+                          70,
+                          25,
+                          45,
+                          226,
+                          248,
+                          183,
+                          98,
+                          62,
+                          249,
+                          15,
+                          215,
+                          235,
+                          34,
+                          68,
+                          62,
+                          242,
+                          121,
+                          156,
+                          252,
+                          239,
+                          102,
+                          124,
+                          149,
+                          39
+                        ]
+                      }
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6810d146dca47541fd405bff629354dd67646b8cce1912abaef0052dbf6433f5::Bjarne",
+                  "key": "6b232e6a",
                   "kind": "struct",
-                  "name": "Anders"
+                  "name": "Bjarne",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      107,
+                      35,
+                      46,
+                      106,
+                      146,
+                      238,
+                      100,
+                      47,
+                      255,
+                      176,
+                      23,
+                      249,
+                      162,
+                      135,
+                      206,
+                      28,
+                      205,
+                      58,
+                      213,
+                      136,
+                      65,
+                      107,
+                      11,
+                      218,
+                      121,
+                      150,
+                      15,
+                      157,
+                      38,
+                      169,
+                      69,
+                      11
+                    ]
+                  }
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6d1a79480e49430ecac9bd290a27d0f0fb9b85b48bd2b6938f08b6364d666d69::_",
+                      "key": "1b44036a",
+                      "kind": "variable",
+                      "name": "_",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          27,
+                          68,
+                          3,
+                          106,
+                          233,
+                          218,
+                          66,
+                          123,
+                          16,
+                          215,
+                          10,
+                          185,
+                          45,
+                          159,
+                          117,
+                          99,
+                          54,
+                          170,
+                          225,
+                          53,
+                          62,
+                          36,
+                          15,
+                          84,
+                          145,
+                          192,
+                          193,
+                          114,
+                          151,
+                          254,
+                          60,
+                          206
+                        ]
+                      }
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6146df368b528e088137e9ac48a79827fa48dc32b53ad946b94d3ec159c74445::Gopher",
+                  "key": "2f0ecb47",
+                  "kind": "function",
+                  "name": "Gopher",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      47,
+                      14,
+                      203,
+                      71,
+                      108,
+                      66,
+                      149,
+                      112,
+                      66,
+                      106,
+                      26,
+                      120,
+                      226,
+                      189,
+                      46,
+                      6,
+                      164,
+                      40,
+                      211,
+                      192,
+                      133,
+                      40,
+                      13,
+                      3,
+                      252,
+                      234,
+                      101,
+                      23,
+                      41,
+                      46,
+                      6,
+                      50
+                    ]
+                  }
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::4c6611a46a2a8e7fee449668c24f600efa89ab1d4d68c85cae005527c783bb4c::ferris",
+                      "key": "bf0b54f4",
+                      "kind": "variable",
+                      "name": "ferris",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          191,
+                          11,
+                          84,
+                          244,
+                          199,
+                          132,
+                          137,
+                          77,
+                          33,
+                          79,
+                          101,
+                          164,
+                          179,
+                          25,
+                          204,
+                          87,
+                          127,
+                          14,
+                          142,
+                          213,
+                          38,
+                          165,
+                          185,
+                          102,
+                          6,
+                          156,
+                          220,
+                          147,
+                          21,
+                          14,
+                          170,
+                          67
+                        ]
+                      }
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::ef50602bb73121801eebfb4a0bdf09fb05c9af6f8f13ef9eb04d0be5012fcabf::ferris",
+                  "key": "6aa95e91",
+                  "kind": "function",
+                  "name": "ferris",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      106,
+                      169,
+                      94,
+                      145,
+                      29,
+                      227,
+                      132,
+                      22,
+                      176,
+                      237,
+                      94,
+                      28,
+                      238,
+                      106,
+                      9,
+                      223,
+                      127,
+                      72,
+                      118,
+                      43,
+                      211,
+                      97,
+                      167,
+                      46,
+                      250,
+                      110,
+                      67,
+                      102,
+                      84,
+                      9,
+                      158,
+                      154
+                    ]
+                  }
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::88e50d81b3304c02d18ca73922c1b5e5ac067f0ee9079dfdc60baa58175bd961::monty",
+                      "key": "1f65ca58",
+                      "kind": "variable",
+                      "name": "monty",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          31,
+                          101,
+                          202,
+                          88,
+                          48,
+                          228,
+                          23,
+                          20,
+                          106,
+                          18,
+                          235,
+                          200,
+                          22,
+                          39,
+                          79,
+                          57,
+                          171,
+                          210,
+                          146,
+                          167,
+                          90,
+                          132,
+                          86,
+                          157,
+                          107,
+                          153,
+                          145,
+                          251,
+                          163,
+                          105,
+                          179,
+                          233
+                        ]
+                      }
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::71b7a4f4aa3a7687c9a98a206360c8a7414a3ddb8a438bf15d225110ea63525f::monty",
+                  "key": "3a2f153c",
+                  "kind": "function",
+                  "name": "monty",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      58,
+                      47,
+                      21,
+                      60,
+                      166,
+                      123,
+                      159,
+                      235,
+                      226,
+                      87,
+                      129,
+                      129,
+                      243,
+                      132,
+                      105,
+                      147,
+                      68,
+                      194,
+                      7,
+                      166,
+                      29,
+                      166,
+                      10,
+                      165,
+                      28,
+                      32,
+                      30,
+                      61,
+                      5,
+                      170,
+                      236,
+                      211
+                    ]
+                  }
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::src/main.ts:2::turing",
+                  "key": "43f36291",
+                  "kind": "function",
+                  "name": "turing",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      67,
+                      243,
+                      98,
+                      145,
+                      93,
+                      78,
+                      88,
+                      133,
+                      223,
+                      13,
+                      185,
+                      53,
+                      121,
+                      145,
+                      103,
+                      43,
+                      170,
+                      121,
+                      88,
+                      107,
+                      53,
+                      147,
+                      98,
+                      169,
+                      97,
+                      207,
+                      92,
+                      77,
+                      120,
+                      32,
+                      167,
+                      5
+                    ]
+                  }
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::983eeae49997d5dec76877a35a6153223e3355dca14774d437584687bceff42b::string_view",
+                  "key": "d112b5a2",
+                  "kind": "module",
+                  "name": "string_view",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      209,
+                      18,
+                      181,
+                      162,
+                      47,
+                      254,
+                      167,
+                      117,
+                      155,
+                      120,
+                      49,
+                      19,
+                      63,
+                      129,
+                      100,
+                      42,
+                      207,
+                      6,
+                      92,
+                      152,
+                      226,
+                      18,
+                      178,
+                      230,
+                      176,
+                      100,
+                      206,
+                      77,
+                      41,
+                      188,
+                      228,
+                      97
+                    ]
+                  }
                 }
               ],
               "unnamed": 0
@@ -1316,6 +2652,7 @@
       ],
       "exit": 0,
       "tools": [
+        "backend.call",
         "backend.document",
         "backend.graph",
         "backend.index",

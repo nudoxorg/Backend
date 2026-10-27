@@ -17,11 +17,14 @@ use super::{
 #[cfg(test)]
 use backend_engine::builtin::SemanticPublicationClaim;
 use backend_engine::builtin::{
-    ProductSemanticCaptureOutcome, ProductSemanticCaptureRecord, ProductSemanticCaptureRelation,
-    ProductSemanticCaptureRootSchema, ProductSemanticPublicationKey,
-    ProductSemanticPublicationRecord, ProductSemanticPublicationRelation,
-    ProductSourceFileFactsRecord, ProductSourceFileFactsRelation, ProductSourceFileFactsRootSchema,
-    SemanticPublicationVersion, SemanticSourceCapture, admit_product_source_file_facts,
+    NativePathDisposition, NativePathRefusal, ProductNativeFrontierRecord,
+    ProductNativeFrontierRelation, ProductNativeFrontierRootSchema, ProductSemanticCaptureOutcome,
+    ProductSemanticCaptureRecord, ProductSemanticCaptureRelation, ProductSemanticCaptureRootSchema,
+    ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
+    ProductSemanticPublicationRelation, ProductSourceFileFactsRecord,
+    ProductSourceFileFactsRelation, ProductSourceFileFactsRootSchema, SemanticPublicationVersion,
+    SemanticSourceCapture, admit_product_source_file_facts, product_native_frontier_record_key,
+    product_native_frontier_relation, product_native_frontier_root_object,
     product_source_file_facts_record_key, product_source_file_facts_relation,
     product_source_file_facts_root_object, semantic_capture_relation,
     semantic_capture_root_from_object, semantic_capture_root_object,
@@ -456,6 +459,7 @@ pub struct BuiltinIntent {
     semantic_changes: Box<[BuiltinSemanticChange]>,
     capture_changes: Box<[BuiltinCaptureChange]>,
     source_facts_changes: Box<[BuiltinSourceFactsChange]>,
+    native_frontier_changes: Box<[BuiltinNativeFrontierChange]>,
     semantic_selection: Option<BuiltinSemanticSelectionIntent>,
     operation_key: Option<[u8; 32]>,
     capture_basis: Option<BuiltinCaptureBasis>,
@@ -479,6 +483,7 @@ pub(super) struct BuiltinSemanticChange {
 /// has derived the immutable source transition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct BuiltinCaptureChange {
+    pub(super) cargo_target: Option<backend_library::CargoTargetScope>,
     pub(super) key: ProductSemanticPublicationKey,
     pub(super) expected: Option<ProductSemanticCaptureRecord>,
     pub(super) capture: SemanticSourceCapture,
@@ -579,6 +584,14 @@ pub(super) struct BuiltinSourceFactsChange {
     pub(super) after: Option<ProductSourceFileFactsRecord>,
 }
 
+/// Exact before/after evidence for one native profile frontier row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct BuiltinNativeFrontierChange {
+    pub(super) key: [u8; 32],
+    pub(super) expected: Option<ProductNativeFrontierRecord>,
+    pub(super) after: Option<ProductNativeFrontierRecord>,
+}
+
 /// Exact before/after evidence for changing the selected compiler generation.
 ///
 /// The immutable history key proves which compiler publication was requested;
@@ -613,6 +626,8 @@ impl BuiltinIntent {
     /// their self-contained before-root receipt does not identify the selected
     /// base descriptor.
     const CAPTURE_BASIS_VERSION: u8 = 9;
+    const NATIVE_FRONTIER_VERSION: u8 = 10;
+    const CARGO_TARGET_VERSION: u8 = 11;
     const ADD: u8 = 1;
     const REMOVE: u8 = 2;
     const INDEX: u8 = 3;
@@ -763,6 +778,11 @@ impl BuiltinIntent {
     ) -> Result<Self, BuiltinModelError> {
         let version = if capture_changes
             .iter()
+            .any(|change| change.cargo_target.is_some())
+        {
+            Self::CARGO_TARGET_VERSION
+        } else if capture_changes
+            .iter()
             .any(|change| change.compiler_failure.is_some())
         {
             Self::TYPED_FAILURE_VERSION
@@ -780,6 +800,7 @@ impl BuiltinIntent {
             None,
             None,
             capture_changes,
+            Vec::new(),
             Vec::new(),
         )
     }
@@ -811,6 +832,27 @@ impl BuiltinIntent {
             capture_basis,
             self.capture_changes.into_vec(),
             source_facts_changes,
+            self.native_frontier_changes.into_vec(),
+        )
+    }
+
+    pub(super) fn with_native_frontier(
+        self,
+        native_frontier_changes: Vec<BuiltinNativeFrontierChange>,
+    ) -> Result<Self, BuiltinModelError> {
+        Self::new_with_version(
+            Self::NATIVE_FRONTIER_VERSION.max(self.encoding_version),
+            self.operation,
+            self.package,
+            self.label,
+            self.changes.into_vec(),
+            self.semantic_changes.into_vec(),
+            self.semantic_selection,
+            self.operation_key,
+            self.capture_basis,
+            self.capture_changes.into_vec(),
+            self.source_facts_changes.into_vec(),
+            native_frontier_changes,
         )
     }
 
@@ -823,6 +865,11 @@ impl BuiltinIntent {
         source_facts_changes: Vec<BuiltinSourceFactsChange>,
     ) -> Result<Self, BuiltinModelError> {
         let version = if capture_changes
+            .iter()
+            .any(|change| change.cargo_target.is_some())
+        {
+            Self::CARGO_TARGET_VERSION
+        } else if capture_changes
             .iter()
             .any(|change| change.compiler_failure.is_some())
         {
@@ -842,6 +889,7 @@ impl BuiltinIntent {
             None,
             capture_changes,
             source_facts_changes,
+            Vec::new(),
         )
     }
 
@@ -892,6 +940,7 @@ impl BuiltinIntent {
             None,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
     }
 
@@ -907,6 +956,7 @@ impl BuiltinIntent {
         capture_basis: Option<BuiltinCaptureBasis>,
         mut capture_changes: Vec<BuiltinCaptureChange>,
         mut source_facts_changes: Vec<BuiltinSourceFactsChange>,
+        mut native_frontier_changes: Vec<BuiltinNativeFrontierChange>,
     ) -> Result<Self, BuiltinModelError> {
         if !matches!(
             encoding_version,
@@ -916,6 +966,8 @@ impl BuiltinIntent {
                 | Self::FACTS_VERSION
                 | Self::TYPED_FAILURE_VERSION
                 | Self::CAPTURE_BASIS_VERSION
+                | Self::NATIVE_FRONTIER_VERSION
+                | Self::CARGO_TARGET_VERSION
         ) || (encoding_version < Self::VERSION
             && (matches!(operation, BuiltinIntentOperation::SelectSemanticGeneration)
                 || semantic_selection.is_some()))
@@ -926,9 +978,14 @@ impl BuiltinIntent {
                 && encoding_version != Self::FACTS_VERSION
                 && encoding_version != Self::TYPED_FAILURE_VERSION
                 && encoding_version != Self::CAPTURE_BASIS_VERSION
+                && encoding_version != Self::NATIVE_FRONTIER_VERSION
+                && encoding_version != Self::CARGO_TARGET_VERSION
                 && operation_key.is_some())
             || (encoding_version == Self::CAPTURE_BASIS_VERSION
                 && (capture_changes.is_empty() || capture_basis.is_none()))
+            || (encoding_version == Self::NATIVE_FRONTIER_VERSION
+                && !capture_changes.is_empty()
+                && capture_basis.is_none())
             || (encoding_version < Self::CAPTURE_BASIS_VERSION && capture_basis.is_some())
         {
             return Err(BuiltinModelError(
@@ -980,7 +1037,19 @@ impl BuiltinIntent {
                 .windows(2)
                 .any(|window| window[0].key >= window[1].key)
             || capture_changes.iter().any(|change| {
-                !change.key.is_selected()
+                change.cargo_target.as_ref().is_some_and(|scope| {
+                    encoding_version < Self::CARGO_TARGET_VERSION
+                        || !matches!(
+                            change.key.profile(),
+                            backend_semantic::vocabulary::LanguageProfile::Rust(_)
+                        )
+                        || scope.validate().is_err()
+                        || scope.source_count != change.capture.source_count()
+                        || !matches!(
+                            change.outcome,
+                            ProductSemanticCaptureOutcome::Pending { .. }
+                        )
+                }) || !change.key.is_selected()
                     || change.key.package_key() != package
                     || (change.compiler_failure.is_some()
                         && (encoding_version < Self::TYPED_FAILURE_VERSION
@@ -1002,34 +1071,84 @@ impl BuiltinIntent {
         }
         source_facts_changes.sort_by_key(|change| change.key);
         if source_facts_changes.len() > BuiltinPackageRecord::MAX_PROJECT_FILES.saturating_mul(300)
-            || (encoding_version == Self::FACTS_VERSION && source_facts_changes.is_empty())
-            || (encoding_version < Self::FACTS_VERSION && !source_facts_changes.is_empty())
-            || source_facts_changes
+        {
+            return Err(BuiltinModelError(
+                "source-facts intent exceeds its row-count limit".to_owned(),
+            ));
+        }
+        if encoding_version == Self::FACTS_VERSION && source_facts_changes.is_empty() {
+            return Err(BuiltinModelError(
+                "source-facts intent is empty for its encoding version".to_owned(),
+            ));
+        }
+        if encoding_version < Self::FACTS_VERSION && !source_facts_changes.is_empty() {
+            return Err(BuiltinModelError(
+                "source-facts intent is present before its encoding version".to_owned(),
+            ));
+        }
+        if source_facts_changes
+            .windows(2)
+            .any(|window| window[0].key >= window[1].key)
+        {
+            return Err(BuiltinModelError(
+                "source-facts intent row keys are not strictly ordered".to_owned(),
+            ));
+        }
+        for change in &source_facts_changes {
+            if change.expected == change.after {
+                return Err(BuiltinModelError(
+                    "source-facts intent contains an unchanged row".to_owned(),
+                ));
+            }
+            for (side, record) in [
+                ("expected", change.expected.as_ref()),
+                ("after", change.after.as_ref()),
+            ] {
+                let Some(record) = record else {
+                    continue;
+                };
+                let Some(owner) = record.file_key() else {
+                    return Err(BuiltinModelError(format!(
+                        "source-facts intent {side} row has no file owner"
+                    )));
+                };
+                if product_source_file_facts_record_key(owner, record)
+                    .map_or(true, |canonical| canonical != change.key)
+                {
+                    return Err(BuiltinModelError(format!(
+                        "source-facts intent {side} row owner or canonical key does not match"
+                    )));
+                }
+            }
+        }
+        native_frontier_changes.sort_by_key(|change| change.key);
+        if (encoding_version == Self::NATIVE_FRONTIER_VERSION && native_frontier_changes.is_empty())
+            || (encoding_version < Self::NATIVE_FRONTIER_VERSION
+                && !native_frontier_changes.is_empty())
+            || native_frontier_changes
                 .windows(2)
                 .any(|window| window[0].key >= window[1].key)
-            || source_facts_changes.iter().any(|change| {
+            || native_frontier_changes.iter().any(|change| {
                 change.expected == change.after
                     || [change.expected.as_ref(), change.after.as_ref()]
                         .into_iter()
                         .flatten()
                         .any(|record| {
-                            let Some(owner) = record.file_key() else {
-                                return true;
-                            };
-                            product_source_file_facts_record_key(owner, record)
+                            product_native_frontier_record_key(record)
                                 .map_or(true, |canonical| canonical != change.key)
                         })
             })
         {
             return Err(BuiltinModelError(
-                "source-facts intent is unordered, oversized, or contains an invalid owner"
+                "native frontier intent is unordered, empty, or contains an invalid owner"
                     .to_owned(),
             ));
         }
         if (changes.is_empty()
             && semantic_changes.is_empty()
             && capture_changes.is_empty()
-            && source_facts_changes.is_empty())
+            && source_facts_changes.is_empty()
+            && native_frontier_changes.is_empty())
             || semantic_changes.len() > backend_engine::application::MAX_MANIFEST_ENTRIES
             || semantic_changes
                 .windows(2)
@@ -1064,6 +1183,7 @@ impl BuiltinIntent {
             semantic_changes: semantic_changes.into_boxed_slice(),
             capture_changes: capture_changes.into_boxed_slice(),
             source_facts_changes: source_facts_changes.into_boxed_slice(),
+            native_frontier_changes: native_frontier_changes.into_boxed_slice(),
             semantic_selection,
             operation_key,
             capture_basis,
@@ -1104,6 +1224,11 @@ impl BuiltinIntent {
     ) -> Result<Self, BuiltinModelError> {
         let minimum_version = if capture_changes
             .iter()
+            .any(|change| change.cargo_target.is_some())
+        {
+            Self::CARGO_TARGET_VERSION
+        } else if capture_changes
+            .iter()
             .any(|change| change.compiler_failure.is_some())
         {
             Self::TYPED_FAILURE_VERSION
@@ -1122,6 +1247,7 @@ impl BuiltinIntent {
             self.capture_basis,
             capture_changes,
             self.source_facts_changes.into_vec(),
+            self.native_frontier_changes.into_vec(),
         )
     }
 
@@ -1135,7 +1261,7 @@ impl BuiltinIntent {
             ));
         }
         Self::new_with_version(
-            Self::CAPTURE_BASIS_VERSION,
+            Self::CAPTURE_BASIS_VERSION.max(self.encoding_version),
             self.operation,
             self.package,
             self.label,
@@ -1146,6 +1272,7 @@ impl BuiltinIntent {
             Some(basis),
             self.capture_changes.into_vec(),
             self.source_facts_changes.into_vec(),
+            self.native_frontier_changes.into_vec(),
         )
     }
 
@@ -1178,6 +1305,9 @@ impl BuiltinIntent {
             6 => b"BPI6",
             7 => b"BPI7",
             8 => b"BPI8",
+            9 => b"BPI9",
+            Self::NATIVE_FRONTIER_VERSION => b"BPIA",
+            Self::CARGO_TARGET_VERSION => b"BPIB",
             _ => b"BPI9",
         });
         bytes.push(self.encoding_version);
@@ -1268,18 +1398,29 @@ impl BuiltinIntent {
                 if self.encoding_version >= Self::TYPED_FAILURE_VERSION {
                     encode_optional_compiler_failure(change.compiler_failure.as_ref(), &mut bytes);
                 }
+                if self.encoding_version >= Self::CARGO_TARGET_VERSION {
+                    match &change.cargo_target {
+                        None => bytes.push(0),
+                        Some(scope) => {
+                            bytes.push(1);
+                            let encoded =
+                                serde_json::to_vec(scope).expect("admitted Cargo target scope");
+                            bytes.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+                            bytes.extend_from_slice(&encoded);
+                        }
+                    }
+                }
             }
-            if self.encoding_version >= Self::CAPTURE_BASIS_VERSION {
+            if self.encoding_version == Self::CAPTURE_BASIS_VERSION {
                 let basis = self
                     .capture_basis
                     .expect("capture-basis intents are validated at construction");
-                bytes.extend_from_slice(&basis.workspace_root);
-                bytes.extend_from_slice(&basis.workspace_sequence.to_be_bytes());
-                bytes.extend_from_slice(&basis.closure_id);
-                match basis.capture_root {
-                    Some(root) => {
+                encode_capture_basis(basis, &mut bytes);
+            } else if self.encoding_version >= Self::NATIVE_FRONTIER_VERSION {
+                match self.capture_basis {
+                    Some(basis) => {
                         bytes.push(1);
-                        bytes.extend_from_slice(&root);
+                        encode_capture_basis(basis, &mut bytes);
                     }
                     None => bytes.push(0),
                 }
@@ -1294,6 +1435,18 @@ impl BuiltinIntent {
                     bytes.extend_from_slice(&change.key);
                     encode_optional_source_facts_record(change.expected.as_ref(), &mut bytes);
                     encode_optional_source_facts_record(change.after.as_ref(), &mut bytes);
+                }
+            }
+            if self.encoding_version >= Self::NATIVE_FRONTIER_VERSION {
+                bytes.extend_from_slice(
+                    &u32::try_from(self.native_frontier_changes.len())
+                        .unwrap_or(u32::MAX)
+                        .to_be_bytes(),
+                );
+                for change in &self.native_frontier_changes {
+                    bytes.extend_from_slice(&change.key);
+                    encode_optional_native_frontier_record(change.expected.as_ref(), &mut bytes);
+                    encode_optional_native_frontier_record(change.after.as_ref(), &mut bytes);
                 }
             }
         }
@@ -1313,6 +1466,7 @@ impl BuiltinIntent {
         if clear_payload {
             self.changes = Box::new([]);
             self.source_facts_changes = Box::new([]);
+            self.native_frontier_changes = Box::new([]);
         }
     }
 
@@ -1326,6 +1480,7 @@ impl BuiltinIntent {
             self.semantic_changes = Box::new([]);
             self.capture_changes = Box::new([]);
             self.source_facts_changes = Box::new([]);
+            self.native_frontier_changes = Box::new([]);
             self.semantic_selection = None;
         }
         self
@@ -1347,6 +1502,7 @@ impl BuiltinIntent {
         let capture_changes = decoder.capture_changes()?;
         let capture_basis = decoder.capture_basis()?;
         let source_facts_changes = decoder.source_facts_changes()?;
+        let native_frontier_changes = decoder.native_frontier_changes()?;
         decoder.finish()?;
         let intent = Self::new_with_version(
             encoding_version,
@@ -1360,6 +1516,7 @@ impl BuiltinIntent {
             capture_basis,
             capture_changes,
             source_facts_changes,
+            native_frontier_changes,
         )?;
         if encoding_version < Self::CAPTURE_VERSION && !intent.capture_changes.is_empty() {
             return Err(BuiltinModelError(
@@ -1391,6 +1548,10 @@ impl BuiltinIntent {
 
     pub(super) fn source_facts_changes(&self) -> &[BuiltinSourceFactsChange] {
         &self.source_facts_changes
+    }
+
+    pub(super) fn native_frontier_changes(&self) -> &[BuiltinNativeFrontierChange] {
+        &self.native_frontier_changes
     }
 
     fn admit_semantic_selection_against(
@@ -1535,6 +1696,39 @@ fn encode_optional_source_facts_record(
             );
             output.extend_from_slice(&encoded);
         }
+    }
+}
+
+fn encode_optional_native_frontier_record(
+    record: Option<&ProductNativeFrontierRecord>,
+    output: &mut Vec<u8>,
+) {
+    match record {
+        None => output.push(0),
+        Some(record) => {
+            output.push(1);
+            let mut encoded = Vec::new();
+            ProductNativeFrontierRelation::encode_value(record, &mut encoded);
+            output.extend_from_slice(
+                &u32::try_from(encoded.len())
+                    .unwrap_or(u32::MAX)
+                    .to_be_bytes(),
+            );
+            output.extend_from_slice(&encoded);
+        }
+    }
+}
+
+fn encode_capture_basis(basis: BuiltinCaptureBasis, output: &mut Vec<u8>) {
+    output.extend_from_slice(&basis.workspace_root);
+    output.extend_from_slice(&basis.workspace_sequence.to_be_bytes());
+    output.extend_from_slice(&basis.closure_id);
+    match basis.capture_root {
+        Some(root) => {
+            output.push(1);
+            output.extend_from_slice(&root);
+        }
+        None => output.push(0),
     }
 }
 
@@ -1738,6 +1932,8 @@ impl<'a> IntentDecoder<'a> {
                     | (Some(b"BPI7"), 7)
                     | (Some(b"BPI8"), 8)
                     | (Some(b"BPI9"), 9)
+                    | (Some(b"BPIA"), 10)
+                    | (Some(b"BPIB"), 11)
             )
         {
             return Err(BuiltinModelError(
@@ -1928,6 +2124,21 @@ impl<'a> IntentDecoder<'a> {
         if self.version < BuiltinIntent::CAPTURE_BASIS_VERSION {
             return Ok(None);
         }
+        if self.version >= BuiltinIntent::NATIVE_FRONTIER_VERSION {
+            match self.take(1)?.first().copied() {
+                Some(0) => return Ok(None),
+                Some(1) => {}
+                _ => {
+                    return Err(BuiltinModelError(
+                        "malformed capture basis presence marker".to_owned(),
+                    ));
+                }
+            }
+        }
+        self.capture_basis_payload().map(Some)
+    }
+
+    fn capture_basis_payload(&mut self) -> Result<BuiltinCaptureBasis, BuiltinModelError> {
         let workspace_root = self
             .take(32)?
             .try_into()
@@ -1953,7 +2164,6 @@ impl<'a> IntentDecoder<'a> {
             }
         };
         BuiltinCaptureBasis::new(workspace_root, workspace_sequence, closure_id, capture_root)
-            .map(Some)
     }
 
     fn source_facts_changes(&mut self) -> Result<Vec<BuiltinSourceFactsChange>, BuiltinModelError> {
@@ -1972,6 +2182,59 @@ impl<'a> IntentDecoder<'a> {
             ));
         }
         (0..count).map(|_| self.source_facts_change()).collect()
+    }
+
+    fn native_frontier_changes(
+        &mut self,
+    ) -> Result<Vec<BuiltinNativeFrontierChange>, BuiltinModelError> {
+        if self.version < BuiltinIntent::NATIVE_FRONTIER_VERSION {
+            return Ok(Vec::new());
+        }
+        let count = self.read_u32()? as usize;
+        let maximum = BuiltinPackageRecord::MAX_PROJECT_FILES
+            .saturating_mul(2)
+            .saturating_add(2);
+        let minimum_bytes_per_change = 34usize;
+        if count == 0
+            || count > maximum
+            || count > self.bytes.len().saturating_sub(self.at) / minimum_bytes_per_change
+        {
+            return Err(BuiltinModelError(
+                "malformed native frontier change count".to_owned(),
+            ));
+        }
+        (0..count).map(|_| self.native_frontier_change()).collect()
+    }
+
+    fn native_frontier_change(&mut self) -> Result<BuiltinNativeFrontierChange, BuiltinModelError> {
+        let key = self
+            .take(32)?
+            .try_into()
+            .map_err(|_| BuiltinModelError("malformed native frontier key".to_owned()))?;
+        let expected = self.optional_native_frontier_record()?;
+        let after = self.optional_native_frontier_record()?;
+        Ok(BuiltinNativeFrontierChange {
+            key,
+            expected,
+            after,
+        })
+    }
+
+    fn optional_native_frontier_record(
+        &mut self,
+    ) -> Result<Option<ProductNativeFrontierRecord>, BuiltinModelError> {
+        match self.take(1)?.first().copied() {
+            Some(0) => Ok(None),
+            Some(1) => {
+                let length = self.read_u32()? as usize;
+                ProductNativeFrontierRelation::decode_value(self.take(length)?)
+                    .map(Some)
+                    .map_err(|_| BuiltinModelError("malformed native frontier record".to_owned()))
+            }
+            _ => Err(BuiltinModelError(
+                "malformed native frontier record tag".to_owned(),
+            )),
+        }
     }
 
     fn source_facts_change(&mut self) -> Result<BuiltinSourceFactsChange, BuiltinModelError> {
@@ -2030,7 +2293,45 @@ impl<'a> IntentDecoder<'a> {
         } else {
             None
         };
+        let cargo_target = if self.version >= BuiltinIntent::CARGO_TARGET_VERSION {
+            match self.take(1)?.first().copied() {
+                Some(0) => None,
+                Some(1) => {
+                    let len = self.read_u32()? as usize;
+                    if len > 8192 {
+                        return Err(BuiltinModelError(
+                            "Cargo target scope exceeds bound".to_owned(),
+                        ));
+                    }
+                    let bytes = self.take(len)?;
+                    let scope: backend_library::CargoTargetScope = serde_json::from_slice(bytes)
+                        .map_err(|_| {
+                            BuiltinModelError("malformed Cargo target scope".to_owned())
+                        })?;
+                    scope
+                        .validate()
+                        .map_err(|error| BuiltinModelError(error.to_owned()))?;
+                    if serde_json::to_vec(&scope)
+                        .map_err(|error| BuiltinModelError(error.to_string()))?
+                        != bytes
+                    {
+                        return Err(BuiltinModelError(
+                            "noncanonical Cargo target scope".to_owned(),
+                        ));
+                    }
+                    Some(scope)
+                }
+                _ => {
+                    return Err(BuiltinModelError(
+                        "malformed Cargo target scope tag".to_owned(),
+                    ));
+                }
+            }
+        } else {
+            None
+        };
         Ok(BuiltinCaptureChange {
+            cargo_target,
             key,
             expected,
             capture,
@@ -2314,6 +2615,7 @@ pub(super) fn prepare_transition_with_source_update(
     intent.admit_semantic_selection_against(&semantic)?;
     let semantic_update = prepare_semantic_update(&semantic, intent.semantic_changes())?;
     let source_facts_update = prepare_source_facts_relation_update(base, intent)?;
+    let native_frontier_update = prepare_native_frontier_relation_update(base, intent)?;
     let source_change_count = update.delta().changes().count();
     let semantic_change_count = semantic_update.delta().changes().count();
     let source_changed = source_change_count != 0;
@@ -2391,6 +2693,8 @@ pub(super) fn prepare_transition_with_source_update(
             capture_pointer: capture_update.pointer.as_ref(),
             source_facts_objects: &source_facts_update.node_objects,
             source_facts_pointer: source_facts_update.pointer.as_ref(),
+            native_frontier_objects: &native_frontier_update.node_objects,
+            native_frontier_pointer: native_frontier_update.pointer.as_ref(),
         },
     )?;
     let registry = super::product_relation_registry()?;
@@ -2444,6 +2748,27 @@ pub(super) fn prepare_transition_with_source_update(
     } else {
         transition
     };
+    let transition = if let Some(pointer) = native_frontier_update.pointer {
+        let root = native_frontier_update
+            .node_objects
+            .iter()
+            .find(|object| pointer.bytes() == object.version())
+            .cloned();
+        let transition = transition
+            .replace_object_family([pointer], &registry)
+            .map_err(|error| BuiltinModelError(format!("select native frontier root: {error}")))?;
+        if let Some(root) = root {
+            transition
+                .replace_object_family([root], &registry)
+                .map_err(|error| {
+                    BuiltinModelError(format!("replace selected native frontier root: {error}"))
+                })?
+        } else {
+            transition
+        }
+    } else {
+        transition
+    };
     let transition = transition
         .replace_object_family([intent_object], &registry)
         .map_err(|error| BuiltinModelError(format!("retain current intent: {error}")))?;
@@ -2476,6 +2801,11 @@ struct PreparedSourceFactsRelationUpdate {
     pointer: Option<TypedObject>,
 }
 
+struct PreparedNativeFrontierRelationUpdate {
+    node_objects: Vec<TypedObject>,
+    pointer: Option<TypedObject>,
+}
+
 fn checked_product_change_count(
     source_changes: usize,
     semantic_changes: usize,
@@ -2485,6 +2815,7 @@ fn checked_product_change_count(
         source_changes,
         semantic_changes,
         intent.source_facts_changes().len(),
+        intent.native_frontier_changes().len(),
         intent.capture_changes().len(),
     ]
     .into_iter()
@@ -2580,6 +2911,95 @@ fn prepare_source_facts_relation_update(
         Ok(PreparedSourceFactsRelationUpdate {
             node_objects,
             pointer: Some(product_source_file_facts_root_object(state.root())),
+        })
+    }
+}
+
+fn prepare_native_frontier_relation_update(
+    base: &WorkspaceSnapshot,
+    intent: &BuiltinIntent,
+) -> Result<PreparedNativeFrontierRelationUpdate, BuiltinModelError> {
+    if intent.native_frontier_changes().is_empty() {
+        return Ok(PreparedNativeFrontierRelationUpdate {
+            node_objects: Vec::new(),
+            pointer: None,
+        });
+    }
+    let selected = product_native_frontier_relation(base).map_err(|error| {
+        BuiltinModelError(format!("open selected native frontier relation: {error}"))
+    })?;
+    let changes = intent
+        .native_frontier_changes()
+        .iter()
+        .map(|change| TreeChange {
+            key: change.key,
+            after: change.after.clone(),
+        })
+        .collect::<Vec<_>>();
+    if let Some(relation) = selected {
+        for change in intent.native_frontier_changes() {
+            let current = relation.lookup(&change.key).map_err(|error| {
+                BuiltinModelError(format!("read current native frontier row: {error}"))
+            })?;
+            if current != change.expected {
+                return Err(BuiltinModelError(
+                    "native frontier base does not match its persisted before value".to_owned(),
+                ));
+            }
+        }
+        let update = relation.prepare_update(&changes).map_err(|error| {
+            BuiltinModelError(format!("prepare native frontier delta: {error}"))
+        })?;
+        let node_objects = update
+            .changed_nodes()
+            .iter()
+            .map(|node| {
+                TypedObject::from_state_root(node.commitment(), node).map_err(|error| {
+                    BuiltinModelError(format!("retain native frontier node: {error:?}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(PreparedNativeFrontierRelationUpdate {
+            node_objects,
+            pointer: Some(product_native_frontier_root_object(update.target().root())),
+        })
+    } else {
+        if intent
+            .native_frontier_changes()
+            .iter()
+            .any(|change| change.expected.is_some() || change.after.is_none())
+        {
+            return Err(BuiltinModelError(
+                "native frontier relation disappeared before its expected row".to_owned(),
+            ));
+        }
+        let entries = intent
+            .native_frontier_changes()
+            .iter()
+            .filter_map(|change| change.after.clone().map(|record| (change.key, record)))
+            .collect::<Vec<_>>();
+        let state = backend_engine::RelationState::<ProductNativeFrontierRelation>::from_entries(
+            entries,
+            super::admitted_coverage()?,
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!("build initial native frontier relation: {error}"))
+        })?;
+        let mut closure = state.node_closure();
+        let mut node_objects = Vec::new();
+        while let Some(node) = closure
+            .try_next()
+            .map_err(|error| BuiltinModelError(format!("traverse native frontier: {error:?}")))?
+        {
+            node_objects.push(
+                TypedObject::from_state_root(node.state_root(), node.canonical()).map_err(
+                    |error| BuiltinModelError(format!("retain native frontier root: {error:?}")),
+                )?,
+            );
+        }
+        Ok(PreparedNativeFrontierRelationUpdate {
+            node_objects,
+            pointer: Some(product_native_frontier_root_object(state.root())),
         })
     }
 }
@@ -2817,9 +3237,15 @@ fn next_capture_record(
                 change.outcome,
                 change.compiler_failure.clone(),
             )
+            .and_then(|record| record.with_cargo_target(change.cargo_target.clone()))
             .map_err(|error| BuiltinModelError(error.to_owned()))
         }
         (Some(current), outcome) => {
+            if change.cargo_target.is_some() {
+                return Err(BuiltinModelError(
+                    "terminal capture cannot replace selected Cargo scope".to_owned(),
+                ));
+            }
             let ProductSemanticCaptureOutcome::Pending {
                 prior: pending_prior,
             } = current.outcome()
@@ -3326,7 +3752,15 @@ fn admit_persisted_relations(
                     ProductSourceFileFactsRootSchema::TYPE,
                     ProductSourceFileFactsRootSchema::VERSION,
                 );
-                if pointer.schema() != capture_schema && pointer.schema() != facts_schema {
+                let native_frontier_schema = backend_version::SchemaIdentity::new(
+                    ProductNativeFrontierRootSchema::DOMAIN,
+                    ProductNativeFrontierRootSchema::TYPE,
+                    ProductNativeFrontierRootSchema::VERSION,
+                );
+                if pointer.schema() != capture_schema
+                    && pointer.schema() != facts_schema
+                    && pointer.schema() != native_frontier_schema
+                {
                     continue;
                 }
                 let root = pointer.bytes().try_into().map_err(|_| {
@@ -3336,9 +3770,13 @@ fn admit_persisted_relations(
                     persisted
                         .relation::<ProductSemanticCaptureRelation>(store, root)
                         .and_then(|tree| tree.root_object())
-                } else {
+                } else if pointer.schema() == facts_schema {
                     persisted
                         .relation::<ProductSourceFileFactsRelation>(store, root)
+                        .and_then(|tree| tree.root_object())
+                } else {
+                    persisted
+                        .relation::<ProductNativeFrontierRelation>(store, root)
                         .and_then(|tree| tree.root_object())
                 }
                 .map_err(|e| {
@@ -3389,6 +3827,13 @@ fn admit_persisted_relations(
         persisted_objects.objects(),
     )?;
     validate_persisted_source_facts(
+        persisted,
+        store,
+        &persisted_intent,
+        &target_tree,
+        persisted_objects.objects(),
+    )?;
+    validate_persisted_native_frontier(
         persisted,
         store,
         &persisted_intent,
@@ -3570,6 +4015,144 @@ fn validate_persisted_source_facts(
     Ok(())
 }
 
+fn validate_persisted_native_frontier(
+    persisted: &backend_engine::PersistedTransition,
+    store: &backend_engine::FileStore,
+    intent: &BuiltinIntent,
+    source: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    closure_objects: &[TypedObject],
+) -> Result<(), BuiltinModelError> {
+    if intent.native_frontier_changes().is_empty() {
+        return Ok(());
+    }
+    let pointer_schema = backend_version::SchemaIdentity::new(
+        ProductNativeFrontierRootSchema::DOMAIN,
+        ProductNativeFrontierRootSchema::TYPE,
+        ProductNativeFrontierRootSchema::VERSION,
+    );
+    let pointer_key = ObjectKey::<ProductNativeFrontierRootSchema>::from_value(&[0x4e; 32]);
+    let pointer = closure_objects
+        .iter()
+        .find(|object| object.schema() == pointer_schema && object.key() == pointer_key.as_bytes())
+        .ok_or_else(|| {
+            BuiltinModelError("native frontier update has no target root pointer".to_owned())
+        })?;
+    let root: [u8; 32] = pointer
+        .bytes()
+        .try_into()
+        .map_err(|_| BuiltinModelError("malformed native frontier root".to_owned()))?;
+    let target = persisted
+        .relation::<ProductNativeFrontierRelation>(store, root)
+        .map_err(|error| {
+            BuiltinModelError(format!("open persisted target native frontier: {error}"))
+        })?;
+    for change in intent.native_frontier_changes() {
+        let after = target.lookup(&change.key).map_err(|error| {
+            BuiltinModelError(format!(
+                "read persisted target native frontier row: {error}"
+            ))
+        })?;
+        if after != change.after {
+            return Err(BuiltinModelError(
+                "persisted native frontier root does not match its exact intent rows".to_owned(),
+            ));
+        }
+        let Some(ProductNativeFrontierRecord::Path {
+            project,
+            profile,
+            path,
+            disposition,
+        }) = after
+        else {
+            continue;
+        };
+        let source_key = backend_engine::product_source_file_key(project, &path);
+        let source_record = source
+            .lookup(&source_key)
+            .map_err(|error| {
+                BuiltinModelError(format!("read native frontier source row: {error}"))
+            })?
+            .ok_or_else(|| {
+                BuiltinModelError("native frontier path has no selected source row".to_owned())
+            })?;
+        let file = source_record.file_fields().ok_or_else(|| {
+            BuiltinModelError("native frontier path does not select a source file".to_owned())
+        })?;
+        if file.project != project || file.path != path || file.language != profile.language() {
+            return Err(BuiltinModelError(
+                "native frontier path owner differs from its source row".to_owned(),
+            ));
+        }
+        match disposition {
+            NativePathDisposition::Structural {
+                content,
+                source_identity,
+            } => {
+                if file.content_version != content
+                    || file.source_identity != Some(source_identity)
+                    || file
+                        .admitted_unavailable_reason()
+                        .map_err(BuiltinModelError)?
+                        .is_some()
+                {
+                    return Err(BuiltinModelError(
+                        "structural native disposition differs from parsed source identity"
+                            .to_owned(),
+                    ));
+                }
+            }
+            NativePathDisposition::ClangMalformed { .. } => {
+                if profile.language() != backend_compile::SourceLanguage::Clang
+                    || file
+                        .admitted_unavailable_reason()
+                        .map_err(BuiltinModelError)?
+                        != Some(backend_engine::SourceUnavailableReason::Unparsed)
+                {
+                    return Err(BuiltinModelError(
+                        "malformed Clang candidate is not backed by an unavailable unparsed source row"
+                            .to_owned(),
+                    ));
+                }
+            }
+            NativePathDisposition::CSharpMalformed { .. } => {
+                if profile.language() != backend_compile::SourceLanguage::CSharp
+                    || file.content_version != [0; 32]
+                    || file.source_identity.is_some()
+                    || file
+                        .admitted_unavailable_reason()
+                        .map_err(BuiltinModelError)?
+                        != Some(backend_engine::SourceUnavailableReason::Unparsed)
+                {
+                    return Err(BuiltinModelError(
+                        "malformed C# candidate is not backed by an unavailable unparsed source row"
+                            .to_owned(),
+                    ));
+                }
+            }
+            NativePathDisposition::Refused(reason) => {
+                use backend_engine::SourceUnavailableReason;
+                let expected = match reason {
+                    NativePathRefusal::InvalidUtf8 => SourceUnavailableReason::NotText,
+                    NativePathRefusal::MalformedOther => SourceUnavailableReason::Unparsed,
+                    NativePathRefusal::ReadUnavailable => SourceUnavailableReason::Unreadable,
+                    NativePathRefusal::Oversized => SourceUnavailableReason::TooLarge,
+                };
+                if file
+                    .admitted_unavailable_reason()
+                    .map_err(BuiltinModelError)?
+                    != Some(expected)
+                {
+                    return Err(BuiltinModelError(
+                        "native refusal differs from its selected unavailable source row"
+                            .to_owned(),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn selected_capture_root_from_objects(
     objects: &[TypedObject],
 ) -> Result<Option<[u8; 32]>, BuiltinModelError> {
@@ -3717,15 +4300,18 @@ fn validate_persisted_capture_changes(
             .ok_or_else(|| BuiltinModelError("capture base publication disappeared".to_owned()))?;
         let controls =
             backend_engine::workspace::recovery::control_frontier(store, &predecessor.descriptor())
-                .map_err(|e| BuiltinModelError(format!("read bounded capture base controls: {e}")))?;
+                .map_err(|e| {
+                    BuiltinModelError(format!("read bounded capture base controls: {e}"))
+                })?;
         let intent_schema = backend_version::SchemaIdentity::new(
             BuiltinIntentSchema::DOMAIN,
             BuiltinIntentSchema::TYPE,
             BuiltinIntentSchema::VERSION,
         );
-        let staged = controls.objects().iter().any(|object| {
-            object.schema() == intent_schema && object.bytes().starts_with(b"BPS1")
-        });
+        let staged = controls
+            .objects()
+            .iter()
+            .any(|object| object.schema() == intent_schema && object.bytes().starts_with(b"BPS1"));
         if staged {
             controls
         } else {
@@ -4190,6 +4776,95 @@ mod persisted_intent_tests {
     }
 
     #[test]
+    fn explicit_cargo_scope_round_trips_with_authenticated_capture_basis() {
+        let label = "pkg:cargo/explicit-target@1.0.0";
+        let package = backend_engine::PackageKey::from_value(label);
+        let key = ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::parse(label).expect("package"),
+            backend_semantic::vocabulary::PackageUrl::parse(label.to_owned()).expect("coordinate"),
+            backend_semantic::vocabulary::LanguageProfile::Rust(
+                backend_semantic::vocabulary::RustEdition::Rust2024,
+            ),
+        )
+        .expect("key");
+        let scope = backend_library::CargoTargetScope {
+            name: backend_library::CargoTargetSelector::new("library".to_owned()).expect("name"),
+            root: "src/lib.rs".to_owned(),
+            kinds: vec!["lib".to_owned()].into_boxed_slice(),
+            source_closure: [8; 32],
+            source_count: 1,
+        };
+        let capture = SemanticSourceCapture::new(None, [5; 32], [6; 32], 1, 1).expect("capture");
+        let intent = BuiltinIntent::index_with_capture(
+            package,
+            label,
+            Vec::new(),
+            Vec::new(),
+            vec![BuiltinCaptureChange {
+                cargo_target: Some(scope.clone()),
+                key,
+                expected: None,
+                capture,
+                outcome: ProductSemanticCaptureOutcome::Pending { prior: None },
+                compiler_failure: None,
+            }],
+        )
+        .expect("scoped pending intent");
+        let basis = BuiltinCaptureBasis::new([2; 32], 0, [9; 32], None).expect("basis");
+        let intent = intent
+            .with_capture_basis(basis)
+            .expect("bound source closure");
+        let bytes = intent.encode();
+        assert!(bytes.starts_with(b"BPIB"));
+        assert_eq!(
+            BuiltinIntent::decode(&bytes).expect("scoped intent codec"),
+            intent
+        );
+        let change = &intent.capture_changes()[0];
+        let pending =
+            next_capture_record(None, change, None, [1; 32], [2; 32], 0, [3; 32], [4; 32])
+                .expect("pending");
+        assert_eq!(pending.cargo_target(), Some(&scope));
+        let terminal = BuiltinCaptureChange {
+            cargo_target: None,
+            key: change.key.clone(),
+            expected: Some(pending.clone()),
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Unavailable {
+                reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+            },
+            compiler_failure: None,
+        };
+        let done = next_capture_record(
+            Some(&pending),
+            &terminal,
+            None,
+            [7; 32],
+            [3; 32],
+            1,
+            [10; 32],
+            [11; 32],
+        )
+        .expect("terminal");
+        assert_eq!(done.cargo_target(), Some(&scope));
+        let mut changed = terminal.clone();
+        changed.cargo_target = Some(scope);
+        assert!(
+            next_capture_record(
+                Some(&pending),
+                &changed,
+                None,
+                [7; 32],
+                [3; 32],
+                1,
+                [10; 32],
+                [11; 32]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn keyed_index_intents_round_trip_and_have_distinct_workspace_request_identities() {
         let intent = file_intent(vec![declaration(backend_compile::Container::Module)]);
         assert!(intent.encode().starts_with(b"BPI4"));
@@ -4218,6 +4893,119 @@ mod persisted_intent_tests {
     }
 
     #[test]
+    fn native_frontier_capture_basis_marker_is_optional_only_in_v10() {
+        let none = [0u8];
+        let mut decoder = IntentDecoder {
+            bytes: &none,
+            at: 0,
+            version: BuiltinIntent::NATIVE_FRONTIER_VERSION,
+        };
+        assert_eq!(decoder.capture_basis().expect("v10 absent basis"), None);
+        assert_eq!(decoder.at, 1);
+
+        let invalid = [2u8];
+        let mut decoder = IntentDecoder {
+            bytes: &invalid,
+            at: 0,
+            version: BuiltinIntent::NATIVE_FRONTIER_VERSION,
+        };
+        assert!(decoder.capture_basis().is_err());
+
+        // BPI9 predates the presence marker and continues to read the original
+        // fixed-width basis payload directly.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[1; 32]);
+        payload.extend_from_slice(&7u64.to_be_bytes());
+        payload.extend_from_slice(&[2; 32]);
+        payload.push(0);
+        let mut decoder = IntentDecoder {
+            bytes: &payload,
+            at: 0,
+            version: BuiltinIntent::CAPTURE_BASIS_VERSION,
+        };
+        let basis = decoder
+            .capture_basis()
+            .expect("v9 legacy basis")
+            .expect("v9 basis is mandatory");
+        assert_eq!(basis.workspace_root, [1; 32]);
+        assert_eq!(basis.workspace_sequence, 7);
+        assert_eq!(basis.closure_id, [2; 32]);
+        assert_eq!(basis.capture_root, None);
+        assert_eq!(decoder.at, payload.len());
+
+        let mut marked_payload = Vec::with_capacity(payload.len() + 1);
+        marked_payload.push(1);
+        marked_payload.extend_from_slice(&payload);
+        let mut decoder = IntentDecoder {
+            bytes: &marked_payload,
+            at: 0,
+            version: BuiltinIntent::NATIVE_FRONTIER_VERSION,
+        };
+        assert_eq!(
+            decoder.capture_basis().expect("v10 present basis"),
+            Some(basis)
+        );
+        assert_eq!(decoder.at, marked_payload.len());
+    }
+
+    #[test]
+    fn native_frontier_still_rejects_capture_intents_without_a_basis() {
+        let label = "pkg:cargo/unsealed-capture@1.0.0";
+        let package = backend_engine::PackageKey::from_value(label);
+        let package_reference =
+            backend_engine::PackageReference::parse(label.to_owned()).expect("package reference");
+        let coordinate = backend_semantic::vocabulary::PackageUrl::parse(label.to_owned())
+            .expect("package coordinate");
+        let capture_key = ProductSemanticPublicationKey::new(
+            package_reference,
+            coordinate,
+            backend_semantic::vocabulary::LanguageProfile::Rust(
+                backend_semantic::vocabulary::RustEdition::Rust2024,
+            ),
+        )
+        .expect("capture key");
+        let capture =
+            SemanticSourceCapture::new(None, [5; 32], [6; 32], 1, 1).expect("source capture");
+        let intent = BuiltinIntent::index_with_capture(
+            package,
+            label,
+            Vec::new(),
+            Vec::new(),
+            vec![BuiltinCaptureChange {
+                cargo_target: None,
+                key: capture_key,
+                expected: None,
+                capture,
+                outcome: ProductSemanticCaptureOutcome::Unavailable {
+                    reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+                },
+                compiler_failure: None,
+            }],
+        )
+        .expect("unsealed capture intent");
+        let record = ProductNativeFrontierRecord::Profile {
+            project: package.to_bytes(),
+            profile: backend_semantic::vocabulary::LanguageProfile::Rust(
+                backend_semantic::vocabulary::RustEdition::Rust2024,
+            ),
+            package_target: None,
+            path_count: 0,
+            disposition_digest: [7; 32],
+        };
+        let key = product_native_frontier_record_key(&record).expect("frontier profile key");
+        assert!(
+            intent
+                .with_native_frontier(vec![BuiltinNativeFrontierChange {
+                    key,
+                    expected: None,
+                    after: Some(record),
+                }])
+                .is_err(),
+            "native frontier cannot make an unsealed capture publishable"
+        );
+    }
+
+    #[test]
     fn typed_compiler_refusal_intent_round_trips_canonically() {
         let label = "pkg:cargo/persisted-selection@1.0.0";
         let package = backend_engine::PackageKey::from_value(label);
@@ -4241,6 +5029,7 @@ mod persisted_intent_tests {
             Vec::new(),
             Vec::new(),
             vec![BuiltinCaptureChange {
+                cargo_target: None,
                 key,
                 expected: None,
                 capture,

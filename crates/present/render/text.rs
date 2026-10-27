@@ -625,7 +625,12 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
         }
     }
     if view.records().is_empty() {
-        lines.push(theme.paint(Style::Dim, "  no row at this revision"));
+        let message = if view.is_references_result() {
+            "  no reference records captured at this revision"
+        } else {
+            "  no row at this revision"
+        };
+        lines.push(theme.paint(Style::Dim, message));
         index_search_page_footer(view, &mut lines);
         index_job_footer(view, &mut lines, theme);
         return lines.finish();

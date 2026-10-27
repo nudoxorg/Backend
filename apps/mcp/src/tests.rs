@@ -73,6 +73,7 @@ fn embedded_client_rejects_an_intent_for_another_package_before_execution() {
         wrong,
         78,
         Command::Add {
+            cargo_target: None,
             package,
             execution_intent: Default::default(),
         },
@@ -115,6 +116,7 @@ fn request_encoding_rejects_a_certificate_for_another_package() {
     let request = CommandDto::new(
         8,
         Command::Add {
+            cargo_target: None,
             package,
             execution_intent: Default::default(),
         },
@@ -269,6 +271,7 @@ fn certified_framed_dispatch_admits_identity_before_presentation() {
     let request = CommandDto::new(
         5,
         Command::Add {
+            cargo_target: None,
             package,
             execution_intent: Default::default(),
         },
@@ -463,6 +466,7 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
     let request = CommandDto::new(
         17,
         Command::Add {
+            cargo_target: None,
             package,
             execution_intent: Default::default(),
         },
@@ -501,6 +505,7 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
     let request = CommandDto::new(
         18,
         Command::Add {
+            cargo_target: None,
             package: package_key("pkg"),
             execution_intent: Default::default(),
         },
@@ -533,6 +538,7 @@ fn unix_transport_rejects_digest_only_identity_success() {
     let request = CommandDto::new(
         19,
         Command::Add {
+            cargo_target: None,
             package,
             execution_intent: Default::default(),
         },

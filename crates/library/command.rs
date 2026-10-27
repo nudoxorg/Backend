@@ -1188,6 +1188,8 @@ pub enum Command {
     PackagePage(PageRequest),
     /// Append an add-package intent.
     Add {
+        /// Optional explicit Cargo target; omission preserves package scope.
+        cargo_target: Option<crate::CargoTargetSelector>,
         /// Package identity.
         package: PackageKey,
         /// Public compile execution intent; ordinary callers use Interactive.
@@ -1553,6 +1555,7 @@ mod tests {
         assert_eq!(query.cursor(), Some(cursor));
         assert_eq!(
             Command::Add {
+                cargo_target: None,
                 package: package_key("pkg"),
                 execution_intent: CompileExecutionIntent::Interactive,
             }

@@ -75,9 +75,9 @@ use std::{collections::HashMap, path::Path, vec::Vec};
 
 use backend_frontend_rust::legacy::{
     ByteSpan, ModuleDeclaration, RustAnalysisControl, RustAuthority, RustAuthorityError,
-    RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess, RustProject,
-    RustWorkspace, SemanticKind, SourceByteLimit, SourceOrigin, ra_ap_hir, ra_ap_ide_db,
-    ra_ap_syntax,
+    RustCargoTarget, RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess,
+    RustProject, RustWorkspace, SemanticKind, SourceByteLimit, SourceOrigin, ra_ap_hir,
+    ra_ap_ide_db, ra_ap_syntax,
 };
 use backend_semantic::ir::{
     AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ExternalEntityRef,
@@ -180,13 +180,26 @@ pub(crate) fn collect<'source>(
 pub(crate) fn collect_workspace<'source>(
     workspace: &RustWorkspace,
     source_path: &Path,
+    target: Option<RustCargoTarget<'_>>,
     maximum_source_bytes: SourceByteLimit,
     control: CompileControl<'_>,
     source: &'source [u8],
     facts: &mut FactSet<'source>,
 ) -> Result<(), RustCollectError> {
-    workspace
-        .analyze_source(
+    let analysis = if let Some(target) = target {
+        workspace.analyze_source_for_target(
+            source_path,
+            source,
+            target,
+            RustAnalysisControl {
+                cancelled: control.cancelled,
+                maximum_source_bytes,
+                deadline: control.deadline,
+            },
+            |authority| collect_authority(authority, source, facts),
+        )
+    } else {
+        workspace.analyze_source_with_cargo_target_fallback(
             source_path,
             source,
             RustAnalysisControl {
@@ -196,7 +209,8 @@ pub(crate) fn collect_workspace<'source>(
             },
             |authority| collect_authority(authority, source, facts),
         )
-        .map_err(map_collect_error)
+    };
+    analysis.map_err(map_collect_error)
 }
 
 fn collect_authority<'analysis, 'source>(
@@ -4818,6 +4832,7 @@ mod tests {
                 collect_workspace(
                     lease.workspace(),
                     &root.join("crates/core/main.rs"),
+                    None,
                     SourceByteLimit::from(8_192),
                     CompileControl {
                         cancelled: &cancelled,
@@ -4883,6 +4898,394 @@ mod tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    /// A PackageRoot session must carry exact Cargo metadata target identity
+    /// through the production workspace collector. This fixture mirrors the
+    /// pinned Ryu 1.0.18 manifest's `autobenches = false` and explicit
+    /// `[[bench]] name = "bench", path = "benches/bench.rs"` declaration;
+    /// it is intentionally a small synthetic project, not a replay of Ryu's
+    /// complete source archive.
+    #[test]
+    fn package_root_collects_declared_bench_by_exact_metadata_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use backend_frontend_rust::legacy::{
+            RustCargoMetadataPolicy, RustWorkspaceFile, RustWorkspaceSessionKey,
+            RustWorkspaceSessionLane,
+        };
+        use std::path::Path;
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "rust-package-root-bench-{}-{nonce}-{sequence}",
+            std::process::id()
+        ));
+        let _guard = FixtureRoot(root.clone());
+        fs::create_dir_all(root.join("benches"))?;
+        fs::create_dir_all(root.join("src"))?;
+        fs::create_dir_all(root.join("tests"))?;
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"ryu\"\nversion = \"1.0.18\"\nedition = \"2018\"\nautobenches = false\n\n[workspace]\n\n[lib]\npath = \"src/lib.rs\"\n\n[[bench]]\nname = \"bench\"\npath = \"benches/bench.rs\"\n\n[[test]]\nname = \"owner-test\"\npath = \"tests/owner.rs\"\n",
+        )?;
+        let bench = "pub fn measured() -> f64 { 1.0 }\n";
+        let library =
+            "#[path = \"../shared.rs\"] mod shared;\npub fn value() -> f64 { shared::value() }\n";
+        let test = "#[path = \"../shared.rs\"] mod shared;\n#[test] fn retained_test() { assert_eq!(shared::value(), 1.0); }\n";
+        let shared = "pub fn value() -> f64 { 1.0 }\n";
+        for (path, source) in [
+            ("benches/bench.rs", bench),
+            ("src/lib.rs", library),
+            ("tests/owner.rs", test),
+            ("shared.rs", shared),
+        ] {
+            fs::write(root.join(path), source)?;
+        }
+
+        let toolchain = RustToolchain::discover(rustc_path())?;
+        let source_paths = [
+            PathBuf::from("benches/bench.rs"),
+            PathBuf::from("src/lib.rs"),
+            PathBuf::from("tests/owner.rs"),
+        ];
+        let files = [
+            RustWorkspaceFile {
+                relative_path: &source_paths[0],
+                source: bench,
+            },
+            RustWorkspaceFile {
+                relative_path: &source_paths[1],
+                source: library,
+            },
+            RustWorkspaceFile {
+                relative_path: &source_paths[2],
+                source: test,
+            },
+        ];
+        let key = RustWorkspaceSessionKey::new(
+            &root,
+            &toolchain,
+            RustEdition::Rust2018,
+            Stage::LowerIr,
+            RustFeatureControl::default(),
+            RustCargoMetadataPolicy::Offline,
+            None,
+            None,
+            None,
+            [0x72; 32],
+            &source_paths,
+        )?;
+        let cancelled = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(180);
+        let mut lane = RustWorkspaceSessionLane::default();
+        let lease = lane.begin(
+            key,
+            &files,
+            RustAnalysisControl {
+                cancelled: &cancelled,
+                maximum_source_bytes: SourceByteLimit::from(8_192),
+                deadline,
+            },
+        )?;
+
+        let workspace = lease.workspace();
+        let cargo_facts = workspace
+            .cargo_workspace_facts()
+            .expect("PackageRoot bench diagnosis requires admitted full Cargo metadata facts");
+        let package_id = cargo_facts
+            .selected_package_id
+            .as_deref()
+            .expect("Cargo metadata must select the exact package manifest");
+        let package = cargo_facts
+            .workspace_packages
+            .iter()
+            .find(|package| package.package_id.as_ref() == package_id)
+            .expect("selected package id must resolve in admitted workspace facts");
+        assert_eq!(
+            package.manifest_path,
+            root.join("Cargo.toml"),
+            "the selected metadata package must be the exact session-root manifest"
+        );
+        let bench_path = root.join("benches/bench.rs");
+        let exact_bench_targets = package
+            .targets
+            .iter()
+            .filter(|target| target.source_path == bench_path)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            exact_bench_targets.len(),
+            1,
+            "Cargo metadata must contain exactly one target at the selected bench path"
+        );
+        assert_eq!(exact_bench_targets[0].name.as_ref(), "bench");
+        assert!(
+            exact_bench_targets[0]
+                .kinds
+                .iter()
+                .any(|kind| kind.as_ref() == "bench"),
+            "the exact source root must be admitted specifically as a bench target"
+        );
+        let bench_target = workspace
+            .cargo_target_for_source_path(&bench_path)
+            .expect("selected package, manifest, and exact source-root gates must admit the bench");
+        assert_eq!(bench_target.name, "bench");
+        assert_eq!(bench_target.root, Path::new("benches/bench.rs"));
+        assert!(
+            workspace
+                .cargo_target_for_source_path(root.join("shared.rs"))
+                .is_none(),
+            "a non-target shared module must not acquire a guessed Cargo target"
+        );
+
+        let mut facts = FactSet::new();
+        collect_workspace(
+            workspace,
+            &bench_path,
+            None,
+            SourceByteLimit::from(8_192),
+            CompileControl {
+                cancelled: &cancelled,
+                deadline,
+            },
+            bench.as_bytes(),
+            &mut facts,
+        )
+        .map_err(TestError::Collection)?;
+        assert!(
+            facts.len() >= 1,
+            "the admitted bench source must produce facts"
+        );
+
+        let mut shared_facts = FactSet::new();
+        assert!(
+            matches!(
+                collect_workspace(
+                    workspace,
+                    &root.join("shared.rs"),
+                    None,
+                    SourceByteLimit::from(8_192),
+                    CompileControl {
+                        cancelled: &cancelled,
+                        deadline,
+                    },
+                    shared.as_bytes(),
+                    &mut shared_facts,
+                ),
+                Err(RustCollectError::Authority(
+                    RustAuthorityError::AmbiguousSourceOwner {
+                        target_resolution:
+                            backend_frontend_rust::legacy::RustCargoTargetResolution::NoExactTarget,
+                        ..
+                    }
+                ))
+            ),
+            "an unmatched shared module must retain the typed ambiguity refusal"
+        );
+        Ok(())
+    }
+
+    /// Cargo Edition 2018 discovers `benches/bench.rs` without an explicit
+    /// `[[bench]]` declaration. Keep that implicit target on the same admitted
+    /// metadata and rust-analyzer path as declared targets: a file-shaped
+    /// fallback is not sufficient evidence of Cargo ownership.
+    #[test]
+    fn package_root_collects_implicit_edition_2018_bench_by_exact_metadata_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use backend_frontend_rust::legacy::{
+            RustCargoMetadataPolicy, RustWorkspaceFile, RustWorkspaceSessionKey,
+            RustWorkspaceSessionLane,
+        };
+        use std::path::Path;
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "rust-package-root-implicit-bench-{}-{nonce}-{sequence}",
+            std::process::id()
+        ));
+        let _guard = FixtureRoot(root.clone());
+        fs::create_dir_all(root.join("benches"))?;
+        fs::create_dir_all(root.join("src"))?;
+        let root = fs::canonicalize(&root)?;
+
+        // This matches the relevant public Ryu 1.0.13 Cargo shape: Edition
+        // 2018, Cargo's default automatic benchmark discovery, and no explicit
+        // `autobenches` or `[[bench]]`. The source is a small fixture, not a
+        // hash-exact copy of the captured 1.0.13 archive.
+        let manifest = concat!(
+            "[package]\n",
+            "name = \"ryu\"\n",
+            "version = \"1.0.13\"\n",
+            "edition = \"2018\"\n\n",
+            "[workspace]\n",
+        );
+        fs::write(root.join("Cargo.toml"), manifest)?;
+        let bench = concat!(
+            "#[path = \"../shared.rs\"] mod shared;\n",
+            "pub fn format_sample(value: f64) -> String {\n",
+            "    shared::helper();\n",
+            "    value.to_string()\n",
+            "}\n\n",
+            "fn main() {\n",
+            "    std::hint::black_box(format_sample(1.25));\n",
+            "}\n",
+        );
+        let library = concat!(
+            "#[path = \"../shared.rs\"] mod shared;\n",
+            "pub fn library_value() -> f64 { shared::helper(); 1.0 }\n",
+        );
+        let shared = "pub fn helper() {}\n";
+        fs::write(root.join("benches/bench.rs"), bench)?;
+        fs::write(root.join("src/lib.rs"), library)?;
+        fs::write(root.join("shared.rs"), shared)?;
+
+        let toolchain = RustToolchain::discover(rustc_path())?;
+        let source_paths = [
+            PathBuf::from("benches/bench.rs"),
+            PathBuf::from("src/lib.rs"),
+        ];
+        let files = [
+            RustWorkspaceFile {
+                relative_path: &source_paths[0],
+                source: bench,
+            },
+            RustWorkspaceFile {
+                relative_path: &source_paths[1],
+                source: library,
+            },
+        ];
+        let key = RustWorkspaceSessionKey::new(
+            &root,
+            &toolchain,
+            RustEdition::Rust2018,
+            Stage::LowerIr,
+            RustFeatureControl::default(),
+            RustCargoMetadataPolicy::Offline,
+            None,
+            None,
+            None,
+            [0x13; 32],
+            &source_paths,
+        )?;
+        let cancelled = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(180);
+        let mut lane = RustWorkspaceSessionLane::default();
+        let lease = lane.begin(
+            key,
+            &files,
+            RustAnalysisControl {
+                cancelled: &cancelled,
+                maximum_source_bytes: SourceByteLimit::from(8_192),
+                deadline,
+            },
+        )?;
+
+        let workspace = lease.workspace();
+        let cargo_facts = workspace
+            .cargo_workspace_facts()
+            .expect("implicit bench admission requires full Cargo metadata facts");
+        let package_id = cargo_facts
+            .selected_package_id
+            .as_deref()
+            .expect("Cargo metadata must select the exact package manifest");
+        let package = cargo_facts
+            .workspace_packages
+            .iter()
+            .find(|package| package.package_id.as_ref() == package_id)
+            .expect("selected package id must resolve in admitted workspace facts");
+        assert_eq!(
+            package.manifest_path,
+            root.join("Cargo.toml"),
+            "the selected metadata package must be the exact session-root manifest"
+        );
+
+        let bench_path = root.join("benches/bench.rs");
+        let exact_bench_targets = package
+            .targets
+            .iter()
+            .filter(|target| target.source_path == bench_path)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            exact_bench_targets.len(),
+            1,
+            "Cargo must auto-discover exactly one bench target at the selected source root"
+        );
+        assert_eq!(exact_bench_targets[0].name.as_ref(), "bench");
+        assert!(
+            exact_bench_targets[0]
+                .kinds
+                .iter()
+                .any(|kind| kind.as_ref() == "bench"),
+            "Cargo metadata must classify this exact source root as a bench"
+        );
+        let selected_target = workspace
+            .cargo_target_for_source_path(&bench_path)
+            .expect("exact Cargo metadata ownership must admit the implicit bench");
+        assert_eq!(selected_target.name, "bench");
+        assert_eq!(selected_target.root, Path::new("benches/bench.rs"));
+        assert!(
+            workspace
+                .cargo_target_for_source_path(root.join("src/lib.rs"))
+                .is_some_and(|target| {
+                    target.name == "ryu" && target.root == Path::new("src/lib.rs")
+                }),
+            "the neighboring library target must retain its own exact source-root identity"
+        );
+
+        let mut facts = FactSet::new();
+        collect_workspace(
+            workspace,
+            &bench_path,
+            None,
+            SourceByteLimit::from(8_192),
+            CompileControl {
+                cancelled: &cancelled,
+                deadline,
+            },
+            bench.as_bytes(),
+            &mut facts,
+        )
+        .map_err(|error| {
+            // Preserve the typed authority/lowering cause in the failure text;
+            // in particular, a source-scope refusal must not be converted into
+            // guessed ownership or hidden behind a generic parse assertion.
+            TestError::Collection(error)
+        })?;
+        assert!(
+            facts.len() >= 1,
+            "the admitted implicit bench root must produce rust-analyzer facts"
+        );
+
+        let mut shared_facts = FactSet::new();
+        let shared_path = root.join("shared.rs");
+        let refusal = collect_workspace(
+            workspace,
+            &shared_path,
+            None,
+            SourceByteLimit::from(8_192),
+            CompileControl {
+                cancelled: &cancelled,
+                deadline,
+            },
+            shared.as_bytes(),
+            &mut shared_facts,
+        );
+        assert!(
+            matches!(
+                refusal,
+                Err(RustCollectError::Authority(
+                    RustAuthorityError::AmbiguousSourceOwner {
+                        target_resolution:
+                            backend_frontend_rust::legacy::RustCargoTargetResolution::NoExactTarget,
+                        ..
+                    }
+                ))
+            ),
+            "a non-target sibling must retain the typed exact-target refusal, got {refusal:?}"
+        );
+        lease.commit();
         Ok(())
     }
 

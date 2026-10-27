@@ -28,8 +28,10 @@ receipts; subsequent query answers retain their product fields. Only explicitly
 listed timestamp/timing/process fields are normalized.
 
 Wall time is measured separately for each CLI operation and for the MCP session.
-Peak RSS and CPU cover the owner over the whole case, including indexing; they
-exclude compiler subprocesses and CLI/MCP resource use. Linux `/proc` is required.
+Peak RSS and CPU cover indexing, the historical selected request workload, and
+later live/GUI work. Added completeness-proof work is accounted as the separate
+phase documented below. The owner counters exclude compiler subprocesses and
+CLI/MCP resource use. Linux `/proc` is required.
 The initial ratios and noise floors in `surface.py` are provisional and need
 repeated measurements before this becomes a required performance gate. Compiler
 shell acquisition is infrastructure setup, outside those operation measurements.
@@ -55,6 +57,15 @@ not cancel or hide successful peers; the tier passes only if every selected
 case passes. Each completed case is compared and reported immediately; a slower
 earlier catalog entry cannot hold back a completed peer verdict.
 Reported case wall time measures execution, excluding time waiting for a worker.
+
+In CI, after acquiring the pinned runtime/tool shell and before starting cases,
+the runner drains pending writes on the task filesystem with Linux `sync -f`.
+This is infrastructure setup, reported as `CI-TIMING ... filesystem-drain`, and
+remains inside the overall T2 deadline. It attempts to clear runtime-import journal writes before the first owner's
+30-second startup budget. Build1840 exceeded the drain bound, so this has not
+resolved shared-filesystem contention. Product fsync
+calls, startup bounds, snapshots and performance limits remain unchanged.
+A failed or timed-out drain fails the run; it cannot produce a passing case.
 
 `SURFACE-PERFORMANCE` lines in the retained CI event log carry schema1 JSON with
 the case name and full measured timing/CPU/memory data. The report file remains
@@ -287,12 +298,29 @@ claim; representative-corpus scale and indexing efficiency remain open.
 
 The first comparison (pr-t1/599, `06daafdca`) kept the exact native view root
 and declaration answers, but opaque continuation proof bytes varied between
-fresh owners. Snapshot admission now consumes every offered first-page token
-through the appropriate public client before replacing its spelling with
-`<live-validated>`. It rejects refused tokens, repeated/empty pages, search scope
-changes, outline basis changes and dishonest continuation flags. This is a
-one-hop continuation proof, alongside the existing synthetic exhaustive search
-traversal; it does not claim exhaustive real-project outline traversal.
+fresh owners. Snapshot admission consumes every offered cursor through the
+appropriate public client before replacing its spelling with
+`<live-validated>`. Real CLI/MCP search and outline chains are walked through the
+terminal page before snapshot comparison. The harness rejects refused tokens,
+cycles, empty/non-progressing pages, repeated emitted identities, scope drift,
+outline basis changes and dishonest continuation flags. Outline identity uses
+the full selected-symbol ID carried by the DTO; a repeated ancestor is allowed
+only when it contains newly emitted descendants. MCP outline continuations stay
+in their issuing session, while search cursors use the public clients. The
+bounded CI evidence retains each page response without its opaque cursor bytes,
+linking pages with cursor SHA-256 values. A proof is bound to its CLI answer or
+MCP call ordinal, so an identical token on another request must be traversed
+independently. The reviewed answer golden remains the first page.
+
+Outline proof retains the general 256-page ceiling. Build 599439 consumed all
+256 valid `cpp-pugixml` pages and 7,876 unique declarations while the admitted
+page still honestly offered a cursor, so that reviewed case alone raises the
+ceiling to 512. Its issued CLI limit is 200, but output admission deliberately
+narrows large encoded frames to 25 declarations while retaining the original
+page credit and immutable basis. Each complete canonical UTF-8 receipt is also
+limited to 1 MiB and a query chain to 64 MiB; exceeding any page, receipt, chain,
+or unchanged query deadline bound refuses the proof without truncating it or
+admitting coverage.
 
 For token-bearing answers only, the normalizer validates the reported byte/token
 arithmetic, then records `bytesExcludingCursor` and
@@ -619,3 +647,132 @@ same-named result from another file cannot satisfy the search. The case uses the
 existing direct TSZ default; `COMPILER_TYPESCRIPT_COMPILER` remains a separate
 oracle. Exact-head indexing,
 answers, and performance remain unvalidated by this source candidate.
+
+### C rxi/map initial Linux snapshot (W2, 2026-10-23)
+
+Reviewed build1807/global594865 on exactee8d0c27 against the complete pinned
+map.c/map.h sources and an independent Clang syntax-only AST. Both transports
+retain the authored cleanup/lookup functions and header declarations/macros.
+The outline also retains compiler result carriers, explicitly distinguished
+from authored local variables; no source location is invented for them.
+The25-row CLI and50-row MCP pages remain bounded with validated continuation.
+See reviews/2026-10-23-c-rxi-map-initial-linux.json for scope and evidence.
+The first Linux sample (add2.47s, CPU2.37s, RSS335836KiB) seeds this new case's
+baseline; no existing baseline or tolerance changes. Fresh exact-head CI
+comparison is still required; this review alone is not a passing T2 verdict.
+
+### Go answer reviews (W2, 2026-10-23)
+
+The UUID and Sync answer-only updates retain every byte of their existing
+performance sections. Exact answers from Linux T2/1807 repeat in diagnostic
+build596340 using the frozen ad0cde836 T1 artifact. Independent Go AST review
+checked all queried source anchors and every name across the complete diagnostic
+outlines (455 UUID rows, 371 Sync rows), including real module filenames and
+documented positional signature carriers. These are source/result reviews;
+official exact-head T2 and its unchanged performance guards still must pass.
+See the two dated Go review JSON files for provenance and scope.
+
+### Java annotation answer review (W2, 2026-10-23)
+
+The repaired Java annotation capture produces identical answers in official
+T2/1844 and diagnostic596497 on4fdf93137. The answer-only golden update was
+reviewed against all31verified source-jar files using an independent Javac AST
+reader; visible source sites, qualification and semantic carriers are explained
+in reviews/2026-10-23-java-jsr305-linux-answers.json. The old performance section
+is retained byte-for-byte. This is not an official passing T2 comparison.
+
+### TinyIoC initial Linux snapshot (W2, 2026-10-23)
+
+The first C# golden uses T2/1835's measured answers and performance, after
+source-site/native publication checks succeeded. T2/1844 repeats its answers
+exactly. An independent Roslyn parse of the verified pinned source confirms
+all12visible source anchors, including conditional class-modifier start lines.
+The dated TinyIoC review records scope, generated semantic carriers, both
+measurements and the remaining fresh exact-head comparison requirement.
+
+### Itoa answer review (W2, 2026-10-23)
+
+Itoa answers repeat exactly in T2/1807 and1844. The answer-only review checks
+queried sites against the verified crate and an independent Rust AST, and
+checks generated benchmark/test names against actual pinned-rustc macro
+expansion. The dated review distinguishes source declarations from compiler
+carriers. Original performance bytes remain unchanged; fresh T2 is required.
+
+### Polyglot method-kind contract (W2, 2026-10-23)
+
+Diagnostic596768 on frozen4fdf93137 returns `language` as a C++ method at
+`src/main.cpp:4` and Java method at`src/Duke.java:2`, exactly matching the
+authored fixtures. The bounded-search precondition now requires `method`;
+its former `function` filter rejected both real methods. The two required
+source paths/languages, exact lowercase name and all ranking/completeness,
+continuation and live-health guards remain in place.
+
+The selected CLI/MCP performance workload retains the historical initial
+requests and exactly one offered continuation per selected cursor. Its owner
+CPU and peak RSS are sampled before completeness proofs. The harness then
+reissues the same initial requests and exhausts every offered cursor chain
+against that still-current publication, under the original absolute query
+deadlines. Proof CPU is removed from the owner CPU metric by phase deltas. For
+peak RSS, Linux `clear_refs=5` resets only the locald high-water mark after
+proof; the harness requires the reset VmHWM to equal current VmRSS and fails
+closed if the kernel refuses it. The reported peak is the maximum of the
+pre-proof VmHWM and the post-reset live/GUI VmHWM. Raw phase counters and proof
+timing are kept as separate evidence, not folded into baseline performance.
+The runner emits `CI-RESOURCE-PHASE` records before proof, after the verified
+reset, and after live/GUI work so phase counters remain available even when a
+later GUI contract fails.
+This accounts for locald CPU and VmHWM; teardown housekeeping in the MCP
+client process is outside those owner counters. Full proof still runs under
+the original CLI per-query deadline and original MCP session deadline, so an
+expired deadline remains a failure.
+
+### Corrected C-family stability and xxhash reviews (W2, 2026-10-23)
+
+Fixed artifact9819cef0c produces identical C++ answers across two diagnostic
+597028runs and officialT2/1851. The first C++ golden uses1851's actual baseline;
+26source-backed sites were independently checked with Clang ASTs. The C-map
+followup changes only three derived root/revision fields after corrected macro
+storage facts; all other answer fields and original performance bytes match.
+xxhash answers also repeat exactly; eleven source anchors and all visible names
+were independently checked against the verified Go module. The xxhash baseline
+is retained byte-for-byte. Dated reviews record scope and proof; fresh official
+exact-head comparison remains required.
+
+### Tomli answer and GUI content review (W2, 2026-10-23)
+
+The dated Tomli review checks all5visible source anchors against an independent
+AST from the verified pinned archive and records1851's actual GUI pixel/OCR
+source-content evidence. The original performance suffix remains byte-for-byte
+unchanged.1844's intermittent GUI source-content failure remains unresolved and
+the full content guard/deadline remains enabled; accepting truthful1851answers
+does not count as fixing that failure or as an official green comparison.
+
+### Polyglot methods and retained GUI failure pixels (W2, 2026-10-23)
+
+Official1862 polyglot answers match frozen981 diagnostic597289 exactly.
+All10queried authored declaration/method sites match the seven tiny fixtures;
+independent compiler/syntax AST checks and semantic-carrier qualifications are
+recorded in the dated review. Existing performance bytes remain unchanged.
+The diagnostic had different TS environment overrides, so equality was checked
+against the actual official answer before adopting this candidate.
+GUI failures now retain bounded already-captured native pixels and OCR in
+CI-GUI-FAILURE; they neither extend the deadline nor replace the original error.
+
+### Concurrent case slots and GUI-serving owner usage (W2, 2026-10-27)
+
+Concurrent cases now each run on their own whole physical cores
+(`SURFACE-CPU-SLOTS`; on ilo, logical CPUs 0–5 and 6–11). On the #681 heads
+(pr-t2 1956–1972, all P-core placed, other CI paused), python-blinker's
+`cli add` took about 4.5s alone and 8.6–9.2s when it overlapped polyglot's
+indexing. Tomli's took 5.05–6.08s in 14/14 runs. With slots (pr-t2/2119) they
+took 3.97s and 2.42s. No answer, owner baseline, tolerance or floor changed.
+
+Tomli's owner baseline (2.84s CPU, 283560KiB) was seeded by expansion run
+489752 before its GUI probe ran. The owner's work serving the desktop is now
+measured separately as `gui_owner_cpu_seconds` and `gui_owner_peak_rss_kib`.
+The owner's VmHWM is reset before the GUI phase, so that peak is attributable
+to it. In the same 14 runs, non-GUI owner CPU was 2.14–2.74s and peak was
+279168–291804KiB, all inside the unchanged baseline. GUI-serving owner CPU was
+0.99–2.38s and peak was 326612–363812KiB. Its first baseline is the slowest
+sample of each, 2.38s and 363812KiB, under the existing ratios and floors.
+(Robert chose separate accounting over re-baselining the owner, 2026-10-27.)

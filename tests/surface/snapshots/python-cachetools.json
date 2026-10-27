@@ -51,7 +51,7 @@
           "schema": 3,
           "sequence": 2,
           "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-          "source_root": "f480bdc839ae0f09cc1e2f8d69fb3392ec434bb06c8dd5d6006f3ece398744fa"
+          "source_root": "f3b51d188eda41ead7bbc6af5ea14e8549bfa729977ac5f9f2c70af8b6ad8979"
         },
         "roots": [
           {
@@ -2270,8 +2270,8 @@
           }
         ],
         "readiness": "ready",
-        "revision": "f091812b",
-        "rows": 1863
+        "revision": "f3b51d18",
+        "rows": 1866
       }
     },
     "cli search TTLCache": {
@@ -2279,9 +2279,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 5309,
+          "bytes": 5314,
           "bytesPerToken": 4,
-          "estimatedTokens": 1328
+          "estimatedTokens": 1329
         },
         "coverage": [
           {
@@ -2353,7 +2353,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.py:451 \u203a TTLCache"
+              "trail": "project › src/cachetools/__init__.py:451 › TTLCache"
             },
             "kind": "class",
             "language": "python",
@@ -2408,7 +2408,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:94 \u203a TTLCache"
+              "trail": "project › src/cachetools/__init__.pyi:94 › TTLCache"
             },
             "kind": "class",
             "language": "python",
@@ -2417,7 +2417,7 @@
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::a47bba1a083058c0110fe20eb26cf6cbe68cb32af75c9ff70760a1e4a407598d::TTLCache",
+              "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::a47bba1a083058c0110fe20eb26cf6cbe9639771e664f9b98a8753543b8e57c1::TTLCache",
               "line": 4,
               "name": "TTLCache",
               "path": "tests/test_ttl.py",
@@ -2427,42 +2427,42 @@
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  6,
-                  57,
-                  253,
-                  148,
-                  60,
-                  19,
-                  73,
-                  91,
-                  75,
-                  96,
-                  91,
-                  245,
-                  225,
+                  238,
+                  113,
                   137,
-                  39,
-                  43,
-                  215,
-                  178,
-                  248,
-                  241,
-                  206,
-                  138,
-                  69,
-                  24,
-                  144,
-                  228,
-                  55,
+                  161,
+                  10,
+                  94,
+                  160,
+                  221,
+                  10,
+                  171,
+                  128,
+                  102,
+                  74,
+                  93,
+                  148,
+                  44,
+                  117,
+                  195,
+                  104,
+                  74,
+                  36,
+                  200,
+                  120,
+                  149,
+                  235,
+                  61,
+                  90,
+                  45,
+                  214,
+                  224,
                   3,
-                  203,
-                  253,
-                  147,
-                  91
+                  47
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_ttl.py:4 \u203a TTLCache"
+              "trail": "project › tests/test_ttl.py:4 › TTLCache"
             },
             "kind": "import",
             "language": "python",
@@ -2471,7 +2471,7 @@
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::17c15f0ea7488e521acd2be4e42bbcefe68cb32af75c9ff70760a1e4a407598d::TTLCache",
+              "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::17c15f0ea7488e521acd2be4e42bbcef9456848d5eddac541668dd23fc8a76d0::TTLCache",
               "name": "TTLCache",
               "segments": [
                 "TTLCache"
@@ -2479,42 +2479,42 @@
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  154,
-                  55,
-                  83,
-                  54,
-                  148,
-                  49,
-                  180,
-                  126,
-                  139,
-                  88,
-                  150,
-                  174,
-                  113,
-                  158,
-                  14,
-                  174,
-                  250,
-                  239,
-                  181,
-                  52,
-                  154,
-                  104,
-                  173,
-                  23,
-                  86,
-                  125,
-                  251,
-                  196,
-                  80,
-                  59,
                   58,
-                  188
+                  247,
+                  54,
+                  220,
+                  112,
+                  156,
+                  83,
+                  220,
+                  55,
+                  4,
+                  31,
+                  183,
+                  235,
+                  170,
+                  61,
+                  2,
+                  120,
+                  241,
+                  101,
+                  160,
+                  205,
+                  149,
+                  250,
+                  147,
+                  115,
+                  231,
+                  149,
+                  107,
+                  178,
+                  127,
+                  184,
+                  56
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a TTLCache"
+              "trail": "project › TTLCache"
             },
             "kind": "type",
             "language": "unknown",
@@ -2568,7 +2568,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_ttl.py:28 \u203a TTLCacheTest"
+              "trail": "project › tests/test_ttl.py:28 › TTLCacheTest"
             },
             "kind": "class",
             "language": "python",
@@ -2622,7 +2622,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.py:540 \u203a ttl"
+              "trail": "project › src/cachetools/__init__.py:540 › ttl"
             },
             "kind": "property",
             "language": "python",
@@ -2675,7 +2675,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a self"
+              "trail": "project › self"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2684,7 +2684,7 @@
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/python-cachetools/project::external::symbol:79c7026d6a29c2449c2e12526bc4843be00fdd131fee10cc48936fa7cd05dc4d::TTLCache",
+              "coordinate": "/tmp/nudox-surface/python-cachetools/project::external::symbol:3374771db522bdc1a675c16098ef5c7e53fa40461b987b583c8535ee6517a75d::TTLCache",
               "name": "TTLCache",
               "segments": [
                 "TTLCache"
@@ -2692,42 +2692,42 @@
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  121,
-                  199,
-                  2,
-                  109,
-                  106,
-                  41,
-                  194,
-                  68,
-                  156,
-                  46,
-                  18,
-                  82,
-                  107,
-                  196,
-                  132,
-                  59,
-                  224,
-                  15,
-                  221,
-                  19,
-                  31,
+                  51,
+                  116,
+                  119,
+                  29,
+                  181,
+                  34,
+                  189,
+                  193,
+                  166,
+                  117,
+                  193,
+                  96,
+                  152,
+                  239,
+                  92,
+                  126,
+                  83,
+                  250,
+                  64,
+                  70,
+                  27,
+                  152,
+                  123,
+                  88,
+                  60,
+                  133,
+                  53,
                   238,
-                  16,
-                  204,
-                  72,
-                  147,
-                  111,
+                  101,
+                  23,
                   167,
-                  205,
-                  5,
-                  220,
-                  77
+                  93
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a TTLCache"
+              "trail": "project › TTLCache"
             },
             "language": "unknown",
             "score": 4294967288,
@@ -2735,7 +2735,7 @@
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/python-cachetools/project::external::symbol:f9534870248a04ad5d9076fae71ed828ad6b7c5913b3dba8ea8f1bfc962403f3::TTLCache",
+              "coordinate": "/tmp/nudox-surface/python-cachetools/project::external::symbol:3e9d469a72c34b5c3ed7045c8f3afceb728d18024ea00afc768545fcc49df212::TTLCache",
               "name": "TTLCache",
               "segments": [
                 "TTLCache"
@@ -2743,42 +2743,42 @@
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  249,
-                  83,
-                  72,
-                  112,
-                  36,
-                  138,
+                  62,
+                  157,
+                  70,
+                  154,
+                  114,
+                  195,
+                  75,
+                  92,
+                  62,
+                  215,
                   4,
-                  173,
-                  93,
-                  144,
-                  118,
-                  250,
-                  231,
-                  30,
-                  216,
-                  40,
-                  173,
-                  107,
-                  124,
-                  89,
-                  19,
-                  179,
-                  219,
-                  168,
-                  234,
+                  92,
                   143,
-                  27,
+                  58,
                   252,
-                  150,
-                  36,
-                  3,
-                  243
+                  235,
+                  114,
+                  141,
+                  24,
+                  2,
+                  78,
+                  160,
+                  10,
+                  252,
+                  118,
+                  133,
+                  69,
+                  252,
+                  196,
+                  157,
+                  242,
+                  18
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a TTLCache"
+              "trail": "project › TTLCache"
             },
             "language": "unknown",
             "score": 4294967287,
@@ -2796,9 +2796,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytesExcludingCursor": 15397,
+          "bytesExcludingCursor": 15389,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 3850
+          "estimatedTokensExcludingCursor": 3848
         },
         "coverage": [
           {
@@ -2871,7 +2871,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.py:738 \u203a cached"
+              "trail": "project › src/cachetools/__init__.py:738 › cached"
             },
             "kind": "function",
             "language": "python",
@@ -2926,7 +2926,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:186 \u203a cached"
+              "trail": "project › src/cachetools/__init__.pyi:186 › cached"
             },
             "kind": "function",
             "language": "python",
@@ -2980,7 +2980,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:177 \u203a cached"
+              "trail": "project › src/cachetools/__init__.pyi:177 › cached"
             },
             "kind": "function",
             "language": "python",
@@ -3034,7 +3034,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:169 \u203a cached"
+              "trail": "project › src/cachetools/__init__.pyi:169 › cached"
             },
             "kind": "function",
             "language": "python",
@@ -3043,7 +3043,7 @@
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::b2ebfa22a71e877e0a9ae79e51abf00533c83cfdd3c49069e3be839222a386e7::cached",
+              "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::b2ebfa22a71e877e0a9ae79e51abf005d75fad09d4794ca89e7220ff8668d1f7::cached",
               "line": 6,
               "name": "cached",
               "path": "tests/test_threading.py",
@@ -3053,42 +3053,42 @@
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  12,
-                  152,
-                  137,
-                  11,
-                  5,
-                  129,
-                  229,
-                  248,
-                  122,
-                  128,
+                  114,
+                  38,
+                  220,
+                  109,
                   157,
-                  136,
-                  56,
+                  147,
+                  32,
+                  230,
+                  158,
+                  24,
+                  121,
                   16,
-                  107,
-                  101,
-                  108,
-                  124,
-                  62,
-                  174,
-                  126,
-                  58,
-                  246,
-                  198,
-                  66,
-                  163,
-                  221,
-                  20,
-                  28,
-                  112,
+                  131,
+                  203,
+                  109,
+                  0,
+                  208,
+                  36,
+                  94,
+                  102,
+                  247,
+                  34,
+                  181,
+                  178,
+                  12,
+                  207,
+                  60,
+                  243,
+                  193,
+                  171,
                   128,
-                  123
+                  70
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_threading.py:6 \u203a cached"
+              "trail": "project › tests/test_threading.py:6 › cached"
             },
             "kind": "import",
             "language": "python",
@@ -3097,7 +3097,7 @@
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::a7a8c8e88d80643886ba692dda7c51eb33c83cfdd3c49069e3be839222a386e7::cached",
+              "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::a7a8c8e88d80643886ba692dda7c51ebad305bdd426939088637b10d0d47bf4f::cached",
               "name": "cached",
               "segments": [
                 "cached"
@@ -3105,42 +3105,42 @@
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  117,
-                  136,
-                  41,
-                  67,
-                  5,
-                  126,
-                  183,
+                  134,
+                  124,
+                  71,
+                  62,
+                  237,
                   133,
-                  174,
-                  224,
-                  226,
-                  83,
-                  186,
-                  50,
-                  203,
-                  222,
+                  109,
+                  136,
+                  9,
+                  93,
+                  92,
+                  189,
+                  210,
+                  17,
+                  251,
                   218,
-                  183,
-                  70,
-                  188,
-                  192,
-                  114,
-                  211,
-                  119,
-                  143,
-                  153,
-                  143,
-                  15,
-                  252,
-                  235,
-                  68,
-                  137
+                  26,
+                  234,
+                  6,
+                  231,
+                  37,
+                  106,
+                  75,
+                  25,
+                  112,
+                  216,
+                  144,
+                  84,
+                  137,
+                  139,
+                  75,
+                  98
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a cached"
+              "trail": "project › cached"
             },
             "kind": "type",
             "language": "unknown",
@@ -3194,7 +3194,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_cachedmethod.py:10 \u203a Cached"
+              "trail": "project › tests/test_cachedmethod.py:10 › Cached"
             },
             "kind": "class",
             "language": "python",
@@ -3248,7 +3248,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_classmethod.py:9 \u203a Cached"
+              "trail": "project › tests/test_classmethod.py:9 › Cached"
             },
             "kind": "class",
             "language": "python",
@@ -3302,7 +3302,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_cachedmethod.py:504 \u203a Cached"
+              "trail": "project › tests/test_cachedmethod.py:504 › Cached"
             },
             "kind": "class",
             "language": "python",
@@ -3356,7 +3356,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_cachedmethod.py:496 \u203a Cached"
+              "trail": "project › tests/test_cachedmethod.py:496 › Cached"
             },
             "kind": "class",
             "language": "python",
@@ -3410,7 +3410,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:153 \u203a _cached_wrapper"
+              "trail": "project › src/cachetools/__init__.pyi:153 › _cached_wrapper"
             },
             "kind": "class",
             "language": "python",
@@ -3464,7 +3464,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:165 \u203a _cached_wrapper_info"
+              "trail": "project › src/cachetools/__init__.pyi:165 › _cached_wrapper_info"
             },
             "kind": "class",
             "language": "python",
@@ -3518,7 +3518,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_classmethod.py:40 \u203a CachedClassMethodTest"
+              "trail": "project › tests/test_classmethod.py:40 › CachedClassMethodTest"
             },
             "kind": "class",
             "language": "python",
@@ -3572,7 +3572,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:195 \u203a _cachedmethod_wrapper"
+              "trail": "project › src/cachetools/__init__.pyi:195 › _cachedmethod_wrapper"
             },
             "kind": "class",
             "language": "python",
@@ -3626,7 +3626,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:211 \u203a _cachedmethod_wrapper_info"
+              "trail": "project › src/cachetools/__init__.pyi:211 › _cachedmethod_wrapper_info"
             },
             "kind": "class",
             "language": "python",
@@ -3680,7 +3680,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/keys.py:64 \u203a typedmethodkey"
+              "trail": "project › src/cachetools/keys.py:64 › typedmethodkey"
             },
             "kind": "function",
             "language": "python",
@@ -3735,7 +3735,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/keys.py:46 \u203a methodkey"
+              "trail": "project › src/cachetools/keys.py:46 › methodkey"
             },
             "kind": "function",
             "language": "python",
@@ -3790,7 +3790,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:218 \u203a cachedmethod"
+              "trail": "project › src/cachetools/__init__.pyi:218 › cachedmethod"
             },
             "kind": "function",
             "language": "python",
@@ -3844,7 +3844,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:237 \u203a cachedmethod"
+              "trail": "project › src/cachetools/__init__.pyi:237 › cachedmethod"
             },
             "kind": "function",
             "language": "python",
@@ -3898,7 +3898,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.py:769 \u203a cachedmethod"
+              "trail": "project › src/cachetools/__init__.py:769 › cachedmethod"
             },
             "kind": "function",
             "language": "python",
@@ -3953,7 +3953,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:226 \u203a cachedmethod"
+              "trail": "project › src/cachetools/__init__.pyi:226 › cachedmethod"
             },
             "kind": "function",
             "language": "python",
@@ -4007,7 +4007,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_threading.py:86 \u203a test_cached_locked"
+              "trail": "project › tests/test_threading.py:86 › test_cached_locked"
             },
             "kind": "method",
             "language": "python",
@@ -4061,7 +4061,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_threading.py:54 \u203a test_cached_stampede"
+              "trail": "project › tests/test_threading.py:54 › test_cached_stampede"
             },
             "kind": "method",
             "language": "python",
@@ -4115,7 +4115,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_threading.py:104 \u203a test_cachedmethod_locked"
+              "trail": "project › tests/test_threading.py:104 › test_cachedmethod_locked"
             },
             "kind": "method",
             "language": "python",
@@ -4169,7 +4169,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/cachetools/__init__.pyi:204 \u203a __get__"
+              "trail": "project › src/cachetools/__init__.pyi:204 › __get__"
             },
             "kind": "method",
             "language": "python",
@@ -4196,11 +4196,11 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 8188,
                 "bytesPerToken": 4,
-                "estimatedTokens": 2047,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
+                "normalizedEstimatedTokensExcludingCounters": 906,
+                "normalizedFrameBytesExcludingCounters": 3621,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -4209,7 +4209,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `TTLCache` \u00b7 class \u00b7 python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::7e1ade17c4f14c5892156e2f2aa9109326869723e486c181eebaa9ea0d6b2ba0::TTLCache`\n\u2022 `TTLCache` \u00b7 class \u00b7 python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::de5f7b46ce6c2b764903cfaf1344d0e426869723e486c181eebaa9ea0d6b2ba0::TTLCache`\n\u2022 `TTLCache` \u00b7 import \u00b7 python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::a47bba1a083058c0110fe20eb26cf6cbe68cb32af75c9ff70760a1e4a407598d::TTLCache`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `TTLCache` · class · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::7e1ade17c4f14c5892156e2f2aa9109326869723e486c181eebaa9ea0d6b2ba0::TTLCache`\n• `TTLCache` · class · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::de5f7b46ce6c2b764903cfaf1344d0e426869723e486c181eebaa9ea0d6b2ba0::TTLCache`\n• `TTLCache` · import · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::a47bba1a083058c0110fe20eb26cf6cbe9639771e664f9b98a8753543b8e57c1::TTLCache`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
                 "type": "text"
               }
             ],
@@ -4217,13 +4217,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 6859,
+                "bytesExcludingCursor": 2278,
                 "bytesPerToken": 4,
-                "estimatedTokens": 1715
+                "estimatedTokensExcludingCursor": 570
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-1792131845-pc4-eJztWXuUHEXV79kk5HWMEk-IQKL1dQRmyexuvx-TDATCBiN5rMmyq66bSXVXdbbZnu6hu2fJhA1IzhcwkUeAxGgADRp5KYLRKEFEEaIBIiLyGfQc8qkI6ImocBAjmsRT_ZjpeYTdGPhDj_3H9KNu3br3d-_91e2e8z_SNZ9KUVTLU5fTQ9j1TMemszyXoV18aQl7ft5EdJbN0LpTKEAb0dnL6UGTnGkPQ1cfoDM0gj4kz3282qezdHf3ovlQH8B0hrbMgunTWT5DX2bayLmMSFUWYTO06XkljAIBhC1zCLtlOsuvzdAa9EyPztIGo7IKy2m8rPKQ43jE8AghFYmiqkAOIc7QkWjIgoJYThBZpBq6qMgsVBlVYASWpTO0XnI9xyUru1g3i5jO0ixGsgJVRsGsrEFGUqHEipwkKqIm6poisDonigyLeFVjIMNqWFNlQ-IMXtGwpECRzlS9oHXMygY2JKwKPKMiLCmGwCDJEHkJaxyHZEnSFU1GuiSJCicIoowwFGTREGVeVhiFztCaC219gM7SgiQyUEQc4hVdZGRd4lhNkyHCuirx0IC6rCFZYDRNV0SGkTVWRxKjQkk2NE5QOINA7qwiHnJQYDQWqkjReGgwKoc1VZQFURZVSdZZFYpIU3UoKBhhUeA4CXOKwam8xGJelhg6Q3v6AC7AIDau45DA8oYOecQh2ZAkXRUYA0MoGpwgSYwoGYwoYqyxSIGYNxQDGZBRWEPURJmVBYbXWZUoJUll65jOchn60hJ2y3nHMDwcJkn44LhSZS1JVIjyBWibBvZ8OmuXLGvt2rUpiqLGT75745kbpix65a61G4-yW4znxv_k-jl3Dr_5ffvK1q4zc7v2PDLS-GOvXPrycwdKR4zexcr-jeO_1rV_07nmu--7_655rb_qnTuYeumlJzdSxZl3nXXhkfGPTrr1quXbt83e-8iLE7Fy6---cv0V_RSVery3p4vtXbyAa6EoKkUtveXcfb-8Zd5X9s0b89yELz17xf49r9163c_KP7_h-d9__1Pjpl01zD-2Z9ycS-a0rNj7wg7-me0rljyx4pf3fueB-6YOzrno63-b-NHVc77x9d2nHPjHl97o-tyNN6yb7qrTrIduGv6_nZN3L77swtvMOyafs33zwyXn120f5l-b_cHznOWHHjaHb39uy5r16a9u_WkKUmNSIxlBUVTLVqolNcAX797b_j7zzkPXrJn6Qs-Om19es-6o9LGZ3_rtw687Z91x8VZqzJgrtm3pOtyzZ8mp9zzz-Ucye5--bcI3vwfg-Xsn_GLjpCe2pLdSFEX1zl_MtYyE1YzbFx2ij75irBS3ffwf4-7Zt_mPr7-0-hO7Hp8195SXpzw4_DuqepR6u5ZxLaPx5GoqlRqbuuncKd1_SJ2ya_dPvvPo7vHz_-fZz8z52g9Y464ibezd8WykFEz68VMTluU33Hnviz885er1t_7m2uGJ3lePbJi17kfD_deyf3pt_JQ_33jVbPnmL856Ovf8bRd_9ovPd_w47183tXPmF_Zcc9qmzWNPTo1f0PXlZ352bdewdvq37_3DZ7Jv_ui7_uSH1lOXz_j5xDuu3PmhDoqixhagaacmTN0x-bTbPp39800Ht_i9H1v1yLb-3U986JUXzz_zNze0Su-XV5L8tUzNhW65Zdz792_cdP30B0_aBpfh9bue_N8ZZ3TNVO_ffvrBrW90KA8PfJmiKDNyY1xQRdHNLB360HJWtQUP28LSahtiqRQ1Jubp2P2RnIvkUtS4k56afuSN38-feGDg9Xc5y-2dbUPWp9f-EK-7oPfAjtJfvNUTKCq1oWdhZ29P57LlC5cuicMGRuHG8ZgCRirfWG4UUQnkRozJmHdO4yh9bonlz30i13al8fi8I_fkP2iMc8atODhz4wuHDr854QN9vdPnzT21Eq6TpowsOuP8Hm7J0gs6qVRLKgVIPxAeM86uqInOEonr4s7u8ypB_W-wRgxWBc-zU_ElOEk9vHnuexf2XbSy7y-_3nDW7P07D7361MbO9236rTzmycM390UariN4L1vaSx3nxH-DuFDrOvxCscMuIWd1m1dyDajjjmLZH3DsNp0wk-84ltdRdJ1LsO5nsx4uQNs39WwWCrKmQRYyCs-Iis6wLGNgjsEaJ-mGpJMuTdd4DhqyqKuGITOyxEAWC1BgZFFVUDYbk1_q6NGjhyvQ3jD9C5ev2_nQtPVTj3aOvfruV8954AC3a_va_z-46Fct024c-4vY8EowTh2CVglPqlo7qaL45FjmZB97vtdBfvO-b7UXCTmPjUc_YLhOAVQVALNQdFwfVPTEWCkGK6uGrCmcxmk6KyoiyxmGIDKCIkHVYHmsKQjznCZCRkbIwJqgY4bhWFFlGQGpJ45aS7M03py9aumyv9_-8qU9--5_13255XuGly7veezVq_0L1-07uLV7Wig29sWGNB7dxP_oNEZYNGRNkHQs6ZwmS4LK8LoBDZYXBMRggZMUSZU5HguKpLMKi7EGoYohgySN0yBTm8ZH_vU0nq1b0PMqOZfOd5sFjILrvvxF3RmQ7yE_3d39rdlUJQ1O91y9I-FhPm_app_PtxfLpBlZEcm19B2H9kkAADDPGcKu5UAU3CFsgFh1OnhCDg9bRraik-jhAkVcBhiWA_3-TEW0AFd75hqcDQeqz33fanh2dvVyFfbJNMfIgvnQsqBm4b4-skJ_vAQYBkscG4NccApntoK2c4LbLGhvbz8ud0Zp8Xl2OQPALLBg4UcXd2ZBoeT5QMOAhggRG2ngOwTM6iSzgN2kD_0h2CN7etyOFl2niF2_XHHU9600cS0QPs8uV2XJKF5dNF0cCGQCM7PEsNrFgpmW6fl9fqloVROmvz_Q9TbS44lWY0uFFBP0-NjC1ze5N2Uelx982vjrmOtXTP7kgm8-gAZfy40duuYWupAPxaY-2kCPo5v4H02PMmYhwqysCwYr6KKicqwoYc7gIFRZRuWPjx6PHjc9Vra7eYuWXQwCRWR3tnAB2z70TccGl5n-AChit830cSFI4TbfaSOfJ0C6u3tRKwj6g0qWzjg2EyaJ9bRjEytFpR6Nusr3UG-lLSgymqZP1HSapicFusLF8otMezBUTo583rMc38vnQQ6k6bCePToD6EFcJiebfBLMALro4iG6NVTUQIJh_Q_ici5gl4gWvOAuciRJk-2DuAxyRL5xKJoKcrGS-iVdjEo6jhatU-5iv-TaFTzbA18zIB0vmqlZo86bkm2Z9mAztQQDkAvnkuuaQQJMPEiuGwaDKSAXaGlQG0wBuUAwNKcJsNFmkiFkHNKsmyO_7QXHdnzHNvVMdQeoBz2RU-3H1EtUJnS01uxq7fk8-X4IciA61eKbrkqT8dij4DpynVzXqyRgkzDrjmVhnSS0177URdjF6AJT9xNaowm-b4EcgSCJk-7YPjRtL5mECed9t1wbSrJqHK3Ihr5BXO4n27HtABc7xATTXlWZhVfruOiDi3C503Udt2nCLYCWh6szLA83FQtWDbBOt4K5gS1xLiZ9WoV9UtFJlzLh-0U8lIvDWREdvc-rsB_kOQFqdE6GJiKQG9HPqqTt-FHZNfe3urQZdxHo2Jjl8wXT80x7VT5fZ_exoK6BK5EaSZy9ZjgHnBnD7dXB7TWBO2DhqqcAemEjdCxqS5PRqgfkqFmswZjWdy6yjWWQi3XW1fgIqAehjQi0KpcMOClds4DB7EQ51womuKLqUw1zBGIJwoxZpoZ2k5Sb5CMyORl98h_EMaosGqqEvSKaCHuNZDLBmscmgLi96BRrkWyOm2mMXD91WQ9ND1eCHK6R3E187DbumG-BtF5y3SSHV7N9wLRwOGx6gZVEptaYWYA2XIzXkBcZEnLDcQGxAPqOC6CuY8-rkR9VBUW4BArnBgbEUDTKkaNsYguFcvV9RuRcMBY4V8sJng_9uL_IgOAuAVqEFjJ10s6Vigj6OB0KjQbYUe2QBLAgfUwbeI7rY5SuSaOAFrx0a9hyWbCgIQgc7ZIs-TlGhtSXWOPgSIU1YnHVQJR4M4xTOErJt3jHrJpM03T3AK5tagO3gWMAfwCH9XeWRxKr4AU9bvONo6ZfaHhdrW-WaJpehgvOEK5sZYF-EHziqywLoI3iZaAd5rZmxaYlqDdUsTKdIPOVoAhN12uv9p5J2-MMN73wxbwG_GAkSqsI0hOq5bgDS-ZWg_E50NffnPRADjQQZJ1ktP8mJCsNywiMEkAckGCTiq9L7cjUdlgsYhul03HR1zVNUdjj0dbWZptwLaFXZGskEbZC7Pri8SpC5Ijqo8ovNcuQpw2Mn4hTzYwoySIPq4lcdIoVM5umbyJDSdo2SUFgYej5wMU6tn2rDEoeRsAfgNXFB2AYD2iRP-jLFZybp-7b0Ac19DfkCN8VCSppUmg1TFgXwqjXWe47xYXBfmM6dqPCur2SPsMjiYcLRb9MgzOAXy6GDNHans_bsIDz-daw_klF1q7X0AclYhYiHr4WRtt-Yk_WLQzdtPc2fvw60W8tLanUPwHu72GY-950c1e7e2f778766e1de8d7db27b30e7",
+                  "cursor": "mcp2-<live-validated>",
                   "limit": 3,
                   "query": "TTLCache"
                 },
@@ -4299,7 +4299,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/cachetools/__init__.py:451 \u203a TTLCache"
+                    "trail": "project › src/cachetools/__init__.py:451 › TTLCache"
                   },
                   "kind": "class",
                   "language": "python",
@@ -4354,7 +4354,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/cachetools/__init__.pyi:94 \u203a TTLCache"
+                    "trail": "project › src/cachetools/__init__.pyi:94 › TTLCache"
                   },
                   "kind": "class",
                   "language": "python",
@@ -4363,7 +4363,7 @@
                 },
                 {
                   "identity": {
-                    "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::a47bba1a083058c0110fe20eb26cf6cbe68cb32af75c9ff70760a1e4a407598d::TTLCache",
+                    "coordinate": "/tmp/nudox-surface/python-cachetools/project::semantic::a47bba1a083058c0110fe20eb26cf6cbe9639771e664f9b98a8753543b8e57c1::TTLCache",
                     "line": 4,
                     "name": "TTLCache",
                     "path": "tests/test_ttl.py",
@@ -4373,42 +4373,42 @@
                     "semantic_data": {
                       "kind": "selected-symbol-id",
                       "value": [
-                        6,
-                        57,
-                        253,
-                        148,
-                        60,
-                        19,
-                        73,
-                        91,
-                        75,
-                        96,
-                        91,
-                        245,
-                        225,
+                        238,
+                        113,
                         137,
-                        39,
-                        43,
-                        215,
-                        178,
-                        248,
-                        241,
-                        206,
-                        138,
-                        69,
-                        24,
-                        144,
-                        228,
-                        55,
+                        161,
+                        10,
+                        94,
+                        160,
+                        221,
+                        10,
+                        171,
+                        128,
+                        102,
+                        74,
+                        93,
+                        148,
+                        44,
+                        117,
+                        195,
+                        104,
+                        74,
+                        36,
+                        200,
+                        120,
+                        149,
+                        235,
+                        61,
+                        90,
+                        45,
+                        214,
+                        224,
                         3,
-                        203,
-                        253,
-                        147,
-                        91
+                        47
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a tests/test_ttl.py:4 \u203a TTLCache"
+                    "trail": "project › tests/test_ttl.py:4 › TTLCache"
                   },
                   "kind": "import",
                   "language": "python",
@@ -4434,11 +4434,11 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 6920,
                 "bytesPerToken": 4,
-                "estimatedTokens": 1730,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
+                "normalizedEstimatedTokensExcludingCounters": 903,
+                "normalizedFrameBytesExcludingCounters": 3611,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -4447,7 +4447,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `cached` \u00b7 function \u00b7 python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::939090f05c447a170fe20697390ad411a43f65d89aa4b2e966cca56be0415dc9::cached`\n\u2022 `cached` \u00b7 function \u00b7 python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d088b7f118795cb101d9d0dd2dde89cdc3aa::cached`\n\u2022 `cached` \u00b7 function \u00b7 python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d08888035d1ca8ce27cbd6272c7514e1063d::cached`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `cached` · function · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::939090f05c447a170fe20697390ad411a43f65d89aa4b2e966cca56be0415dc9::cached`\n• `cached` · function · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d088b7f118795cb101d9d0dd2dde89cdc3aa::cached`\n• `cached` · function · python\n  `/tmp/nudox-surface/python-cachetools/project::semantic::e1ae0f68e58b7ed6547d3b7dd958d08888035d1ca8ce27cbd6272c7514e1063d::cached`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
                 "type": "text"
               }
             ],
@@ -4455,13 +4455,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 5595,
+                "bytesExcludingCursor": 2272,
                 "bytesPerToken": 4,
-                "estimatedTokens": 1399
+                "estimatedTokensExcludingCursor": 568
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-1792131845-pc4-eJztWHtwFdUZ370hBJIRByxofc26tkhkc7Pvs7sxIiAiQiAiJqU0Xs6eczZZc-_udXcvSUiilRmwUBRfiEUQFFTwgVVLFfGFQomKL7Aa7UB9FBUBi4xDqaOks_dFENpAUacPzz9n9-x3vvP7ft_3_c6dO-LS6pEUTVGRTa3sNOL5tuuwhiRyrEeuShE_iNmYNQSORW4iAR3MGq1sox3OrE-ghxpYjsUwgOF6QJoD1mARRA0EsxwbtxN2wBoSxzbZDnabQpv8EQLH2r6fIjhtgEncnka8FtaQ2jnWhL7tswZr8bqgCaIpAV2CoihhXsIY61hRdA2KGIsWwooFZA0LoqwIWLeQogEB6rwu87IgsByLUp7veuHJHkF2krAGK0FCVKRjSIiOZKIDEQBgIt1SVVMGUAdQIBJSTSAqim7pCtQhgcjEvIl5bCKN5Q5GwfI6L1qEQIyV0AngeUnhFSQQQSWqpqgWkIGqqkA1NV3lZWJploxVRYeaCgCwCMuxpgcd1MAarKwqPFSwiCUNKTxAqiiYJoCYIF2VoAURMDGQedNEmsLzwBQQVnkdqsAyRVkTrZByt541WEGEMm8KUMeaKUGL10Vi6gqQFaDoKkCCDhVs6gjKGsFEkUVRJaJmibqkCkQCKs9yrI8aSAKmc-O5bphWxRRVHlu8ICPMA2iJvK6JmqoSLFmSBSVi8hIPiM6rioo1QVQEKAIVKrqFgCWSkDY_LCkHEdYQOfaqFPFaYq5l-SRTJJmFYyqV9rBMIY4loGNbxA9Yw0nF4-3t7TRFUUUlK-cMnt1v3O4V7XO6hPlWZ9FrN1Tc1_blc841pdWDK1dvWNfT9_W7r_q4c1vqgFVbpb09p2hV9ds3DrNPfPi3Ky4ofa_2vEb6o49enkMlz1hxzugDRS8UL7r2sqULh3as296XaIs-eeCGq-soin6xtqZaqK26SIxQFEVTE-4YtundOy54YNMFBZ19lr159dsb9i66fkvLW_O27njuV4UDr22T1m8orLiyInJFx4fLpc1Lrxj_0hXvPrT2iYcHNFaMfeTvfX_WXPHYI2sGbftq2b7q39w0b8bJnj4w_tTNbX98tGRNVdPoxfa9JecvvfWZlPt-2SXS3qE_Ge5etv8Zu-2uzvnTZw55cMEbNKQK6J5AUBQVWUBF6AYpubIjeop93_7rpg_4sGb5LR9Pn9GlTj7j93955gv3nHsvX0AVFFy9cH711zUbxv_4_s13ruM6Xl_c53fPMnBER5935hS_NH_IAoqiqNqRVWKkJ65Ov2vcfrZrtzVVWfjzrwrv33TrZ1981PyL1S-efd6gj_s92fYJdXCkaqsnipGjiWQWRdO96JuH9Zu0ix60es1ra19YUzTyrDdvq1j1vGCtSLJWx_I3s06Z4lde7TMxNvu-h7b_YdCsmYs-mNvW13_wwOyzZ2xsq5sr_HVvUb89N107FNxy99mvV25dfPntd28tfyUWXD9g1BlLNlx36o239upPF11Ufc_mLXOr28zTHn9o123GlxufDkqemkm1nv5W33uvefTicoqieiWg7dB9BiwvOXXxr409N--cH9ROrl-3sG7NSxfv3j5i8AfzStUzwdSwfuO26UGvJVJofBZfvGrH-h1eU-uL-xpHr5x-5nmN3uVL5q9c9eDTJa__qYOiqPpsGIXpLsq-nIVgAONufVl6sSzTWmXTBIqmCjIqnQu-p9CydjRV2Ltv5MCnW2tbN1JK4br3nYaav4226htnTx2__4u3Jq-obzpAUfTsmjGjamtGTbxszITxuaQxRxHEsUBhemrenN1R5CRt12NGCr47j0cZcyRnP2XwCXt-9ErRw8ztQ6zdw4Yt21lQtKN3TeeAS--eds-SjXtzzUJTvfv1bNr_8Rpx_IQLR1F0hKaZ8LdAZvRfkneTndUwr1WjJg3PJ_WHZPWYrDyf59K5R6ZkHTjzrv6F1NdjYIlzQuHs5hGfg6Envj-Lli5R1iYnj8uY9V4Y8j1xQi11jBv_C_JC_bI8SCTLnRR2m8v8lGdBRMqTLUGD65SlpSlw3bhfnvTcKwkKDMMnCegENjIMXdJ5nbd4BckygALgLSLyqg4knYdYFgQoS5aqYE2HUDZFoqsqQlBRTcLLgoKRbhgZ6aO7urq68sTOO3lJ64xHnxo4c0DXqF6zVn5-_hPbxNVL2_-8c9x7kYE39XonBzuPf_iFBLkeDFyPCVymyYNJBjJWykGB7TpMkx00MJBJkIRrT7edegbBeByaccIEDTBgfDiN-HlXJ3nET8UDn7EdBjJpdNEcsLGYWJklPCQ9cUwjaalsJC1-tAH6DY2khWPiLmqsHO86hGOQ62A7hJB9tx3LrbwIxn1SatAFOa-n-h4q70ZzLGY7dhCLRZMtFBX5IGtWMPdbPLyYYRiGZdnjpi3t6AiMFedOSM-W5yaYaCwDnrETSdcLmFh4XpJ4GdMwOJxDMyTEkEUZDttKoz-4kFv0bccPoINIjpGR4VRqZHx2H6H_BGwksdDRkAY78DkmYfs-8bud0314JEh5DhNLexzzzU1cNs4EbPbt6ST3ilKeF76XHgqAxI8IFrnxOElz7UehiaJVMJm0nfrvBX6mJuLEyYApPQyxT74PGDzH8N84OrclWx7pWsjym674TJF3q-9saedxlRYfGsVxOc-Cy-7LV2iud2dolgB0C5iaaIomEhRNEUTLkhVe1lSoW4JETA0TSTQVyAOMLWLKiPC8KCi6wMtYP34JjeRvsm532uSpb_AnTmu-5ZyKstsee5U7YdFgyty1_dMF9VVFrSeBPXdkzHolDrvTjm7j__SdRgRIeEvViKKZgGBVkQGWTICxrmiY1zQTWIKgAV1BpsALWMc8xiLGRNMRRhKE3e-0A8d8p-VSQffupvfpGkw_G0xVKghFOCsWU2JjJ3HMcKeljmnLNHXatpG0GMzIrF5PiUajHBMbO6ku8zEscYMZbvqBB1Ew0nXC_4qqoAPriTflMFf5VjCYWLc9mbVDLNMazYyzA-LB-JRJXorUccWlTNn5B5FMyT_FqjkmNrGujmOy90KuJ9M9nP_c7Z487Z_fkzZFUU_miCv-gbiQOCYajX6LMnW8XXFEmerss3nfY52FO9c-se3OZ_et3HLK-nfcyud37Sk_7eW6lovdLVmZWnaYTB3dxv9rmdI0XlKwgKCGiAiQiVURiAgogkwEXpVwd5n6-t-XqbO-g25jKsPiPTaxYiqPUbMO2XDuf4KCPZLj9Kc_cMr8a06_Z3HrqZciNP0P8fKDDA-30b0b2a9ae343bdf0777806991870d58",
+                  "cursor": "mcp2-<live-validated>",
                   "limit": 3,
                   "query": "cached"
                 },
@@ -4537,7 +4537,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/cachetools/__init__.py:738 \u203a cached"
+                    "trail": "project › src/cachetools/__init__.py:738 › cached"
                   },
                   "kind": "function",
                   "language": "python",
@@ -4592,7 +4592,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/cachetools/__init__.pyi:186 \u203a cached"
+                    "trail": "project › src/cachetools/__init__.pyi:186 › cached"
                   },
                   "kind": "function",
                   "language": "python",
@@ -4646,7 +4646,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/cachetools/__init__.pyi:177 \u203a cached"
+                    "trail": "project › src/cachetools/__init__.pyi:177 › cached"
                   },
                   "kind": "function",
                   "language": "python",
@@ -4733,7 +4733,7 @@
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "f480bdc839ae0f09cc1e2f8d69fb3392ec434bb06c8dd5d6006f3ece398744fa"
+                "source_root": "f3b51d188eda41ead7bbc6af5ea14e8549bfa729977ac5f9f2c70af8b6ad8979"
               },
               "roots": [
                 {

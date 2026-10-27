@@ -214,6 +214,50 @@ mod tests {
         .expect("closed native failure")
         .expect("compiler failure projected")
     }
+
+    #[test]
+    fn rust_scope_details_reach_refusal_render_without_paths() {
+        use backend_library::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,
+            CompilerDiagnostic, CompilerTerminal, RustSourceScopeFailureKind as R,
+            RustTargetResolutionKind as T, SourceAuthority,
+        };
+        use backend_version::{CompileRecipeDomain, ContentId, SourceFactDomain};
+
+        let terminal = CompilerTerminal::Compile {
+            attempted: CompilerAttempt {
+                source: SourceAuthority {
+                    identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"rust source"),
+                    byte_len: 11,
+                },
+                recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"rust recipe"),
+            },
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::Resolve,
+                class: AuthorityDiagnosticClass::SourceScope,
+                diagnostic: Some(CompilerDiagnostic::from_rust_source_scope_failure(
+                    R::AmbiguousSourceOwner {
+                        definition_count: 5,
+                        omitted_definition_count: 1,
+                        target_resolution: T::NoExactTarget,
+                    },
+                )),
+            },
+        };
+        let failure = PackageCompilerFailure::from_package_terminal("src/lib.rs", &terminal)
+            .expect("source-bound Rust refusal")
+            .expect("authority refusal");
+        let bytes = failure
+            .encode_bounded_json()
+            .expect("canonical refusal JSON");
+        let reopened = PackageCompilerFailure::decode_bounded_json(&bytes)
+            .expect("cold compiler-outcome reader");
+        let fault = Fault::compiler_refusal(&reopened, Operand::Whole);
+        let rendered = fault.cause().sentence();
+        assert!(rendered.contains("5 active owner definitions"));
+        assert!(rendered.contains("no_exact_target"));
+        assert!(!rendered.contains("/private"));
+    }
     impl Fake {
         fn new(mode: Mode, state: RowState, count: usize, coverage: Vec<Coverage>) -> Self {
             let basis = Basis::new(
@@ -296,6 +340,7 @@ mod tests {
                 profile,
             };
             let source_capture = IndexSourceCaptureSummary {
+                cargo_target: None,
                 producer_package: package.clone(),
                 request_identity: [6; 32],
                 commit_identity: [7; 32],

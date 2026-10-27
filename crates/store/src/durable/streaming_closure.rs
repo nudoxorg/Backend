@@ -15,7 +15,7 @@ use super::{
     relation_object_limit, sync_directory,
 };
 use crate::closure::ManifestRelation;
-use crate::{ClosureId, ObjectId, UntrustedObjectId};
+use crate::{ClosureId, ObjectId, TypedObject, UntrustedObjectId};
 use backend_version::{
     IdContext, LazyTree, ObjectVersionHasher, PersistedTreeRoot, TreeChange, UntrustedId,
     admit_canonical_root_claim, canonical_empty,
@@ -253,6 +253,171 @@ impl StreamingClosureBuilder {
     #[must_use]
     pub const fn object_count(&self) -> usize {
         self.object_count
+    }
+
+    /// Attempts a bounded initial pair of already typed objects.
+    ///
+    /// This Unix fast path is available only for a healthy empty builder,
+    /// unregistered relation schemas, distinct absent object IDs, and two
+    /// payloads that each fit the existing one-frame limit and 16 KiB cap.
+    /// `None` means no stage files were created and the caller can use the
+    /// ordinary object streams. Once staging begins, any error poisons this
+    /// builder; it never falls back after a partial publication attempt.
+    pub fn try_write_initial_typed_pair(
+        &mut self,
+        objects: &[TypedObject; 2],
+    ) -> Result<Option<[ObjectId; 2]>, StoreError> {
+        if self.failed || self.active_object {
+            return Err(StoreError::Corrupt);
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = objects;
+            return Ok(None);
+        }
+
+        #[cfg(unix)]
+        {
+            const PAIR_MAX_PAYLOAD_BYTES: usize = 16 * 1024;
+            if self.object_count != 0
+                || self.declared_payload_bytes != 0
+                || self.payload_bytes != 0
+                || self.bytes_written != 0
+                || self.chunk_calls != 0
+                || self.budget.max_objects < 2
+                || check_metadata_budget(2, self.budget.max_metadata_bytes).is_err()
+            {
+                return Ok(None);
+            }
+
+            let ids = [objects[0].id(), objects[1].id()];
+            if ids[0] == ids[1] || ids.iter().any(|id| id.as_bytes() == &[0; 32]) {
+                return Ok(None);
+            }
+            let mut payload_bytes = 0_u64;
+            let mut chunk_calls = 0_usize;
+            let claims = [
+                ArtifactObjectClaim::new(
+                    objects[0].schema(),
+                    *objects[0].key(),
+                    *objects[0].version(),
+                    u64::try_from(objects[0].bytes().len()).map_err(|_| StoreError::Bounds)?,
+                )
+                .with_object_id(UntrustedObjectId::from_bytes(*ids[0].as_bytes())),
+                ArtifactObjectClaim::new(
+                    objects[1].schema(),
+                    *objects[1].key(),
+                    *objects[1].version(),
+                    u64::try_from(objects[1].bytes().len()).map_err(|_| StoreError::Bounds)?,
+                )
+                .with_object_id(UntrustedObjectId::from_bytes(*ids[1].as_bytes())),
+            ];
+            for index in 0..2 {
+                let length = objects[index].bytes().len();
+                let encoded_len = object_header_bytes()
+                    .checked_add(length)
+                    .ok_or(StoreError::Bounds)?;
+                if length > PAIR_MAX_PAYLOAD_BYTES
+                    || length > self.budget.max_object_bytes
+                    || length > self.budget.max_chunk_bytes
+                    || encoded_len > self.store.object_envelope_limit()?
+                    || self
+                        .store
+                        .relation_registry
+                        .contains_schema(objects[index].schema())
+                {
+                    return Ok(None);
+                }
+                payload_bytes = payload_bytes
+                    .checked_add(u64::try_from(length).map_err(|_| StoreError::Bounds)?)
+                    .ok_or(StoreError::Bounds)?;
+                if length != 0 {
+                    chunk_calls = chunk_calls.checked_add(1).ok_or(StoreError::Bounds)?;
+                }
+            }
+            let projected_payload = self
+                .declared_payload_bytes
+                .checked_add(payload_bytes)
+                .ok_or(StoreError::Bounds)?;
+            let projected_calls = self
+                .chunk_calls
+                .checked_add(chunk_calls)
+                .ok_or(StoreError::Bounds)?;
+            let maximum_new_bytes = u64::try_from(
+                object_header_bytes()
+                    .checked_mul(2)
+                    .and_then(|headers| {
+                        objects[0]
+                            .bytes()
+                            .len()
+                            .checked_add(objects[1].bytes().len())
+                            .and_then(|payload| headers.checked_add(payload))
+                    })
+                    .ok_or(StoreError::Bounds)?,
+            )
+            .map_err(|_| StoreError::Bounds)?;
+            if projected_payload > self.budget.max_payload_bytes
+                || projected_calls > self.budget.max_chunk_calls
+                || self.bytes_written.checked_add(maximum_new_bytes).is_none()
+            {
+                return Ok(None);
+            }
+
+            // Keep this exact objects-directory handle across file creation,
+            // linking, both directory barriers, and stage unlinking.
+            let Some(publication) = artifact_fs::prepare_initial_pair(&self.store, ids)? else {
+                return Ok(None);
+            };
+
+            self.failed = true;
+            let names = ["pair-1.tmp", "pair-2.tmp"];
+            let mut first = artifact_fs::create_stage_file(&self.staging_dir, names[0])?;
+            super::artifact::write_object_envelope(
+                &objects[0],
+                &mut first,
+                self.store.object_envelope_limit()?,
+            )?;
+            let mut second = artifact_fs::create_stage_file(&self.staging_dir, names[1])?;
+            super::artifact::write_object_envelope(
+                &objects[1],
+                &mut second,
+                self.store.object_envelope_limit()?,
+            )?;
+            let created = artifact_fs::publish_initial_pair(
+                &self.store,
+                publication,
+                &self.staging_dir,
+                names,
+                [&first, &second],
+                ids,
+                claims,
+            )?;
+
+            self.record_member(claims[0], ids[0])?;
+            self.record_member(claims[1], ids[1])?;
+            self.declared_payload_bytes = projected_payload;
+            self.chunk_calls = projected_calls;
+            let created_bytes = (0..2).try_fold(0_u64, |total, index| {
+                if created[index] {
+                    total
+                        .checked_add(
+                            u64::try_from(object_header_bytes())
+                                .map_err(|_| StoreError::Bounds)?
+                                .checked_add(claims[index].length())
+                                .ok_or(StoreError::Bounds)?,
+                        )
+                        .ok_or(StoreError::Bounds)
+                } else {
+                    Ok(total)
+                }
+            })?;
+            self.bytes_written = self
+                .bytes_written
+                .checked_add(created_bytes)
+                .ok_or(StoreError::Bounds)?;
+            self.failed = false;
+            Ok(Some(ids))
+        }
     }
 
     /// Starts the only live object stream. Dropping it before `finish` poisons
@@ -899,6 +1064,16 @@ mod tests {
         .with_object_id(UntrustedObjectId::from_bytes(*item.id().as_bytes()))
     }
 
+    fn has_staged_pair(test: &TestStore) -> bool {
+        fs::read_dir(test.path.join("staging/artifacts"))
+            .expect("list private stream sessions")
+            .flatten()
+            .any(|session| {
+                let path = session.path();
+                path.join("pair-1.tmp").exists() || path.join("pair-2.tmp").exists()
+            })
+    }
+
     fn expected_closure(items: &[TypedObject]) -> ClosureId {
         let mut objects = items.to_vec();
         objects.sort_by_key(|item| (item.schema(), *item.key(), *item.version()));
@@ -983,6 +1158,517 @@ mod tests {
             assert_eq!(reopened.object_count(), u64::try_from(items.len())?);
         }
         Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn initial_typed_pair_matches_streamed_closure_and_reopens_cold() {
+        let test = TestStore::new();
+        let objects = [object(31, 4097), object(77, 8191)];
+        let expected = expected_closure(&objects);
+        let mut builder = test
+            .store
+            .begin_streaming_closure(budget(4))
+            .expect("begin bounded pair capture");
+        assert_eq!(
+            builder
+                .try_write_initial_typed_pair(&objects)
+                .expect("publish pair")
+                .expect("eligible initial pair"),
+            [objects[0].id(), objects[1].id()]
+        );
+        assert_eq!(builder.object_count(), 2);
+        let receipt = builder.seal().expect("seal pair closure");
+        assert_eq!(receipt.closure(), expected);
+
+        let cold = FileStore::open(&test.path, 64 * 1024).expect("cold reopen pair store");
+        let reopened = cold
+            .reopen_stored_closure(
+                ArtifactClosureClaim::from_id(expected),
+                ArtifactBudget::new(4, 4, 2 * 1024 * 1024, 16 * 1024, 4096),
+            )
+            .expect("reopen pair closure");
+        assert_eq!(reopened.object_count(), 2);
+        for item in &objects {
+            assert_eq!(
+                cold.read_object(item.id()).expect("read pair member"),
+                *item
+            );
+        }
+    }
+
+    #[test]
+    fn typed_pair_ineligible_inputs_fall_back_without_pair_side_effects() {
+        let test = TestStore::new();
+        let small = [object(12, 23), object(99, 31)];
+        let oversized = [object(18, 16 * 1024 + 1), object(19, 41)];
+        let mut builder = test
+            .store
+            .begin_streaming_closure(budget(8))
+            .expect("begin pair fallback capture");
+        assert_eq!(
+            builder
+                .try_write_initial_typed_pair(&oversized)
+                .expect("oversized pair preflight"),
+            None
+        );
+        assert_eq!(builder.object_count(), 0);
+        for item in &oversized {
+            stream_object(&mut builder, item);
+        }
+        let expected = expected_closure(&oversized);
+        assert_eq!(
+            builder.seal().expect("fallback stream seal").closure(),
+            expected
+        );
+
+        let relation = backend_version::RelationState::<super::super::RawRelation>::from_entries(
+            [(
+                b"pair-relation".to_vec(),
+                super::super::super::StoredValue::new(Vec::new(), 1, Vec::new()),
+            )],
+            backend_version::CoverageWitness::Partial(backend_version::partial_coverage(1)),
+        )
+        .expect("checked relation state");
+        let registered = [
+            TypedObject::from_relation_state(&relation).expect("registered relation object"),
+            small[0].clone(),
+        ];
+        let mut builder = test
+            .store
+            .begin_streaming_closure(budget(8))
+            .expect("begin registered-relation fallback");
+        assert_eq!(
+            builder
+                .try_write_initial_typed_pair(&registered)
+                .expect("registered schema preflight"),
+            None
+        );
+        assert_eq!(builder.object_count(), 0);
+        for item in &registered {
+            stream_object(&mut builder, item);
+        }
+        let expected = expected_closure(&registered);
+        assert_eq!(
+            builder.seal().expect("registered fallback seal").closure(),
+            expected
+        );
+
+        test.store
+            .write_object(&small[0])
+            .expect("install existing member before pair preflight");
+        let mut builder = test
+            .store
+            .begin_streaming_closure(budget(8))
+            .expect("begin existing-member fallback");
+        assert_eq!(
+            builder
+                .try_write_initial_typed_pair(&small)
+                .expect("existing object preflight"),
+            None
+        );
+        assert_eq!(builder.object_count(), 0);
+        for item in &small {
+            stream_object(&mut builder, item);
+        }
+        let expected = expected_closure(&small);
+        assert_eq!(
+            builder.seal().expect("existing fallback seal").closure(),
+            expected
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn typed_pair_budget_preflight_has_no_staging_side_effects() {
+        let test = TestStore::new();
+        let objects = [object(8, 23), object(9, 31)];
+        for limits in [
+            StreamingClosureBudget::new(1, 1024, 256, 64, 16, 4096),
+            StreamingClosureBudget::new(4, 30, 256, 64, 16, 4096),
+            StreamingClosureBudget::new(4, 1024, 24, 64, 16, 4096),
+            StreamingClosureBudget::new(4, 1024, 256, 16, 16, 4096),
+            StreamingClosureBudget::new(4, 1024, 256, 64, 1, 4096),
+            StreamingClosureBudget::new(
+                4,
+                1024,
+                256,
+                64,
+                16,
+                StreamingClosureBudget::metadata_input_bytes_for(2).expect("metadata charge") - 1,
+            ),
+        ] {
+            let mut builder = test
+                .store
+                .begin_streaming_closure(limits)
+                .expect("valid one-object-compatible policy");
+            assert_eq!(
+                builder
+                    .try_write_initial_typed_pair(&objects)
+                    .expect("budget preflight"),
+                None
+            );
+            assert_eq!(builder.object_count(), 0);
+            assert_eq!(builder.payload_bytes, 0);
+            assert_eq!(builder.bytes_written, 0);
+            assert!(!has_staged_pair(&test));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn initial_typed_pair_verifies_a_raced_existing_object_before_credit() {
+        let test = TestStore::new();
+        let objects = [object(37, 101), object(38, 103)];
+        let expected = expected_closure(&objects);
+        let builder = test
+            .store
+            .begin_streaming_closure(budget(4))
+            .expect("begin pair race capture");
+        let store = test.store.clone();
+        let worker_objects = objects.clone();
+        let (reached_tx, reached_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let mut builder = builder;
+            artifact_fs::set_test_pair_barrier(0, reached_tx, release_rx);
+            let result = builder.try_write_initial_typed_pair(&worker_objects);
+            artifact_fs::clear_test_pair_barrier(0);
+            (builder, result)
+        });
+        reached_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("pair files were verified before link race");
+        store
+            .write_object(&objects[0])
+            .expect("concurrent writer installs first exact member");
+        release_tx.send(()).expect("resume pair publisher");
+        let (mut builder, result) = worker.join().expect("pair publisher thread");
+        assert_eq!(
+            result.expect("complete raced pair publication"),
+            Some([objects[0].id(), objects[1].id()])
+        );
+        assert_eq!(builder.object_count(), 2);
+        assert_eq!(builder.seal().expect("seal raced pair").closure(), expected);
+        for item in &objects {
+            assert_eq!(
+                store
+                    .read_object(item.id())
+                    .expect("read verified pair member"),
+                *item
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn raced_wrong_identity_object_is_rejected_without_chmod_or_credit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let test = TestStore::new();
+        let objects = [object(39, 107), object(40, 109)];
+        let builder = test
+            .store
+            .begin_streaming_closure(budget(4))
+            .expect("begin corrupt-race capture");
+        let worker_objects = objects.clone();
+        let (reached_tx, reached_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let mut builder = builder;
+            artifact_fs::set_test_pair_barrier(0, reached_tx, release_rx);
+            let result = builder.try_write_initial_typed_pair(&worker_objects);
+            artifact_fs::clear_test_pair_barrier(0);
+            (builder, result)
+        });
+        reached_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("pair reached link after initial absence check");
+
+        let foreign_object = object(211, objects[0].bytes().len());
+        let mut foreign = Vec::new();
+        super::super::artifact::write_object_envelope(
+            &foreign_object,
+            &mut foreign,
+            test.store
+                .object_envelope_limit()
+                .expect("object envelope bound"),
+        )
+        .expect("encode another valid typed object");
+        let path = test.store.object_path(objects[0].id());
+        fs::write(&path, &foreign).expect("install valid but wrong-identity file");
+        let mut permissions = fs::metadata(&path)
+            .expect("inspect raced corrupt file")
+            .permissions();
+        permissions.set_mode(0o644);
+        fs::set_permissions(&path, permissions).expect("set writable foreign mode");
+        release_tx.send(()).expect("resume pair verifier");
+
+        let (mut builder, result) = worker.join().expect("pair verifier thread");
+        assert!(
+            result.is_err(),
+            "wrong-identity race winner must be refused"
+        );
+        assert_eq!(builder.object_count(), 0);
+        assert!(builder.seal().is_err(), "corrupt race poisons builder");
+        assert_eq!(fs::read(&path).expect("foreign bytes retained"), foreign);
+        assert_eq!(
+            fs::metadata(&path)
+                .expect("foreign metadata retained")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644,
+            "failed verification must not chmod the foreign object"
+        );
+        fs::remove_file(&path).expect("remove test foreign object");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replaced_stage_alias_is_not_linked_into_the_object_store() {
+        let test = TestStore::new();
+        let objects = [object(41, 113), object(42, 127)];
+        let expected = expected_closure(&objects);
+        let builder = test
+            .store
+            .begin_streaming_closure(budget(4))
+            .expect("begin stage alias race capture");
+        let worker_objects = objects.clone();
+        let (reached_tx, reached_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let mut builder = builder;
+            artifact_fs::set_test_pair_barrier(0, reached_tx, release_rx);
+            let result = builder.try_write_initial_typed_pair(&worker_objects);
+            artifact_fs::clear_test_pair_barrier(0);
+            (builder, result)
+        });
+        reached_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("both stage files were verified before publication");
+
+        let sessions = test.path.join("staging/artifacts");
+        let session_path = fs::read_dir(&sessions)
+            .expect("list pair staging sessions")
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| path.join("pair-2.tmp").exists())
+            .expect("locate staged pair");
+        let second_stage = session_path.join("pair-2.tmp");
+        let retained_stage = session_path.join("pair-2-held.tmp");
+        fs::rename(&second_stage, &retained_stage).expect("replace second stage alias");
+        let foreign = b"foreign stage alias must not be published";
+        fs::write(&second_stage, foreign).expect("install foreign stage alias");
+        release_tx.send(()).expect("resume pair publisher");
+
+        let (mut builder, result) = worker.join().expect("pair stage publisher thread");
+        assert!(result.is_err(), "changed stage alias must be refused");
+        assert_eq!(builder.object_count(), 0);
+        assert_eq!(
+            fs::read(&second_stage).expect("foreign stage unchanged"),
+            foreign
+        );
+        assert!(
+            builder.seal().is_err(),
+            "stage alias refusal poisons builder"
+        );
+
+        let cold = FileStore::open(&test.path, 64 * 1024).expect("recover poisoned stage");
+        assert!(
+            cold.reopen_stored_closure(
+                ArtifactClosureClaim::from_id(expected),
+                ArtifactBudget::new(4, 4, 2 * 1024 * 1024, 16 * 1024, 4096),
+            )
+            .is_err(),
+            "stage alias race must not install closure authority"
+        );
+        assert!(
+            !test.store.object_path(objects[1].id()).exists(),
+            "the replaced second stage alias was never published"
+        );
+        cold.collect_garbage(&GcRoots::new(), GcLimits::default())
+            .expect("collect the first unselected pair member");
+        assert!(
+            !test.store.object_path(objects[0].id()).exists(),
+            "partial pair publication leaves only a collectable orphan"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pair_publication_uses_held_stage_and_objects_directories_after_path_rebind() {
+        let test = TestStore::new();
+        let objects = [object(44, 211), object(45, 223)];
+        let expected = expected_closure(&objects);
+        let builder = test
+            .store
+            .begin_streaming_closure(budget(4))
+            .expect("begin directory rebind capture");
+        let worker_objects = objects.clone();
+        let (reached_tx, reached_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let mut builder = builder;
+            artifact_fs::set_test_pair_barrier(1, reached_tx, release_rx);
+            let result = builder.try_write_initial_typed_pair(&worker_objects);
+            artifact_fs::clear_test_pair_barrier(1);
+            (builder, result)
+        });
+        reached_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("first member was linked through the held directory");
+
+        let root_path = test.path.clone();
+        let held_root = root_path.with_file_name(format!(
+            "{}-held",
+            root_path.file_name().unwrap().to_string_lossy()
+        ));
+        let _held_root_cleanup = artifact_fs::TestDirectoryCleanup::new(&held_root);
+        fs::rename(&root_path, &held_root).expect("rebind store parent pathname");
+        fs::create_dir(&root_path).expect("create foreign store root");
+        fs::create_dir(root_path.join("objects")).expect("create foreign objects directory");
+        fs::write(root_path.join("objects/canary"), b"foreign root object")
+            .expect("foreign root canary");
+
+        let objects_path = held_root.join("objects");
+        let moved_objects_path = held_root.join("objects-held");
+        fs::rename(&objects_path, &moved_objects_path).expect("rebind objects pathname");
+        fs::create_dir(&objects_path).expect("create foreign objects directory");
+
+        let sessions = held_root.join("staging/artifacts");
+        let session_path = fs::read_dir(&sessions)
+            .expect("list capture sessions")
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| path.join("pair-1.tmp").exists())
+            .expect("locate live pair staging directory");
+        let moved_session_path = sessions.join("session-held-pair-test");
+        fs::rename(&session_path, &moved_session_path).expect("rebind staging pathname");
+        fs::create_dir(&session_path).expect("create foreign staging directory");
+        fs::write(session_path.join("pair-1.tmp"), b"foreign stage").expect("foreign stage file");
+        fs::write(session_path.join("pair-2.tmp"), b"foreign stage 2")
+            .expect("second foreign stage file");
+
+        release_tx
+            .send(())
+            .expect("resume held-directory publisher");
+        let (mut builder, result) = worker.join().expect("pair publisher thread");
+        assert_eq!(
+            result.expect("publish through held directories"),
+            Some([objects[0].id(), objects[1].id()])
+        );
+        assert_eq!(
+            fs::read(session_path.join("pair-1.tmp")).unwrap(),
+            b"foreign stage"
+        );
+        assert_eq!(
+            fs::read(session_path.join("pair-2.tmp")).unwrap(),
+            b"foreign stage 2"
+        );
+        assert_eq!(
+            fs::read(root_path.join("objects/canary")).unwrap(),
+            b"foreign root object"
+        );
+        for item in &objects {
+            let name = format!("{}.object", super::super::hex(item.id().as_bytes()));
+            assert!(
+                !objects_path.join(name).exists(),
+                "rebound objects directory was not used"
+            );
+        }
+
+        fs::remove_dir_all(&session_path).expect("remove foreign staging directory");
+        fs::rename(&moved_session_path, &session_path).expect("restore captured session path");
+        fs::remove_dir(&objects_path).expect("remove foreign objects directory");
+        fs::rename(&moved_objects_path, &objects_path).expect("restore objects path");
+        fs::remove_dir_all(&root_path).expect("remove foreign store root");
+        fs::rename(&held_root, &root_path).expect("restore store parent path");
+
+        assert_eq!(builder.object_count(), 2);
+        assert_eq!(
+            builder
+                .seal()
+                .expect("seal after pathname restoration")
+                .closure(),
+            expected
+        );
+        for item in &objects {
+            assert_eq!(
+                test.store
+                    .read_object(item.id())
+                    .expect("read held-directory object"),
+                *item
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_foreign_object_preflight_falls_back_without_mutating_it() {
+        let test = TestStore::new();
+        let objects = [object(62, 53), object(63, 59)];
+        let path = test.store.object_path(objects[0].id());
+        let foreign = b"foreign object bytes";
+        fs::write(&path, foreign).expect("install foreign object file");
+        let mut builder = test
+            .store
+            .begin_streaming_closure(budget(4))
+            .expect("begin foreign-object fallback");
+        assert_eq!(
+            builder
+                .try_write_initial_typed_pair(&objects)
+                .expect("read-only object preflight"),
+            None
+        );
+        assert_eq!(builder.object_count(), 0);
+        assert_eq!(fs::read(&path).expect("foreign file unchanged"), foreign);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pair_barrier_failures_never_credit_members_or_publish_a_closure() {
+        for point in 20..=24 {
+            let test = TestStore::new();
+            let objects = [object(point, 43), object(point.wrapping_add(1), 47)];
+            let expected = expected_closure(&objects);
+            let mut builder = test
+                .store
+                .begin_streaming_closure(budget(4))
+                .expect("begin pair fault capture");
+            artifact_fs::set_test_fault(point);
+            let attempt = builder.try_write_initial_typed_pair(&objects);
+            artifact_fs::clear_test_fault(point);
+            assert!(attempt.is_err());
+            assert_eq!(builder.object_count(), 0);
+            assert!(
+                builder.try_write_initial_typed_pair(&objects).is_err(),
+                "a failed builder refuses another pair attempt"
+            );
+            assert!(
+                builder.seal().is_err(),
+                "fault {point} poisoned the builder"
+            );
+
+            let cold = FileStore::open(&test.path, 64 * 1024)
+                .expect("recover failed pair staging session");
+            assert!(
+                cold.reopen_stored_closure(
+                    ArtifactClosureClaim::from_id(expected),
+                    ArtifactBudget::new(4, 4, 2 * 1024 * 1024, 16 * 1024, 4096),
+                )
+                .is_err(),
+                "fault {point} did not install closure authority"
+            );
+            cold.collect_garbage(&GcRoots::new(), GcLimits::default())
+                .expect("collect failed pair members as unselected orphans");
+            for item in &objects {
+                assert!(
+                    !test.store.object_path(item.id()).exists(),
+                    "fault {point} left a collectable pair object"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1489,6 +2175,61 @@ mod tests {
             .expect("collect unselected member");
         collector.join().expect("join GC thread");
         assert!(!test.store.contains_object(id).expect("member swept"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn typed_pair_seal_transfers_its_gc_pin_into_the_receipt() {
+        let test = TestStore::new();
+        let items = [object(47, 83), object(48, 89)];
+        let mut builder = test
+            .store
+            .begin_streaming_closure(budget(4))
+            .expect("begin pair capture");
+        assert!(
+            builder
+                .try_write_initial_typed_pair(&items)
+                .expect("write pair")
+                .is_some()
+        );
+        let held = builder
+            .seal_pinned()
+            .expect("seal and transfer pair GC pin");
+        assert_eq!(held.receipt().closure(), expected_closure(&items));
+
+        let gc_store = test.store.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let collector = thread::spawn(move || {
+            started_tx.send(()).expect("signal GC start");
+            let result = gc_store.collect_garbage(&GcRoots::new(), GcLimits::default());
+            done_tx.send(result).expect("send GC result");
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("collector thread started");
+        assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        for item in &items {
+            assert!(
+                test.store
+                    .contains_object(item.id())
+                    .expect("pair stays pinned")
+            );
+        }
+        drop(held);
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("GC resumes after pair receipt drop")
+            .expect("collect unselected pair members");
+        collector.join().expect("join pair collector");
+        for item in &items {
+            assert!(
+                !test
+                    .store
+                    .contains_object(item.id())
+                    .expect("pair member swept")
+            );
+        }
     }
 
     #[test]

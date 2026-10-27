@@ -239,9 +239,13 @@ impl PublicationWork {
         requested_reference: backend_library::PackageReference,
         operation_key: Option<backend_library::IndexOperationKey>,
         cancellation: Arc<AtomicBool>,
+        finalization_observation: Option<
+            Arc<crate::builtin::index_work_observation::IndexWorkObservation>,
+        >,
     ) -> Self {
         let source_observation = match &preparation {
             Preparation::Source { scan, .. } => scan.observation(),
+            Preparation::Finalize(_) => finalization_observation,
             _ => None,
         };
         let source_attempts = match &preparation {
@@ -377,8 +381,15 @@ impl PublicationWork {
             let preparation = std::mem::replace(&mut self.preparation, Preparation::Consumed);
             match preparation {
                 Preparation::Finalize(job) => {
-                    let prepared =
-                        super::super::index::finish_deferred_index_for_snapshot(&self.base, job)?;
+                    if let Some(observation) = &self.source_observation {
+                        observation.phase("deferred-index-finalize-start");
+                    }
+                    let result =
+                        super::super::index::finish_deferred_index_for_snapshot(&self.base, job);
+                    if let Some(observation) = &self.source_observation {
+                        observation.phase("deferred-index-finalize-returned");
+                    }
+                    let prepared = result?;
                     self.preparation = Preparation::SourcePrepared(prepared);
                     return Ok(());
                 }
@@ -1528,7 +1539,19 @@ impl PublicationWorker {
                             }
                             #[cfg(test)]
                             returned.observed.phase("retire-original-payloads");
-                            drop((returned, retired));
+                            if let Some(progress) = returned.source_observation.clone() {
+                                // Keep the tuple's original left-to-right destruction
+                                // order. The opt-in observer owns no publication
+                                // capability and distinguishes destruction from the
+                                // owner's subsequent join/poll interval.
+                                progress.phase("retire-returned-work");
+                                drop(returned);
+                                progress.phase("retire-prior-read-payloads");
+                                drop(retired);
+                                progress.phase("retirement-complete");
+                            } else {
+                                drop((returned, retired));
+                            }
                             return;
                         }
                         Err(_) => return,

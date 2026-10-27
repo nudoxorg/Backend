@@ -887,12 +887,24 @@ fn product_projection(
         }
     }
     if view.records().is_empty() {
-        lines.push("no row at this revision");
+        lines.push(if view.is_references_result() {
+            "no reference records captured at this revision"
+        } else {
+            "no row at this revision"
+        });
         index_search_page_footer(view, &mut lines, target);
         index_job_footer(view, detail, &mut lines);
         return lines.finish();
     }
     let readable_records = view.readable_records();
+    let coverage_continuation = match view.compiler_outcomes() {
+        Some(backend_library::PackageCompilerOutcomes::Coverage { page, .. }) => page
+            .next
+            .as_ref()
+            .and_then(|read| serde_json::to_string(&read).ok()),
+        _ => None,
+    };
+    let mut shown_coverage_continuation = false;
     for record in readable_records.as_ref() {
         let mut head = record.title().to_owned();
         if !record.tags().is_empty() {
@@ -900,7 +912,13 @@ fn product_projection(
         }
         lines.push(head);
         if let Some(operand) = record.operand() {
-            lines.push(format!("`{operand}`"));
+            let repeated_coverage_continuation = coverage_continuation
+                .as_deref()
+                .is_some_and(|continuation| continuation == operand);
+            if !repeated_coverage_continuation || !shown_coverage_continuation {
+                lines.push(format!("`{operand}`"));
+                shown_coverage_continuation |= repeated_coverage_continuation;
+            }
         }
         if let Some(status) = record.history_status() {
             lines.push(semantic_history_details(status));

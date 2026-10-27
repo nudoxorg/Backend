@@ -173,6 +173,7 @@ fn request_encoding_rejects_a_certificate_for_another_package() {
     let request = CommandDto::new(
         8,
         Command::Add {
+            cargo_target: None,
             package,
             execution_intent: Default::default(),
         },
@@ -351,6 +352,7 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
     let request = CommandDto::new(
         15,
         Command::Add {
+            cargo_target: None,
             package,
             execution_intent: Default::default(),
         },
@@ -389,6 +391,7 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
     let request = CommandDto::new(
         16,
         Command::Add {
+            cargo_target: None,
             package: package_key("pkg"),
             execution_intent: Default::default(),
         },
@@ -421,6 +424,7 @@ fn unix_transport_rejects_digest_only_identity_success() {
     let request = CommandDto::new(
         19,
         Command::Add {
+            cargo_target: None,
             package,
             execution_intent: Default::default(),
         },
@@ -607,6 +611,7 @@ fn add_defaults_to_interactive_and_advertises_the_background_option() {
     let help = invoke::help_for(grammar_for("add").expect("Add grammar"));
     assert!(help.contains("use `.` for the current directory"));
     assert!(help.contains("--execution-intent INTENT"));
+    assert!(help.contains("--cargo-target NAME"));
     assert!(help.contains("bounded remote calibration"));
 }
 
@@ -640,7 +645,9 @@ fn add_accepts_background_and_rejects_unknown_execution_intents() {
     )
     .expect("parse background Add");
     let Request::IndexWithExecutionIntent {
-        execution_intent, ..
+        cargo_target,
+        execution_intent,
+        ..
     } = lower(&invocation, "/unused").expect("lower background Add")
     else {
         panic!("add lowers to an index request");
@@ -649,6 +656,19 @@ fn add_accepts_background_and_rejects_unknown_execution_intents() {
         execution_intent,
         backend_library::CompileExecutionIntent::Background
     );
+    assert_eq!(cargo_target, None);
+
+    let target_invocation = invoke::parse(
+        &words("add /abs/project --cargo-target integration-test"),
+        None,
+    )
+    .expect("parse explicit Cargo target");
+    let Request::IndexWithExecutionIntent { cargo_target, .. } =
+        lower(&target_invocation, "/unused").expect("lower target Add")
+    else {
+        panic!("an explicit Cargo target uses the scoped index request");
+    };
+    assert_eq!(cargo_target.expect("selector").as_str(), "integration-test");
 
     let invocation = invoke::parse(&words("add /abs/project --execution-intent remote"), None)
         .expect("the grammar parses the option value before semantic validation");
@@ -673,7 +693,9 @@ fn owner_index_job_commands_accept_exact_cli_ticket_operands() {
     let ticket_json = serde_json::to_string(&ticket).expect("exact owner ticket JSON");
 
     let start = invoke::parse(
-        &words("index_start pkg:cargo/serde@1.0.228 --execution-intent background"),
+        &words(
+            "index_start pkg:cargo/serde@1.0.228 --execution-intent background --cargo-target lib",
+        ),
         None,
     )
     .expect("parse index_start");
@@ -682,9 +704,10 @@ fn owner_index_job_commands_accept_exact_cli_ticket_operands() {
         Ok(Request::Surface(command))
             if matches!(*command,
                 SurfaceCommand::IndexStart {
+                    cargo_target: Some(ref target),
                     package: backend_library::PackageReference::Purl(ref package),
                     execution_intent: backend_library::CompileExecutionIntent::Background,
-                } if package.as_str() == "pkg:cargo/serde@1.0.228")
+                } if package.as_str() == "pkg:cargo/serde@1.0.228" && target.as_str() == "lib")
     ));
 
     for (line, expected_id) in [
@@ -1139,6 +1162,7 @@ fn admitted_durable_partial_matches_ticket_fault_and_cli_exit_without_inventing_
         )
         .expect("receipt"),
         source_capture: IndexSourceCaptureSummary {
+            cargo_target: None,
             producer_package: PackageReference::parse("pkg:cargo/producer@1.0.0")
                 .expect("producer"),
             request_identity: [1; 32],

@@ -58,6 +58,34 @@ fn until(
     }
 }
 
+fn until_publication_stage(
+    fixture: &mut AdapterFixture,
+    stage: &str,
+    operation: &backend_library::IndexOperationKey,
+    ticket: Option<&backend_library::IndexJobTicket>,
+) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        tick(fixture);
+        let finished = {
+            let (adapter, _) = fixture.parts();
+            adapter.indexing.is_none()
+        };
+        if finished {
+            return;
+        }
+        if Instant::now() >= deadline {
+            let state = ticket
+                .map(|ticket| after_grant_state(fixture, Some(operation.clone()), ticket))
+                .unwrap_or_else(|| {
+                    "no owner ticket was captured after the accepted start request".to_owned()
+                });
+            panic!("actual publication stage {stage} did not finish in30s; {state}");
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 fn profile_completion_state(completion: &ProfileCompletion) -> String {
     let outcome = match &completion.outcome {
         ProfileOutcome::Cancelled => "Cancelled".to_owned(),
@@ -296,6 +324,7 @@ fn start(
             .expect("actual durable acceptance before worker transfer");
     }
     let mut job = IndexJob {
+        cargo_target: None,
         owner_ticket: ticket.clone(),
         operation_key: operation,
         captures: BTreeMap::new(),
@@ -309,6 +338,7 @@ fn start(
         captured_label: label.clone(),
         requested_package: package,
         execution_intent: CompileExecutionIntent::Interactive,
+        observation: None,
         _staged_project: None,
         work: IndexJobWork::Transition,
     };
@@ -1162,6 +1192,7 @@ fn native_dispatch(
     }
     let operation = backend_library::IndexOperationKey::from_bytes([seed; 32]).expect("key");
     let command = Command::Surface(backend_library::SurfaceCommand::IndexOperationStart {
+        cargo_target: None,
         operation_key: operation,
         package: backend_library::PackageReference::parse(label.clone()).expect("actual project"),
         execution_intent: CompileExecutionIntent::Interactive,
@@ -1212,6 +1243,422 @@ fn keyed_status(
     .admit(backend_library::CommandId::IndexProgress)
     .expect("public status preserves terminal/capture shape");
     status
+}
+
+fn install_installed_rust_compiler(fixture: &mut AdapterFixture) {
+    #[derive(Clone)]
+    struct FixtureHost(std::path::PathBuf);
+    impl backend_engine::application::LocalHostEnvironment for FixtureHost {
+        fn value(
+            &self,
+            variable: backend_engine::application::LocalHostVariable,
+        ) -> Option<std::ffi::OsString> {
+            if variable == backend_engine::application::LocalHostVariable::NudoxDataRoot {
+                Some(self.0.clone().into_os_string())
+            } else {
+                backend_engine::application::LocalHostEnvironment::value(
+                    &backend_engine::application::ProcessHostEnvironment,
+                    variable,
+                )
+            }
+        }
+
+        fn search_path(&self) -> Option<std::ffi::OsString> {
+            backend_engine::application::LocalHostEnvironment::search_path(
+                &backend_engine::application::ProcessHostEnvironment,
+            )
+        }
+
+        fn cargo_home(&self) -> Option<std::ffi::OsString> {
+            backend_engine::application::LocalHostEnvironment::cargo_home(
+                &backend_engine::application::ProcessHostEnvironment,
+            )
+        }
+    }
+
+    let compiler = backend_engine::application::LocalCompilerHost::new(
+        FixtureHost(fixture.root.0.join("compiler-rust-target")),
+        backend_engine::application::LocalHostDiscovery::InstalledTools,
+    )
+    .open()
+    .expect("actual installed Rust compiler and Cargo selection");
+    let profile = backend_semantic::vocabulary::LanguageProfile::Rust(
+        backend_semantic::vocabulary::RustEdition::Rust2021,
+    );
+    // Host startup deliberately probes installed executables asynchronously.
+    // Wait for this exact profile's probe before asserting its admission state.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let capability = loop {
+        let capability = compiler.capabilities().for_profile(profile);
+        if capability.state() != backend_engine::application::LocalCompilerCapabilityState::Probing {
+            break capability;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the installed Rust probe must finish: {capability:?}",
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert!(
+        matches!(
+            capability.state(),
+            backend_engine::application::LocalCompilerCapabilityState::Ready
+                | backend_engine::application::LocalCompilerCapabilityState::Deferred
+        ),
+        "the installed Rust pair is admitted now or deferred to the first request: {capability:?}",
+    );
+    fixture.adapter.as_mut().expect("adapter").compiler = compiler;
+}
+
+fn run_rust_target_operation(
+    fixture: &mut AdapterFixture,
+    package: backend_library::PackageReference,
+    target: &str,
+    seed: u8,
+) -> backend_library::IndexOperationStatus {
+    eprintln!("selected Rust publication start: target={target} operation={seed:#x}");
+    let operation = backend_library::IndexOperationKey::from_bytes([seed; 32]).expect("operation");
+    let command = Command::Surface(backend_library::SurfaceCommand::IndexOperationStart {
+        cargo_target: Some(
+            backend_library::CargoTargetSelector::new(target.to_owned()).expect("target name"),
+        ),
+        operation_key: operation,
+        package,
+        execution_intent: CompileExecutionIntent::Interactive,
+    });
+    let body = serde_json::to_vec(&backend_engine::CommandDto::new(u64::from(seed), command))
+        .expect("actual selected Rust index DTO");
+    let (adapter, daemon) = fixture.parts();
+    assert!(matches!(
+        adapter.execute_or_defer(daemon, &body, u64::from(seed)),
+        Ok(Executed::Reply(_))
+    ));
+    let ticket = adapter
+        .indexing
+        .as_ref()
+        .map(|job| job.owner_ticket.clone());
+    until_publication_stage(
+        fixture,
+        &format!("selected Rust target={target} operation={seed:#x}"),
+        &operation,
+        ticket.as_ref(),
+    );
+    let status = keyed_status(fixture, operation);
+    eprintln!(
+        "selected Rust publication completed: target={target} operation={seed:#x} state={:?}",
+        status.state
+    );
+    assert!(
+        matches!(
+            &status.state,
+            backend_library::IndexOperationState::Published(_)
+        ),
+        "real Rust target {target} must publish completely: {status:?}"
+    );
+    assert_eq!(
+        status
+            .cargo_target
+            .as_ref()
+            .map(|selected| selected.as_str()),
+        Some(target)
+    );
+    let capture = status
+        .source_capture
+        .as_ref()
+        .expect("selected source capture");
+    let scope = capture
+        .cargo_target
+        .as_ref()
+        .expect("retained target scope");
+    assert_eq!(scope.name.as_str(), target);
+    assert_eq!(scope.root, format!("src/{target}.rs"));
+    assert_eq!(scope.kinds.as_ref(), ["bin".to_owned()]);
+    assert_eq!(scope.source_count, 2);
+    status
+}
+
+fn public_name_rows(fixture: &mut AdapterFixture, name: &str) -> Vec<backend_library::Row> {
+    let (adapter, daemon) = fixture.parts();
+    let library = daemon.engine().daemon().library();
+    let root = library.revision_root();
+    let capability = library.view().capability();
+    assert!(
+        capability.is_some(),
+        "the product owner's current view supplies its admitted coverage capability"
+    );
+    let command = Command::Name(backend_library::NameQuery::new(
+        name,
+        root,
+        backend_library::QueryLimit::new(10).expect("bounded name result"),
+    ));
+    // Product views use their actual owner's certificate producer, rather
+    // than the catalog's optional built-in library-source certificate.
+    let revision_request = backend_engine::CommandDto::new(0xb92, Command::Revision);
+    let revision_body =
+        serde_json::to_vec(&revision_request).expect("actual owner revision request DTO");
+    let revision_bytes = adapter
+        .execute(daemon, &revision_body)
+        .expect("revision through the real product owner transport");
+    let revision = backend_library::ReplyDto::decode_with_certificate(
+        &revision_bytes,
+        capability.clone(),
+    )
+    .expect("strict real product revision reply with the owner's admitted capability");
+    backend_library::admit_reply(&revision_request, &revision)
+        .expect("producer revision receipt admission");
+    let CommandReply::Revision(receipt) = &revision.reply else {
+        panic!("the real product owner returns a revision receipt");
+    };
+    assert_eq!(
+        receipt.root(),
+        root,
+        "certificate binds the original name-query root"
+    );
+    let certificate = revision
+        .certificate()
+        .cloned()
+        .expect("real product revision producer certificate");
+    let dto = backend_engine::CommandDto::new(0xb93, command).with_certificate(certificate);
+    let body = serde_json::to_vec(&dto).expect("actual certified public name query DTO");
+    let Executed::Reply(bytes) = adapter
+        .execute_or_defer(daemon, &body, 0xb93)
+        .expect("public name query")
+    else {
+        panic!("name query is a read");
+    };
+    let reply = backend_library::ReplyDto::decode_with_certificate(&bytes, capability)
+        .expect("strict public name reply with the same admitted owner capability");
+    backend_library::admit_reply(&dto, &reply).expect("public name query admission");
+    let CommandReply::Names(snapshot) = reply.reply else {
+        panic!("public name query returns admitted rows");
+    };
+    snapshot.root.row_refs().cloned().collect()
+}
+
+#[test]
+fn public_name_fixture_bootstraps_certificate_through_real_product_owner() {
+    let mut fixture = AdapterFixture::open(TempTree::new(), false);
+    let before = {
+        let (_, daemon) = fixture.parts();
+        daemon.engine().daemon().library().revision_root()
+    };
+    assert!(public_name_rows(&mut fixture, "absent_certificate_fixture_marker").is_empty());
+    let (_, daemon) = fixture.parts();
+    assert_eq!(
+        daemon.engine().daemon().library().revision_root(),
+        before,
+        "certified revision and name reads cannot change the product root"
+    );
+}
+
+fn run_unselected_rust_operation(
+    fixture: &mut AdapterFixture,
+    package: backend_library::PackageReference,
+    seed: u8,
+) -> backend_library::IndexOperationStatus {
+    let operation = backend_library::IndexOperationKey::from_bytes([seed; 32]).expect("operation");
+    let command = Command::Surface(backend_library::SurfaceCommand::IndexOperationStart {
+        cargo_target: None,
+        operation_key: operation,
+        package,
+        execution_intent: CompileExecutionIntent::Interactive,
+    });
+    let body = serde_json::to_vec(&backend_engine::CommandDto::new(u64::from(seed), command))
+        .expect("actual package-wide Rust index DTO");
+    eprintln!("package-wide Rust publication start: operation={seed:#x}");
+    let (adapter, daemon) = fixture.parts();
+    assert!(matches!(
+        adapter.execute_or_defer(daemon, &body, u64::from(seed)),
+        Ok(Executed::Reply(_))
+    ));
+    let ticket = adapter
+        .indexing
+        .as_ref()
+        .map(|job| job.owner_ticket.clone());
+    until_publication_stage(
+        fixture,
+        &format!("package-wide Rust operation={seed:#x}"),
+        &operation,
+        ticket.as_ref(),
+    );
+    let status = keyed_status(fixture, operation);
+    eprintln!(
+        "package-wide Rust publication completed: operation={seed:#x} state={:?}",
+        status.state
+    );
+    status
+}
+
+#[test]
+fn selected_rust_target_replaces_latest_semantic_context_and_redo_keeps_it() {
+    let mut fixture = AdapterFixture::open(TempTree::new(), false);
+    install_installed_rust_compiler(&mut fixture);
+    let (_, label) = fixture.add_target();
+    let source_root = Path::new(&label);
+    fs::create_dir_all(source_root.join("src")).expect("Cargo source directory");
+    fs::write(
+        source_root.join("Cargo.toml"),
+        "[package]\nname = \"target_context_replace\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[[bin]]\nname = \"alpha\"\npath = \"src/alpha.rs\"\n\n[[bin]]\nname = \"beta\"\npath = \"src/beta.rs\"\n",
+    )
+    .expect("two real Cargo binary target declarations");
+    fs::write(
+        source_root.join("src/alpha.rs"),
+        "mod shared;\npub fn alpha_context_marker() -> usize { shared::shared_value() }\nfn main() {}\n",
+    )
+    .expect("actual alpha target source");
+    fs::write(
+        source_root.join("src/beta.rs"),
+        "mod shared;\npub fn beta_context_marker() -> usize { shared::shared_value() }\nfn main() {}\n",
+    )
+    .expect("actual beta target source");
+    fs::write(
+        source_root.join("src/shared.rs"),
+        "pub fn shared_value() -> usize { 7 }\n",
+    )
+    .expect("real module shared by both Cargo targets");
+    let package = backend_library::PackageReference::parse(label).expect("local package");
+
+    let alpha = run_rust_target_operation(&mut fixture, package.clone(), "alpha", 0xc1);
+    assert!(
+        public_name_rows(&mut fixture, "alpha_context_marker")
+            .iter()
+            .any(|row| row.label.contains("alpha_context_marker")),
+        "the selected alpha declaration must be visible through the public name read"
+    );
+    assert!(
+        public_name_rows(&mut fixture, "beta_context_marker")
+            .iter()
+            .all(|row| !row.label.contains("beta_context_marker")),
+        "the unselected beta target must not leak into alpha's semantic result"
+    );
+    assert_eq!(
+        alpha
+            .source_capture
+            .as_ref()
+            .unwrap()
+            .cargo_target
+            .as_ref()
+            .unwrap()
+            .source_count,
+        2,
+        "alpha's exact source closure contains its root and shared module"
+    );
+
+    let beta = run_rust_target_operation(&mut fixture, package.clone(), "beta", 0xc2);
+    assert_ne!(
+        alpha
+            .source_capture
+            .as_ref()
+            .unwrap()
+            .cargo_target
+            .as_ref()
+            .unwrap()
+            .source_closure,
+        beta.source_capture
+            .as_ref()
+            .unwrap()
+            .cargo_target
+            .as_ref()
+            .unwrap()
+            .source_closure,
+        "different exact Cargo targets retain different source-closure identities"
+    );
+    assert!(
+        public_name_rows(&mut fixture, "alpha_context_marker")
+            .iter()
+            .all(|row| !row.label.contains("alpha_context_marker")),
+        "switching to beta removes the prior alpha declaration from public reads"
+    );
+    assert!(
+        public_name_rows(&mut fixture, "beta_context_marker")
+            .iter()
+            .any(|row| row.label.contains("beta_context_marker")),
+        "the selected beta declaration is visible through the public name read"
+    );
+    assert_eq!(
+        beta.source_capture
+            .as_ref()
+            .unwrap()
+            .cargo_target
+            .as_ref()
+            .unwrap()
+            .name
+            .as_str(),
+        "beta",
+        "the retained capture scope discloses the exact replacement target"
+    );
+
+    let beta_redo = run_rust_target_operation(&mut fixture, package.clone(), "beta", 0xc3);
+    assert_eq!(
+        beta_redo.source_capture.as_ref().unwrap().cargo_target,
+        beta.source_capture.as_ref().unwrap().cargo_target,
+        "unchanged target redo retains the exact target/source scope"
+    );
+    assert_eq!(
+        beta_redo
+            .source_capture
+            .as_ref()
+            .unwrap()
+            .cargo_target
+            .as_ref()
+            .unwrap()
+            .name
+            .as_str(),
+        "beta"
+    );
+    assert!(
+        public_name_rows(&mut fixture, "beta_context_marker")
+            .iter()
+            .any(|row| row.label.contains("beta_context_marker")),
+        "redo of the selected beta target preserves its public declaration"
+    );
+    assert!(
+        public_name_rows(&mut fixture, "alpha_context_marker")
+            .iter()
+            .all(|row| !row.label.contains("alpha_context_marker")),
+        "redo does not restore stale alpha declarations"
+    );
+
+    let unselected = run_unselected_rust_operation(&mut fixture, package, 0xc4);
+    assert!(
+        matches!(
+            &unselected.state,
+            backend_library::IndexOperationState::Failed {
+                reason: backend_library::IndexOperationFailureReason::Refused,
+                ..
+            } | backend_library::IndexOperationState::PartiallyPublished { .. }
+        ),
+        "package-wide compilation must honestly refuse the shared file's two active owners: {unselected:?}"
+    );
+    assert!(unselected.cargo_target.is_none());
+    assert!(
+        unselected
+            .source_capture
+            .as_ref()
+            .is_some_and(|capture| { capture.cargo_target.is_none() })
+    );
+    let beta_rows = public_name_rows(&mut fixture, "beta_context_marker");
+    assert!(
+        beta_rows
+            .iter()
+            .any(|row| row.label.contains("beta_context_marker")),
+        "the last successful beta declaration remains readable after the unselected refusal"
+    );
+    assert!(
+        beta_rows.iter().any(|row| {
+            row.label.contains("beta_context_marker")
+                && row.document.iter().any(|fragment| {
+                    matches!(fragment, backend_library::Fragment::Text(text) if text.contains("stale semantic image:"))
+                })
+        }),
+        "the preserved beta declaration must be explicitly marked stale after the later failed capture"
+    );
+    assert!(
+        public_name_rows(&mut fixture, "alpha_context_marker")
+            .iter()
+            .all(|row| !row.label.contains("alpha_context_marker")),
+        "the later unselected failure must not restore alpha"
+    );
 }
 
 fn graph_page(
@@ -2005,6 +2452,7 @@ fn staged_selection_removal(
         )
         .test_value()?;
         pending_changes.push(BuiltinCaptureChange {
+            cargo_target: None,
             key: key.clone(),
             expected: Some(current),
             capture,
@@ -2039,6 +2487,7 @@ fn staged_selection_removal(
             panic!("actual committed Pending capture must preserve its prior generation");
         };
         capture_changes.push(BuiltinCaptureChange {
+            cargo_target: None,
             key: change.key,
             expected: Some(current),
             capture: change.capture,
@@ -2211,6 +2660,7 @@ fn publication_worker_removes_native_selection_after_staging() -> Result<(), Str
     let (adapter, daemon) = fixture.parts();
     let ticket = adapter.issue_index_ticket(reference).test_value()?;
     let mut job = IndexJob {
+        cargo_target: None,
         owner_ticket: ticket.clone(),
         operation_key: None,
         captures: BTreeMap::new(),
@@ -2224,6 +2674,7 @@ fn publication_worker_removes_native_selection_after_staging() -> Result<(), Str
         captured_label: label,
         requested_package: package,
         execution_intent: CompileExecutionIntent::Interactive,
+        observation: None,
         _staged_project: None,
         work: IndexJobWork::Transition,
     };

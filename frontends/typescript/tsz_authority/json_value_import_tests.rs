@@ -199,4 +199,196 @@ mod json_value_import_tests {
         );
         Ok(())
     }
+
+    /// Exercises the native cross-file default-alias path seen in query-core:
+    /// `DefaultError` is a conditional over `Register`, and `QueryState`
+    /// carries it as its second defaulted type parameter. The minimal library
+    /// deliberately owns a nongeneric global `Error`. This is a regression
+    /// fixture for the affected authority path; it is not yet known to fail
+    /// without the pending TSZ identity fix.
+    #[test]
+    fn cross_file_default_error_keeps_library_error_and_query_state_params_separate()
+    -> Result<(), Box<dyn Error>> {
+        const TYPES: &str = "export interface Register {}\n\
+            export type DefaultError = Register extends { defaultError: infer TError }\n\
+              ? TError\n\
+              : Error;\n";
+        const QUERY: &str = "import type { DefaultError } from './types';\n\
+            export interface QueryState<TData = unknown, TError = DefaultError> {\n\
+              data: TData | undefined;\n\
+              error: TError | null;\n\
+            }\n";
+        const CONSUMER: &str = "import type { QueryState } from './query';\n\
+            export declare const state: QueryState;\n\
+            export const error: QueryState['error'] = state.error;\n";
+
+        let mut checker = TszCheckerOptions::default();
+        checker.no_lib = false;
+        let recipe = TszProjectOptions {
+            checker,
+            semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+            program_diagnostics: Vec::new(),
+            module_resolutions: vec![
+                TszProjectModuleResolution {
+                    importer_path: "src/query.ts".into(),
+                    specifier: "./types".into(),
+                    request_kind: TszProjectModuleRequestKind::EsmImport,
+                    resolution_mode: None,
+                    target: TszProjectModuleResolutionTarget::File {
+                        path: "src/types.ts".into(),
+                    },
+                },
+                TszProjectModuleResolution {
+                    importer_path: "src/consumer.ts".into(),
+                    specifier: "./query".into(),
+                    request_kind: TszProjectModuleRequestKind::EsmImport,
+                    resolution_mode: None,
+                    target: TszProjectModuleResolutionTarget::File {
+                        path: "src/query.ts".into(),
+                    },
+                },
+            ],
+            file_formats: Vec::new(),
+            environment: TszEnvironmentFingerprint::from_sha256([0x5b; 32]),
+        };
+        let base_library = TszLibraryInput::from_utf8(
+            "lib.es5.d.ts",
+            b"interface Error { name: string; message: string; }".to_vec(),
+        )?
+        .into_lib_file();
+        let cause_library = TszLibraryInput::from_utf8(
+            "lib.es2022.error.d.ts",
+            b"interface Error { cause?: unknown; }".to_vec(),
+        )?
+        .into_lib_file();
+        let mut authority = TszProjectAuthority::new();
+        authority.update(
+            vec![
+                input("src/types.ts", TYPES),
+                input("src/query.ts", QUERY),
+                input("src/consumer.ts", CONSUMER),
+            ],
+            recipe,
+            &[base_library, cause_library],
+        )?;
+        let project = checked_project(&authority)?;
+        let consumer = project
+            .program()
+            .files
+            .iter()
+            .position(|file| file.file_name == "src/consumer.ts")
+            .ok_or_else(|| {
+                io::Error::other("consumer module is absent from the checked project")
+            })?;
+        let query_file = project
+            .program()
+            .files
+            .iter()
+            .position(|file| file.file_name == "src/query.ts")
+            .ok_or_else(|| io::Error::other("query module is absent from the checked project"))?
+            as u32;
+        let program = project.program();
+        let error_id = program
+            .globals
+            .get("Error")
+            .ok_or_else(|| io::Error::other("the linked libraries do not expose global Error"))?;
+        let error_symbol = program
+            .symbols
+            .get(error_id)
+            .ok_or_else(|| io::Error::other("global Error has no merged symbol"))?;
+        let library_error_owner_count: usize = error_symbol
+            .declarations
+            .iter()
+            .map(|&declaration| {
+                program
+                    .declaration_arenas
+                    .get(&(error_id, declaration))
+                    .map_or(0, |arenas| arenas.len())
+            })
+            .sum();
+        assert_eq!(
+            library_error_owner_count, 2,
+            "the two explicit libraries must retain both Error declaration arenas"
+        );
+        project.with_file_checker_and_types(consumer, |checker, binder, _, types| {
+            let state = binder
+                .file_locals
+                .get("state")
+                .ok_or_else(|| io::Error::other("defaulted QueryState value is not bound"))?;
+            let state_type = checker.get_type_of_symbol(state);
+            let _state_type = checker.resolve_lazy_type(state_type);
+
+            let error = binder
+                .file_locals
+                .get("error")
+                .ok_or_else(|| io::Error::other("projected QueryState error is not bound"))?;
+            let error_type = checker.get_type_of_symbol(error);
+            let error_type = checker.resolve_lazy_type(error_type);
+            let checker_error_owner_count: usize = error_symbol
+                .declarations
+                .iter()
+                .map(|&declaration| {
+                    binder
+                        .declaration_arenas
+                        .get(&(error_id, declaration))
+                        .map_or(0, |arenas| arenas.len())
+                })
+                .sum();
+            assert_eq!(
+                checker_error_owner_count, library_error_owner_count,
+                "the actual project checker binder must retain both Error declaration arenas"
+            );
+            // Inspect retained declarations rather than relying on whichever
+            // structural spelling the formatter chooses. The builtin Error
+            // must remain the non-program, zero-parameter declaration; the
+            // authored QueryState must retain both defaulted parameters.
+            let definitions = &project.program().definition_store;
+            let error_defs = definitions
+                .find_defs_by_name(types.intern_string("Error"))
+                .unwrap_or_default();
+            let library_errors = error_defs
+                .iter()
+                .filter_map(|def_id| definitions.get(*def_id))
+                .filter(|def| def.file_id == Some(u32::MAX))
+                .collect::<Vec<_>>();
+            assert!(
+                !library_errors.is_empty()
+                    && library_errors.iter().all(|def| def.type_params.is_empty()),
+                "all retained standard-library Error definitions remain present with arity zero"
+            );
+            let query_defs = definitions
+                .find_defs_by_name(types.intern_string("QueryState"))
+                .unwrap_or_default();
+            let query_state = query_defs
+                .iter()
+                .filter_map(|def_id| definitions.get(*def_id))
+                .find(|def| def.file_id == Some(query_file))
+                .ok_or_else(|| io::Error::other("authored QueryState definition is absent"))?;
+            assert_eq!(query_state.type_params.len(), 2);
+            assert_eq!(
+                query_state.type_params[0].name,
+                types.intern_string("TData")
+            );
+            assert_eq!(
+                query_state.type_params[1].name,
+                types.intern_string("TError")
+            );
+            assert!(
+                query_state
+                    .type_params
+                    .iter()
+                    .all(|param| param.default.is_some())
+            );
+
+            // Force the default branch and retain a supplemental readable
+            // result, without requiring a nominal display format.
+            let error_display = checker.format_type(error_type);
+            assert!(
+                error_display.contains("Error"),
+                "projected default error still refers to Error: {error_display}"
+            );
+            Ok::<_, io::Error>(())
+        })?;
+        Ok(())
+    }
 }

@@ -1314,6 +1314,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
     fn push_parameter_facts(
         &mut self,
         params: &ParamRows,
+        depth: u8,
     ) -> Result<[u32; MAX_FACT_CHILDREN + 1], TypeScriptCollectError> {
         let mut ordinals = [0_u32; MAX_FACT_CHILDREN + 1];
         for (index, row) in params.iter().enumerate() {
@@ -1327,7 +1328,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
             let member_base = self.staged_members.len();
             let cells = match row.annotation {
-                Some(span) => self.owner_cells(span.start, span.end, 0)?,
+                Some(span) => self.owner_cells(span.start, span.end, depth)?,
                 None => TypeCells::unknown(TypeReason::Unannotated),
             };
             let extension = self.extension(type_parameter_start)?;
@@ -1410,6 +1411,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         &mut self,
         name: Span,
         annotation: Span,
+        depth: u8,
     ) -> Result<u32, TypeScriptCollectError> {
         let name_bytes = self.slice_span(name).ok_or(TypeScriptCollectError::Span {
             start: name.start,
@@ -1417,7 +1419,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         })?;
         let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
         let member_base = self.staged_members.len();
-        let cells = self.owner_cells(annotation.start, annotation.end, 0)?;
+        let cells = self.owner_cells(annotation.start, annotation.end, depth)?;
         let extension = self.extension(type_parameter_start)?;
         // A result may share its callable's name and type with an authored
         // input (`stmt(stmt: Stmt): Stmt`). Both are Parameter facts under
@@ -1465,11 +1467,24 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         result: Option<Span>,
         static_member: bool,
     ) -> Result<u32, TypeScriptCollectError> {
+        self.push_signature_at_depth(name, declaration, rows, params, result, static_member, 0)
+    }
+
+    fn push_signature_at_depth(
+        &mut self,
+        name: Span,
+        declaration: Span,
+        rows: &TypeParamRows,
+        params: &ParamRows,
+        result: Option<Span>,
+        static_member: bool,
+        depth: u8,
+    ) -> Result<u32, TypeScriptCollectError> {
         self.push_type_parameter_facts(rows)?;
-        let type_parameter_start = self.push_type_params(rows, 0)?;
-        let param_ordinals = self.push_parameter_facts(params)?;
+        let type_parameter_start = self.push_type_params(rows, depth)?;
+        let param_ordinals = self.push_parameter_facts(params, depth)?;
         let result_target = match result {
-            Some(span) => Some(self.push_result_carrier(name, span)?),
+            Some(span) => Some(self.push_result_carrier(name, span, depth)?),
             None => None,
         };
         let name_bytes = self.slice_span(name).ok_or(TypeScriptCollectError::Span {
@@ -2420,41 +2435,6 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         self.synthetic_cells_fact(fallback_name, TypeCells::unknown(TypeReason::Unannotated))
     }
 
-    /// Declares one formal parameter as a `Parameter` fact when the binding
-    /// site is not already registered, then walks its annotation for nested
-    /// function bindings.
-    ///
-    /// The annotation is not lowered onto this fact. These parameters belong
-    /// to a function type, and the type-literal walk already owns every
-    /// member of that annotation. Lowering it here would claim a second
-    /// index-signature field to the parameter, and a same-named parameter of
-    /// the enclosing signature would then share that field's identity.
-    fn declare_formal_parameter_binding(
-        &mut self,
-        name_span: Span,
-        annotation: Option<Span>,
-        flags: u8,
-        depth: u8,
-    ) -> Result<(), TypeScriptCollectError> {
-        if self.text_span(name_span).is_some_and(|name| name == "this") {
-            return Ok(());
-        }
-        if self.fact_at_name_start(name_span.start).is_none() {
-            let mut params = ParamRows::new();
-            params.push(ParamRow {
-                name: name_span,
-                annotation: None,
-                default: None,
-                flags,
-            })?;
-            self.push_parameter_facts(&params)?;
-        }
-        if let Some(span) = annotation {
-            self.declare_bindings_in_span(span.start, span.end, depth.saturating_add(1))?;
-        }
-        Ok(())
-    }
-
     /// Walks one expression span and declares bindings reachable through
     /// `satisfies`, `as`, and non-null assertions on the initializer plane.
     fn declare_expression_bindings(
@@ -2684,21 +2664,10 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             }
             if let Some(function_type) = kind.as_ts_function_type() {
                 for parameter in function_type.params.items.iter() {
-                    let annotation = parameter
-                        .type_annotation
-                        .as_ref()
-                        .map(|annotation| annotation.type_annotation.span());
-                    let flags = if parameter.optional {
-                        SemanticTypeChild::FLAG_OPTIONAL
-                    } else {
-                        0
-                    };
-                    self.declare_formal_parameter_binding(
-                        parameter.pattern.span(),
-                        annotation,
-                        flags,
-                        next_depth,
-                    )?;
+                    if let Some(annotation) = parameter.type_annotation.as_ref() {
+                        let inner = annotation.type_annotation.span();
+                        self.declare_bindings_in_span(inner.start, inner.end, next_depth)?;
+                    }
                     if let Some(init) = parameter.initializer.as_ref() {
                         let init_span = init.span();
                         self.declare_expression_bindings(
@@ -2709,16 +2678,10 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                     }
                 }
                 if let Some(rest) = function_type.params.rest.as_ref() {
-                    let annotation = rest
-                        .type_annotation
-                        .as_ref()
-                        .map(|annotation| annotation.type_annotation.span());
-                    self.declare_formal_parameter_binding(
-                        rest.rest.argument.span(),
-                        annotation,
-                        SemanticTypeChild::FLAG_REST,
-                        next_depth,
-                    )?;
+                    if let Some(annotation) = rest.type_annotation.as_ref() {
+                        let inner = annotation.type_annotation.span();
+                        self.declare_bindings_in_span(inner.start, inner.end, next_depth)?;
+                    }
                 }
                 let returned = function_type.return_type.type_annotation.span();
                 self.declare_bindings_in_span(returned.start, returned.end, next_depth)?;
@@ -3311,61 +3274,69 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         next_depth: u8,
     ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
         if let Some(function_type) = kind.as_ts_function_type() {
-            let width = function_type
-                .params
-                .items
-                .len()
-                .saturating_add(usize::from(function_type.params.rest.is_some()))
-                .saturating_add(1);
-            if width > MAX_TYPE_CHILDREN {
-                return Err(fault(FactFault::TypeProjectionWidth {
-                    actual: width,
-                    maximum: MAX_TYPE_CHILDREN,
-                }));
+            if let Some(existing) = self.fact_at_name_start(span.start)
+                && let Ok(index) = usize::try_from(existing)
+                && self.fact_kinds.get(index) == Some(&EntityKind::Function)
+                && self.decl_starts.get(index) == Some(&span.start)
+                && self.decl_ends.get(index) == Some(&span.end)
+            {
+                return Ok(TypeOutcome::Existing(existing));
             }
-            let mut cells = TypeCells::leaf(SemanticTypeTag::FunctionPointer);
+            // A function type is a real lexical owner for its parameter
+            // declarations. Emitting it through the shared signature path
+            // keeps same-named parameters in sibling function types distinct
+            // without adding source coordinates to their identities.
+            let mut rows = TypeParamRows::new();
+            if let Some(declared) = function_type.type_parameters.as_ref() {
+                for parameter in declared.params.iter() {
+                    Self::stage_row(
+                        &mut rows,
+                        TypeParamRow {
+                            name: parameter.name.span,
+                            constraint: parameter.constraint.as_ref().map(|t| t.span()),
+                            default: parameter.default.as_ref().map(|t| t.span()),
+                        },
+                    )?;
+                }
+            }
+            let mut params = ParamRows::new();
             for parameter in function_type.params.items.iter() {
-                let target = match parameter.type_annotation.as_ref() {
-                    Some(annotation) => {
-                        let inner = annotation.type_annotation.span();
-                        self.child_target(inner.start, inner.end, next_depth)?
-                    }
-                    None => self.unannotated_fact(parameter.span())?,
-                };
-                let flags = if parameter.optional {
-                    SemanticTypeChild::FLAG_OPTIONAL
-                } else {
-                    0
-                };
-                // A standalone function type mints no `Parameter` fact
-                // for its parameters, so the written pattern is the only
-                // source of a name; pass it explicitly rather than
-                // leaving the child unnamed.
-                let name = self.slice_span(parameter.pattern.span());
-                cells.push_child(target, name, flags)?;
+                params.push(ParamRow {
+                    name: parameter.pattern.span(),
+                    annotation: parameter
+                        .type_annotation
+                        .as_ref()
+                        .map(|annotation| annotation.type_annotation.span()),
+                    default: parameter.initializer.as_ref().map(|init| init.span()),
+                    flags: if parameter.optional {
+                        SemanticTypeChild::FLAG_OPTIONAL
+                    } else {
+                        0
+                    },
+                })?;
             }
             if let Some(rest) = function_type.params.rest.as_ref() {
-                let target = match rest.type_annotation.as_ref() {
-                    Some(annotation) => {
-                        let inner = annotation.type_annotation.span();
-                        self.child_target(inner.start, inner.end, next_depth)?
-                    }
-                    None => self.unannotated_fact(rest.span())?,
-                };
-                let name = self.slice_span(rest.rest.argument.span());
-                cells.push_child(target, name, SemanticTypeChild::FLAG_REST)?;
+                params.push(ParamRow {
+                    name: rest.rest.argument.span(),
+                    annotation: rest
+                        .type_annotation
+                        .as_ref()
+                        .map(|annotation| annotation.type_annotation.span()),
+                    default: None,
+                    flags: SemanticTypeChild::FLAG_REST,
+                })?;
             }
             let returned = function_type.return_type.type_annotation.span();
-            let target = self.child_target(returned.start, returned.end, next_depth)?;
-            cells.record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
-            cells.push_child(target, None, 0)?;
-            // The rest element is pushed after every fixed parameter, so
-            // it is the final parameter exactly when present, and the
-            // record must declare the typed-last variadic form for it.
-            if function_type.params.rest.is_some() {
-                cells.record.payload0 = SemanticTypeRecord::FUNCTION_TYPED_VARIADIC_FLAG;
-            }
-            return Ok(TypeOutcome::Cells(cells));
+            let ordinal = self.push_signature_at_depth(
+                span,
+                span,
+                &rows,
+                &params,
+                Some(returned),
+                false,
+                next_depth,
+            )?;
+            return Ok(TypeOutcome::Existing(ordinal));
         }
         Ok(TypeOutcome::Cells(self.unrepresented(span)))
     }
@@ -10912,6 +10883,14 @@ fn intern_native_tsz_type<'source>(
     // therefore comes from the checker-owned body and must keep its native
     // dynamically-typed meaning instead of being confused with a failed lookup.
     if !active.insert(resolved_type_id) {
+        report_native_tsz_type_projection_cycle(
+            registry,
+            checker,
+            database,
+            type_id,
+            resolved_type_id,
+            active,
+        );
         // A checker-owned lazy alias may close on its already active body.
         // Keep that named reference through the existing entity plane only
         // after proving its exact definition/file/declaration identity. A raw
@@ -10945,6 +10924,320 @@ fn intern_native_tsz_type<'source>(
     result
 }
 
+/// Emits a bounded, opt-in view of the exact TSZ row that closed a projection
+/// path. This is diagnostic-only: it does not change projection, admission, or
+/// persisted failure data, and it never formats a checker type as source text.
+fn report_native_tsz_type_projection_cycle(
+    registry: &FactRegistry<'_, '_>,
+    checker: &TszCheckerState<'_>,
+    database: &dyn TszTypeDatabase,
+    input: TszTypeId,
+    resolved: TszTypeId,
+    active: &std::collections::HashSet<TszTypeId>,
+) {
+    use std::ffi::OsStr;
+
+    const LIMIT: usize = 16;
+    const NAME_BYTES: usize = 64;
+    if std::env::var_os("NUDOX_TYPESCRIPT_TYPE_PROJECTION_DIAGNOSTICS").as_deref()
+        != Some(OsStr::new("1"))
+    {
+        return;
+    }
+
+    let mut active_ids = active.iter().map(|id| id.0).collect::<Vec<_>>();
+    active_ids.sort_unstable();
+    active_ids.truncate(32);
+    let active_types = active_ids
+        .iter()
+        .filter_map(|id| {
+            let id = TszTypeId(*id);
+            let data = database.lookup(id)?;
+            let lazy = matches!(data, TypeData::Lazy(_))
+                .then(|| format_native_tsz_lazy_diagnostic(checker, database, &data));
+            Some((id.0, format!("{data:?}"), lazy))
+        })
+        .collect::<Vec<_>>();
+    let raw_data = database.lookup(input);
+    let raw_lazy_detail = raw_data
+        .as_ref()
+        .filter(|data| matches!(data, TypeData::Lazy(_)))
+        .map(|data| format_native_tsz_lazy_diagnostic(checker, database, data));
+    let mut detail = database.lookup(resolved).map_or_else(
+        || "lookup=missing".to_owned(),
+        |data| match data {
+            TypeData::Object(shape_id) | TypeData::ObjectWithIndex(shape_id) => {
+                let shape = database.object_shape(shape_id);
+                let properties = shape
+                    .properties
+                    .iter()
+                    .take(LIMIT)
+                    .map(|property| {
+                        let name = bounded_native_tsz_diagnostic_name(
+                            &database.resolve_atom_ref(property.name),
+                            NAME_BYTES,
+                        );
+                        format!("{name:?}:{}", property.type_id.0)
+                    })
+                    .collect::<Vec<_>>();
+                format!(
+                    "data={data:?} nominal_symbol={:?} properties={properties:?} total_properties={} indexes=[string:{:?},number:{:?},symbol:{:?}]",
+                    shape.symbol,
+                    shape.properties.len(),
+                    shape.string_index.map(|index| (index.key_type.0, index.value_type.0)),
+                    shape.number_index.map(|index| (index.key_type.0, index.value_type.0)),
+                    shape.symbol_index.map(|index| (index.key_type.0, index.value_type.0)),
+                )
+            }
+            TypeData::Function(shape_id) => {
+                let shape = database.function_shape(shape_id);
+                let parameters = shape
+                    .params
+                    .iter()
+                    .take(LIMIT)
+                    .map(|parameter| {
+                        let name = parameter.name.map(|name| {
+                            bounded_native_tsz_diagnostic_name(
+                                &database.resolve_atom_ref(name),
+                                NAME_BYTES,
+                            )
+                        });
+                        (name, parameter.type_id.0, parameter.optional, parameter.rest)
+                    })
+                    .collect::<Vec<_>>();
+                format!(
+                    "data={data:?} params={parameters:?} total_params={} return={} this={:?} type_params={}",
+                    shape.params.len(),
+                    shape.return_type.0,
+                    shape.this_type.map(|ty| ty.0),
+                    shape.type_params.len(),
+                )
+            }
+            TypeData::Callable(shape_id) => {
+                let shape = database.callable_shape(shape_id);
+                let signatures =
+                    |signatures: &[backend_frontend_typescript::tsz_type_handles::CallSignature]| {
+                    signatures
+                        .iter()
+                        .take(LIMIT)
+                        .map(|signature| {
+                            let params = signature
+                                .params
+                                .iter()
+                                .take(LIMIT)
+                                .map(|parameter| {
+                                    let name = parameter.name.map(|name| {
+                                        bounded_native_tsz_diagnostic_name(
+                                            &database.resolve_atom_ref(name),
+                                            NAME_BYTES,
+                                        )
+                                    });
+                                    (name, parameter.type_id.0, parameter.optional, parameter.rest)
+                                })
+                                .collect::<Vec<_>>();
+                            (params, signature.return_type.0, signature.type_params.len())
+                        })
+                        .collect::<Vec<_>>()
+                };
+                format!(
+                    "data={data:?} calls={:?} total_calls={} constructs={:?} total_constructs={}",
+                    signatures(&shape.call_signatures),
+                    shape.call_signatures.len(),
+                    signatures(&shape.construct_signatures),
+                    shape.construct_signatures.len(),
+                )
+            }
+            TypeData::Application(application_id) => {
+                let application = database.type_application(application_id);
+                let args = application
+                    .args
+                    .iter()
+                    .take(LIMIT)
+                    .map(|argument| argument.0)
+                    .collect::<Vec<_>>();
+                format!(
+                    "data={data:?} base={} args={args:?} total_args={}",
+                    application.base.0,
+                    application.args.len(),
+                )
+            }
+            TypeData::Lazy(_) => format!(
+                "data={data:?} {}",
+                format_native_tsz_lazy_diagnostic(checker, database, &data)
+            ),
+            TypeData::Conditional(conditional_id) => {
+                let conditional = database.conditional_type(conditional_id);
+                let children = [
+                    ("check", conditional.check_type),
+                    ("extends", conditional.extends_type),
+                    ("true", conditional.true_type),
+                    ("false", conditional.false_type),
+                ]
+                .into_iter()
+                .map(|(role, child)| {
+                    let child_data = database.lookup(child);
+                    let lazy = child_data
+                        .as_ref()
+                        .filter(|item| matches!(item, TypeData::Lazy(_)));
+                    let lazy_detail = lazy.map(|item| {
+                        format_native_tsz_lazy_diagnostic(checker, database, item)
+                    });
+                    let application_detail = child_data.as_ref().and_then(|item| {
+                        let TypeData::Application(application_id) = item else {
+                            return None;
+                        };
+                        let application = database.type_application(*application_id);
+                        let base_data = database.lookup(application.base);
+                        let base_lazy = base_data
+                            .as_ref()
+                            .filter(|base| matches!(base, TypeData::Lazy(_)))
+                            .map(|base| {
+                                format_native_tsz_lazy_diagnostic(checker, database, base)
+                            });
+                        let base_symbol = match base_data.as_ref() {
+                            Some(TypeData::Object(shape_id) | TypeData::ObjectWithIndex(shape_id)) => {
+                                Some(database.object_shape(*shape_id).symbol)
+                            }
+                            _ => None,
+                        };
+                        let arguments = application
+                            .args
+                            .iter()
+                            .take(LIMIT)
+                            .map(|argument| {
+                                let data = database.lookup(*argument);
+                                let lazy = data
+                                    .as_ref()
+                                    .filter(|argument| matches!(argument, TypeData::Lazy(_)))
+                                    .map(|argument| {
+                                        format_native_tsz_lazy_diagnostic(
+                                            checker, database, argument,
+                                        )
+                                    });
+                                (argument.0, data.map(|data| format!("{data:?}")), lazy)
+                            })
+                            .collect::<Vec<_>>();
+                        Some(format!(
+                            "base={} base_data={:?} base_symbol={base_symbol:?} base_lazy={base_lazy:?} args={arguments:?} total_args={}",
+                            application.base.0,
+                            base_data.map(|base| format!("{base:?}")),
+                            application.args.len(),
+                        ))
+                    });
+                    (
+                        role,
+                        child.0,
+                        child_data.map(|item| format!("{item:?}")),
+                        lazy_detail,
+                        application_detail,
+                    )
+                })
+                .collect::<Vec<_>>();
+                let definition_file = match raw_data.as_ref() {
+                    Some(TypeData::Lazy(def_id)) => checker
+                        .ctx
+                        .definition_store
+                        .get(*def_id)
+                        .and_then(|info| info.file_id)
+                        .and_then(|index| {
+                            registry.tsz_project?.program().files.get(index as usize)
+                        })
+                        .map(|file| {
+                            let path = if file.file_name.len() > 256 {
+                                &file.file_name[..file.file_name.floor_char_boundary(256)]
+                            } else {
+                                file.file_name.as_str()
+                            };
+                            (
+                                path,
+                                file.arena
+                                    .get_source_file_at(file.source_file)
+                                    .map(|source| source.text.len()),
+                            )
+                        }),
+                    _ => None,
+                };
+                format!(
+                    "data={data:?} distributive={} children={children:?} definition_file={definition_file:?}",
+                    conditional.is_distributive,
+                )
+            }
+            TypeData::Union(list) | TypeData::Intersection(list) => {
+                let children = database
+                    .type_list(list)
+                    .iter()
+                    .take(LIMIT)
+                    .map(|child| child.0)
+                    .collect::<Vec<_>>();
+                format!("data={data:?} children={children:?}")
+            }
+            TypeData::Array(child) | TypeData::ReadonlyType(child) | TypeData::NoInfer(child) => {
+                format!("data={data:?} child={}", child.0)
+            }
+            TypeData::Tuple(list) => {
+                let elements = database
+                    .tuple_list(list)
+                    .iter()
+                    .take(LIMIT)
+                    .map(|element| (element.type_id.0, element.optional, element.rest))
+                    .collect::<Vec<_>>();
+                format!("data={data:?} elements={elements:?}")
+            }
+            other => format!("data={other:?}"),
+        },
+    );
+    if detail.len() > 2048 {
+        let mut end = 2048;
+        while !detail.is_char_boundary(end) {
+            end -= 1;
+        }
+        detail.truncate(end);
+    }
+    eprintln!(
+        "typescript type projection cycle: input={} raw={raw_data:?} raw_lazy={raw_lazy_detail:?} resolved={} active={active_ids:?} active_types={active_types:?} {detail}",
+        input.0, resolved.0,
+    );
+}
+
+fn format_native_tsz_lazy_diagnostic(
+    checker: &TszCheckerState<'_>,
+    database: &dyn TszTypeDatabase,
+    data: &TypeData,
+) -> String {
+    const NAME_BYTES: usize = 64;
+    let TypeData::Lazy(def_id) = data else {
+        return "data=not_lazy".to_owned();
+    };
+    checker.ctx.definition_store.get(*def_id).map_or_else(
+        || "definition=missing".to_owned(),
+        |info| {
+            let name = bounded_native_tsz_diagnostic_name(
+                &database.resolve_atom_ref(info.name),
+                NAME_BYTES,
+            );
+            format!(
+                "definition={{kind:{:?},name:{name:?},file:{:?},span:{:?},symbol:{:?},type_params:{},body:{:?}}}",
+                info.kind,
+                info.file_id,
+                info.span,
+                info.symbol_id,
+                info.type_params.len(),
+                info.body.map(|body| body.0),
+            )
+        },
+    )
+}
+
+fn bounded_native_tsz_diagnostic_name(name: &str, maximum_bytes: usize) -> String {
+    if name.len() <= maximum_bytes {
+        return name.to_owned();
+    }
+    let mut end = maximum_bytes;
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &name[..end])
+}
 /// Returns one exact same-file, non-generic alias entity for a lazy back-edge.
 /// Definition IDs and binder-local symbol IDs are never interchanged. The
 /// primary definition index, declaring file, source bytes, stable declaration,
@@ -13851,6 +14144,46 @@ type Container = {\n\
     }
 
     #[test]
+    fn native_tsz_keeps_function_type_parameters_in_distinct_signature_owners()
+    -> Result<(), LaneError> {
+        let source = concat!(
+            "type ReplaceReturnType<TFunction extends (...args: any[]) => unknown, TReturn> = ",
+            "(...args: Parameters<TFunction>) => TReturn;\n",
+            "type QueryKey = readonly unknown[];\n",
+            "type QueryFunctionContext<TKey> = { queryKey: TKey };\n",
+            "type QueryFunction<T, TKey, TPage> = T;\n",
+            "type Query = {};\n",
+            "type QueryPersister<T, TKey extends QueryKey, TPage> = ",
+            "[TPage] extends [never] ",
+            "? (queryFn: QueryFunction<T, TKey, never>, context: QueryFunctionContext<TKey>, query: Query) => T ",
+            ": (queryFn: QueryFunction<T, TKey, TPage>, context: QueryFunctionContext<TKey>, query: Query) => T;\n",
+        );
+        for ir in [owned_ir(source, None)?, owned_tsz_ir(source)?] {
+            for name in [b"args".as_slice(), b"context".as_slice()] {
+                let parameters = ir
+                    .items()
+                    .filter(|item| item.kind() == EntityKind::Parameter && item.name() == name)
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    parameters.len(),
+                    2,
+                    "both authored {name:?} parameters survive"
+                );
+                assert_ne!(
+                    parameters[0].parent(),
+                    parameters[1].parent(),
+                    "same-named parameters belong to their distinct function-type signatures"
+                );
+                assert!(
+                    parameters.iter().all(|parameter| parameter.parent().is_some()),
+                    "function-type parameter ownership is explicit"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn native_tsz_compact_fragment_uses_typed_anonymous_anchors_and_keeps_empty_literals()
     -> Result<(), LaneError> {
         let source = "const empty = \"\";\nexport function currentImpl(copy: any) {\n  return [copy].map((key, childValue) => { return childValue; });\n}\n";
@@ -14222,6 +14555,97 @@ describe('suite', () => {\n\
                 .count(),
             2,
             "each call site has one exact target, without a global name-only guess"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_relative_and_path_alias_jsx_references_keep_exact_targets() -> Result<(), LaneError> {
+        let relative = "export const RelativeButton = () => <button />;\n";
+        let alias = "export const AliasButton = () => <button />;\n";
+        let caller = "import { RelativeButton } from '../components/RelativeButton';\nimport { AliasButton } from '@/components/AliasButton';\nexport default function Page() { return <><RelativeButton /><AliasButton /></>; }\n";
+        let resolutions = [
+            module_resolution(
+                "src/app/page.tsx",
+                "../components/RelativeButton",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "src/components/RelativeButton.tsx".to_owned(),
+                },
+            ),
+            module_resolution(
+                "src/app/page.tsx",
+                "@/components/AliasButton",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "src/components/AliasButton.tsx".to_owned(),
+                },
+            ),
+        ];
+        let authority = native_tsz_project_with_resolutions(
+            &[
+                ("src/components/RelativeButton.tsx", relative),
+                ("src/components/AliasButton.tsx", alias),
+                ("src/app/page.tsx", caller),
+            ],
+            &resolutions,
+        )?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("path-alias TSZ project"))?;
+        let facts = collect_native_tsz_file(project, "src/app/page.tsx", caller)?;
+        let expected = [
+            (
+                "RelativeButton",
+                "src/components/RelativeButton.tsx",
+                relative,
+            ),
+            ("AliasButton", "src/components/AliasButton.tsx", alias),
+        ];
+        let mut imports = [0_u8; 2];
+        let mut jsx_uses = [0_u8; 2];
+        for index in 0..facts.occurrence_len {
+            let occurrence = facts.occurrences[index];
+            if !matches!(occurrence.kind, ReferenceKind::Import | ReferenceKind::VariableUse) {
+                continue;
+            }
+            let owner = facts.occurrence_owners[index] as usize;
+            let owner_span = facts.provenance.source_spans()[owner]
+                .ok_or(LaneError::Missing("JSX occurrence owner span"))?;
+            let start = owner_span.start + occurrence.span.start;
+            let end = owner_span.start + occurrence.span.end;
+            let Some((ordinal, (name, target_path, target_source))) = expected
+                .iter()
+                .enumerate()
+                .find(|(_, (name, _, _))| caller.get(start as usize..end as usize) == Some(*name))
+            else {
+                continue;
+            };
+            let slot = facts.occurrence_source_coordinate_slot[index]
+                .ok_or(LaneError::Missing("component source coordinate"))?;
+            let coordinate = TypeScriptSourceCoordinate::decode(
+                &facts.foreign_source_coordinate_text[slot as usize],
+            )
+            .ok_or(LaneError::Missing("decodable component coordinate"))?;
+            assert_eq!(coordinate.path, *target_path);
+            assert_eq!(
+                coordinate.name_start as usize,
+                target_source
+                    .find(name)
+                    .ok_or(LaneError::Missing("target declaration name"))?,
+                "the reference must retain the exact target declaration identity"
+            );
+            match occurrence.kind {
+                ReferenceKind::Import => imports[ordinal] += 1,
+                ReferenceKind::VariableUse => jsx_uses[ordinal] += 1,
+                _ => unreachable!(),
+            }
+        }
+        assert_eq!(imports, [1, 1], "each import produces one exact target edge");
+        assert_eq!(
+            jsx_uses,
+            [1, 1],
+            "relative and aliased JSX reads both resolve once, without duplicate edges"
         );
         Ok(())
     }

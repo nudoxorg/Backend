@@ -435,6 +435,7 @@
         "rust"
       ],
       "index_mode": "wait",
+      "cargo_target": "ryu",
       "authored_symbols": {
         "Buffer": "src/buffer/mod.rs",
         "format_finite": "src/buffer/mod.rs"
@@ -633,6 +634,7 @@
         "python"
       ],
       "index_mode": "wait",
+      "outline_max_pages": 512,
       "authored_symbols": {
         "xml_document": "src/pugixml.hpp",
         "xml_parse_result": "src/pugixml.hpp"
@@ -825,7 +827,8 @@
           "tool": "backend.outline",
           "arguments": {}
         }
-      ]
+      ],
+      "row_dump": true
     }
   ]
 }

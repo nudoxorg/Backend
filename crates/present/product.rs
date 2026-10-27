@@ -395,6 +395,7 @@ pub struct ProductView {
     package_graph_page: Option<backend_library::PackageGraphPage>,
     package_graph_request_authority: Option<backend_library::PackageGraphSourceAuthority>,
     semantic_data: Option<ProductSemanticData>,
+    references_result: bool,
     pub(crate) mcp_exposure: crate::McpExposure,
     package_discovery: Option<PackageDiscoveryProjection>,
 }
@@ -589,6 +590,12 @@ impl ProductView {
     #[must_use]
     pub fn heading(&self) -> &str {
         &self.heading
+    }
+
+    /// Whether this answer is the typed result of a reference query.
+    #[must_use]
+    pub const fn is_references_result(&self) -> bool {
+        self.references_result
     }
 
     /// Returns the records in reply order.
@@ -1112,6 +1119,11 @@ impl ProductView {
         self
     }
 
+    fn with_references_result(mut self) -> Self {
+        self.references_result = true;
+        self
+    }
+
     /// Records one product answer a surface assembled itself.
     ///
     /// An accepted intent is not a [`SurfaceReply`], but it is the same shape
@@ -1135,6 +1147,7 @@ impl ProductView {
             package_graph_page: None,
             package_graph_request_authority: None,
             semantic_data: None,
+            references_result: false,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1160,6 +1173,7 @@ impl ProductView {
             package_graph_page: None,
             package_graph_request_authority: None,
             semantic_data: None,
+            references_result: false,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1183,6 +1197,7 @@ impl ProductView {
             package_graph_page: None,
             package_graph_request_authority: None,
             semantic_data: None,
+            references_result: false,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1206,6 +1221,7 @@ impl ProductView {
             package_graph_page: None,
             package_graph_request_authority: None,
             semantic_data: None,
+            references_result: false,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1229,6 +1245,7 @@ impl ProductView {
             package_graph_page: None,
             package_graph_request_authority: None,
             semantic_data: None,
+            references_result: false,
             package_discovery: None,
             mcp_exposure: crate::McpExposure::Direct,
         }
@@ -1316,7 +1333,8 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::References { target, references } => ProductView::rows(
             format!("references to {}", target.as_str()).as_str(),
             references.iter().map(reference_row).collect(),
-        ),
+        )
+        .with_references_result(),
         SurfaceReply::Diff(records) => {
             ProductView::rows("diff", records.iter().map(diff_row).collect())
         }
@@ -1725,6 +1743,9 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                 }
             };
             let mut facts = vec![format!("package {}", status.package.as_str())];
+            if let Some(target) = &status.cargo_target {
+                facts.push(format!("selected Cargo target {}", target.as_str()));
+            }
             if let Some(capture) = &status.source_capture {
                 facts.push(format!(
                     "source capture root {} at sequence {}",
@@ -2261,6 +2282,28 @@ fn forge_discovery_row(candidate: &backend_library::ForgeDiscoveryCandidate) -> 
     )
 }
 
+fn coverage_gap_label(
+    path: &str,
+    cause: backend_library::PackageCompilerCoverageGapCause,
+    diagnostic: Option<&backend_library::PackageCompilerCoverageGapDiagnostic>,
+) -> String {
+    match diagnostic {
+        Some(
+            diagnostic
+                @ backend_library::PackageCompilerCoverageGapDiagnostic::TypeProjectionCycle {
+                    line,
+                    column,
+                    ..
+                },
+        ) => format!(
+            "{}:{line}:{column}: {cause} (TSZ cycle owner context: {})",
+            single_line(path),
+            diagnostic.summary()
+        ),
+        None => format!("{}: {cause}", single_line(path)),
+    }
+}
+
 fn compiler_outcome_rows(
     outcomes: &backend_library::PackageCompilerOutcomes,
 ) -> Vec<ProductRecord> {
@@ -2277,6 +2320,9 @@ fn compiler_outcome_rows(
                 State::Failed { reason, .. } => format!("failed: {reason}; prior generation remains stale"),
             };
             let mut tags = vec![format!("{} captured source file(s)", profile.source_count)];
+            if let Some(scope) = source_capture.cargo_target.as_ref().filter(|_| profile.profile.name() == Some("rust")) {
+                tags.push(format!("Cargo target {} ({}) at {}; coverage is its selected source closure", scope.name.as_str(), scope.kinds.join(", "), scope.root));
+            }
             let mut operand = refusals.iter().find(|refusal| refusal.profile==profile.profile).and_then(|refusal| match &refusal.diagnostic {
                 Diagnostic::NotRecorded => { tags.push("no typed compiler diagnostic was recorded".to_owned()); None },
                 Diagnostic::Retained { read } => {
@@ -2307,7 +2353,7 @@ fn compiler_outcome_rows(
         Outcomes::Coverage {page,..} => page.rows.iter().map(|row| {
             let title=match row {
                 backend_library::PackageCompilerCoverageRow::Configuration{path,..}=>format!("selected TypeScript config: {}",single_line(path)),
-                backend_library::PackageCompilerCoverageRow::Gap{path,cause,..}=>format!("{}: {cause}",single_line(path)),
+                backend_library::PackageCompilerCoverageRow::Gap{path,cause,diagnostic,..}=>coverage_gap_label(path,*cause,diagnostic.as_ref()),
             };
             ProductRecord::new(title,page.next.and_then(|read|serde_json::to_string(&read).ok()),vec![format!("{} of {} captured sources have semantic artifacts",page.completed,page.source_count)])
         }).collect(),
@@ -3764,6 +3810,29 @@ fn operand(package: &PackageReference) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coverage_gap_text_places_the_exact_owner_context_at_its_source_position() {
+        let diagnostic =
+            backend_library::PackageCompilerCoverageGapDiagnostic::TypeProjectionCycle {
+                type_id: 91,
+                owner_start: 80,
+                owner_end: 101,
+                owner_name_start: 90,
+                owner_name_end: 96,
+                line: 9,
+                column: 4,
+                owner_name: "Layout".into(),
+            };
+        assert_eq!(
+            coverage_gap_label(
+                "src/app/layout.tsx",
+                backend_library::PackageCompilerCoverageGapCause::SourceNotRepresentable,
+                Some(&diagnostic),
+            ),
+            "src/app/layout.tsx:9:4: lowering cannot represent it (TSZ cycle owner context: owner declaration \"Layout\" at 9:4 (bytes 80..101); TSZ handle 91)"
+        );
+    }
 
     #[test]
     fn usability_batch_read_extent_survives_json_and_both_text_surfaces() {

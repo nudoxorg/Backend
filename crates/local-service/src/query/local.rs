@@ -563,6 +563,10 @@ pub(crate) struct Corpus {
     pub(crate) coverage: CoverageWitness,
     pub(crate) lexical: lexical::TantivyAdapter,
     pub(crate) lexical_binding: lexical::Binding,
+    // The exact admitted state used to build or advance `lexical`. Keeping its
+    // persistent tree lets a later durable revision diff from the prior view
+    // without rejoining that view's rows and semantic evidence.
+    document_state: lexical::DocumentState,
     selected: SelectedCorpus,
     pub(crate) semantic_evidence: SemanticQueryCorpus,
 }
@@ -1116,6 +1120,38 @@ pub(crate) enum SnapshotMaintenance {
     Rebuilt,
 }
 
+impl SnapshotMaintenance {
+    fn diagnostic_name(self) -> &'static str {
+        match self {
+            Self::Reused => "reused",
+            Self::Restored => "restored",
+            Self::Rebound => "rebound",
+            Self::Revised { .. } => "revised",
+            Self::Rebuilt => "rebuilt",
+        }
+    }
+}
+
+/// Bounded phase details for the existing opt-in search-preparation receipt.
+#[derive(Default)]
+pub(crate) struct SelectionPreparationDiagnostic {
+    pub(crate) row_evidence_join_ns: Option<u128>,
+    pub(crate) relation_state_ns: Option<u128>,
+    pub(crate) document_state_ns: Option<u128>,
+    pub(crate) projection_open_advance_ns: Option<u128>,
+    pub(crate) view_rows: Option<u64>,
+    pub(crate) evidence_facts: Option<usize>,
+    pub(crate) lexical_documents: Option<usize>,
+    pub(crate) selected_entities: Option<usize>,
+    pub(crate) previous_view: Option<String>,
+    pub(crate) previous_binding: Option<lexical::Binding>,
+    pub(crate) same_view: Option<bool>,
+    pub(crate) same_workspace: Option<bool>,
+    pub(crate) same_relation_root: Option<bool>,
+    pub(crate) same_binding: Option<bool>,
+    pub(crate) maintenance: Option<&'static str>,
+}
+
 /// Owns the immutable local search materialization selected by the current
 /// published product view.
 ///
@@ -1186,12 +1222,50 @@ impl SearchSnapshotOwner {
         semantic_evidence: SemanticQueryCorpus,
         cancelled: Option<&AtomicBool>,
     ) -> Result<&QueryCoordinator, QueryError> {
+        self.select_controlled_observed(
+            workspace,
+            view,
+            expected_view_capability,
+            coverage,
+            semantic_evidence,
+            cancelled,
+            None,
+        )
+    }
+
+    pub(crate) fn select_controlled_observed(
+        &mut self,
+        workspace: WorkspaceRoot,
+        view: ViewRoot,
+        expected_view_capability: CoverageCapability,
+        coverage: CoverageWitness,
+        semantic_evidence: SemanticQueryCorpus,
+        cancelled: Option<&AtomicBool>,
+        mut diagnostic: Option<&mut SelectionPreparationDiagnostic>,
+    ) -> Result<&QueryCoordinator, QueryError> {
         preparation_checkpoint(cancelled, "lexical-select")?;
         validate_view_binding(&view, &expected_view_capability)?;
+        if let Some(diagnostic) = diagnostic.as_deref_mut() {
+            diagnostic.view_rows = Some(view.row_count());
+            diagnostic.evidence_facts = Some(semantic_evidence.facts().len());
+            if let Some(previous) = self.selected.as_ref() {
+                diagnostic.previous_view = Some(backend_engine::encode_id(
+                    previous.corpus.view.root().as_bytes(),
+                ));
+                diagnostic.previous_binding = Some(previous.corpus.lexical_binding);
+                diagnostic.same_view = Some(previous.corpus.view.root() == view.root());
+                diagnostic.same_workspace = Some(previous.corpus.workspace == workspace);
+            }
+        }
         if self.selected.as_ref().is_some_and(|selected| {
             selected.matches_selection(workspace, &view, coverage, &semantic_evidence)
         }) {
             self.maintenance = Some(SnapshotMaintenance::Reused);
+            if let Some(diagnostic) = diagnostic.as_deref_mut() {
+                diagnostic.maintenance = Some("reused");
+                diagnostic.same_relation_root = Some(true);
+                diagnostic.same_binding = Some(true);
+            }
             return self.selected.as_ref().ok_or(QueryError::InvalidView);
         }
         // One admitted current corpus serves both the revision attempt and a
@@ -1205,7 +1279,16 @@ impl SearchSnapshotOwner {
             coverage,
             semantic_evidence,
             cancelled,
+            diagnostic.as_deref_mut(),
         )?;
+        if let Some(diagnostic) = diagnostic.as_deref_mut() {
+            let binding = prepared.binding;
+            if let Some(previous) = diagnostic.previous_binding.as_ref() {
+                diagnostic.same_relation_root = Some(previous.root == binding.root);
+                diagnostic.same_binding = Some(*previous == binding);
+            }
+        }
+        let projection_started = diagnostic.as_ref().map(|_| std::time::Instant::now());
         let revised = match self.selected.as_mut() {
             Some(selected) => selected.try_revise(
                 &prepared,
@@ -1230,6 +1313,11 @@ impl SearchSnapshotOwner {
                     | SnapshotMaintenance::Revised { .. } => {}
                 }
                 self.maintenance = Some(maintenance);
+                if let Some(diagnostic) = diagnostic.as_deref_mut() {
+                    diagnostic.maintenance = Some(maintenance.diagnostic_name());
+                    diagnostic.projection_open_advance_ns =
+                        projection_started.map(|started| started.elapsed().as_nanos());
+                }
                 return self.selected.as_ref().ok_or(QueryError::InvalidView);
             }
             Ok(None) => {}
@@ -1237,16 +1325,26 @@ impl SearchSnapshotOwner {
                 if error.permits_ephemeral_revision_rebuild() && self.durable_root.is_none() {
                     self.selected = None;
                 } else {
+                    if let Some(diagnostic) = diagnostic.as_deref_mut() {
+                        diagnostic.maintenance = Some("refused");
+                        diagnostic.projection_open_advance_ns =
+                            projection_started.map(|started| started.elapsed().as_nanos());
+                    }
                     return Err(error);
                 }
             }
         }
-        let (selected, action) = QueryCoordinator::from_prepared_corpus(
+        let opened = QueryCoordinator::from_prepared_corpus(
             prepared,
             self.durable_root.clone(),
             self.durable_budget,
             cancelled,
-        )?;
+        );
+        if let Some(diagnostic) = diagnostic.as_deref_mut() {
+            diagnostic.projection_open_advance_ns =
+                projection_started.map(|started| started.elapsed().as_nanos());
+        }
+        let (selected, action) = opened?;
         self.selected = Some(selected);
         match action {
             lexical::DurableProjectionAction::Opened => {
@@ -1262,6 +1360,9 @@ impl SearchSnapshotOwner {
                     rewritten_documents: 0,
                 });
             }
+        }
+        if let Some(diagnostic) = diagnostic.as_deref_mut() {
+            diagnostic.maintenance = self.maintenance.map(SnapshotMaintenance::diagnostic_name);
         }
         self.selected.as_ref().ok_or(QueryError::InvalidView)
     }
@@ -1429,6 +1530,7 @@ impl QueryCoordinator {
             coverage,
             semantic_evidence,
             cancelled,
+            None,
         )?;
         Self::from_prepared_corpus(prepared, durable_root, durable_budget, cancelled)
     }
@@ -1482,6 +1584,7 @@ impl QueryCoordinator {
                     coverage: prepared.coverage,
                     lexical,
                     lexical_binding: prepared.binding,
+                    document_state: prepared.state,
                     selected: prepared.selected,
                     semantic_evidence: prepared.semantic_evidence,
                 }),
@@ -1498,8 +1601,8 @@ impl QueryCoordinator {
         cancelled: Option<&AtomicBool>,
     ) -> Result<Option<(SnapshotMaintenance, &mut Corpus)>, QueryError> {
         // Existing readers own the old immutable corpus. Detect that before
-        // reconstructing its document state; the replacement still consumes
-        // the identical already-admitted current corpus above.
+        // replacing its document state; the replacement still consumes the
+        // identical already-admitted current corpus above.
         let Some(corpus) = Arc::get_mut(&mut self.corpus) else {
             return Ok(None);
         };
@@ -1511,21 +1614,7 @@ impl QueryCoordinator {
             return Ok(None);
         }
         let previous_state = if durable_root.is_some() {
-            let previous_view_capability = corpus
-                .view
-                .capability()
-                .ok_or(QueryError::StaleViewBinding)?;
-            Some(
-                prepare_corpus_controlled(
-                    corpus.workspace,
-                    corpus.view.clone(),
-                    &previous_view_capability,
-                    corpus.coverage,
-                    corpus.semantic_evidence.clone(),
-                    cancelled,
-                )?
-                .state,
-            )
+            Some(corpus.document_state.clone())
         } else {
             None
         };
@@ -1596,6 +1685,7 @@ impl QueryCoordinator {
                 },
             }
         };
+        corpus.document_state = prepared.state.clone();
         Ok(Some((maintenance, corpus)))
     }
 
@@ -2361,6 +2451,7 @@ fn prepare_corpus(
         coverage,
         semantic_evidence,
         None,
+        None,
     )
 }
 
@@ -2379,6 +2470,7 @@ fn prepare_corpus_controlled(
     coverage: CoverageWitness,
     semantic_evidence: SemanticQueryCorpus,
     cancelled: Option<&AtomicBool>,
+    mut diagnostic: Option<&mut SelectionPreparationDiagnostic>,
 ) -> Result<PreparedCorpus, QueryError> {
     preparation_checkpoint(cancelled, "lexical-prepare")?;
     validate_view_binding(&view, expected_view_capability)?;
@@ -2400,8 +2492,16 @@ fn prepare_corpus_controlled(
     if semantic_evidence.workspace() != workspace {
         return Err(QueryError::InvalidSemanticEvidence);
     }
-    let (documents, selected) =
-        collect_selected_documents(workspace, &view, &semantic_evidence, cancelled)?;
+    let join_started = diagnostic.as_ref().map(|_| std::time::Instant::now());
+    let collected = collect_selected_documents(workspace, &view, &semantic_evidence, cancelled);
+    if let Some(diagnostic) = diagnostic.as_deref_mut() {
+        diagnostic.row_evidence_join_ns = join_started.map(|started| started.elapsed().as_nanos());
+    }
+    let (documents, selected) = collected?;
+    if let Some(diagnostic) = diagnostic.as_deref_mut() {
+        diagnostic.lexical_documents = Some(documents.len());
+        diagnostic.selected_entities = Some(selected.document_order.len());
+    }
     let left_out = selected.left_out;
     if !left_out.is_empty() {
         eprintln!(
@@ -2410,8 +2510,12 @@ fn prepare_corpus_controlled(
         );
     }
     preparation_checkpoint(cancelled, "lexical-relation")?;
-    let state = RelationState::<lexical::IndexRelation>::from_entries(documents, coverage)
-        .map_err(|_| QueryError::InvalidView)?;
+    let relation_started = diagnostic.as_ref().map(|_| std::time::Instant::now());
+    let state = RelationState::<lexical::IndexRelation>::from_entries(documents, coverage);
+    if let Some(diagnostic) = diagnostic.as_deref_mut() {
+        diagnostic.relation_state_ns = relation_started.map(|started| started.elapsed().as_nanos());
+    }
+    let state = state.map_err(|_| QueryError::InvalidView)?;
     preparation_checkpoint(cancelled, "lexical-binding")?;
     let binding = lexical::Binding::new(
         workspace,
@@ -2427,8 +2531,13 @@ fn prepare_corpus_controlled(
         view.frontier().root.as_bytes(),
     ));
     preparation_checkpoint(cancelled, "lexical-document-state")?;
-    let state = lexical::DocumentState::from_relation(binding, state, lexical::Limits::default())
-        .map_err(QueryError::Lexical)?;
+    let document_state_started = diagnostic.as_ref().map(|_| std::time::Instant::now());
+    let state = lexical::DocumentState::from_relation(binding, state, lexical::Limits::default());
+    if let Some(diagnostic) = diagnostic.as_deref_mut() {
+        diagnostic.document_state_ns =
+            document_state_started.map(|started| started.elapsed().as_nanos());
+    }
+    let state = state.map_err(QueryError::Lexical)?;
     preparation_checkpoint(cancelled, "lexical-complete")?;
     #[cfg(test)]
     PREPARED_CORPORA.with_borrow_mut(|prepared| {
@@ -2518,11 +2627,15 @@ mod prepared_corpus_tests {
     impl std::error::Error for ViewFixtureError {}
 
     fn renamed_view(view: &ViewRoot) -> TestResult<ViewRoot> {
+        relabeled_view(view, "alpha exact", "zephyr marker")
+    }
+
+    fn relabeled_view(view: &ViewRoot, from: &str, to: &str) -> TestResult<ViewRoot> {
         let mut rows = view.rows().to_vec();
         rows.iter_mut()
-            .find(|row| row.label == "alpha exact")
+            .find(|row| row.label == from)
             .ok_or_else(|| std::io::Error::other("missing fixture symbol"))?
-            .label = "zephyr marker".to_owned();
+            .label = to.to_owned();
         let renamed = ViewRoot::new_checked(
             view.recipe(),
             view.basis(),
@@ -2686,7 +2799,8 @@ mod prepared_corpus_tests {
                 &capability,
                 coverage,
                 evidence.clone(),
-                Some(&token)
+                Some(&token),
+                None,
             ),
             Err(QueryError::SelectedViewRetired)
         ));
@@ -2715,7 +2829,8 @@ mod prepared_corpus_tests {
                         &capability,
                         coverage,
                         evidence.clone(),
-                        Some(&token)
+                        Some(&token),
+                        None,
                     ),
                     Err(QueryError::SelectedViewRetired)
                 ),
@@ -2734,6 +2849,7 @@ mod prepared_corpus_tests {
             coverage,
             evidence,
             Some(&token),
+            None,
         )?;
         assert_eq!(resumed.binding, baseline.binding);
         assert_eq!(resumed.state, baseline.state);
@@ -2889,8 +3005,7 @@ mod prepared_corpus_tests {
     }
 
     #[test]
-    fn an_owned_revision_prepares_current_once_and_only_durable_previous_state_once() -> TestResult
-    {
+    fn an_owned_revision_prepares_only_the_current_document_state() -> TestResult {
         for durable in [false, true] {
             let directory = Directory::new()?;
             let (workspace, old_view) = super::super::tests::selected_view();
@@ -2907,8 +3022,9 @@ mod prepared_corpus_tests {
                 1
             );
             assert_eq!(
-                work.iter().filter(|root| **root == old_view.root()).count(),
-                usize::from(durable)
+                work,
+                [next_view.root()],
+                "the prior admitted document state supplies the durable delta base"
             );
             assert_eq!(
                 owner.maintenance(),
@@ -2918,6 +3034,91 @@ mod prepared_corpus_tests {
             );
             assert_eq!(owner.projection_builds(), 1);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn durable_revisions_reuse_exact_document_states_and_preserve_retained_answers() -> TestResult {
+        let directory = Directory::new()?;
+        let (workspace, old_view) = super::super::tests::selected_view();
+        let middle_view = renamed_view(&old_view)?;
+        let current_view = relabeled_view(&middle_view, "zephyr marker", "nova marker")?;
+        let mut owner = directory.owner(true, "successive-revisions");
+
+        select(&mut owner, workspace, &old_view)?;
+        let retained_old = search(&owner, "alpha")?;
+        let old_binding = {
+            let corpus = &owner
+                .selected
+                .as_ref()
+                .ok_or_else(|| std::io::Error::other("missing old snapshot"))?
+                .corpus;
+            let binding = corpus.lexical_binding;
+            assert_eq!(corpus.document_state.binding(), binding);
+            binding
+        };
+
+        let measure = Measurement::start();
+        select(&mut owner, workspace, &middle_view)?;
+        assert_eq!(measure.take(), [middle_view.root()]);
+        assert_eq!(retained_old.corpus.view.root(), old_view.root());
+        assert_eq!(retained_old.corpus.document_state.binding(), old_binding);
+        assert!(
+            retained_old
+                .rows
+                .iter()
+                .any(|row| row.row.label == "alpha exact")
+        );
+        assert_eq!(search(&owner, "alpha")?.total_matches, 0);
+        let middle_answer = search(&owner, "zephyr")?;
+        assert!(
+            middle_answer
+                .rows
+                .iter()
+                .any(|row| row.row.label == "zephyr marker")
+        );
+        let middle_binding = {
+            let corpus = &owner
+                .selected
+                .as_ref()
+                .ok_or_else(|| std::io::Error::other("missing middle snapshot"))?
+                .corpus;
+            let binding = corpus.lexical_binding;
+            assert_eq!(corpus.document_state.binding(), binding);
+            binding
+        };
+        drop(retained_old);
+        drop(middle_answer);
+
+        select(&mut owner, workspace, &current_view)?;
+        assert_eq!(measure.take(), [current_view.root()]);
+        assert_eq!(
+            owner.maintenance(),
+            Some(SnapshotMaintenance::Revised {
+                rewritten_documents: 1,
+            })
+        );
+        assert_eq!(search(&owner, "zephyr")?.total_matches, 0);
+        let current_answer = search(&owner, "nova")?;
+        assert!(
+            current_answer
+                .rows
+                .iter()
+                .any(|row| row.row.label == "nova marker")
+        );
+        let current_corpus = &owner
+            .selected
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("missing current snapshot"))?
+            .corpus;
+        assert_eq!(current_corpus.view.root(), current_view.root());
+        assert_eq!(
+            current_corpus.document_state.binding(),
+            current_corpus.lexical_binding
+        );
+        assert_ne!(old_binding.root, middle_binding.root);
+        assert_ne!(middle_binding.root, current_corpus.lexical_binding.root);
+
         Ok(())
     }
 }

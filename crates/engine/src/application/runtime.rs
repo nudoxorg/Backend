@@ -5,8 +5,9 @@
 
 #[path = "typescript_snapshot.rs"]
 mod typescript_snapshot;
-pub use typescript_snapshot::TypeScriptSnapshotReuse;
 use typescript_snapshot::TypeScriptSnapshotCache;
+pub use typescript_snapshot::TypeScriptSnapshotReuse;
+pub(crate) use typescript_snapshot::encode_staged_snapshot_certificate;
 
 use std::{
     collections::HashMap,
@@ -15,7 +16,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex, OnceLock, RwLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
         mpsc::{
             Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError, channel, sync_channel,
         },
@@ -24,6 +25,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::builtin::{NativeCSharpCandidatePermit, NativeClangCandidatePermit};
 use crate::driver::{
     CompileControl, ResolvedToolchain, ToolchainResolutionError, ToolchainSelection,
 };
@@ -39,7 +41,8 @@ use backend_frontend_java::legacy::harness::JdkToolchain;
 use backend_frontend_python::legacy::Pyrefly;
 use backend_frontend_python::legacy::checker::NativePythonProjectAuthority;
 use backend_frontend_rust::legacy::{
-    RustCargoMetadataPolicy, RustFeatureControl, RustToolchain, SourceByteLimit,
+    RustCargoMetadataPolicy, RustCargoTargetSourceClosureV1, RustFeatureControl, RustToolchain,
+    SourceByteLimit,
 };
 use backend_frontend_typescript::legacy::{ExplicitTypeScriptChecker, TypeScriptInvocationModeV1};
 use backend_library::interface::{
@@ -65,6 +68,36 @@ const MAX_ADMITTED_COMPILER_REQUESTS: usize = 16;
 const COMMAND_QUEUE_CAPACITY: usize = 8;
 const COMPILER_LANE_QUEUE_CAPACITY: usize = 1;
 const MAX_PYTHON_SNAPSHOT_WITNESS_BYTES: usize = 64 * 1024 * 1024;
+
+const DEBUG_COMPILER_OWNER_REASON_LIMIT: u8 = 8;
+
+fn debug_worker_generation_stop(startup: bool, phase: &str) {
+    debug_compiler_owner(
+        if startup { 4 } else { 5 },
+        if startup {
+            "worker-startup-stop"
+        } else {
+            "worker-generation-stop"
+        },
+        format_args!("phase={phase}"),
+    );
+}
+
+fn debug_compiler_owner(reason: u8, event: &str, detail: impl std::fmt::Display) {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    static SEEN: AtomicU16 = AtomicU16::new(0);
+    if reason >= DEBUG_COMPILER_OWNER_REASON_LIMIT
+        || !*ENABLED.get_or_init(|| {
+            std::env::var_os("NUDOX_DEBUG_COMPILER_OWNER").is_some_and(|value| value == "1")
+        })
+    {
+        return;
+    }
+    let bit = 1_u16 << reason;
+    if SEEN.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
+        eprintln!("NUDOX-COMPILER-OWNER event={event} {detail}");
+    }
+}
 
 fn compiler_lane_count() -> usize {
     #[cfg(feature = "cluster-process-journey-hooks")]
@@ -183,10 +216,32 @@ pub struct OwnedPackageSourceSet {
     go_witness_deadline_phase: Option<&'static str>,
     request: PackageCompileRequest,
     package_target: CompilerPackageTargetV2,
+    rust_cargo_target_name: Option<Box<str>>,
+    expected_rust_target_source_closure: Option<[u8; 32]>,
     package_root: Box<Path>,
     sources: Box<[OwnedPackageSource]>,
     input_claim: Option<SemanticInputWitness>,
     python_environment: Option<backend_frontend_python::legacy::checker::PythonEnvironmentInput>,
+    admission: OwnedPackageSourceAdmission,
+    native_frontier_project: Option<[u8; 32]>,
+    native_frontier_root: Option<[u8; 32]>,
+    native_clang_permits: Box<[NativeClangCandidatePermit]>,
+    native_csharp_permits: Box<[NativeCSharpCandidatePermit]>,
+}
+
+/// Authority by which a complete source set entered the native compiler.
+/// Ordinary parsed frontiers and parser-malformed native Clang candidates use
+/// separate constructors so a malformed source can never silently fall back
+/// through the ordinary package-source admission route.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OwnedPackageSourceAdmission {
+    /// Sources admitted through the normal parsed-source contract.
+    #[default]
+    Parsed,
+    /// Exact UTF-8 C/C++ bytes admitted by the local native-source frontier.
+    NativeClangCandidate,
+    /// Exact UTF-8 C# bytes admitted by the local native-source frontier.
+    NativeCSharpCandidate,
 }
 
 impl OwnedPackageSourceSet {
@@ -225,13 +280,157 @@ impl OwnedPackageSourceSet {
         Ok(Self {
             request,
             package_target,
+            rust_cargo_target_name: None,
+            expected_rust_target_source_closure: None,
             package_root: package_root.into_boxed_path(),
             go_compile_deadline: None,
             go_witness_deadline_phase: None,
             sources,
             input_claim: None,
             python_environment: None,
+            admission: OwnedPackageSourceAdmission::Parsed,
+            native_frontier_project: None,
+            native_frontier_root: None,
+            native_clang_permits: Box::new([]),
+            native_csharp_permits: Box::new([]),
         })
+    }
+
+    /// Selects a Rust Cargo target by its exact admitted Cargo name.
+    ///
+    /// Resolve this selector with [`LocalCompilerClient::resolve_rust_cargo_target`]
+    /// before manifest capture and compilation. The result must be used to construct
+    /// a new unit-bound source set; this package-root request remains a resolver input.
+    pub fn with_rust_cargo_target_name(
+        mut self,
+        name: impl Into<Box<str>>,
+    ) -> Result<Self, PackageSourceSetError> {
+        let name = name.into();
+        if !matches!(self.request.target.profile, LanguageProfile::Rust(_))
+            || self.package_target.unit_key() != &CompilationUnitKeyV2::PackageRoot
+            || name.is_empty()
+            || name.len() > 1024
+        {
+            return Err(PackageSourceSetError::InvalidRustCargoTargetName);
+        }
+        self.rust_cargo_target_name = Some(name);
+        Ok(self)
+    }
+
+    /// Binds later compilation to the exact source closure returned by target resolution.
+    pub fn with_expected_rust_target_source_closure(
+        mut self,
+        identity: [u8; 32],
+    ) -> Result<Self, PackageSourceSetError> {
+        if !matches!(self.request.target.profile, LanguageProfile::Rust(_))
+            || !matches!(
+                self.package_target.unit_key(),
+                CompilationUnitKeyV2::RustCrate { .. }
+            )
+        {
+            return Err(PackageSourceSetError::CompilationUnitMismatch);
+        }
+        self.expected_rust_target_source_closure = Some(identity);
+        Ok(self)
+    }
+
+    /// Admits a source set specifically as exact native Clang candidates.
+    /// This route is limited to C/C++ profiles and UTF-8 source buffers; it
+    /// does not turn Python raw-source admission or remote include readiness
+    /// into Clang authority.
+    pub fn new_native_clang_candidate(
+        request: PackageCompileRequest,
+        package_root: PathBuf,
+        sources: Box<[OwnedPackageSource]>,
+        selected_frontier_project: [u8; 32],
+        selected_frontier_root: [u8; 32],
+        permits: Box<[NativeClangCandidatePermit]>,
+    ) -> Result<Self, PackageSourceSetError> {
+        if !matches!(
+            request.target.profile,
+            LanguageProfile::C(_) | LanguageProfile::Cxx(_)
+        ) || sources
+            .iter()
+            .any(|source| matches!(source.source, OwnedPackageSourceContents::Raw(_)))
+        {
+            return Err(PackageSourceSetError::NativeClangProfileMismatch);
+        }
+        if permits.is_empty()
+            || permits.iter().any(|permit| {
+                permit.profile() != request.target.profile
+                    || permit.package_target() != request.as_ref()
+                    || permit.selected_root() != selected_frontier_root
+                    || !sources.iter().any(|source| {
+                        permit.admits(
+                            selected_frontier_project,
+                            selected_frontier_root,
+                            request.as_ref(),
+                            &source.relative_path,
+                            request.target.profile,
+                            source.source_bytes(),
+                        )
+                    })
+            })
+        {
+            return Err(PackageSourceSetError::NativeClangProfileMismatch);
+        }
+        let mut admitted = Self::new(request, package_root, sources)?;
+        admitted.admission = OwnedPackageSourceAdmission::NativeClangCandidate;
+        admitted.native_frontier_project = Some(selected_frontier_project);
+        admitted.native_frontier_root = Some(selected_frontier_root);
+        admitted.native_clang_permits = permits;
+        Ok(admitted)
+    }
+
+    /// Admits a source set specifically as exact native C# candidates.
+    /// This route is limited to C# profiles and UTF-8 source buffers; it does
+    /// not reuse the Clang permit or its profile allowlist.
+    pub fn new_native_csharp_candidate(
+        request: PackageCompileRequest,
+        package_root: PathBuf,
+        sources: Box<[OwnedPackageSource]>,
+        selected_frontier_project: [u8; 32],
+        selected_frontier_root: [u8; 32],
+        permits: Box<[NativeCSharpCandidatePermit]>,
+    ) -> Result<Self, PackageSourceSetError> {
+        if !matches!(request.target.profile, LanguageProfile::CSharp(_))
+            || sources
+                .iter()
+                .any(|source| matches!(source.source, OwnedPackageSourceContents::Raw(_)))
+        {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        if permits.is_empty()
+            || permits.iter().any(|permit| {
+                permit.profile() != request.target.profile
+                    || permit.package_target() != request.as_ref()
+                    || permit.selected_root() != selected_frontier_root
+                    || !sources.iter().any(|source| {
+                        permit.admits(
+                            selected_frontier_project,
+                            selected_frontier_root,
+                            request.as_ref(),
+                            &source.relative_path,
+                            request.target.profile,
+                            source.source_bytes(),
+                        )
+                    })
+            })
+        {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        let mut admitted = Self::new(request, package_root, sources)?;
+        admitted.admission = OwnedPackageSourceAdmission::NativeCSharpCandidate;
+        admitted.native_frontier_project = Some(selected_frontier_project);
+        admitted.native_frontier_root = Some(selected_frontier_root);
+        admitted.native_csharp_permits = permits;
+        Ok(admitted)
+    }
+
+    /// Reports the explicit source authority route carried to the compiler owner.
+    #[must_use]
+    pub const fn admission(&self) -> OwnedPackageSourceAdmission {
+        self.admission
     }
 
     /// Attaches the opaque exact input-manifest claim admitted by the caller.
@@ -872,39 +1071,72 @@ mod typescript_project_authority_transition_tests {
     use backend_semantic::vocabulary::TypeScriptSource;
 
     #[test]
-    fn admitted_project_replaces_only_runtime_startup_candidates_and_preserves_fixed_portable_constraints() {
+    fn admitted_project_replaces_only_runtime_startup_candidates_and_preserves_fixed_portable_constraints()
+     {
         let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
         let target = ContentId::from_canonical_bytes(b"same project target");
         let seed = LocalCompilerPlaneExecutionSeed::for_typescript_project(
-            target, profile, Stage::LowerIr, ContentId::from_digest([41; 32]), [42; 32],
-        ).unwrap();
+            target,
+            profile,
+            Stage::LowerIr,
+            ContentId::from_digest([41; 32]),
+            [42; 32],
+        )
+        .unwrap();
         let input = SemanticInputWitness::claimed_state(
-            [43; 32], backend_version::ScopeRoot::from_bytes([44; 32]), Coverage::Partial,
+            [43; 32],
+            backend_version::ScopeRoot::from_bytes([44; 32]),
+            Coverage::Partial,
         );
         let local = seed.bind_input(input);
         let portable = LocalCompilerExecutionIdentity {
-            target, profile, stage: Stage::LowerIr,
+            target,
+            profile,
+            stage: Stage::LowerIr,
             toolchain: NativeTool::TypeScriptCompiler,
             toolchain_identity: [91; 32],
             local_authority_fingerprint: [92; 32],
-            environment_identity: [93; 32], target_platform_identity: [94; 32],
+            environment_identity: [93; 32],
+            target_platform_identity: [94; 32],
             invocation_recipe: crate::application::CompilerInvocationRecipeV2::new(
-                profile, Stage::LowerIr, NativeTool::TypeScriptCompiler,
-                ContentId::from_digest([91; 32]), [93; 32], [94; 32], [95; 32],
-            ).unwrap(),
+                profile,
+                Stage::LowerIr,
+                NativeTool::TypeScriptCompiler,
+                ContentId::from_digest([91; 32]),
+                [93; 32],
+                [94; 32],
+                [95; 32],
+            )
+            .unwrap(),
         };
         let (execution, plane) = PackageExecutionAuthority::RuntimeStartup {
-            execution: Some(portable), plane: None,
-        }.with_admitted_typescript_project(seed).identities();
-        assert!(execution.is_none(), "a startup candidate is not portable project admission");
+            execution: Some(portable),
+            plane: None,
+        }
+        .with_admitted_typescript_project(seed)
+        .identities();
+        assert!(
+            execution.is_none(),
+            "a startup candidate is not portable project admission"
+        );
         let admitted = plane.unwrap().bind_input(input);
         assert_eq!(admitted, local);
         assert_eq!(admitted.input_witness(), input);
-        assert_eq!(admitted.input_witness().coverage().state(), Coverage::Partial);
+        assert_eq!(
+            admitted.input_witness().coverage().state(),
+            Coverage::Partial
+        );
         let (execution, plane) = PackageExecutionAuthority::Fixed {
-            execution: Some(portable), plane: None,
-        }.with_admitted_typescript_project(seed).identities();
-        assert_eq!(execution, Some(portable), "foreign pinned portable authority must remain a strict constraint");
+            execution: Some(portable),
+            plane: None,
+        }
+        .with_admitted_typescript_project(seed)
+        .identities();
+        assert_eq!(
+            execution,
+            Some(portable),
+            "foreign pinned portable authority must remain a strict constraint"
+        );
         assert_eq!(plane.unwrap().bind_input(input), local);
         assert_ne!(portable.toolchain_identity(), local.toolchain_identity());
     }
@@ -1638,7 +1870,9 @@ fn compiler_environment_identity(profile: LanguageProfile) -> [u8; 32] {
         profile,
         if matches!(profile, LanguageProfile::Go(_)) {
             backend_semantic::ir::GO_DECLARATION_PUBLICATION_PROJECTION_VERSION
-        } else { backend_semantic::ir::SEMANTIC_IR_PROJECTION_VERSION },
+        } else {
+            backend_semantic::ir::SEMANTIC_IR_PROJECTION_VERSION
+        },
     )
 }
 
@@ -3120,7 +3354,10 @@ impl DeferredNativePython {
                 tool: NativeTool::Python,
                 result: Some(Ok(row)),
             })
-            .map_err(|_| CompilerRuntimeCause::RequestOwnerStopped)?;
+            .map_err(|_| {
+                debug_compiler_owner(7, "probe-observer-stopped", "tool=python");
+                CompilerRuntimeCause::RequestOwnerStopped
+            })?;
         // A peer cannot observe a claim until the fallible row and notification succeeded.
         self.observation_sent.store(true, Ordering::Release);
         Ok(())
@@ -3402,6 +3639,78 @@ impl LocalCompilerClient {
                 )
                 .is_ok()
         })
+    }
+
+    /// Resolves a name-only Rust Cargo selector against the compiler's admitted workspace.
+    ///
+    /// The returned target and exact captured HIR source closure must be used before
+    /// manifest capture or package compilation. This operation uses the same configured
+    /// Rust toolchain, Cargo feature policy, and metadata policy as the compile owner.
+    pub fn resolve_rust_cargo_target(
+        &self,
+        request: &OwnedPackageSourceSet,
+    ) -> Result<
+        (CompilerPackageTargetV2, RustCargoTargetSourceClosureV1),
+        PackageSemanticRuntimeError,
+    > {
+        self.resolve_rust_cargo_target_cancellable(request, Arc::new(AtomicBool::new(false)))
+    }
+
+    /// Cancellable form of [`Self::resolve_rust_cargo_target`].
+    pub fn resolve_rust_cargo_target_cancellable(
+        &self,
+        request: &OwnedPackageSourceSet,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<
+        (CompilerPackageTargetV2, RustCargoTargetSourceClosureV1),
+        PackageSemanticRuntimeError,
+    > {
+        let target_name = request
+            .rust_cargo_target_name
+            .as_deref()
+            .ok_or(PackageSourceSetError::InvalidRustCargoTargetName)?
+            .to_owned()
+            .into_boxed_str();
+        let facts = request.facts();
+        let mut lease =
+            RequestLease::acquire_with_cancelled(&self.shared, self.client_id, facts, cancelled)
+                .map_err(PackageSemanticRuntimeError::Runtime)?;
+        let mut request = request.clone();
+        request.go_compile_deadline = self
+            .wait_for_toolchain(facts, &lease.cancelled)
+            .map_err(PackageSemanticRuntimeError::Runtime)?;
+        let (response, returned) = sync_channel(1);
+        let sender = self.shared.command.as_ref().ok_or_else(|| {
+            PackageSemanticRuntimeError::Runtime(
+                facts.terminal(CompilerRuntimeCause::RequestOwnerStopped),
+            )
+        })?;
+        match sender.try_send(RuntimeCommand::ResolveRustCargoTarget {
+            request,
+            target_name,
+            response,
+            cancelled: Arc::clone(&lease.cancelled),
+        }) {
+            Ok(()) => lease.mark_dispatched(),
+            Err(TrySendError::Full(_)) => {
+                return Err(PackageSemanticRuntimeError::Runtime(facts.terminal(
+                    CompilerRuntimeCause::CommandQueueFull {
+                        capacity: u16::try_from(COMMAND_QUEUE_CAPACITY).unwrap_or(u16::MAX),
+                    },
+                )));
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                return Err(PackageSemanticRuntimeError::Runtime(
+                    facts.terminal(CompilerRuntimeCause::RequestOwnerStopped),
+                ));
+            }
+        }
+        let result = returned.recv().map_err(|_| {
+            PackageSemanticRuntimeError::Runtime(
+                facts.terminal(CompilerRuntimeCause::ResponseOwnerStopped),
+            )
+        })?;
+        lease.complete(result)
     }
 
     /// Records only a compiler-produced fence for the binding actually selected
@@ -3705,11 +4014,10 @@ impl LocalCompilerClient {
             response: response_tx,
             cancelled: Arc::clone(&lease.cancelled),
         };
-        let sender = self
-            .shared
-            .command
-            .as_ref()
-            .ok_or_else(|| facts.terminal(CompilerRuntimeCause::RequestOwnerStopped))?;
+        let sender = self.shared.command.as_ref().ok_or_else(|| {
+            debug_compiler_owner(1, "command-missing", "operation=compile");
+            facts.terminal(CompilerRuntimeCause::RequestOwnerStopped)
+        })?;
         match sender.try_send(command) {
             Ok(()) => lease.mark_dispatched(),
             Err(TrySendError::Full(_)) => {
@@ -3718,6 +4026,7 @@ impl LocalCompilerClient {
                 }));
             }
             Err(TrySendError::Disconnected(_)) => {
+                debug_compiler_owner(2, "command-disconnected", "operation=compile");
                 return Err(facts.terminal(CompilerRuntimeCause::RequestOwnerStopped));
             }
         }
@@ -3773,6 +4082,7 @@ impl LocalCompilerClient {
             .expect("validated compiler admission wait fits the monotonic clock");
         if let Some(deferred) = native_python {
             if !self.shared.alive.load(Ordering::Acquire) {
+                debug_compiler_owner(0, "request-owner-dead", "operation=wait-toolchain");
                 return Err(facts.terminal(CompilerRuntimeCause::RequestOwnerStopped));
             }
             let authority = deferred
@@ -3861,6 +4171,7 @@ impl LocalCompilerClient {
                 return Ok(deferred_go.map(|_| deadline));
             }
             if !self.shared.alive.load(Ordering::Acquire) {
+                debug_compiler_owner(0, "request-owner-dead", "operation=wait-toolchain");
                 return Err(facts.terminal(CompilerRuntimeCause::RequestOwnerStopped));
             }
             if cancelled.load(Ordering::Acquire) {
@@ -3903,11 +4214,10 @@ impl LocalCompilerClient {
         }
         let mut lease = RequestLease::acquire_snapshot(&self.shared, self.client_id, requested)?;
         let (response, returned) = sync_channel(1);
-        let sender = self
-            .shared
-            .command
-            .as_ref()
-            .ok_or(SemanticImageAccessError::OwnerStopped { requested })?;
+        let sender = self.shared.command.as_ref().ok_or_else(|| {
+            debug_compiler_owner(1, "command-missing", "operation=semantic-image");
+            SemanticImageAccessError::OwnerStopped { requested }
+        })?;
         match sender.try_send(RuntimeCommand::SemanticImage {
             requested,
             response,
@@ -3918,12 +4228,14 @@ impl LocalCompilerClient {
                 return Err(SemanticImageAccessError::RequestInFlight { requested });
             }
             Err(TrySendError::Disconnected(_)) => {
+                debug_compiler_owner(2, "command-disconnected", "operation=semantic-image");
                 return Err(SemanticImageAccessError::OwnerStopped { requested });
             }
         }
-        let result = returned
-            .recv()
-            .map_err(|_| SemanticImageAccessError::OwnerStopped { requested })?;
+        let result = returned.recv().map_err(|_| {
+            debug_compiler_owner(7, "response-owner-stopped", "operation=semantic-image");
+            SemanticImageAccessError::OwnerStopped { requested }
+        })?;
         lease.complete(result)
     }
 
@@ -3937,6 +4249,9 @@ impl LocalCompilerClient {
         &self,
         request: OwnedPackageSourceSet,
     ) -> Result<PublishedSemanticPackage, PackageSemanticRuntimeError> {
+        if request.rust_cargo_target_name.is_some() {
+            return Err(PackageSourceSetError::InvalidRustCargoTargetName.into());
+        }
         let facts = request.facts();
         let mut lease = RequestLease::acquire(&self.shared, self.client_id, facts)
             .map_err(PackageSemanticRuntimeError::Runtime)?;
@@ -3948,6 +4263,7 @@ impl LocalCompilerClient {
             self.capture_go_authority_witness(&mut request, &lease.cancelled)?;
         let (response, returned) = sync_channel(1);
         let sender = self.shared.command.as_ref().ok_or_else(|| {
+            debug_compiler_owner(1, "command-missing", "operation=compile-package");
             PackageSemanticRuntimeError::Runtime(
                 facts.terminal(CompilerRuntimeCause::RequestOwnerStopped),
             )
@@ -3967,6 +4283,7 @@ impl LocalCompilerClient {
                 )));
             }
             Err(TrySendError::Disconnected(_)) => {
+                debug_compiler_owner(2, "command-disconnected", "operation=compile-package");
                 return Err(PackageSemanticRuntimeError::Runtime(
                     facts.terminal(CompilerRuntimeCause::RequestOwnerStopped),
                 ));
@@ -4008,6 +4325,9 @@ impl LocalCompilerClient {
         request: OwnedPackageSourceSet,
         cancelled: Arc<AtomicBool>,
     ) -> Result<StagedSemanticPackage, PackageSemanticRuntimeError> {
+        if request.rust_cargo_target_name.is_some() {
+            return Err(PackageSourceSetError::InvalidRustCargoTargetName.into());
+        }
         let facts = request.facts();
         let mut lease =
             RequestLease::acquire_with_cancelled(&self.shared, self.client_id, facts, cancelled)
@@ -4020,6 +4340,7 @@ impl LocalCompilerClient {
             self.capture_go_authority_witness(&mut request, &lease.cancelled)?;
         let (response, returned) = sync_channel(1);
         let sender = self.shared.command.as_ref().ok_or_else(|| {
+            debug_compiler_owner(1, "command-missing", "operation=compile-package-staged");
             PackageSemanticRuntimeError::Runtime(
                 facts.terminal(CompilerRuntimeCause::RequestOwnerStopped),
             )
@@ -4039,6 +4360,11 @@ impl LocalCompilerClient {
                 )));
             }
             Err(TrySendError::Disconnected(_)) => {
+                debug_compiler_owner(
+                    2,
+                    "command-disconnected",
+                    "operation=compile-package-staged",
+                );
                 return Err(PackageSemanticRuntimeError::Runtime(
                     facts.terminal(CompilerRuntimeCause::RequestOwnerStopped),
                 ));
@@ -4148,6 +4474,7 @@ impl LocalCompilerClient {
             .map_err(PackageSemanticRuntimeError::Runtime)?;
         let (response, returned) = sync_channel(1);
         let sender = self.shared.command.as_ref().ok_or_else(|| {
+            debug_compiler_owner(1, "command-missing", "operation=activate-generation");
             PackageSemanticRuntimeError::Runtime(
                 facts.terminal(CompilerRuntimeCause::RequestOwnerStopped),
             )
@@ -4168,6 +4495,7 @@ impl LocalCompilerClient {
                 )));
             }
             Err(TrySendError::Disconnected(_)) => {
+                debug_compiler_owner(2, "command-disconnected", "operation=activate-generation");
                 return Err(PackageSemanticRuntimeError::Runtime(
                     facts.terminal(CompilerRuntimeCause::RequestOwnerStopped),
                 ));
@@ -4331,6 +4659,7 @@ impl<'shared> RequestLease<'shared> {
         cancelled: Arc<AtomicBool>,
     ) -> Result<Self, CompilerTerminal> {
         if !shared.alive.load(Ordering::Acquire) {
+            debug_compiler_owner(0, "request-owner-dead", "operation=lease-acquire");
             return Err(facts.terminal(CompilerRuntimeCause::RequestOwnerStopped));
         }
         let request_id = shared.next_request.fetch_add(1, Ordering::Relaxed);
@@ -4360,6 +4689,7 @@ impl<'shared> RequestLease<'shared> {
         requested: SemanticImageAuthority,
     ) -> Result<Self, SemanticImageAccessError> {
         if !shared.alive.load(Ordering::Acquire) {
+            debug_compiler_owner(0, "request-owner-dead", "operation=semantic-image-lease");
             return Err(SemanticImageAccessError::OwnerStopped { requested });
         }
         let request_id = shared.next_request.fetch_add(1, Ordering::Relaxed);
@@ -4456,6 +4786,128 @@ impl OwnedCompilerRequest {
     }
 }
 
+#[cfg(test)]
+mod rust_target_selector_admission_tests {
+    use super::*;
+    use backend_library::interface::{GenerateTarget, PackageUrl};
+    use backend_semantic::vocabulary::RustEdition;
+
+    fn request(profile: LanguageProfile, package: &str) -> PackageCompileRequest {
+        PackageCompileRequest::new(
+            GenerateTarget {
+                correlation: crate::application::CorrelationId(1),
+                profile,
+                stage: Stage::LowerIr,
+            },
+            PackageUrl::parse(package).expect("canonical test package URL"),
+        )
+        .expect("test package profile is supported")
+    }
+
+    fn rust_package() -> OwnedPackageSourceSet {
+        OwnedPackageSourceSet::new(
+            request(
+                LanguageProfile::Rust(RustEdition::Rust2024),
+                "pkg:cargo/selector-fixture@1.0.0",
+            ),
+            PathBuf::from("/selector-fixture"),
+            vec![
+                OwnedPackageSource::from_string("src/lib.rs", "pub fn value() {}".into())
+                    .expect("normalized Rust source"),
+            ]
+            .into_boxed_slice(),
+        )
+        .expect("valid Rust package source set")
+    }
+
+    #[test]
+    fn target_name_selector_rejects_empty_wrong_profile_and_unit() {
+        assert!(matches!(
+            rust_package().with_rust_cargo_target_name(""),
+            Err(PackageSourceSetError::InvalidRustCargoTargetName)
+        ));
+
+        let non_rust = OwnedPackageSourceSet::new(
+            request(
+                LanguageProfile::TypeScript(
+                    backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+                ),
+                "pkg:npm/selector-fixture@1.0.0",
+            ),
+            PathBuf::from("/selector-fixture"),
+            vec![
+                OwnedPackageSource::from_string("src/index.ts", "export {};".into())
+                    .expect("normalized TypeScript source"),
+            ]
+            .into_boxed_slice(),
+        )
+        .expect("valid TypeScript package source set");
+        assert!(matches!(
+            non_rust.with_rust_cargo_target_name("selector-fixture"),
+            Err(PackageSourceSetError::InvalidRustCargoTargetName)
+        ));
+
+        let rust = rust_package();
+        let selected = OwnedPackageSourceSet::new_for_unit(
+            rust.request.clone(),
+            CompilerPackageTargetV2::new(
+                rust.request.as_ref().clone(),
+                CompilationUnitKeyV2::RustCrate {
+                    name: "selector-fixture".into(),
+                    root: "src/lib.rs".into(),
+                },
+            )
+            .expect("canonical unit target"),
+            rust.package_root.to_path_buf(),
+            rust.sources.clone(),
+        )
+        .expect("valid selected-unit source set");
+        assert!(matches!(
+            selected.with_rust_cargo_target_name("selector-fixture"),
+            Err(PackageSourceSetError::InvalidRustCargoTargetName)
+        ));
+        assert!(matches!(
+            rust.with_expected_rust_target_source_closure([9; 32]),
+            Err(PackageSourceSetError::CompilationUnitMismatch)
+        ));
+    }
+
+    #[test]
+    fn rejected_target_resolution_releases_budget_even_if_the_caller_left() {
+        for caller_left in [false, true] {
+            let budget = StagedOutputBudget::new(16);
+            let reservation = budget.reserve(16).expect("available resolver credit");
+            let (response, returned) = sync_channel(1);
+            let returned = (!caller_left).then_some(returned);
+            reject_lane_job(
+                LaneJob::ResolveRustCargoTarget {
+                    request: rust_package()
+                        .with_rust_cargo_target_name("selector-fixture")
+                        .expect("explicit target request"),
+                    target_name: "selector-fixture".into(),
+                    response,
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                    reservation,
+                },
+                CompilerRuntimeCause::RequestOwnerStopped,
+            );
+            if let Some(returned) = returned {
+                assert!(matches!(
+                    returned.recv().expect("resolver terminal reply"),
+                    Err(PackageSemanticRuntimeError::Runtime(CompilerTerminal::Runtime {
+                        cause: CompilerRuntimeCause::RequestOwnerStopped,
+                        ..
+                    }))
+                ));
+            }
+            assert!(
+                budget.reserve(16).is_ok(),
+                "rejected resolution retained its lane admission credit"
+            );
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct RequestFacts {
     profile: LanguageProfile,
@@ -4498,6 +4950,17 @@ enum RuntimeCommand {
         response: SyncSender<Result<StagedSemanticPackage, PackageSemanticRuntimeError>>,
         cancelled: Arc<AtomicBool>,
     },
+    ResolveRustCargoTarget {
+        request: OwnedPackageSourceSet,
+        target_name: Box<str>,
+        response: SyncSender<
+            Result<
+                (CompilerPackageTargetV2, RustCargoTargetSourceClosureV1),
+                PackageSemanticRuntimeError,
+            >,
+        >,
+        cancelled: Arc<AtomicBool>,
+    },
     ActivateSemanticGeneration {
         profile: LanguageProfile,
         manifest: CompilationManifestFacts,
@@ -4526,6 +4989,18 @@ enum LaneJob {
         go_authority_witness: Option<GoPackageAuthorityWitness>,
         execution_identity: Option<LocalCompilerExecutionIdentity>,
         plane_execution_seed: Option<LocalCompilerPlaneExecutionSeed>,
+        reservation: StagedOutputLease,
+    },
+    ResolveRustCargoTarget {
+        request: OwnedPackageSourceSet,
+        target_name: Box<str>,
+        response: SyncSender<
+            Result<
+                (CompilerPackageTargetV2, RustCargoTargetSourceClosureV1),
+                PackageSemanticRuntimeError,
+            >,
+        >,
+        cancelled: Arc<AtomicBool>,
         reservation: StagedOutputLease,
     },
 }
@@ -4561,6 +5036,21 @@ enum LaneCompletion {
         request: OwnedPackageSourceSet,
         staged: Result<StagedPackageCompilation, PackageSemanticRuntimeError>,
         response: PackageCompileResponse,
+        cancelled: Arc<AtomicBool>,
+        reservation: StagedOutputLease,
+    },
+    ResolveRustCargoTarget {
+        facts: RequestFacts,
+        resolved: Result<
+            (CompilerPackageTargetV2, RustCargoTargetSourceClosureV1),
+            PackageSemanticRuntimeError,
+        >,
+        response: SyncSender<
+            Result<
+                (CompilerPackageTargetV2, RustCargoTargetSourceClosureV1),
+                PackageSemanticRuntimeError,
+            >,
+        >,
         cancelled: Arc<AtomicBool>,
         reservation: StagedOutputLease,
     },
@@ -4632,6 +5122,11 @@ fn run_worker(
                     .iter_mut()
                     .find(|candidate| candidate.tool == observation.tool)
                 else {
+                    debug_compiler_owner(
+                        5,
+                        "worker-generation-stop",
+                        "phase=missing-toolchain-slot",
+                    );
                     alive.store(false, Ordering::Release);
                     break;
                 };
@@ -4667,6 +5162,7 @@ fn run_worker_generation(
         match owned.selection() {
             Ok(selection) => toolchains.push(selection),
             Err(source) => {
+                debug_worker_generation_stop(startup.is_some(), "toolchain-selection");
                 if let Some(startup) = startup.take() {
                     let _ = startup.send(Err(LocalCompilerRuntimeOpenError::Toolchain {
                         ordinal,
@@ -4681,6 +5177,7 @@ fn run_worker_generation(
     let toolchains = match LocalToolchainSet::validate(&toolchains) {
         Ok(toolchains) => toolchains,
         Err(error) => {
+            debug_worker_generation_stop(startup.is_some(), "toolchain-set-validation");
             if let Some(startup) = startup.take() {
                 let _ = startup.send(Err(error.into()));
             }
@@ -4694,6 +5191,7 @@ fn run_worker_generation(
         match LocalPackageRoot::new(owned.ecosystem, &owned.path) {
             Ok(root) => package_roots.push(root),
             Err(source) => {
+                debug_worker_generation_stop(startup.is_some(), "package-root-validation");
                 if let Some(startup) = startup.take() {
                     let _ = startup.send(Err(LocalCompilerRuntimeOpenError::PackageRoot {
                         ordinal,
@@ -4708,6 +5206,7 @@ fn run_worker_generation(
     let package_roots = match LocalPackageRootSet::validate(&package_roots) {
         Ok(package_roots) => package_roots,
         Err(error) => {
+            debug_worker_generation_stop(startup.is_some(), "package-root-set-validation");
             if let Some(startup) = startup.take() {
                 let _ = startup.send(Err(error.into()));
             }
@@ -4815,6 +5314,7 @@ fn run_worker_generation(
         match configuration.scratch.lane_scratch() {
             Ok(scratch) => lane_scratches.push(scratch),
             Err(source) => {
+                debug_worker_generation_stop(startup.is_some(), "lane-scratch-allocation");
                 if let Some(startup) = startup.take() {
                     let _ = startup.send(Err(LocalCompilerRuntimeOpenError::LaneScratch {
                         lane,
@@ -4850,6 +5350,17 @@ fn run_worker_generation(
     ) {
         Ok(compiler) => compiler,
         Err(error) => {
+            debug_worker_generation_stop(startup.is_some(), "compiler-construction");
+            if std::env::var_os("NUDOX_DEBUG_COMPILER_OWNER").is_some_and(|value| value == "1") {
+                eprintln!(
+                    "NUDOX-COMPILER-OWNER phase={} compiler-construction error={error}",
+                    if startup.is_some() {
+                        "startup"
+                    } else {
+                        "generation"
+                    }
+                );
+            }
             if let Some(startup) = startup.take() {
                 let _ = startup.send(Err(error.into()));
             }
@@ -4937,6 +5448,7 @@ fn run_worker_lanes(
                     )
                 })
             {
+                debug_worker_generation_stop(startup.is_some(), "lane-thread-spawn");
                 if let Some(startup) = startup.take() {
                     let _ = startup.send(Err(LocalCompilerRuntimeOpenError::LaneSpawn {
                         lane,
@@ -4950,6 +5462,7 @@ fn run_worker_lanes(
         }
         drop(completion_tx);
         let Some(mut lane_queue) = BoundedLaneQueue::new(lane_senders) else {
+            debug_worker_generation_stop(startup.is_some(), "empty-lane-set");
             if let Some(startup) = startup.take() {
                 let _ = startup.send(Err(LocalCompilerRuntimeOpenError::StartupOwnerStopped));
             }
@@ -4959,6 +5472,7 @@ fn run_worker_lanes(
         if let Some(startup) = startup.take()
             && startup.send(Ok(())).is_err()
         {
+            debug_compiler_owner(4, "worker-startup-stop", "phase=ready-notification-closed");
             alive.store(false, Ordering::Release);
             return WorkerDisposition::Stop;
         }
@@ -4976,12 +5490,16 @@ fn run_worker_lanes(
                 Ok(completion) => {
                     in_flight = in_flight.saturating_sub(1);
                     if !publish_lane_completion(compiler, completion) {
+                        debug_compiler_owner(6, "publisher-stop", "phase=lane-completion-publish");
                         stopping = true;
                         alive.store(false, Ordering::Release);
                     }
                     continue;
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => stopping = true,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    debug_compiler_owner(7, "worker-channel-stopped", "channel=lane-completions");
+                    stopping = true;
+                }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
 
@@ -5000,11 +5518,23 @@ fn run_worker_lanes(
                     Ok(completion) => {
                         in_flight = in_flight.saturating_sub(1);
                         if !publish_lane_completion(compiler, completion) {
+                            debug_compiler_owner(
+                                6,
+                                "publisher-stop",
+                                "phase=drain-completion-publish",
+                            );
                             stopping = true;
                             alive.store(false, Ordering::Release);
                         }
                     }
-                    Err(RecvTimeoutError::Disconnected) => stopping = true,
+                    Err(RecvTimeoutError::Disconnected) => {
+                        debug_compiler_owner(
+                            7,
+                            "worker-channel-stopped",
+                            "channel=lane-completions-drain",
+                        );
+                        stopping = true;
+                    }
                     Err(RecvTimeoutError::Timeout) => {}
                 }
                 continue;
@@ -5025,7 +5555,10 @@ fn run_worker_lanes(
                     &mut stopping,
                     alive,
                 ),
-                Err(RecvTimeoutError::Disconnected) => stopping = true,
+                Err(RecvTimeoutError::Disconnected) => {
+                    debug_compiler_owner(7, "worker-channel-stopped", "channel=commands");
+                    stopping = true;
+                }
                 Err(RecvTimeoutError::Timeout) => {}
             }
         }
@@ -5090,6 +5623,12 @@ fn dispatch_runtime_command(
                     );
                 }
                 Err(LaneSendError::Closed(job)) => {
+                    let lane = identity.lane(compiler_lane_count());
+                    debug_compiler_owner(
+                        3,
+                        "lane-closed",
+                        format_args!("lane={lane} owner_alive={}", alive.load(Ordering::Acquire)),
+                    );
                     reject_lane_job(job, CompilerRuntimeCause::RequestOwnerStopped);
                 }
             }
@@ -5112,6 +5651,7 @@ fn dispatch_runtime_command(
             embedding_scratch_max,
             embedding_requirement,
             in_flight,
+            alive,
         ),
         RuntimeCommand::CompilePackageSourcesStaged {
             request,
@@ -5131,7 +5671,70 @@ fn dispatch_runtime_command(
             embedding_scratch_max,
             embedding_requirement,
             in_flight,
+            alive,
         ),
+        RuntimeCommand::ResolveRustCargoTarget {
+            request,
+            target_name,
+            response,
+            cancelled,
+        } => {
+            let facts = request.facts();
+            if cancelled.load(Ordering::Acquire) {
+                let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
+                    facts.terminal(CompilerRuntimeCause::RequestCancelled),
+                )));
+                return;
+            }
+            let reservation_bytes = staged_output_reservation(
+                facts.profile,
+                request.sources.len(),
+                image_cap,
+                0,
+                0,
+            );
+            let Some(reservation_bytes) = reservation_bytes else {
+                let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
+                    facts.terminal(CompilerRuntimeCause::StagedOutputReservationOverflow),
+                )));
+                return;
+            };
+            let reservation = match budget.reserve(reservation_bytes) {
+                Ok(reservation) => reservation,
+                Err(full) => {
+                    let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
+                        facts.terminal(staged_output_budget_cause(full)),
+                    )));
+                    return;
+                }
+            };
+            let identity = lane_identity(facts, capabilities, None);
+            let job = LaneJob::ResolveRustCargoTarget {
+                request,
+                target_name,
+                response,
+                cancelled,
+                reservation,
+            };
+            match lane_queue.try_send(identity, job) {
+                Ok(_) => *in_flight = in_flight.saturating_add(1),
+                Err(LaneSendError::Full(job)) => reject_lane_job(
+                    job,
+                    CompilerRuntimeCause::LaneQueueFull {
+                        capacity: u16::try_from(COMPILER_LANE_QUEUE_CAPACITY).unwrap_or(u16::MAX),
+                    },
+                ),
+                Err(LaneSendError::Closed(job)) => {
+                    let lane = identity.lane(compiler_lane_count());
+                    debug_compiler_owner(
+                        3,
+                        "lane-closed",
+                        format_args!("lane={lane} owner_alive={}", alive.load(Ordering::Acquire)),
+                    );
+                    reject_lane_job(job, CompilerRuntimeCause::RequestOwnerStopped);
+                }
+            }
+        }
         RuntimeCommand::SemanticImage {
             requested,
             response,
@@ -5154,6 +5757,7 @@ fn dispatch_runtime_command(
                         requested,
                         cause,
                     }));
+                    debug_compiler_owner(6, "worker-panic-stop", "operation=semantic-image");
                     *stopping = true;
                     alive.store(false, Ordering::Release);
                 }
@@ -5192,6 +5796,7 @@ fn dispatch_runtime_command(
                     let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
                         facts.terminal(CompilerRuntimeCause::WorkerPanic(cause)),
                     )));
+                    debug_compiler_owner(6, "worker-panic-stop", "operation=activate-generation");
                     *stopping = true;
                     alive.store(false, Ordering::Release);
                 }
@@ -5214,6 +5819,7 @@ fn queue_package_sources(
     embedding_scratch_max: usize,
     _embedding_requirement: EmbeddingRequirement,
     in_flight: &mut usize,
+    alive: &AtomicBool,
 ) {
     let facts = request.facts();
     let capability = capabilities.for_profile(facts.profile);
@@ -5314,6 +5920,12 @@ fn queue_package_sources(
             );
         }
         Err(LaneSendError::Closed(job)) => {
+            let lane = identity.lane(compiler_lane_count());
+            debug_compiler_owner(
+                3,
+                "lane-closed",
+                format_args!("lane={lane} owner_alive={}", alive.load(Ordering::Acquire)),
+            );
             reject_lane_job(job, CompilerRuntimeCause::RequestOwnerStopped);
         }
     }
@@ -5498,6 +6110,13 @@ fn reject_lane_job(job: LaneJob, cause: CompilerRuntimeCause) {
             response.send_error(PackageSemanticRuntimeError::Runtime(
                 request.facts().terminal(cause),
             ));
+        }
+        LaneJob::ResolveRustCargoTarget {
+            request, response, ..
+        } => {
+            let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
+                request.facts().terminal(cause),
+            )));
         }
     }
 }
@@ -5696,12 +6315,87 @@ fn run_lane(
                             } else {
                                 None
                             };
-                            let package = PackageSourceSet::new_for_unit(
+                            let mut package = PackageSourceSet::new_for_unit(
                                 &request.request,
                                 &request.package_target,
                                 &request.package_root,
                                 &sources,
                             )?;
+                            if let Some(identity) = request.expected_rust_target_source_closure {
+                                package =
+                                    package.with_expected_rust_target_source_closure(identity)?;
+                            }
+                            let package = match request.admission {
+                                OwnedPackageSourceAdmission::Parsed => package,
+                                OwnedPackageSourceAdmission::NativeClangCandidate => {
+                                    let selected_frontier_project = request
+                                        .native_frontier_project
+                                        .ok_or(PackageSourceSetError::NativeClangProfileMismatch)?;
+                                    let selected_frontier_root = request
+                                        .native_frontier_root
+                                        .ok_or(PackageSourceSetError::NativeClangProfileMismatch)?;
+                                    if request.native_clang_permits.is_empty()
+                                        || request.native_clang_permits.iter().any(|permit| {
+                                            permit.profile() != request.request.target.profile
+                                                || permit.package_target()
+                                                    != request.request.as_ref()
+                                                || permit.selected_root() != selected_frontier_root
+                                                || !request.sources.iter().any(|source| {
+                                                    permit.admits(
+                                                        selected_frontier_project,
+                                                        selected_frontier_root,
+                                                        request.request.as_ref(),
+                                                        &source.relative_path,
+                                                        request.request.target.profile,
+                                                        source.source_bytes(),
+                                                    )
+                                                })
+                                        })
+                                    {
+                                        return Err(
+                                            PackageSourceSetError::NativeClangProfileMismatch
+                                                .into(),
+                                        );
+                                    }
+                                    package.with_native_clang_candidate()?
+                                }
+                                OwnedPackageSourceAdmission::NativeCSharpCandidate => {
+                                    let selected_frontier_project =
+                                        request.native_frontier_project.ok_or(
+                                            PackageSourceSetError::NativeCSharpProfileMismatch,
+                                        )?;
+                                    let selected_frontier_root =
+                                        request.native_frontier_root.ok_or(
+                                            PackageSourceSetError::NativeCSharpProfileMismatch,
+                                        )?;
+                                    if request.native_csharp_permits.is_empty()
+                                        || request.native_csharp_permits.iter().any(|permit| {
+                                            permit.profile() != request.request.target.profile
+                                                || permit.package_target()
+                                                    != request.request.as_ref()
+                                                || permit.selected_root() != selected_frontier_root
+                                                || !request.sources.iter().any(|source| {
+                                                    permit.admits(
+                                                        selected_frontier_project,
+                                                        selected_frontier_root,
+                                                        request.request.as_ref(),
+                                                        &source.relative_path,
+                                                        request.request.target.profile,
+                                                        source.source_bytes(),
+                                                    )
+                                                })
+                                        })
+                                    {
+                                        return Err(
+                                            PackageSourceSetError::NativeCSharpProfileMismatch
+                                                .into(),
+                                        );
+                                    }
+                                    // C# package compilation always enters the existing Roslyn
+                                    // authority path; the permit gates exact source admission.
+                                    package
+                                }
+                            };
                             let package = match raw_sources.as_ref() {
                                 Some(raw_sources) => {
                                     package.with_python_raw_sources(raw_sources)?
@@ -5768,6 +6462,88 @@ fn run_lane(
                         facts,
                         request,
                         staged,
+                        response,
+                        cancelled,
+                        reservation,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+                if retire_lane {
+                    return;
+                }
+            }
+            LaneJob::ResolveRustCargoTarget {
+                request,
+                target_name,
+                response,
+                cancelled,
+                reservation,
+            } => {
+                let facts = request.facts();
+                let resolved = if cancelled.load(Ordering::Acquire) {
+                    Err(PackageSemanticRuntimeError::Runtime(
+                        facts.terminal(CompilerRuntimeCause::RequestCancelled),
+                    ))
+                } else {
+                    run_lane_attempt(
+                        || {
+                            if request.rust_cargo_target_name.as_deref()
+                                != Some(target_name.as_ref())
+                            {
+                                return Err(
+                                    PackageSourceSetError::InvalidRustCargoTargetName.into(),
+                                );
+                            }
+                            if request.package_target.unit_key()
+                                != &CompilationUnitKeyV2::PackageRoot
+                            {
+                                return Err(PackageSourceSetError::CompilationUnitMismatch.into());
+                            }
+                            let borrowed = borrow_package_sources(
+                                &request.sources,
+                                request.request.target.profile,
+                            )?;
+                            let package = PackageSourceSet::new_for_unit(
+                                &request.request,
+                                &request.package_target,
+                                &request.package_root,
+                                &borrowed,
+                            )?;
+                            execution
+                                .resolve_rust_cargo_target_name(
+                                    &package,
+                                    target_name.as_ref(),
+                                    &cancelled,
+                                )
+                                .map_err(PackageSemanticRuntimeError::from)
+                        },
+                        |cause| {
+                            PackageSemanticRuntimeError::Runtime(
+                                facts.terminal(CompilerRuntimeCause::WorkerPanic(cause)),
+                            )
+                        },
+                    )
+                };
+                let panicked = matches!(
+                    &resolved,
+                    Err(PackageSemanticRuntimeError::Runtime(
+                        CompilerTerminal::Runtime {
+                            cause: CompilerRuntimeCause::WorkerPanic(_),
+                            ..
+                        }
+                    ))
+                );
+                let replacement = panicked.then(|| scratch.lane_scratch().ok()).flatten();
+                let retire_lane = panicked && replacement.is_none();
+                if let Some(replacement) = replacement {
+                    scratch = replacement;
+                }
+                if completions
+                    .send(LaneCompletion::ResolveRustCargoTarget {
+                        facts,
+                        resolved,
                         response,
                         cancelled,
                         reservation,
@@ -5894,6 +6670,23 @@ fn publish_lane_completion(
                     }
                 }
             }
+            true
+        }
+        LaneCompletion::ResolveRustCargoTarget {
+            facts,
+            resolved,
+            response,
+            cancelled,
+            reservation: _reservation,
+        } => {
+            let resolved = if cancelled.load(Ordering::Acquire) {
+                Err(PackageSemanticRuntimeError::Runtime(
+                    facts.terminal(CompilerRuntimeCause::RequestCancelled),
+                ))
+            } else {
+                resolved
+            };
+            let _ = response.send(resolved);
             true
         }
     }

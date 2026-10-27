@@ -44,6 +44,63 @@ pub struct NativeProgram {
     pub root_names: Vec<PathBuf>,
     /// Diagnostics produced while loading and resolving project configuration.
     pub program_diagnostics: Vec<crate::TszDiagnostic>,
+    /// Bounded filesystem transcript for configured root discovery. It is
+    /// replayed before a retained native resolver proof may tolerate file-set
+    /// changes in directories it enumerated.
+    pub root_selection: Option<NativeRootSelectionTranscript>,
+}
+
+/// Exact configured-root query needed to replay TypeScript's root matcher
+/// against a fresh admitted filesystem view.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeRootSelectionTranscript {
+    pub config_path: PathBuf,
+    pub root_names: Vec<PathBuf>,
+    pub directories: Vec<PathBuf>,
+}
+
+/// Replays only configured source-root selection. Module parsing and checking
+/// are deliberately not performed; the resolver ledger separately replays all
+/// positive and negative module candidates.
+pub fn replay_root_selection(
+    fs: &dyn ResolutionFileSystem,
+    config_path: &Path,
+    checkpoint: &dyn ExecutionCheckpoint,
+) -> Result<NativeRootSelectionTranscript, String> {
+    replay_root_selection_controlled(fs, config_path, &|work| poll(checkpoint, work))
+}
+
+/// Replays roots with a local caller control, including polls within glob matching.
+/// This callback stays on the replay thread; compiler execution retains its
+/// separate Send + Sync checkpoint contract.
+pub fn replay_root_selection_controlled(
+    fs: &dyn ResolutionFileSystem,
+    config_path: &Path,
+    control: &dyn Fn(u64) -> Result<(), String>,
+) -> Result<NativeRootSelectionTranscript, String> {
+    let checkpoint = &RootReplayCheckpoint(control);
+    poll(checkpoint, 0)?;
+    let parsed = tsz::config::load_tsconfig_with_diagnostics_and_file_system(config_path, fs)
+        .map_err(|error| error.to_string())?;
+    let mut options =
+        tsz::config::resolve_compiler_options_embedded(parsed.config.compiler_options.as_ref())
+            .map_err(|error| error.to_string())?;
+    if options.base_url.is_none()
+        && options
+            .paths
+            .as_ref()
+            .is_some_and(|paths| !paths.is_empty())
+        && let Some(paths_base_path) = parsed.paths_base_path
+    {
+        options.paths_base_path = Some(paths_base_path);
+    }
+    let (root_names, directories) =
+        select_roots(fs, config_path, &parsed.config, &options, checkpoint)?;
+    Ok(NativeRootSelectionTranscript {
+        config_path: config_path.to_path_buf(),
+        root_names,
+        directories,
+    })
 }
 
 /// Resolver metadata for one module request in a program source file.
@@ -68,26 +125,64 @@ pub fn build(
     inferred_roots: &[PathBuf],
     checkpoint: &dyn ExecutionCheckpoint,
 ) -> Result<NativeProgram, String> {
+    build_with_root_selection_observer(fs, config_path, inferred_roots, checkpoint, &|_| Ok(()))
+}
+
+/// Reports completed root enumeration before module resolution can enumerate any
+/// of the same directories. Consumers retain these as separate observations.
+pub fn build_with_root_selection_observer(
+    fs: &dyn ResolutionFileSystem,
+    config_path: Option<&Path>,
+    inferred_roots: &[PathBuf],
+    checkpoint: &dyn ExecutionCheckpoint,
+    root_selection_complete: &dyn Fn(&NativeRootSelectionTranscript) -> Result<(), String>,
+) -> Result<NativeProgram, String> {
     poll(checkpoint, 0)?;
-    let (config, mut program_diagnostics) = match config_path {
+    let (config, mut program_diagnostics, paths_base_path) = match config_path {
         Some(path) => {
             let parsed = tsz::config::load_tsconfig_with_diagnostics_and_file_system(path, fs)
                 .map_err(|error| error.to_string())?;
-            (parsed.config, parsed.diagnostics)
+            (parsed.config, parsed.diagnostics, parsed.paths_base_path)
         }
-        None => (TsConfig::default(), Vec::new()),
+        None => (TsConfig::default(), Vec::new(), None),
     };
     let mut options =
         tsz::config::resolve_compiler_options_embedded(config.compiler_options.as_ref())
             .map_err(|error| error.to_string())?;
+    // TypeScript 4.1 permits `paths` without `baseUrl`. In that form, each
+    // substitution is relative to the tsconfig directory. TSZ's resolver has
+    // an explicit `paths_base_path` for this case. The config loader retains
+    // which config declared the effective mapping across `extends` merging.
+    // Preserve the resolver's separate `base_url` fallback semantics by
+    // setting only the paths anchor.
+    if options.base_url.is_none()
+        && options
+            .paths
+            .as_ref()
+            .is_some_and(|paths| !paths.is_empty())
+        && let Some(paths_base_path) = paths_base_path
+    {
+        options.paths_base_path = Some(paths_base_path);
+    }
     // Resolver options also determine checker diagnostics and must travel with it.
     options.checker.allow_importing_ts_extensions = options.allow_importing_ts_extensions;
     options.checker.rewrite_relative_import_extensions = options.rewrite_relative_import_extensions;
     let options_identity = format!("{options:?}");
-    let roots = match config_path {
-        Some(path) => select_roots(fs, path, &config, &options, checkpoint)?,
-        None => inferred_roots.to_vec(),
+    let (roots, root_selection) = match config_path {
+        Some(path) => {
+            let (roots, directories) = select_roots(fs, path, &config, &options, checkpoint)?;
+            let transcript = NativeRootSelectionTranscript {
+                config_path: path.to_path_buf(),
+                root_names: roots.clone(),
+                directories,
+            };
+            (roots, Some(transcript))
+        }
+        None => (inferred_roots.to_vec(), None),
     };
+    if let Some(query) = &root_selection {
+        root_selection_complete(query)?;
+    }
     let mut resolver = ModuleResolver::with_file_system(&options, fs);
     let solution = roots.is_empty()
         && config
@@ -104,6 +199,7 @@ pub fn build(
             options_identity,
             root_names: roots,
             program_diagnostics,
+            root_selection,
         });
     }
     let mut pending = roots.iter().cloned().collect::<VecDeque<_>>();
@@ -474,13 +570,31 @@ pub fn build(
         options_identity,
         root_names: roots,
         program_diagnostics,
+        root_selection,
     })
 }
 
-fn poll(checkpoint: &dyn ExecutionCheckpoint, work: u64) -> Result<(), String> {
-    checkpoint
-        .checkpoint(work)
-        .map_err(|stop| format!("native TSZ admission stopped: {stop:?}"))
+trait NativeCheckpoint {
+    fn poll(&self, work: u64) -> Result<(), String>;
+}
+
+impl<T: ExecutionCheckpoint + ?Sized> NativeCheckpoint for T {
+    fn poll(&self, work: u64) -> Result<(), String> {
+        self.checkpoint(work)
+            .map_err(|stop| format!("native TSZ admission stopped: {stop:?}"))
+    }
+}
+
+struct RootReplayCheckpoint<'a>(&'a dyn Fn(u64) -> Result<(), String>);
+
+impl NativeCheckpoint for RootReplayCheckpoint<'_> {
+    fn poll(&self, work: u64) -> Result<(), String> {
+        (self.0)(work)
+    }
+}
+
+fn poll(checkpoint: &(impl NativeCheckpoint + ?Sized), work: u64) -> Result<(), String> {
+    checkpoint.poll(work)
 }
 
 fn explicit_resolution_mode(
@@ -533,8 +647,8 @@ fn select_roots(
     config_path: &Path,
     config: &TsConfig,
     options: &ResolvedCompilerOptions,
-    checkpoint: &dyn ExecutionCheckpoint,
-) -> Result<Vec<PathBuf>, String> {
+    checkpoint: &(impl NativeCheckpoint + ?Sized),
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
     let directory = config_path
         .parent()
         .ok_or("native TSZ config has no directory")?;
@@ -609,6 +723,7 @@ fn select_roots(
         .map(|path| (path, 0usize))
         .collect::<Vec<_>>();
     let mut visited = BTreeSet::new();
+    let mut queried_directories = BTreeSet::new();
     let mut entries_seen = 0usize;
     while let Some((directory, depth)) = pending.pop() {
         poll(checkpoint, 1)?;
@@ -618,12 +733,13 @@ fn select_roots(
         else {
             continue;
         };
-        if !visited.insert(canonical) {
+        if !visited.insert(canonical.clone()) {
             continue;
         }
         if depth > MAX_DIRECTORY_DEPTH {
             return Err("native TSZ root directory depth exceeds bound".into());
         }
+        queried_directories.insert(canonical);
         let Some(entries) = fs.read_dir(&directory).map_err(|error| error.to_string())? else {
             continue;
         };
@@ -662,7 +778,10 @@ fn select_roots(
             }
         }
     }
-    Ok(roots.into_iter().collect())
+    Ok((
+        roots.into_iter().collect(),
+        queried_directories.into_iter().collect(),
+    ))
 }
 
 fn source_extension(path: &Path, allow_js: bool) -> bool {
@@ -713,7 +832,7 @@ fn any_selector_matches(
     path: &str,
     include: bool,
     directory_prefix: bool,
-    checkpoint: &dyn ExecutionCheckpoint,
+    checkpoint: &(impl NativeCheckpoint + ?Sized),
 ) -> Result<bool, String> {
     for pattern in patterns {
         if glob_path_matches(pattern, path, include, directory_prefix, checkpoint)? {
@@ -728,7 +847,7 @@ fn glob_path_matches(
     path: &str,
     include: bool,
     directory_prefix: bool,
-    checkpoint: &dyn ExecutionCheckpoint,
+    checkpoint: &(impl NativeCheckpoint + ?Sized),
 ) -> Result<bool, String> {
     let pattern = pattern.split('/').collect::<Vec<_>>();
     let path = path.split('/').collect::<Vec<_>>();
@@ -786,7 +905,7 @@ fn segment_matches(
     path: &str,
     include: bool,
     file_name: bool,
-    checkpoint: &dyn ExecutionCheckpoint,
+    checkpoint: &(impl NativeCheckpoint + ?Sized),
 ) -> Result<bool, String> {
     let wildcard = pattern.contains(['*', '?']);
     if include && wildcard && matches!(path, "node_modules" | "bower_components" | "jspm_packages")
@@ -1004,6 +1123,41 @@ mod tests {
         )?);
         Ok(())
     }
+
+    #[test]
+    fn configured_root_transcript_replays_unrelated_files_but_rejects_new_roots()
+    -> Result<(), Box<dyn Error>> {
+        static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("tsz-root-query-replay-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(root.join("src"))?;
+        let config = root.join("tsconfig.json");
+        std::fs::write(
+            &config,
+            r#"{"compilerOptions":{"noLib":true,"types":[]},"include":["src/**/*"]}"#,
+        )?;
+        std::fs::write(root.join("src/main.ts"), "export const main = 1;")?;
+        let before = replay_root_selection(&tsz::StdResolutionFileSystem, &config, &Unlimited)?;
+        std::fs::write(root.join("src/unrelated.txt"), "")?;
+        let after_text = replay_root_selection(&tsz::StdResolutionFileSystem, &config, &Unlimited)?;
+        assert_eq!(before, after_text, "the .txt is not a TSZ root input");
+
+        std::fs::write(root.join("src/new.ts"), "export const added = 1;")?;
+        let after_source =
+            replay_root_selection(&tsz::StdResolutionFileSystem, &config, &Unlimited)?;
+        assert_ne!(before.root_names, after_source.root_names);
+
+        std::fs::write(
+            &config,
+            r#"{"compilerOptions":{"noLib":true,"types":[]},"include":["src/main.ts"]}"#,
+        )?;
+        let after_options =
+            replay_root_selection(&tsz::StdResolutionFileSystem, &config, &Unlimited)?;
+        assert_ne!(after_source, after_options);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
     #[test]
     fn native_include_globs_keep_hidden_dependency_and_minified_file_boundaries()
     -> Result<(), Box<dyn Error>> {
@@ -1033,6 +1187,28 @@ mod tests {
         )?);
         Ok(())
     }
+    #[test]
+    fn local_root_replay_control_stops_inside_a_single_pattern() {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let control = |_: u64| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 2 {
+                Err("caller cancelled replay".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let result = glob_path_matches(
+            "/repo/**/*",
+            "/repo/src/main.ts",
+            true,
+            false,
+            &RootReplayCheckpoint(&control),
+        );
+        assert_eq!(result, Err("caller cancelled replay".to_string()));
+        assert_eq!(calls.get(), 2, "stop propagates from inside the matcher");
+    }
+
     #[test]
     fn native_root_matcher_propagates_work_stops_inside_a_single_pattern() {
         struct Stopped;
@@ -1118,6 +1294,289 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn configured_paths_alias_resolves_without_base_url() -> Result<(), Box<dyn Error>> {
+        static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("tsz-path-alias-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(root.join("src/app"))?;
+        std::fs::create_dir_all(root.join("src/components"))?;
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{"files":["src/app/page.ts"],"compilerOptions":{"paths":{"@/*":["./src/*"]}}}"#,
+        )?;
+        std::fs::write(
+            root.join("src/app/page.ts"),
+            "export { NavBar } from '@/components/NavBar';\n",
+        )?;
+        std::fs::write(
+            root.join("src/components/NavBar.ts"),
+            "export const NavBar = 1;\n",
+        )?;
+
+        let config = root.join("tsconfig.json");
+        let program = build(
+            &tsz::StdResolutionFileSystem,
+            Some(&config),
+            &[],
+            &Unlimited,
+        )
+        .map_err(io::Error::other)?;
+        let target = root.join("src/components/NavBar.ts").canonicalize()?;
+        assert!(
+            program.resolutions.iter().any(|resolution| {
+                resolution.importer.ends_with("src/app/page.ts")
+                    && resolution.specifier == "@/components/NavBar"
+                    && resolution.target.as_ref() == Some(&target)
+            }),
+            "tsconfig paths without baseUrl must resolve through the configured project root: {:?}",
+            program
+                .resolutions
+                .iter()
+                .map(|resolution| (
+                    &resolution.importer,
+                    &resolution.specifier,
+                    &resolution.target
+                ))
+                .collect::<Vec<_>>()
+        );
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn missing_selected_config_does_not_invent_a_paths_anchor() -> Result<(), Box<dyn Error>> {
+        let program = build(&tsz::StdResolutionFileSystem, None, &[], &Unlimited)
+            .map_err(io::Error::other)?;
+        assert!(
+            program.options_identity.contains("paths_base_path: None"),
+            "an absent config must leave the resolver's paths anchor unset: {}",
+            program.options_identity
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn inherited_paths_keep_declaring_config_anchor_and_local_override()
+    -> Result<(), Box<dyn Error>> {
+        static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "tsz-inherited-path-alias-{}-{id}",
+            std::process::id()
+        ));
+        let base = root.join("base");
+        let inherited_leaf = root.join("inherited");
+        let overridden_leaf = root.join("overridden");
+        for dir in [
+            base.join("src/components"),
+            inherited_leaf.join("src/app"),
+            inherited_leaf.join("src/components"),
+            overridden_leaf.join("src/app"),
+            overridden_leaf.join("override-src/components"),
+        ] {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(
+            base.join("tsconfig.json"),
+            r#"{"compilerOptions":{"paths":{"@/*":["./src/*"]}}}"#,
+        )?;
+        std::fs::write(
+            inherited_leaf.join("tsconfig.json"),
+            r#"{"extends":"../base/tsconfig.json","files":["src/app/page.ts"]}"#,
+        )?;
+        std::fs::write(
+            inherited_leaf.join("src/app/page.ts"),
+            "import { Inherited } from '@/components/Inherited';\nexport { Inherited };\n",
+        )?;
+        std::fs::write(
+            base.join("src/components/Inherited.ts"),
+            "export const Inherited = 1;\n",
+        )?;
+
+        // The inherited mapping resolves beneath `base`, even though the
+        // selected config and importing source live under `inherited`.
+        let inherited_config = inherited_leaf.join("tsconfig.json");
+        let inherited = build(
+            &tsz::StdResolutionFileSystem,
+            Some(&inherited_config),
+            &[],
+            &Unlimited,
+        )
+        .map_err(io::Error::other)?;
+        let inherited_target = base.join("src/components/Inherited.ts").canonicalize()?;
+        assert!(
+            inherited.resolutions.iter().any(|resolution| {
+                resolution.specifier == "@/components/Inherited"
+                    && resolution.target.as_ref() == Some(&inherited_target)
+            }),
+            "inherited paths must retain their declaring config directory: {:?}",
+            inherited
+                .resolutions
+                .iter()
+                .map(|resolution| (&resolution.specifier, &resolution.target))
+                .collect::<Vec<_>>()
+        );
+
+        // A later extends entry without `paths` leaves the earlier mapping
+        // and its origin in force.
+        let empty_base = root.join("empty-base");
+        let array_leaf = root.join("array-inherited");
+        std::fs::create_dir_all(empty_base.as_path())?;
+        std::fs::create_dir_all(array_leaf.join("src"))?;
+        std::fs::write(empty_base.join("tsconfig.json"), "{}")?;
+        std::fs::write(
+            array_leaf.join("tsconfig.json"),
+            r#"{"extends":["../base/tsconfig.json","../empty-base/tsconfig.json"],"files":["src/page.ts"]}"#,
+        )?;
+        std::fs::write(
+            array_leaf.join("src/page.ts"),
+            "import { Inherited } from '@/components/Inherited';\nexport { Inherited };\n",
+        )?;
+        let array_config = array_leaf.join("tsconfig.json");
+        let array_program = build(
+            &tsz::StdResolutionFileSystem,
+            Some(&array_config),
+            &[],
+            &Unlimited,
+        )
+        .map_err(io::Error::other)?;
+        assert!(
+            array_program.resolutions.iter().any(|resolution| {
+                resolution.specifier == "@/components/Inherited"
+                    && resolution.target.as_ref() == Some(&inherited_target)
+            }),
+            "an extends entry without paths must retain the earlier mapping origin"
+        );
+
+        // A later extends entry that inherits `paths` from its own base wins
+        // as a whole option and carries that ancestor's declaring directory.
+        let alternate_mapping = root.join("alternate-mapping");
+        let alternate = root.join("alternate");
+        let array_override_leaf = root.join("array-override");
+        std::fs::create_dir_all(alternate_mapping.join("alt-src/components"))?;
+        std::fs::create_dir_all(alternate.as_path())?;
+        std::fs::create_dir_all(array_override_leaf.join("src"))?;
+        std::fs::write(
+            alternate_mapping.join("tsconfig.json"),
+            r#"{"compilerOptions":{"paths":{"@/*":["./alt-src/*"]}}}"#,
+        )?;
+        std::fs::write(
+            alternate.join("tsconfig.json"),
+            r#"{"extends":"../alternate-mapping/tsconfig.json"}"#,
+        )?;
+        std::fs::write(
+            array_override_leaf.join("tsconfig.json"),
+            r#"{"extends":["../base/tsconfig.json","../alternate/tsconfig.json"],"files":["src/page.ts"]}"#,
+        )?;
+        std::fs::write(
+            array_override_leaf.join("src/page.ts"),
+            "import { Alternate } from '@/components/Alternate';\nexport { Alternate };\n",
+        )?;
+        std::fs::write(
+            alternate_mapping.join("alt-src/components/Alternate.ts"),
+            "export const Alternate = 1;\n",
+        )?;
+        let array_override_config = array_override_leaf.join("tsconfig.json");
+        let array_override_program = build(
+            &tsz::StdResolutionFileSystem,
+            Some(&array_override_config),
+            &[],
+            &Unlimited,
+        )
+        .map_err(io::Error::other)?;
+        let alternate_target = alternate_mapping
+            .join("alt-src/components/Alternate.ts")
+            .canonicalize()?;
+        assert!(
+            array_override_program.resolutions.iter().any(|resolution| {
+                resolution.specifier == "@/components/Alternate"
+                    && resolution.target.as_ref() == Some(&alternate_target)
+            }),
+            "the later extends entry must carry its inherited paths origin"
+        );
+
+        std::fs::write(
+            overridden_leaf.join("tsconfig.json"),
+            r#"{"extends":"../base/tsconfig.json","files":["src/app/page.ts"],"compilerOptions":{"paths":{"@/*":["./override-src/*"]}}}"#,
+        )?;
+        std::fs::write(
+            overridden_leaf.join("src/app/page.ts"),
+            "import { Overridden } from '@/components/Overridden';\nexport { Overridden };\n",
+        )?;
+        std::fs::write(
+            overridden_leaf.join("override-src/components/Overridden.ts"),
+            "export const Overridden = 1;\n",
+        )?;
+        let overridden_config = overridden_leaf.join("tsconfig.json");
+        let overridden = build(
+            &tsz::StdResolutionFileSystem,
+            Some(&overridden_config),
+            &[],
+            &Unlimited,
+        )
+        .map_err(io::Error::other)?;
+        let overridden_target = overridden_leaf
+            .join("override-src/components/Overridden.ts")
+            .canonicalize()?;
+        assert!(
+            overridden.resolutions.iter().any(|resolution| {
+                resolution.specifier == "@/components/Overridden"
+                    && resolution.target.as_ref() == Some(&overridden_target)
+            }),
+            "an entry-config paths override must anchor at that config: {:?}",
+            overridden
+                .resolutions
+                .iter()
+                .map(|resolution| (&resolution.specifier, &resolution.target))
+                .collect::<Vec<_>>()
+        );
+
+        // With baseUrl, TSZ's existing baseUrl anchor remains authoritative.
+        let base_url_config = root.join("base-url");
+        let base_url_leaf = root.join("base-url-leaf");
+        std::fs::create_dir_all(base_url_config.join("lib/components"))?;
+        std::fs::create_dir_all(base_url_leaf.join("src"))?;
+        std::fs::write(
+            base_url_config.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":"./lib","paths":{"@/*":["./components/*"]}}}"#,
+        )?;
+        std::fs::write(
+            base_url_leaf.join("tsconfig.json"),
+            r#"{"extends":"../base-url/tsconfig.json","files":["src/page.ts"]}"#,
+        )?;
+        std::fs::write(
+            base_url_leaf.join("src/page.ts"),
+            "import { BaseUrl } from '@/BaseUrl';\nexport { BaseUrl };\n",
+        )?;
+        std::fs::write(
+            base_url_config.join("lib/components/BaseUrl.ts"),
+            "export const BaseUrl = 1;\n",
+        )?;
+        let base_url_leaf_config = base_url_leaf.join("tsconfig.json");
+        let base_url_program = build(
+            &tsz::StdResolutionFileSystem,
+            Some(&base_url_leaf_config),
+            &[],
+            &Unlimited,
+        )
+        .map_err(io::Error::other)?;
+        let base_url_target = base_url_config
+            .join("lib/components/BaseUrl.ts")
+            .canonicalize()?;
+        assert!(
+            base_url_program.resolutions.iter().any(|resolution| {
+                resolution.specifier == "@/BaseUrl"
+                    && resolution.target.as_ref() == Some(&base_url_target)
+            }),
+            "an inherited baseUrl must continue to anchor paths substitutions"
+        );
+
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
     #[test]
     fn automatic_jsx_runtime_honors_source_pragma_and_classic_override() {
         let mut options = TszCheckerOptions::default();

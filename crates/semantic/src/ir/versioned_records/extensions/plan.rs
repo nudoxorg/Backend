@@ -176,6 +176,7 @@ impl CanonicalPlaneRowEncoder for LanguageExtensionRows {
                 out,
             )?,
             Language::Clang => encode_clang(
+                reader,
                 plan,
                 reader
                     .clang_extension(owner.id)

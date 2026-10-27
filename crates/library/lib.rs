@@ -23,6 +23,8 @@ pub mod canonical;
 mod capability;
 mod cargo_aliases;
 mod cargo_source;
+mod cargo_target;
+pub use cargo_target::{CargoTargetScope, CargoTargetSelector};
 mod catalog;
 mod command;
 mod command_registry;
@@ -184,7 +186,8 @@ pub use graph_query::{
 };
 pub use package_compiler_outcomes::{
     MAX_PACKAGE_COMPILER_COVERAGE_PAGE_BYTES, MAX_PACKAGE_COMPILER_COVERAGE_PAGE_ROWS,
-    PackageCompilerCoverage, PackageCompilerCoveragePage, PackageCompilerCoverageRow,
+    PackageCompilerCoverage, PackageCompilerCoverageGapCause,
+    PackageCompilerCoverageGapDiagnostic, PackageCompilerCoveragePage, PackageCompilerCoverageRow,
     PackageCompilerCoverageSelector, PackageCompilerDiagnostic, PackageCompilerOutcomeBasis,
     PackageCompilerOutcomeRead, PackageCompilerOutcomeSelector, PackageCompilerOutcomes,
     PackageCompilerOutcomesUnavailable, PackageCompilerProfileRefusal,
@@ -322,7 +325,7 @@ pub use surface::{
     SemanticLinkDelta, SemanticLinkEvidence, SemanticLinkKind, SemanticLinkTarget,
     SemanticSourceSpan, SemanticVersionFreshness, SemanticVersionRecord, SubscriptionRecord,
     SurfaceCommand, SurfaceReply, TreeNodeId, TreeNodeRecord, TreeOpener, TreeSubject,
-    index_operation_request_digest,
+    index_operation_request_digest, index_operation_scoped_request_digest,
 };
 pub use view::{
     AddressMatchKind, Basis, CapturedSourceCoordinate, CommittedViewDelta, CompleteViewProjection,

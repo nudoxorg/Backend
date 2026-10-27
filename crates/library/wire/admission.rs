@@ -933,7 +933,11 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
         }
 
         (
-            Command::Add { package, .. },
+            Command::Add {
+                cargo_target,
+                package,
+                ..
+            },
             CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial)),
         ) => {
             partial
@@ -942,6 +946,17 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
             if crate::package_key(partial.package.as_str()) != *package {
                 return Err(ReplyAdmissionError::Protocol(
                     "partial add reply does not match the requested package".to_owned(),
+                ));
+            }
+            if partial
+                .source_capture
+                .cargo_target
+                .as_ref()
+                .map(|scope| &scope.name)
+                != cargo_target.as_ref()
+            {
+                return Err(ReplyAdmissionError::Protocol(
+                    "partial add reply does not match the requested Cargo target".to_owned(),
                 ));
             }
             true
@@ -1227,13 +1242,14 @@ fn admit_index_reply(
     reply: &crate::SurfaceReply,
 ) -> Result<(), ReplyAdmissionError> {
     use crate::{
-        IndexJobObservation, IndexOperationObservation, IndexStartResult, SurfaceCommand,
-        SurfaceReply,
+        IndexJobObservation, IndexJobOutcome, IndexOperationObservation, IndexStartResult,
+        SurfaceCommand, SurfaceReply,
     };
 
     let operation = match (command, reply) {
         (
             SurfaceCommand::IndexOperationStart {
+                cargo_target,
                 operation_key,
                 package,
                 execution_intent,
@@ -1241,7 +1257,7 @@ fn admit_index_reply(
             SurfaceReply::IndexOperationStarted(observation),
         ) => Some((
             *operation_key,
-            Some((package, *execution_intent)),
+            Some((package, *execution_intent, cargo_target.as_ref())),
             observation,
         )),
         (
@@ -1257,18 +1273,37 @@ fn admit_index_reply(
                 "index operation reply family does not match the command".to_owned(),
             ));
         }
-        (SurfaceCommand::IndexStart { package, .. }, SurfaceReply::IndexStarted(result)) => {
+        (
+            SurfaceCommand::IndexStart {
+                cargo_target,
+                package,
+                ..
+            },
+            SurfaceReply::IndexStarted(result),
+        ) => {
             let observed = match result {
                 IndexStartResult::Started { ticket, .. } => ticket.package(),
                 IndexStartResult::Terminal(terminal) => terminal.ticket.package(),
             };
-            return if package == observed {
-                Ok(())
-            } else {
-                Err(ReplyAdmissionError::Protocol(
+            if package != observed {
+                return Err(ReplyAdmissionError::Protocol(
                     "index start reply does not match the requested package".to_owned(),
-                ))
-            };
+                ));
+            }
+            if let IndexStartResult::Terminal(terminal) = result
+                && let IndexJobOutcome::PartiallyPublished(partial) = &terminal.outcome
+                && partial
+                    .source_capture
+                    .cargo_target
+                    .as_ref()
+                    .map(|scope| &scope.name)
+                    != cargo_target.as_ref()
+            {
+                return Err(ReplyAdmissionError::Protocol(
+                    "index start reply does not match the requested Cargo target".to_owned(),
+                ));
+            }
+            return Ok(());
         }
         (SurfaceCommand::IndexStart { .. }, _) => {
             return Err(ReplyAdmissionError::Protocol(
@@ -1290,12 +1325,17 @@ fn admit_index_reply(
                 "index operation reply does not match the exact requested key".to_owned(),
             ));
         }
-        if let Some((package, execution_intent)) = request {
-            let digest = crate::index_operation_request_digest(package, execution_intent);
+        if let Some((package, execution_intent, cargo_target)) = request {
+            let digest = crate::index_operation_scoped_request_digest(
+                package,
+                execution_intent,
+                cargo_target,
+            );
             let matches = match observation {
                 IndexOperationObservation::Known(status) => {
                     status.package == *package
                         && status.execution_intent == execution_intent
+                        && status.cargo_target.as_ref() == cargo_target
                         && status.request_digest == digest
                 }
                 IndexOperationObservation::OutsideReceiptWindow { request_digest, .. } => {

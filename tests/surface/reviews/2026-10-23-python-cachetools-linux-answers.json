@@ -1,0 +1,373 @@
+{
+  "acceptance": "Fresh exact-head Linux snapshot/performance comparison remains required; not a green verdict.",
+  "answer_review": [
+    "TTLCache is the authored class at src/cachetools/__init__.py:451, with its pinned stub at __init__.pyi:94; cached is the authored function at __init__.py:738, with three genuine pinned stub overloads at169/177/186.",
+    "Reviewed related Cached test classes, cachemethod wrapper stubs, ttl property and key helpers against the full archive. CLI result counts remain9 and25. Shelf native row count1863->1866 is retained as an observed backend row count, not asserted to be1866 authored declarations.",
+    "Checked every source-backed search or explicit source-coordinate outline row across CLI/MCP against its exact AST name, file and line; all visible outline names occur in the independent AST. The attached anchor list records the exact checks.",
+    "Retain the original bounded page shapes, ordering, child relationships, identities, source-root/branch/log fields, measured wire accounting and live-validated continuation markers. Existing harness publication, authored-symbol and continuation assertions passed before the candidate was emitted.",
+    "The native semantic coverage field now reports complete while embedding-based semantic_search remains explicitly unavailable/unconfigured. No embedding capability is inferred or added.",
+    "The visible prefixes and queried authored results are independently reviewed; this does not claim independent enumeration of every stored native carrier or every later continuation page. Counts describe observed native rows, including implicit semantic carriers."
+  ],
+  "case": "python-cachetools",
+  "evidence": {
+    "artifact_manifest_sha256": "ecebb531d2b88ff9e6cfc4aa245d2840181a7d7593d7f36090a74b3b7d8456c2",
+    "build": 1807,
+    "global_build": 594865,
+    "job": "pr-t2",
+    "pipeline": "nudox-backend-t1-pr",
+    "source_sha": "ee8d0c27be6bf9f58e1f88ae525b123c50d49ee3"
+  },
+  "normalization": "No normalizer or public assertion changed for this review.",
+  "performance": {
+    "action": "Previous performance JSON suffix retained byte-for-byte; no measured candidate baseline, ratio or floor adopted.",
+    "preserved_suffix_sha256": "6203bf839772f149e2764475d8f8c7aa83c7c65c1b7083a30d47c25eeec0710b"
+  },
+  "reviewer": "Codex / GPT-6.1, 2026-10-23",
+  "schema": 1,
+  "scope": "Explicit answer-only review against complete pinned source, with existing baseline bytes preserved.",
+  "source": {
+    "coordinate": "pypi:cachetools@7.2.0",
+    "files_sha256": {
+      "docs/conf.py": "f68affa8dfcf4a20d5fe872cfb0e19f9b284f8feda563dd8e8e23eafe75cd4eb",
+      "src/cachetools/__init__.py": "525ba807fed4af10744f068b5f9b81710903b6f73ee897469d3bf615847e2bd0",
+      "src/cachetools/__init__.pyi": "ed9551103ba6c51b632604268e7104f649a7b0ec40c4c0a6802540e56e4b7c46",
+      "src/cachetools/_cached.py": "e4a75ee34a6d1b582ec8567080ca90eca9c330f0c8f878b7372a861dbc1e18f4",
+      "src/cachetools/_cachedmethod.py": "ad2e75ebb6d3131225f36ce63c6f281700e675aff79ce2d447f8e97132b4ecb4",
+      "src/cachetools/func.py": "87724e4fc82303fd5172cc9fd03c7aaf6a767c6c477f3cb74a245fc45ebf7816",
+      "src/cachetools/func.pyi": "b55c20d4122014165183e80b3078b402b9a5f1300c509143bd6ec861d5819af2",
+      "src/cachetools/keys.py": "9550bd6914744c2fc6fd211dfb83cdae2d6206b1a1bfcf052d017cb23b39b49e",
+      "src/cachetools/keys.pyi": "594a1166a9c399a375b6095ee1b38408f44b7d7c8b7b57685caab85b4598a24c",
+      "tests/__init__.py": "72d99005a5d409aa14990b42b54646b726a4f3ca7a091a6f4831ff7701293eb8",
+      "tests/test_cache.py": "dbdf81b02f344a0e62a5dcf2364be7e135e2511e765e93b43864aeb7aa3b115c",
+      "tests/test_cached.py": "27097d0df26efd2e6f72d03e5a8c9cdd7c4b5545ecee38aa439a78538c72fb0a",
+      "tests/test_cachedmethod.py": "d5b131d062ef613bbbcaaf107b4ab0a2f28f4bf505dd00964d2c46cf5ac757bf",
+      "tests/test_classmethod.py": "465e882cf15481277cef959eb5d4ec0072d61c342079cac05684da55fe543851",
+      "tests/test_fifo.py": "c6134627b4d9daab20e67b27fe2ff8d7e225116ae46d6a0e79b2c9b620d25941",
+      "tests/test_func.py": "668e212d3a49b5442578e1a77579bacd20bbd466a8ea4a18ac04969fa4e75827",
+      "tests/test_keys.py": "c6e39d6e781cb737159b43d725c4a0f00ce6f2885376fb6efd01c5d59e196064",
+      "tests/test_lfu.py": "11981704035d965ae733140734efb7cd30615ef492cfeeb464f63992db59b404",
+      "tests/test_lru.py": "dbfd53eb372f24571f70d739faeb6c4963f79c80ef18228f44b38b1112bf1a6c",
+      "tests/test_rr.py": "7f56f910027e0f38f10757a0b7feb3493ddea6a71ae0ffd3c24d85485803c373",
+      "tests/test_threading.py": "fd6bfb6b3d0b4c650a1786381ab4c33d04ff348cd5d1e91d8014239df111c165",
+      "tests/test_tlru.py": "461fd80337d3e4a7fba830b30765cce19666611f797568f18740e4f6eea98199",
+      "tests/test_ttl.py": "dad8f3e725176a39a487d23bd4a25930db05380ce0b452f73485506dbe5284d1"
+    },
+    "method": "Downloaded the exact archive, recomputed its pinned SRI SHA-256, read the queried declarations, and independently parsed every .py/.pyi file with Python ast; no product output was used to construct the source index.",
+    "url": "https://files.pythonhosted.org/packages/29/2c/3f18755527b03ca9ff6be724bd5370cb777c76a87f17301377cf04a4729b/cachetools-7.2.0.tar.gz",
+    "verified_archive_hash": "sha256-vKwaG42mkJmUopVyOKV7gUDat8XFxppDZpZU/oejPB0="
+  },
+  "verified_source_anchors": [
+    [
+      "cli search TTLCache",
+      "TTLCache",
+      "src/cachetools/__init__.py",
+      451
+    ],
+    [
+      "cli search TTLCache",
+      "TTLCache",
+      "src/cachetools/__init__.pyi",
+      94
+    ],
+    [
+      "cli search TTLCache",
+      "TTLCache",
+      "tests/test_ttl.py",
+      4
+    ],
+    [
+      "cli search TTLCache",
+      "TTLCacheTest",
+      "tests/test_ttl.py",
+      28
+    ],
+    [
+      "cli search TTLCache",
+      "ttl",
+      "src/cachetools/__init__.py",
+      540
+    ],
+    [
+      "cli search cached",
+      "cached",
+      "src/cachetools/__init__.py",
+      738
+    ],
+    [
+      "cli search cached",
+      "cached",
+      "src/cachetools/__init__.pyi",
+      186
+    ],
+    [
+      "cli search cached",
+      "cached",
+      "src/cachetools/__init__.pyi",
+      177
+    ],
+    [
+      "cli search cached",
+      "cached",
+      "src/cachetools/__init__.pyi",
+      169
+    ],
+    [
+      "cli search cached",
+      "cached",
+      "tests/test_threading.py",
+      6
+    ],
+    [
+      "cli search cached",
+      "Cached",
+      "tests/test_cachedmethod.py",
+      10
+    ],
+    [
+      "cli search cached",
+      "Cached",
+      "tests/test_classmethod.py",
+      9
+    ],
+    [
+      "cli search cached",
+      "Cached",
+      "tests/test_cachedmethod.py",
+      504
+    ],
+    [
+      "cli search cached",
+      "Cached",
+      "tests/test_cachedmethod.py",
+      496
+    ],
+    [
+      "cli search cached",
+      "_cached_wrapper",
+      "src/cachetools/__init__.pyi",
+      153
+    ],
+    [
+      "cli search cached",
+      "_cached_wrapper_info",
+      "src/cachetools/__init__.pyi",
+      165
+    ],
+    [
+      "cli search cached",
+      "CachedClassMethodTest",
+      "tests/test_classmethod.py",
+      40
+    ],
+    [
+      "cli search cached",
+      "_cachedmethod_wrapper",
+      "src/cachetools/__init__.pyi",
+      195
+    ],
+    [
+      "cli search cached",
+      "_cachedmethod_wrapper_info",
+      "src/cachetools/__init__.pyi",
+      211
+    ],
+    [
+      "cli search cached",
+      "typedmethodkey",
+      "src/cachetools/keys.py",
+      64
+    ],
+    [
+      "cli search cached",
+      "methodkey",
+      "src/cachetools/keys.py",
+      46
+    ],
+    [
+      "cli search cached",
+      "cachedmethod",
+      "src/cachetools/__init__.pyi",
+      218
+    ],
+    [
+      "cli search cached",
+      "cachedmethod",
+      "src/cachetools/__init__.pyi",
+      237
+    ],
+    [
+      "cli search cached",
+      "cachedmethod",
+      "src/cachetools/__init__.py",
+      769
+    ],
+    [
+      "cli search cached",
+      "cachedmethod",
+      "src/cachetools/__init__.pyi",
+      226
+    ],
+    [
+      "cli search cached",
+      "test_cached_locked",
+      "tests/test_threading.py",
+      86
+    ],
+    [
+      "cli search cached",
+      "test_cached_stampede",
+      "tests/test_threading.py",
+      54
+    ],
+    [
+      "cli search cached",
+      "test_cachedmethod_locked",
+      "tests/test_threading.py",
+      104
+    ],
+    [
+      "cli search cached",
+      "__get__",
+      "src/cachetools/__init__.pyi",
+      204
+    ],
+    [
+      "backend.search",
+      "TTLCache",
+      "src/cachetools/__init__.py",
+      451
+    ],
+    [
+      "backend.search",
+      "TTLCache",
+      "src/cachetools/__init__.pyi",
+      94
+    ],
+    [
+      "backend.search",
+      "TTLCache",
+      "tests/test_ttl.py",
+      4
+    ],
+    [
+      "backend.search",
+      "cached",
+      "src/cachetools/__init__.py",
+      738
+    ],
+    [
+      "backend.search",
+      "cached",
+      "src/cachetools/__init__.pyi",
+      186
+    ],
+    [
+      "backend.search",
+      "cached",
+      "src/cachetools/__init__.pyi",
+      177
+    ]
+  ],
+  "visible_outline_names": [
+    "LFUCache",
+    "_Link",
+    "unlink",
+    "__init__",
+    "count",
+    "__slots__",
+    "__init__",
+    "maxsize",
+    "getsizeof",
+    "__setitem__",
+    "cache_setitem",
+    "value",
+    "key",
+    "popitem",
+    "clear",
+    "__delitem__",
+    "cache_delitem",
+    "key",
+    "__touch",
+    "key",
+    "__getitem__",
+    "cache_getitem",
+    "key",
+    "_TimedCache",
+    "_Timer",
+    "__exit__",
+    "exc",
+    "__init__",
+    "timer",
+    "__call__",
+    "__getattr__",
+    "name",
+    "__reduce__",
+    "__enter__",
+    "expire",
+    "time",
+    "setdefault",
+    "args",
+    "kwargs",
+    "__init__",
+    "getsizeof",
+    "maxsize",
+    "timer",
+    "get",
+    "args",
+    "kwargs",
+    "__len__",
+    "cache_len",
+    "clear",
+    "pop",
+    "LFUCache",
+    "_Link",
+    "unlink",
+    "__init__",
+    "count",
+    "__slots__",
+    "__init__",
+    "maxsize",
+    "getsizeof",
+    "__setitem__",
+    "cache_setitem",
+    "value",
+    "key",
+    "popitem",
+    "clear",
+    "__delitem__",
+    "cache_delitem",
+    "key",
+    "__touch",
+    "key",
+    "__getitem__",
+    "cache_getitem",
+    "key",
+    "_TimedCache",
+    "_Timer",
+    "__exit__",
+    "exc",
+    "__init__",
+    "timer",
+    "__call__",
+    "__getattr__",
+    "name",
+    "__reduce__",
+    "__enter__",
+    "expire",
+    "time",
+    "setdefault",
+    "args",
+    "kwargs",
+    "__init__",
+    "getsizeof",
+    "maxsize",
+    "timer",
+    "get",
+    "args",
+    "kwargs",
+    "__len__",
+    "cache_len",
+    "clear",
+    "pop"
+  ]
+}

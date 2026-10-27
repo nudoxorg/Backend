@@ -100,6 +100,7 @@ pub(super) fn read(
         return Ok(unavailable(Unavailable::CaptureIncomplete));
     }
     let mut capture_basis = None;
+    let mut cargo_target = None;
     let mut profiles = Vec::with_capacity(records.len());
     let mut refusals = Vec::new();
     let mut full = None;
@@ -113,6 +114,16 @@ pub(super) fn read(
         // The canonical PSC2 decoder already prohibits history/generation keys.
         if !key.is_selected() || key.package_key().to_bytes() != project_key {
             return Ok(unavailable(Unavailable::CaptureIncomplete));
+        }
+        if let Some(scope) = record.cargo_target() {
+            if !matches!(
+                key.profile(),
+                backend_semantic::vocabulary::LanguageProfile::Rust(_)
+            ) || cargo_target.as_ref().is_some_and(|prior| prior != scope)
+            {
+                return Ok(unavailable(Unavailable::CaptureIncomplete));
+            }
+            cargo_target = Some(scope.clone());
         }
         let capture = record.capture();
         if *capture.source_version() != basis.source_version {
@@ -329,6 +340,7 @@ pub(super) fn read(
         return Ok(unavailable(Unavailable::CaptureNotRecorded));
     };
     let summary = IndexSourceCaptureSummary {
+        cargo_target,
         producer_package: package.clone(),
         request_identity,
         commit_identity,
@@ -514,6 +526,8 @@ fn receipt_matches_capture(
         return false;
     };
     status.package == summary.producer_package
+        && expected.cargo_target == summary.cargo_target
+        && status.cargo_target.as_ref() == summary.cargo_target.as_ref().map(|scope| &scope.name)
         && expected.commit_identity() == &summary.commit_identity
         && expected.workspace_root() == &summary.workspace_root
         && expected.workspace_sequence() == summary.workspace_sequence
@@ -560,6 +574,7 @@ mod tests {
             },
         });
         let summary = IndexSourceCaptureSummary {
+            cargo_target: None,
             producer_package: package.clone(),
             request_identity: [6; 32],
             commit_identity: [7; 32],
@@ -653,6 +668,7 @@ mod tests {
                     source,
                     byte_len: 4,
                     cause: SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
+                    diagnostic: None,
                 })
                 .collect(),
         )
@@ -740,6 +756,7 @@ mod tests {
                 source,
                 byte_len: 4,
                 cause: SourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
+                diagnostic: None,
             })
             .collect();
         let catalog =

@@ -1123,6 +1123,7 @@ dependencies = [
  "backend-compile",
  "backend-execution",
  "backend-extension-qdrant",
+ "backend-extension-turso",
  "backend-extension-tantivy",
  "backend-extension-trustfall",
  "backend-flow",

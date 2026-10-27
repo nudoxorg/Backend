@@ -5,18 +5,36 @@ use backend_frontend_typescript::native_project::{
     ResolutionDirEntry, ResolutionFileKind, ResolutionFileSystem,
 };
 use backend_frontend_typescript::{TszExecutionCheckpoint, TszProjectExecutionStop};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::io;
+use std::rc::Rc;
+use std::time::Duration;
 
-struct CapturedNativeFileSystem<'resolver, 'witness> {
+type SnapshotReplayControl<'a> =
+    Rc<RefCell<&'a mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>>>;
+
+struct CapturedNativeFileSystem<'resolver, 'witness, 'control> {
     resolver: RefCell<&'resolver mut TypeScriptResolverCapability<'witness>>,
     error: RefCell<Option<TypeScriptProjectHostError>>,
     boundary: &'resolver Path,
     deadline: Instant,
     cancelled: &'resolver AtomicBool,
+    control: Option<SnapshotReplayControl<'control>>,
+    root_selection_phase: Cell<bool>,
 }
 
-impl CapturedNativeFileSystem<'_, '_> {
+impl CapturedNativeFileSystem<'_, '_, '_> {
+    fn check_control(&self) -> io::Result<()> {
+        let Some(control) = &self.control else {
+            return Ok(());
+        };
+        if let Err(error) = (**control.borrow_mut())() {
+            let message = error.to_string();
+            *self.error.borrow_mut() = Some(error);
+            return Err(io::Error::other(message));
+        }
+        Ok(())
+    }
     fn observe<T>(
         &self,
         operation: impl FnOnce(
@@ -28,8 +46,10 @@ impl CapturedNativeFileSystem<'_, '_> {
                 "native TSZ captured filesystem already refused",
             ));
         }
+        self.check_control()?;
         let result = check_admission_control(self.deadline, self.cancelled)
             .and_then(|()| operation(&mut self.resolver.borrow_mut()));
+        self.check_control()?;
         result.map_err(|error| {
             let message = error.to_string();
             *self.error.borrow_mut() = Some(error);
@@ -38,7 +58,7 @@ impl CapturedNativeFileSystem<'_, '_> {
     }
 }
 
-impl ResolutionFileSystem for CapturedNativeFileSystem<'_, '_> {
+impl ResolutionFileSystem for CapturedNativeFileSystem<'_, '_, '_> {
     fn resolution_boundary(&self) -> Option<&Path> {
         Some(self.boundary)
     }
@@ -75,7 +95,12 @@ impl ResolutionFileSystem for CapturedNativeFileSystem<'_, '_> {
     }
     fn read_dir(&self, path: &Path) -> io::Result<Option<Vec<ResolutionDirEntry>>> {
         self.observe(|resolver| {
-            let Some(canonical) = resolver.observe_program_directory(path)? else {
+            let canonical = if self.root_selection_phase.get() {
+                resolver.observe_root_program_directory(path)?
+            } else {
+                resolver.observe_program_directory(path)?
+            };
+            let Some(canonical) = canonical else {
                 return Ok(None);
             };
             let entries = resolver
@@ -130,6 +155,100 @@ impl TszExecutionCheckpoint for NativeAdmissionCheckpoint<'_> {
     }
 }
 
+pub(super) fn replay_native_root_selection(
+    witness: &TypeScriptProjectWitness,
+    query: &NativeRootSelectionObservation,
+    control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+) -> Result<BTreeSet<PathBuf>, TypeScriptProjectHostError> {
+    control()?;
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(30))
+        .ok_or_else(|| closure_mismatch("native root-query replay deadline overflow"))?;
+    let cancelled = AtomicBool::new(false);
+    let shared_control: SnapshotReplayControl<'_> = Rc::new(RefCell::new(&mut *control));
+    let mut resolver = witness.resolver();
+    let checkpoint = NativeAdmissionCheckpoint {
+        deadline,
+        cancelled: &cancelled,
+        work: std::sync::atomic::AtomicU64::new(0),
+    };
+    let fs = CapturedNativeFileSystem {
+        resolver: RefCell::new(&mut resolver),
+        error: RefCell::new(None),
+        boundary: witness.workspace_root(),
+        deadline,
+        cancelled: &cancelled,
+        control: Some(Rc::clone(&shared_control)),
+        root_selection_phase: Cell::new(true),
+    };
+    let replay_control_error = RefCell::new(None);
+    let replayed = backend_frontend_typescript::native_project::replay_root_selection_controlled(
+        &fs,
+        &query.config_path,
+        &|work| {
+            if let Err(error) = (**shared_control.borrow_mut())() {
+                let message = error.to_string();
+                replay_control_error.borrow_mut().get_or_insert(error);
+                return Err(message);
+            }
+            checkpoint
+                .checkpoint(work)
+                .map_err(|stop| format!("native TSZ admission stopped: {stop:?}"))
+        },
+    );
+    let filesystem_error = std::mem::take(&mut *fs.error.borrow_mut());
+    drop(fs);
+    drop(checkpoint);
+    drop(shared_control);
+    // Preserve the first typed cancellation result without invoking the
+    // caller again after it has already stopped root/glob replay.
+    if let Some(error) = replay_control_error.into_inner().or(filesystem_error) {
+        return Err(error);
+    }
+    let replayed = match replayed {
+        Ok(replayed) => replayed,
+        Err(message) => {
+            control()?;
+            return Err(TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                detail: format!("native TypeScript root-query replay failed: {message}")
+                    .into_boxed_str(),
+            });
+        }
+    };
+    if replayed.config_path.as_path() != query.config_path.as_ref()
+        || replayed
+            .root_names
+            .iter()
+            .map(PathBuf::as_path)
+            .collect::<Vec<_>>()
+            != query
+                .root_names
+                .iter()
+                .map(|path| path.as_ref())
+                .collect::<Vec<_>>()
+        || replayed
+            .directories
+            .iter()
+            .map(PathBuf::as_path)
+            .collect::<Vec<_>>()
+            != query
+                .directories
+                .iter()
+                .map(|path| path.as_ref())
+                .collect::<Vec<_>>()
+    {
+        return Err(closure_mismatch(
+            "native TypeScript root-query result changed during snapshot replay",
+        ));
+    }
+    control()?;
+    Ok(query
+        .directories
+        .iter()
+        .map(|path| PathBuf::from(path.as_ref()))
+        .collect())
+}
+
 pub(super) fn build_direct_inputs_for_config(
     inputs: &TypeScriptProjectInputs<'_>,
     resolver: &mut TypeScriptResolverCapability<'_>,
@@ -157,12 +276,18 @@ pub(super) fn build_direct_inputs_for_config(
         boundary: inputs.workspace_root,
         deadline,
         cancelled,
+        control: None,
+        root_selection_phase: Cell::new(config.is_some()),
     };
-    let built = backend_frontend_typescript::native_project::build(
+    let built = backend_frontend_typescript::native_project::build_with_root_selection_observer(
         &fs,
         config.map(|config| config.path.as_ref()),
         &inferred_roots,
         &checkpoint,
+        &|_| {
+            fs.root_selection_phase.set(false);
+            Ok(())
+        },
     );
     if let Some(error) = fs.error.into_inner() {
         return Err(error);
@@ -367,6 +492,13 @@ pub(super) fn build_direct_inputs_for_config(
     let previous_work = aggregate.replay_work;
     aggregate.replay_work = checkpoint.work.load(std::sync::atomic::Ordering::Relaxed);
     let closure_work = aggregate.replay_work.saturating_sub(previous_work);
+    if let Some(query) = &built.root_selection {
+        resolver.record_native_root_selection(
+            &query.config_path,
+            &query.root_names,
+            &query.directories,
+        )?;
+    }
     let sealed = match validated_host {
         Some(host) => resolver.seal_with_host(host)?,
         None => resolver.seal()?,

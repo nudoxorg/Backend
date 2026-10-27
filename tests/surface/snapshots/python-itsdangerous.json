@@ -51,7 +51,7 @@
           "schema": 3,
           "sequence": 2,
           "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-          "source_root": "a9706589cad21981d43fdd8c785264d628f448f3ca146f7687a6d15103792420"
+          "source_root": "4f0e9f9f035f95feab1a8da33b93ed1615711d31fcbcc74609f3b5c65f830e55"
         },
         "roots": [
           {
@@ -1179,7 +1179,7 @@
           }
         ],
         "readiness": "ready",
-        "revision": "b15bc148",
+        "revision": "4f0e9f9f",
         "rows": 827
       }
     },
@@ -1188,9 +1188,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytesExcludingCursor": 13467,
+          "bytesExcludingCursor": 13448,
           "bytesPerToken": 4,
-          "estimatedTokensExcludingCursor": 3367
+          "estimatedTokensExcludingCursor": 3362
         },
         "coverage": [
           {
@@ -1263,7 +1263,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/itsdangerous/signer.py:76 \u203a Signer"
+              "trail": "project › src/itsdangerous/signer.py:76 › Signer"
             },
             "kind": "class",
             "language": "python",
@@ -1273,61 +1273,7 @@
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::fb63ae7af597d05f00df1c361862dd38d5c5651e77f26de85bc0e89b9b2ae89c::Signer",
-              "line": 11,
-              "name": "Signer",
-              "path": "src/itsdangerous/serializer.py",
-              "segments": [
-                "Signer"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  22,
-                  223,
-                  220,
-                  160,
-                  98,
-                  57,
-                  70,
-                  60,
-                  158,
-                  199,
-                  6,
-                  42,
-                  109,
-                  9,
-                  77,
-                  42,
-                  214,
-                  107,
-                  171,
-                  117,
-                  156,
-                  247,
-                  236,
-                  208,
-                  165,
-                  156,
-                  24,
-                  163,
-                  206,
-                  81,
-                  154,
-                  192
-                ]
-              },
-              "shape": "semantic",
-              "trail": "project \u203a src/itsdangerous/serializer.py:11 \u203a Signer"
-            },
-            "kind": "import",
-            "language": "python",
-            "score": 4294967294,
-            "state": "ready"
-          },
-          {
-            "identity": {
-              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::5e95daf73d8e34afe6736260e4758ca7d5c5651e77f26de85bc0e89b9b2ae89c::Signer",
+              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::5e95daf73d8e34afe6736260e4758ca7703f29dfb408783b6abe6a455027fc9a::Signer",
               "line": 11,
               "name": "Signer",
               "path": "tests/test_itsdangerous/test_timed.py",
@@ -1337,213 +1283,51 @@
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  54,
-                  252,
-                  89,
-                  26,
-                  96,
-                  49,
-                  106,
-                  175,
-                  52,
-                  88,
-                  241,
-                  192,
-                  253,
-                  1,
-                  84,
-                  126,
-                  200,
-                  131,
-                  155,
-                  245,
-                  153,
-                  205,
-                  166,
-                  207,
-                  213,
-                  99,
-                  144,
-                  152,
-                  102,
-                  26,
-                  233,
-                  24
-                ]
-              },
-              "shape": "semantic",
-              "trail": "project \u203a tests/test_itsdangerous/test_timed.py:11 \u203a Signer"
-            },
-            "kind": "import",
-            "language": "python",
-            "score": 4294967293,
-            "state": "ready"
-          },
-          {
-            "identity": {
-              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::4d02d0e86b5702f7354cfaebe2f0ddd0d5c5651e77f26de85bc0e89b9b2ae89c::Signer",
-              "line": 17,
-              "name": "Signer",
-              "path": "src/itsdangerous/__init__.py",
-              "segments": [
-                "Signer"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  81,
-                  159,
-                  186,
-                  201,
-                  208,
-                  95,
-                  85,
-                  186,
-                  4,
-                  198,
-                  234,
-                  63,
-                  157,
-                  56,
-                  172,
-                  43,
-                  62,
-                  82,
-                  165,
-                  7,
-                  128,
-                  207,
-                  162,
-                  41,
-                  246,
-                  249,
-                  0,
-                  152,
-                  137,
-                  223,
-                  5,
-                  11
-                ]
-              },
-              "shape": "semantic",
-              "trail": "project \u203a src/itsdangerous/__init__.py:17 \u203a Signer"
-            },
-            "kind": "import",
-            "language": "python",
-            "score": 4294967292,
-            "state": "ready"
-          },
-          {
-            "identity": {
-              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::93d24064a1505aab6cd1bc1a69cb3691d5c5651e77f26de85bc0e89b9b2ae89c::Signer",
-              "line": 9,
-              "name": "Signer",
-              "path": "tests/test_itsdangerous/test_signer.py",
-              "segments": [
-                "Signer"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  128,
-                  17,
-                  227,
-                  74,
-                  154,
-                  153,
-                  205,
-                  208,
-                  158,
-                  233,
-                  72,
-                  14,
-                  214,
-                  144,
-                  176,
-                  19,
-                  229,
-                  48,
-                  200,
-                  76,
-                  202,
-                  219,
-                  64,
-                  250,
-                  143,
-                  114,
-                  36,
+                  33,
                   108,
-                  103,
-                  136,
+                  146,
+                  23,
+                  146,
+                  79,
+                  197,
+                  181,
+                  78,
+                  29,
+                  236,
                   226,
-                  40
-                ]
-              },
-              "shape": "semantic",
-              "trail": "project \u203a tests/test_itsdangerous/test_signer.py:9 \u203a Signer"
-            },
-            "kind": "import",
-            "language": "python",
-            "score": 4294967291,
-            "state": "ready"
-          },
-          {
-            "identity": {
-              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::f4baace49d91bfc3b29a9fdcf3343b64d5c5651e77f26de85bc0e89b9b2ae89c::Signer",
-              "line": 18,
-              "name": "Signer",
-              "path": "tests/test_itsdangerous/test_serializer.py",
-              "segments": [
-                "Signer"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  195,
-                  131,
-                  242,
-                  228,
-                  238,
-                  232,
-                  139,
-                  100,
-                  124,
-                  43,
-                  84,
-                  24,
-                  137,
-                  39,
-                  43,
-                  16,
-                  53,
-                  147,
-                  95,
-                  134,
-                  209,
-                  54,
-                  129,
-                  37,
-                  61,
-                  243,
-                  98,
-                  114,
-                  232,
-                  173,
+                  92,
                   26,
-                  21
+                  217,
+                  41,
+                  134,
+                  144,
+                  139,
+                  233,
+                  30,
+                  5,
+                  238,
+                  120,
+                  145,
+                  117,
+                  70,
+                  131,
+                  6,
+                  131,
+                  239,
+                  52
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_itsdangerous/test_serializer.py:18 \u203a Signer"
+              "trail": "project › tests/test_itsdangerous/test_timed.py:11 › Signer"
             },
             "kind": "import",
             "language": "python",
-            "score": 4294967290,
+            "score": 4294967294,
             "state": "ready"
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::cc93af2e73dba2aabbe66ded2f679c45d5c5651e77f26de85bc0e89b9b2ae89c::Signer",
+              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::cc93af2e73dba2aabbe66ded2f679c45a1c86369cc44fed2e8dca89ad0864de3::Signer",
               "line": 19,
               "name": "Signer",
               "path": "src/itsdangerous/timed.py",
@@ -1553,42 +1337,258 @@
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  206,
-                  212,
-                  164,
-                  75,
-                  206,
-                  253,
-                  136,
-                  183,
-                  63,
-                  30,
-                  55,
-                  105,
-                  167,
-                  79,
-                  119,
-                  21,
-                  174,
-                  21,
+                  48,
+                  102,
+                  204,
+                  207,
+                  54,
+                  196,
+                  181,
+                  39,
                   243,
-                  134,
-                  1,
-                  224,
-                  246,
-                  169,
-                  114,
-                  169,
-                  36,
-                  91,
+                  3,
+                  14,
                   179,
-                  99,
-                  111,
-                  153
+                  236,
+                  186,
+                  72,
+                  93,
+                  198,
+                  2,
+                  132,
+                  41,
+                  9,
+                  252,
+                  69,
+                  28,
+                  41,
+                  110,
+                  234,
+                  176,
+                  203,
+                  190,
+                  73,
+                  8
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/itsdangerous/timed.py:19 \u203a Signer"
+              "trail": "project › src/itsdangerous/timed.py:19 › Signer"
+            },
+            "kind": "import",
+            "language": "python",
+            "score": 4294967293,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::93d24064a1505aab6cd1bc1a69cb3691dfbcf8424af6600d4bfd22add1624c05::Signer",
+              "line": 9,
+              "name": "Signer",
+              "path": "tests/test_itsdangerous/test_signer.py",
+              "segments": [
+                "Signer"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  108,
+                  3,
+                  161,
+                  211,
+                  148,
+                  114,
+                  7,
+                  222,
+                  159,
+                  2,
+                  195,
+                  162,
+                  189,
+                  176,
+                  96,
+                  172,
+                  15,
+                  34,
+                  199,
+                  221,
+                  25,
+                  146,
+                  177,
+                  151,
+                  218,
+                  147,
+                  42,
+                  243,
+                  139,
+                  193,
+                  52,
+                  45
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › tests/test_itsdangerous/test_signer.py:9 › Signer"
+            },
+            "kind": "import",
+            "language": "python",
+            "score": 4294967292,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::4d02d0e86b5702f7354cfaebe2f0ddd07ed285cc4b9836775e53281229e7bd76::Signer",
+              "line": 17,
+              "name": "Signer",
+              "path": "src/itsdangerous/__init__.py",
+              "segments": [
+                "Signer"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  140,
+                  150,
+                  200,
+                  77,
+                  135,
+                  51,
+                  32,
+                  117,
+                  11,
+                  96,
+                  63,
+                  78,
+                  197,
+                  245,
+                  244,
+                  131,
+                  201,
+                  172,
+                  143,
+                  23,
+                  85,
+                  140,
+                  6,
+                  137,
+                  239,
+                  73,
+                  97,
+                  234,
+                  34,
+                  87,
+                  219,
+                  141
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › src/itsdangerous/__init__.py:17 › Signer"
+            },
+            "kind": "import",
+            "language": "python",
+            "score": 4294967291,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::f4baace49d91bfc3b29a9fdcf3343b64bc1b41bf58fe93c59d0bb45418c90dfc::Signer",
+              "line": 18,
+              "name": "Signer",
+              "path": "tests/test_itsdangerous/test_serializer.py",
+              "segments": [
+                "Signer"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  144,
+                  11,
+                  167,
+                  248,
+                  161,
+                  190,
+                  200,
+                  232,
+                  21,
+                  98,
+                  56,
+                  0,
+                  177,
+                  109,
+                  231,
+                  4,
+                  33,
+                  39,
+                  231,
+                  35,
+                  240,
+                  113,
+                  101,
+                  79,
+                  79,
+                  100,
+                  133,
+                  91,
+                  68,
+                  196,
+                  209,
+                  55
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › tests/test_itsdangerous/test_serializer.py:18 › Signer"
+            },
+            "kind": "import",
+            "language": "python",
+            "score": 4294967290,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::fb63ae7af597d05f00df1c361862dd38d8c387ec0e46d1a9b2cf27dca2a8fb7e::Signer",
+              "line": 11,
+              "name": "Signer",
+              "path": "src/itsdangerous/serializer.py",
+              "segments": [
+                "Signer"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  155,
+                  5,
+                  157,
+                  31,
+                  9,
+                  30,
+                  250,
+                  250,
+                  193,
+                  44,
+                  143,
+                  189,
+                  109,
+                  187,
+                  5,
+                  203,
+                  6,
+                  151,
+                  23,
+                  244,
+                  3,
+                  7,
+                  167,
+                  30,
+                  229,
+                  127,
+                  231,
+                  58,
+                  95,
+                  33,
+                  6,
+                  178
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › src/itsdangerous/serializer.py:11 › Signer"
             },
             "kind": "import",
             "language": "python",
@@ -1642,7 +1642,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_itsdangerous/test_signer.py:24 \u203a signer"
+              "trail": "project › tests/test_itsdangerous/test_signer.py:24 › signer"
             },
             "kind": "method",
             "language": "python",
@@ -1694,7 +1694,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -1746,7 +1746,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -1798,7 +1798,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -1850,7 +1850,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -1902,7 +1902,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -1954,7 +1954,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2006,7 +2006,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2058,7 +2058,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2110,7 +2110,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2162,7 +2162,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2214,7 +2214,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2266,7 +2266,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2318,7 +2318,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2370,7 +2370,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2422,7 +2422,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2474,7 +2474,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2526,7 +2526,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a signer"
+              "trail": "project › signer"
             },
             "kind": "variable",
             "language": "unknown",
@@ -2545,9 +2545,9 @@
       "json": {
         "answer": "records",
         "budget": {
-          "bytes": 3582,
+          "bytes": 3578,
           "bytesPerToken": 4,
-          "estimatedTokens": 896
+          "estimatedTokens": 895
         },
         "coverage": [
           {
@@ -2619,7 +2619,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/itsdangerous/url_safe.py:72 \u203a URLSafeSerializer"
+              "trail": "project › src/itsdangerous/url_safe.py:72 › URLSafeSerializer"
             },
             "kind": "class",
             "language": "python",
@@ -2629,7 +2629,7 @@
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::f78802f91841887db251e1346749f3d9a37053490b062b1add8696ca5fa1828e::URLSafeSerializer",
+              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::f78802f91841887db251e1346749f3d9e8e363ee46639df2afd4b6f4f687103a::URLSafeSerializer",
               "line": 20,
               "name": "URLSafeSerializer",
               "path": "src/itsdangerous/__init__.py",
@@ -2639,42 +2639,42 @@
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  29,
-                  115,
-                  202,
-                  101,
-                  167,
-                  6,
+                  139,
+                  214,
+                  19,
+                  46,
+                  57,
+                  146,
+                  130,
+                  182,
+                  221,
+                  13,
+                  189,
+                  150,
                   74,
-                  176,
-                  140,
-                  81,
-                  17,
-                  105,
-                  99,
-                  154,
-                  24,
-                  147,
-                  87,
-                  171,
-                  189,
-                  129,
-                  99,
-                  153,
-                  36,
-                  151,
-                  241,
-                  189,
-                  128,
-                  211,
-                  155,
-                  4,
-                  99,
-                  147
+                  39,
+                  68,
+                  157,
+                  237,
+                  29,
+                  149,
+                  101,
+                  239,
+                  101,
+                  137,
+                  1,
+                  202,
+                  96,
+                  21,
+                  244,
+                  62,
+                  12,
+                  168,
+                  23
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/itsdangerous/__init__.py:20 \u203a URLSafeSerializer"
+              "trail": "project › src/itsdangerous/__init__.py:20 › URLSafeSerializer"
             },
             "kind": "import",
             "language": "python",
@@ -2683,7 +2683,7 @@
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d0e0cb3325042ba8d1b2fe2283a78286a37053490b062b1add8696ca5fa1828e::URLSafeSerializer",
+              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d0e0cb3325042ba8d1b2fe2283a782862097175433b3805019377f31931160fa::URLSafeSerializer",
               "line": 5,
               "name": "URLSafeSerializer",
               "path": "tests/test_itsdangerous/test_url_safe.py",
@@ -2693,42 +2693,42 @@
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  40,
-                  230,
-                  71,
-                  89,
-                  147,
+                  154,
                   80,
-                  249,
-                  53,
-                  169,
-                  225,
-                  49,
-                  169,
-                  132,
-                  243,
-                  16,
-                  134,
-                  56,
-                  148,
-                  18,
+                  178,
+                  135,
+                  178,
                   90,
-                  199,
-                  227,
-                  113,
+                  178,
+                  187,
+                  60,
+                  31,
+                  30,
+                  140,
+                  9,
+                  2,
+                  2,
+                  184,
+                  61,
+                  119,
+                  180,
+                  34,
+                  130,
+                  191,
+                  63,
+                  50,
+                  120,
+                  43,
+                  58,
+                  154,
+                  71,
                   210,
-                  41,
-                  115,
-                  109,
-                  245,
-                  10,
-                  20,
-                  41,
-                  156
+                  128,
+                  68
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a tests/test_itsdangerous/test_url_safe.py:5 \u203a URLSafeSerializer"
+              "trail": "project › tests/test_itsdangerous/test_url_safe.py:5 › URLSafeSerializer"
             },
             "kind": "import",
             "language": "python",
@@ -2782,7 +2782,7 @@
                 ]
               },
               "shape": "semantic",
-              "trail": "project \u203a src/itsdangerous/url_safe.py:15 \u203a URLSafeSerializerMixin"
+              "trail": "project › src/itsdangerous/url_safe.py:15 › URLSafeSerializerMixin"
             },
             "kind": "class",
             "language": "python",
@@ -2792,7 +2792,7 @@
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::external::symbol:a7d2351fd35fc9a4815d4b47c0748f4497b41aa077fded23499d353a570fbe30::URLSafeSerializer",
+              "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::external::symbol:674cb94f086a997ce6d0ac33d52b1f398bf36ae3c8778997065351a475a69b60::URLSafeSerializer",
               "name": "URLSafeSerializer",
               "segments": [
                 "URLSafeSerializer"
@@ -2800,42 +2800,42 @@
               "semantic_data": {
                 "kind": "selected-symbol-id",
                 "value": [
-                  167,
-                  210,
-                  53,
+                  103,
+                  76,
+                  185,
+                  79,
+                  8,
+                  106,
+                  153,
+                  124,
+                  230,
+                  208,
+                  172,
+                  51,
+                  213,
+                  43,
                   31,
-                  211,
-                  95,
-                  201,
-                  164,
-                  129,
-                  93,
-                  75,
-                  71,
-                  192,
-                  116,
-                  143,
-                  68,
-                  151,
-                  180,
-                  26,
-                  160,
+                  57,
+                  139,
+                  243,
+                  106,
+                  227,
+                  200,
                   119,
-                  253,
-                  237,
-                  35,
-                  73,
-                  157,
-                  53,
-                  58,
-                  87,
-                  15,
-                  190,
-                  48
+                  137,
+                  151,
+                  6,
+                  83,
+                  81,
+                  164,
+                  117,
+                  166,
+                  155,
+                  96
                 ]
               },
               "shape": "external",
-              "trail": "project \u203a URLSafeSerializer"
+              "trail": "project › URLSafeSerializer"
             },
             "language": "unknown",
             "score": 4294967291,
@@ -2861,11 +2861,11 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 6834,
                 "bytesPerToken": 4,
-                "estimatedTokens": 1709,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
+                "normalizedEstimatedTokensExcludingCounters": 966,
+                "normalizedFrameBytesExcludingCounters": 3862,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -2874,7 +2874,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `URLSafeSerializer` \u00b7 class \u00b7 python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::66d216efc50c5884f6331026b9bd86df8331487c3a7461a38014e631f955459b::URLSafeSerializer`\n\u2022 `URLSafeSerializer` \u00b7 import \u00b7 python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::f78802f91841887db251e1346749f3d9a37053490b062b1add8696ca5fa1828e::URLSafeSerializer`\n\u2022 `URLSafeSerializer` \u00b7 import \u00b7 python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::d0e0cb3325042ba8d1b2fe2283a78286a37053490b062b1add8696ca5fa1828e::URLSafeSerializer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `URLSafeSerializer` · class · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::66d216efc50c5884f6331026b9bd86df8331487c3a7461a38014e631f955459b::URLSafeSerializer`\n• `URLSafeSerializer` · import · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::f78802f91841887db251e1346749f3d9e8e363ee46639df2afd4b6f4f687103a::URLSafeSerializer`\n• `URLSafeSerializer` · import · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::d0e0cb3325042ba8d1b2fe2283a782862097175433b3805019377f31931160fa::URLSafeSerializer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
                 "type": "text"
               }
             ],
@@ -2882,13 +2882,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 5444,
+                "bytesExcludingCursor": 2458,
                 "bytesPerToken": 4,
-                "estimatedTokens": 1361
+                "estimatedTokensExcludingCursor": 615
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-1792131995-pc4-eJztWG1wFdUZ3r0xgAlSsWAd1M66w5Bgb8ies7tnd2-QCogiEohQCMJI7tnzkSzcezfZ3UtACCAjERRMy-fwIR8VpGhtBWEqCgrTgkqpIh9KsaZS0Y6jtIp8D0hnk9xQJzgJoj_qdH_cPfe973nOPu_zPufs3H73l_QXREGIvDtZnsA833FTckyFUdljVWnmB2UOlWMgKhM3mcQpKscmy-Od8C77DHukQo7KFAc4jAdsYiDH5BHDBg_HnA1nnoMTzkPMk6Nywkk6gRxTo3K1k6JudZjevBqIyo7vpxltSKAs4Uxg3iQ5ptZEZRv7ji_HZBvoNgGaqWMOLA1gaECuUNviJuUa0U1TIbqqm1QhzFJUVecWMqnCga0hZiJsyVGZpD3f9cKVPUacSibHZECRiTSCuW4ADVJTtw2g6xpWMdB0w1CBpiMFI4VrTIMIYmZzTVNNnWuGYQMLydFLLGRbgQByhSNgIAqAQogJOTUAVRSFEK6YnDANUpUyAGzL4lyxCVYsZFo6REAlclS2PZwiFXJM1pCuYJ1CqppEVwyCILBtA1NGLKRijolhU0NTbJuYuqIYNiAUKRZGBrehZkIeltwtDxlCrCk2wBY1bRVzxYLMtnRD0w3dQgYBFtapbRGsmYwyXYMQMWhyaKkIMNVAihyVfVLBkrhBG891Q4W5ZakKDIloKjcJxroBkM50Axiqquo2A8zSNAMSyi2mIUo1BdiQU8VGmoVtHIKG3ZUiTI7BqFyVZt6kMpdznzU2SWPgilqlJuxYTMuSOOVw5gdyLJVOJGpqakRBENrnrn-sx-xOg4_9puaxi2AhP9T-rSeK1k05tz01rWdJjzs279zR2u-P2rBy9ZDUdeDZ86_8eOuSWveRWnXdv1_t3jHt_3PwjmnVC8_X1X9Vt1_pvX7cZnh6w7HDHX65aE_6jVG3zSl69GJi1EFBEN8oHVkCSovvhhFBEERh6LKf7zm87M5n99yZdajDUwemvrvz-PK5-ye9U_f-J9tnZXd9eIr6p53ZReOKImNf_3CNum_V2CG7xx5-7uUXf3_D-KL7Npy9dtTEohc2bLmx_vxTp0qW_Kpuxk88q2ti67wpBzfmbimuvudJ5-ncPqsWvJJ2jxQMUo__rHtfd_iZV5wpqw8tfGhm_m8Xvy1iIUts7SEEQYgsFiJi0fvd6urn7f2w95kdN-2r7eOtzu5SfqhkU7Wc_9Fy9q9d9YuFrKypK8pPnzoZr_PWjLjxpZXTDsY-qGv3Fard1Q31zN1c4bwsCIJQ2r8YRlqrVe4mN7LyA3vIH48_lSMMfO_ErgOnVz03s1NZ_mddd9XnF1cIl650ackwGGkLk1pBFGc90X3TzZ2-7J6eOeZv-99cUXkIvf7-g3mJzWs2vbrhaOfrxzSBSgf6Hr5v7vSVM1Ycv2n0bHGevmRt78Idf157tzTh1Md7uzm_a99pw5gdA0d_saBbXuF1W878ffCo6Tv1uR0_ydLPVuz9YlOqdr3Y_u6Stfv2zymZYt_8h-c-WxQ799q2IHfrTGHyLe9c-_S0jQMLBUG4JomdlNjhhjW53Z58PPb5vE8XBqUPlO9Y-uCW3QOPfdSvxz_qeqKfGvGwfxOO7WFvUiT71gq6-2RVv0NjqkYMinUp9buMzImfONrj9k9P9J95onrDIkEQvCYa2Q0uavoSJTjACbe8oCFY0GitgglAEIWsFht2pg6tsWzKE4Xsds_fVvgjPOHt6_fMuFC1V9jzed2b_fbXd96y8vOtqxbNHoZ7C4I4e-S9A0pHDhg2_N6hQzL6SW3gcyWPIrXm40xeG-RpyGtVnKzvD7GNnCOZ_LPzI3cc6X9m99oq9lGVr4458sld3l_OHk0eEDdeyKVLX2qWq12n1lM7wpFwyNC7BghiRBSl8A2h8erYrRmm6Y5CXYsH_KJvs6j_F6tVsZrrebuYGUq3-rvZunaDnp9zf2eHLL1pfumz2x4mS7ov_mLb9P3LriHzmxBeD-s9bGipcIUT_wd0EeYWBsnKwlSauhML_LTHMWGFlZOCCjdV4AQ-xaly5rlpv7DSc8cxEsRiPkviVOCQWIwbpqlAbgFTA6ZpUBvqgAFVQ4ZmcZVaWDUUXdUsxVYQtAGm1EQWIljnGJjQZLFYi31QvHjx4lfNVT73zjH44in7mWFvrTj_wnvz4nPO17jF9Y-f6d91wKwL_UhJhkOzLrdNwIk0yylMe4kyH3OW03KBzpncW3yPFH6NYlmZk3KCsrJeleEe3iWT2Jt7blLqlcGUnGSl6wVSC2gJ-y2DGZAZHFPEqAptkyMEMdYh4RbjxFapbUGkmIQTgyKuUcpMm5uaCnRNN01ONYhUXbn6ckcu54D8j-95YH7JWX39EbD-kS-vrzUX3DD6tQ-r9vX0kydzuvRc3uSAd1s4oG0Tf-AOoApTiK2qUFc0aGOThi_dDEJTxYYJTfQtHXDh2zugoNEB__3gvdrihvyA-YFfGH6WfY11QySD0OiM7MwktcEZl13rG13yHRriaqt_WUMAPm1Wx18f7TD1mV1_3X5294KBS-DUXbNfGrJn-vZzS6sfTjamXVPbwhBtm_gDNwRCFALEONGV8C8CjSNVBQpEtmVTE1FuqirQTIOo2NAQwKqpAI0hFXBL1zXdsr_BEBev2BDZmUGfUtcb70sJZzyTYiSBfT8W73UJPS7Z6UCi6WSlL-EUlRIupr7kpAJXwmHzNhelX0NX-4HnpMol4qZ8xw_CoculoIJJ6crK8ARoQKhmHsE-k0gF9jAJmNeU1IwFcKKyAtssCI-MapZIhPd4PK8sLx6PhoOCvHi8ASwez-uVF4_3yvDv28CgpavyW0SKnYlOKipdCozxA-_BnjEx8s0H4NdtPrApUex41YvmSJIkybJ8dVo0oFy9DDkhzBUrkKHwHe5fV2uWiCj-BxJ6Di0-bd551aaa934a6a749e4f5183bef71b3e",
+                  "cursor": "mcp2-<live-validated>",
                   "limit": 3,
                   "query": "URLSafeSerializer"
                 },
@@ -2964,7 +2964,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/itsdangerous/url_safe.py:72 \u203a URLSafeSerializer"
+                    "trail": "project › src/itsdangerous/url_safe.py:72 › URLSafeSerializer"
                   },
                   "kind": "class",
                   "language": "python",
@@ -2974,7 +2974,7 @@
                 },
                 {
                   "identity": {
-                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::f78802f91841887db251e1346749f3d9a37053490b062b1add8696ca5fa1828e::URLSafeSerializer",
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::f78802f91841887db251e1346749f3d9e8e363ee46639df2afd4b6f4f687103a::URLSafeSerializer",
                     "line": 20,
                     "name": "URLSafeSerializer",
                     "path": "src/itsdangerous/__init__.py",
@@ -2984,42 +2984,42 @@
                     "semantic_data": {
                       "kind": "selected-symbol-id",
                       "value": [
-                        29,
-                        115,
-                        202,
-                        101,
-                        167,
-                        6,
+                        139,
+                        214,
+                        19,
+                        46,
+                        57,
+                        146,
+                        130,
+                        182,
+                        221,
+                        13,
+                        189,
+                        150,
                         74,
-                        176,
-                        140,
-                        81,
-                        17,
-                        105,
-                        99,
-                        154,
-                        24,
-                        147,
-                        87,
-                        171,
-                        189,
-                        129,
-                        99,
-                        153,
-                        36,
-                        151,
-                        241,
-                        189,
-                        128,
-                        211,
-                        155,
-                        4,
-                        99,
-                        147
+                        39,
+                        68,
+                        157,
+                        237,
+                        29,
+                        149,
+                        101,
+                        239,
+                        101,
+                        137,
+                        1,
+                        202,
+                        96,
+                        21,
+                        244,
+                        62,
+                        12,
+                        168,
+                        23
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/itsdangerous/__init__.py:20 \u203a URLSafeSerializer"
+                    "trail": "project › src/itsdangerous/__init__.py:20 › URLSafeSerializer"
                   },
                   "kind": "import",
                   "language": "python",
@@ -3028,7 +3028,7 @@
                 },
                 {
                   "identity": {
-                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d0e0cb3325042ba8d1b2fe2283a78286a37053490b062b1add8696ca5fa1828e::URLSafeSerializer",
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::d0e0cb3325042ba8d1b2fe2283a782862097175433b3805019377f31931160fa::URLSafeSerializer",
                     "line": 5,
                     "name": "URLSafeSerializer",
                     "path": "tests/test_itsdangerous/test_url_safe.py",
@@ -3038,42 +3038,42 @@
                     "semantic_data": {
                       "kind": "selected-symbol-id",
                       "value": [
-                        40,
-                        230,
-                        71,
-                        89,
-                        147,
+                        154,
                         80,
-                        249,
-                        53,
-                        169,
-                        225,
-                        49,
-                        169,
-                        132,
-                        243,
-                        16,
-                        134,
-                        56,
-                        148,
-                        18,
+                        178,
+                        135,
+                        178,
                         90,
-                        199,
-                        227,
-                        113,
+                        178,
+                        187,
+                        60,
+                        31,
+                        30,
+                        140,
+                        9,
+                        2,
+                        2,
+                        184,
+                        61,
+                        119,
+                        180,
+                        34,
+                        130,
+                        191,
+                        63,
+                        50,
+                        120,
+                        43,
+                        58,
+                        154,
+                        71,
                         210,
-                        41,
-                        115,
-                        109,
-                        245,
-                        10,
-                        20,
-                        41,
-                        156
+                        128,
+                        68
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a tests/test_itsdangerous/test_url_safe.py:5 \u203a URLSafeSerializer"
+                    "trail": "project › tests/test_itsdangerous/test_url_safe.py:5 › URLSafeSerializer"
                   },
                   "kind": "import",
                   "language": "python",
@@ -3099,11 +3099,11 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 8579,
                 "bytesPerToken": 4,
-                "estimatedTokens": 2145,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
+                "normalizedEstimatedTokensExcludingCounters": 905,
+                "normalizedFrameBytesExcludingCounters": 3617,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3112,7 +3112,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u27133\n\u2022 `Signer` \u00b7 class \u00b7 python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::f21f9c0794aacc3a3c55db3486897c9e429dfbd59d20f7171c84b756159aa1ad::Signer`\n\u2022 `Signer` \u00b7 import \u00b7 python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::fb63ae7af597d05f00df1c361862dd38d5c5651e77f26de85bc0e89b9b2ae89c::Signer`\n\u2022 `Signer` \u00b7 import \u00b7 python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::5e95daf73d8e34afe6736260e4758ca7d5c5651e77f26de85bc0e89b9b2ae89c::Signer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✓3\n• `Signer` · class · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::f21f9c0794aacc3a3c55db3486897c9e429dfbd59d20f7171c84b756159aa1ad::Signer`\n• `Signer` · import · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::5e95daf73d8e34afe6736260e4758ca7703f29dfb408783b6abe6a455027fc9a::Signer`\n• `Signer` · import · python\n  `/tmp/nudox-surface/python-itsdangerous/project::semantic::cc93af2e73dba2aabbe66ded2f679c45a1c86369cc44fed2e8dca89ad0864de3::Signer`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n",
                 "type": "text"
               }
             ],
@@ -3120,13 +3120,13 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytes": 7255,
+                "bytesExcludingCursor": 2279,
                 "bytesPerToken": 4,
-                "estimatedTokens": 1814
+                "estimatedTokensExcludingCursor": 570
               },
               "continuation_call": {
                 "arguments": {
-                  "cursor": "mcp2-1792131995-pc4-eJztWn2UFNWVrx7ED1A0rh9ksst5Fq7MmJ6e-uj6HEYdEQOrg6MYIHK061W9V93FVFd1ql7P0AromkDUaDBsiOsX6kFNjOt6MHAiiTFyshI1bGRVWBaVmHWj64nurm7i16LseVXd1d0zPQww5o_N2f6D7q6673d_797fvffVNOdfOjCHSTFM245r2CEchI7vsboopNkAf7WMQ5JzEKvzadbyi0XoIVa_hh106DsbYhhYBTbNIkggvU7wcsLq7EIn7-GATbOuU3QIq4tpdtjxkD9MbRIXfJp1wrCMUWSAsOsM4aDC6uLKNGvC0AlZnTV5ybT4rCpBm9eyPBQUweaQqdkqsrOWpKqcJYmSijgLa5woSrYmq4izeTMrY1WGGptmrXIQ-gH1HGDLKWFWZ0WTx4KoQShiUTZFwRRMjARO5LMIKpbIWbKERUmVkYxlSeSxZQmqJkom5C1TlnnEpuu7YFWo8Ty2swoWeZVTRQVjUzIVhEzOtmBWoWjIEjTbFDhTU1GWRxo0NSmLBIhlkWPTrBlAzyqwOpuVJQ5KSECiakmcYskCb5oKRNjSZBHa0FJMpGQ507RUieMUk7eQzGlQVmxTyKqCTUPu51md5QWY5Uweakg1RWhzmoBNTVKykiJpsmLxGpSQqVkwq2KEpawgyFhQbUETZR6LikxJhVYBF2GUm8D3aVptiDlFUiVeQbIiYEWUzKytSTyX1ZDMQ1W2saKYWDQlyVREy-JVrHK2mUWSqgmYhxSUSsqzMKsLafarZRxUcr5thzgWSXzhsKSyksoUolwReo6NQ8LqXtl1V65cmWIY5pipD9101o3TLn7n-ytvOsCvt_cc8_y3er634uOnvGs7B87q3fL0tvHuf8MUSvct8E7gH97_5J89cfsa_-trxO_958_OPL4cvnnxtmuH1-9fu-_TtS9ysx9atkX4YNM7e4-99bs7ys8uOePmnm8ccJfsYpjUs4sXDfCL-y8U2hiGSTGX3Hnujr13nvfwjvMm7Tl240ur_vnp9-665cXK7rWvvvXUDZNP_esV4j88PblnWU_bVc-8fr_4wr1XLXjuqr2P_OTxR08e7Llo00fHLVne88NNW0_bt3_j-wO3f3vt9acH2qnuE-tW7Hps6tb-4S_d7Tw49Zx7v_Nk2f9N11-J733xzD5_4YdPOivu27P-6tUdf3fbP6UgMyk1HgmGYdpuY9pSPa-2r923bufrsz_cNv2FNecE900-Jb9nYPMw2_Hbu_B_bN93GzNp0qoN-Q_e_4OxNrj_y6f9-J5rd-mvrT36U3nN9na5c-qWgvMThmGYxXP6hbbxYjV1s992z2vmgp-_t3EKM-_l329_6YN7H1k9Ldfx9qnb93X0F5j6q7x44DKh7VB2soZJpW741pmbvzDtv88sr176you_2lDaIz_z6pWz3C33b_7Zpn_73ElLq6Dgpb69F91y3T3Xb3hv-hU3ptZJtz8wu3vbLx-4EAy9_8bOdufvj5m2aem2eVe8-532Wd0nbP3w1xcvue5p6Zbj35okfVTY-e5mb81DqWMuHHjghRdvHlhhfuFHj7z9Xf3jX_yUTH1iNXPNn-8-7sFrH5vXzTDMUUXoeKljT75_avvd39T_a93v1pPFX8lvu-PKrc_Ne-e355_1r2s75RmKQfXrOmYAg0rb5J4ZM-_Y-Pqg8NiTL0w6Ze8KbvtV0prdbyycsaPjb5be90v7LxiGyVe3MTmqouqXMyxIoOvnu6KLXXFpdQ3xTIqZFHfp2ubH21rVLsVMPvqmb8_4_Sr-uq-t-t3SlS-f-NyXjsevdP4P2HpL3788vL7_7Dc4hknduGj-3MWL5l62cP4lC2pJA4ewicOhAsYr3prdIeQkshs3I5P-eIiHuOe2mv3Hr5VXn747eFPa_NGlR90Nv--_ec3rW5aGO6b_-4mbd92YaU_SdfS08U3BbxYJCy65YC6TakulAD0LVL08m8BU32Wa1_65l_clJv-frHGTlcTz7FTtIzjt16_ca2oXzt7wi6PPLh7Xf_buwYfLd33w9s4H7pq-8VeX3vFUFeFWGu_LLlnMHObC_wN5Ya7vJsVSt1dG_vKusBzY0MLdpQop-F6XQ0IEvTwO_HLYXQr8Zdgiuh7iIvSIY-m6bcoixAq0JU1BnGRzHLJ5S5R5VRYQElUkWZIs8VhRbEFGWJVMi8OqZmqmALGqWboeN7_UgQMHPk1C-_Hud4TH3zd_cNnzG_b_8OV1xs37V_r9-7754ZxT597wyfnWQI14koxThqBbxlO6wwhsShXzc7XbM8LA6m7aSogDB7rO1TjIlGiLnlozbbcDvwgyMRBwiiU_IKCKVwuXDZGMkSiYqi3LAoSSYNkati1TRKYmyJxq2ZaCZDuLEFZNW82KvJSVVNVGWUEWJW7iYWtrpWR5_1faDX7Zo9kl7z71SeryVc987c4_3P6PDz6_y7r1b-32t6ZXlfzoKCUf2sI_cSVLWJMQtBURqVjMQhvLiigLMoeziqRaUDkcJX9y5EoGsZIb2WbGUPVfEhySsJv-m2vaXXSFOEWMRoj7rEjcLbD_aEKfaFRbCp3M3qP6zhWnLGG__virM37sLkFHvflS38JpJ-Hjf7Bz8pcvis0-v36U0A9t4Z-40G2BtzWLU7QshJYlQtGSJGSKWVVWNcXScFbQkG0iSUMCZyu8wltq1lQkmZc0CHmIGoV-4LCF3lP7cG4fqGovxFY5wG4l-h4Cs0JwmAakgD1Q9uJrpICLgPhgCAeOXQGkAEkSihmkgOOqAQUYerMIMDH2gFWgQUCZxO6CywuY-gowAYO4AsKCX3YRMDGAIIAe8osgJIHj5YFvA8OIaBgGgB6qmXp-3escE4MQDmFEaVk-wsAPQPUxGVi-RwLfzYALHNvGAfYICKFLwgaf5RCjBOx84gPkhMTx8mUnLESBoEQcD6AEgYLi5STMgIUYAx35lm50W75n4RIJjQTrHNsPgOPZflCEhJKBpl8mNIJxoB1SoRskzcGIdgldUg_XHL0EA1isGuUGcUUHIyJI_IhptLiamWGHFDJgDvSiuCZgquuEhLodxJUwDXwX4ZDQ9R4exiFJR1DlUtSDKHLgk4h8Q_ZqdKBLdDB3OQlgjYPlF03Hw5FvYBh1woYBmgOboJ1BeUNSDnA4RpATUzmJQ0kHCzH9QvwAmJgMU5lFcayBxZGgUhxNfBBXcggHzlC0MR3M84cjdvQSTmBo1um2okZdz1GCdl5TssCAH4aO6Vb1HwIYYGAYVBSQGEYaGAZaBr2835VcquvED4BhFIrQMowMuADbsEwVSnygQ0IC3UDxpVwzcSMNhguOVQ_lDNSwdJS_0XpCTp6OpyImBR_pYB4MC8Aue1akVeLTwgDDtPbz2MMBpKmLAjGvv29OAtaThPyg1Jt8jWJ-biNznXLQjQIMC65jZsIC5I0MWOATmhvYsn4SIJ2uAtD1PQyQj6MeBEsltxJvhJY6cDyCgyJGDiS01TletKF6eHqr4YFu3g8cUijqoA_olgvDUDdow3W8fF_tngEcLyTQs3A1YnUYegNDRCmaZcdFNHwQVHeaAFLfDWhR5TTu6GTDaI5dQyJPz2Rqja7aY3UdCBkuMRD7EMIoqWfajxprGpgVUIJhGDOLGgPxk8UnNhdw3e30Vm65DK_Wa8MwkugZBhiGIYARE_rBAzDIl4u0xokfZTMKBS34kARli_jB-L6yjb5G1EU8KUbFDQxj2hcSHlUSYYL0-THp1GbrCfGteOrqqeRI1D76qSYyiQ99F1cfek9impZPAQAAlmUnOH0jmIMP3imRzWcxdCOgz2DexqQnPGojmIlN2Tg2n8GEjXDo60gHbBORiczWhMm4o7V574c1VRuXTmigJmwnOk8ToImN0wTm4NO0cf8TGaSjk3X4c7Ql5SMYownOkU_RxrAc2QBNSExofiYoo8dnXPFjjM5k3RFMzgafTYNzbId0aDasmtjMPKibbIObiY3LBGhsItXBFhOaGbfSWt5iLyD2UisOGt5am8BBpmmBE3ucqbdUdBqYZQKsuAdXd0xRoVcBetFHibkB_KAGZPnFEiRRd_FN-lA-Tl001EMN4kjKYmY88mfqDUmK4tuYopaFrgOS6fMqoBeEVH9WfLUj58KrKzkah86WsY5-rq7V1SF05BpGqzk5IictOmLSsmswh9y5qwKstuzDj9XI-ROSAPQCtslNVY0I2yCXczyH5HId9d6LXbs-PxpPARRqRXwUAyuABU0rM5_gAJouXhqS4MpRFyPTKxvAokneDLOANtZeYLJNf_-r_Q-RBh6l5pV0SabBoNW-E3T6VjdtKacxbBv69shu3WpJZ5yqBv3VTkB1HUUTiQSVqNLj4xMVX_2Ako5E2Ag08uAUKzD-DDpcGJLOSKFOGFceRa6KOpZQg4wSbk4IoOv6wyGAzf08rIQkPloPYlyq9XTfjs2rB9YqTLQfKtkAF_0hDPDykhNgBHwPV49UNU1l6lIK9Qiyqg_QC3JFOIijOzl6o6Nu2jkSo6QnAhiGHslFXzpCXKqWfTQt7cSadp2cCUMsZ3PQLRWgiUk9DvQVQCfEYBGtz7lB4Af1Sqi9WBrsvDOEPSrD6pnQgp7n02eLOOImtiBtLA4BRVgBJmZHw0RnTeh4UWsccZh0SMQY9C2cM38-cDEhOAjTrUCQk3dIGPeJWV253lmgWA4JaCCTaV42IjAw7lnUnuq2ORjR3ebIQpfUk4DdsPWK1vVb9xznI7alb02cmmuXshvNbIRNb4zYuuuNcNu6JY61xLGbG0RrOs0mI9g03RxBZoxZNsYShxZdrd-0JFK_3RuN16Q9dYx216CE6ObBmltvHTledV4p8Es4IJVkdtSrNPLVCbrOiWuzzpBlo-Jp7lTYo93vs_zdcoK_HbSlUv8LNrqL9g-7a7b55d45233a6937eb58373a7bcdd88",
+                  "cursor": "mcp2-<live-validated>",
                   "limit": 3,
                   "query": "Signer"
                 },
@@ -3202,7 +3202,7 @@
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a src/itsdangerous/signer.py:76 \u203a Signer"
+                    "trail": "project › src/itsdangerous/signer.py:76 › Signer"
                   },
                   "kind": "class",
                   "language": "python",
@@ -3212,61 +3212,7 @@
                 },
                 {
                   "identity": {
-                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::fb63ae7af597d05f00df1c361862dd38d5c5651e77f26de85bc0e89b9b2ae89c::Signer",
-                    "line": 11,
-                    "name": "Signer",
-                    "path": "src/itsdangerous/serializer.py",
-                    "segments": [
-                      "Signer"
-                    ],
-                    "semantic_data": {
-                      "kind": "selected-symbol-id",
-                      "value": [
-                        22,
-                        223,
-                        220,
-                        160,
-                        98,
-                        57,
-                        70,
-                        60,
-                        158,
-                        199,
-                        6,
-                        42,
-                        109,
-                        9,
-                        77,
-                        42,
-                        214,
-                        107,
-                        171,
-                        117,
-                        156,
-                        247,
-                        236,
-                        208,
-                        165,
-                        156,
-                        24,
-                        163,
-                        206,
-                        81,
-                        154,
-                        192
-                      ]
-                    },
-                    "shape": "semantic",
-                    "trail": "project \u203a src/itsdangerous/serializer.py:11 \u203a Signer"
-                  },
-                  "kind": "import",
-                  "language": "python",
-                  "score": 4294967294,
-                  "state": "ready"
-                },
-                {
-                  "identity": {
-                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::5e95daf73d8e34afe6736260e4758ca7d5c5651e77f26de85bc0e89b9b2ae89c::Signer",
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::5e95daf73d8e34afe6736260e4758ca7703f29dfb408783b6abe6a455027fc9a::Signer",
                     "line": 11,
                     "name": "Signer",
                     "path": "tests/test_itsdangerous/test_timed.py",
@@ -3276,42 +3222,96 @@
                     "semantic_data": {
                       "kind": "selected-symbol-id",
                       "value": [
-                        54,
-                        252,
-                        89,
+                        33,
+                        108,
+                        146,
+                        23,
+                        146,
+                        79,
+                        197,
+                        181,
+                        78,
+                        29,
+                        236,
+                        226,
+                        92,
                         26,
-                        96,
-                        49,
-                        106,
-                        175,
-                        52,
-                        88,
-                        241,
-                        192,
-                        253,
-                        1,
-                        84,
-                        126,
-                        200,
-                        131,
-                        155,
-                        245,
-                        153,
-                        205,
-                        166,
-                        207,
-                        213,
-                        99,
+                        217,
+                        41,
+                        134,
                         144,
-                        152,
-                        102,
-                        26,
+                        139,
                         233,
-                        24
+                        30,
+                        5,
+                        238,
+                        120,
+                        145,
+                        117,
+                        70,
+                        131,
+                        6,
+                        131,
+                        239,
+                        52
                       ]
                     },
                     "shape": "semantic",
-                    "trail": "project \u203a tests/test_itsdangerous/test_timed.py:11 \u203a Signer"
+                    "trail": "project › tests/test_itsdangerous/test_timed.py:11 › Signer"
+                  },
+                  "kind": "import",
+                  "language": "python",
+                  "score": 4294967294,
+                  "state": "ready"
+                },
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::cc93af2e73dba2aabbe66ded2f679c45a1c86369cc44fed2e8dca89ad0864de3::Signer",
+                    "line": 19,
+                    "name": "Signer",
+                    "path": "src/itsdangerous/timed.py",
+                    "segments": [
+                      "Signer"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        48,
+                        102,
+                        204,
+                        207,
+                        54,
+                        196,
+                        181,
+                        39,
+                        243,
+                        3,
+                        14,
+                        179,
+                        236,
+                        186,
+                        72,
+                        93,
+                        198,
+                        2,
+                        132,
+                        41,
+                        9,
+                        252,
+                        69,
+                        28,
+                        41,
+                        110,
+                        234,
+                        176,
+                        203,
+                        190,
+                        73,
+                        8
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project › src/itsdangerous/timed.py:19 › Signer"
                   },
                   "kind": "import",
                   "language": "python",
@@ -3337,8 +3337,8 @@
                 "bytesPerToken": 4,
                 "limitBytes": 49152,
                 "limitTokens": 12000,
-                "normalizedEstimatedTokensExcludingCounters": 3124,
-                "normalizedFrameBytesExcludingCounters": 12496,
+                "normalizedEstimatedTokensExcludingCounters": 5777,
+                "normalizedFrameBytesExcludingCounters": 23105,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -3347,7 +3347,7 @@
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/python-itsdangerous/project`\n\n◆ _CompactJSON  `src/itsdangerous/_json.py:7 › _CompactJSON`\n  ƒ loads  `src/itsdangerous/_json.py:11 › loads`\n    ▫ payload  `payload`\n    ▫ loads  `loads`\n  ƒ dumps  `src/itsdangerous/_json.py:15 › dumps`\n    ▫ kwargs  `kwargs`\n    ▫ obj  `obj`\n    ▫ dumps  `dumps`\n◆ BadHeader  `src/itsdangerous/exc.py:66 › BadHeader`\n  ƒ __init__  `src/itsdangerous/exc.py:74 › __init__`\n    ▫ header  `header`\n    ▫ payload  `payload`\n    ▫ original_error  `original_error`\n    ▫ message  `message`\n◆ BadTimeSignature  `src/itsdangerous/exc.py:36 › BadTimeSignature`\n  ƒ __init__  `src/itsdangerous/exc.py:41 › __init__`\n    ▫ payload  `payload`\n    ▫ message  `message`\n    ▫ date_signed  `date_signed`\n◆ BadSignature  `src/itsdangerous/exc.py:22 › BadSignature`\n  ƒ __init__  `src/itsdangerous/exc.py:25 › __init__`\n    ▫ message  `message`\n    ▫ payload  `payload`\n◆ BadData  `src/itsdangerous/exc.py:7 › BadData`\n  ƒ __init__  `src/itsdangerous/exc.py:14 › __init__`\n25 declaration(s) · truncated\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 25 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-itsdangerous/project\",\"limit\":25,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
+                "text": "# project\n`/tmp/nudox-surface/python-itsdangerous/project`\n\n◆ _CompactJSON  `src/itsdangerous/_json.py:7 › _CompactJSON`\n  ƒ loads  `src/itsdangerous/_json.py:11 › loads`\n    ▫ payload  `payload`\n    ▫ loads  `loads`\n  ƒ dumps  `src/itsdangerous/_json.py:15 › dumps`\n    ▫ kwargs  `kwargs`\n    ▫ obj  `obj`\n    ▫ dumps  `dumps`\n◆ BadHeader  `src/itsdangerous/exc.py:66 › BadHeader`\n  ƒ __init__  `src/itsdangerous/exc.py:74 › __init__`\n    ▫ header  `header`\n    ▫ payload  `payload`\n    ▫ original_error  `original_error`\n    ▫ message  `message`\n◆ BadTimeSignature  `src/itsdangerous/exc.py:36 › BadTimeSignature`\n  ƒ __init__  `src/itsdangerous/exc.py:41 › __init__`\n    ▫ payload  `payload`\n    ▫ message  `message`\n    ▫ date_signed  `date_signed`\n◆ BadSignature  `src/itsdangerous/exc.py:22 › BadSignature`\n  ƒ __init__  `src/itsdangerous/exc.py:25 › __init__`\n    ▫ message  `message`\n    ▫ payload  `payload`\n◆ BadData  `src/itsdangerous/exc.py:7 › BadData`\n  ƒ __init__  `src/itsdangerous/exc.py:14 › __init__`\n    ▫ message  `message`\n  ƒ __str__  `src/itsdangerous/exc.py:18 › __str__`\n    ▫ __str__  `__str__`\n◆ SignatureExpired  `src/itsdangerous/exc.py:60 › SignatureExpired`\n◆ BadPayload  `src/itsdangerous/exc.py:92 › BadPayload`\n  ƒ __init__  `src/itsdangerous/exc.py:101 › __init__`\n    ▫ message  `message`\n    ▫ original_error  `original_error`\n◆ _PDataSerializer  `src/itsdangerous/serializer.py:26 › _PDataSerializer`\n  ƒ dumps  `src/itsdangerous/serializer.py:31 › dumps`\n    ▫ dumps  `dumps`\n    ▫ obj  `obj`\n  ƒ loads  `src/itsdangerous/serializer.py:27 › loads`\n    ▫ payload  `payload`\n    ▫ loads  `loads`\n◆ Serializer  `src/itsdangerous/serializer.py:42 › Serializer`\n  ƒ __init__  `src/itsdangerous/serializer.py:110 › __init__`\n    ▫ signer  `signer`\n    ▫ serializer_kwargs  `serializer_kwargs`\n    ▫ salt  `salt`\n    ▫ signer_kwargs  `signer_kwargs`\n    ▫ serializer  `serializer`\n    ▫ secret_key  `secret_key`\n    ▫ fallback_signers  `fallback_signers`\n  ƒ __init__  `src/itsdangerous/serializer.py:177 › __init__`\n50 declaration(s) · truncated\nMore declarations remain beyond this bounded prefix. Continue outline with --limit 50 and the next cursor.\n\n\nContinue by copying `structuredContent.continuation_call` as the next tool call; it preserves the selected tool and original arguments with the exact returned next-page operands.\n\nContinue `backend.outline` with arguments `{\"path\":\"/tmp/nudox-surface/python-itsdangerous/project\",\"limit\":50,\"detail\":\"summary\"}` and `cursor` copied from `structuredContent.nextCursor`.",
                 "type": "text"
               }
             ],
@@ -3355,11 +3355,11 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytesExcludingCursor": 10383,
+                "bytesExcludingCursor": 19873,
                 "bytesPerToken": 4,
-                "estimatedTokensExcludingCursor": 2596
+                "estimatedTokensExcludingCursor": 4969
               },
-              "declarations": 25,
+              "declarations": 50,
               "detail": "summary",
               "extent": "truncated",
               "nextCursor": "mcp2-<live-validated>",
@@ -3392,13 +3392,13 @@
                     "state": "complete"
                   }
                 ],
-                "limit": 25,
+                "limit": 50,
                 "log": "12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760",
                 "more": true,
                 "schema": 3,
                 "sequence": 2,
                 "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
-                "source_root": "a9706589cad21981d43fdd8c785264d628f448f3ca146f7687a6d15103792420"
+                "source_root": "4f0e9f9f035f95feab1a8da33b93ed1615711d31fcbcc74609f3b5c65f830e55"
               },
               "roots": [
                 {
@@ -4411,6 +4411,51 @@
                 {
                   "children": [
                     {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::2f17af29838875e243671daf6aa78a805ffe3532b59db9889b8390f347dc3a95::message",
+                          "key": "d5c44a9e",
+                          "kind": "variable",
+                          "name": "message",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              213,
+                              196,
+                              74,
+                              158,
+                              203,
+                              217,
+                              172,
+                              109,
+                              158,
+                              52,
+                              101,
+                              4,
+                              125,
+                              24,
+                              47,
+                              71,
+                              111,
+                              28,
+                              4,
+                              13,
+                              45,
+                              122,
+                              9,
+                              185,
+                              216,
+                              228,
+                              164,
+                              210,
+                              195,
+                              35,
+                              28,
+                              133
+                            ]
+                          }
+                        }
+                      ],
                       "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8de921be457decbbeec9ceaad4dbb4016ec22fd0738377b311a1eb23465e4e51::__init__",
                       "key": "2fdcaa66",
                       "kind": "method",
@@ -4450,6 +4495,94 @@
                           105,
                           92,
                           17
+                        ]
+                      }
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6a0c4b669f78f9c8d9513a3072968315bd21faa0069dc94280d6bf18f1383f43::__str__",
+                          "key": "40073581",
+                          "kind": "variable",
+                          "name": "__str__",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              64,
+                              7,
+                              53,
+                              129,
+                              139,
+                              247,
+                              228,
+                              106,
+                              213,
+                              185,
+                              161,
+                              196,
+                              71,
+                              11,
+                              116,
+                              103,
+                              212,
+                              116,
+                              143,
+                              84,
+                              210,
+                              188,
+                              208,
+                              86,
+                              66,
+                              77,
+                              74,
+                              239,
+                              151,
+                              237,
+                              116,
+                              199
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::f44cdadecb76e17cc3be73f9ae6e2fb8045458715ef47b1cef86052ad6b5ce48::__str__",
+                      "key": "5f52f6d0",
+                      "kind": "method",
+                      "name": "__str__",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          95,
+                          82,
+                          246,
+                          208,
+                          126,
+                          47,
+                          45,
+                          62,
+                          97,
+                          91,
+                          254,
+                          117,
+                          218,
+                          104,
+                          149,
+                          172,
+                          171,
+                          5,
+                          138,
+                          195,
+                          36,
+                          155,
+                          39,
+                          230,
+                          15,
+                          16,
+                          239,
+                          199,
+                          36,
+                          146,
+                          91,
+                          219
                         ]
                       }
                     }
@@ -4493,6 +4626,966 @@
                       125,
                       121,
                       140
+                    ]
+                  }
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c18188baa1fc43f9f6eda1918a52dfad7505a922c93f33ba6b53352ca09c1283::SignatureExpired",
+                  "key": "c35ee3e0",
+                  "kind": "class",
+                  "name": "SignatureExpired",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      195,
+                      94,
+                      227,
+                      224,
+                      114,
+                      163,
+                      52,
+                      149,
+                      63,
+                      154,
+                      152,
+                      81,
+                      216,
+                      4,
+                      175,
+                      24,
+                      103,
+                      142,
+                      105,
+                      191,
+                      148,
+                      83,
+                      100,
+                      126,
+                      185,
+                      28,
+                      233,
+                      111,
+                      56,
+                      68,
+                      213,
+                      112
+                    ]
+                  }
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8be1eee9650f9bcbeb792906817408615ffe3532b59db9889b8390f347dc3a95::message",
+                          "key": "a2bf581d",
+                          "kind": "variable",
+                          "name": "message",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              162,
+                              191,
+                              88,
+                              29,
+                              51,
+                              137,
+                              72,
+                              235,
+                              70,
+                              65,
+                              247,
+                              182,
+                              193,
+                              71,
+                              163,
+                              49,
+                              77,
+                              34,
+                              54,
+                              233,
+                              223,
+                              105,
+                              22,
+                              229,
+                              71,
+                              82,
+                              78,
+                              239,
+                              231,
+                              144,
+                              244,
+                              166
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::2455543efe2ae66a1c1d865d3274e34133fc04973843c06f09902128a45b8fd8::original_error",
+                          "key": "c7b732ca",
+                          "kind": "variable",
+                          "name": "original_error",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              199,
+                              183,
+                              50,
+                              202,
+                              89,
+                              191,
+                              153,
+                              54,
+                              177,
+                              18,
+                              243,
+                              237,
+                              117,
+                              232,
+                              198,
+                              103,
+                              52,
+                              179,
+                              61,
+                              146,
+                              243,
+                              4,
+                              56,
+                              113,
+                              235,
+                              62,
+                              103,
+                              60,
+                              188,
+                              111,
+                              160,
+                              167
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8d8920ad0c9478168473d1cbad473a630833c56c5e6e542cd92d1e95cd2d1c07::__init__",
+                      "key": "ddb26bfb",
+                      "kind": "method",
+                      "name": "__init__",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          221,
+                          178,
+                          107,
+                          251,
+                          170,
+                          36,
+                          250,
+                          164,
+                          58,
+                          115,
+                          216,
+                          209,
+                          222,
+                          216,
+                          108,
+                          216,
+                          21,
+                          250,
+                          119,
+                          9,
+                          51,
+                          14,
+                          126,
+                          17,
+                          150,
+                          123,
+                          65,
+                          206,
+                          162,
+                          95,
+                          110,
+                          85
+                        ]
+                      }
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::05bd9d017cf38fbee5a99f65fafa42190af045fdb2a399919d8d00930b9be29b::BadPayload",
+                  "key": "c9d73e2d",
+                  "kind": "class",
+                  "name": "BadPayload",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      201,
+                      215,
+                      62,
+                      45,
+                      54,
+                      112,
+                      109,
+                      56,
+                      169,
+                      135,
+                      190,
+                      176,
+                      191,
+                      153,
+                      13,
+                      143,
+                      107,
+                      124,
+                      23,
+                      207,
+                      138,
+                      59,
+                      212,
+                      183,
+                      149,
+                      166,
+                      89,
+                      175,
+                      64,
+                      98,
+                      0,
+                      9
+                    ]
+                  }
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::8907900e34bb5dbc76cfe6f0634d46cc8e159bcd93c4bd2ee1684782630f2f30::dumps",
+                          "key": "9d6d2149",
+                          "kind": "variable",
+                          "name": "dumps",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              157,
+                              109,
+                              33,
+                              73,
+                              45,
+                              79,
+                              225,
+                              81,
+                              169,
+                              108,
+                              156,
+                              201,
+                              17,
+                              193,
+                              33,
+                              28,
+                              77,
+                              139,
+                              9,
+                              39,
+                              4,
+                              61,
+                              202,
+                              38,
+                              205,
+                              54,
+                              212,
+                              136,
+                              82,
+                              73,
+                              66,
+                              171
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::43e1a8132e120cdc4fe7237f05f546efb35b2a32af8b2b94dbe6b97d201c39d1::obj",
+                          "key": "9f7ceea5",
+                          "kind": "variable",
+                          "name": "obj",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              159,
+                              124,
+                              238,
+                              165,
+                              169,
+                              71,
+                              87,
+                              110,
+                              201,
+                              223,
+                              197,
+                              162,
+                              173,
+                              230,
+                              238,
+                              116,
+                              240,
+                              137,
+                              30,
+                              35,
+                              163,
+                              181,
+                              96,
+                              27,
+                              98,
+                              209,
+                              156,
+                              227,
+                              142,
+                              32,
+                              94,
+                              224
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::940ece6742305325213043fa35838ee053070ce8a8f4b79ff20af9a7e955414b::dumps",
+                      "key": "c53856c6",
+                      "kind": "method",
+                      "name": "dumps",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          197,
+                          56,
+                          86,
+                          198,
+                          64,
+                          89,
+                          232,
+                          124,
+                          113,
+                          54,
+                          125,
+                          101,
+                          118,
+                          82,
+                          7,
+                          46,
+                          23,
+                          55,
+                          1,
+                          59,
+                          242,
+                          219,
+                          207,
+                          134,
+                          20,
+                          227,
+                          131,
+                          140,
+                          101,
+                          165,
+                          217,
+                          99
+                        ]
+                      }
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::05a6e0d7906842ca2f715e0aa53fe2b7cabea2cdbd78c89483a73cadfa958c65::payload",
+                          "key": "98cc6b8f",
+                          "kind": "variable",
+                          "name": "payload",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              152,
+                              204,
+                              107,
+                              143,
+                              71,
+                              141,
+                              247,
+                              64,
+                              247,
+                              251,
+                              229,
+                              96,
+                              166,
+                              1,
+                              43,
+                              160,
+                              32,
+                              183,
+                              59,
+                              211,
+                              1,
+                              248,
+                              248,
+                              245,
+                              156,
+                              111,
+                              245,
+                              89,
+                              25,
+                              230,
+                              137,
+                              159
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::2ec3a9b5ea6dc2f9dca32f114d051659d86c7ee108db0598b7672c76df6df0d7::loads",
+                          "key": "c31cda19",
+                          "kind": "variable",
+                          "name": "loads",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              195,
+                              28,
+                              218,
+                              25,
+                              30,
+                              47,
+                              86,
+                              145,
+                              132,
+                              189,
+                              139,
+                              114,
+                              152,
+                              126,
+                              19,
+                              220,
+                              73,
+                              123,
+                              186,
+                              196,
+                              64,
+                              183,
+                              216,
+                              242,
+                              77,
+                              113,
+                              251,
+                              74,
+                              90,
+                              162,
+                              105,
+                              45
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::a03c703e0138983af08c1ab004cf1605113800aaf1bf05acad977f5dc7d9ca8f::loads",
+                      "key": "cb54e1fc",
+                      "kind": "method",
+                      "name": "loads",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          203,
+                          84,
+                          225,
+                          252,
+                          255,
+                          161,
+                          111,
+                          17,
+                          63,
+                          238,
+                          117,
+                          134,
+                          20,
+                          148,
+                          236,
+                          162,
+                          215,
+                          214,
+                          161,
+                          159,
+                          229,
+                          232,
+                          81,
+                          226,
+                          156,
+                          117,
+                          18,
+                          57,
+                          79,
+                          214,
+                          132,
+                          150
+                        ]
+                      }
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::a54661288c7791afdd1b7c8b66d125a2889ecf45865725b1cda4b872f141958b::_PDataSerializer",
+                  "key": "7881a72b",
+                  "kind": "class",
+                  "name": "_PDataSerializer",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      120,
+                      129,
+                      167,
+                      43,
+                      180,
+                      46,
+                      110,
+                      185,
+                      155,
+                      91,
+                      141,
+                      167,
+                      201,
+                      45,
+                      195,
+                      255,
+                      87,
+                      73,
+                      230,
+                      44,
+                      45,
+                      210,
+                      1,
+                      49,
+                      30,
+                      144,
+                      183,
+                      190,
+                      59,
+                      10,
+                      224,
+                      71
+                    ]
+                  }
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::f5cbd3cc12e1fcde5d75dce4c29c46b9512aa20e2459db617108f99f094dbb39::signer",
+                          "key": "047425f9",
+                          "kind": "variable",
+                          "name": "signer",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              4,
+                              116,
+                              37,
+                              249,
+                              25,
+                              89,
+                              123,
+                              17,
+                              188,
+                              227,
+                              106,
+                              34,
+                              220,
+                              170,
+                              26,
+                              111,
+                              14,
+                              152,
+                              4,
+                              93,
+                              34,
+                              162,
+                              195,
+                              99,
+                              222,
+                              141,
+                              115,
+                              243,
+                              75,
+                              162,
+                              220,
+                              83
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6510cb118f2dc3a116177210500999d42292000707c32a0baa57511dfb2f48f1::serializer_kwargs",
+                          "key": "40887417",
+                          "kind": "variable",
+                          "name": "serializer_kwargs",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              64,
+                              136,
+                              116,
+                              23,
+                              246,
+                              14,
+                              175,
+                              205,
+                              50,
+                              226,
+                              179,
+                              206,
+                              237,
+                              108,
+                              194,
+                              35,
+                              77,
+                              247,
+                              11,
+                              247,
+                              36,
+                              48,
+                              214,
+                              207,
+                              219,
+                              25,
+                              114,
+                              145,
+                              140,
+                              151,
+                              104,
+                              165
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::6397e88967a85671e84dce0c1f136cc1ceeca0a99ee7bbff0d3ebbe7a6516bea::salt",
+                          "key": "7d944bd3",
+                          "kind": "variable",
+                          "name": "salt",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              125,
+                              148,
+                              75,
+                              211,
+                              254,
+                              171,
+                              36,
+                              197,
+                              85,
+                              245,
+                              81,
+                              8,
+                              190,
+                              183,
+                              86,
+                              140,
+                              232,
+                              53,
+                              248,
+                              141,
+                              64,
+                              154,
+                              137,
+                              252,
+                              193,
+                              25,
+                              0,
+                              247,
+                              140,
+                              56,
+                              97,
+                              113
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::af4cfd24616ebfd95c2cda8df416178cb1fd8807b7c182f86d7ee64b7219d9b1::signer_kwargs",
+                          "key": "98a0fd0b",
+                          "kind": "variable",
+                          "name": "signer_kwargs",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              152,
+                              160,
+                              253,
+                              11,
+                              206,
+                              48,
+                              165,
+                              96,
+                              223,
+                              47,
+                              225,
+                              54,
+                              126,
+                              118,
+                              96,
+                              183,
+                              7,
+                              143,
+                              28,
+                              115,
+                              126,
+                              169,
+                              13,
+                              101,
+                              69,
+                              159,
+                              29,
+                              95,
+                              238,
+                              55,
+                              63,
+                              216
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::48bc74e7a31588418ad0ede5c4eddc3abd041c04927695ee66a453ceda09c610::serializer",
+                          "key": "bf3ebe47",
+                          "kind": "variable",
+                          "name": "serializer",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              191,
+                              62,
+                              190,
+                              71,
+                              155,
+                              70,
+                              47,
+                              100,
+                              174,
+                              108,
+                              232,
+                              52,
+                              42,
+                              232,
+                              94,
+                              229,
+                              153,
+                              192,
+                              238,
+                              78,
+                              101,
+                              219,
+                              80,
+                              25,
+                              147,
+                              201,
+                              240,
+                              157,
+                              52,
+                              244,
+                              241,
+                              172
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::3a014efd7af586082581c037b068f1c1acdd57dbc3f572684cd145694c1f05bd::secret_key",
+                          "key": "df8f7d3e",
+                          "kind": "variable",
+                          "name": "secret_key",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              223,
+                              143,
+                              125,
+                              62,
+                              123,
+                              0,
+                              149,
+                              198,
+                              118,
+                              193,
+                              243,
+                              91,
+                              44,
+                              33,
+                              1,
+                              122,
+                              52,
+                              1,
+                              26,
+                              18,
+                              229,
+                              123,
+                              164,
+                              208,
+                              234,
+                              62,
+                              241,
+                              17,
+                              36,
+                              119,
+                              189,
+                              31
+                            ]
+                          }
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::ec5450c30a00d19c795e911424cd906907dba0f65e0213b2766d58cab00c4cdd::fallback_signers",
+                          "key": "fdb0eeb4",
+                          "kind": "variable",
+                          "name": "fallback_signers",
+                          "semantic_data": {
+                            "kind": "selected-symbol-id",
+                            "value": [
+                              253,
+                              176,
+                              238,
+                              180,
+                              220,
+                              164,
+                              180,
+                              15,
+                              35,
+                              98,
+                              82,
+                              214,
+                              215,
+                              32,
+                              194,
+                              141,
+                              98,
+                              86,
+                              55,
+                              137,
+                              108,
+                              37,
+                              231,
+                              146,
+                              121,
+                              37,
+                              15,
+                              153,
+                              91,
+                              66,
+                              221,
+                              124
+                            ]
+                          }
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c5ecbbd46d81274766cf4382302daecd99bf112e54245a481f6bf216576d9c68::__init__",
+                      "key": "21659bd4",
+                      "kind": "method",
+                      "name": "__init__",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          33,
+                          101,
+                          155,
+                          212,
+                          144,
+                          57,
+                          52,
+                          153,
+                          169,
+                          189,
+                          110,
+                          221,
+                          40,
+                          182,
+                          24,
+                          84,
+                          54,
+                          132,
+                          81,
+                          218,
+                          142,
+                          227,
+                          108,
+                          218,
+                          190,
+                          149,
+                          2,
+                          219,
+                          225,
+                          169,
+                          206,
+                          26
+                        ]
+                      }
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::c5ecbbd46d81274766cf4382302daecd9eeaa5f406dcc99d8e13f94918963375::__init__",
+                      "key": "2a02a07b",
+                      "kind": "method",
+                      "name": "__init__",
+                      "semantic_data": {
+                        "kind": "selected-symbol-id",
+                        "value": [
+                          42,
+                          2,
+                          160,
+                          123,
+                          153,
+                          173,
+                          34,
+                          242,
+                          78,
+                          253,
+                          148,
+                          131,
+                          89,
+                          12,
+                          140,
+                          132,
+                          165,
+                          120,
+                          80,
+                          197,
+                          109,
+                          221,
+                          88,
+                          144,
+                          125,
+                          57,
+                          32,
+                          160,
+                          149,
+                          123,
+                          50,
+                          153
+                        ]
+                      }
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/python-itsdangerous/project::semantic::29a3488dc188d74a1573057101a16b7e6b8f4c7c38dd6aa24b64a431d3055bd5::Serializer",
+                  "key": "7d0ce579",
+                  "kind": "class",
+                  "name": "Serializer",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      125,
+                      12,
+                      229,
+                      121,
+                      226,
+                      228,
+                      182,
+                      132,
+                      95,
+                      50,
+                      232,
+                      147,
+                      81,
+                      153,
+                      81,
+                      31,
+                      237,
+                      243,
+                      167,
+                      251,
+                      253,
+                      234,
+                      95,
+                      100,
+                      190,
+                      15,
+                      157,
+                      92,
+                      130,
+                      81,
+                      53,
+                      212
                     ]
                   }
                 }

@@ -7,6 +7,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
+    mem::size_of,
     num::NonZeroUsize,
     path::{Path, PathBuf},
     sync::atomic::AtomicBool,
@@ -24,8 +25,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use super::typescript_host::{
-    TypeScriptDirectoryEntryKind, TypeScriptProjectHostError, TypeScriptProjectInputs,
-    TypeScriptResolverCapability, TypeScriptResolverWitness, ValidatedTypeScriptHost,
+    NativeRootSelectionObservation, TypeScriptDirectoryEntryKind, TypeScriptProjectHostError,
+    TypeScriptProjectInputs, TypeScriptProjectWitness, TypeScriptResolverCapability,
+    TypeScriptResolverWitness, ValidatedTypeScriptHost,
 };
 use super::{ToolchainProbeLimits, toolchain_probe::run_typescript_program_bridge};
 use crate::application::compiler::PackageSource;
@@ -88,6 +90,14 @@ pub(crate) fn native_program_execution_fingerprint(
     *digest.finalize().as_bytes()
 }
 
+pub(super) fn replay_native_root_selection(
+    witness: &TypeScriptProjectWitness,
+    query: &NativeRootSelectionObservation,
+    control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+) -> Result<BTreeSet<PathBuf>, TypeScriptProjectHostError> {
+    direct::replay_native_root_selection(witness, query, control)
+}
+
 /// A captured source can retain provenance without being a Compiler API program member.
 /// Exclusion never admits that source to TSZ or supplies semantic authority for it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -116,6 +126,66 @@ pub(crate) struct TypeScriptProgramClosureWitness {
 }
 
 impl TypeScriptProgramClosureWitness {
+    /// Encodes the narrow native program form: the compiler API transcript must be the
+    /// exact empty/default shape emitted by the native TSZ producer.
+    #[cfg(test)]
+    pub(crate) fn encode_native_snapshot(
+        &self,
+        host: &TypeScriptProjectWitness,
+    ) -> Option<Vec<u8>> {
+        self.encode_native_snapshot_with_limit(
+            host,
+            backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES,
+        )
+    }
+
+    fn encode_native_snapshot_with_limit(
+        &self,
+        host: &TypeScriptProjectWitness,
+        max_bytes: usize,
+    ) -> Option<Vec<u8>> {
+        if !self.compiler_accesses.is_empty()
+            || !self.directory_views.is_empty()
+            || self.metrics != ProgramClosureMetrics::default()
+            || self.access_digest
+                != compiler_access_digest(&[], &[], ProgramClosureMetrics::default()).ok()?
+        {
+            return None;
+        }
+        self.resolver
+            .encode_native_snapshot_with_limit(host, max_bytes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn decode_native_snapshot(
+        bytes: &[u8],
+        host: &TypeScriptProjectWitness,
+        control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+    ) -> Option<Self> {
+        let current_host = host.validated_controlled(control).ok()?;
+        Self::decode_native_snapshot_with_validated_host(bytes, &current_host, control)
+    }
+
+    fn decode_native_snapshot_with_validated_host(
+        bytes: &[u8],
+        current_host: &ValidatedTypeScriptHost<'_>,
+        control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+    ) -> Option<Self> {
+        let resolver = TypeScriptResolverWitness::decode_native_snapshot_with_validated_host(
+            bytes,
+            current_host,
+            control,
+        )?;
+        let metrics = ProgramClosureMetrics::default();
+        Some(Self {
+            resolver,
+            compiler_accesses: Box::new([]),
+            directory_views: Box::new([]),
+            metrics,
+            access_digest: compiler_access_digest(&[], &[], metrics).ok()?,
+        })
+    }
+
     fn retained_bytes(&self) -> usize {
         self.resolver
             .retained_bytes()
@@ -129,13 +199,15 @@ impl TypeScriptProgramClosureWitness {
             ))
     }
 
+    #[cfg(test)]
     pub(crate) fn validate_current(
         &self,
-        witness: &super::typescript_host::TypeScriptProjectWitness,
+        witness: &TypeScriptProjectWitness,
     ) -> Result<(), TypeScriptProjectHostError> {
         self.validate_with_host(&witness.validated()?)
     }
 
+    #[cfg(test)]
     fn validate_with_host(
         &self,
         host: &ValidatedTypeScriptHost<'_>,
@@ -285,14 +357,14 @@ fn retained_string_bytes(value: &String) -> usize {
 
 fn retained_vec_bytes<T>(values: &Vec<T>, nested: impl Fn(&T) -> usize) -> usize {
     values.iter().fold(
-        retained_allocation_bytes(values.capacity().saturating_mul(std::mem::size_of::<T>())),
+        retained_allocation_bytes(values.capacity().saturating_mul(size_of::<T>())),
         |bytes, value| bytes.saturating_add(nested(value)),
     )
 }
 
 fn retained_slice_bytes<T>(values: &[T], nested: impl Fn(&T) -> usize) -> usize {
     values.iter().fold(
-        retained_allocation_bytes(values.len().saturating_mul(std::mem::size_of::<T>())),
+        retained_allocation_bytes(values.len().saturating_mul(size_of::<T>())),
         |bytes, value| bytes.saturating_add(nested(value)),
     )
 }
@@ -1134,8 +1206,91 @@ pub(crate) enum TypeScriptForestSourceMembership {
 #[derive(Debug)]
 pub(crate) struct TypeScriptForestClosureWitness(pub(crate) Vec<TypeScriptProgramClosureWitness>);
 impl TypeScriptForestClosureWitness {
+    #[cfg(test)]
+    pub(crate) fn encode_native_snapshot(
+        &self,
+        host: &TypeScriptProjectWitness,
+    ) -> Option<Vec<Vec<u8>>> {
+        self.encode_native_snapshot_with_limit(
+            host,
+            backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES,
+        )
+    }
+
+    pub(crate) fn encode_native_snapshot_with_limit(
+        &self,
+        host: &TypeScriptProjectWitness,
+        max_serialized_bytes: usize,
+    ) -> Option<Vec<Vec<u8>>> {
+        let max_snapshot_bytes = backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES;
+        if self.0.is_empty() || self.0.len() > super::typescript_host::MAX_PROJECT_CONFIG_FILES {
+            return None;
+        }
+        if max_serialized_bytes > max_snapshot_bytes {
+            return None;
+        }
+        let retained = host
+            .retained_native_bytes()?
+            .checked_add(self.retained_bytes())?;
+        if retained > max_snapshot_bytes {
+            return None;
+        }
+        let mut encoded_bytes = 0usize;
+        let mut encoded = Vec::with_capacity(self.0.len());
+        for program in &self.0 {
+            let available = max_serialized_bytes
+                .checked_sub(encoded_bytes)?
+                .checked_sub(4)?;
+            let bytes = program.encode_native_snapshot_with_limit(host, available)?;
+            let framed_len = 4usize.checked_add(bytes.len())?;
+            encoded_bytes = encoded_bytes.checked_add(framed_len)?;
+            if encoded_bytes > max_serialized_bytes || bytes.len() > u32::MAX as usize {
+                return None;
+            }
+            encoded.push(bytes);
+        }
+        Some(encoded)
+    }
+
+    pub(crate) fn decode_native_snapshot(
+        programs: Vec<Vec<u8>>,
+        host: &TypeScriptProjectWitness,
+        control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
+    ) -> Option<Self> {
+        if programs.is_empty() || programs.len() > super::typescript_host::MAX_PROJECT_CONFIG_FILES
+        {
+            return None;
+        }
+        let current_host = host.validated_controlled(control).ok()?;
+        let mut retained = host
+            .retained_native_bytes()?
+            .checked_add(size_of::<Self>())?
+            .checked_add(retained_allocation_bytes(
+                programs
+                    .len()
+                    .checked_mul(size_of::<TypeScriptProgramClosureWitness>())?,
+            ))?;
+        if retained > backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES {
+            return None;
+        }
+        let mut restored = Vec::with_capacity(programs.len());
+        for program in &programs {
+            let leaf = TypeScriptProgramClosureWitness::decode_native_snapshot_with_validated_host(
+                program,
+                &current_host,
+                control,
+            )?;
+            retained = retained.checked_add(leaf.retained_bytes())?;
+            if retained > backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES {
+                return None;
+            }
+            restored.push(leaf);
+        }
+        Some(Self(restored))
+    }
+
     pub(crate) fn retained_bytes(&self) -> usize {
-        std::mem::size_of::<Self>().saturating_add(retained_vec_bytes(
+        size_of::<Self>().saturating_add(retained_vec_bytes(
             &self.0,
             TypeScriptProgramClosureWitness::retained_bytes,
         ))
@@ -1143,14 +1298,14 @@ impl TypeScriptForestClosureWitness {
 
     pub(crate) fn validate_current(
         &self,
-        witness: &super::typescript_host::TypeScriptProjectWitness,
+        witness: &TypeScriptProjectWitness,
     ) -> Result<(), TypeScriptProjectHostError> {
         self.validate_current_controlled(witness, &mut || Ok(()))
     }
 
     pub(crate) fn validate_current_controlled(
         &self,
-        witness: &super::typescript_host::TypeScriptProjectWitness,
+        witness: &TypeScriptProjectWitness,
         control: &mut dyn FnMut() -> Result<(), TypeScriptProjectHostError>,
     ) -> Result<(), TypeScriptProjectHostError> {
         let host = witness.validated_controlled(control)?;
@@ -3064,7 +3219,7 @@ mod tests {
         let two = super::retained_slice_bytes(&accesses, ProgramAccess::retained_bytes);
         assert_eq!(
             two - one,
-            std::mem::size_of::<ProgramAccess>() + duplicate_payload,
+            size_of::<ProgramAccess>() + duplicate_payload,
             "deduplicating the resolver path cannot remove a separate retained access object"
         );
         assert!(
@@ -3081,10 +3236,10 @@ mod tests {
         let empty = view.retained_bytes();
         view.files.reserve(8);
         view.directories.push("child".into());
-        assert!(view.retained_bytes() >= empty + 8 * std::mem::size_of::<String>() + "child".len());
+        assert!(view.retained_bytes() >= empty + 8 * size_of::<String>() + "child".len());
         assert!(
             super::retained_slice_bytes(&[view], ProgramDirectoryView::retained_bytes)
-                >= std::mem::size_of::<ProgramDirectoryView>()
+                >= size_of::<ProgramDirectoryView>()
         );
     }
 

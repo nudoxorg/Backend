@@ -110,6 +110,20 @@ fn page_limit_domains_preserve_defaults_and_admit_exact_engine_boundaries() {
 }
 
 #[test]
+fn repeated_operands_remain_visible_outside_compiler_coverage_pages() {
+    let view = ProductView::assembled(
+        "generic",
+        vec![
+            ProductRecord::new("first row", Some("same operand".to_owned()), Vec::new()),
+            ProductRecord::new("second row", Some("same operand".to_owned()), Vec::new()),
+        ],
+    );
+
+    let text = crate::render::markdown::product(&view);
+    assert_eq!(text.matches("`same operand`").count(), 2);
+}
+
+#[test]
 fn durable_index_grammars_keep_exact_keys_and_reject_mixed_progress_identities() {
     let key = backend_library::IndexOperationKey::from_bytes([0x51; 32]).expect("key");
     let mut start = Invocation::new(grammar_for("index_start").expect("start grammar"));
@@ -1984,6 +1998,29 @@ fn a_references_reply_renders_sites_with_their_provenance() {
 }
 
 #[test]
+fn empty_references_result_does_not_claim_target_absence_or_reference_completeness() {
+    let reply = backend_library::SurfaceReply::References {
+        target: backend_library::ProductText::new("pkg::semantic::callee")
+            .expect("reference target"),
+        references: Box::new([]),
+    };
+    let view = product_view(&reply);
+    for rendered in [
+        markdown::product(&view),
+        text::product(&view, Theme::plain()),
+    ] {
+        assert!(
+            rendered.contains("no reference records captured at this revision"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("no references found"), "{rendered}");
+        assert!(!rendered.contains("no row at this revision"), "{rendered}");
+    }
+    let generic = product_view(&backend_library::SurfaceReply::IndexSearch(Box::new([])));
+    assert!(markdown::product(&generic).contains("no row at this revision"));
+}
+
+#[test]
 fn advisory_reply_renders_typed_coverage_and_decision() {
     let reply =
         backend_library::SurfaceReply::Advisory(backend_library::AdvisoryPackageDto::unknown());
@@ -2092,6 +2129,7 @@ fn owner_index_job_grammars_lower_exact_ticket_operands_to_typed_surface_command
         Request::Surface(command)
             if matches!(*command,
                 backend_library::SurfaceCommand::IndexStart {
+                    cargo_target: None,
                     package: backend_library::PackageReference::Purl(ref package),
                     execution_intent: backend_library::CompileExecutionIntent::Background,
                 } if package.as_str() == "pkg:cargo/serde@1.0.228")

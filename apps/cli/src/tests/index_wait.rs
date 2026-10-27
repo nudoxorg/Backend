@@ -36,6 +36,7 @@ impl CommandTransport for Owner {
             .push(command.clone());
         let observation = match command {
             SurfaceCommand::IndexOperationStart {
+                cargo_target: None,
                 operation_key,
                 package,
                 execution_intent,

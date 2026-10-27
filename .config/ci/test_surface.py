@@ -1,5 +1,6 @@
 """The snapshot admission contract must reject failed product setup."""
 import importlib.util
+import hashlib
 from concurrent.futures import Future
 from pathlib import Path
 import unittest
@@ -7,6 +8,488 @@ import unittest
 spec = importlib.util.spec_from_file_location("surface", Path(__file__).with_name("surface.py"))
 surface = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(surface)
+runner_spec = importlib.util.spec_from_file_location("ci_test_runner", Path(__file__).with_name("test.py"))
+runner = importlib.util.module_from_spec(runner_spec)
+runner_spec.loader.exec_module(runner)
+
+
+class NativeTypeScriptOwnerEnvironmentTests(unittest.TestCase):
+    def test_shared_shell_report_overrides_cannot_select_an_external_product_producer(self):
+        import os, tempfile
+        from unittest.mock import patch
+        inherited = {name: "/pinned/external" for name in (
+            "NUDOX_TSC", "NUDOX_TYPESCRIPT_NODE", "NUDOX_TYPESCRIPT_MODULE_ROOT",
+            "NUDOX_TYPESCRIPT_REPORT_PROGRAM",
+        )}
+        inherited["NUDOX_RUSTC"] = "/pinned/rustc"
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, inherited, clear=True):
+            env = surface.isolated_env(Path(temporary) / "home", Path("/published/bin"))
+        for name in inherited:
+            if name != "NUDOX_RUSTC":
+                self.assertNotIn(name, env)
+        self.assertEqual(env["NUDOX_RUSTC"], "/pinned/rustc")
+        self.assertEqual(env["BACKEND_LOCALD_BIN"], "/published/bin/backend-locald")
+
+    def test_diagnostic_runner_flags_do_not_enter_application_process_environment(self):
+        import os, tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {
+                surface.SEARCH_PREPARATION_DIAGNOSTICS_ENV: "1",
+                surface.OWNER_USAGE_DIAGNOSTICS_ENV: "1",
+                "BACKEND_JOURNEY_SEARCH_PREPARATION": "untrusted-inherited-value",
+        }, clear=True):
+            env = surface.isolated_env(Path(temporary) / "home", Path("/published/bin"))
+        self.assertNotIn(surface.SEARCH_PREPARATION_DIAGNOSTICS_ENV, env)
+        self.assertNotIn(surface.OWNER_USAGE_DIAGNOSTICS_ENV, env)
+        self.assertNotIn("BACKEND_JOURNEY_SEARCH_PREPARATION", env)
+
+    def test_search_preparation_diagnostics_require_exact_ci_report_opt_in(self):
+        self.assertFalse(surface._preparation_diagnostic_opt_in(None, "1"))
+        provenance = {"source_sha": "a" * 40}
+        self.assertFalse(surface._preparation_diagnostic_opt_in(provenance, None))
+        self.assertFalse(surface._preparation_diagnostic_opt_in(provenance, "yes"))
+        self.assertTrue(surface._preparation_diagnostic_opt_in(provenance, "1"))
+        self.assertTrue(surface._preparation_diagnostic_opt_in(provenance, "true"))
+        self.assertTrue(surface._preparation_diagnostic_opt_in(provenance, "TRUE"))
+        self.assertFalse(surface._preparation_diagnostic_opt_in(provenance, "0"))
+
+
+class DiagnosticRunnerEnvironmentTests(unittest.TestCase):
+    def invoke_runner(self, argv, inherited):
+        import os
+        import subprocess
+        from unittest.mock import patch
+        with patch.dict(os.environ, inherited, clear=True), \
+                patch.object(runner.sys, "argv", argv), \
+                patch.object(runner.subprocess, "run",
+                             return_value=subprocess.CompletedProcess([], 0)) as launch:
+            self.assertEqual(runner.main(), 0)
+        launch.assert_called_once()
+        return launch.call_args.kwargs["env"]
+
+    def test_provenance_report_does_not_implicitly_opt_in_diagnostics(self):
+        flags = (surface.SEARCH_PREPARATION_DIAGNOSTICS_ENV,
+                 surface.OWNER_USAGE_DIAGNOSTICS_ENV)
+        environment = self.invoke_runner([
+            "test.py", "integration", "--bin-dir", "/published/bin", "--in-shell",
+            "--ci-report", "/private/ci-evidence.json", "--source-sha", "a" * 40,
+        ], {"PATH": "/usr/bin"})
+        for name in flags:
+            self.assertNotIn(name, environment)
+        self.assertEqual(environment["CI_T2_EXTERNAL"], "1")
+
+    def test_explicit_diagnostic_values_are_preserved_for_the_harness(self):
+        flags = (surface.SEARCH_PREPARATION_DIAGNOSTICS_ENV,
+                 surface.OWNER_USAGE_DIAGNOSTICS_ENV)
+        environment = self.invoke_runner([
+            "test.py", "integration", "--bin-dir", "/published/bin", "--in-shell",
+            "--ci-report", "/private/ci-evidence.json", "--source-sha", "a" * 40,
+        ], {flags[0]: "1", flags[1]: "0", "PATH": "/usr/bin"})
+        self.assertEqual([environment[name] for name in flags], ["1", "0"])
+        self.assertEqual(environment["CI_T2_EXTERNAL"], "1")
+
+
+class SearchPreparationReceiptTests(unittest.TestCase):
+    @staticmethod
+    def receipt(pid=42):
+        return {
+            "schema": "nudox.search-preparation-worker.v1",
+            "process_id": pid,
+            "workspace": "a" * 64,
+            "view": "b" * 64,
+            "view_version": "c" * 64,
+            "source": {"root": "d" * 64, "object": "e" * 64,
+                       "branch": "f" * 64, "log": "0" * 64, "schema": 3},
+            "elapsed_ns": 1000,
+            "phases": {
+                "indexed_sources": {"state": "observed", "elapsed_ns": 100},
+                "semantic_corpus": {"state": "observed", "elapsed_ns": 200},
+                "lexical_projection": {"state": "observed", "elapsed_ns": 300},
+            },
+            "selection": {
+                "row_evidence_join_ns": 11, "relation_state_ns": 12,
+                "document_state_ns": 13, "projection_open_advance_ns": 14,
+                "view_rows": 7, "evidence_facts": 8, "lexical_documents": 9,
+                "selected_entities": 6, "previous_view": None, "previous_binding": None,
+                "same_view": False, "same_workspace": True, "same_relation_root": False,
+                "same_binding": False, "maintenance": "revised",
+            },
+            "outcome": "prepared",
+            "authority": "worker-observation-only",
+        }
+
+    @staticmethod
+    def owner(directory, pid=42, poll=None):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        process = Mock(pid=pid)
+        process.poll.return_value = poll
+        return SimpleNamespace(workspace=directory, process=process)
+
+    def write_receipt(self, directory, receipt=None):
+        import json
+        value = self.receipt() if receipt is None else receipt
+        raw = json.dumps(value, separators=(",", ":")).encode()
+        path = Path(directory) / surface.SEARCH_PREPARATION_RECEIPT
+        path.write_bytes(raw)
+        return path, raw
+
+    def test_captures_exact_private_owner_receipt_as_bounded_identities_and_scalars(self):
+        import contextlib
+        import io
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self.owner(directory)
+            _, raw = self.write_receipt(directory)
+            provenance = {"source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                captured = surface.capture_search_preparation_diagnostic(owner, provenance, {
+                    "answer": "records", "workspace": "a" * 64, "view": "b" * 64,
+                    "view_version": "c" * 64,
+                    "basis": {"source": {"root": "d" * 64, "object": "e" * 64,
+                                          "branch": "f" * 64, "log": "0" * 64, "schema": 3}},
+                })
+                surface.emit_search_preparation_diagnostic(captured, "fixture")
+            packet = json.loads(output.getvalue().split(" ", 1)[1])
+            self.assertEqual(packet["state"], "captured")
+            self.assertEqual(packet["receipt_sha256"], hashlib.sha256(raw).hexdigest())
+            self.assertEqual(packet["owner_pid"], 42)
+            self.assertEqual(packet["workspace"], "a" * 64)
+            self.assertEqual(packet["phases"]["semantic_corpus"]["elapsed_ns"], 200)
+            self.assertEqual(packet["selection"]["maintenance"], "revised")
+            self.assertEqual(packet["binding_level"], "owner-process-private-workspace")
+            self.assertEqual(len(packet["verified_answer_fields"]), 8)
+            self.assertEqual(packet["unbound_worker_fields"], [])
+            self.assertNotIn(directory, output.getvalue())
+            self.assertLessEqual(len(output.getvalue().encode()), surface.SEARCH_PREPARATION_DIAGNOSTIC_LIMIT + 40)
+
+    def test_oversized_and_stale_owner_receipts_are_refused_without_content(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self.owner(directory)
+            path, _ = self.write_receipt(directory)
+            path.write_bytes(b"x" * (surface.SEARCH_PREPARATION_RECEIPT_LIMIT + 1))
+            oversized = surface.capture_search_preparation_diagnostic(owner, {
+                "source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}, {})
+            self.assertEqual(oversized, {"state": "unavailable", "reason": "receipt-over-limit"})
+            self.write_receipt(directory, self.receipt(pid=41))
+            stale = surface.capture_search_preparation_diagnostic(owner, {
+                "source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}, {})
+            self.assertEqual(stale["reason"], "receipt-owner-or-schema-mismatch")
+            owner.process.poll.return_value = 0
+            retired = surface.capture_search_preparation_diagnostic(owner, {
+                "source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}, {})
+            self.assertEqual(retired["reason"], "owner-not-live")
+
+    def test_diagnostic_emission_failure_cannot_change_the_case_verdict(self):
+        from unittest.mock import patch
+        with patch.object(surface.json, "dumps", side_effect=TypeError("diagnostic only")):
+            surface.emit_search_preparation_diagnostic({"state": "captured"}, "fixture")
+
+    def test_receipt_without_observation_only_authority_is_refused(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self.owner(directory)
+            receipt = self.receipt()
+            receipt.pop("authority")
+            self.write_receipt(directory, receipt)
+            result = surface.capture_search_preparation_diagnostic(owner, {
+                "source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}, {})
+            self.assertEqual(result, {
+                "state": "unavailable", "reason": "receipt-owner-or-schema-mismatch"})
+
+    def test_atomic_replacement_between_stat_and_open_is_refused(self):
+        import json
+        import os
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self.owner(directory)
+            path, _ = self.write_receipt(directory)
+            replacement = Path(directory) / "replacement.json"
+            replacement.write_bytes(json.dumps(self.receipt(pid=42, ) | {"elapsed_ns": 999},
+                                                   separators=(",", ":")).encode())
+            real_open = os.open
+            replaced = False
+
+            def replace_then_open(target, flags, *args, **kwargs):
+                nonlocal replaced
+                if Path(target) == path and not replaced:
+                    os.replace(replacement, path)
+                    replaced = True
+                return real_open(target, flags, *args, **kwargs)
+
+            with patch.object(surface.os, "open", side_effect=replace_then_open):
+                result = surface.capture_search_preparation_diagnostic(owner, {
+                    "source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}, {})
+            self.assertTrue(replaced)
+            self.assertEqual(result["reason"], "receipt-changed-before-read")
+
+    def test_unexposed_search_ids_are_labeled_unbound_and_exposed_mismatch_refuses(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self.owner(directory)
+            self.write_receipt(directory)
+            provenance = {"source_sha": "1" * 40, "artifact_manifest_sha256": "2" * 64}
+            unbound = surface.capture_search_preparation_diagnostic(owner, provenance, {
+                "answer": "records", "readiness": "ready", "records": []})
+            self.assertEqual(unbound["binding_level"], "owner-process-private-workspace")
+            self.assertEqual(unbound["verified_answer_fields"], [])
+            self.assertEqual(len(unbound["unbound_worker_fields"]), 8)
+            mismatch = surface.capture_search_preparation_diagnostic(owner, provenance, {
+                "answer": "records", "view": "9" * 64})
+            self.assertEqual(mismatch, {
+                "state": "unavailable", "reason": "search-answer-identity-mismatch"})
+            source_mismatch = surface.capture_search_preparation_diagnostic(owner, provenance, {
+                "answer": "records", "page": {"source_root": "9" * 64}})
+            self.assertEqual(source_mismatch, {
+                "state": "unavailable", "reason": "search-answer-identity-mismatch"})
+
+
+class FailedIndexDiagnosticTests(unittest.TestCase):
+    def test_diagnostic_reads_public_outcome_without_changing_setup_verdict(self):
+        import contextlib, io, json
+        from unittest.mock import patch
+        owner = object()
+        project = Path("/tmp/nudox-surface/example/project")
+        reply = {"exit": 0, "json": {"answer": "compiler-outcome", "failures": ["retained refusal"]}}
+        with patch.object(surface, "run_cli", return_value=(reply, 0.1)) as run, contextlib.redirect_stdout(io.StringIO()) as output:
+            surface.emit_index_failure_diagnostic(owner, project)
+        run.assert_called_once_with(owner, project, [
+            "package-profile", str(project),
+            "--compiler-outcome", '{"kind":"current"}',
+        ], 10)
+        packet = json.loads(output.getvalue().split(" ", 1)[1])
+        self.assertEqual(packet, {"project": str(project), "reply": reply})
+
+    def test_exact_coverage_pages_and_refusal_diagnostics_are_copied_under_one_deadline(self):
+        import contextlib, io, json
+        from unittest.mock import patch
+        first = {"kind": "coverage", "selector": {"catalog": "exact", "offset": 0}}
+        next_page = {"kind": "coverage", "selector": {"catalog": "exact", "offset": 25}}
+        diagnostic = {"kind": "diagnostic", "selector": {"basis": "exact", "profile": [0, 1]}}
+        summary = {"state": "summary", "coverage": [{"state": "retained", "read": first}],
+                   "refusals": [{"diagnostic": {"state": "retained", "read": diagnostic}}]}
+        outcomes = [summary, {"state": "coverage", "page": {"rows": [{"kind": "gap"}], "next": next_page}},
+                    {"state": "diagnostic", "refusal": {"compiler_failure": {"phase": "authority"}}},
+                    {"state": "coverage", "page": {"rows": [], "next": None}}]
+        replies = [({"exit": 0, "json": {"compiler_outcomes": body}}, 0.1) for body in outcomes]
+        with patch.object(surface, "run_cli", side_effect=replies) as run, \
+                patch.object(surface.time, "monotonic", side_effect=[100, 101, 102, 103]), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            surface.emit_index_failure_diagnostic(object(), Path("/tmp/project"))
+        self.assertEqual(run.call_count, 4)
+        calls = run.call_args_list
+        self.assertEqual([call.args[3] for call in calls], [10, 9, 8, 7])
+        self.assertEqual([json.loads(call.args[2][-1]) for call in calls[1:]],
+                         [first, diagnostic, next_page])
+        packets = [json.loads(line.split(" ", 1)[1]) for line in output.getvalue().splitlines()]
+        self.assertEqual(len(packets), 4)
+        self.assertEqual(packets[-1]["reply"]["json"]["compiler_outcomes"]["page"]["next"], None)
+
+    def test_stale_or_repeated_coverage_selectors_cannot_extend_diagnostic_capture(self):
+        import contextlib, io
+        from unittest.mock import patch
+        read = {"kind": "coverage", "selector": {"catalog": "exact", "offset": 0}}
+        first = {"exit": 0, "json": {"compiler_outcomes": {
+            "state": "summary", "coverage": [{"state": "retained", "read": read}]}}}
+        for body in [{"state": "stale"}, {"state": "coverage", "page": {"next": read}}]:
+            with self.subTest(body=body), patch.object(surface, "run_cli", side_effect=[
+                    (first, 0), ({"exit": 0, "json": {"compiler_outcomes": body}}, 0)]) as run, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                surface.emit_index_failure_diagnostic(object(), Path("/tmp/project"))
+            self.assertEqual(run.call_count, 2)
+
+    def test_diagnostic_failure_cannot_replace_the_original_exception(self):
+        from unittest.mock import patch
+        with patch.object(surface, "run_cli", side_effect=RuntimeError("owner gone")):
+            # The caller's bare raise must still rethrow its setup exception.
+            with self.assertRaisesRegex(ValueError, "original setup refusal"):
+                try:
+                    raise ValueError("original setup refusal")
+                except Exception:
+                    surface.emit_index_failure_diagnostic(object(), Path("/tmp/project"))
+                    raise
+
+
+class CliTimingTests(unittest.TestCase):
+    def test_diagnostic_logging_does_not_enter_cli_operation_time(self):
+        import subprocess
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        clock = [0.0]
+        messages = []
+        diagnostics = {}
+        owner = SimpleNamespace(bin_dir=Path("/published/bin"),
+                                endpoint=Path("/case/locald.sock"), env={})
+
+        def slow_log(message):
+            messages.append(message)
+            clock[0] += 5.0 if len(messages) == 1 else 7.0
+
+        def cli(command, **options):
+            self.assertEqual(options["timeout"], 3)
+            clock[0] += 2.0
+            return subprocess.CompletedProcess(command, 0, '{"ok":true}', "")
+
+        token = surface.CASE_DIAGNOSTICS.set(diagnostics)
+        try:
+            with patch.object(surface.time, "monotonic", side_effect=lambda: clock[0]), \
+                    patch.object(surface, "log", side_effect=slow_log), \
+                    patch.object(surface.process_custody, "run", side_effect=cli):
+                answer, seconds = surface.run_cli(owner, Path("/project"), ["add", "--wait"], 3)
+        finally:
+            surface.CASE_DIAGNOSTICS.reset(token)
+
+        self.assertEqual(answer, {"exit": 0, "json": {"ok": True}})
+        self.assertEqual(seconds, 2.0)
+        self.assertEqual(messages[-1], "cli add: completed after 2.000s")
+        self.assertEqual(diagnostics["cli_add_timing"], {
+            "outcome": "completed", "subprocess_seconds": 2.0,
+            "start_log_seconds": 5.0, "completion_log_seconds": 7.0,
+            "old_log_inclusive_seconds": 14.0,
+        })
+
+    def test_slow_logs_preserve_original_timeout_and_failure(self):
+        import subprocess
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        for failure, outcome in [(subprocess.TimeoutExpired("cli", 3), "timed out"),
+                                 (RuntimeError("original child failure"), "raised")]:
+            with self.subTest(outcome=outcome):
+                clock = [0.0]
+                messages = []
+                owner = SimpleNamespace(bin_dir=Path("/published/bin"),
+                                        endpoint=Path("/case/locald.sock"), env={})
+
+                def slow_log(message):
+                    messages.append(message)
+                    clock[0] += 5.0
+
+                def cli(_command, **options):
+                    self.assertEqual(options["timeout"], 3)
+                    clock[0] += 3.0
+                    raise failure
+
+                with patch.object(surface.time, "monotonic", side_effect=lambda: clock[0]), \
+                        patch.object(surface, "log", side_effect=slow_log), \
+                        patch.object(surface.process_custody, "run", side_effect=cli), \
+                        self.assertRaises(type(failure)) as caught:
+                    surface.run_cli(owner, Path("/project"), ["add", "--wait"], 3)
+                self.assertIs(caught.exception, failure)
+                self.assertEqual(messages[-1], f"cli add: {outcome} after 3.000s")
+
+
+class RuntimeImportDrainTests(unittest.TestCase):
+    def test_main_activates_owned_process_custody_before_setup_drain(self):
+        import contextlib
+        import sys
+        import tempfile
+        import types
+        from unittest.mock import patch
+
+        events = []
+        cpu_placement = types.ModuleType("cpu_placement")
+
+        @contextlib.contextmanager
+        def placement():
+            events.append("placement")
+            yield {"fixture": True}
+
+        cpu_placement.measurement_placement = placement
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def drain():
+                events.append("drain")
+                self.assertEqual(events[0], "activate")
+
+            with patch.object(surface.sys, "argv", [
+                    "surface.py", "--bin-dir", str(root / "bin"),
+                    "--ci-report", str(root / "evidence.json"),
+                    "--source-sha", "a" * 40]), \
+                    patch.object(surface, "SCRATCH", root / "scratch"), \
+                    patch.object(surface, "evidence_artifact", return_value="b" * 64), \
+                    patch.object(surface.process_custody, "activate",
+                                 side_effect=lambda: events.append("activate")) as activate, \
+                    patch.object(surface, "drain_task_volume", side_effect=drain), \
+                    patch.object(surface, "compare_cases",
+                                 side_effect=lambda *_args: events.append("cases") or 0) as compare, \
+                    patch.dict(sys.modules, {"cpu_placement": cpu_placement}):
+                self.assertEqual(surface.main(), 0)
+
+        self.assertEqual(events, ["activate", "drain", "placement", "cases"])
+        activate.assert_called_once_with()
+        compare.assert_called_once()
+
+    def test_main_drain_failure_aborts_before_case_comparison(self):
+        import sys
+        import tempfile
+        import types
+        from unittest.mock import patch
+
+        events = []
+        cpu_placement = types.ModuleType("cpu_placement")
+        cpu_placement.measurement_placement = lambda: self.fail("placement ran after drain failure")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def fail_drain():
+                events.append("drain")
+                self.assertEqual(events[0], "activate")
+                raise RuntimeError("drain refused")
+
+            with patch.object(surface.sys, "argv", [
+                    "surface.py", "--bin-dir", str(root / "bin"),
+                    "--ci-report", str(root / "evidence.json"),
+                    "--source-sha", "a" * 40]), \
+                    patch.object(surface, "SCRATCH", root / "scratch"), \
+                    patch.object(surface, "evidence_artifact", return_value="b" * 64), \
+                    patch.object(surface.process_custody, "activate",
+                                 side_effect=lambda: events.append("activate")), \
+                    patch.object(surface, "drain_task_volume", side_effect=fail_drain), \
+                    patch.object(surface, "compare_cases") as compare, \
+                    patch.dict(sys.modules, {"cpu_placement": cpu_placement}):
+                with self.assertRaisesRegex(RuntimeError, "drain refused"):
+                    surface.main()
+
+        self.assertEqual(events, ["activate", "drain"])
+        compare.assert_not_called()
+
+    def test_linux_flushes_only_task_filesystem_with_bounded_setup(self):
+        import subprocess
+        from unittest.mock import patch
+        with patch.object(surface.sys, "platform", "linux"), \
+                patch.object(surface.process_custody, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            surface.drain_task_volume()
+        run.assert_called_once_with(
+            ["sync", "--file-system", str(surface.ROOT)],
+            capture_output=True, text=True, timeout=60,
+        )
+
+    def test_drain_failure_cannot_become_a_product_pass(self):
+        import subprocess
+        from unittest.mock import patch
+        with patch.object(surface.sys, "platform", "linux"), \
+                patch.object(surface.process_custody, "run", return_value=subprocess.CompletedProcess([], 1, "", "I/O error")):
+            with self.assertRaisesRegex(RuntimeError, "infrastructure.*I/O error"):
+                surface.drain_task_volume()
+
+    def test_timeout_is_an_infrastructure_failure(self):
+        import subprocess
+        from unittest.mock import patch
+        with patch.object(surface.sys, "platform", "linux"), \
+                patch.object(surface.process_custody, "run", side_effect=subprocess.TimeoutExpired("sync", 60)):
+            with self.assertRaisesRegex(RuntimeError, "infrastructure.*exceeded 60 seconds"):
+                surface.drain_task_volume()
+
+    def test_other_platforms_do_not_invoke_linux_syncfs(self):
+        from unittest.mock import patch
+        with patch.object(surface.sys, "platform", "darwin"), \
+                patch.object(surface.process_custody, "run") as run:
+            surface.drain_task_volume()
+        run.assert_not_called()
 
 
 class LocaldStartupDiagnosticTests(unittest.TestCase):
@@ -626,7 +1109,15 @@ class PartialSearchReadinessTests(unittest.TestCase):
 class SnapshotContinuationTests(unittest.TestCase):
     def page(self, token="pc4-one", coordinate="first"):
         size = 100 + len(token)
-        return {"answer": "records", "query": "Digest", "records": [{"identity": {"coordinate": coordinate}}],
+        identity = {"coordinate": coordinate,
+                    "semantic_data": {"kind": "selected-symbol-id",
+                                      "value": list(hashlib.sha256(coordinate.encode()).digest())}}
+        return {"answer": "records", "query": "Digest", "coverage": [], "readiness": "ready",
+                "detail": "summary", "semantic_search": "ready", "search_scope": "source",
+                "limit": 1, "source_root": "root", "source_object": "object",
+                "branch": "branch", "log": "log", "schema": 3, "sequence": 2,
+                "revision": "revision",
+                "records": [{"identity": identity}],
                 "more": True, "nextCursor": token,
                 "budget": {"bytes": size, "bytesPerToken": 4, "estimatedTokens": (size + 3) // 4}}
 
@@ -645,6 +1136,57 @@ class SnapshotContinuationTests(unittest.TestCase):
             surface.normalize_continuations(invalid, {invalid["nextCursor"]})
         unchanged = {"budget": {"bytes": 99, "estimatedTokens": 25}, "state": "stale"}
         self.assertEqual(surface.normalize_continuations(unchanged, set()), unchanged)
+
+    def test_continuation_evidence_retains_dtos_and_hashes_opaque_tokens(self):
+        import contextlib
+        import io
+
+        token = "mcp2-opaque-proof"
+        evidence = []
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            surface._emit_continuation_page(evidence, "mcp", "backend.search", 1,
+                {"arguments": {"query": "Digest", "limit": 3}}, self.page(token), None)
+        receipt = evidence[0]
+        self.assertEqual(receipt["offered_cursor_sha256"], hashlib.sha256(token.encode()).hexdigest())
+        self.assertNotIn(token, output.getvalue())
+        self.assertNotIn("nextCursor", receipt["response"])
+        self.assertEqual(receipt["response"]["records"], self.page(token)["records"])
+        self.assertEqual(receipt["response"]["budget"]["bytes"], self.page(token)["budget"]["bytes"])
+
+    def test_report_references_bind_every_full_logged_continuation_page(self):
+        import contextlib
+        import json
+        import copy
+        import io
+
+        evidence = []
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            for index in range(1, 4):
+                response = self.page(coordinate=f"declaration-{index}")
+                response["source_text"] = "é" * 200000
+                surface._emit_continuation_page(evidence, "mcp", "backend.search", index,
+                    {"arguments": {"query": "Digest"}}, response, None)
+        original = copy.deepcopy(evidence)
+        references = surface.continuation_report_references(evidence)
+        logged = output.getvalue().splitlines()
+        self.assertEqual(len(references), len(evidence))
+        self.assertEqual(evidence, original)
+        self.assertGreater(len(output.getvalue().encode()), 1024 * 1024)
+        self.assertLess(len(json.dumps(references).encode()), 2048)
+        for index, (reference, line) in enumerate(zip(references, logged), 1):
+            payload = line.removeprefix("SURFACE-CONTINUATION-PAGE ").encode()
+            self.assertEqual(reference, {
+                "transport": "mcp", "tool": "backend.search", "page": index,
+                "receipt_sha256": hashlib.sha256(payload).hexdigest(),
+                "receipt_bytes": len(payload),
+            })
+        evidence[1]["response"]["source_text"] += "changed"
+        changed = surface.continuation_report_references(evidence)
+        self.assertNotEqual(references[1]["receipt_sha256"], changed[1]["receipt_sha256"])
+        self.assertEqual(references[0], changed[0])
+        self.assertEqual(references[2], changed[2])
 
     def test_executable_only_cursor_is_consumed_before_normalization(self):
         import copy
@@ -675,6 +1217,20 @@ class SnapshotContinuationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "contradictory"):
             surface.normalize_continuations(wrong, {token, wrong["nextCursor"]})
 
+    def test_initial_more_flag_must_match_cursor_without_rejecting_empty_terminal_pages(self):
+        records = {"answer": "records", "records": [], "more": False}
+        outline = {"answer": "outline", "roots": [], "declarations": 0,
+                   "page": {"more": False}}
+        self.assertIsNone(surface.require_initial_cursor_shape(records))
+        self.assertIsNone(surface.require_initial_cursor_shape(outline))
+
+        missing_cursor = {"answer": "records", "records": [], "more": True}
+        spurious_cursor = {"answer": "outline", "roots": [], "declarations": 0,
+                           "nextCursor": "mcp2-spurious", "page": {"more": False}}
+        for answer in (missing_cursor, spurious_cursor):
+            with self.subTest(answer=answer), self.assertRaisesRegex(RuntimeError, "more flag"):
+                surface.require_initial_cursor_shape(answer)
+
     def test_wire_accounting_is_measured_before_normalizing_proof_bytes(self):
         import copy
         import json
@@ -694,8 +1250,8 @@ class SnapshotContinuationTests(unittest.TestCase):
 
         first, size = fixture("mcp2-first-proof")
         other, _ = fixture("mcp2-a-different-longer-proof")
-        one = surface.normalize_surface_answers(first, {"mcp2-first-proof"})
-        two = surface.normalize_surface_answers(other, {"mcp2-a-different-longer-proof"})
+        one = surface.normalize_surface_answers(first, {"mcp:0": {"mcp2-first-proof"}})
+        two = surface.normalize_surface_answers(other, {"mcp:0": {"mcp2-a-different-longer-proof"}})
         self.assertEqual(one, two)
         bad = copy.deepcopy(first["mcp"]["calls"][0]["reply"])
         bad["_meta"]["backend/wireBudget"]["bytes"] += 1
@@ -703,17 +1259,64 @@ class SnapshotContinuationTests(unittest.TestCase):
             surface.require_mcp_wire_budget(bad, size)
         self.assertEqual(one["mcp"]["calls"][0]["reply"]["_meta"]["backend/wireBudget"]["limitBytes"], 49152)
 
+    def test_same_cursor_from_distinct_mcp_answers_requires_each_answer_proof(self):
+        token = "mcp2-reused-across-answers"
+        reply = {"structuredContent": self.page(token)}
+        answers = {"mcp": {"calls": [
+            {"call": {"tool": "backend.search", "arguments": {"query": "A"}}, "reply": reply},
+            {"call": {"tool": "backend.search", "arguments": {"query": "B"}}, "reply": reply},
+        ]}}
+        with self.assertRaisesRegex(RuntimeError, "unconsumed token"):
+            surface.normalize_surface_answers(answers, {"mcp:0": {token}})
+
     def test_search_continuation_refuses_fault_repetition_and_scope_drift(self):
         first = self.page()
-        following = {"answer": "records", "query": "Digest", "records": [{"identity": {"coordinate": "second"}}], "more": False}
+        following = {"answer": "records", "query": "Digest", "coverage": [], "readiness": "ready",
+                     "detail": "summary", "semantic_search": "ready", "search_scope": "source",
+                     "limit": 1, "source_root": "root", "source_object": "object",
+                     "branch": "branch", "log": "log", "schema": 3, "sequence": 2,
+                     "revision": "revision",
+                     "records": [{"identity": {"coordinate": "second"}}], "more": False}
         surface.require_continuation_reply(first, following, "root")
         for wrong in ({"answer": "fault"}, dict(following, records=[]), dict(following, records=first["records"]),
-                      dict(following, query="other"), dict(following, nextCursor=first["nextCursor"]),
+                      dict(following, query="other"), dict(following, limit=2),
+                      dict(following, source_object="other"), dict(following, nextCursor=first["nextCursor"]),
                       dict(following, more=True)):
             with self.subTest(answer=wrong), self.assertRaises(RuntimeError):
                 surface.require_continuation_reply(first, wrong, "root")
 
+    def test_search_page_overlap_uses_full_symbol_ids_then_structural_fallback(self):
+        import hashlib
+
+        first = self.page("pc4-first", "same-coordinate")
+        def terminal(coordinate):
+            page = self.page("pc4-terminal", coordinate)
+            page["more"] = False
+            page.pop("nextCursor")
+            return page
+
+        different_symbol = terminal("same-coordinate")
+        different_symbol["records"][0]["identity"]["semantic_data"]["value"] = list(
+            hashlib.sha256(b"another exact declaration").digest())
+        surface.require_continuation_reply(first, different_symbol, "root")
+
+        same_symbol_elsewhere = terminal("different-coordinate")
+        same_symbol_elsewhere["records"][0]["identity"]["semantic_data"] = first["records"][0]["identity"]["semantic_data"]
+        with self.assertRaisesRegex(RuntimeError, "duplicate emitted search identity"):
+            surface.require_continuation_reply(first, same_symbol_elsewhere, "root")
+
+        unresolved_first = self.page("pc4-unresolved", "same-coordinate")
+        unresolved_first["records"][0]["identity"] = {"coordinate": "same-coordinate", "name": "first"}
+        unresolved_following = terminal("same-coordinate")
+        unresolved_following["records"][0]["identity"] = {"coordinate": "same-coordinate", "name": "second"}
+        surface.require_continuation_reply(unresolved_first, unresolved_following, "root")
+        unresolved_duplicate = terminal("different-coordinate")
+        unresolved_duplicate["records"][0]["identity"] = {"coordinate": "same-coordinate", "name": "first"}
+        with self.assertRaisesRegex(RuntimeError, "duplicate emitted search identity"):
+            surface.require_continuation_reply(unresolved_first, unresolved_duplicate, "root")
+
     def test_outline_resume_uses_the_returned_page_limit(self):
+        import copy
         call = {"tool": "backend.outline", "arguments": {}}
         first = {"nextCursor": "mcp2-proof", "page": {"limit": 50},
                  "package": {"project": "/project"}, "detail": "summary"}
@@ -721,15 +1324,26 @@ class SnapshotContinuationTests(unittest.TestCase):
                          {"tool": "backend.outline", "arguments": {"path": "/project", "limit": 50, "detail": "summary", "cursor": "mcp2-proof"}})
         with self.assertRaises(RuntimeError):
             surface.mcp_continuation_call(call, dict(first, page={}))
+        first["continuation_call"] = {"name": "backend.outline", "arguments": {
+            "path": "/project", "limit": 50, "detail": "summary", "cursor": "mcp2-proof"}}
+        self.assertEqual(surface.mcp_continuation_call(call, first), {
+            "tool": "backend.outline", "arguments": first["continuation_call"]["arguments"]})
+        wrong = copy.deepcopy(first)
+        wrong["continuation_call"]["arguments"]["limit"] = 49
+        with self.assertRaisesRegex(RuntimeError, "effective limit"):
+            surface.mcp_continuation_call(call, wrong)
 
     def test_outline_continuation_keeps_the_published_basis(self):
         import copy
         first = {"answer": "outline", "roots": [{"key": "first"}], "declarations": 1, "nextCursor": "mcp2-one",
-                 "page": {"source_root": "root", "branch": "branch", "log": "log", "schema": 3, "sequence": 2, "limit": 100, "more": True}}
+                 "package": {"project": "/project"}, "detail": "summary",
+                 "page": {"source_root": "root", "source_object": "object", "coverage": [],
+                          "branch": "branch", "log": "log", "schema": 3, "sequence": 2, "limit": 100, "more": True}}
         following = {"answer": "outline", "roots": [{"key": "second"}], "declarations": 1,
+                     "package": {"project": "/project"}, "detail": "summary",
                      "page": dict(first["page"], more=False)}
         surface.require_continuation_reply(first, following, "root")
-        for field in ("source_root", "branch", "log", "schema", "sequence", "limit"):
+        for field in ("source_root", "source_object", "coverage", "branch", "log", "schema", "sequence", "limit"):
             wrong = copy.deepcopy(following)
             wrong["page"][field] = "changed"
             with self.subTest(field=field), self.assertRaises(RuntimeError):
@@ -737,8 +1351,530 @@ class SnapshotContinuationTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             surface.require_continuation_reply(first, dict(following, roots=first["roots"]), "root")
 
+    def test_outline_cursor_walk_exhausts_pages_and_rejects_cross_page_duplicates(self):
+        def row(name, children=()):
+            return {"coordinate": name, "name": name, "kind": "class", "key": name[:8],
+                    "semantic_data": {"kind": "selected-symbol-id",
+                                      "value": list(hashlib.sha256(name.encode()).digest())},
+                    "children": list(children)}
+
+        def page(root, token, more):
+            def count(node): return 1 + sum(count(child) for child in node.get("children", []))
+            value = {"answer": "outline", "roots": [root],
+                     "declarations": count(root), "package": {"project": "/project"}, "detail": "summary",
+                     "page": {"source_root": "root", "source_object": "object", "coverage": [],
+                              "branch": "branch", "log": "log",
+                              "schema": 3, "sequence": 2, "limit": 2, "more": more}}
+            if token is not None:
+                value["nextCursor"] = token
+            return value
+
+        first = page(row("decl-a"), "mcp2-a", True)
+        second = page(row("decl-b"), "mcp2-b", True)
+        last = page(row("decl-c"), None, False)
+        offered = []
+
+        def fetch(current, token):
+            offered.append(token)
+            return {"mcp2-a": second, "mcp2-b": last}[token]
+
+        self.assertEqual(surface.walk_outline_pages(first, fetch, "root"), (3, 3))
+        self.assertEqual(offered, ["mcp2-a", "mcp2-b"])
+        duplicate = row("different-label")
+        duplicate["semantic_data"] = first["roots"][0]["semantic_data"]
+        with self.assertRaisesRegex(RuntimeError, "duplicate emitted outline identity"):
+            surface.walk_outline_pages(first, lambda _current, _token: page(duplicate, None, False), "root")
+
+        first_context = page(row("parent", [row("child-one")]), "mcp2-context", True)
+        resumed_context = page(row("parent", [row("child-two")]), None, False)
+        self.assertEqual(surface.walk_outline_pages(
+            first_context, lambda _current, _token: resumed_context, "root"), (2, 3))
+        nested_context = page(row("parent", [row("child-one", [row("grandchild")])]), None, False)
+        first_nested = page(row("parent", [row("child-one")]), "mcp2-nested", True)
+        self.assertEqual(surface.walk_outline_pages(
+            first_nested, lambda _current, _token: nested_context, "root"), (2, 3))
+        nonprogress = page(row("parent"), None, False)
+        with self.assertRaisesRegex(RuntimeError, "duplicate emitted outline identity"):
+            surface.walk_outline_pages(first_context, lambda _current, _token: nonprogress, "root")
+        dishonest_terminal = page(row("decl-z"), "mcp2-late", False)
+        with self.assertRaisesRegex(RuntimeError, "more flag disagrees"):
+            surface.walk_outline_pages(dishonest_terminal, lambda _current, _token: last, "root")
+        cycle = page(row("decl-d"), "mcp2-a", True)
+        with self.assertRaisesRegex(RuntimeError, "repeated outline cursor"):
+            surface.walk_outline_pages(first, lambda _current, token: {
+                "mcp2-a": second, "mcp2-b": cycle}[token], "root")
+        with self.assertRaisesRegex(RuntimeError, "deadline"):
+            surface.walk_outline_pages(first, fetch, "root", deadline=0)
+
+        # The general 256-page cap remains fail-closed. A reviewed case can
+        # explicitly raise it while keeping the deadline and receipt bounds.
+        def long_page(index):
+            more = index < 257
+            return page(row(f"long-decl-{index}"), f"long-{index + 1}" if more else None, more)
+
+        with self.assertRaisesRegex(RuntimeError, "page bound"):
+            surface.walk_outline_pages(
+                long_page(1), lambda _current, token: long_page(int(token.removeprefix("long-"))),
+                "root")
+
+        import contextlib
+        import io
+        retained = []
+        byte_budget = {"bytes": 0}
+        fetch_long_page = lambda _current, token: long_page(int(token.removeprefix("long-")))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(surface.walk_outline_pages(
+                long_page(1), fetch_long_page, "root",
+                max_pages=512,
+                on_page=lambda index, response, incoming: surface._emit_continuation_page(
+                    retained, "cli", "outline", index, {"arguments": ["outline"]},
+                    response, incoming, byte_budget=byte_budget)),
+                (257, 257))
+        self.assertEqual(len(retained), 257)
+        self.assertGreater(byte_budget["bytes"], 0)
+        self.assertLess(byte_budget["bytes"], surface.MAX_CONTINUATION_CHAIN_BYTES)
+
+        retained.clear()
+        byte_budget["bytes"] = 0
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(
+                RuntimeError, "complete receipt chain exceeded its byte bound"):
+            surface.walk_outline_pages(
+                long_page(1), fetch_long_page, "root",
+                max_pages=512,
+                on_page=lambda index, response, incoming: surface._emit_continuation_page(
+                    retained, "cli", "outline", index, {"arguments": ["outline"]},
+                    response, incoming, byte_budget=byte_budget,
+                    max_total_bytes=1024))
+        self.assertGreater(byte_budget["bytes"], 0)
+        self.assertLess(len(retained), 257)
+
+        oversized = dict(long_page(1), source_text="x" * 128)
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(
+                RuntimeError, "complete page receipt exceeded its byte bound"):
+            surface._emit_continuation_page([], "cli", "outline", 1,
+                {"arguments": ["outline"]}, oversized, None,
+                byte_budget={"bytes": 0}, max_page_bytes=128)
+
+    def test_search_cursor_walk_exhausts_pages_and_rejects_cycles_or_duplicates(self):
+        def page(coordinate, token, more):
+            value = {"answer": "records", "query": "Digest", "coverage": [], "readiness": "ready",
+                     "detail": "summary", "semantic_search": "ready",
+                     "records": [{"identity": {"coordinate": coordinate,
+                                                   "semantic_data": {"kind": "selected-symbol-id",
+                                                                     "value": list(hashlib.sha256(coordinate.encode()).digest())}}}],
+                     "more": more}
+            if token is not None:
+                value["nextCursor"] = token
+            return value
+
+        first = page("decl-a", "pc4-a", True)
+        second = page("decl-b", "pc4-b", True)
+        last = page("decl-c", None, False)
+        self.assertEqual(surface.walk_record_pages(first, lambda _current, token: {
+            "pc4-a": second, "pc4-b": last}[token]), (3, 3))
+        duplicate = page("different-coordinate", None, False)
+        duplicate["records"][0]["identity"]["semantic_data"] = first["records"][0]["identity"]["semantic_data"]
+        with self.assertRaisesRegex(RuntimeError, "duplicate emitted search identity"):
+            surface.walk_record_pages(first, lambda _current, _token: duplicate)
+        cycle = page("decl-c", "pc4-a", True)
+        with self.assertRaisesRegex(RuntimeError, "repeated search cursor"):
+            surface.walk_record_pages(first, lambda _current, token: {
+                "pc4-a": second, "pc4-b": cycle}[token])
+
 
 class InteractiveMcpTests(unittest.TestCase):
+    def _run_phase_accounting_scenario(self, proof_peak_rss, gui_peak_rss,
+                                       gui_resident_rss):
+        import contextlib, io, tempfile
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        def page(name, token=None):
+            result = {"answer": "outline", "roots": [{
+                "key": name, "name": name,
+                "semantic_data": {"kind": "selected-symbol-id",
+                                  "value": list(hashlib.sha256(name.encode()).digest())},
+                "children": []}], "declarations": 1,
+                "package": {"project": "/project"}, "detail": "summary",
+                "page": {"source_root": "root", "source_object": "object", "coverage": [],
+                         "branch": "branch", "log": "log", "schema": 3,
+                         "sequence": 2, "limit": 2, "more": token is not None},
+                "budget": ({"bytes": len(token.encode()), "bytesPerToken": 1,
+                            "estimatedTokens": len(token.encode())} if token else {})}
+            if token is not None:
+                result["nextCursor"] = token
+            return result
+
+        first, last = page("first", "mcp2-next"), page("last")
+        events = []
+        state = {"cpu_seconds": 1.0, "peak_rss_kib": 100, "resident_rss_kib": 80}
+        sessions = 0
+
+        def session(_owner, _project, calls, _timeout, on_reply, *, absolute_deadline):
+            nonlocal sessions
+            sessions += 1
+            proof_session = sessions == 2
+            def exchange(call, _per_call=10):
+                events.append("proof-hop" if proof_session else "measured-hop")
+                if proof_session:
+                    state.update(cpu_seconds=99.0, peak_rss_kib=proof_peak_rss,
+                                 resident_rss_kib=min(90, proof_peak_rss))
+                return {"isError": False, "structuredContent": last}
+            exchange.deadline = absolute_deadline
+            reply = {"isError": False, "structuredContent": first}
+            on_reply(calls[0], reply, exchange, exchange)
+            return {"exit": 0, "tools": ["backend.outline"],
+                    "calls": [{"call": calls[0], "reply": reply}]}, 0.01
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = root / "fixture"
+            fixture.mkdir()
+            def usage_raw():
+                events.append("usage")
+                return dict(state)
+            def reset_peak_rss():
+                events.append("reset")
+                state["peak_rss_kib"] = state["resident_rss_kib"]
+                return dict(state)
+            owner = SimpleNamespace(process=SimpleNamespace(pid=1), stop=lambda: None,
+                                    usage_raw=usage_raw, reset_peak_rss=reset_peak_rss)
+            case = {"name": "outline-session", "project": str(fixture),
+                    "languages": ["python"], "index_mode": "wait",
+                    "gui": {"kind": "test"},
+                    "mcp": [{"tool": "backend.outline", "arguments": {}}]}
+            def gui(_owner, _project, _case):
+                events.append("gui")
+                # /proc documents RSS/HWM as unlocked snapshots, so the
+                # sampled HWM may decrease even though no second reset ran.
+                state.update(cpu_seconds=105.0, peak_rss_kib=gui_peak_rss,
+                             resident_rss_kib=gui_resident_rss)
+                return {"answer": "gui"}, {"seconds": {}, "gui_peak_rss_kib": 10}, {}
+            gui_module = SimpleNamespace(run_gui=gui)
+            with patch.object(surface, "SCRATCH", root / "scratch"), \
+                    patch.object(surface, "Owner", return_value=owner), \
+                    patch.object(surface, "run_cli", return_value=({"exit": 0, "json": {}}, 0.01)), \
+                    patch.object(surface, "require_completed_index", return_value="root"), \
+                    patch.object(surface, "run_mcp_interactive", side_effect=session), \
+                    patch.object(surface, "normalize_surface_answers", side_effect=lambda answers, _proofs: answers), \
+                    patch.dict(sys.modules, {"gui_contract": gui_module}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                record = surface.run_case(case, root / "bin")
+        return record, events, sessions
+
+    def test_case_accounts_proof_separately_and_tolerates_decreasing_hwm_snapshots(self):
+        record, events, sessions = self._run_phase_accounting_scenario(9999, 70, 70)
+        self.assertEqual(sessions, 2)
+        self.assertLess(events.index("measured-hop"), events.index("usage"))
+        self.assertLess(events.index("usage"), events.index("proof-hop"))
+        self.assertLess(events.index("proof-hop"), events.index("reset"))
+        self.assertLess(events.index("reset"), events.index("gui"))
+        # GUI-serving owner CPU (99 -> 105) is its own metric, not owner CPU.
+        self.assertEqual(record["performance"]["cpu_seconds"], 1)
+        self.assertEqual(record["performance"]["gui_owner_cpu_seconds"], 6)
+        self.assertEqual(record["performance"]["peak_rss_kib"], 100)
+        self.assertEqual(record["resource_phase_evidence"]["proof_cpu_seconds"], 98)
+        self.assertEqual(record["resource_phase_evidence"]["proof_peak_rss_kib"], 9999)
+        self.assertEqual(record["resource_phase_evidence"]["post_reset_peak_rss_kib"], 90)
+        self.assertNotIn("resource_phase_evidence", record["performance"])
+        self.assertEqual(record["resource_phase_evidence"]["post_reset_final"]["cpu_seconds"], 99)
+        self.assertEqual(record["resource_phase_evidence"]["gui_owner"]["cpu_seconds"], 6)
+        self.assertEqual(len(record["continuation_evidence"]), 2)
+
+        # The exact failure observed in build 600335 was a lower postproof
+        # VmHWM than the independently sampled preproof VmHWM.
+        record, _events, _sessions = self._run_phase_accounting_scenario(70, 70, 70)
+        self.assertEqual(record["performance"]["peak_rss_kib"], 100)
+        self.assertEqual(record["resource_phase_evidence"]["proof_peak_rss_kib"], 100)
+
+    def test_gui_phase_peak_is_retained_as_gui_owner_peak(self):
+        record, events, _sessions = self._run_phase_accounting_scenario(70, 120, 100)
+        self.assertEqual(record["performance"]["peak_rss_kib"], 100)
+        self.assertEqual(record["performance"]["gui_owner_peak_rss_kib"], 120)
+        self.assertEqual(record["resource_phase_evidence"]["post_reset_peak_rss_kib"], 70)
+        # VmHWM is reset again right before the GUI so its peak is attributable.
+        self.assertEqual(events[events.index("gui") - 1], "reset")
+
+    def test_gui_owner_metrics_use_owner_tolerances(self):
+        baseline = {"seconds": {}, "gui_owner_cpu_seconds": 2.38, "gui_owner_peak_rss_kib": 363812}
+        within = {"seconds": {}, "gui_owner_cpu_seconds": 3.5, "gui_owner_peak_rss_kib": 450000}
+        over = {"seconds": {}, "gui_owner_cpu_seconds": 3.6, "gui_owner_peak_rss_kib": 460000}
+        self.assertEqual(surface.regressions(baseline, within), [])
+        failures = surface.regressions(baseline, over)
+        self.assertTrue(any("gui_owner_cpu_seconds" in item for item in failures))
+        self.assertTrue(any("gui_owner_peak_rss_kib" in item for item in failures))
+
+    def test_replay_refuses_expired_original_cli_deadline(self):
+        import time
+        owner = object()
+        with self.assertRaisesRegex(RuntimeError, "original query deadline expired"):
+            surface._replay_cli_cursor(owner, Path("/project"), ["search", "x"],
+                                       "cli search x", {"json": {}}, {}, "root", [],
+                                       time.monotonic() - 1)
+
+
+class OwnerUsageDiagnosticsTests(unittest.TestCase):
+    def test_diagnostics_opt_in_is_exact(self):
+        self.assertFalse(surface._owner_usage_diagnostics_enabled("1"))
+        provenance = {"source_sha": "a" * 40,
+                      "artifact_manifest_sha256": "b" * 64}
+        with surface._context_value(surface.RUN_PROVENANCE, provenance):
+            self.assertFalse(surface._owner_usage_diagnostics_enabled("true"))
+            self.assertFalse(surface._owner_usage_diagnostics_enabled("0"))
+            self.assertTrue(surface._owner_usage_diagnostics_enabled("1"))
+        with surface._context_value(surface.RUN_PROVENANCE, {"source_sha": "a" * 40}):
+            self.assertFalse(surface._owner_usage_diagnostics_enabled("1"))
+
+    def test_usage_sample_captures_same_pid_starttime_and_counters(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        owner = surface.Owner.__new__(surface.Owner)
+        owner.process = SimpleNamespace(pid=123, poll=lambda: None)
+        stat_fields = ["0"] * 20
+        stat_fields[10], stat_fields[11], stat_fields[18] = "10", "20", "777"
+        proc_stat = "123 (locald with ) in comm) R " + " ".join(stat_fields)
+
+        def read(path):
+            if str(path) == "/proc/123/status":
+                return "Name:\tlocald\nVmHWM:\t120 kB\nVmRSS:\t100 kB\n"
+            if str(path) == "/proc/123/stat":
+                return proc_stat
+            raise AssertionError(path)
+
+        with patch.object(surface, "_owner_usage_diagnostics_enabled", return_value=True), \
+             patch.object(Path, "read_text", autospec=True,
+                          side_effect=lambda self, *args, **kwargs: read(self)), \
+             patch.object(surface.time, "time_ns", return_value=123456789), \
+             patch.object(surface.time, "monotonic_ns", return_value=987654321):
+            sample = owner.usage_raw()
+        self.assertEqual(sample["pid"], 123)
+        self.assertEqual(sample["start_ticks"], 777)
+        self.assertEqual(sample["comm"], "locald")
+        self.assertEqual(sample["peak_rss_kib"], 120)
+        self.assertEqual(sample["resident_rss_kib"], 100)
+        self.assertEqual(sample["cpu_user_ticks"], 10)
+        self.assertEqual(sample["cpu_system_ticks"], 20)
+        self.assertEqual(sample["sample_wall_time_ns"], 123456789)
+        self.assertEqual(sample["sample_monotonic_ns"], 987654321)
+
+    def test_usage_sample_records_pid_identity_change_without_replacing_counters(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        owner = surface.Owner.__new__(surface.Owner)
+        owner.process = SimpleNamespace(pid=123, poll=lambda: None)
+        tails = []
+        for start_ticks in (777, 778):
+            fields = ["0"] * 20
+            fields[10], fields[11], fields[18] = "10", "20", str(start_ticks)
+            tails.append("123 (locald) R " + " ".join(fields))
+
+        def read(path):
+            if str(path) == "/proc/123/status":
+                return "Name:\tlocald\nVmHWM:\t120 kB\nVmRSS:\t100 kB\n"
+            if str(path) == "/proc/123/stat":
+                return tails.pop(0)
+            raise AssertionError(path)
+
+        with patch.object(surface, "_owner_usage_diagnostics_enabled", return_value=True), \
+             patch.object(Path, "read_text", autospec=True,
+                          side_effect=lambda self, *args, **kwargs: read(self)):
+            sample = owner.usage_raw()
+        self.assertEqual(sample["start_ticks"], 778)
+        self.assertIn("start_ticks_before=777 start_ticks_after=778",
+                      sample["diagnostic_error"])
+
+    def test_optional_sample_detail_failure_does_not_replace_required_counters(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        owner = surface.Owner.__new__(surface.Owner)
+        owner.process = SimpleNamespace(pid=123, poll=lambda: None)
+        fields = ["0"] * 20
+        fields[10], fields[11], fields[18] = "10", "20", "777"
+        stat_text = "123 (locald) R " + " ".join(fields)
+
+        def read(path):
+            if str(path) == "/proc/123/status":
+                return "Name:\tlocald\nVmHWM:\t120 kB\nVmRSS:\t100 kB\n"
+            if str(path) == "/proc/123/stat":
+                return stat_text
+            raise AssertionError(path)
+
+        with patch.object(surface, "_owner_usage_diagnostics_enabled", return_value=True), \
+             patch.object(Path, "read_text", autospec=True,
+                          side_effect=lambda self, *args, **kwargs: read(self)), \
+             patch.object(surface.time, "time_ns", side_effect=OSError("clock unavailable")):
+            sample = owner.usage_raw()
+        self.assertEqual(sample["peak_rss_kib"], 120)
+        self.assertEqual(sample["cpu_seconds"], 30 / surface.os.sysconf("SC_CLK_TCK"))
+        self.assertEqual(sample["diagnostic_error"], "sample detail unavailable: OSError")
+
+    def test_reset_events_record_request_result_and_same_identity(self):
+        import contextlib, io, json
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        owner = surface.Owner.__new__(surface.Owner)
+        owner.process = SimpleNamespace(pid=123, poll=lambda: None)
+        owner.case_name = "case-a"
+        status_reads = 0
+        writes = []
+        fields = ["0"] * 20
+        fields[10], fields[11], fields[18] = "10", "20", "777"
+        stat_text = "123 (locald) R " + " ".join(fields)
+
+        def read(path):
+            nonlocal status_reads
+            if str(path) == "/proc/123/stat":
+                return stat_text
+            if str(path) == "/proc/123/status":
+                status_reads += 1
+                if status_reads <= 1:
+                    return "Name:\tlocald\nVmHWM:\t120 kB\nVmRSS:\t100 kB\n"
+                return "Name:\tlocald\nVmHWM:\t80 kB\nVmRSS:\t80 kB\n"
+            raise AssertionError(path)
+
+        output = io.StringIO()
+        with patch.object(surface, "_owner_usage_diagnostics_enabled", return_value=True), \
+             patch.object(Path, "read_text", autospec=True,
+                          side_effect=lambda self, *args, **kwargs: read(self)), \
+             patch.object(Path, "write_text", autospec=True,
+                          side_effect=lambda self, value: writes.append((str(self), value)) or len(value)), \
+             contextlib.redirect_stdout(output), \
+             surface._context_value(surface.RUN_PROVENANCE, {
+                 "source_sha": "a" * 40, "artifact_manifest_sha256": "b" * 64}):
+            reset = owner.reset_peak_rss()
+        self.assertEqual(writes, [("/proc/123/clear_refs", "5\n")])
+        self.assertEqual((reset["peak_rss_kib"], reset["resident_rss_kib"]), (80, 80))
+        events = [json.loads(line.split("CI-OWNER-USAGE ", 1)[1])
+                  for line in output.getvalue().splitlines() if "CI-OWNER-USAGE " in line]
+        self.assertEqual([event["event"] for event in events], [
+            "clear-refs-write-requested", "clear-refs-write-completed"])
+        self.assertEqual(events[0]["case"], "case-a")
+        self.assertEqual(events[0]["start_ticks"], events[1]["start_ticks"])
+        self.assertEqual(events[0]["before"]["peak_rss_kib"], 120)
+        self.assertEqual(events[1]["after"]["peak_rss_kib"], 80)
+
+    def test_emission_is_bounded_and_output_failure_is_best_effort(self):
+        import contextlib, io
+        from unittest.mock import patch
+        provenance = {"source_sha": "a" * 40,
+                      "artifact_manifest_sha256": "b" * 64}
+        without_provenance = io.StringIO()
+        with patch.object(surface, "_owner_usage_diagnostics_enabled", return_value=True), \
+             contextlib.redirect_stdout(without_provenance):
+            surface._emit_owner_usage_diagnostic("case-a", "unbound", value=1)
+        self.assertEqual(without_provenance.getvalue(), "")
+        output = io.StringIO()
+        with patch.object(surface, "_owner_usage_diagnostics_enabled", return_value=True), \
+             surface._context_value(surface.RUN_PROVENANCE, provenance), \
+             contextlib.redirect_stdout(output):
+            surface._emit_owner_usage_diagnostic("case-a", "oversized", detail="x" * 20000)
+        line = output.getvalue().encode("utf-8")
+        self.assertLessEqual(len(line), surface.OWNER_USAGE_DIAGNOSTIC_LIMIT + 32)
+        self.assertIn(b"exceeded its bound", line)
+        with patch.object(surface, "_owner_usage_diagnostics_enabled", return_value=True), \
+             patch("builtins.print", side_effect=OSError("closed")), \
+             surface._context_value(surface.RUN_PROVENANCE, provenance):
+            surface._emit_owner_usage_diagnostic("case-a", "write-failed", value=1)
+
+
+class OwnerPeakResetTests(unittest.TestCase):
+    def test_usage_refuses_an_exited_owner_before_reading_proc(self):
+        from types import SimpleNamespace
+        owner = surface.Owner.__new__(surface.Owner)
+        owner.process = SimpleNamespace(pid=123, poll=lambda: 1)
+        with self.assertRaisesRegex(RuntimeError, "owner exited before its resource sample"):
+            owner.usage_raw()
+
+    def test_usage_refuses_an_owner_that_exits_during_proc_sample(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        owner = surface.Owner.__new__(surface.Owner)
+        polls = iter((None, 0))
+        owner.process = SimpleNamespace(pid=123, poll=lambda: next(polls))
+        reads = []
+
+        def read(path):
+            reads.append(str(path))
+            if str(path) == "/proc/123/status":
+                return "VmHWM:\t120 kB\nVmRSS:\t100 kB\n"
+            if str(path) == "/proc/123/stat":
+                return "123 (locald) R " + " ".join(["0"] * 20)
+            raise AssertionError(path)
+
+        with patch.object(surface, "_owner_usage_diagnostics_enabled", return_value=False), \
+             patch.object(Path, "read_text", autospec=True,
+                          side_effect=lambda self, *args, **kwargs: read(self)):
+            with self.assertRaisesRegex(RuntimeError, "owner exited during its resource sample"):
+                owner.usage_raw()
+        self.assertEqual(reads, ["/proc/123/status", "/proc/123/stat"])
+
+    def test_peak_reset_refusal_fails_closed(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        owner = surface.Owner.__new__(surface.Owner)
+        owner.process = SimpleNamespace(pid=123, poll=lambda: None)
+        writes = []
+
+        def read(path):
+            if str(path) == "/proc/123/status":
+                return "VmHWM:\t120 kB\nVmRSS:\t100 kB\n"
+            return "123 (locald) R " + " ".join(["0"] * 10 + ["10", "20"])
+
+        with patch.object(Path, "write_text", autospec=True,
+                          side_effect=lambda self, value: writes.append((str(self), value))), \
+             patch.object(Path, "read_text", autospec=True,
+                          side_effect=lambda self, *args, **kwargs: read(self)), \
+             patch.object(surface.time, "sleep"):
+            with self.assertRaisesRegex(RuntimeError, "VmHWM reset did not take effect"):
+                owner.reset_peak_rss()
+        self.assertEqual(writes, [("/proc/123/clear_refs", "5\n")] * 5)
+
+    def test_peak_reset_retries_an_owner_that_grew_during_the_sample(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        owner = surface.Owner.__new__(surface.Owner)
+        owner.process = SimpleNamespace(pid=123, poll=lambda: None)
+        writes = []
+        statuses = iter(["VmHWM:\t3049648 kB\nVmRSS:\t3049196 kB\n",
+                         "VmHWM:\t3049200 kB\nVmRSS:\t3049200 kB\n"])
+
+        def read(path):
+            if str(path) == "/proc/123/status":
+                return next(statuses)
+            return "123 (locald) R " + " ".join(["0"] * 10 + ["10", "20"])
+
+        with patch.object(Path, "write_text", autospec=True,
+                          side_effect=lambda self, value: writes.append((str(self), value))), \
+             patch.object(Path, "read_text", autospec=True,
+                          side_effect=lambda self, *args, **kwargs: read(self)), \
+             patch.object(surface.time, "sleep"):
+            reset = owner.reset_peak_rss()
+        self.assertEqual(len(writes), 2)
+        self.assertEqual((reset["peak_rss_kib"], reset["resident_rss_kib"]), (3049200, 3049200))
+
+
+class CursorProofReplayTests(unittest.TestCase):
+    def test_initial_replay_compares_semantic_basis_and_refuses_mismatch(self):
+        measured = {"answer": "records", "records": [{"id": "stable"}],
+                    "page": {"source_root": "published-root", "sequence": 3},
+                    "more": True, "nextCursor": "pc1-measured",
+                    "budget": {"bytes": 13, "bytesPerToken": 1, "estimatedTokens": 13}}
+        replayed = {"answer": "records", "records": [{"id": "stable"}],
+                    "page": {"source_root": "published-root", "sequence": 3},
+                    "more": True, "nextCursor": "pc1-replayed",
+                    "budget": {"bytes": 13, "bytesPerToken": 1, "estimatedTokens": 13}}
+        surface._assert_same_initial_answer(measured, replayed,
+                                            {"pc1-measured"}, {"pc1-replayed"}, "test")
+        replayed["page"]["sequence"] = 4
+        with self.assertRaisesRegex(RuntimeError, "differs from the measured answer"):
+            surface._assert_same_initial_answer(measured, replayed,
+                                                {"pc1-measured"}, {"pc1-replayed"}, "test")
+
+    def test_mcp_cursor_refusal_is_not_admitted_as_proof(self):
+        with self.assertRaisesRegex(RuntimeError, "refused the offered cursor"):
+            surface._mcp_structured({"isError": True, "content": [{"text": "stale"}]}, "test")
+
     def test_partial_search_is_retried_inside_its_issuing_mcp_session(self):
         import os
         import sys
@@ -2110,6 +3246,26 @@ finally:
                     finally:
                         for fd in owned_fds.values():os.close(fd)
                         os.close(runner_fd)
+
+
+class SelectedCargoTargetAdmissionTests(unittest.TestCase):
+    def test_selected_receipt_requires_exact_request_and_coverage_denominator(self):
+        import copy
+        scope = {"name": "ryu", "root": "src/lib.rs", "kinds": ["lib"], "source_count": 12, "source_closure": [1] * 32}
+        detail = {"cargo_target": "ryu", "source_capture": {"cargo_target": scope, "profiles": [{"source_count": 12}]}}
+        answer = {"json": {"index_operation": {"detail": detail}}}
+        surface.require_selected_cargo_target(answer, "ryu")
+        for mutation in ("request", "capture", "count", "digest", "root"):
+            bad = copy.deepcopy(answer)
+            row = bad["json"]["index_operation"]["detail"]
+            capture = row["source_capture"]
+            if mutation == "request": row["cargo_target"] = "bench"
+            elif mutation == "capture": capture["cargo_target"]["name"] = "bench"
+            elif mutation == "count": capture["profiles"][0]["source_count"] = 13
+            elif mutation == "digest": capture["cargo_target"]["source_closure"] = [0] * 32
+            elif mutation == "root": capture["cargo_target"]["root"] = "benches/bench.rs"
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(RuntimeError, "selected Cargo target"):
+                surface.require_selected_cargo_target(bad, "ryu")
 
 
 if __name__ == "__main__":

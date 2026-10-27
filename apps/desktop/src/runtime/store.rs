@@ -1162,6 +1162,9 @@ impl DataStore {
             }
             return;
         };
+        if let PageKey::Search(query) = &key {
+            self.trace_search_authority("search.authority-submit", query, Some(generation));
+        }
         super::trace::mark("read.submit", format_args!("{key:?} {priority:?}"));
         let admitted = pool.submit(ReadJob {
             key: key.clone(),
@@ -1405,7 +1408,11 @@ impl DataStore {
                     if self.pages.inflight(&key) == Some(generation) {
                         self.prefetching.remove(&key);
                     }
-                    match self.pages.land(&key, generation, result) {
+                    let landing = self.pages.land(&key, generation, result);
+                    if let PageKey::Search(query) = &key {
+                        self.trace_search_authority("search.authority-land", query, Some(generation));
+                    }
+                    match landing {
                         Landing::Applied => {
                             applied += 1;
                             self.stats.landed = self.stats.landed.saturating_add(1);
@@ -1549,6 +1556,46 @@ impl DataStore {
     #[must_use]
     pub fn package(&self, package: &PackageRef) -> Resource<PackageDossier> {
         self.pages.package(package)
+    }
+
+    /// Bounded, opt-in correlation of a search read with its UI authority.
+    pub(crate) fn trace_search_authority(
+        &self,
+        event: &'static str,
+        query: &SearchQuery,
+        generation: Option<Generation>,
+    ) {
+        if !super::trace::enabled() {
+            return;
+        }
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static RECORDS: AtomicUsize = AtomicUsize::new(0);
+        if RECORDS
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                (count < 64).then_some(count + 1)
+            })
+            .is_err()
+        {
+            return;
+        }
+        let resource = self.pages.search(query);
+        let terminal = match resource.terminal() {
+            ResourceTerminal::Complete => "complete",
+            ResourceTerminal::Partial => "partial",
+            ResourceTerminal::Unavailable(_) => "unavailable",
+            ResourceTerminal::Fault(_) => "fault",
+        };
+        let query_label = query.text.chars().take(128).collect::<String>();
+        super::trace::mark(
+            event,
+            format_args!(
+                "query={query_label:?} generation={generation:?} current={} value={:?} serving={} terminal={terminal} activity={:?}",
+                self.snapshot.key(),
+                resource.value_root(),
+                self.owner_serving(),
+                resource.activity(),
+            ),
+        );
     }
 
     /// Returns accumulated search results.

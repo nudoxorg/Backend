@@ -1756,7 +1756,7 @@ impl LineageSearchIndex {
         let facet_value_limit = self.facet_value_limit();
         if !self.releases.contains_key(key) {
             self.oversized_lineages.remove(&group_sort_key);
-            self.inner.remove_document(&group_sort_key);
+            self.inner.remove_document(&group_sort_key)?;
             return Ok(());
         }
         if self
@@ -2423,7 +2423,7 @@ impl DiscoverySearchIndex {
         }
         let forge_release_fingerprint = forge_documents_fingerprint(&next)?;
         for identity in &removed {
-            self.inner.remove_document(identity);
+            self.inner.remove_document(identity)?;
         }
         self.lineages.remove_batch(removed)?;
         let mut lineage_changes = Vec::with_capacity(changed.len());
@@ -2475,7 +2475,7 @@ impl DiscoverySearchIndex {
             self.source_pins = rebuild_forge_source_pin_index(&next)?;
         } else {
             for identity in &removed {
-                self.source_pins.remove_document(identity);
+                self.source_pins.remove_document(identity)?;
             }
             for (identity, document) in changed {
                 add_or_replace_forge_source_pin(&mut self.source_pins, identity, document)?;
@@ -3142,13 +3142,17 @@ impl DiscoverySearchIndex {
 pub(crate) struct LocalDeclarationSearchIndex {
     root: Option<ViewStateRoot>,
     inner: Option<TextSearchIndex<RowId>>,
+    external_inner: Option<TextSearchIndex<RowId>>,
 }
 
 impl LocalDeclarationSearchIndex {
     pub(crate) fn sync(&mut self, view: &ViewRoot) -> Result<(), String> {
         let root = view.root();
-        if self.root == Some(root) && self.inner.is_some() {
+        if self.root == Some(root) && self.inner.is_some() && self.external_inner.is_some() {
             return Ok(());
+        }
+        if self.is_sealed() {
+            return Err("sealed local declaration search index cannot change roots".to_owned());
         }
         self.rebuild(view)
     }
@@ -3161,7 +3165,10 @@ impl LocalDeclarationSearchIndex {
         &mut self,
         deltas: &[CommittedViewDelta],
     ) -> Result<(), String> {
-        if self.inner.is_none() || deltas.is_empty() {
+        if !deltas.is_empty() && self.is_sealed() {
+            return Err("sealed local declaration search index cannot accept deltas".to_owned());
+        }
+        if self.inner.is_none() || self.external_inner.is_none() || deltas.is_empty() {
             return Ok(());
         }
         for delta in deltas {
@@ -3171,19 +3178,13 @@ impl LocalDeclarationSearchIndex {
             }
             let result = match delta.delta() {
                 ViewDelta::Upsert { row } => self.upsert_row(row),
-                ViewDelta::Remove { id } => {
-                    self.remove_row(*id);
-                    Ok(())
-                }
+                ViewDelta::Remove { id } => self.remove_row(*id),
                 ViewDelta::Patch { changes } => {
                     let mut result = Ok(());
                     for change in changes.iter() {
                         result = match change {
                             RowChange::Upsert(row) => self.upsert_row(row),
-                            RowChange::Remove(id) => {
-                                self.remove_row(*id);
-                                Ok(())
-                            }
+                            RowChange::Remove(id) => self.remove_row(*id),
                         };
                         if result.is_err() {
                             break;
@@ -3200,10 +3201,13 @@ impl LocalDeclarationSearchIndex {
             }
             self.root = Some(delta.target_root());
         }
-        let commit_result = match self.inner.as_mut() {
-            Some(inner) => inner.commit(),
-            None => Ok(()),
-        };
+        let mut commit_result = self.inner.as_mut().map_or(Ok(()), |inner| inner.commit());
+        if commit_result.is_ok() {
+            commit_result = self
+                .external_inner
+                .as_mut()
+                .map_or(Ok(()), |inner| inner.commit());
+        }
         if let Err(error) = commit_result {
             self.invalidate();
             return Err(error);
@@ -3233,6 +3237,21 @@ impl LocalDeclarationSearchIndex {
             .page_with_ecosystem(query, limit, None, continuation)
     }
 
+    pub(crate) fn page_external_after(
+        &self,
+        query: &str,
+        limit: usize,
+        continuation: Option<&SearchContinuation>,
+    ) -> Result<SearchPage<RowId>, String> {
+        if let Some(continuation) = continuation {
+            continuation.admit()?;
+        }
+        self.external_inner
+            .as_ref()
+            .ok_or_else(|| "external declaration search index was not synchronized".to_owned())?
+            .page_with_ecosystem(query, limit, None, continuation)
+    }
+
     pub(crate) const fn revision(&self) -> Option<ViewStateRoot> {
         self.root
     }
@@ -3243,17 +3262,26 @@ impl LocalDeclarationSearchIndex {
     }
 
     fn upsert_row(&mut self, row: &Row) -> Result<(), String> {
+        let identity = row.id.stable_key();
         let inner = self
             .inner
             .as_mut()
             .ok_or_else(|| "local declaration writer disappeared".to_owned())?;
-        let identity = row.id.stable_key();
+        let external_inner = self
+            .external_inner
+            .as_mut()
+            .ok_or_else(|| "external declaration writer disappeared".to_owned())?;
+        inner.remove_document(&identity)?;
+        external_inner.remove_document(&identity)?;
         if !matches!(row.id, RowId::Symbol(_)) {
-            inner.remove_document(&identity);
             return Ok(());
         }
         let name = row.label.rsplit("::").next().unwrap_or(&row.label);
-        inner.remove_document(&identity);
+        let inner = if is_external_placeholder(row) {
+            external_inner
+        } else {
+            inner
+        };
         inner.insert_document(
             identity,
             row.id,
@@ -3265,15 +3293,27 @@ impl LocalDeclarationSearchIndex {
         )
     }
 
-    fn remove_row(&mut self, id: RowId) {
+    fn remove_row(&mut self, id: RowId) -> Result<(), String> {
         if let Some(inner) = self.inner.as_mut() {
-            inner.remove_document(&id.stable_key());
+            inner.remove_document(&id.stable_key())?;
         }
+        if let Some(inner) = self.external_inner.as_mut() {
+            inner.remove_document(&id.stable_key())?;
+        }
+        Ok(())
     }
 
     fn rebuild(&mut self, view: &ViewRoot) -> Result<(), String> {
         *self = Self::build_controlled(view, None)?;
         Ok(())
+    }
+
+    fn is_sealed(&self) -> bool {
+        self.inner.as_ref().is_some_and(TextSearchIndex::is_sealed)
+            || self
+                .external_inner
+                .as_ref()
+                .is_some_and(TextSearchIndex::is_sealed)
     }
 
     /// Builds only on an exclusive preparation worker in the production owner.
@@ -3283,11 +3323,88 @@ impl LocalDeclarationSearchIndex {
         view: &ViewRoot,
         cancelled: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<Self, String> {
+        Self::build_controlled_with_lifecycle(view, cancelled, false)
+    }
+
+    /// Builds an immutable snapshot for publication by the exclusive local
+    /// search preparation worker. Mutable callers keep the writer-retaining
+    /// `build_controlled` lifecycle.
+    pub(crate) fn build_immutable_controlled(
+        view: &ViewRoot,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<Self, String> {
+        Self::build_controlled_with_lifecycle(view, cancelled, true)
+    }
+
+    fn build_controlled_with_lifecycle(
+        view: &ViewRoot,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+        immutable: bool,
+    ) -> Result<Self, String> {
         let check = |point| {
             super::check_search_preparation(cancelled, point).map_err(|error| error.to_string())
         };
         check("local-declaration-start")?;
+        if immutable {
+            let mut inner = TextSearchIndex::new()?;
+            for row in view.row_refs() {
+                check("local-declaration-row")?;
+                if !matches!(row.id, RowId::Symbol(_)) || is_external_placeholder(row) {
+                    continue;
+                }
+                let name = row.label.rsplit("::").next().unwrap_or(&row.label);
+                inner.insert_document(
+                    row.id.stable_key(),
+                    row.id,
+                    row.label.as_str(),
+                    name,
+                    local_search_text(row),
+                    None,
+                    local_sort_key(row.id, row.label.as_str()),
+                )?;
+            }
+            check("local-declaration-before-commit")?;
+            inner.commit()?;
+            check("local-declaration-after-commit")?;
+            check("local-declaration-before-inner-seal")?;
+            inner.seal_writer()?;
+            check("local-declaration-after-inner-seal")?;
+
+            let mut external_inner = TextSearchIndex::new()?;
+            for row in view.row_refs() {
+                // This boundary is reached only after the inner writer has
+                // been sealed, so cancellation here proves the serial phase.
+                check("local-declaration-external-row")?;
+                if !matches!(row.id, RowId::Symbol(_)) || !is_external_placeholder(row) {
+                    continue;
+                }
+                let name = row.label.rsplit("::").next().unwrap_or(&row.label);
+                external_inner.insert_document(
+                    row.id.stable_key(),
+                    row.id,
+                    row.label.as_str(),
+                    name,
+                    local_search_text(row),
+                    None,
+                    local_sort_key(row.id, row.label.as_str()),
+                )?;
+            }
+            check("local-declaration-before-external-commit")?;
+            external_inner.commit()?;
+            check("local-declaration-after-external-commit")?;
+            check("local-declaration-before-external-seal")?;
+            external_inner.seal_writer()?;
+            check("local-declaration-after-external-seal")?;
+            check("local-declaration-before-publish")?;
+            return Ok(Self {
+                root: Some(view.root()),
+                inner: Some(inner),
+                external_inner: Some(external_inner),
+            });
+        }
+
         let mut inner = TextSearchIndex::new()?;
+        let mut external_inner = TextSearchIndex::new()?;
         for row in view.row_refs() {
             check("local-declaration-row")?;
             if !matches!(row.id, RowId::Symbol(_)) {
@@ -3295,7 +3412,12 @@ impl LocalDeclarationSearchIndex {
             }
             let name = row.label.rsplit("::").next().unwrap_or(&row.label);
             let sort_key = local_sort_key(row.id, row.label.as_str());
-            inner.insert_document(
+            let target = if is_external_placeholder(row) {
+                &mut external_inner
+            } else {
+                &mut inner
+            };
+            target.insert_document(
                 row.id.stable_key(),
                 row.id,
                 row.label.as_str(),
@@ -3307,17 +3429,26 @@ impl LocalDeclarationSearchIndex {
         }
         check("local-declaration-before-commit")?;
         inner.commit()?;
+        external_inner.commit()?;
         check("local-declaration-after-commit")?;
         Ok(Self {
             root: Some(view.root()),
             inner: Some(inner),
+            external_inner: Some(external_inner),
         })
     }
 
     fn invalidate(&mut self) {
         self.root = None;
         self.inner = None;
+        self.external_inner = None;
     }
+}
+
+fn is_external_placeholder(row: &Row) -> bool {
+    matches!(row.id, RowId::Symbol(_))
+        && row.source.captured().is_none()
+        && row.label.contains("::external::symbol:")
 }
 
 fn local_search_content(row: &Row) -> Vec<&str> {
@@ -3350,7 +3481,7 @@ fn local_search_text(row: &Row) -> SearchDocumentText<'_> {
 
 pub(super) struct TextSearchIndex<K> {
     _index: Index,
-    writer: Option<IndexWriter>,
+    writer: WriterState,
     reader: IndexReader,
     exact_coordinate: Field,
     exact_name: Field,
@@ -3373,6 +3504,20 @@ pub(super) struct TextSearchIndex<K> {
     substring_values: BTreeMap<String, Vec<String>>,
     local_source_paths: BTreeMap<String, String>,
     dirty: bool,
+}
+
+enum WriterState {
+    /// The index is rebuilt from an existing immutable posting list. Metadata
+    /// is reconstructed for authority checks, but no writer may be opened.
+    ReadOnly,
+    /// This index may be updated, but has not needed an IndexWriter yet.
+    WriteEligibleIdle { writer_memory_bytes: usize },
+    /// The first actual posting mutation opened this writer. It remains open
+    /// across commits so later delta batches preserve the existing update path.
+    Open(IndexWriter),
+    /// A committed immutable snapshot. Mutations are refused before metadata
+    /// changes so postings and authority metadata cannot diverge.
+    Sealed,
 }
 
 /// Positional Unicode grams shared by prose and separately admitted source paths.
@@ -5140,13 +5285,11 @@ impl<K: Clone> TextSearchIndex<K> {
             return Err("persisted discovery Tantivy schema is incompatible".to_owned());
         }
         let writer = if mode.writes_postings() {
-            Some(
-                index
-                    .writer_with_num_threads(1, writer_memory_bytes)
-                    .map_err(|error| error.to_string())?,
-            )
+            WriterState::WriteEligibleIdle {
+                writer_memory_bytes,
+            }
         } else {
-            None
+            WriterState::ReadOnly
         };
         let reader = index.reader().map_err(|error| error.to_string())?;
         Ok(Self {
@@ -5240,7 +5383,7 @@ impl<K: Clone> TextSearchIndex<K> {
             substring_generic: true,
             ..SearchDocumentText::default()
         };
-        self.remove_document(&identity);
+        self.remove_document(&identity)?;
         self.insert_document(identity, key, coordinate, name, search_text, None, sort_key)
     }
 
@@ -5259,7 +5402,7 @@ impl<K: Clone> TextSearchIndex<K> {
             substring_generic: true,
             ..SearchDocumentText::default()
         };
-        self.remove_document(&identity);
+        self.remove_document(&identity)?;
         self.insert_document(
             identity,
             key,
@@ -5301,7 +5444,7 @@ impl<K: Clone> TextSearchIndex<K> {
         ecosystem: &str,
         sort_key: String,
     ) -> Result<(), String> {
-        self.remove_document(&identity);
+        self.remove_document(&identity)?;
         self.insert_document(
             identity,
             key,
@@ -5328,6 +5471,10 @@ impl<K: Clone> TextSearchIndex<K> {
         }
         if self.identities.contains_key(&identity) {
             return Err("duplicate document identity in Tantivy projection".to_owned());
+        }
+        let writes_postings = !matches!(&self.writer, WriterState::ReadOnly);
+        if writes_postings {
+            self.ensure_writer()?;
         }
         let coordinate = normalize(coordinate);
         let name = normalize(name);
@@ -5392,13 +5539,22 @@ impl<K: Clone> TextSearchIndex<K> {
         self.substring
             .add(&mut document, substring_values.iter().map(String::as_str));
         substring_values.retain(|field| !field.is_empty());
-        self.dirty = true;
-        if let Some(writer) = self.writer.as_mut() {
-            writer
-                .add_document(document)
-                .map_err(|error| error.to_string())?;
-        } else {
-            self.dirty = false;
+        match &mut self.writer {
+            WriterState::Open(writer) => {
+                self.dirty = true;
+                writer
+                    .add_document(document)
+                    .map_err(|error| error.to_string())?;
+            }
+            WriterState::ReadOnly => self.dirty = false,
+            WriterState::WriteEligibleIdle { .. } => {
+                return Err("writable discovery index failed to open its writer".to_owned());
+            }
+            WriterState::Sealed => {
+                return Err(
+                    "sealed discovery Tantivy index cannot accept postings writes".to_owned(),
+                );
+            }
         }
         self.identities.insert(identity, sort_key.clone());
         self.standings.insert(sort_key.clone(), standing);
@@ -5408,18 +5564,66 @@ impl<K: Clone> TextSearchIndex<K> {
         Ok(())
     }
 
-    fn remove_document(&mut self, identity: &str) {
+    fn remove_document(&mut self, identity: &str) -> Result<(), String> {
+        if !self.identities.contains_key(identity) {
+            return Ok(());
+        }
+        match &self.writer {
+            WriterState::ReadOnly => {
+                // Preserve OpenAt's metadata-only reconstruction contract;
+                // this branch never creates a writer or changes postings.
+                self.remove_document_metadata(identity);
+                return Ok(());
+            }
+            WriterState::WriteEligibleIdle { .. } => self.ensure_writer()?,
+            WriterState::Open(_) => {}
+            WriterState::Sealed => {
+                return Err(
+                    "sealed discovery Tantivy index cannot accept postings writes".to_owned(),
+                );
+            }
+        }
+        self.remove_document_metadata(identity);
+        Ok(())
+    }
+
+    fn remove_document_metadata(&mut self, identity: &str) {
         let Some(sort_key) = self.identities.remove(identity) else {
             return;
         };
-        if let Some(writer) = self.writer.as_mut() {
+        if let WriterState::Open(writer) = &mut self.writer {
             writer.delete_term(Term::from_field_text(self.document_identity, identity));
         }
         self.keys.remove(&sort_key);
         self.standings.remove(&sort_key);
         self.substring_values.remove(&sort_key);
         self.local_source_paths.remove(&sort_key);
-        self.dirty = self.writer.is_some();
+        self.dirty = matches!(&self.writer, WriterState::Open(_));
+    }
+
+    fn ensure_writer(&mut self) -> Result<(), String> {
+        let writer_memory_bytes = match &self.writer {
+            WriterState::ReadOnly => {
+                return Err(
+                    "read-only discovery Tantivy index cannot accept postings writes".to_owned(),
+                );
+            }
+            WriterState::WriteEligibleIdle {
+                writer_memory_bytes,
+            } => *writer_memory_bytes,
+            WriterState::Open(_) => return Ok(()),
+            WriterState::Sealed => {
+                return Err(
+                    "sealed discovery Tantivy index cannot accept postings writes".to_owned(),
+                );
+            }
+        };
+        let writer = self
+            ._index
+            .writer_with_num_threads(1, writer_memory_bytes)
+            .map_err(|error| error.to_string())?;
+        self.writer = WriterState::Open(writer);
+        Ok(())
     }
 
     fn contains_substring(&self, sort_key: &str, needle: &str) -> bool {
@@ -5437,11 +5641,29 @@ impl<K: Clone> TextSearchIndex<K> {
         if !self.dirty {
             return Ok(());
         }
-        if let Some(writer) = self.writer.as_mut() {
-            writer.commit().map_err(|error| error.to_string())?;
-            self.reader.reload().map_err(|error| error.to_string())?;
-        }
+        let WriterState::Open(writer) = &mut self.writer else {
+            return Err("dirty discovery Tantivy index has no postings writer".to_owned());
+        };
+        writer.commit().map_err(|error| error.to_string())?;
+        self.reader.reload().map_err(|error| error.to_string())?;
         self.dirty = false;
+        Ok(())
+    }
+
+    fn is_sealed(&self) -> bool {
+        matches!(&self.writer, WriterState::Sealed)
+    }
+
+    /// Joins the writer's native merge threads, then refreshes the retained
+    /// reader against the completed immutable segments before publication.
+    fn seal_writer(&mut self) -> Result<(), String> {
+        let writer = std::mem::replace(&mut self.writer, WriterState::Sealed);
+        if let WriterState::Open(writer) = writer {
+            writer
+                .wait_merging_threads()
+                .map_err(|error| error.to_string())?;
+        }
+        self.reader.reload().map_err(|error| error.to_string())?;
         Ok(())
     }
 
@@ -8160,7 +8382,10 @@ mod tests {
         let removed_key = key(cargo, "pkg:cargo/widget-b@9999.9.9");
         let removed_identity =
             discovery_sort_key(&removed_key.source, removed_key.coordinate.as_str());
-        index.inner.remove_document(&removed_identity);
+        index
+            .inner
+            .remove_document(&removed_identity)
+            .expect("remove release posting");
         index.inner.commit().expect("commit release delete");
         index
             .lineages
@@ -9823,7 +10048,9 @@ mod tests {
                 replacement_sort.clone(),
             )
             .expect("replace first row");
-        index.remove_document(&second_identity);
+        index
+            .remove_document(&second_identity)
+            .expect("remove second document");
         index.commit().expect("delta commit");
         let current = vec![(
             "one".to_owned(),
@@ -10740,7 +10967,9 @@ mod tests {
         }
         for ordinal in CHANGED..CHANGED * 2 {
             let identity = format!("symbol:{ordinal:05}");
-            index.remove_document(&identity);
+            index
+                .remove_document(&identity)
+                .expect("remove changed document");
             rows[ordinal] = (String::new(), String::new(), String::new(), String::new());
         }
         index.commit().expect("delta commit");
@@ -10781,5 +11010,531 @@ mod tests {
 
     fn local_test_sort_key(coordinate: &str, identity: &str) -> String {
         format!("{}\u{1f}{identity}", normalize(coordinate))
+    }
+}
+
+#[cfg(test)]
+mod lazy_writer_tests {
+    use super::*;
+
+    fn hit_keys<K>(hits: Vec<SearchHit<K>>) -> Vec<K> {
+        hits.into_iter().map(|hit| hit.key).collect()
+    }
+
+    fn local_pages(
+        index: &LocalDeclarationSearchIndex,
+        query: &str,
+        external: bool,
+    ) -> Vec<(Vec<RowId>, Option<SearchContinuation>)> {
+        let mut cursor = None;
+        let mut pages = Vec::new();
+        for _ in 0..8 {
+            let page = if external {
+                index.page_external_after(query, 1, cursor.as_ref())
+            } else {
+                index.page_after(query, 1, cursor.as_ref())
+            }
+            .expect("bounded local declaration page");
+            let next = page.next_cursor;
+            pages.push((hit_keys(page.hits), next.clone()));
+            cursor = next;
+            if cursor.is_none() {
+                return pages;
+            }
+        }
+        panic!("local declaration page walk did not complete: {query}");
+    }
+
+    #[test]
+    fn immutable_local_snapshot_matches_mutable_build_and_rejects_changes() {
+        let (base, _) = super::super::initial_view().expect("initial view");
+        let capability = super::super::test_builtin_view_capability().expect("view capability");
+        let mut view = base;
+        let rows = [
+            Row::new(
+                RowId::Symbol(backend_engine::symbol_key("fixture::local::alpha")),
+                view.basis(),
+                "fixture::local::alpha",
+            )
+            .with_signature("snapshotneedle alpha"),
+            Row::new(
+                RowId::Symbol(backend_engine::symbol_key("fixture::local::beta")),
+                view.basis(),
+                "fixture::local::beta",
+            )
+            .with_signature("snapshotneedle beta"),
+            Row::new(
+                RowId::Symbol(backend_engine::symbol_key(
+                    "fixture::external::symbol:alpha",
+                )),
+                view.basis(),
+                "fixture::external::symbol:alpha",
+            )
+            .with_signature("externalneedle alpha"),
+            Row::new(
+                RowId::Symbol(backend_engine::symbol_key("fixture::external::symbol:beta")),
+                view.basis(),
+                "fixture::external::symbol:beta",
+            )
+            .with_signature("externalneedle beta"),
+        ];
+        let first_id = rows[0].id;
+        for row in rows {
+            let prepared = view
+                .prepare(ViewDelta::Upsert { row }, capability.clone())
+                .expect("prepare local declaration");
+            view = view.commit(prepared).expect("commit local declaration").0;
+        }
+
+        let mutable = LocalDeclarationSearchIndex::build_controlled(&view, None)
+            .expect("mutable local declaration build");
+        let mut immutable = LocalDeclarationSearchIndex::build_immutable_controlled(&view, None)
+            .expect("immutable local declaration build");
+        assert!(matches!(
+            &mutable.inner.as_ref().expect("mutable inner").writer,
+            WriterState::Open(_)
+        ));
+        assert!(matches!(
+            &mutable
+                .external_inner
+                .as_ref()
+                .expect("mutable external")
+                .writer,
+            WriterState::Open(_)
+        ));
+        assert!(matches!(
+            &immutable.inner.as_ref().expect("sealed inner").writer,
+            WriterState::Sealed
+        ));
+        assert!(matches!(
+            &immutable
+                .external_inner
+                .as_ref()
+                .expect("sealed external")
+                .writer,
+            WriterState::Sealed
+        ));
+        for (query, external) in [
+            ("snapshotneedle", false),
+            ("alpha", false),
+            ("externalneedle", true),
+            ("beta", true),
+        ] {
+            assert_eq!(
+                local_pages(&immutable, query, external),
+                local_pages(&mutable, query, external),
+                "immutable and mutable ordered pages/cursors differ for {query:?}"
+            );
+        }
+
+        let before_internal = local_pages(&immutable, "snapshotneedle", false);
+        let before_external = local_pages(&immutable, "externalneedle", true);
+        for pages in [&before_internal, &before_external] {
+            assert!(pages.len() >= 2, "each partition must exercise continuation paging");
+            assert!(pages.iter().all(|(hits, _)| !hits.is_empty()), "parity must compare actual hits");
+            assert_eq!(pages.iter().map(|(hits, _)| hits.len()).sum::<usize>(), 2,
+                "both authored rows must be returned in each partition");
+            assert!(pages[0].1.is_some(), "first page must carry a real continuation");
+        }
+        immutable.sync(&view).expect("same-root sealed snapshot remains query-ready");
+        let root_before = immutable.revision();
+        let stored_identity = first_id.stable_key();
+        let sealed_inner = immutable.inner.as_mut().expect("sealed inner");
+        let key_count = sealed_inner.keys.len();
+        let identity_count = sealed_inner.identities.len();
+        assert!(sealed_inner.remove_document(&stored_identity).is_err());
+        assert!(
+            sealed_inner
+                .insert_document(
+                    "new-identity".into(),
+                    first_id,
+                    "fixture:local/new",
+                    "newneedle",
+                    SearchDocumentText {
+                        generic: vec!["newneedle"],
+                        ..SearchDocumentText::default()
+                    },
+                    None,
+                    "new-sort-key".into(),
+                )
+                .is_err()
+        );
+        assert_eq!(sealed_inner.keys.len(), key_count);
+        assert_eq!(sealed_inner.identities.len(), identity_count);
+        assert!(!sealed_inner.dirty);
+
+        let next_row = Row::new(
+            RowId::Symbol(backend_engine::symbol_key("fixture::local::next")),
+            view.basis(),
+            "fixture::local::next",
+        )
+        .with_signature("nextneedle");
+        let prepared = view
+            .prepare(ViewDelta::Upsert { row: next_row }, capability)
+            .expect("prepare next local declaration");
+        let (next_view, delta) = view.commit(prepared).expect("commit next declaration");
+        assert!(immutable.sync(&next_view).is_err());
+        assert!(immutable.apply_committed_deltas(&[delta]).is_err());
+        assert_eq!(immutable.revision(), root_before);
+        assert_eq!(
+            local_pages(&immutable, "snapshotneedle", false),
+            before_internal
+        );
+        assert_eq!(
+            local_pages(&immutable, "externalneedle", true),
+            before_external
+        );
+    }
+
+    #[test]
+    fn immutable_local_snapshot_cancellation_refuses_commit_and_seal_boundaries() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (mut view, _) = super::super::initial_view().expect("initial view");
+        let capability = super::super::test_builtin_view_capability().expect("view capability");
+        // Both partitions must own real writers so both seal joins are exercised.
+        for label in ["fixture::local::cancel", "fixture::external::symbol:cancel"] {
+            let row = Row::new(RowId::Symbol(backend_engine::symbol_key(label)), view.basis(), label)
+                .with_signature("cancellationneedle");
+            let prepared = view.prepare(ViewDelta::Upsert { row }, capability.clone())
+                .expect("prepare cancellation fixture");
+            view = view.commit(prepared).expect("commit cancellation fixture").0;
+        }
+        for point in [
+            "local-declaration-before-commit",
+            "local-declaration-after-commit",
+            "local-declaration-before-inner-seal",
+            "local-declaration-after-inner-seal",
+            "local-declaration-external-row",
+            "local-declaration-before-external-commit",
+            "local-declaration-after-external-commit",
+            "local-declaration-before-external-seal",
+            "local-declaration-after-external-seal",
+            "local-declaration-before-publish",
+        ] {
+            let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+            let _guard = super::super::cancel_search_preparation_after(point, 1,
+                std::sync::Arc::clone(&cancelled));
+            let result = LocalDeclarationSearchIndex::build_immutable_controlled(&view, Some(&cancelled));
+            assert!(cancelled.load(Ordering::Acquire), "actual boundary must be reached: {point}");
+            assert!(matches!(result, Err(ref error) if error == "search preparation cancelled"),
+                "cancellation must refuse the complete snapshot at {point}");
+        }
+        // A fresh uncancelled build still publishes both real partitions after cleanup.
+        let index = LocalDeclarationSearchIndex::build_immutable_controlled(&view, None)
+            .expect("uncancelled immutable build");
+        assert_eq!(local_pages(&index, "cancellationneedle", false).iter()
+            .map(|(hits, _)| hits.len()).sum::<usize>(), 1);
+        assert_eq!(local_pages(&index, "cancellationneedle", true).iter()
+            .map(|(hits, _)| hits.len()).sum::<usize>(), 1);
+    }
+
+    #[test]
+    fn external_local_search_writer_is_lazy_and_reinsert_matches_cold_pages() {
+        fn external_row(view: &ViewRoot, suffix: &str, signature: &str) -> Row {
+            let label = format!("fixture::external::symbol:{suffix}");
+            Row::new(
+                RowId::Symbol(backend_engine::symbol_key(&label)),
+                view.basis(),
+                label,
+            )
+            .with_signature(signature)
+        }
+
+        fn external_pages(index: &LocalDeclarationSearchIndex, query: &str) -> Vec<RowId> {
+            let mut cursor = None;
+            let mut hits = Vec::new();
+            for _ in 0..8 {
+                let page = index
+                    .page_external_after(query, 1, cursor.as_ref())
+                    .expect("bounded external page");
+                hits.extend(hit_keys(page.hits));
+                cursor = page.next_cursor;
+                if cursor.is_none() {
+                    return hits;
+                }
+            }
+            panic!("external page walk did not complete: {query}");
+        }
+
+        let (base, _) = super::super::initial_view().expect("initial view");
+        let capability = super::super::test_builtin_view_capability().expect("view capability");
+        let mut local = LocalDeclarationSearchIndex::default();
+        local.sync(&base).expect("empty local projection");
+        let inner = local.inner.as_ref().expect("local search index");
+        let external = local
+            .external_inner
+            .as_ref()
+            .expect("external search index");
+        assert!(matches!(
+            &inner.writer,
+            WriterState::WriteEligibleIdle {
+                writer_memory_bytes: WRITER_MEMORY_BYTES
+            }
+        ));
+        assert!(matches!(
+            &external.writer,
+            WriterState::WriteEligibleIdle {
+                writer_memory_bytes: WRITER_MEMORY_BYTES
+            }
+        ));
+        local
+            .inner
+            .as_mut()
+            .expect("inner index")
+            .remove_document("no-such-document")
+            .expect("empty delete is a no-op");
+        local
+            .external_inner
+            .as_mut()
+            .expect("external index")
+            .remove_document("no-such-document")
+            .expect("empty external delete is a no-op");
+        assert!(matches!(
+            &local
+                .external_inner
+                .as_ref()
+                .expect("external index")
+                .writer,
+            WriterState::WriteEligibleIdle { .. }
+        ));
+
+        let internal = Row::new(
+            RowId::Symbol(backend_engine::symbol_key("fixture::internal")),
+            base.basis(),
+            "fixture::internal",
+        )
+        .with_signature("internalneedle");
+        let prepared = base
+            .prepare(ViewDelta::Upsert { row: internal }, capability.clone())
+            .expect("prepare ordinary internal declaration");
+        let (internal_view, internal_delta) = base
+            .commit(prepared)
+            .expect("commit ordinary internal declaration");
+        local
+            .apply_committed_deltas(&[internal_delta])
+            .expect("index internal declaration");
+        assert!(matches!(
+            &local.inner.as_ref().expect("inner index").writer,
+            WriterState::Open(_)
+        ));
+        assert!(matches!(
+            &local
+                .external_inner
+                .as_ref()
+                .expect("external index")
+                .writer,
+            WriterState::WriteEligibleIdle {
+                writer_memory_bytes: WRITER_MEMORY_BYTES
+            }
+        ));
+
+        let first = external_row(&internal_view, "zeta", "externalneedle zeta");
+        let first_id = first.id;
+        let prepared = internal_view
+            .prepare(ViewDelta::Upsert { row: first }, capability.clone())
+            .expect("prepare first external row");
+        let (view_one, first_delta) = internal_view
+            .commit(prepared)
+            .expect("commit first external row");
+        local
+            .apply_committed_deltas(&[first_delta])
+            .expect("index first external row");
+        assert!(matches!(
+            &local.inner.as_ref().expect("inner index").writer,
+            WriterState::Open(_)
+        ));
+        assert!(matches!(
+            &local
+                .external_inner
+                .as_ref()
+                .expect("external index")
+                .writer,
+            WriterState::Open(_)
+        ));
+        assert_eq!(external_pages(&local, "externalneedle"), [first_id]);
+
+        let prepared = view_one
+            .prepare(ViewDelta::Remove { id: first_id }, capability.clone())
+            .expect("prepare external row removal");
+        let (view_two, removal) = view_one.commit(prepared).expect("commit external removal");
+        local
+            .apply_committed_deltas(&[removal])
+            .expect("remove external row");
+        assert!(external_pages(&local, "externalneedle").is_empty());
+
+        let second = external_row(&view_two, "beta", "reinsertedneedle beta");
+        let second_id = second.id;
+        let third = external_row(&view_two, "alpha", "reinsertedneedle alpha");
+        let third_id = third.id;
+        let fourth = external_row(&view_two, "gamma", "reinsertedneedle gamma");
+        let fourth_id = fourth.id;
+        let mut changes = vec![
+            RowChange::Upsert(Box::new(second)),
+            RowChange::Upsert(Box::new(third)),
+            RowChange::Upsert(Box::new(fourth)),
+        ];
+        changes.sort_by_key(RowChange::id);
+        let prepared = view_two
+            .prepare(
+                ViewDelta::Patch {
+                    changes: changes.into(),
+                },
+                capability,
+            )
+            .expect("prepare external reinsertion and siblings");
+        let (view_three, reinsertion) = view_two
+            .commit(prepared)
+            .expect("commit external reinsertion and siblings");
+        local
+            .apply_committed_deltas(&[reinsertion])
+            .expect("apply external reinsertion and siblings");
+
+        let mut cold = LocalDeclarationSearchIndex::default();
+        cold.sync(&view_three)
+            .expect("cold external comparison index");
+        for query in ["", "reinsertedneedle", "alpha", "beta", "gamma"] {
+            assert_eq!(
+                external_pages(&local, query),
+                external_pages(&cold, query),
+                "external ordered pages differ from cold build for {query:?}"
+            );
+        }
+        assert_eq!(external_pages(&local, ""), [third_id, second_id, fourth_id]);
+    }
+
+    #[test]
+    fn first_lazy_writer_failure_keeps_metadata_idle_and_retry_queries_exactly() {
+        let directory = tempfile::tempdir().expect("lazy writer lock fixture");
+        let mut index = TextSearchIndex::<String>::new_at(directory.path(), WRITER_MEMORY_BYTES)
+            .expect("empty writable index");
+        let locker = index
+            ._index
+            .writer_with_num_threads::<TantivyDocument>(1, WRITER_MEMORY_BYTES)
+            .expect("hold the real Tantivy writer lock");
+        let insert = |index: &mut TextSearchIndex<String>| {
+            index.insert_document(
+                "atomic-identity".into(),
+                "atomic-key".into(),
+                "fixture:local/atomic",
+                "atomicneedle",
+                SearchDocumentText {
+                    generic: vec!["atomicneedle"],
+                    local_source_path: Some("src/atomic.py"),
+                    ..SearchDocumentText::default()
+                },
+                None,
+                "atomic-sort-key".into(),
+            )
+        };
+        assert!(
+            insert(&mut index).is_err(),
+            "the held writer lock refuses first mutation"
+        );
+        assert!(matches!(
+            &index.writer,
+            WriterState::WriteEligibleIdle {
+                writer_memory_bytes: WRITER_MEMORY_BYTES
+            }
+        ));
+        assert!(!index.dirty);
+        assert!(index.keys.is_empty());
+        assert!(index.identities.is_empty());
+        assert!(index.standings.is_empty());
+        assert!(index.substring_values.is_empty());
+        assert!(index.local_source_paths.is_empty());
+        assert_eq!(index.reader.searcher().num_docs(), 0);
+        locker
+            .wait_merging_threads()
+            .expect("release real writer lock");
+        insert(&mut index).expect("retry the same first mutation after lock release");
+        assert!(matches!(&index.writer, WriterState::Open(_)));
+        index.commit().expect("commit retry");
+        assert_eq!(
+            hit_keys(
+                index
+                    .page("atomicneedle", 8)
+                    .expect("query committed retry")
+                    .hits
+            ),
+            ["atomic-key".to_owned()]
+        );
+    }
+
+    #[test]
+    fn reopened_local_search_index_stays_explicitly_read_only() {
+        let directory = tempfile::tempdir().expect("search index directory");
+        let mut build = TextSearchIndex::<String>::new_at(directory.path(), WRITER_MEMORY_BYTES)
+            .expect("build durable local index");
+        assert!(matches!(
+            &build.writer,
+            WriterState::WriteEligibleIdle { .. }
+        ));
+        build
+            .add_document(
+                "persisted".to_owned(),
+                "fixture:local/persisted",
+                "persistedneedle",
+                ["persistedneedle"],
+                "fixture:local/persisted".to_owned(),
+            )
+            .expect("write durable document");
+        assert!(matches!(&build.writer, WriterState::Open(_)));
+        build.commit().expect("commit durable document");
+        drop(build);
+
+        let mut read_only =
+            TextSearchIndex::<String>::open_at(directory.path(), WRITER_MEMORY_BYTES)
+                .expect("open immutable local index");
+        assert!(matches!(&read_only.writer, WriterState::ReadOnly));
+        read_only
+            .add_document(
+                "persisted".to_owned(),
+                "fixture:local/persisted",
+                "persistedneedle",
+                ["persistedneedle"],
+                "fixture:local/persisted".to_owned(),
+            )
+            .expect("reconstruct read-only metadata");
+        assert!(matches!(&read_only.writer, WriterState::ReadOnly));
+        assert_eq!(
+            hit_keys(
+                read_only
+                    .page("persistedneedle", 8)
+                    .expect("persisted query")
+                    .hits
+            ),
+            ["persisted".to_owned()]
+        );
+        assert!(read_only.ensure_writer().is_err());
+        assert!(matches!(&read_only.writer, WriterState::ReadOnly));
+        let persisted_documents = read_only.reader.searcher().num_docs();
+        read_only
+            .remove_document("fixture:local/persisted")
+            .expect("read-only metadata removal remains supported");
+        assert!(read_only.identities.is_empty());
+        assert_eq!(
+            read_only.reader.searcher().num_docs(),
+            persisted_documents,
+            "metadata removal cannot delete persisted postings"
+        );
+        read_only
+            .add_document(
+                "persisted".to_owned(),
+                "fixture:local/persisted",
+                "persistedneedle",
+                ["persistedneedle"],
+                "fixture:local/persisted".to_owned(),
+            )
+            .expect("reconstruct read-only metadata after removal");
+        assert!(matches!(&read_only.writer, WriterState::ReadOnly));
+        assert_eq!(
+            hit_keys(
+                read_only
+                    .page("persistedneedle", 8)
+                    .expect("retained query")
+                    .hits
+            ),
+            ["persisted".to_owned()]
+        );
     }
 }

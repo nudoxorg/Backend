@@ -12,14 +12,15 @@ use crate::ir::{
     AnonymousCallableAnchor, AnonymousCallableFamilyMultiplicity, BorrowedTree, BuiltinType,
     CSharpFacts, CSharpMemberEffects, CSharpNullability, CSharpPartialRole, CSharpReferenceKind,
     CSharpVersion, CallableAnchorStep, CallableChildRole, CallableParentShape,
-    CallableTypeContainerKind, ConcreteType, CorePayloadHash, DeclarationFamilyId,
-    EntityAuthorityFacts, EntityId, EntityVersion, FactAvailability, FreePredicate, Ir, IrBuilder,
-    ItemKind, LanguageExtensionInput, LanguageProfile, ParentageAuthority, RustEdition, RustFacts,
+    CallableTypeContainerKind, ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass,
+    ConcreteType, CorePayloadHash, CxxStandard, DeclarationFamilyId, EntityAuthorityFacts,
+    EntityId, EntityVersion, FactAvailability, FreePredicate, Ir, IrBuilder, ItemKind,
+    LanguageExtensionInput, LanguageProfile, ParentageAuthority, RustEdition, RustFacts,
     RustOwnership, SemanticCoreReader, SemanticImageAuthority, SemanticImageEncodeError,
     SemanticReader, SignatureCarrierBinding, SignatureCarrierBindingRole,
     SignatureCarrierBindingsObservation, SignatureCarrierOwnerInput, SignatureCarrierRole,
-    SignatureCarrierRoleObservation, TreeItemInput, TupleElement, TupleElementKind, TypeExpr,
-    TypeParameterBound, TypeScriptSource, VariadicForm, VariantFingerprint, Visibility,
+    SignatureCarrierRoleObservation, SourceSpan, TreeItemInput, TupleElement, TupleElementKind,
+    TypeExpr, TypeParameterBound, TypeScriptSource, VariadicForm, VariantFingerprint, Visibility,
 };
 
 use super::wire::{
@@ -489,6 +490,59 @@ fn encoded(ir: &Ir) -> Result<alloc::vec::Vec<u8>, crate::ir::BuildError> {
     let mut bytes = vec![0; length];
     encode_full_semantic_image(ir, &mut bytes).expect("full image writes");
     Ok(bytes)
+}
+
+#[test]
+fn clang_declared_name_round_trips_and_pre_v6_facts_stay_absent()
+-> Result<(), crate::ir::BuildError> {
+    let (ir, declared_name) = clang_image(true)?;
+    let bytes = encoded(&ir)?;
+    assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 6);
+    let view = SemanticImageView::reopen(&bytes).expect("schema-6 Clang image reopens");
+    let observed_name = SemanticReader::clang_extension(&view, EntityId::new(0))
+        .expect("Clang fact is bound")
+        .declared_name
+        .expect("schema 6 retains its declared-name span");
+    let expected_name = declared_name.expect("fixture has a declared name");
+    assert_eq!(observed_name.start(), expected_name.start());
+    assert_eq!(observed_name.end(), expected_name.end());
+    assert_eq!(
+        view.atom(observed_name.file()),
+        Some(&b"src/widget.hpp"[..])
+    );
+    let (facts_offset, facts_count) = directory(&bytes, FullDirectoryKind::ClangFacts);
+    assert_eq!(facts_count, 1);
+    let value_start = facts_offset + RANGE_ROW_BYTES;
+    let value_start = value_start
+        + usize::try_from(u32::from_le_bytes(
+            bytes[facts_offset..facts_offset + 4]
+                .try_into()
+                .expect("Clang fact value offset"),
+        ))
+        .expect("test address space");
+    let mut invalid_span = bytes.clone();
+    let start_offset = value_start + 28;
+    let start = u32::from_le_bytes(
+        invalid_span[start_offset..start_offset + 4]
+            .try_into()
+            .expect("declared-name start"),
+    );
+    invalid_span[value_start + 32..value_start + 36].copy_from_slice(&start.to_le_bytes());
+    assert!(SemanticImageView::reopen(&invalid_span).is_err());
+
+    // Schemas 1–5 used the fixed Clang payload without a name span. Keep that
+    // grammar explicitly admitted as a missing observation, not a fake span.
+    let (legacy_ir, _) = clang_image(false)?;
+    let legacy = legacy_v5_clang_image(encoded(&legacy_ir)?);
+    assert_eq!(u16::from_le_bytes([legacy[4], legacy[5]]), 5);
+    let legacy_view = SemanticImageView::reopen(&legacy).expect("schema-5 Clang image reopens");
+    assert_eq!(
+        SemanticReader::clang_extension(&legacy_view, EntityId::new(0))
+            .expect("legacy Clang fact is bound")
+            .declared_name,
+        None
+    );
+    Ok(())
 }
 
 #[test]
@@ -1866,6 +1920,57 @@ fn csharp_image() -> Result<Ir, crate::ir::BuildError> {
     builder.finish()
 }
 
+fn clang_image(
+    with_declared_name: bool,
+) -> Result<(Ir, Option<SourceSpan>), crate::ir::BuildError> {
+    let mut builder = IrBuilder::new();
+    builder.set_language_profile(LanguageProfile::Cxx(CxxStandard::Cxx26))?;
+    let path = builder.intern_atom(b"src/widget.hpp")?;
+    let source = SourceSpan::new(path, 0, 32).expect("valid declaration extent");
+    let declared_name = with_declared_name
+        .then(|| SourceSpan::new(path, 4, 10).expect("valid declared-name extent"));
+    let templates = builder.intern_type_parameters(&[])?;
+    let includes = builder.intern_attributes(&[])?;
+    let facts = ClangFacts {
+        qualifiers: ClangQualifiers {
+            is_const: false,
+            is_volatile: false,
+            is_restrict: false,
+        },
+        storage: ClangStorageClass::None,
+        layout: ClangLayout {
+            size_bits: Some(64),
+            align_bits: Some(64),
+        },
+        templates,
+        includes,
+        declared_name,
+    };
+    let item = TreeItemInput {
+        name: b"Widget",
+        anonymous_callable_anchor: None,
+        kind: ItemKind::Record,
+        visibility: Visibility::Public,
+        authority: EntityAuthorityFacts {
+            language_extension: FactAvailability::Captured,
+            ..authority()
+        },
+        parent: None,
+        semantic_type: None,
+        members: &[],
+        docs: &[],
+        attributes: &[],
+        source: Some(source),
+        extension: Some(LanguageExtensionInput::Clang(&facts)),
+    };
+    builder.add_borrowed_tree(BorrowedTree {
+        versions: &[version(1)],
+        items: &[item],
+        links: &[],
+    })?;
+    Ok((builder.finish()?, declared_name))
+}
+
 fn directory(bytes: &[u8], kind: FullDirectoryKind) -> (usize, u32) {
     let offset = HEADER_BYTES + kind.index() * DIRECTORY_BYTES;
     let payload = u32::from_le_bytes(
@@ -1879,6 +1984,57 @@ fn directory(bytes: &[u8], kind: FullDirectoryKind) -> (usize, u32) {
             .expect("directory count"),
     );
     (usize::try_from(payload).expect("test address space"), count)
+}
+
+fn legacy_v5_clang_image(mut bytes: Vec<u8>) -> Vec<u8> {
+    assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 6);
+    let (facts_offset, fact_count) = directory(&bytes, FullDirectoryKind::ClangFacts);
+    assert_eq!(fact_count, 1);
+    let range_length = usize::try_from(u32::from_le_bytes(
+        bytes[facts_offset + 4..facts_offset + 8]
+            .try_into()
+            .expect("Clang fact range length"),
+    ))
+    .expect("test address space");
+    assert_eq!(range_length, 36);
+    let value_offset = facts_offset + RANGE_ROW_BYTES;
+    let removed_start = value_offset + range_length - 13;
+    let removed_end = value_offset + range_length;
+    bytes.drain(removed_start..removed_end);
+
+    for kind in FullDirectoryKind::ALL_WITH_CARRIER_BINDINGS {
+        let directory_offset = HEADER_BYTES + kind.index() * DIRECTORY_BYTES;
+        if kind == FullDirectoryKind::ClangFacts {
+            let length = u32::from_le_bytes(
+                bytes[directory_offset + 8..directory_offset + 12]
+                    .try_into()
+                    .expect("Clang directory length"),
+            );
+            bytes[directory_offset + 8..directory_offset + 12]
+                .copy_from_slice(&(length - 13).to_le_bytes());
+            continue;
+        }
+        let offset = u32::from_le_bytes(
+            bytes[directory_offset + 4..directory_offset + 8]
+                .try_into()
+                .expect("directory payload offset"),
+        );
+        if usize::try_from(offset).expect("test address space") >= removed_end {
+            bytes[directory_offset + 4..directory_offset + 8]
+                .copy_from_slice(&(offset - 13).to_le_bytes());
+        }
+    }
+    let old_range_length = u32::from_le_bytes(
+        bytes[facts_offset + 4..facts_offset + 8]
+            .try_into()
+            .expect("Clang fact range length"),
+    );
+    bytes[facts_offset + 4..facts_offset + 8]
+        .copy_from_slice(&(old_range_length - 13).to_le_bytes());
+    let image_length = u32::from_le_bytes(bytes[8..12].try_into().expect("image length"));
+    bytes[8..12].copy_from_slice(&(image_length - 13).to_le_bytes());
+    bytes[4..6].copy_from_slice(&5_u16.to_le_bytes());
+    bytes
 }
 
 fn binding_offset(bytes: &[u8], kind: FullDirectoryKind, row: u32) -> usize {

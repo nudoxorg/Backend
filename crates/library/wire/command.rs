@@ -625,6 +625,8 @@ struct PackageWire {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AddWire {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cargo_target: Option<crate::CargoTargetSelector>,
     package: String,
     execution_intent: CompileExecutionIntent,
 }
@@ -834,11 +836,13 @@ fn command_to_wire(command: &Command) -> CommandWire {
         Command::Packages => CommandWire::Packages(EmptyWire {}),
         Command::PackagePage(page) => CommandWire::PackagePage(page_request_to_wire(*page)),
         Command::Add {
+            cargo_target,
             package,
             execution_intent,
         } => CommandWire::Add(AddWire {
             package: encode_id(package.as_bytes()),
             execution_intent: *execution_intent,
+            cargo_target: cargo_target.clone(),
         }),
         Command::Remove { package } => CommandWire::Remove(PackageWire {
             package: encode_id(package.as_bytes()),
@@ -893,6 +897,7 @@ fn command_from_wire(
             required_certificate(certificate)?,
         )?)),
         CommandWire::Add(value) => Ok(Command::Add {
+            cargo_target: value.cargo_target,
             package: required_certificate(certificate)?
                 .key_value::<PackageSchema>(WireSchema::Package, &value.package)?,
             execution_intent: value.execution_intent,
