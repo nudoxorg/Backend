@@ -1824,10 +1824,34 @@ class OwnerPeakResetTests(unittest.TestCase):
         with patch.object(Path, "write_text", autospec=True,
                           side_effect=lambda self, value: writes.append((str(self), value))), \
              patch.object(Path, "read_text", autospec=True,
-                          side_effect=lambda self, *args, **kwargs: read(self)):
+                          side_effect=lambda self, *args, **kwargs: read(self)), \
+             patch.object(surface.time, "sleep"):
             with self.assertRaisesRegex(RuntimeError, "VmHWM reset did not take effect"):
                 owner.reset_peak_rss()
-        self.assertEqual(writes, [("/proc/123/clear_refs", "5\n")])
+        self.assertEqual(writes, [("/proc/123/clear_refs", "5\n")] * 5)
+
+    def test_peak_reset_retries_an_owner_that_grew_during_the_sample(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        owner = surface.Owner.__new__(surface.Owner)
+        owner.process = SimpleNamespace(pid=123, poll=lambda: None)
+        writes = []
+        statuses = iter(["VmHWM:\t3049648 kB\nVmRSS:\t3049196 kB\n",
+                         "VmHWM:\t3049200 kB\nVmRSS:\t3049200 kB\n"])
+
+        def read(path):
+            if str(path) == "/proc/123/status":
+                return next(statuses)
+            return "123 (locald) R " + " ".join(["0"] * 10 + ["10", "20"])
+
+        with patch.object(Path, "write_text", autospec=True,
+                          side_effect=lambda self, value: writes.append((str(self), value))), \
+             patch.object(Path, "read_text", autospec=True,
+                          side_effect=lambda self, *args, **kwargs: read(self)), \
+             patch.object(surface.time, "sleep"):
+            reset = owner.reset_peak_rss()
+        self.assertEqual(len(writes), 2)
+        self.assertEqual((reset["peak_rss_kib"], reset["resident_rss_kib"]), (3049200, 3049200))
 
 
 class CursorProofReplayTests(unittest.TestCase):

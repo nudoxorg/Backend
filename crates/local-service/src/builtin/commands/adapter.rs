@@ -7086,7 +7086,7 @@ fn dump_view_rows(view: &backend_engine::ViewRoot) {
     let mut lines = view
         .rows()
         .iter()
-        .map(|row| format!("{:?}\t{:?}\t{}\t{:?}", row.id, row.kind, row.label, row.source))
+        .map(|row| format!("{:?}\t{:?}\t{:?}\t{:?}", row.id, row.kind, row.label, row.source))
         .collect::<Vec<_>>();
     lines.sort_unstable();
     // Best effort: a diagnostic write must never fail a readiness reply.

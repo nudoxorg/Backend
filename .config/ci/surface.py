@@ -844,12 +844,19 @@ class Owner:
             _emit_owner_usage_diagnostic(case_name, "clear-refs-write-requested",
                                          pid=pid, start_ticks=before.get("start_ticks"),
                                          before=before, value="5\n")
-        written = Path(f"/proc/{pid}/clear_refs").write_text("5\n")
-        reset = self.usage_raw()
-        _emit_owner_usage_diagnostic(case_name, "clear-refs-write-completed",
-                                     pid=pid, start_ticks=reset.get("start_ticks"),
-                                     bytes_written=written, before=before, after=reset,
-                                     value="5\n")
+        # A still-allocating owner can grow between the reset and the
+        # VmHWM/VmRSS read (cpp-pugixml, pr-t2/2132: peak 3049648 vs resident
+        # 3049196 KiB). Reset again rather than accept a mismatched sample.
+        for _attempt in range(5):
+            written = Path(f"/proc/{pid}/clear_refs").write_text("5\n")
+            reset = self.usage_raw()
+            _emit_owner_usage_diagnostic(case_name, "clear-refs-write-completed",
+                                         pid=pid, start_ticks=reset.get("start_ticks"),
+                                         bytes_written=written, before=before, after=reset,
+                                         value="5\n")
+            if reset["peak_rss_kib"] == reset["resident_rss_kib"]:
+                break
+            time.sleep(0.05)
         if reset["peak_rss_kib"] != reset["resident_rss_kib"]:
             raise RuntimeError(
                 "owner VmHWM reset did not take effect: "
