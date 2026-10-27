@@ -170,6 +170,50 @@ class PlacementTests(unittest.TestCase):
         self.assertTrue(any('PermissionError (errno 1)' in note
                             for note in raised.exception.__notes__))
 
+    def write_topology(self, root, cpu, core, package=0):
+        self.write(root, cpu, package, 'topology/physical_package_id')
+        self.write(root, cpu, core, 'topology/core_id')
+
+    def test_slots_split_whole_cores_without_sharing_siblings(self):
+        # ilo's P-cores: logical CPUs 0-11, sibling pairs, core_id 0,4,8,...,20.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for cpu in range(12):
+                self.write_topology(root, cpu, (cpu // 2) * 4)
+            self.assertEqual(cpu_placement.slot_partitions(set(range(12)), 2, root),
+                             [[0, 1, 2, 3, 4, 5], [6, 7, 8, 9, 10, 11]])
+            # Uneven core counts still give every slot whole cores.
+            self.assertEqual(cpu_placement.slot_partitions(set(range(10)), 2, root),
+                             [[0, 1, 2, 3, 4, 5], [6, 7, 8, 9]])
+
+    def test_slots_need_a_core_each_and_complete_topology(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for cpu in (0, 1):
+                self.write_topology(root, cpu, 0)
+            self.assertEqual(cpu_placement.slot_partitions({0, 1}, 2, root), [])
+            self.assertEqual(cpu_placement.slot_partitions({0, 1}, 1, root), [])
+            self.write_topology(root, 2, 4)
+            self.assertEqual(cpu_placement.slot_partitions({0, 1, 2, 3}, 2, root), [])
+
+    @unittest.skipUnless(hasattr(os, 'sched_getaffinity'), 'Linux affinity lifecycle')
+    def test_pinned_worker_thread_passes_its_slot_to_children(self):
+        import threading
+        original = set(os.sched_getaffinity(0))
+        slot = [min(original)]
+        seen = {}
+
+        def worker():
+            cpu_placement.pin_current_thread(slot)
+            seen['child'] = subprocess.check_output([sys.executable, '-c',
+                'import json,os;print(json.dumps(sorted(os.sched_getaffinity(0))))'], text=True)
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join()
+        self.assertEqual(json.loads(seen['child']), slot)
+        self.assertEqual(set(os.sched_getaffinity(0)), original)
+
     @unittest.skipUnless(hasattr(os, 'sched_getaffinity'), 'Linux affinity lifecycle')
     def test_real_child_inherits_placement_and_parent_recovers(self):
         original = set(os.sched_getaffinity(0))

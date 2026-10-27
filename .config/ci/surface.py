@@ -2875,7 +2875,23 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
             emit_evidence(case, entry)
 
     process_custody.activate()
-    executor = ThreadPoolExecutor(max_workers=args.jobs, thread_name_prefix="surface")
+    import cpu_placement
+    slots = (cpu_placement.slot_partitions(set(os.sched_getaffinity(0)), args.jobs)
+             if hasattr(os, "sched_getaffinity") else [])
+    print("SURFACE-CPU-SLOTS " + json.dumps(slots), flush=True)
+    free_slots = list(slots)
+    slot_lock = threading.Lock()
+
+    def pin_worker() -> None:
+        # Each worker thread owns one slot for its lifetime; case processes
+        # inherit it, so concurrent cases never share a core.
+        if slots:
+            with slot_lock:
+                slot = free_slots.pop(0)
+            cpu_placement.pin_current_thread(slot)
+
+    executor = ThreadPoolExecutor(max_workers=args.jobs, thread_name_prefix="surface",
+                                  initializer=pin_worker)
     futures = {executor.submit(invoke_tracked, case): case for case in cases}
     pending = set(futures)
     processed = set()
