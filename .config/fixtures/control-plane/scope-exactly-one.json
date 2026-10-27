@@ -53,6 +53,7 @@
       "README.md",
       "flake.lock",
       "flake.nix",
+      "tests/cargo-linker-umask.sh",
       "tests/cargo-shared-cache.sh",
       "tests/test_build_census.py",
       "tests/test_ci_disk_reserve.py",
