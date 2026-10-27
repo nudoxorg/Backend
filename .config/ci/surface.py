@@ -692,7 +692,7 @@ class Owner:
     """One backend-locald for one case, started and stopped by the harness."""
 
     def __init__(self, bin_dir: Path, case_root: Path, cargo_vendor: Path | None = None,
-                 row_dump: Path | None = None, extra_env: dict[str, str] | None = None):
+                 row_dump: Path | None = None):
         process_custody.activate()
         self.bin_dir = bin_dir
         # Keep public project/endpoint coordinates stable, but place durable
@@ -708,7 +708,6 @@ class Owner:
         self.env = isolated_env(self.home, bin_dir)
         if row_dump is not None:
             self.env["NUDOX_VIEW_ROW_DUMP"] = str(row_dump)
-        self.env.update(extra_env or {})
         if _preparation_diagnostic_opt_in(RUN_PROVENANCE.get()):
             # isolated_env strips inherited BACKEND_* overrides; this one is
             # explicitly reintroduced only for a provenance-bound CI report.
@@ -2313,7 +2312,13 @@ def emit_index_failure_diagnostic(owner: Owner, project: Path) -> None:
         log(f"index failure diagnostic unavailable: {error}")
 
 
-def copy_case_project(case: dict, project: Path) -> None:
+def run_case(case: dict, bin_dir: Path) -> dict:
+    case_root = SCRATCH / case["name"]
+    if case_root.exists():
+        make_case_directories_writable(case_root)
+        shutil.rmtree(case_root)
+    case_root.mkdir(parents=True, mode=0o700)
+    project = case_root / "project"
     if "project_env" in case:
         source = os.environ.get(case["project_env"])
         if not source or not Path(source).is_absolute():
@@ -2322,80 +2327,6 @@ def copy_case_project(case: dict, project: Path) -> None:
     else:
         shutil.copytree(ROOT / case["project"], project)
     make_case_directories_writable(project)
-
-
-# Diagnostic only (W2): the TypeScript corpus intermittently publishes 3177
-# rows instead of 3175. In the drifted runs `observer.trackResult` and
-# `observer.trackProp` in src/queriesObserver.ts become unresolved externals.
-# Neither the checker worker count (pr-t2/2141) nor the project path or type
-# trace (pr-t2/2144) decides it; concurrent indexing drifts far more often.
-# Trace every TypeScript project update, restart, and file work exhaustion,
-# serially at the case's own path and then four owners at a time. Never part
-# of the verdict.
-COMPILE_TRACE_ENV = {"NUDOX_TS_COMPILE_TRACE": "1"}
-DETERMINISM_PROBE_SERIAL = (COMPILE_TRACE_ENV, COMPILE_TRACE_ENV)
-DETERMINISM_PROBE_PARALLEL = (COMPILE_TRACE_ENV,) * 8
-DETERMINISM_PROBE_NAMES = ("trackResult", "trackProp")
-
-
-def _determinism_probe_index(case: dict, bin_dir: Path, label: str, root: Path,
-                             extra_env: dict, timeout: float) -> dict:
-    if root.exists():
-        make_case_directories_writable(root)
-        shutil.rmtree(root)
-    root.mkdir(parents=True, mode=0o700)
-    project = root / "project"
-    copy_case_project(case, project)
-    dump = root / "view-rows.tsv"
-    owner = Owner(bin_dir, root, row_dump=dump, extra_env=extra_env)
-    owner.case_name = case["name"]
-    try:
-        answer, seconds = run_cli(owner, project, ["add", str(project), "--wait"], timeout)
-        view = require_completed_index(answer, len(case["languages"]))
-        run_cli(owner, project, ["--passive", "health"], 30)
-    finally:
-        owner.stop()
-    rows = dump.read_text(errors="replace").splitlines() if dump.exists() else []
-    labels = [row.split("\t")[2].strip('"') for row in rows if row.count("\t") >= 3]
-    external = sorted({name for name in DETERMINISM_PROBE_NAMES for label in labels
-                       if "::external::" in label and label.endswith("::" + name)})
-    notes = [line[:600] for line in (root / "locald.log").read_text(errors="replace").splitlines()
-             if "nudox-ts-compile-trace" in line or "work allowance" in line]
-    make_case_directories_writable(root)
-    shutil.rmtree(root)
-    return {"run": label, "path": str(project), "env": sorted(extra_env), "view": view,
-            "rows": len(rows), "external": external, "add_seconds": round(seconds, 2),
-            "notes": notes[:24]}
-
-
-def _emit_determinism(case: dict, result: dict) -> None:
-    with OUTPUT_LOCK:
-        print(f"SURFACE-DETERMINISM {case['name']} " + json.dumps(result, sort_keys=True), flush=True)
-
-
-def run_determinism_probe(case: dict, bin_dir: Path, timeout: float) -> None:
-    # The case's own path first, one owner at a time, exactly like the case.
-    for attempt, extra_env in enumerate(DETERMINISM_PROBE_SERIAL):
-        _emit_determinism(case, _determinism_probe_index(
-            case, bin_dir, f"same-path-{attempt}", SCRATCH / case["name"], extra_env, timeout))
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="probe") as probes:
-        results = probes.map(
-            lambda item: _determinism_probe_index(
-                case, bin_dir, f"other-path-{item[0]}", SCRATCH / f"{case['name']}-probe-{item[0]}",
-                item[1], timeout),
-            enumerate(DETERMINISM_PROBE_PARALLEL))
-        for result in results:
-            _emit_determinism(case, result)
-
-
-def run_case(case: dict, bin_dir: Path) -> dict:
-    case_root = SCRATCH / case["name"]
-    if case_root.exists():
-        make_case_directories_writable(case_root)
-        shutil.rmtree(case_root)
-    case_root.mkdir(parents=True, mode=0o700)
-    project = case_root / "project"
-    copy_case_project(case, project)
     timeout = case.get("timeout_seconds", 300)
     outline_max_pages = case.get("outline_max_pages", 256)
     if (isinstance(outline_max_pages, bool) or not isinstance(outline_max_pages, int)
@@ -2708,11 +2639,6 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 if case_error is not None:
                     raise RuntimeError(f"{case_error}\nowner cleanup failed: {cleanup_error}") from case_error
                 raise
-    if row_dump is not None:
-        try:
-            run_determinism_probe(case, bin_dir, timeout)
-        except Exception as error:
-            log(f"determinism probe failed (diagnostic only): {error}")
     record["answers"] = stable(normalize_surface_answers(record["answers"], proven_answers))
     return record
 

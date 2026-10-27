@@ -41,22 +41,6 @@ use backend_frontend_typescript::{TszFileWorkPolicy, TszProject, TszProjectCheck
 const TSZ_CHECKER_WORKERS_PER_COMPILER_LANE: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(2).expect("checker worker policy is nonzero");
 
-// Diagnostic only (W2): the surface harness re-indexes the TypeScript corpus
-// under different checker worker counts to test whether its 3175/3177 row
-// drift comes from parallel checking. Remove together with that probe.
-fn tsz_checker_workers() -> std::num::NonZeroUsize {
-    std::env::var("NUDOX_TSZ_CHECKER_WORKERS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(TSZ_CHECKER_WORKERS_PER_COMPILER_LANE)
-}
-
-// Diagnostic only (W2): print TypeScript project updates, restarts, and work
-// exhaustion to stderr for the surface drift probe. Remove with that probe.
-fn typescript_compile_trace() -> bool {
-    std::env::var_os("NUDOX_TS_COMPILE_TRACE").is_some_and(|value| value == "1")
-}
-
 use backend_library::interface::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerFragmentFailure, CompilerReadiness,
     CompilerRequest as ApplicationCompilerRequest, CompilerTerminal, GeneratedArtifact,
@@ -3808,9 +3792,6 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 ) {
                     Err(PackageSemanticError::TypeScriptWorkRestart) if restarts_left > 0 => {
                         restarts_left -= 1;
-                        if typescript_compile_trace() {
-                            eprintln!("nudox-ts-compile-trace: package restart, restarts_left={restarts_left}");
-                        }
                         tracing::warn!(target: "compiler.typescript_project", restarts_left,
                         "TypeScript source spent its own work allowance; restarting the package compilation without it");
                     }
@@ -4138,7 +4119,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         &native.libraries,
                         TszProjectCheckerExecution {
                             checkpoint: budget,
-                            workers: tsz_checker_workers(),
+                            workers: TSZ_CHECKER_WORKERS_PER_COMPILER_LANE,
                         },
                         &file_work,
                     )
@@ -4179,12 +4160,6 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     "native TypeScript checked authority admitted for projection");
                 if report.reused_project_result {
                     budget.reused_program(program_sources);
-                }
-                if typescript_compile_trace() {
-                    eprintln!(
-                        "nudox-ts-compile-trace: program {program_index} update {report:?} skipped={:?}",
-                        typescript_lane.project(&program_key).map(|project| project.file_work_skipped().clone()),
-                    );
                 }
                 typescript_lane.record(report);
                 if let Some(project) = typescript_lane
@@ -5303,9 +5278,6 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     .and_then(Option::as_ref)
                     .and_then(|session| session.take_file_work_exhaustion());
                 let file_exhausted = file_exhaustion.is_some();
-                if file_exhausted && typescript_compile_trace() {
-                    eprintln!("nudox-ts-compile-trace: query exhausted file work: {file_exhaustion:?} may_restart={may_restart}");
-                }
                 let program_exhausted = lowered.is_err()
                     && tsz_budget.as_ref().is_some_and(|budget| {
                         budget.stop_reason() == Some(backend_frontend_typescript::TszProjectExecutionStop::WorkBudgetExhausted)
