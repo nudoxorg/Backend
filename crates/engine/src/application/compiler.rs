@@ -41,6 +41,16 @@ use backend_frontend_typescript::{TszFileWorkPolicy, TszProject, TszProjectCheck
 const TSZ_CHECKER_WORKERS_PER_COMPILER_LANE: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(2).expect("checker worker policy is nonzero");
 
+// Diagnostic only (W2): the surface harness re-indexes the TypeScript corpus
+// under different checker worker counts to test whether its 3175/3177 row
+// drift comes from parallel checking. Remove together with that probe.
+fn tsz_checker_workers() -> std::num::NonZeroUsize {
+    std::env::var("NUDOX_TSZ_CHECKER_WORKERS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(TSZ_CHECKER_WORKERS_PER_COMPILER_LANE)
+}
+
 use backend_library::interface::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerFragmentFailure, CompilerReadiness,
     CompilerRequest as ApplicationCompilerRequest, CompilerTerminal, GeneratedArtifact,
@@ -4119,7 +4129,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         &native.libraries,
                         TszProjectCheckerExecution {
                             checkpoint: budget,
-                            workers: TSZ_CHECKER_WORKERS_PER_COMPILER_LANE,
+                            workers: tsz_checker_workers(),
                         },
                         &file_work,
                     )
