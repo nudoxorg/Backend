@@ -5343,6 +5343,27 @@ fn status_is_a_rollup_a_reader_can_hold_not_a_capability_dump() {
 }
 
 #[test]
+fn an_account_refusal_stops_the_tool_before_any_product_work() {
+    let health_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut server = ready(Fake {
+        health_calls: Some(health_calls.clone()),
+        ..Fake::default()
+    });
+    server.account = Some(Err("the account directory is not private".to_owned()));
+    let result = call(&mut server, "backend.status", &json!({}));
+    assert_eq!(result["isError"], true);
+    assert!(
+        text_of(&result).contains("the account directory is not private"),
+        "{result}"
+    );
+    assert_eq!(result["structuredContent"]["slug"], "account");
+    assert_eq!(health_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    // Listing tools is protocol, not usage, and is never refused.
+    let tools = request(&mut server, "tools/list", &json!({}));
+    assert!(tools["result"]["tools"].is_array(), "{tools}");
+}
+
+#[test]
 fn the_packages_call_states_readiness_for_every_project() {
     let mut server = ready(Fake::default());
     let result = call(&mut server, "backend.packages", &json!({}));

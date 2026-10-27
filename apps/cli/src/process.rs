@@ -43,6 +43,19 @@ pub fn main_entry() -> ExitCode {
         Ok(split) => split,
         Err(fault) => return report(&fault, &Options::fallback()),
     };
+    if words.first().is_some_and(|word| word == "auth") {
+        return match crate::auth::run(&words[1..], &options) {
+            Ok(output) => emit(&output),
+            Err(fault) => report(&fault, &options),
+        };
+    }
+    // Setup output stays available signed out; every product command needs
+    // the account in a build that requires one.
+    if words.first().is_none_or(|word| word != "mcp-config")
+        && let Err(fault) = crate::auth::require_signed_in()
+    {
+        return report(&fault, &options);
+    }
     if words.first().is_some_and(|word| word == "mcp-config") {
         return match crate::mcp_config::run(&words[1..], &options) {
             Ok(output) => emit(&output),
@@ -116,6 +129,7 @@ fn help_output(args: &[String]) -> Option<String> {
         Some("semantic-hydrate") => crate::semantic_hydrate::help_text().to_owned(),
         Some("embedding-setup") => crate::embedding_setup::help_text().to_owned(),
         Some("mcp-config") => crate::mcp_config::help_text().to_owned(),
+        Some("auth") => crate::auth::help_text().to_owned(),
         command => command
             .and_then(grammar_for)
             .map_or_else(invoke::help, invoke::help_for),

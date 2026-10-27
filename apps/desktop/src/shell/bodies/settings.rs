@@ -38,7 +38,7 @@ pub(super) fn body(
         return Vec::new();
     }
     match page {
-        SettingsPage::About => about(ctx),
+        SettingsPage::About => about(ctx, cx),
         SettingsPage::Index => index(store, ctx),
         SettingsPage::Registry => registry(snapshot, ctx),
         SettingsPage::Help => keys(ctx),
@@ -65,7 +65,7 @@ fn title(words: &str, ctx: &mut Ctx<'_>) -> Leaf {
     )
 }
 
-fn about(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
+fn about(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Vec<Leaf> {
     let measure = ctx.measure;
     let palette = ctx.palette;
     let mut leaves = vec![title("About Nudox", ctx)];
@@ -74,6 +74,112 @@ fn about(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let version = ctx.say(env!("CARGO_PKG_VERSION"));
     leaves.push(setting("Version", text(ty::MONO_ROW, &measure, palette.ink1)
         .child(version).into_any_element(), ctx));
+    leaves.extend(account(ctx, cx));
+    leaves
+}
+
+/// The signed-in account as the About page shows it, fetched once off the UI
+/// thread and again on Refresh.
+enum AccountPanel {
+    Loading,
+    Ready {
+        email: String,
+        plan: String,
+        usage: Option<backend_account::Usage>,
+        key: String,
+        source: String,
+    },
+    Failed(String),
+}
+
+impl gpui::Global for AccountPanel {}
+
+fn fetch_account() -> AccountPanel {
+    let loaded = backend_account::KeyStore::open().and_then(|store| store.load());
+    let (key, source) = match loaded {
+        Ok(Some(found)) => found,
+        Ok(None) => return AccountPanel::Failed("No key is saved.".to_owned()),
+        Err(error) => return AccountPanel::Failed(error.to_string()),
+    };
+    let service = backend_account::Service::new();
+    match service.account(&key) {
+        Ok(account) => AccountPanel::Ready {
+            plan: account.plan_name(),
+            email: account.email,
+            usage: service.usage(&key).ok(),
+            key: key.redacted(),
+            source: source.describe(),
+        },
+        Err(error) => AccountPanel::Failed(error.to_string()),
+    }
+}
+
+fn refresh_account(cx: &mut gpui::App) {
+    cx.set_global(AccountPanel::Loading);
+    cx.spawn(async move |cx| {
+        let fetched = cx.background_executor().spawn(async { fetch_account() }).await;
+        let _ = cx.update(|cx| {
+            cx.set_global(fetched);
+            cx.refresh_windows();
+        });
+    })
+    .detach();
+}
+
+fn account(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Vec<Leaf> {
+    if !backend_account::required() {
+        return Vec::new();
+    }
+    if !cx.has_global::<AccountPanel>() {
+        refresh_account(cx);
+    }
+    let palette = ctx.palette;
+    let measure = ctx.measure;
+    let mut leaves = Vec::new();
+    match cx.global::<AccountPanel>() {
+        AccountPanel::Loading => {
+            leaves.push(value_row("Account", "Checking…", ty::ROW, palette.ink2, ctx));
+        }
+        AccountPanel::Failed(reason) => {
+            let reason = reason.clone();
+            leaves.push(value_row("Account", reason, ty::ROW, palette.coral.base, ctx));
+        }
+        AccountPanel::Ready { email, plan, usage, key, source } => {
+            let (email, plan, key, source) = (email.clone(), plan.clone(), key.clone(), source.clone());
+            let usage = usage.clone();
+            leaves.push(value_row("Account", email, ty::ROW, palette.ink1, ctx));
+            leaves.push(value_row("Plan", plan, ty::ROW, palette.ink1, ctx));
+            if let Some(usage) = usage {
+                let ink = if usage.over_limit { palette.coral.base } else { palette.ink1 };
+                let said = format!("{} · {} MCP tool calls", usage.summary(), usage.tool_calls);
+                leaves.push(value_row("Usage", said, ty::ROW, ink, ctx));
+                if usage.over_limit {
+                    leaves.push(value_row(
+                        "Limit reached",
+                        format!("MCP tool calls are refused until the period resets. Upgrade or turn on overage at {}.", backend_account::KEYS_URL),
+                        ty::SMALL, palette.ink2, ctx,
+                    ));
+                }
+            }
+            leaves.push(value_row("API key", format!("{key} ({source})"), ty::MONO_ROW, palette.ink2, ctx));
+        }
+    }
+    let refresh = facet::controls::button("settings-account-refresh", "Refresh", &measure)
+        .disabled(!ctx.active)
+        .ghost()
+        .on_click(|_, cx| refresh_account(cx));
+    leaves.push(setting("Usage", refresh.into_any_element(), ctx));
+    let sign_out = facet::controls::button("settings-account-sign-out", "Sign out and quit", &measure)
+        .disabled(!ctx.active)
+        .on_click(|_, cx| {
+            if let Ok(store) = backend_account::KeyStore::open() {
+                let _ = store.remove();
+            }
+            cx.quit();
+        });
+    leaves.push(setting("Sign out", sign_out.into_any_element(), ctx));
+    let note = ctx.say("Only MCP tool calls count toward usage. The app and the CLI never do.");
+    leaves.push(Leaf::new(quiet(note, &measure, palette)));
     leaves
 }
 

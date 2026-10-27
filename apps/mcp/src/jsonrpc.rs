@@ -750,6 +750,10 @@ pub(super) struct Server<P> {
     opener: Option<TreeOpener>,
     cursor_secret: CursorAuthority,
     request_context: Option<RequestContext>,
+    /// Records each tool call against the signed-in account. `None` when this
+    /// build does not require an account; `Err` when the account directory
+    /// cannot be opened, which refuses every call with that sentence.
+    account: Option<Result<backend_account::ToolCallMeter, String>>,
 }
 
 /// MCP's initialization handshake is a protocol state, not a boolean.
@@ -788,6 +792,9 @@ impl<P: Product> Server<P> {
             opener: None,
             cursor_secret: cursor_secret.into(),
             request_context: None,
+            account: backend_account::required().then(|| {
+                backend_account::ToolCallMeter::open().map_err(|error| error.to_string())
+            }),
         }
     }
 
@@ -1031,12 +1038,27 @@ impl<P: Product> Server<P> {
         if !matches!(params.get("arguments"), None | Some(Value::Object(_))) {
             return Err(RpcError::invalid("arguments must be an object"));
         }
+        if let Some(refusal) = self.account_refusal() {
+            return Ok(account_refused(&refusal));
+        }
         let empty = Map::new();
         let arguments = params
             .get("arguments")
             .and_then(Value::as_object)
             .unwrap_or(&empty);
         self.call_named_tool(arguments, name, route, McpExposure::Direct, response_id)
+    }
+
+    /// Records this tool call with the account service, or says why it must
+    /// not run. Only MCP tool calls count as usage.
+    fn account_refusal(&mut self) -> Option<String> {
+        match self.account.as_mut()? {
+            Ok(meter) => match meter.admit() {
+                backend_account::Admission::Allowed => None,
+                backend_account::Admission::Denied(sentence) => Some(sentence),
+            },
+            Err(error) => Some(format!("Nudox cannot read your account: {error}")),
+        }
     }
 
     fn call_named_tool(
@@ -3135,6 +3157,15 @@ fn narrow_progress_window(
     page.events = events;
     page.has_more = true;
     true
+}
+
+/// The tool result for a call the account refused before any tool work ran.
+fn account_refused(sentence: &str) -> Value {
+    tool_result(
+        &format!("✗ {sentence}"),
+        json!({ "answer": "fault", "slug": "account", "detail": sentence }),
+        true,
+    )
 }
 
 fn complete_tool_result(text: &str, structured: Value, is_error: bool) -> Value {

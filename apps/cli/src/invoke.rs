@@ -169,6 +169,7 @@ pub fn help() -> String {
     );
     out.push_str("\nquick start (installed command name: nudox)\n");
     out.push_str(concat!(
+        "  nudox auth login  Sign in with an API key from https://nudox.org/dashboard/keys\n",
         "  nudox embedding-setup  Optional Linux semantic setup, before starting the local owner\n",
         "  nudox add . --wait  Wait for the exact operation; inspect its terminal receipt before searching\n",
         "  nudox search \"error handling\"  Find declarations at the published revision\n",

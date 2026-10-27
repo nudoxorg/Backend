@@ -33,6 +33,7 @@ required-features = ["visual-harness"]
 blake3.workspace = true
 anyhow.workspace = true
 async-channel.workspace = true
+backend-account = { path = "../../crates/account" }
 # Unpacks a registry archive from the local cargo cache (`host::registry`).
 flate2.workspace = true
 backend-client = { path = "../../crates/client" }
