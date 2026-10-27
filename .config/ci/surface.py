@@ -2327,12 +2327,14 @@ def copy_case_project(case: dict, project: Path) -> None:
 # Diagnostic only (W2): the TypeScript corpus intermittently publishes 3177
 # rows instead of 3175. In the drifted runs `observer.trackResult` and
 # `observer.trackProp` in src/queriesObserver.ts become unresolved externals.
-# The checker worker count made no difference (pr-t2/2141), but every run at a
-# different project path drifted. Separate the project path from the checker
-# trace environment. Never part of the verdict.
-TYPE_TRACE_ENV = {"NUDOX_TYPESCRIPT_TYPE_PROJECTION_DIAGNOSTICS": "1"}
-DETERMINISM_PROBE_SERIAL = ({}, {}, TYPE_TRACE_ENV, {}, {}, TYPE_TRACE_ENV)
-DETERMINISM_PROBE_PARALLEL = ({}, {})
+# Neither the checker worker count (pr-t2/2141) nor the project path or type
+# trace (pr-t2/2144) decides it; concurrent indexing drifts far more often.
+# Trace every TypeScript project update, restart, and file work exhaustion,
+# serially at the case's own path and then four owners at a time. Never part
+# of the verdict.
+COMPILE_TRACE_ENV = {"NUDOX_TS_COMPILE_TRACE": "1"}
+DETERMINISM_PROBE_SERIAL = (COMPILE_TRACE_ENV, COMPILE_TRACE_ENV)
+DETERMINISM_PROBE_PARALLEL = (COMPILE_TRACE_ENV,) * 8
 DETERMINISM_PROBE_NAMES = ("trackResult", "trackProp")
 
 
@@ -2358,12 +2360,12 @@ def _determinism_probe_index(case: dict, bin_dir: Path, label: str, root: Path,
     external = sorted({name for name in DETERMINISM_PROBE_NAMES for label in labels
                        if "::external::" in label and label.endswith("::" + name)})
     notes = [line[:600] for line in (root / "locald.log").read_text(errors="replace").splitlines()
-             if "def publication" in line or "projection cycle" in line or "work allowance" in line]
+             if "nudox-ts-compile-trace" in line or "work allowance" in line]
     make_case_directories_writable(root)
     shutil.rmtree(root)
-    return {"run": label, "path": str(project), "trace_env": bool(extra_env), "view": view,
+    return {"run": label, "path": str(project), "env": sorted(extra_env), "view": view,
             "rows": len(rows), "external": external, "add_seconds": round(seconds, 2),
-            "notes": notes[:8]}
+            "notes": notes[:24]}
 
 
 def _emit_determinism(case: dict, result: dict) -> None:
@@ -2376,7 +2378,7 @@ def run_determinism_probe(case: dict, bin_dir: Path, timeout: float) -> None:
     for attempt, extra_env in enumerate(DETERMINISM_PROBE_SERIAL):
         _emit_determinism(case, _determinism_probe_index(
             case, bin_dir, f"same-path-{attempt}", SCRATCH / case["name"], extra_env, timeout))
-    with ThreadPoolExecutor(max_workers=len(DETERMINISM_PROBE_PARALLEL), thread_name_prefix="probe") as probes:
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="probe") as probes:
         results = probes.map(
             lambda item: _determinism_probe_index(
                 case, bin_dir, f"other-path-{item[0]}", SCRATCH / f"{case['name']}-probe-{item[0]}",
