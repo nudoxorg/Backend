@@ -691,7 +691,8 @@ def _emit_owner_usage_diagnostic(case: str | None, event: str, **fields) -> None
 class Owner:
     """One backend-locald for one case, started and stopped by the harness."""
 
-    def __init__(self, bin_dir: Path, case_root: Path, cargo_vendor: Path | None = None):
+    def __init__(self, bin_dir: Path, case_root: Path, cargo_vendor: Path | None = None,
+                 row_dump: Path | None = None):
         process_custody.activate()
         self.bin_dir = bin_dir
         # Keep public project/endpoint coordinates stable, but place durable
@@ -705,6 +706,8 @@ class Owner:
         self.workspace = state / "workspace"
         self.endpoint = case_root / "locald.sock"
         self.env = isolated_env(self.home, bin_dir)
+        if row_dump is not None:
+            self.env["NUDOX_VIEW_ROW_DUMP"] = str(row_dump)
         if _preparation_diagnostic_opt_in(RUN_PROVENANCE.get()):
             # isolated_env strips inherited BACKEND_* overrides; this one is
             # explicitly reintroduced only for a provenance-bound CI report.
@@ -2328,7 +2331,10 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         cargo_vendor = Path(vendor)
         if not cargo_vendor.is_absolute() or not cargo_vendor.is_dir() or not str(cargo_vendor.resolve()).startswith("/nix/store/"):
             raise RuntimeError("real corpus: missing pinned Cargo dependency vendor directory")
-    owner = Owner(bin_dir, case_root, cargo_vendor)
+    # Diagnostic only: the published view rows, printed at case end so runs
+    # that disagree on the row count can be diffed (TypeScript 3175 vs 3177).
+    row_dump = case_root / "view-rows.tsv" if case.get("row_dump") else None
+    owner = Owner(bin_dir, case_root, cargo_vendor, row_dump)
     owner.case_name = case["name"]
 
     record = {"answers": {}, "performance": {"seconds": {}}, "continuation_evidence": []}
@@ -2612,6 +2618,13 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         try:
             diagnostics = CASE_DIAGNOSTICS.get()
             _record_owner_threads(diagnostics, owner.process.pid)
+            if row_dump is not None and row_dump.exists():
+                rows = row_dump.read_text(errors="replace").splitlines()
+                with OUTPUT_LOCK:
+                    print(f"SURFACE-VIEW-ROWS {case['name']} rows={len(rows)} sha256="
+                          + hashlib.sha256("\n".join(rows).encode()).hexdigest(), flush=True)
+                    for line in rows:
+                        print(f"SURFACE-VIEW-ROW {case['name']}\t{line[:400]}", flush=True)
         finally:
             try:
                 owner.stop()

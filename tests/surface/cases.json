@@ -827,7 +827,8 @@
           "tool": "backend.outline",
           "arguments": {}
         }
-      ]
+      ],
+      "row_dump": true
     }
   ]
 }

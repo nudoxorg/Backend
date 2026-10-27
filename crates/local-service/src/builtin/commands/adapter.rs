@@ -7062,6 +7062,7 @@ fn semantic_readiness(
     // row count; the counts are derived from the same owner snapshot, so they
     // cannot disagree with the root the certificate commits to.
     let progress = super::super::ingest_progress(&daemon.engine().daemon().owner().snapshot())?;
+    dump_view_rows(daemon.engine().daemon().library().view());
     Ok(CommandReply::Readiness(
         backend_engine::HealthReport::from_admitted_parts(
             report.revision(),
@@ -7072,6 +7073,24 @@ fn semantic_readiness(
         )
         .with_progress(progress),
     ))
+}
+
+/// Diagnostic for T2: the same TypeScript source intermittently publishes 3177
+/// rows instead of 3175 with identical outline declarations. When
+/// `NUDOX_VIEW_ROW_DUMP` names a file, each readiness reply rewrites it with
+/// one sorted line per published row so two runs can be diffed.
+fn dump_view_rows(view: &backend_engine::ViewRoot) {
+    let Some(path) = std::env::var_os("NUDOX_VIEW_ROW_DUMP") else {
+        return;
+    };
+    let mut lines = view
+        .rows()
+        .iter()
+        .map(|row| format!("{:?}\t{:?}\t{}\t{:?}", row.id, row.kind, row.label, row.source))
+        .collect::<Vec<_>>();
+    lines.sort_unstable();
+    // Best effort: a diagnostic write must never fail a readiness reply.
+    std::fs::write(path, lines.join("\n")).ok();
 }
 
 fn project_view_deltas(
