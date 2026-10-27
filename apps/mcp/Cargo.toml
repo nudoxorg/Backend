@@ -19,6 +19,7 @@ token-budget = []
 
 [dependencies]
 axum.workspace = true
+backend-account = { path = "../../crates/account" }
 backend-client = { path = "../../crates/client" }
 backend-engine = { path = "../../crates/engine" }
 backend-extension-trustfall = { path = "../../extensions/trustfall" }

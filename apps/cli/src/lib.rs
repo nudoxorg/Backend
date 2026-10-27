@@ -24,6 +24,7 @@ pub const MAX_ENDPOINT_PATH: usize = backend_replication::MAX_UNIX_ENDPOINT_PATH
 /// Environment variable naming the local daemon Unix endpoint.
 pub const ENDPOINT_ENV: &str = "BACKEND_LOCALD_ENDPOINT";
 
+mod auth;
 mod client;
 mod cluster;
 mod error;

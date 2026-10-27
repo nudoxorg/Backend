@@ -428,6 +428,52 @@ fn open_the_window(cx: &mut App, parts: AppParts, starting_platform: Instant) {
     if let Ok(spec) = std::env::var("NUDOX_DEBUG_PAGE") {
         crate::runtime::debug_page::open_window(cx, graph.store.clone(), crate::runtime::debug_page::parse_keys(&spec));
     }
+    let open_main = move |cx: &mut App| open_main_window(cx, graph, closing, remembered);
+    if needs_sign_in() {
+        open_sign_in(cx, Box::new(open_main));
+    } else {
+        open_main(cx);
+    }
+}
+
+/// A build that requires an account shows the sign-in window first when no
+/// usable key is saved (a damaged file is replaced by signing in again).
+fn needs_sign_in() -> bool {
+    backend_account::required()
+        && !matches!(
+            backend_account::KeyStore::open().and_then(|store| store.load()),
+            Ok(Some(_))
+        )
+}
+
+fn open_sign_in(cx: &mut App, proceed: crate::shell::sign_in::Proceed) {
+    let bounds = Bounds::centered(None, gpui::size(px(560.0), px(420.0)), cx);
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        titlebar: Some(TitlebarOptions {
+            title: Some("Sign in to Nudox".into()),
+            appears_transparent: !cfg!(any(target_os = "linux", target_os = "freebsd")),
+            traffic_light_position: Some(point(px(14.0), px(14.0))),
+        }),
+        is_resizable: false,
+        app_id: Some("dev.nudox.desktop".to_owned()),
+        ..WindowOptions::default()
+    };
+    if let Err(error) = cx.open_window(options, move |window, cx| {
+        let view = cx.new(|cx| crate::shell::sign_in::SignIn::new(proceed, window, cx));
+        cx.new(|cx| gpui_component::Root::new(view, window, cx).bordered(false))
+    }) {
+        eprintln!("backend-desktop: open sign-in window: {error}");
+    }
+    cx.activate(true);
+}
+
+fn open_main_window(
+    cx: &mut App,
+    graph: UiEntityGraph,
+    closing: gpui::Entity<super::close::GracefulClose>,
+    remembered: Option<WindowSize>,
+) {
     let options = window_options(cx, remembered);
     let opening = Instant::now();
     if let Err(error) = cx.open_window(options, move |window, cx| {

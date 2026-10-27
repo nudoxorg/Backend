@@ -894,6 +894,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-account"
+version = "0.2.0"
+dependencies = [
+ "backend-platform",
+ "backend-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "ureq",
+]
+
+[[package]]
 name = "backend-advisory"
 version = "0.2.0"
 dependencies = [
@@ -926,6 +939,7 @@ dependencies = [
 name = "backend-cli"
 version = "0.2.0"
 dependencies = [
+ "backend-account",
  "backend-client",
  "backend-engine",
  "backend-library",
@@ -1056,6 +1070,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-channel",
+ "backend-account",
  "backend-advisory",
  "backend-client",
  "backend-facet",
@@ -1584,6 +1599,7 @@ name = "backend-mcp"
 version = "0.2.0"
 dependencies = [
  "axum",
+ "backend-account",
  "backend-client",
  "backend-engine",
  "backend-extension-trustfall",

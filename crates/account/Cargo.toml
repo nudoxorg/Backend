@@ -1,0 +1,21 @@
+[package]
+name = "backend-account"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+backend-platform = { path = "../platform" }
+backend-runtime = { path = "../runtime" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

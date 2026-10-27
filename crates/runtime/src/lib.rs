@@ -76,6 +76,7 @@ pub const RUNTIME_DIR_ENV: &str = "XDG_RUNTIME_DIR";
 
 const APPLICATION_DIRECTORY: &str = "Nudox";
 const PROJECTS_DIRECTORY: &str = "projects";
+const ACCOUNT_DIRECTORY: &str = "account";
 const AUTHORITY_FILE: &str = "authority.secret";
 const AUTHORITY_INITIALIZATION_LOCK: &str = "authority-initialize.lock";
 /// How long a daemon that is still running may take to publish its endpoint.
@@ -759,6 +760,36 @@ pub fn default_project_workspaces_directory() -> Result<PathBuf, RuntimeError> {
         .path()
         .join(APPLICATION_DIRECTORY)
         .join(PROJECTS_DIRECTORY))
+}
+
+/// Creates or verifies the owner-only account directory and returns its path.
+///
+/// It sits beside `projects` in the same per-user application directory, so the
+/// desktop app, CLI and MCP all find the one signed-in key.
+///
+/// # Errors
+/// Returns the platform profile discovery error when no user state root exists,
+/// or the initialization error when the directory cannot be admitted as private.
+pub fn account_directory() -> Result<PathBuf, RuntimeError> {
+    let state = application_state_root()?;
+    let path = state
+        .path()
+        .join(APPLICATION_DIRECTORY)
+        .join(ACCOUNT_DIRECTORY);
+    let initialized = backend_platform::OwnedWorkspaceDirectory::under_user_data_application(
+        &state.anchor,
+        state.suffix,
+        APPLICATION_DIRECTORY,
+    )
+    .and_then(|application| {
+        application.verify_path()?;
+        backend_platform::durable::ensure_private_application_directory(&path)
+    });
+    initialized.map_err(|source| RuntimeError::DefaultStateInitialization {
+        path: path.clone(),
+        source,
+    })?;
+    Ok(path)
 }
 
 /// Derives one project's default workspace beneath an already selected parent.

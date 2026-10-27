@@ -46,6 +46,7 @@ mod reveal;
 mod root;
 mod shelf;
 mod side;
+pub(crate) mod sign_in;
 mod status;
 #[cfg(test)]
 mod symbol_links;
