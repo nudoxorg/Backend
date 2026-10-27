@@ -2327,14 +2327,17 @@ def copy_case_project(case: dict, project: Path) -> None:
 # Diagnostic only (W2): the TypeScript corpus intermittently publishes 3177
 # rows instead of 3175. In the drifted runs `observer.trackResult` and
 # `observer.trackProp` in src/queriesObserver.ts become unresolved externals.
-# Re-index from fresh owners under different checker worker counts to see
-# whether the drift follows parallel checking. Never part of the verdict.
-DETERMINISM_PROBE_WORKERS = (4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 1)
+# The checker worker count made no difference (pr-t2/2141), but every run at a
+# different project path drifted. Separate the project path from the checker
+# trace environment. Never part of the verdict.
+TYPE_TRACE_ENV = {"NUDOX_TYPESCRIPT_TYPE_PROJECTION_DIAGNOSTICS": "1"}
+DETERMINISM_PROBE_SERIAL = ({}, {}, TYPE_TRACE_ENV, {}, {}, TYPE_TRACE_ENV)
+DETERMINISM_PROBE_PARALLEL = ({}, {})
 DETERMINISM_PROBE_NAMES = ("trackResult", "trackProp")
 
 
-def _determinism_probe_index(case: dict, bin_dir: Path, attempt: int, workers: int, timeout: float) -> dict:
-    root = SCRATCH / f"{case['name']}-probe-{attempt}"
+def _determinism_probe_index(case: dict, bin_dir: Path, label: str, root: Path,
+                             extra_env: dict, timeout: float) -> dict:
     if root.exists():
         make_case_directories_writable(root)
         shutil.rmtree(root)
@@ -2342,14 +2345,11 @@ def _determinism_probe_index(case: dict, bin_dir: Path, attempt: int, workers: i
     project = root / "project"
     copy_case_project(case, project)
     dump = root / "view-rows.tsv"
-    owner = Owner(bin_dir, root, row_dump=dump, extra_env={
-        "NUDOX_TSZ_CHECKER_WORKERS": str(workers),
-        "NUDOX_TYPESCRIPT_TYPE_PROJECTION_DIAGNOSTICS": "1",
-    })
-    owner.case_name = root.name
+    owner = Owner(bin_dir, root, row_dump=dump, extra_env=extra_env)
+    owner.case_name = case["name"]
     try:
         answer, seconds = run_cli(owner, project, ["add", str(project), "--wait"], timeout)
-        require_completed_index(answer, len(case["languages"]))
+        view = require_completed_index(answer, len(case["languages"]))
         run_cli(owner, project, ["--passive", "health"], 30)
     finally:
         owner.stop()
@@ -2361,18 +2361,29 @@ def _determinism_probe_index(case: dict, bin_dir: Path, attempt: int, workers: i
              if "def publication" in line or "projection cycle" in line or "work allowance" in line]
     make_case_directories_writable(root)
     shutil.rmtree(root)
-    return {"attempt": attempt, "workers": workers, "rows": len(rows),
-            "external": external, "add_seconds": round(seconds, 2), "notes": notes[:8]}
+    return {"run": label, "path": str(project), "trace_env": bool(extra_env), "view": view,
+            "rows": len(rows), "external": external, "add_seconds": round(seconds, 2),
+            "notes": notes[:8]}
+
+
+def _emit_determinism(case: dict, result: dict) -> None:
+    with OUTPUT_LOCK:
+        print(f"SURFACE-DETERMINISM {case['name']} " + json.dumps(result, sort_keys=True), flush=True)
 
 
 def run_determinism_probe(case: dict, bin_dir: Path, timeout: float) -> None:
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="probe") as probes:
+    # The case's own path first, one owner at a time, exactly like the case.
+    for attempt, extra_env in enumerate(DETERMINISM_PROBE_SERIAL):
+        _emit_determinism(case, _determinism_probe_index(
+            case, bin_dir, f"same-path-{attempt}", SCRATCH / case["name"], extra_env, timeout))
+    with ThreadPoolExecutor(max_workers=len(DETERMINISM_PROBE_PARALLEL), thread_name_prefix="probe") as probes:
         results = probes.map(
-            lambda item: _determinism_probe_index(case, bin_dir, item[0], item[1], timeout),
-            enumerate(DETERMINISM_PROBE_WORKERS))
+            lambda item: _determinism_probe_index(
+                case, bin_dir, f"other-path-{item[0]}", SCRATCH / f"{case['name']}-probe-{item[0]}",
+                item[1], timeout),
+            enumerate(DETERMINISM_PROBE_PARALLEL))
         for result in results:
-            with OUTPUT_LOCK:
-                print(f"SURFACE-DETERMINISM {case['name']} " + json.dumps(result, sort_keys=True), flush=True)
+            _emit_determinism(case, result)
 
 
 def run_case(case: dict, bin_dir: Path) -> dict:
