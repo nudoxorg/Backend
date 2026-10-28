@@ -910,7 +910,7 @@ def main():
     parser.add_argument("--candidate", required=True, type=Path)
     parser.add_argument("--source", type=Path)
     parser.add_argument("--check-fast", "--check-ci", dest="check_fast", action="store_true", help="check exact source CI: fast plus the selected platform lane")
-    parser.add_argument("--repo", default="nudoxorg/backend")
+    parser.add_argument("--repo", default="nudoxorg/releases")
     parser.add_argument("--candidate-tag")
     parser.add_argument("--rc", type=int)
     parser.add_argument("--platform", choices=PLATFORMS)

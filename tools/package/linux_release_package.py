@@ -60,7 +60,7 @@ def checkpoint_shell(release_tag: str, installer: bytes, minimum_glibc: str) -> 
         fail("checkpoint shell requires the measured glibc version")
     template = Path(__file__).with_name("install_linux_checkpoint.sh.in").read_text()
     substitutions = {
-        "@INSTALLER_URL@": f"https://github.com/nudoxorg/Backend/releases/download/{release_tag}/install-linux-x64.py",
+        "@INSTALLER_URL@": f"https://github.com/nudoxorg/releases/releases/download/{release_tag}/install-linux-x64.py",
         "@INSTALLER_SHA256@": hashlib.sha256(installer).hexdigest(),
         "@INSTALLER_BYTES@": str(len(installer)),
         "@MINIMUM_GLIBC@": minimum_glibc,

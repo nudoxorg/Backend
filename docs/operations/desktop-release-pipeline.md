@@ -52,8 +52,10 @@ brew install --cask nudoxorg/release-qa/nudox
 python3 tools/package/release_contract.py submit --candidate /absolute/path/to/candidate --source . --rc 1
 ```
 
-`NUDOX_RELEASE_TOKEN` needs Contents write on `nudoxorg/backend`; `FORGEJO_TOKEN` needs
-Backend/status read. Obtain them through the team's secret mechanism, not command-line
+`NUDOX_RELEASE_TOKEN` needs Contents write on `nudoxorg/releases`; `FORGEJO_TOKEN` needs
+Backend/status read. Releases live in `nudoxorg/releases`, which holds binaries only and is not
+mirrored: the Forgejo push mirror to `nudoxorg/Backend` deletes tags that exist only on
+GitHub, which turns their releases back into drafts. Obtain them through the team's secret mechanism, not command-line
 arguments or committed files. `submit` checks source/version/tree/lock, artifact bytes, native
 QA, and exact-revision CI. It chooses `v<version>-rc.<number>-<platform>`, uploads a draft,
 reads every asset back, and only then makes the completed prerelease visible to Concourse.
