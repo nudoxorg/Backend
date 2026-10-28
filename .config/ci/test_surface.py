@@ -1821,7 +1821,7 @@ class OwnerPeakResetTests(unittest.TestCase):
 
         def read(path):
             if str(path) == "/proc/123/status":
-                return "VmHWM:\t120 kB\nVmRSS:\t100 kB\n"
+                return "VmHWM:\t120000 kB\nVmRSS:\t100000 kB\n"
             return "123 (locald) R " + " ".join(["0"] * 10 + ["10", "20"])
 
         with patch.object(Path, "write_text", autospec=True,
@@ -1839,7 +1839,7 @@ class OwnerPeakResetTests(unittest.TestCase):
         owner = surface.Owner.__new__(surface.Owner)
         owner.process = SimpleNamespace(pid=123, poll=lambda: None)
         writes = []
-        statuses = iter(["VmHWM:\t3049648 kB\nVmRSS:\t3049196 kB\n",
+        statuses = iter(["VmHWM:\t3049648 kB\nVmRSS:\t3040000 kB\n",
                          "VmHWM:\t3049200 kB\nVmRSS:\t3049200 kB\n"])
 
         def read(path):
@@ -1855,6 +1855,27 @@ class OwnerPeakResetTests(unittest.TestCase):
             reset = owner.reset_peak_rss()
         self.assertEqual(len(writes), 2)
         self.assertEqual((reset["peak_rss_kib"], reset["resident_rss_kib"]), (3049200, 3049200))
+
+    def test_peak_reset_accepts_a_live_owner_within_the_counter_slack(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        owner = surface.Owner.__new__(surface.Owner)
+        owner.process = SimpleNamespace(pid=123, poll=lambda: None)
+        writes = []
+
+        def read(path):
+            if str(path) == "/proc/123/status":
+                return "VmHWM:\t982652 kB\nVmRSS:\t982532 kB\n"
+            return "123 (locald) R " + " ".join(["0"] * 10 + ["10", "20"])
+
+        with patch.object(Path, "write_text", autospec=True,
+                          side_effect=lambda self, value: writes.append((str(self), value))), \
+             patch.object(Path, "read_text", autospec=True,
+                          side_effect=lambda self, *args, **kwargs: read(self)), \
+             patch.object(surface.time, "sleep"):
+            reset = owner.reset_peak_rss()
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(reset["peak_rss_kib"], 982652)
 
 
 class CursorProofReplayTests(unittest.TestCase):

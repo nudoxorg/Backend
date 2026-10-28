@@ -55,6 +55,8 @@ SCRATCH = Path("/tmp/nudox-surface")
 TOLERANCE = {"seconds": 1.5, "peak_rss_kib": 1.25, "cpu_seconds": 1.5}
 # Below these floors noise dominates and a change is not a regression.
 FLOOR = {"seconds": 2.0, "peak_rss_kib": 64 * 1024, "cpu_seconds": 2.0}
+# Largest VmHWM-over-VmRSS gap accepted as a completed peak reset; see reset_peak_rss.
+PEAK_RESET_SLACK_KIB = 1024
 SEARCH_PREPARATION_DIAGNOSTICS_ENV = "NUDOX_SEARCH_PREPARATION_DIAGNOSTICS"
 OWNER_USAGE_DIAGNOSTICS_ENV = "NUDOX_OWNER_USAGE_DIAGNOSTICS"
 OWNER_USAGE_DIAGNOSTIC_LIMIT = 8192
@@ -846,7 +848,10 @@ class Owner:
                                          before=before, value="5\n")
         # A still-allocating owner can grow between the reset and the
         # VmHWM/VmRSS read (cpp-pugixml, pr-t2/2132: peak 3049648 vs resident
-        # 3049196 KiB). Reset again rather than accept a mismatched sample.
+        # 3049196 KiB), and Linux batches RSS counters per CPU, so the two can
+        # stay apart on a live owner (rust-ryu, pr-t2/2629: 982652 vs 982532
+        # KiB after five resets). A refused reset keeps the old maximum; one
+        # within PEAK_RESET_SLACK_KIB of resident moves the peak by at most that.
         for _attempt in range(5):
             written = Path(f"/proc/{pid}/clear_refs").write_text("5\n")
             reset = self.usage_raw()
@@ -854,10 +859,10 @@ class Owner:
                                          pid=pid, start_ticks=reset.get("start_ticks"),
                                          bytes_written=written, before=before, after=reset,
                                          value="5\n")
-            if reset["peak_rss_kib"] == reset["resident_rss_kib"]:
+            if reset["peak_rss_kib"] - reset["resident_rss_kib"] <= PEAK_RESET_SLACK_KIB:
                 break
             time.sleep(0.05)
-        if reset["peak_rss_kib"] != reset["resident_rss_kib"]:
+        if reset["peak_rss_kib"] - reset["resident_rss_kib"] > PEAK_RESET_SLACK_KIB:
             raise RuntimeError(
                 "owner VmHWM reset did not take effect: "
                 f"peak={reset['peak_rss_kib']} KiB resident={reset['resident_rss_kib']} KiB"
