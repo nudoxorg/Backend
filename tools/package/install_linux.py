@@ -24,7 +24,7 @@ import urllib.parse
 import urllib.request
 
 CATALOG_URL = "https://api.nudox.org/v1/releases"
-GITHUB_REPO = "nudoxorg/Backend"
+GITHUB_REPO = "nudoxorg/releases"
 PLATFORM = "linux-x64"
 TARGET = "x86_64-unknown-linux-gnu"
 # Filled by linux_release_package.py for a meeting/checkpoint release. A
