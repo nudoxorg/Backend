@@ -1617,7 +1617,11 @@ def _emit_continuation_page(evidence: list, transport: str, tool: str,
                             byte_budget: dict | None = None,
                             max_page_bytes: int = MAX_CONTINUATION_RECEIPT_BYTES,
                             max_total_bytes: int = MAX_CONTINUATION_CHAIN_BYTES) -> int:
-    """Retain each public page outside goldens without logging opaque cursors."""
+    """Retain each public page outside goldens; log only its hash, never a cursor.
+
+    Full pages made the T2 build log 17-20 MB, and Concourse cut it off before
+    the last verdicts and CI-EVIDENCE (pr-t2/2135, 2623).
+    """
     payload = json.loads(json.dumps(response))
     offered = offered_cursor(payload)
     payload.pop("nextCursor", None)
@@ -1645,29 +1649,32 @@ def _emit_continuation_page(evidence: list, transport: str, tool: str,
         byte_budget["bytes"] = retained + receipt_bytes
     evidence.append(receipt)
     with OUTPUT_LOCK:
-        print("SURFACE-CONTINUATION-PAGE " + encoded.decode("utf-8"), flush=True)
+        print("SURFACE-CONTINUATION-PAGE " + json.dumps(continuation_reference(receipt), sort_keys=True),
+              flush=True)
     return receipt_bytes
 
 
 
-def continuation_report_references(evidence: list[dict]) -> list[dict]:
-    """Index every full SURFACE-CONTINUATION-PAGE log record by its exact hash.
+def continuation_reference(receipt: dict) -> dict:
+    """Name one retained continuation page by its exact hash."""
+    encoded = json.dumps(receipt, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False).encode("utf-8")
+    return {
+        "transport": receipt["transport"],
+        "tool": receipt["tool"],
+        "page": receipt["page"],
+        "receipt_sha256": hashlib.sha256(encoded).hexdigest(),
+        "receipt_bytes": len(encoded),
+    }
 
-    DTOs remain in the case record and log. The bounded CI verdict packet must
-    not duplicate them: one real-project walk can exceed its entire byte cap.
+
+def continuation_report_references(evidence: list[dict]) -> list[dict]:
+    """Index every retained continuation page by its exact hash.
+
+    DTOs remain in the case record. The bounded CI verdict packet must not
+    duplicate them: one real-project walk can exceed its entire byte cap.
     """
-    references = []
-    for receipt in evidence:
-        encoded = json.dumps(receipt, sort_keys=True, separators=(",", ":"),
-                             ensure_ascii=False).encode("utf-8")
-        references.append({
-            "transport": receipt["transport"],
-            "tool": receipt["tool"],
-            "page": receipt["page"],
-            "receipt_sha256": hashlib.sha256(encoded).hexdigest(),
-            "receipt_bytes": len(encoded),
-        })
-    return references
+    return [continuation_reference(receipt) for receipt in evidence]
 
 
 def walk_outline_pages(first: dict, fetch_page, published_root: str,
