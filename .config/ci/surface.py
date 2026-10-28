@@ -2783,6 +2783,7 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
             parser.error(f"unknown cases: {sorted(unknown)}")
         cases = [case for case in cases if case["name"] in args.case]
     failed = []
+    awaiting_confirmation: list[tuple[dict, dict, dict]] = []
     report = {}
     evidence = {}
     provenance = ({"source_sha": args.source_sha,
@@ -2828,6 +2829,7 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         record, elapsed, error = future.result()
         entry = {"state": "failed", "seconds": {}}
         evidence[case["name"]] = entry
+        deferred = False
         try:
             if error is not None:
                 with start_lock:
@@ -2888,31 +2890,65 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
                 failed.append(case["name"])
                 return
             reviewed = json.loads(snapshot_path.read_text())
-            baseline = reviewed.get("performance", {}).get("seconds", {}).get("cli add")
-            indexed = record["performance"].get("seconds", {}).get("cli add")
-            if isinstance(baseline, (int, float)) and baseline > 0 and isinstance(indexed, (int, float)):
-                entry["index_delta_percent"] = round((indexed / baseline - 1) * 100, 2)
-            problems = []
-            if reviewed["answers"] != record["answers"]:
-                old = json.dumps(reviewed["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
-                new = json.dumps(record["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
-                diff = "\n".join(difflib.unified_diff(old, new, "reviewed", "this change", lineterm="", n=2))
-                entry["snapshot_diff"] = bounded_text(diff, 8192)
-                problems.append(f"answers changed; explain or update the snapshot:\n{diff[:20000]}")
-            problems += regressions(reviewed.get("performance", {}), record["performance"])
-            if problems:
-                entry["detail"] = bounded_text("\n".join(problem.split("\n", 1)[0] for problem in problems), 4096)
-                failed.append(case["name"])
-                for problem in problems:
-                    log(f"case {case['name']}: {problem}")
-                if args.print_missing and reviewed["answers"] != record["answers"]:
-                    print_candidate(case["name"], record)
-            else:
-                entry["state"] = "passed"
-                log(f"case {case['name']} matches ({elapsed:.1f}s, "
-                    f"peak {record['performance'].get('peak_rss_kib', 0) // 1024} MiB)")
+            slow = judge(case, record, elapsed, reviewed, entry)
+            if slow and not interrupted.is_set():
+                # One sample on a shared host is noise-prone: hold the verdict
+                # and measure once more after the parallel run. Answers matched.
+                entry["first_measurement_regressions"] = slow
+                awaiting_confirmation.append((case, entry, reviewed))
+                deferred = True
+                log(f"case {case['name']}: over a performance limit once; confirming after the run")
+                return
+            if slow:
+                fail_case(case, entry, slow)
         finally:
-            emit_evidence(case, entry)
+            if not deferred:
+                emit_evidence(case, entry)
+
+    def judge(case: dict, record: dict, elapsed: float, reviewed: dict, entry: dict) -> list[str]:
+        """Settle `entry` unless only performance regressed; return those regressions."""
+        baseline = reviewed.get("performance", {}).get("seconds", {}).get("cli add")
+        indexed = record["performance"].get("seconds", {}).get("cli add")
+        if isinstance(baseline, (int, float)) and baseline > 0 and isinstance(indexed, (int, float)):
+            entry["index_delta_percent"] = round((indexed / baseline - 1) * 100, 2)
+        slow = regressions(reviewed.get("performance", {}), record["performance"])
+        if reviewed["answers"] != record["answers"]:
+            old = json.dumps(reviewed["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
+            new = json.dumps(record["answers"], indent=2, sort_keys=True, ensure_ascii=False).splitlines()
+            diff = "\n".join(difflib.unified_diff(old, new, "reviewed", "this change", lineterm="", n=2))
+            entry["snapshot_diff"] = bounded_text(diff, 8192)
+            fail_case(case, entry, [f"answers changed; explain or update the snapshot:\n{diff[:20000]}", *slow])
+            if args.print_missing:
+                print_candidate(case["name"], record)
+            return []
+        if not slow:
+            entry["state"] = "passed"
+            log(f"case {case['name']} matches ({elapsed:.1f}s, "
+                f"peak {record['performance'].get('peak_rss_kib', 0) // 1024} MiB)")
+        return slow
+
+    def fail_case(case: dict, entry: dict, problems: list[str]) -> None:
+        entry["state"] = "failed"
+        entry["detail"] = bounded_text("\n".join(problem.split("\n", 1)[0] for problem in problems), 4096)
+        failed.append(case["name"])
+        for problem in problems:
+            log(f"case {case['name']}: {problem}")
+
+    def confirm(case: dict, entry: dict, reviewed: dict) -> None:
+        """Re-measure a case that regressed once; it fails only if it regresses again."""
+        record, elapsed, error = executor.submit(invoke_tracked, case).result()
+        if error is not None:
+            fail_case(case, entry, [*entry["first_measurement_regressions"],
+                                    f"confirmation run could not complete: {error}"])
+            return
+        entry.update(record["performance"])
+        report[case["name"]] = record["performance"]
+        emit_performance(case["name"], record["performance"])
+        slow = judge(case, record, elapsed, reviewed, entry)
+        if slow:
+            fail_case(case, entry, [f"{problem} (confirmed on a second measurement)" for problem in slow])
+        elif entry["state"] == "passed":
+            log(f"case {case['name']}: second measurement is within every limit")
 
     process_custody.activate()
     import cpu_placement
@@ -2947,6 +2983,20 @@ def compare_cases(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
             if interrupted.is_set():
                 was_interrupted = True
                 break
+        # Sequential, after the parallel run, so a confirmation never shares the
+        # host with another case.
+        while awaiting_confirmation and not interrupted.is_set():
+            case, entry, reviewed = awaiting_confirmation.pop(0)
+            try:
+                confirm(case, entry, reviewed)
+            finally:
+                emit_evidence(case, entry)
+        for case, entry, _ in awaiting_confirmation:
+            fail_case(case, entry, [*entry["first_measurement_regressions"],
+                                    "not confirmed: CI runner received SIGTERM first"])
+            emit_evidence(case, entry)
+        awaiting_confirmation.clear()
+        was_interrupted = was_interrupted or interrupted.is_set()
     except BaseException:
         executor.shutdown(wait=not interrupted.is_set(), cancel_futures=interrupted.is_set())
         if previous_sigterm is not None and not interrupted.is_set():
