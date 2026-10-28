@@ -1154,7 +1154,7 @@ class SnapshotContinuationTests(unittest.TestCase):
         self.assertEqual(receipt["response"]["records"], self.page(token)["records"])
         self.assertEqual(receipt["response"]["budget"]["bytes"], self.page(token)["budget"]["bytes"])
 
-    def test_report_references_bind_every_full_logged_continuation_page(self):
+    def test_report_references_match_every_logged_continuation_page(self):
         import contextlib
         import json
         import copy
@@ -1173,15 +1173,18 @@ class SnapshotContinuationTests(unittest.TestCase):
         logged = output.getvalue().splitlines()
         self.assertEqual(len(references), len(evidence))
         self.assertEqual(evidence, original)
-        self.assertGreater(len(output.getvalue().encode()), 1024 * 1024)
+        self.assertLess(len(output.getvalue().encode()), 2048)
         self.assertLess(len(json.dumps(references).encode()), 2048)
-        for index, (reference, line) in enumerate(zip(references, logged), 1):
-            payload = line.removeprefix("SURFACE-CONTINUATION-PAGE ").encode()
+        for index, (reference, receipt, line) in enumerate(zip(references, original, logged), 1):
+            payload = json.dumps(receipt, sort_keys=True, separators=(",", ":"),
+                                 ensure_ascii=False).encode("utf-8")
+            self.assertGreater(len(payload), 200000)
             self.assertEqual(reference, {
                 "transport": "mcp", "tool": "backend.search", "page": index,
                 "receipt_sha256": hashlib.sha256(payload).hexdigest(),
                 "receipt_bytes": len(payload),
             })
+            self.assertEqual(json.loads(line.removeprefix("SURFACE-CONTINUATION-PAGE ")), reference)
         evidence[1]["response"]["source_text"] += "changed"
         changed = surface.continuation_report_references(evidence)
         self.assertNotEqual(references[1]["receipt_sha256"], changed[1]["receipt_sha256"])
