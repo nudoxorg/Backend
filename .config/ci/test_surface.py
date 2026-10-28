@@ -2557,6 +2557,72 @@ class IncrementalCaseVerdictTests(unittest.TestCase):
             self.assertFalse(packet.exists(), "partial verdicts cannot stand in for full acceptance")
 
 
+class PerformanceConfirmationTests(unittest.TestCase):
+    REVIEWED = {"answers": {"search": ["Signer"]}, "performance": {"seconds": {"cli add": 3.0}}}
+
+    def compare(self, *runs):
+        import argparse
+        import contextlib
+        import io
+        import json
+        import tempfile
+        from unittest.mock import patch
+
+        class ImmediateExecutor:
+            def __init__(self, **kwargs): pass
+            def submit(self, function, case, *args):
+                future = Future()
+                future.set_result(function(case, *args))
+                return future
+            def shutdown(self, **kwargs): pass
+
+        records = [({"answers": answers, "performance": {"seconds": {"cli add": seconds}}}, seconds, None)
+                   for answers, seconds in runs]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "cases.json").write_text(json.dumps({"cases": [{"name": "python-blinker"}]}))
+            (root / "snapshots").mkdir()
+            (root / "snapshots" / "python-blinker.json").write_text(json.dumps(self.REVIEWED))
+            packet = root / "evidence.json"
+            args = argparse.Namespace(case=None, jobs=1, bin_dir=root, ci_report=packet,
+                                      source_sha="a" * 40, artifact_digest="b" * 64,
+                                      report=None, update=False, print_missing=False)
+            stdout = io.StringIO()
+            with patch.object(surface, "SURFACE", root), \
+                    patch.object(surface, "ThreadPoolExecutor", ImmediateExecutor), \
+                    patch.object(surface, "_invoke_case", side_effect=records) as invoke, \
+                    contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+                status = surface.compare_cases(args, argparse.ArgumentParser())
+            emitted = [line for line in stdout.getvalue().splitlines()
+                       if line.startswith("SURFACE-CASE-EVIDENCE ")]
+            return status, json.loads(packet.read_text())["cases"]["python-blinker"], invoke.call_count, emitted
+
+    def test_single_slow_measurement_passes_when_the_second_is_within_limits(self):
+        answers = self.REVIEWED["answers"]
+        status, verdict, runs, emitted = self.compare((answers, 10.0), (answers, 3.2))
+        self.assertEqual((status, verdict["state"], runs, len(emitted)), (0, "passed", 2, 1))
+        self.assertEqual(verdict["seconds"], {"cli add": 3.2})
+        self.assertIn("seconds[cli add]: 10.0", verdict["first_measurement_regressions"][0])
+
+    def test_regression_on_both_measurements_fails(self):
+        answers = self.REVIEWED["answers"]
+        status, verdict, runs, emitted = self.compare((answers, 10.0), (answers, 9.0))
+        self.assertEqual((status, verdict["state"], runs, len(emitted)), (1, "failed", 2, 1))
+        self.assertIn("seconds[cli add]: 9.0", verdict["detail"])
+        self.assertIn("confirmed on a second measurement", verdict["detail"])
+
+    def test_changed_answers_fail_without_a_second_measurement(self):
+        status, verdict, runs, _ = self.compare(({"search": ["Other"]}, 10.0))
+        self.assertEqual((status, verdict["state"], runs), (1, "failed", 1))
+        self.assertIn("answers changed", verdict["detail"])
+
+    def test_confirmation_must_also_reproduce_the_reviewed_answers(self):
+        answers = self.REVIEWED["answers"]
+        status, verdict, runs, _ = self.compare((answers, 10.0), ({"search": ["Other"]}, 3.0))
+        self.assertEqual((status, verdict["state"], runs), (1, "failed", 2))
+        self.assertIn("answers changed", verdict["detail"])
+
+
 class SigtermEvidenceTests(unittest.TestCase):
     def test_started_case_error_after_signal_is_interrupted_not_product_failure(self):
         import argparse

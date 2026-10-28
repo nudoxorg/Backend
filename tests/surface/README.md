@@ -33,7 +33,11 @@ later live/GUI work. Added completeness-proof work is accounted as the separate
 phase documented below. The owner counters exclude compiler subprocesses and
 CLI/MCP resource use. Linux `/proc` is required.
 The initial ratios and noise floors in `surface.py` are provisional and need
-repeated measurements before this becomes a required performance gate. Compiler
+repeated measurements before this becomes a required performance gate. A case
+whose answers match but which exceeds a ratio once is measured a second time
+after the parallel run, alone on the host; it fails only when the second
+measurement exceeds a limit too. Both measurements stay in the verdict
+(`first_measurement_regressions`), and changed answers never get a second run. Compiler
 shell acquisition is infrastructure setup, outside those operation measurements.
 T2 runs as an isolated parallel consumer in CI and as the explicit integration
 command locally. Smoke and integration have separate verdicts. Consumers verify and
