@@ -39,7 +39,7 @@ use backend_frontend_typescript::{TszFileWorkPolicy, TszProject, TszProjectCheck
 // lanes currently admit at most four file-check workers per owner; parse,
 // bind and merge are separate stages with their existing execution controls.
 const TSZ_CHECKER_WORKERS_PER_COMPILER_LANE: std::num::NonZeroUsize =
-    std::num::NonZeroUsize::new(2).expect("checker worker policy is nonzero");
+    std::num::NonZeroUsize::new(1).expect("checker worker policy is nonzero");
 
 use backend_library::interface::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerFragmentFailure, CompilerReadiness,
