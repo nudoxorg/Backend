@@ -169,6 +169,43 @@ def metadata_path(directory, name, platform=None):
     return existing[0]
 
 
+def optional_metadata_path(directory, name, platform):
+    paths = [Path(directory) / (name + ".json"), Path(directory) / f"{name}-{platform}.json"]
+    existing = [path for path in paths if path.exists() or path.is_symlink()]
+    if len(existing) > 1:
+        raise ValueError(f"candidate has more than one {name} file")
+    return existing[0] if existing else None
+
+
+def read_ci_waiver(directory, manifest):
+    """An explicit, recorded decision to release this exact source despite red CI.
+
+    It names the CI contexts it waives, so any other context still has to pass,
+    and it is published beside the archive so the release says it was waived.
+    """
+    path = optional_metadata_path(directory, "ci-waiver", manifest["platform"])
+    if path is None:
+        return None
+    waiver = read_json(path)
+    if set(waiver) != {"schema", "source_sha", "contexts", "reason", "approved_by", "approved_at"} or waiver["schema"] != 1:
+        raise ValueError("invalid CI waiver schema")
+    if waiver["source_sha"] != manifest["source_sha"]:
+        raise ValueError("CI waiver does not name this candidate's source revision")
+    allowed = PLATFORMS[manifest["platform"]]["ci"]
+    if (not isinstance(waiver["contexts"], list) or not waiver["contexts"]
+            or len(set(waiver["contexts"])) != len(waiver["contexts"]) or not set(waiver["contexts"]) <= set(allowed)):
+        raise ValueError(f"CI waiver contexts must be a non-empty subset of {allowed}")
+    if not all(isinstance(waiver[name], str) and waiver[name].strip() for name in ("reason", "approved_by", "approved_at")):
+        raise ValueError("CI waiver requires a reason, approver and UTC timestamp")
+    try:
+        approved_at = datetime.datetime.fromisoformat(waiver["approved_at"].replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("CI waiver timestamp must be UTC ISO 8601") from error
+    if approved_at.utcoffset() != datetime.timedelta(0):
+        raise ValueError("CI waiver timestamp must be UTC")
+    return waiver
+
+
 def archive_evidence(archive, profile):
     def inspect(names, read, regular):
         if len(names) != len(set(names)) or any(
@@ -638,6 +675,8 @@ class GitHub:
                     raise ValueError("all platforms in one release version must use the same source revision")
         self.release_url = release.get("html_url", f"https://github.com/{self.repo}/releases")
         kinds = ("release-manifest",) if draft_only else ("release-manifest", "native-qa")
+        if read_ci_waiver(directory, manifest) is not None:
+            kinds += ("ci-waiver",)
         names = [manifest["asset"], manifest["asset"] + ".sha256"] + [f"{kind}-{selected}.json" for kind in kinds]
         with tempfile.TemporaryDirectory(prefix="nudox-release-evidence-") as temporary:
             staging = Path(temporary)
@@ -783,7 +822,12 @@ def _is_canonical_forgejo_origin(origin):
     return False
 
 
-def check_fast(revision, platform="macos"):
+def check_fast(revision, platform="macos", waiver=None):
+    """Require each CI context of the platform to pass, unless the waiver names it.
+
+    Returns the waived contexts that were not green.
+    """
+    waived = set(waiver["contexts"]) if waiver else set()
     token = os.environ.get("FORGEJO_TOKEN", "")
     if not token:
         raise ValueError("fast-gate verification requires Forgejo read access")
@@ -791,10 +835,16 @@ def check_fast(revision, platform="macos"):
     request = urllib.request.Request(endpoint, headers={"Authorization": "token " + token})
     with urllib.request.urlopen(request, timeout=30) as response:
         statuses = json.load(response)
+    red = []
     for context in PLATFORMS[platform]["ci"]:
         matches = [entry for entry in statuses if entry["context"] == context]
         if not matches or max(matches, key=lambda entry: entry["id"])["status"] != "success":
-            raise ValueError(f"selected source revision has no passing {context} status")
+            if context not in waived:
+                raise ValueError(f"selected source revision has no passing {context} status")
+            red.append(context)
+    if red:
+        print(f"release CI waiver: releasing {revision} with {', '.join(red)} not green: {waiver['reason']}", file=sys.stderr)
+    return red
 
 
 def promote(manifest, host, key, known_hosts):
@@ -924,8 +974,10 @@ def main():
     if mutating and args.source is None:
         raise ValueError("submission/publication requires the canonical source checkout")
     manifest = validate(args.candidate, args.source, args.platform, require_qa=args.action not in {"stage", "cask"})
+    waiver = read_ci_waiver(args.candidate, manifest)
+    waived = []
     if args.check_fast or mutating:
-        check_fast(manifest["source_sha"], manifest["platform"])
+        waived = check_fast(manifest["source_sha"], manifest["platform"], waiver)
     if args.action == "cask":
         if args.output is None:
             raise ValueError("cask generation requires --output")
@@ -957,6 +1009,8 @@ def main():
             github.publish(args.candidate, "v" + manifest["version"], True, args.platform, source=args.source)
             promote(manifest, args.promotion_host, args.promotion_key, args.known_hosts)
     result = {"action": args.action, "version": manifest["version"], "source_sha": manifest["source_sha"], "sha256": manifest["sha256"]}
+    if waived:
+        result["ci_waived"] = waived
     if args.action == "stage":
         result["preview_url"] = github.release_url
     print(json.dumps(result))
