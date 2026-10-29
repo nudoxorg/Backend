@@ -1,5 +1,21 @@
 # Backend v2
 
+## Start
+
+`direnv allow` (or `nix develop path:.#development`) loads the pinned toolchain and installs the
+git hooks: pre-commit formats staged files and scans them for secrets; pre-push runs
+`backend lint changed`. The shell carries the same six commands as every NuDox repo, as aliases
+onto the `backend` lane system:
+
+| Command | Runs |
+|---|---|
+| `fmt` | `nix fmt` (treefmt) |
+| `check` | `backend lint changed` |
+| `test` | `backend test changed` |
+| `dev` | `cargo run -p backend-desktop` |
+| `build` | `cargo build --locked -p backend-locald -p backend-cli -p backend-mcp` |
+| `ci` | `backend test pr`, what CI's T1 lane runs |
+
 This branch replaces the backend with one local-first, versioned object and
 relation engine. Stable logical keys, immutable object versions, canonical
 relation roots, exact deltas, retained arrangements, replication, and local or

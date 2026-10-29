@@ -1,13 +1,10 @@
-# Root workspace entrypoint for the backend reproducible development control
-# plane. It reuses the small, independently evaluable Nix modules under
-# `.config/nix` and pins the workspace root so pure derivations beside the
-# Cargo sources are visible.
+# The only flake (REPO-CONVENTIONS.md §2.1): a stub at the workspace root, so
+# pure derivations see the Cargo sources beside it. All Nix logic is in the
+# small, independently evaluable modules under `.config/nix`.
 {
   description = "Backend workspace development and validation environment";
 
-  # These pins repeat `.config/flake.nix` exactly so both entrypoints resolve
-  # the same locked inputs. Keep them in lockstep; `flake.lock` mirrors
-  # `.config/flake.lock`.
+  # Flake inputs must remain a literal set for pure evaluation.
   inputs = {
     bundle-nixpkgs.url = "github:philocalyst/nixpkgs/ea2e2b146a72a1a03318c215bdf7bb40f90044bf";
     nixpkgs.url = "github:NixOS/nixpkgs/0bb7ec54c8483066ec9d7720e780a5caa71f8612";
@@ -21,6 +18,13 @@
     };
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    # lib.conventions (shared hooks). Only the development shell uses it. For
+    # local iteration: --override-input nixos path:../MachineConfigurations
+    nixos.url = "git+ssh://forgejo@dev.nudox.org:2222/Nudox/MachineConfigurations.git";
+    git-hooks = {
+      url = "github:cachix/git-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
