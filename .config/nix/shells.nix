@@ -10,6 +10,7 @@
   controlFile,
   corpus,
   gui,
+  conventions,
 }:
 let
   # Native-toolchain and corpus authorities for the seven-language corpus,
@@ -120,13 +121,19 @@ let
       esac
     fi
   '';
+  # The one shell people enter (direnv): it also installs the git hooks and
+  # carries the six repo verbs (conventions.nix).
   development = pkgs.mkShell (
     common
     // {
-      packages = tools.development ++ [
-        commands.backend
-        gui.toolsBundle
-      ];
+      packages =
+        tools.development
+        ++ [
+          commands.backend
+          gui.toolsBundle
+        ]
+        ++ conventions.verbs;
+      shellHook = common.shellHook + conventions.hooks.shellHook;
     }
   );
   verification = pkgs.mkShell (

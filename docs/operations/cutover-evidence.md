@@ -83,8 +83,8 @@ The original configuration-root entrypoint remains valid for the same two
 commands when a caller is already anchored at the workspace root:
 
 ```console
-nix develop "path:$PWD/.config#verification" --command nu --no-config-file .config/nu/cutover/tests.nu
-nix develop "path:$PWD/.config#verification" --command nu --no-config-file .config/nu/cutover/e2e.nu
+nix develop "path:$PWD#verification" --command nu --no-config-file .config/nu/cutover/tests.nu
+nix develop "path:$PWD#verification" --command nu --no-config-file .config/nu/cutover/e2e.nu
 ```
 
 The workspace-root entrypoint is the one that admits the workspace-built
@@ -117,7 +117,7 @@ scope being cut over.
 ## Verified implementation snapshot
 
 On 2026-09-09, the current implementation snapshot passed both commands above
-through `path:$PWD/.config#verification`, the complete
+through `path:$PWD#verification`, the complete
 `cargo test --workspace --all-targets --offline` graph, strict workspace Clippy
 with warnings denied, formatting, and the structural executable. The latter
 also verified one coalesced follower, two hedge attempts, distinct local,

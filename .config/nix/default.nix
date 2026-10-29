@@ -35,10 +35,6 @@ let
       [ ];
   policyFiles =
     workspacePolicyFiles
-    ++ [
-      ../flake.nix
-      ../flake.lock
-    ]
     ++ readPolicyTree ./.
     ++ readPolicyTree ../nu/core
     ++ readPolicyTree ../nu/scope
@@ -154,8 +150,18 @@ let
           corpus
           ;
       };
+      conventions = import ./conventions.nix {
+        inherit
+          inputs
+          pkgs
+          workspaceRoot
+          formatting
+          commands
+          ;
+      };
       shells = import ./shells.nix {
         inherit
+          conventions
           pkgs
           tools
           toolchains

@@ -7,8 +7,6 @@ direnv_layout_dir() {
 
 watch_file flake.nix
 watch_file flake.lock
-watch_file .config/flake.nix
-watch_file .config/flake.lock
 nix_direnv_disallow_fallback
 watch_file .config/nix/*.nix
 watch_file .config/nu/*.nu
