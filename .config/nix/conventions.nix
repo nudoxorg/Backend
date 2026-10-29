@@ -31,11 +31,18 @@ let
     inherit pkgs;
     inherit (inputs) git-hooks;
     src = workspaceRoot;
-    formatter = formatting.wrapper;
     prePush.lint.entry = "${backend} lint changed";
     extra = {
       trim-trailing-whitespace = maintained;
       end-of-file-fixer = maintained;
+      # Same scope as the formatting check (format.nix): the rest of the
+      # workspace has never been held to treefmt.
+      treefmt = {
+        enable = true;
+        name = "treefmt";
+        entry = "${formatting.wrapper}/bin/treefmt --fail-on-change --no-cache";
+        files = "^\\.config/";
+      };
     };
   };
 
