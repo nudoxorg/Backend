@@ -70,6 +70,30 @@ a completed draft. Direct Python `GitHub.publish()` callers must pass `source=` 
 canonical checkout, just as the CLI requires `--source`. Tags remain remotely mutable, so
 operators must preserve them after publication.
 
+### Releasing with red CI (waiver)
+
+A platform's CI contexts must pass for `stage`, `submit`, validation and publication. To ship
+anyway, put a `ci-waiver.json` (or `ci-waiver-<platform>.json`) in the candidate directory
+before `stage`/`submit`:
+
+```json
+{
+  "schema": 1,
+  "source_sha": "<the candidate's 40-hex source revision>",
+  "contexts": ["concourse/backend-linux"],
+  "reason": "T3 linux lane red on <known cause>; native QA passed on hardware",
+  "approved_by": "Robert",
+  "approved_at": "2026-10-29T03:00:00Z"
+}
+```
+
+It waives only the named contexts, and only contexts this platform checks (macOS:
+`concourse/backend-fast`; Linux/Windows add their `backend-<lane>`). Any other red context
+still refuses. It binds to the exact source revision, so a different candidate needs its own.
+Native QA, signing and notarization are never waived. The waiver is uploaded beside the archive
+as `ci-waiver-<platform>.json` on both the candidate and the stable release, and the tool prints
+and returns which contexts were not green, so a waived release is visible as one.
+
 Changed bytes need a new RC number. Retrying the same bytes is idempotent. Build directories,
 ad-hoc signed previews, a green build without native QA, and old archive relabels are refused.
 

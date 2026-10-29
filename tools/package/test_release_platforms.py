@@ -80,6 +80,54 @@ class PlatformReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "backend-linux"):
                 release.check_fast("a" * 40, "linux-x64")
 
+    def test_ci_waiver_releases_named_red_contexts_only(self):
+        statuses = [{"id": 1, "context": "concourse/backend-fast", "status": "success"},
+                    {"id": 2, "context": "concourse/backend-linux", "status": "failure"}]
+        waiver = {"schema": 1, "source_sha": "a" * 40, "contexts": ["concourse/backend-linux"],
+                  "reason": "T3 linux lane red on known flake", "approved_by": "Robert", "approved_at": "2026-10-29T03:00:00Z"}
+        with patch.dict(release.os.environ, {"FORGEJO_TOKEN": "test-only"}), patch.object(release.urllib.request, "urlopen", side_effect=lambda *args, **kwargs: io.BytesIO(json.dumps(statuses).encode())):
+            self.assertEqual(release.check_fast("a" * 40, "linux-x64", waiver), ["concourse/backend-linux"])
+            self.assertEqual(release.check_fast("a" * 40, "macos", waiver), [])
+            statuses[0]["status"] = "failure"
+            with self.assertRaisesRegex(ValueError, "backend-fast"):
+                release.check_fast("a" * 40, "linux-x64", waiver)
+
+    def test_ci_waiver_is_bound_to_source_and_platform_contexts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = native_candidate(root, "linux-x64")
+            self.assertIsNone(release.read_ci_waiver(root, manifest))
+            good = {"schema": 1, "source_sha": manifest["source_sha"], "contexts": ["concourse/backend-linux"],
+                    "reason": "known red lane", "approved_by": "Robert", "approved_at": "2026-10-29T03:00:00Z"}
+            path = root / "ci-waiver.json"
+            path.write_text(json.dumps(good))
+            self.assertEqual(release.read_ci_waiver(root, manifest), good)
+            for change, message in (({"source_sha": "d" * 40}, "source revision"),
+                                    ({"contexts": ["concourse/backend-windows-wine"]}, "subset"),
+                                    ({"contexts": []}, "subset"),
+                                    ({"reason": " "}, "reason"),
+                                    ({"approved_at": "2026-10-29T03:00:00+02:00"}, "UTC"),
+                                    ({"extra": True}, "schema")):
+                with self.subTest(change=change):
+                    path.write_text(json.dumps(good | change))
+                    with self.assertRaisesRegex(ValueError, message):
+                        release.read_ci_waiver(root, manifest)
+            path.write_text(json.dumps(good))
+            (root / "ci-waiver-linux-x64.json").write_text(json.dumps(good))
+            with self.assertRaisesRegex(ValueError, "more than one"):
+                release.read_ci_waiver(root, manifest)
+
+    def test_ci_waiver_is_published_beside_the_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = native_candidate(root, "windows")
+            waiver = {"schema": 1, "source_sha": manifest["source_sha"], "contexts": ["concourse/backend-windows-wine"],
+                      "reason": "Wine lane red", "approved_by": "Robert", "approved_at": "2026-10-29T03:00:00Z"}
+            (root / "ci-waiver.json").write_text(json.dumps(waiver))
+            github = FakeGitHub()
+            github.publish_fixture(root, "v0.2.0-rc.1-windows", False, platform="windows")
+            self.assertIn("ci-waiver-windows.json", [asset["name"] for asset in github.release["assets"]])
+
     def test_publication_requires_deployed_versioned_download_route(self):
         class Response(io.BytesIO):
             headers = {}
