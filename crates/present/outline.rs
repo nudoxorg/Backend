@@ -190,8 +190,13 @@ impl OutlineTree {
     /// Keeps only the nodes the filter admits and counts those it removed. Members of a
     /// removed node move up to its place; the page scope and continuation are unchanged.
     #[must_use]
-    pub fn filtered(self, filter: &KindFilter) -> Self {
-        let _ = filter;
+    pub fn filtered(mut self, filter: &KindFilter) -> Self {
+        if filter.is_empty() {
+            return self;
+        }
+        let mut dropped = 0_usize;
+        self.roots = filter_entries(&self.roots, filter, &mut dropped).into_boxed_slice();
+        self.filtered_out = self.filtered_out.saturating_add(dropped);
         self
     }
 
