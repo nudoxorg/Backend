@@ -365,6 +365,32 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "libvulkan.so.1"):
                     release.main()
 
+    def test_a_listed_library_found_only_through_another_ones_rpath_is_bundled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gui, glib, lib_dir = root / "gui", root / "glib", root / "lib"
+            for path in (gui, glib, lib_dir):
+                path.mkdir()
+            (gui / "libgio-2.0.so.0").write_bytes(b"\x7fELF gio")
+            (glib / "libmount.so.1").write_bytes(b"\x7fELF mount")
+            sonames = root / "gui-sonames.txt"
+            # Popped first, before libgio's RPATH is on the search path.
+            sonames.write_text("libgio-2.0.so.0\nlibmount.so.1\n")
+
+            def tools(command):
+                if Path(command[0]).name == "fake-patchelf" and command[1] == "--print-rpath":
+                    return str(glib) if Path(command[-1]).name == "libgio-2.0.so.0" else ""
+                return fake_run(command)
+
+            with (
+                patch.object(release, "run", side_effect=tools),
+                patch.dict(release.elf_info.__globals__, {"run": tools}),
+                patch.object(release, "GUI_SONAMES", sonames),
+                patch.object(release, "NIX_STORE", str(root)),
+            ):
+                release.bundle_gui_libraries(lib_dir, [gui], Path("fake-patchelf"), Path("fake-readelf"))
+            self.assertEqual(sorted(path.name for path in lib_dir.iterdir()), ["libgio-2.0.so.0", "libmount.so.1"])
+
     def test_portable_linux_publication_uploads_a_pinned_shell_installer(self):
         manifest = {"asset": release.ASSET, "sha256": "d" * 64, "minimum_os": "Linux glibc 2.39"}
         template = Path(release.__file__).with_name("install_linux.sh.in").read_bytes()
