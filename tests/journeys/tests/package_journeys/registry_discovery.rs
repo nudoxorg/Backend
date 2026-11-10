@@ -1148,3 +1148,44 @@ fn unacquired_release_queries_name_the_acquisition_and_list_discovered_versions(
     drop(daemon);
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// The CRM report's advisory finding: `package` and `advisory` must not
+/// disagree about a release whose advisory coverage nobody established. Both
+/// answers carry the same decision and the same coverage and freshness tags,
+/// and neither claims the release is clean.
+#[test]
+fn package_and_advisory_agree_when_advisory_coverage_is_unknown() {
+    let (root, workspace, _secret, _registry, daemon) = online_owner("advisory-agreement");
+    let endpoint = &daemon.endpoint;
+    let purl = "pkg:npm/fixture@1.0.0";
+    let _ = wait_for_discovery(endpoint, &workspace, purl);
+    let package = cli_json(endpoint, &workspace, &["package", purl]);
+    let advisory = cli_json(endpoint, &workspace, &["advisory", purl]);
+    let tags = |page: &Value, prefix: &str| -> Vec<String> {
+        page["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|row| row["tags"].as_array().into_iter().flatten())
+            .filter_map(Value::as_str)
+            .filter(|tag| tag.starts_with(prefix))
+            .map(str::to_owned)
+            .collect()
+    };
+    for prefix in ["decision:", "coverage:", "freshness:"] {
+        let from_advisory = tags(&advisory, prefix);
+        assert!(!from_advisory.is_empty(), "advisory has no `{prefix}` tag: {advisory}");
+        assert_eq!(
+            tags(&package, prefix),
+            from_advisory,
+            "package and advisory disagree on `{prefix}`: {package} vs {advisory}"
+        );
+    }
+    let rendered = package.to_string();
+    assert!(
+        !rendered.contains("no advisories reported"),
+        "unknown advisory coverage must not read as clean: {package}"
+    );
+    drop(daemon);
+    let _ = std::fs::remove_dir_all(root);
+}
