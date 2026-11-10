@@ -4,9 +4,21 @@ use serde::{Deserialize, Serialize};
 
 /// Full bytes copied from a selected row. These bytes are a locator, never a
 /// compiler `SymbolKey` or publication proof.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SelectedSymbolId([u8; 32]);
+
+/// Written as the 64 lowercase hex digits the CLI already takes, which is a third of the
+/// bytes of a 32-integer array and far fewer tokens; read back from either spelling.
+impl Serialize for SelectedSymbolId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut hex = String::with_capacity(64);
+        for byte in self.0 {
+            use core::fmt::Write as _;
+            let _ = write!(hex, "{byte:02x}");
+        }
+        serializer.serialize_str(&hex)
+    }
+}
 
 impl SelectedSymbolId {
     /// Accepts exactly one nonzero, full-width selected row identifier.
@@ -51,8 +63,31 @@ impl SelectedSymbolId {
 
 impl<'de> Deserialize<'de> for SelectedSymbolId {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::new(<[u8; 32]>::deserialize(deserializer)?)
-            .ok_or_else(|| serde::de::Error::custom("selected symbol row id is empty"))
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = SelectedSymbolId;
+            fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                formatter.write_str("64 hexadecimal digits or an array of 32 bytes")
+            }
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<Self::Value, E> {
+                SelectedSymbolId::from_hex(text)
+                    .ok_or_else(|| E::custom("selected symbol row id is not 64 hex digits or is empty"))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut bytes = [0_u8; 32];
+                for (index, slot) in bytes.iter_mut().enumerate() {
+                    *slot = seq
+                        .next_element::<u8>()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(index, &self))?;
+                }
+                if seq.next_element::<u8>()?.is_some() {
+                    return Err(serde::de::Error::invalid_length(33, &self));
+                }
+                SelectedSymbolId::new(bytes)
+                    .ok_or_else(|| serde::de::Error::custom("selected symbol row id is empty"))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
     }
 }
 

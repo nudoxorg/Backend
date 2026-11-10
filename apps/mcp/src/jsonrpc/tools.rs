@@ -951,7 +951,10 @@ fn property(spec: ArgumentSpec) -> Value {
     if spec.kind() == ArgumentKind::SelectedSymbol {
         return json!({"type":"object", "properties": {
             "kind":{"const":"selected-symbol-id"},
-            "value":{"type":"array", "items":{"type":"integer", "minimum":0, "maximum":255}, "minItems":32, "maxItems":32, "contains":{"type":"integer","minimum":1,"maximum":255}}
+            "value":{"oneOf":[
+                {"type":"string", "pattern":"^[0-9a-f]{64}$", "description":"the 64 hex digits returned in identity.semantic_data.value"},
+                {"type":"array", "items":{"type":"integer", "minimum":0, "maximum":255}, "minItems":32, "maxItems":32, "contains":{"type":"integer","minimum":1,"maximum":255}}
+            ]}
         }, "required":["kind","value"], "additionalProperties":false, "description":spec.help()});
     }
     if spec.kind() == ArgumentKind::SemanticShapeRequest {

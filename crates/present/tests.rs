@@ -473,7 +473,7 @@ fn selected_symbol_operand_uses_retained_row_bytes_and_preserves_key_families() 
         assert_eq!(
             identity["semantic_data"],
             serde_json::json!({
-                "kind":"selected-symbol-id", "value":key.as_bytes(),
+                "kind":"selected-symbol-id", "value":backend_library::encode_id(key.as_bytes()),
             })
         );
         assert_ne!(
@@ -2757,4 +2757,42 @@ fn declarations_only_and_outline_kind_options_reach_the_request() {
         lower(&outline, PROJECT).expect_err("unknown kind").slug(),
         FaultSlug::Usage
     );
+}
+
+#[test]
+fn selected_symbol_ids_and_site_symbols_are_hex_and_old_arrays_still_read() {
+    // Every row identity carried a 32-integer array.
+    let id = backend_library::SelectedSymbolId::new([0xab; 32]).expect("nonzero");
+    let encoded = serde_json::to_value(IdentitySemanticData::SelectedSymbolId(id)).expect("encode");
+    assert_eq!(
+        encoded,
+        serde_json::json!({"kind":"selected-symbol-id","value":"ab".repeat(32)})
+    );
+    assert!(serde_json::to_vec(&encoded).expect("bytes").len() < 100);
+    for spelling in [
+        encoded.clone(),
+        serde_json::json!({"kind":"selected-symbol-id","value":vec![0xab_u8; 32]}),
+    ] {
+        let decoded: IdentitySemanticData = serde_json::from_value(spelling).expect("both spellings read");
+        let IdentitySemanticData::SelectedSymbolId(decoded) = decoded;
+        assert_eq!(decoded.bytes(), id.bytes());
+    }
+    assert!(serde_json::from_value::<IdentitySemanticData>(
+        serde_json::json!({"kind":"selected-symbol-id","value":"00".repeat(32)})
+    )
+    .is_err(), "an all-zero id is refused in either spelling");
+
+    let record = ProductRecordDto {
+        site_symbol: Some([0x5a; 32]),
+        ..serde_json::from_value(serde_json::json!({"title":"t","tags":[]})).expect("sparse record")
+    };
+    let value = serde_json::to_value(&record).expect("encode");
+    assert_eq!(value["site_symbol"], serde_json::json!("5a".repeat(32)));
+    let again: ProductRecordDto = serde_json::from_value(value).expect("hex site symbol decodes");
+    assert_eq!(again.site_symbol, Some([0x5a; 32]));
+    let legacy: ProductRecordDto = serde_json::from_value(
+        serde_json::json!({"title":"t","tags":[],"site_symbol":vec![0x5a_u8; 32]}),
+    )
+    .expect("array site symbol decodes");
+    assert_eq!(legacy.site_symbol, Some([0x5a; 32]));
 }

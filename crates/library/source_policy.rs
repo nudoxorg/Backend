@@ -13,21 +13,58 @@ pub enum SourcePolicyStability {
     Unknown,
 }
 
+/// Sixteen identity bytes as 32 lowercase hexadecimal digits: a quarter of the bytes of an
+/// integer array, and one token run instead of sixteen.
+mod hex_16 {
+    use serde::{Deserialize, Deserializer, Serializer, de};
+
+    pub(super) fn serialize<S: Serializer>(value: &[u8; 16], serializer: S) -> Result<S::Ok, S::Error> {
+        let mut hex = String::with_capacity(32);
+        for byte in value {
+            use core::fmt::Write as _;
+            let _ = write!(hex, "{byte:02x}");
+        }
+        serializer.serialize_str(&hex)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 16], D::Error> {
+        let value = String::deserialize(deserializer)?;
+        if value.len() != 32 || value.bytes().any(|byte| !matches!(byte, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err(de::Error::custom("invalid 16-byte hex identity"));
+        }
+        let mut bytes = [0_u8; 16];
+        for (slot, pair) in bytes.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+            let nibble = |byte: u8| if byte.is_ascii_digit() { byte - b'0' } else { byte - b'a' + 10 };
+            *slot = nibble(pair[0]) * 16 + nibble(pair[1]);
+        }
+        Ok(bytes)
+    }
+}
+
 /// Complete bounded claim. Raw decoded fields are not source or compiler authority.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourcePolicyStatement {
+    #[serde(with = "crate::surface::hex_32")]
     symbol: [u8; 32],
+    #[serde(with = "crate::surface::hex_32")]
     selection_version: [u8; 32],
     #[serde(deserialize_with = "deserialize_coordinate")]
     selection_coordinate: String,
+    #[serde(with = "crate::surface::hex_32")]
     view_root: [u8; 32],
+    #[serde(with = "crate::surface::hex_32")]
     source_object: [u8; 32],
+    #[serde(with = "crate::surface::hex_32")]
     source_branch: [u8; 32],
+    #[serde(with = "crate::surface::hex_32")]
     source_log: [u8; 32],
     source_schema: u16,
+    #[serde(with = "crate::surface::hex_32")]
     workspace_root: [u8; 32],
+    #[serde(with = "crate::surface::hex_32")]
     evidence_root: [u8; 32],
+    #[serde(with = "crate::surface::hex_32")]
     project: [u8; 32],
     profile: crate::SemanticLanguageProfile,
     publication_profile: crate::SemanticLanguageProfile,
@@ -35,15 +72,22 @@ pub struct SourcePolicyStatement {
     publication_coordinate: String,
     #[serde(deserialize_with = "deserialize_path")]
     source_path: String,
+    #[serde(with = "crate::surface::hex_32")]
     source_fact: [u8; 32],
+    #[serde(with = "crate::surface::hex_32")]
     input_digest: [u8; 32],
     byte_len: u64,
+    #[serde(with = "crate::surface::hex_32")]
     publication_binding: [u8; 32],
+    #[serde(with = "crate::surface::hex_32")]
     image_identity: [u8; 32],
     image_byte_len: u32,
+    #[serde(with = "crate::surface::hex_32")]
     program_membership: [u8; 32],
     entity_index: u32,
+    #[serde(with = "hex_16")]
     declaration_family: [u8; 16],
+    #[serde(with = "hex_16")]
     declaration_variant: [u8; 16],
     policy_stability: SourcePolicyStability,
 }
@@ -190,6 +234,7 @@ pub enum SourcePolicyQualification {
 #[serde(deny_unknown_fields)]
 pub struct SourcePolicyCaptured {
     statement: SourcePolicyStatement,
+    #[serde(with = "crate::surface::hex_32")]
     seal: [u8; 32],
 }
 /// A seal-verified claim. Snapshot and actual source checks remain mandatory.
@@ -568,6 +613,36 @@ mod tests {
         assert!(builder().finish().is_err());
         let gap = crate::GraphAvailability::unavailable("observed policy stability unknown").expect("gap");
         assert!(builder().finish_with_availability(gap).is_ok());
+    }
+
+    #[test]
+    fn identity_fields_are_hex_so_a_claim_is_a_fraction_of_its_integer_array_size() {
+        // Each references row carried about 3.2 KB of source_policy, nearly all of it
+        // 32-integer arrays.
+        let (statement, _) = claim();
+        let seal = crate::seal_native_owner_statement(&[7; 32], &statement).expect("seal");
+        let qualification = SourcePolicyQualification::CapturedObserved {
+            data: Box::new(SourcePolicyCaptured { statement, seal }),
+        };
+        let encoded = serde_json::to_value(&qualification).expect("encode");
+        let statement = &encoded["data"]["statement"];
+        for field in ["symbol", "selection_version", "view_root", "source_object", "source_branch",
+            "source_log", "workspace_root", "evidence_root", "project", "source_fact",
+            "input_digest", "publication_binding", "image_identity", "program_membership"] {
+            assert!(statement[field].as_str().is_some_and(|text| text.len() == 64), "{field}: {}", statement[field]);
+        }
+        for field in ["declaration_family", "declaration_variant"] {
+            assert!(statement[field].as_str().is_some_and(|text| text.len() == 32), "{field}");
+        }
+        assert!(encoded["data"]["seal"].as_str().is_some_and(|text| text.len() == 64));
+        let bytes = serde_json::to_vec(&encoded).expect("bytes").len();
+        // The same claim as integer arrays was 3213 bytes in a real references row.
+        assert!(bytes < 1900, "{bytes} bytes");
+        let reopened: SourcePolicyQualification = serde_json::from_value(encoded).expect("hex decodes");
+        assert_eq!(reopened, qualification);
+        // The seal is over the canonical form, so it still verifies after the round trip.
+        let SourcePolicyQualification::CapturedObserved { data } = &reopened else { panic!("captured") };
+        crate::verify_native_owner_statement(&[7; 32], &data.statement, &data.seal).expect("seal verifies");
     }
 
     #[test]

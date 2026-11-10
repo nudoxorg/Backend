@@ -675,6 +675,55 @@ fn is_zero(value: &usize) -> bool {
     *value == 0
 }
 
+/// `Option<[u8; 32]>` as 64 lowercase hex digits, reading the older integer array too.
+mod optional_hex_32 {
+    use serde::{Deserialize, Deserializer, Serializer, de};
+
+    pub(super) fn serialize<S: Serializer>(
+        value: &Option<[u8; 32]>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            None => serializer.serialize_none(),
+            Some(bytes) => {
+                let mut hex = String::with_capacity(64);
+                for byte in bytes {
+                    use core::fmt::Write as _;
+                    let _ = write!(hex, "{byte:02x}");
+                }
+                serializer.serialize_str(&hex)
+            }
+        }
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Spelling {
+        Hex(String),
+        Bytes([u8; 32]),
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<[u8; 32]>, D::Error> {
+        match Option::<Spelling>::deserialize(deserializer)? {
+            None => Ok(None),
+            Some(Spelling::Bytes(bytes)) => Ok(Some(bytes)),
+            Some(Spelling::Hex(text)) => {
+                if text.len() != 64 || text.bytes().any(|b| !matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+                    return Err(de::Error::custom("expected 64 lowercase hex digits"));
+                }
+                let mut bytes = [0_u8; 32];
+                for (slot, pair) in bytes.iter_mut().zip(text.as_bytes().chunks_exact(2)) {
+                    let nibble = |b: u8| if b.is_ascii_digit() { b - b'0' } else { b - b'a' + 10 };
+                    *slot = nibble(pair[0]) * 16 + nibble(pair[1]);
+                }
+                Ok(Some(bytes))
+            }
+        }
+    }
+}
+
 impl RecordListDto {
     /// Projects one result page.
     #[must_use]
@@ -1400,8 +1449,9 @@ pub struct ProductIndexSearchPageDto {
 /// One product record.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProductRecordDto {
-    /// Owner-reported occurrence-site symbol, when supplied.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Owner-reported occurrence-site symbol, when supplied: 64 hex digits (older
+    /// 32-integer arrays still decode).
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "optional_hex_32")]
     pub site_symbol: Option<[u8; 32]>,
     /// Typed per-occurrence relation and source evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
