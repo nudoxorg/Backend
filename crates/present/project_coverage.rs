@@ -163,8 +163,53 @@ pub(crate) fn read_current_project_profiles(
     snapshot: &ViewSnapshot,
     health: &HealthReport,
 ) -> BTreeMap<PackageKey, Vec<crate::shelf::ProfileFiles>> {
-    let _ = (engine, snapshot, health);
-    BTreeMap::new()
+    let mut result = BTreeMap::new();
+    let view_root = health.revision().root();
+    if !snapshot_matches_health(snapshot, health) || engine.revision().ok() != Some(view_root) {
+        return result;
+    }
+    let source_root = *health.basis().root.as_bytes();
+    for (key, label) in snapshot
+        .root
+        .rows()
+        .iter()
+        .filter_map(|row| match (row.id, row.state) {
+            (RowId::Package(key), RowState::Ready) => Some((key, row.label.as_str())),
+            _ => None,
+        })
+        .take(MAX_PROFILE_READS)
+    {
+        let Ok(package) = PackageReference::parse(label.to_owned()) else {
+            continue;
+        };
+        if !matches!(package, PackageReference::Local(_)) {
+            continue;
+        }
+        let reply = engine.surface(SurfaceCommand::PackageCoverageCurrent {
+            package: package.clone(),
+            view_root: *view_root.as_bytes(),
+        });
+        let Some(evidence) = reply
+            .ok()
+            .and_then(package_coverage)
+            .and_then(|coverage| {
+                ProjectCoverageEvidence::from_owner_reply(
+                    view_root,
+                    source_root,
+                    key,
+                    &package,
+                    coverage,
+                )
+            })
+        else {
+            continue;
+        };
+        result.insert(key, evidence.profile_files());
+    }
+    if engine.revision().ok() != Some(view_root) {
+        return BTreeMap::new();
+    }
+    result
 }
 
 /// Reads current selected profile summaries only when workspace health says
