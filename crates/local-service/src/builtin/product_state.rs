@@ -820,8 +820,14 @@ impl ProductState {
                 let rows =
                     package_versions(view, catalog, catalog_index, &package, workspace)?.rows;
                 if rows.is_empty() {
+                    if let Some(reply) = discovered_versions(discovery, &package)? {
+                        return Ok((reply, false));
+                    }
                     return Err(format!(
-                        "no acquired or indexed versions are recorded for {}; use index-search (backend.index_search) to find discovered releases",
+                        "no acquired, indexed or discovered versions are recorded for {}; \
+                         `package {}` looks up this exact release's registry metadata and then lists the package's discovered versions here, \
+                         and index-search (backend.index_search) finds packages by name",
+                        package.as_str(),
                         package.as_str()
                     ));
                 }
@@ -2671,12 +2677,98 @@ fn discovered_package(
     let Some(discovery) = discovery else {
         return Ok(None);
     };
+    let candidates = discovery_candidates(discovery, |candidate| candidate == coordinate)?;
+    Ok(
+        (!candidates.is_empty()).then(|| SurfaceReply::PackageDiscovery {
+            package: coordinate.clone(),
+            observation: backend_library::RegistryPackageDiscoveryObservation::Observed {
+                candidates: candidates.into_boxed_slice(),
+            },
+            advisory: None,
+        }),
+    )
+}
+
+/// Every release of the requested package that source metadata has observed,
+/// newest first. Acquired records are never consulted: these claims carry no
+/// archive, so they answer "which versions exist", not "what is in them".
+fn discovered_versions(
+    discovery: Option<&DiscoveryStore>,
+    package: &PackageReference,
+) -> Result<Option<SurfaceReply>, String> {
+    let PackageReference::Purl(coordinate) = package else {
+        return Ok(None);
+    };
+    let Some(discovery) = discovery else {
+        return Ok(None);
+    };
+    let mut candidates = discovery_candidates(discovery, |candidate| {
+        candidate.package_type() == coordinate.package_type()
+            && candidate.namespace() == coordinate.namespace()
+            && candidate.name() == coordinate.name()
+    })?;
+    candidates.sort_by(|left, right| {
+        natural_version_order(right.coordinate.version(), left.coordinate.version())
+            .then_with(|| left.coordinate.as_str().cmp(right.coordinate.as_str()))
+            .then_with(|| left.source.cmp(&right.source))
+    });
+    Ok((!candidates.is_empty()).then(|| SurfaceReply::DiscoveredVersions {
+        package: coordinate.clone(),
+        candidates: candidates.into_boxed_slice(),
+    }))
+}
+
+/// Orders version spellings by their numeric and textual runs. It claims no
+/// ecosystem precedence rule; it only keeps a listing stable and readable.
+fn natural_version_order(left: &str, right: &str) -> std::cmp::Ordering {
+    fn runs(text: &str) -> Vec<(bool, &str)> {
+        let mut out = Vec::new();
+        let mut start = 0;
+        let mut digits = None;
+        for (index, ch) in text.char_indices() {
+            let is_digit = ch.is_ascii_digit();
+            match digits {
+                Some(current) if current == is_digit => {}
+                Some(current) => {
+                    out.push((current, &text[start..index]));
+                    start = index;
+                    digits = Some(is_digit);
+                }
+                None => digits = Some(is_digit),
+            }
+        }
+        if let Some(current) = digits {
+            out.push((current, &text[start..]));
+        }
+        out
+    }
+    let (left_runs, right_runs) = (runs(left), runs(right));
+    for (a, b) in left_runs.iter().zip(right_runs.iter()) {
+        let order = match (a.0, b.0) {
+            (true, true) => {
+                let (a, b) = (a.1.trim_start_matches('0'), b.1.trim_start_matches('0'));
+                a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+            }
+            _ => a.1.cmp(b.1),
+        };
+        if order != std::cmp::Ordering::Equal {
+            return order;
+        }
+    }
+    left_runs.len().cmp(&right_runs.len())
+}
+
+fn discovery_candidates(
+    discovery: &DiscoveryStore,
+    selects: impl Fn(&backend_engine::registry::PackageCoordinate) -> bool,
+) -> Result<Vec<RegistryDiscoveryCandidate>, String> {
     let now = discovery_now();
     let mut candidates = Vec::new();
     for (source, fact) in discovery
         .facts()
-        .filter(|(_, fact)| &fact.coordinate == coordinate)
+        .filter(|(_, fact)| selects(&fact.coordinate))
     {
+        let coordinate = &fact.coordinate;
         let observed_at = fact.observed_at.as_unix_millis();
         let valid_until = observed_at.saturating_add(DISCOVERY_FRESHNESS_MILLIS);
         let historical = discovery.is_historical(*source);
@@ -2746,15 +2838,7 @@ fn discovered_package(
             candidates.push(historical);
         }
     }
-    Ok(
-        (!candidates.is_empty()).then(|| SurfaceReply::PackageDiscovery {
-            package: coordinate.clone(),
-            observation: backend_library::RegistryPackageDiscoveryObservation::Observed {
-                candidates: candidates.into_boxed_slice(),
-            },
-            advisory: None,
-        }),
-    )
+    Ok(candidates)
 }
 
 fn registry_discovery_metadata(
@@ -4069,12 +4153,18 @@ fn dependencies(
     if let Some(value) = local_manifest_dependencies(graph, package)? {
         return Ok(value);
     }
-    Ok(DependencyFacts::Unavailable(
-        ProductText::new(format!(
-            "dependency facts are unavailable for {}; source discovery does not acquire dependency metadata. Index local source or acquire this exact release and retry",
+    let reason = match package {
+        PackageReference::Purl(_) => format!(
+            "dependency facts are unavailable for {0}; registry discovery records standing, downloads and advisories only, and dependencies are read from an acquired release. Acquire this exact release with `add {0}` (backend.index with path {0}) and retry",
             package.as_str()
-        ))
-        .map_err(|error| error.to_string())?,
+        ),
+        PackageReference::Local(_) => format!(
+            "dependency facts are unavailable for {0}; this project has no indexed manifest dependencies. Index the project directory (`add {0}`) and retry",
+            package.as_str()
+        ),
+    };
+    Ok(DependencyFacts::Unavailable(
+        ProductText::new(reason).map_err(|error| error.to_string())?,
     ))
 }
 
@@ -4350,14 +4440,15 @@ mod tests {
                 },
             )
             .expect_err("no acquired versions");
-            assert!(versions.contains("index-search"));
+            assert!(versions.contains("index-search") && versions.contains("package pkg:"), "{versions}");
             let dependencies = execute(&mut state, SurfaceCommand::Dependencies { package })
                 .expect("typed unavailable facts");
             let SurfaceReply::Dependencies(DependencyFacts::Unavailable(reason)) = dependencies
             else {
                 panic!("dependency gap must be explicit");
             };
-            assert!(reason.as_str().contains("source discovery does not acquire dependency metadata"));
+            assert!(reason.as_str().contains("registry discovery records standing, downloads and advisories only"), "{}", reason.as_str());
+            assert!(reason.as_str().contains("add pkg:"), "{}", reason.as_str());
         }
         let _ = fs::remove_dir_all(root);
     }

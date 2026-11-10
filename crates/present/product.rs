@@ -1762,6 +1762,19 @@ pub fn product_view_for_command(
     reply: &SurfaceReply,
 ) -> ProductView {
     let mut view = product_view(reply);
+    if let backend_library::SurfaceCommand::Explore { query, .. } = command
+        && view.records.is_empty()
+        && view.fault.is_none()
+        && matches!(
+            reply,
+            SurfaceReply::Explored(_) | SurfaceReply::ExploredDeclarations(_)
+        )
+    {
+        view.note = Some(explore_empty_note(
+            query.as_ref().map(backend_library::ProductText::as_str),
+            matches!(reply, SurfaceReply::ExploredDeclarations(_)),
+        ));
+    }
     if let backend_library::SurfaceCommand::PackageGraphPage { request } = command {
         view.package_graph_request_authority = request.authority;
     }
@@ -1775,12 +1788,33 @@ pub fn product_view_for_command(
                     package.as_str(),
                 )))
                 .with_affordance(crate::Affordance::UseCommand {
-                    name: "package",
+                    // A pinned registry release is acquired before its
+                    // dependencies can be read; a local label is looked up.
+                    name: match package {
+                        backend_library::PackageReference::Purl(_) => "add",
+                        backend_library::PackageReference::Local(_) => "package",
+                    },
                     args: Box::new([package.as_str().to_owned()]),
                 }),
         );
     }
     view
+}
+
+/// Says what an empty `explore` covered, so an empty page is never read as
+/// "this does not exist". `explore` browses the acquired shelf and one indexed
+/// project's declarations; registry discovery and external references are
+/// searched by name with `index-search`.
+fn explore_empty_note(query: Option<&str>, project_scope: bool) -> String {
+    match (query, project_scope) {
+        (Some(query), true) => format!(
+            "No declaration of this indexed project matches `{query}`. Declarations in other projects, external references and registry packages are not browsed here; `index-search {query}` (backend.index_search) searches all of them by name."
+        ),
+        (Some(query), false) => format!(
+            "Nothing acquired or indexed matches `{query}`; this does not mean no such package or symbol exists. `explore` browses only acquired registry packages and indexed projects, not registry discovery or external references. `index-search {query}` (backend.index_search) searches discovered packages and indexed declarations by name."
+        ),
+        (None, _) => "Nothing is acquired or indexed yet. `explore` browses only acquired registry packages and indexed projects; add a project (`add <directory>`) or acquire a release (`add <pinned purl>`), or look up packages by name with `index-search <name>`.".to_owned(),
+    }
 }
 
 /// Registry, library, and semantic-generation answers.
@@ -1877,6 +1911,26 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                 observation: observation.clone(),
                 advisory: advisory.clone(),
             });
+            view
+        }
+        SurfaceReply::DiscoveredVersions {
+            package,
+            candidates,
+        } => {
+            let mut view = ProductView::rows(
+                "package-versions",
+                candidates
+                    .iter()
+                    .cloned()
+                    .map(RegistrySearchHit::Discovered)
+                    .map(|hit| registry_search_hit_row(&hit))
+                    .collect(),
+            );
+            view.note = Some(format!(
+                "{} release(s) of {} observed by registry metadata, newest first. None is acquired, so dependencies, README and engine requirements are not read yet; acquire one with `add <pinned purl>` (backend.index with path <pinned purl>).",
+                candidates.len(),
+                package.name()
+            ));
             view
         }
         SurfaceReply::PackageDetails { registry, forge } => {

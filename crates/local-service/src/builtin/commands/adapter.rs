@@ -1325,11 +1325,20 @@ impl CommandAdapter {
             }
             return Ok(Executed::Deferred);
         }
-        if let Command::Surface(surface) = &request.command
-            && let backend_library::SurfaceCommand::Package {
-                package: backend_library::PackageReference::Purl(package),
-            } = surface
-        {
+        let metadata_lookup = match &request.command {
+            Command::Surface(
+                surface @ backend_library::SurfaceCommand::Package {
+                    package: backend_library::PackageReference::Purl(package),
+                },
+            ) => Some((surface, package, false)),
+            Command::Surface(
+                surface @ backend_library::SurfaceCommand::PackageVersions {
+                    package: backend_library::PackageReference::Purl(package),
+                },
+            ) => Some((surface, package, true)),
+            _ => None,
+        };
+        if let Some((surface, package, versions_of_package)) = metadata_lookup {
             let acquired = self
                 .registry
                 .as_mut()
@@ -1337,10 +1346,21 @@ impl CommandAdapter {
                 .transpose()
                 .map_err(BuiltinModelError)?
                 .is_some_and(|catalog| {
-                    catalog
-                        .records
-                        .iter()
-                        .any(|record| record.coordinate.as_str() == package.as_str())
+                    catalog.records.iter().any(|record| {
+                        if versions_of_package {
+                            // Any acquired release of the package answers
+                            // `package-versions` from the catalog itself.
+                            matches!(
+                                &record.coordinate,
+                                backend_library::PackageReference::Purl(held)
+                                    if held.package_type() == package.package_type()
+                                        && held.namespace() == package.namespace()
+                                        && held.name() == package.name()
+                            )
+                        } else {
+                            record.coordinate.as_str() == package.as_str()
+                        }
+                    })
                 });
             let forge = self.forge.search_records().map_err(BuiltinModelError)?;
             let forged = !super::super::forge_gateway::find_package_versions(&forge, package)
@@ -1357,10 +1377,11 @@ impl CommandAdapter {
                 && !installed
                 && let Some(discovery) = self.discovery.as_ref()
                 && let crate::discovery::package_metadata::PackageMetadataPreparation::Fetch(
-                    metadata,
+                    mut metadata,
                 ) =
                     discovery.prepare_package(package, self.index_owner_epoch, request.request_id)
             {
+                metadata.versions_requested = versions_of_package;
                 return match self.browse_lane.submit_metadata(
                     transport_ticket,
                     request.request_id,
@@ -4377,6 +4398,7 @@ impl CommandAdapter {
         for (ticket, request_id, admitted_owner, advisory, terminal) in self.browse_lane.drain() {
             if let BrowseTerminal::Metadata(fetched, permit) = terminal {
                 let package = fetched.request.package.clone();
+                let versions_requested = fetched.request.versions_requested;
                 let observation = if fetched.request.owner_epoch != self.index_owner_epoch
                     || fetched.request.request_id != request_id
                 {
@@ -4396,13 +4418,23 @@ impl CommandAdapter {
                 let reply = self
                     .surface(
                         daemon,
-                        backend_library::SurfaceCommand::Package {
-                            package: backend_library::PackageReference::Purl(package.clone()),
+                        if versions_requested {
+                            backend_library::SurfaceCommand::PackageVersions {
+                                package: backend_library::PackageReference::Purl(package.clone()),
+                            }
+                        } else {
+                            backend_library::SurfaceCommand::Package {
+                                package: backend_library::PackageReference::Purl(package.clone()),
+                            }
                         },
                         request_id,
                     )
                     .map(|(reply, _)| reply);
-                let mut reply = package_metadata_completion_reply(package, reply, observation);
+                let mut reply = if versions_requested {
+                    package_versions_completion_reply(reply, observation)
+                } else {
+                    package_metadata_completion_reply(package, reply, observation)
+                };
                 if let CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
                     package, advisory, ..
                 }) = &mut reply {
@@ -8607,6 +8639,42 @@ fn package_metadata_completion_reply(
         }
         (Ok(reply), _) => reply,
         (Err(error), _) => CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+            error.to_string(),
+        )),
+    }
+}
+
+/// The version list a metadata lookup produced, or the typed reason it could
+/// not produce one. A failed or empty lookup never becomes a `package` reply:
+/// the caller asked for versions, so the refusal says what the lookup found.
+fn package_versions_completion_reply(
+    reply: Result<CommandReply, BuiltinModelError>,
+    observation: Option<backend_library::RegistryPackageDiscoveryObservation>,
+) -> CommandReply {
+    let lookup = observation.map(|observation| match observation {
+        backend_library::RegistryPackageDiscoveryObservation::Missing { .. } => {
+            "the registry reports no such package".to_owned()
+        }
+        backend_library::RegistryPackageDiscoveryObservation::Unavailable { reason, .. } => {
+            reason.as_str().to_owned()
+        }
+        backend_library::RegistryPackageDiscoveryObservation::Observed { .. } => {
+            "the registry metadata was observed".to_owned()
+        }
+    });
+    match (reply, lookup) {
+        (Ok(CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(detail))), Some(lookup)) => {
+            CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(format!(
+                "{detail}; registry metadata lookup: {lookup}"
+            )))
+        }
+        (Err(error), Some(lookup)) => {
+            CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(format!(
+                "{error}; registry metadata lookup: {lookup}"
+            )))
+        }
+        (Ok(reply), _) => reply,
+        (Err(error), None) => CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
             error.to_string(),
         )),
     }

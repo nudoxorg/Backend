@@ -776,7 +776,7 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
         positional: &[ArgumentSpec::optional(
             "path",
             ArgumentKind::ProjectPath,
-            "Local project directory to index or re-index; use `.` for the current directory.",
+            "Local project directory to index or re-index (`.` for the current directory), or a pinned registry purl such as pkg:pypi/name@1.2.3 to acquire that exact release.",
         )],
         options: &[ArgumentSpec::optional_with_json_name(
             "execution-intent",
@@ -787,7 +787,7 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             "cargo-target", "cargo_target", ArgumentKind::Text,
             "Explicit Cargo target name. Index only its compiler-proven source closure; package input provenance is retained. Missing or duplicate target names refuse.",
         )],
-        when: "Pass the absolute local project directory to index or re-index it. The CLI also accepts index as an alias for add. Call it when packages does not list the project, or when its source changed. Use background execution when the request may be calibrated remotely.",
+        when: "Pass the absolute local project directory to index or re-index it. The CLI also accepts index as an alias for add. Call it when packages does not list the project, or when its source changed. Pass a pinned registry purl instead to acquire that exact release's archive under the configured registry policy; only then are its dependencies, README, engine requirements and external API source readable. Use background execution when the request may be calibrated remotely.",
     },
     CommandGrammar {
         name: "remove",
