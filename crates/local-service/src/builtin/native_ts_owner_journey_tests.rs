@@ -664,6 +664,107 @@ fn native_ts_workspace_that_gains_a_second_language_still_indexes() -> Result<()
     Ok(())
 }
 
+/// A project first indexed with TypeScript beside another language (the
+/// structural lane) and later reduced to TypeScript only moves to the native
+/// lane: the structural TypeScript rows are replaced by selected native
+/// evidence, and the native lane serves the project after a cold reopen.
+#[test]
+fn structural_mixed_project_reduced_to_typescript_moves_to_native_evidence() -> Result<(), Box<dyn Error>> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("tsx-nse-shrink-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o700));
+    }
+    let fixture = builder.tempdir_in("/tmp")?;
+    let project = fixture.path().join("project");
+    fs::create_dir(&project)?;
+    fs::write(
+        project.join("tsconfig.json"),
+        "{\"compilerOptions\":{\"strict\":true},\"include\":[\"*.ts\"]}",
+    )?;
+    fs::write(
+        project.join("view.ts"),
+        "export function Greeting() {\n  return 'before';\n}\n",
+    )?;
+    fs::write(
+        project.join("Program.cs"),
+        "public class OrderService { public int Count() { return 1; } }\n",
+    )?;
+    let paths = backend_runtime::WorkspacePaths::discover(
+        Some(fixture.path().join("owner")),
+        Some(fixture.path().join("state")),
+        Some(fixture.path().join("owner.sock")),
+    )?;
+    paths.initialize()?;
+    let authority = backend_engine::read_authority_secret(paths.authority_secret())?;
+    let owner = start_owner(&paths)?;
+    let mut session = Session::connect(owner.endpoint())?;
+    index_to_publication(&mut session, &project, 0x91)?;
+    let mixed = served_excerpts(&mut session, "Greeting")?;
+    assert!(mixed.iter().any(|text| text.contains("return 'before'")), "{mixed:?}");
+    fs::remove_file(project.join("Program.cs"))?;
+    assert_eq!(index_to_publication(&mut session, &project, 0x92)?, 0);
+    select_native_document(&mut session, &authority, "Greeting", "view.ts")?;
+    drop(session);
+    assert_eq!(owner.close()?.failures, 0);
+    let owner = start_owner(&paths)?;
+    let mut session = Session::connect(owner.endpoint())?;
+    select_native_document(&mut session, &authority, "Greeting", "view.ts")?;
+    drop(session);
+    assert_eq!(owner.close()?.failures, 0);
+    Ok(())
+}
+
+/// Removing a project that holds native evidence must leave a workspace that
+/// reopens, serves nothing for the removed project, and indexes it again.
+#[test]
+fn removing_a_native_typescript_project_leaves_a_reopenable_workspace() -> Result<(), Box<dyn Error>> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("tsx-nse-remove-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o700));
+    }
+    let fixture = builder.tempdir_in("/tmp")?;
+    let project = fixture.path().join("project");
+    fs::create_dir(&project)?;
+    fs::write(
+        project.join("tsconfig.json"),
+        "{\"compilerOptions\":{\"strict\":true},\"include\":[\"*.ts\"]}",
+    )?;
+    fs::write(
+        project.join("view.ts"),
+        "export function Greeting() {\n  return 'before';\n}\n",
+    )?;
+    let paths = backend_runtime::WorkspacePaths::discover(
+        Some(fixture.path().join("owner")),
+        Some(fixture.path().join("state")),
+        Some(fixture.path().join("owner.sock")),
+    )?;
+    paths.initialize()?;
+    let authority = backend_engine::read_authority_secret(paths.authority_secret())?;
+    let owner = start_owner(&paths)?;
+    let mut session = Session::connect(owner.endpoint())?;
+    assert_eq!(index_to_publication(&mut session, &project, 0xa1)?, 0);
+    select_native_document(&mut session, &authority, "Greeting", "view.ts")?;
+    let coordinate = project.canonicalize()?;
+    session.remove(coordinate.to_str().ok_or("project path")?)?;
+    assert!(served_excerpts(&mut session, "Greeting")?.is_empty(), "removed project must serve nothing");
+    drop(session);
+    assert_eq!(owner.close()?.failures, 0);
+    let owner = start_owner(&paths)?;
+    let mut session = Session::connect(owner.endpoint())?;
+    assert!(served_excerpts(&mut session, "Greeting")?.is_empty());
+    assert_eq!(index_to_publication(&mut session, &project, 0xa2)?, 0);
+    select_native_document(&mut session, &authority, "Greeting", "view.ts")?;
+    drop(session);
+    assert_eq!(owner.close()?.failures, 0);
+    Ok(())
+}
+
 #[test]
 fn native_ts_listener_cold_reopen_and_edit_without_frontends() -> Result<(), Box<dyn Error>> {
     if crate::test_support::run_test_in_child(
