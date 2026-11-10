@@ -699,6 +699,38 @@ def query_output(bin_dir, out):
         r.stop()
 
 
+def probe_owner_retirement(bin_dir, out):
+    """What does a client see when its change races the owner's idle retirement?
+
+    The detached owner retires itself after its idle window and takes a while to drain. A change
+    submitted inside that drain used to be accepted by the still-open listener and then dropped.
+    The window is shrunk to 1.5 s and the submit time is swept across the retirement.
+    """
+    import subprocess, re
+    results = []
+    for offset_ms in range(1200, 2400, 100):
+        o = out / f"offset-{offset_ms}"
+        r = Route(bin_dir, o, owner_args=["--idle-timeout-ms", "1500"])
+        try:
+            proj = _project(r, "tiny")
+            t0 = time.monotonic()
+            r.start_owner(proj)
+            started = time.monotonic()
+            wait = max(0.0, offset_ms / 1000 - (time.monotonic() - started))
+            time.sleep(wait)
+            code, obj, text = r.cli("add", ["add", str(proj), "--wait", "--wait-timeout", "120"], proj, timeout=240)
+            lost = bool(re.search(r"in flight|outcome is unknown|broken pipe|connection (was )?lost", text, re.I))
+            results.append({"offset_ms": offset_ms, "exit": code, "lost_in_flight": lost,
+                            "tail": text[-240:].replace("\n", " ")})
+        finally:
+            r.stop()
+    (out / "sweep.json").write_text(json.dumps(results, indent=1))
+    lost = [x for x in results if x["lost_in_flight"]]
+    return {"owner_retirement": {"pass": not lost,
+                         "detail": f"{len(results)} submits across the retirement window; {len(lost)} lost in flight: "
+                                   f"{[x['offset_ms'] for x in lost]}"}}
+
+
 def gate_on_signed_out(bin_dir, out):
     """Which routes still answer when the account gate is ON and nobody is signed in.
 
@@ -721,5 +753,5 @@ def gate_on_signed_out(bin_dir, out):
         r.stop()
 
 
-SCENARIOS = {"query_output": query_output, "gate_on_signed_out": gate_on_signed_out, "verify_budget": verify_budget, "probe_budget_no_csharp": probe_budget_no_csharp, "probe_budget_no_appshell": probe_budget_no_appshell, "probe_budget_no_next": probe_budget_no_next, "probe_refusals": probe_refusals, "probe_refs_mixed": probe_refs_mixed, "startup_missing_checker": startup_missing_checker, "probe_crm": probe_crm, "probe_budget_diag": probe_budget_diag, "probe_reindex_refusal": probe_reindex_refusal, "probe_refs_nested": probe_refs_nested, "probe_refs_gap": probe_refs_gap, "probe_react_variants": probe_react_variants, "probe_budget": probe_budget, "startup_path": startup_path, "probe_refs": probe_refs,
+SCENARIOS = {"probe_owner_retirement": probe_owner_retirement, "query_output": query_output, "gate_on_signed_out": gate_on_signed_out, "verify_budget": verify_budget, "probe_budget_no_csharp": probe_budget_no_csharp, "probe_budget_no_appshell": probe_budget_no_appshell, "probe_budget_no_next": probe_budget_no_next, "probe_refusals": probe_refusals, "probe_refs_mixed": probe_refs_mixed, "startup_missing_checker": startup_missing_checker, "probe_crm": probe_crm, "probe_budget_diag": probe_budget_diag, "probe_reindex_refusal": probe_reindex_refusal, "probe_refs_nested": probe_refs_nested, "probe_refs_gap": probe_refs_gap, "probe_react_variants": probe_react_variants, "probe_budget": probe_budget, "startup_path": startup_path, "probe_refs": probe_refs,
              "probe_edits": probe_edits, "probe_churn": probe_churn, "probe_mcp": probe_mcp}

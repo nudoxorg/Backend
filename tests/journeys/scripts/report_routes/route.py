@@ -266,7 +266,7 @@ class RetirementUnproved(RuntimeError):
 class Route:
     """One private HOME, one owner, any number of CLI and MCP calls."""
 
-    def __init__(self, bin_dir, out, auto_start=False, path_extra=None, extra_env=None):
+    def __init__(self, bin_dir, out, auto_start=False, path_extra=None, extra_env=None, owner_args=None):
         self.bin = pathlib.Path(bin_dir)
         self.out = pathlib.Path(out)
         self.out.mkdir(parents=True, exist_ok=True)
@@ -283,6 +283,7 @@ class Route:
         self.autostart_owners = {}
         self.pending = bytearray()
         self.auto_start = auto_start
+        self.owner_args = list(owner_args or [])
         base_path = os.environ.get("PATH", "/usr/bin:/bin")
         env = {k: os.environ[k] for k in ("LANG", "LC_ALL", "TZ") if k in os.environ}
         env["PATH"] = path_extra if path_extra is not None else base_path
@@ -311,7 +312,7 @@ class Route:
             self.owner = subprocess.Popen(
                 [str(self.bin / "backend-locald"), "--endpoint", str(self.endpoint), "--workspace",
                  str(self.workspace), "--authority-secret-file", str(secret), "--registry-offline",
-                 "--registry-discovery-offline", "--advisory-offline", "--forge-offline"],
+                 "--registry-discovery-offline", "--advisory-offline", "--forge-offline", *self.owner_args],
                 cwd=cwd, env=env, stdout=subprocess.DEVNULL, stderr=log, start_new_session=True)
         self._remember_spawned_process(self.owner)
         deadline = time.monotonic() + 420
