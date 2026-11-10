@@ -301,17 +301,28 @@ class Route:
         self.endpoint = self.root / "owner.sock"
 
     # ---- owner ---------------------------------------------------------------------
-    def start_owner(self, cwd):
+    def start_owner(self, cwd, registry=None):
+        """Starts the owner. With `registry` (a loopback fixture from registry_fixture.py)
+        registry metadata and acquisition are online against that fixture only; without it
+        every registry path is offline, as in the original probes."""
         if self.auto_start:
             return
         secret = self.workspace / "authority.secret"
         self._ensure_authority_secret(secret)
         env = dict(self.env, BACKEND_LOCALD_AUTHORITY_SECRET_FILE=str(secret))
+        if registry is None:
+            registry_flags = ["--registry-offline", "--registry-discovery-offline", "--advisory-offline",
+                              "--forge-offline"]
+        else:
+            registry_flags = []
+            for ecosystem in ("npm", "pypi"):
+                registry_flags += ["--registry-discovery-source", registry.source(ecosystem),
+                                   "--registry-source", registry.source(ecosystem)]
+            registry_flags += ["--advisory-offline", "--forge-offline"]
         with open(self.out / "owner-stderr.log", "wb") as log:
             self.owner = subprocess.Popen(
                 [str(self.bin / "backend-locald"), "--endpoint", str(self.endpoint), "--workspace",
-                 str(self.workspace), "--authority-secret-file", str(secret), "--registry-offline",
-                 "--registry-discovery-offline", "--advisory-offline", "--forge-offline"],
+                 str(self.workspace), "--authority-secret-file", str(secret)] + registry_flags,
                 cwd=cwd, env=env, stdout=subprocess.DEVNULL, stderr=log, start_new_session=True)
         self._remember_spawned_process(self.owner)
         deadline = time.monotonic() + 420
