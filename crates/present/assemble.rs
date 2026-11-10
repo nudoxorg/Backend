@@ -149,6 +149,29 @@ fn source_from(
                 },
             )
         }
+        (None, _) if identity.shape() == crate::IdentityShape::External => {
+            // An external reference names a declaration of a dependency. Its
+            // source is not part of the project's index, and the way to read it
+            // is the dependency's own acquired release, not a retry.
+            Source::Absent {
+                fault: Fault::new(
+                    crate::fault::FaultSlug::SourceUnavailable,
+                    crate::fault::Operand::Coordinate(identity.coordinate().clone()),
+                    crate::fault::Cause::new(
+                        crate::fault::CauseSlug::NotCaptured,
+                        format!(
+                            "`{}` is an external reference: it belongs to a package this project depends on, and that package's source is not in the index. `index-search {}` finds the package, and `add <pinned purl>` acquires one exact release, after which its declarations are searchable and readable",
+                            identity.name(),
+                            identity.name(),
+                        ),
+                    ),
+                    crate::fault::Affordance::UseCommand {
+                        name: "index-search",
+                        args: Box::new([identity.name().to_owned()]),
+                    },
+                ),
+            }
+        }
         (None, _) => {
             let operand = crate::fault::Operand::Coordinate(identity.coordinate().clone());
             Source::Absent {
