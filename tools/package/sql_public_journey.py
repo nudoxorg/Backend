@@ -159,7 +159,11 @@ def expect(text, needles, label):
 
 
 start_owner()
-code, raw = cli("index", ["add", str(project), "--wait", "--wait-timeout", "2400"], timeout=2520)
+# The CLI wait is capped at 900 s; exit 75 means the operation is still active, so ask again.
+for attempt in range(8):
+    code, raw = cli("index" if attempt == 0 else f"index-wait-{attempt}", ["add", str(project), "--wait", "--wait-timeout", "900"], timeout=960)
+    if code != 75:
+        break
 if code != 0:
     fail(f"index exited {code}: {raw[:600]} (a typed account refusal means this is a gate-on build)")
 

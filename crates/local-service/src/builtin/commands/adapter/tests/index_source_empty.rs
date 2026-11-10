@@ -302,7 +302,7 @@ fn sql_files_without_an_admitted_worker_publish_honest_unavailable_hosts_and_unc
     let expected_root = prior_source_root.ok_or("missing source root")?;
     close_journal_fixture(&mut fixture);
     let workspace = Path::new(&label).parent().ok_or("workspace missing")?;
-    let owner = reopen_journal_owner(workspace)?;
+    let owner = reopen_sql_journal_owner(workspace)?;
     let snapshot = owner.snapshot();
     let sql = backend_engine::builtin::sql_analysis_relation(&snapshot)?.ok_or("SQL selection survives a cold reopen")?;
     assert_eq!(*sql.root().as_bytes(), expected_root);
@@ -324,6 +324,20 @@ fn close_journal_fixture(fixture: &mut AdapterFixture) {
 }
 
 fn reopen_journal_owner(
+    workspace: &Path,
+) -> Result<backend_engine::WorkspaceOwner<crate::builtin::BuiltinModel>, Box<dyn std::error::Error>>
+{
+    Ok(backend_engine::WorkspaceOwner::open_with_registry(
+        workspace,
+        crate::builtin::BuiltinModel,
+        crate::builtin::genesis()?,
+        crate::builtin::product_relation_registry()?,
+    )?)
+}
+
+/// As above for a workspace that holds SQL: replaying a SQL receipt needs the
+/// owner's receipt context bound to the leased store, exactly as in production.
+fn reopen_sql_journal_owner(
     workspace: &Path,
 ) -> Result<backend_engine::WorkspaceOwner<crate::builtin::BuiltinModel>, Box<dyn std::error::Error>>
 {
