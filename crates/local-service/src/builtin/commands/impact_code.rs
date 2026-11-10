@@ -1023,7 +1023,7 @@ export function Card() { return <div className={styles.card + " " + styles["titl
 "#;
         let scan = scan("src/Card.tsx", source);
         let classes: BTreeSet<&str> = scan.module_class_uses.iter().map(|usage| usage.class.as_str()).collect();
-        assert_eq!(classes, ["card", "title"].into());
+        assert_eq!(classes, BTreeSet::from(["card", "title"]));
     }
 
     #[test]

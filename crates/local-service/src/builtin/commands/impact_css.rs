@@ -1070,19 +1070,19 @@ mod tests {
     #[test]
     fn selector_reading_separates_subject_from_context() {
         let shape = read_selector(".card .title:hover");
-        assert_eq!(shape.mentions_classes, ["card", "title"].map(String::from).into());
-        assert_eq!(shape.subject_classes, ["title"].map(String::from).into());
+        assert_eq!(shape.mentions_classes, std::collections::BTreeSet::from(["card", "title"].map(String::from)));
+        assert_eq!(shape.subject_classes, std::collections::BTreeSet::from(["title"].map(String::from)));
         assert!(!shape.simple);
         let simple = read_selector(".btn.primary");
-        assert_eq!(simple.subject_classes, ["btn", "primary"].map(String::from).into());
+        assert_eq!(simple.subject_classes, std::collections::BTreeSet::from(["btn", "primary"].map(String::from)));
         assert!(simple.simple);
         let functional = read_selector(".a:not(.b)");
         assert!(!functional.simple);
-        assert_eq!(functional.subject_classes, ["a"].map(String::from).into());
+        assert_eq!(functional.subject_classes, std::collections::BTreeSet::from(["a"].map(String::from)));
         assert!(functional.mentions_classes.contains("b"));
         let attribute = read_selector("a[href=\".fake\"].link");
-        assert_eq!(attribute.mentions_classes, ["link"].map(String::from).into());
-        assert_eq!(read_selector(r".a\:b").subject_classes, ["a:b"].map(String::from).into());
+        assert_eq!(attribute.mentions_classes, std::collections::BTreeSet::from(["link"].map(String::from)));
+        assert_eq!(read_selector(r".a\:b").subject_classes, std::collections::BTreeSet::from(["a:b"].map(String::from)));
         assert!(read_selector("h1").subject_classes.is_empty());
     }
 

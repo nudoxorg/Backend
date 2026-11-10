@@ -935,6 +935,8 @@ mod tests {
                 identifier_coverage: IdentifierCoverage::Unavailable,
             },
             binding: Binding::UnsupportedContext,
+            // A valid outline, so the rejection comes from the forged field under test.
+            outline: Some(Outline { coverage: OutlineCoverage::Complete, statements: vec![] }),
         };
         let text = serde_json::to_string(&forged).unwrap();
         std::fs::write(&path, format!("#!/bin/sh\nprintf '%s' '{}'\n", text)).unwrap();
@@ -983,6 +985,8 @@ mod tests {
                 context_sha256: Sha256::digest(&payload).into(),
                 reads: vec![read.clone(), read],
             },
+            // A valid outline, so the rejection comes from the forged field under test.
+            outline: Some(Outline { coverage: OutlineCoverage::Complete, statements: vec![] }),
         };
         let text = serde_json::to_string(&forged).unwrap();
         std::fs::write(&path, format!("#!/bin/sh\nprintf '%s' '{}'\n", text)).unwrap();
