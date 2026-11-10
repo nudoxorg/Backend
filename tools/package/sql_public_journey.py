@@ -23,6 +23,7 @@ p.add_argument("--build-receipt", required=True, help="Root Cargo build receipt 
 p.add_argument("--source-checkout", required=True, help="exact clean checkout certified by the receipt")
 p.add_argument("--sql-only", action="store_true", help="leave out the TypeScript files")
 p.add_argument("--python", action="store_true", help="index Python beside SQL instead of TypeScript")
+p.add_argument("--application", action="store_true", help="put TypeScript, Python, TSX and CSS beside the SQL, with query calls in the application files")
 p.add_argument("--flat", action="store_true", help="place migrations and queries in one directory")
 p.add_argument("--expect-no-worker", action="store_true", help="require named unavailable-host gaps and successful cold publication")
 a = p.parse_args()
@@ -132,6 +133,36 @@ try:
     if a.python:
         FILES = {path: text for path, text in FILES.items() if path.startswith("db/")}
         FILES["app/repository.py"] = "def load_query():\n    return 1\n"
+    if a.application:
+        # Application code beside the SQL: TypeScript that issues queries (better-sqlite3), a
+        # consumer of it, and Python (sqlite3). Query calls whose text is a literal are analysed
+        # with the same worker as the migrations; one built at run time is a candidate.
+        FILES.pop("app/server.ts", None)
+        FILES.update({
+            "src/db.ts": (
+                "import Database from 'better-sqlite3';\n\nconst db = new Database('app.db');\n\n"
+                "export const findAccount = db.prepare('SELECT email, balance FROM accounts WHERE id = ?');\n\n"
+                "export function debit(id: number, amount: number) {\n"
+                "  return db.prepare(\"UPDATE accounts SET balance = balance - ? WHERE id = ?\").run(amount, id);\n}\n\n"
+                "export function spendReport(min: number) {\n  return db\n    .prepare(`\n      SELECT s.email, s.spent\n"
+                "      FROM account_spend s\n      WHERE s.spent > ?\n    `)\n    .all(min);\n}\n\n"
+                "export function lookup(column: string, email: string) {\n"
+                "  return db.prepare(`SELECT ${column} FROM accounts WHERE email = ?`).get(email);\n}\n"
+            ),
+            "src/api.ts": (
+                "import { debit, findAccount } from './db';\n\n"
+                "export function charge(id: number) {\n  return debit(id, 1) && findAccount.get(id);\n}\n"
+            ),
+            "src/report.py": (
+                "import sqlite3\n\n\ndef tier_report(conn):\n    cur = conn.cursor()\n"
+                "    cur.execute(\"SELECT email, tier FROM accounts WHERE tier = ?\", (\"basic\",))\n    return cur.fetchall()\n"
+            ),
+            "src/Card.tsx": "export function Card({ title }: { title: string }) {\n  return <div className=\"card\">{title}</div>;\n}\n",
+            "src/card.css": ".card { color: var(--ink); }\n:root { --ink: #222; }\n",
+            "tsconfig.json": '{"compilerOptions":{"target":"ES2020","module":"ESNext","strict":true,"noEmit":true,"jsx":"preserve"},"include":["src"]}\n',
+        })
+    # Application files whose query calls become embedded SQL hosts.
+    EMBEDDED = ["src/db.ts", "src/report.py"] if a.application and not a.sql_only and not a.python else []
     # This valid SQLite construct previously lost an entire file in a source build.
     FILES["db/migrations/0001_init.sql"] += "CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT, country TEXT);\n"
     FILES["db/queries/upsert.sql"] = (
@@ -390,7 +421,7 @@ def check_worker_status(label):
     if page.get("terminal", {}).get("state") != "complete":
         fail(f"{label}: incomplete SQL gap page")
     gaps = page["basis"]["gaps"]
-    expected_total = sum(1 for path in project.rglob("*.sql") if path.is_file())
+    expected_total = sum(1 for path in project.rglob("*.sql") if path.is_file()) + len(EMBEDDED)
     if not isinstance(summary, dict) or summary.get("no_worker_files") != 0 or summary.get("unsupported_dialect_files") != 0 or summary.get("other_unavailable_files") != 0 or summary.get("rejected_files") != gaps["native_error_hosts"] or gaps["unavailable_hosts"] != 0 or summary.get("implicit_selection") is not True or sum(value for key, value in summary.items() if key != "implicit_selection") != expected_total:
         fail(f"{label}: selected status and SQL gaps disagree: {summary}, {gaps}, {expected_total}")
     return summary
@@ -656,6 +687,60 @@ if [(r["node"], r["strength"], r["relation"]) for r in bookshop_before[2]["rows"
     fail("CLI and MCP typed column impact differs")
 if [(r["node"], r["strength"], r["relation"]) for r in bookshop_before[3]["rows"]] != [(r["node"], r["strength"], r["relation"]) for r in mcp_table["rows"]]:
     fail("CLI and MCP typed renamed table impact differs")
+
+def impact(label, *args):
+    code, raw = cli(label, ["impact", str(project), *args])
+    if code != 0:
+        fail(f"{label}: impact exited {code}: {raw[:600]}")
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        fail(f"{label}: impact output is not JSON")
+    return body, "\n".join(strings(body))
+
+
+def line_of(text, needle):
+    return next(i for i, line in enumerate(text.splitlines(), 1) if needle in line)
+
+
+if EMBEDDED:
+    db_ts = (project / "src/db.ts").read_text()
+    find_line = line_of(db_ts, "findAccount =")
+    debit_line = line_of(db_ts, "UPDATE accounts")
+    built_line = line_of(db_ts, "${column}")
+    py_line = line_of((project / "src/report.py").read_text(), "SELECT email, tier")
+    # 4b. SQL written in application code: statements of both files, beside the migrations.
+    _, text = query("embedded-statements", "--role", "statement")
+    expect(text, ["src/db.ts#embedded.sql", "src/report.py#embedded.sql"], "embedded-statements")
+    # Mentions of accounts.balance now include the TypeScript calls, with exact spans.
+    body, text = query("embedded-uses", "--role", "reference", "--kind", "column", "--uses", "accounts.balance")
+    expect(text, ["src/db.ts#embedded.sql", sql_path("db/queries/accounts.sql")], "embedded-uses")
+    code, raw = cli("embedded-read-source", ["sql-read-source", next(
+        s_.split()[-1] for s_ in strings(body) if s_.startswith("read: sql-read-source ") and "embedded" in s_)])
+    if code != 0 or "balance" not in raw:
+        fail("sql-read-source did not return the exact written name from application code: " + raw[:400])
+    # 4c. Impact: what breaks if accounts.balance changes reaches the calls that read or write it.
+    _, text = impact("impact-balance", "--sql-column", "accounts.balance")
+    expect(text, [f"src/db.ts:{find_line}", f"src/db.ts:{debit_line}", "exact"], "impact-balance")
+    # The table also reaches the SQL built at run time, but only as a candidate; the gap is named.
+    _, text = impact("impact-table", "--sql-table", "accounts")
+    expect(text, [f"src/db.ts:{built_line}", f"src/report.py:{py_line}", "candidate", "sql.embedded-sql"], "impact-table")
+    # Seeds for views and indexes.
+    _, text = impact("impact-view", "--sql-view", "account_spend")
+    expect(text, ["src/db.ts", sql_path("db/queries/accounts.sql")], "impact-view")
+    _, text = impact("impact-index", "--sql-index", "orders_by_account", "--direction", "dependencies")
+    expect(text, ["orders"], "impact-index")
+    _, text = query("uses-view", "--uses-view", "account_spend")
+    expect(text, ["src/db.ts#embedded.sql", sql_path("db/queries/accounts.sql")], "uses-view")
+    # The same seeds through MCP.
+    reply = rpc(20, "tools/call", {"name": "backend.impact", "arguments": {"package": str(project), "sql_view": "account_spend"}})
+    mtext = "\n".join(strings(reply))
+    if reply.get("result", {}).get("isError") or "account_spend" not in mtext:
+        fail("MCP impact with a view seed did not answer: " + mtext[:600])
+    reply = rpc(21, "tools/call", {"name": "backend.sql_query", "arguments": {"package": str(project), "uses_view": "account_spend"}})
+    mtext = "\n".join(strings(reply))
+    if reply.get("result", {}).get("isError") or "src/db.ts#embedded.sql" not in mtext:
+        fail("MCP sql_query with a view seed did not return the application mention: " + mtext[:600])
 mcp.stdin.close()
 processes.retire(mcp)
 
@@ -752,5 +837,30 @@ processes.retire(mcp)
 code, raw = cli("outline-cold", ["outline", str(project)])
 if code != 0 or "account_spend" not in raw or "SQL column accounts.balance" in raw:
     fail("cold ordinary outline lost SQL or retained a dropped column: " + raw[:1200])
+if EMBEDDED:
+    # 8. After the cold restart the application-code answers are intact, and an edit to a
+    #    query call is followed by a re-index.
+    _, text = impact("impact-after-restart", "--sql-table", "accounts")
+    expect(text, ["src/db.ts", "src/report.py"], "impact-after-restart")
+    edited = db_ts.replace("UPDATE accounts SET balance = balance - ? WHERE id = ?", "UPDATE accounts SET tier = ? WHERE id = ?")
+    (project / "src/db.ts").write_text(edited)
+    code, raw = cli("reindex-code", ["add", str(project), "--wait", "--wait-timeout", "600"], timeout=720)
+    if code != 0:
+        fail("reindex after editing application code failed: " + raw[:400])
+    _, text = impact("impact-tier-after-edit", "--sql-column", "accounts.tier")
+    expect(text, [f"src/db.ts:{debit_line}"], "impact-tier-after-edit")
+    # 9. Deleting the project retires its SQL: nothing answers for it any more, and adding it
+    #    again analyses it afresh.
+    code, raw = cli("remove", ["remove", str(project)])
+    if code != 0:
+        fail("remove failed: " + raw[:400])
+    code, raw = cli("sql-after-remove", ["sql-query", str(project), "--role", "definition", "--kind", "table"])
+    if code == 0 and "table accounts" in raw:
+        fail("SQL rows of a deleted project are still served: " + raw[:400])
+    code, raw = cli("readd", ["add", str(project), "--wait", "--wait-timeout", "900"], timeout=960)
+    if code != 0:
+        fail("re-adding the removed project failed: " + raw[:400])
+    _, text = query("tables-after-readd", "--role", "definition", "--kind", "table")
+    expect(text, ["table accounts", "table orders"], "tables-after-readd")
 finish()
 print("PASS: sql public journey (CLI + MCP + cold restart)")
