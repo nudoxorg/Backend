@@ -168,17 +168,11 @@ class FakeGitHub(release.GitHub):
         self.uploaded = {}
         self.asset_data = {}
         self.calls = []
-        self.tag_reference = {
-            "ref": "refs/tags/checkpoint-test",
-            "object": {"type": "commit", "sha": "a" * 40},
-        }
 
     def api(self, path, method="GET", body=None):
         self.calls.append((path, method, body))
-        if path.startswith("/git/ref/tags/"):
-            return self.tag_reference
-        if path.startswith("/git/tags/"):
-            raise AssertionError("unexpected annotated tag lookup")
+        if path.startswith("/git/"):
+            raise AssertionError("the distribution repository has no source tags to look up")
         if method == "POST":
             self.release = {"id": 42, "tag_name": body["tag_name"], "assets": [], "draft": True, "prerelease": body["prerelease"], "body": body["body"]}
         elif method == "PATCH":
@@ -210,102 +204,43 @@ class FakeGitHub(release.GitHub):
 
 
 class CandidateTests(unittest.TestCase):
-    def verify_tag_pair(self, github, forgejo_sha="a" * 40):
+    def verify_tag(self, forgejo_sha="a" * 40):
         tag = "checkpoint-test"
         outputs = [
             "ssh://forgejo@dev.nudox.org:2222/Nudox/Backend.git\n",
             f"{forgejo_sha}\trefs/tags/{tag}\n",
         ]
         with patch.object(release.subprocess, "check_output", side_effect=outputs):
-            release.require_published_source_tag(Path("/fixture/source"), tag, "a" * 40, github)
+            release.require_published_source_tag(Path("/fixture/source"), tag, "a" * 40)
 
-    def test_release_tag_preflight_requires_both_canonical_and_distribution_refs(self):
-        absent = FakeGitHub()
-        with patch.object(release.subprocess, "check_output", side_effect=[
-            "ssh://forgejo@dev.nudox.org:2222/Nudox/Backend.git\n",
-            subprocess.CalledProcessError(2, ["git", "ls-remote"]),
-        ]):
-            with self.assertRaisesRegex(ValueError, "canonical Forgejo tag checkpoint-test is absent"):
-                release.require_published_source_tag(Path("/fixture/source"), "checkpoint-test", "a" * 40, absent)
-        self.assertEqual(absent.calls, [], "missing canonical refs must be refused before GitHub is queried")
-
-        absent_error = None
-        with patch.object(release.subprocess, "check_output", side_effect=[
-            "ssh://forgejo@dev.nudox.org:2222/Nudox/Backend.git\n",
-            subprocess.CalledProcessError(2, ["git", "ls-remote"]),
-        ]):
-            with self.assertRaises(ValueError) as caught:
-                release.require_published_source_tag(Path("/fixture/source"), "checkpoint-test", "a" * 40, absent)
-            absent_error = str(caught.exception)
+    def test_release_tag_preflight_requires_the_canonical_ref(self):
+        for _ in range(2):
+            with patch.object(release.subprocess, "check_output", side_effect=[
+                "ssh://forgejo@dev.nudox.org:2222/Nudox/Backend.git\n",
+                subprocess.CalledProcessError(2, ["git", "ls-remote"]),
+            ]):
+                with self.assertRaises(ValueError) as caught:
+                    release.require_published_source_tag(Path("/fixture/source"), "checkpoint-test", "a" * 40)
+        absent_error = str(caught.exception)
+        self.assertIn("canonical Forgejo tag checkpoint-test is absent", absent_error)
         self.assertIn("git -C /fixture/source tag checkpoint-test " + "a" * 40, absent_error)
         self.assertIn("git -C /fixture/source push origin refs/tags/checkpoint-test", absent_error)
 
-        foreign_forgejo = FakeGitHub()
         with self.assertRaisesRegex(ValueError, "Forgejo release tag does not resolve"):
-            self.verify_tag_pair(foreign_forgejo, "b" * 40)
-        self.assertEqual(foreign_forgejo.calls, [], "a foreign canonical tag must be refused before GitHub is queried")
+            self.verify_tag("b" * 40)
+        self.verify_tag()
 
-        foreign_github = FakeGitHub()
-        foreign_github.tag_reference["object"]["sha"] = "c" * 40
-        with self.assertRaisesRegex(ValueError, "GitHub distribution tag does not resolve"):
-            self.verify_tag_pair(foreign_github)
-        self.assertEqual([call[0] for call in foreign_github.calls], ["/git/ref/tags/checkpoint-test"])
-
-        absent_github = FakeGitHub()
-
-        def missing_reference(path, method="GET", body=None):
-            absent_github.calls.append((path, method, body))
-            raise urllib.error.HTTPError("https://api.github.com/example", 404, "missing", {}, None)
-
-        with patch.object(absent_github, "api", side_effect=missing_reference), patch.object(
-            release.subprocess,
-            "check_output",
-            side_effect=[
-                "ssh://forgejo@dev.nudox.org:2222/Nudox/Backend.git\n",
-                "a" * 40 + "\trefs/tags/checkpoint-test\n",
-            ],
-        ):
-            with self.assertRaises(urllib.error.HTTPError):
-                release.require_published_source_tag(
-                    Path("/fixture/source"), "checkpoint-test", "a" * 40, absent_github
-                )
-        self.assertEqual([call[0] for call in absent_github.calls], ["/git/ref/tags/checkpoint-test"])
-
-        malformed_github = FakeGitHub()
-        malformed_github.tag_reference = {"ref": "refs/tags/checkpoint-test", "object": None}
-        with self.assertRaisesRegex(ValueError, "malformed target"):
-            self.verify_tag_pair(malformed_github)
-
-        correct = FakeGitHub()
-        self.verify_tag_pair(correct)
-        self.assertEqual([call[0] for call in correct.calls], ["/git/ref/tags/checkpoint-test"])
-
-    def test_release_tag_preflight_resolves_annotated_github_tag(self):
-        github = FakeGitHub()
-        github.tag_reference["object"] = {"type": "tag", "sha": "b" * 40}
-
-        def api(path, method="GET", body=None):
-            github.calls.append((path, method, body))
-            if path == "/git/ref/tags/checkpoint-test":
-                return github.tag_reference
-            if path == "/git/tags/" + "b" * 40:
-                return {"object": {"type": "commit", "sha": "a" * 40}}
-            raise AssertionError(f"unexpected GitHub tag API request: {path}")
-
-        with patch.object(github, "api", side_effect=api), patch.object(release.subprocess, "check_output", side_effect=[
+    def test_release_tag_preflight_peels_an_annotated_forgejo_tag(self):
+        with patch.object(release.subprocess, "check_output", side_effect=[
             "https://dev.nudox.org/git/Nudox/Backend.git\n",
             (
                 "b" * 40 + "\trefs/tags/checkpoint-test\n" +
                 "a" * 40 + "\trefs/tags/checkpoint-test^{}\n"
             ),
         ]):
-            release.require_published_source_tag(Path("/fixture/source"), "checkpoint-test", "a" * 40, github)
-        self.assertEqual([call[0] for call in github.calls], [
-            "/git/ref/tags/checkpoint-test", "/git/tags/" + "b" * 40,
-        ])
+            release.require_published_source_tag(Path("/fixture/source"), "checkpoint-test", "a" * 40)
 
     def test_release_tag_preflight_rejects_noncanonical_origins_and_duplicates(self):
-        github = FakeGitHub()
         for origin in (
             "https://dev.nudox.org/Nudox/Backend.git",
             "https://dev.nudox.org/git/SomeoneElse/Backend.git",
@@ -320,9 +255,8 @@ class CandidateTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(ValueError, "origin is not the canonical"):
                     release.require_published_source_tag(
-                        Path("/fixture/source"), "checkpoint-test", "a" * 40, github
+                        Path("/fixture/source"), "checkpoint-test", "a" * 40
                     )
-        self.assertEqual(github.calls, [])
 
     def test_canonical_forgejo_origin_parser_accepts_only_known_clone_forms(self):
         for origin in (
@@ -340,19 +274,16 @@ class CandidateTests(unittest.TestCase):
             with self.subTest(origin=origin):
                 self.assertFalse(release._is_canonical_forgejo_origin(origin))
 
-        github = FakeGitHub()
         duplicated = ("a" * 40 + "\trefs/tags/checkpoint-test\n") * 2
         with patch.object(release.subprocess, "check_output", side_effect=[
             "https://dev.nudox.org/git/Nudox/Backend.git\n", duplicated,
         ]):
             with self.assertRaisesRegex(ValueError, "duplicate refs"):
                 release.require_published_source_tag(
-                    Path("/fixture/source"), "checkpoint-test", "a" * 40, github
+                    Path("/fixture/source"), "checkpoint-test", "a" * 40
                 )
-        self.assertEqual(github.calls, [])
 
     def test_release_tag_preflight_bounds_git_remote_lookup(self):
-        github = FakeGitHub()
         with patch.object(
             release.subprocess,
             "check_output",
@@ -360,10 +291,9 @@ class CandidateTests(unittest.TestCase):
         ) as check_output:
             with self.assertRaisesRegex(ValueError, "failed or exceeded 30 seconds"):
                 release.require_published_source_tag(
-                    Path("/fixture/source"), "checkpoint-test", "a" * 40, github
+                    Path("/fixture/source"), "checkpoint-test", "a" * 40
                 )
         self.assertEqual(check_output.call_args.kwargs["timeout"], 30)
-        self.assertEqual(github.calls, [])
 
         with patch.object(release.subprocess, "check_output", side_effect=[
             "https://dev.nudox.org/git/Nudox/Backend.git\n",
@@ -371,10 +301,9 @@ class CandidateTests(unittest.TestCase):
         ]) as check_output:
             with self.assertRaisesRegex(ValueError, "tag lookup exceeded 30 seconds"):
                 release.require_published_source_tag(
-                    Path("/fixture/source"), "checkpoint-test", "a" * 40, github
+                    Path("/fixture/source"), "checkpoint-test", "a" * 40
                 )
         self.assertEqual(check_output.call_args.kwargs["timeout"], 30)
-        self.assertEqual(github.calls, [])
 
     def test_preflight_failure_does_not_mutate_existing_release(self):
         github = FakeGitHub(existing={
@@ -427,9 +356,6 @@ class CandidateTests(unittest.TestCase):
             with self.subTest(moved=type(moved).__name__), tempfile.TemporaryDirectory() as directory:
                 manifest = candidate(directory)
                 github = FakeGitHub()
-                github.tag_reference = {"ref": "refs/tags/v0.2.0", "object": {
-                    "type": "commit", "sha": manifest["source_sha"],
-                }}
                 with patch.object(release.subprocess, "check_output", side_effect=[
                     "https://dev.nudox.org/git/Nudox/Backend.git\n",
                     manifest["source_sha"] + "\trefs/tags/v0.2.0\n",
@@ -445,18 +371,15 @@ class CandidateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             manifest = candidate(directory)
             github = FakeGitHub()
-            github.tag_reference = {"ref": "refs/tags/v0.2.0", "object": {
-                "type": "commit", "sha": manifest["source_sha"],
-            }}
             with patch.object(release.subprocess, "check_output", side_effect=[
                 "https://dev.nudox.org/git/Nudox/Backend.git\n",
                 manifest["source_sha"] + "\trefs/tags/v0.2.0\n",
             ] * 2) as git:
                 github.publish(directory, "v0.2.0", True, source=Path("/fixture/source"))
             self.assertEqual(git.call_count, 4)
-            self.assertEqual([path for path, _, _ in github.calls].count("/git/ref/tags/v0.2.0"), 2)
+            self.assertFalse(any(path.startswith("/git/") for path, _, _ in github.calls),
+                             "the binaries-only distribution repository has no source tag to check")
             self.assertFalse(github.release["draft"])
-            self.assertEqual(github.calls[-2][0], "/git/ref/tags/v0.2.0")
             self.assertEqual(github.calls[-1][1], "PATCH")
 
     def test_tag_preflight_errors_do_not_expose_remote_credentials_or_stderr(self):
@@ -469,7 +392,7 @@ class CandidateTests(unittest.TestCase):
                 release.subprocess, "check_output", side_effect=[failure]
             ):
                 with self.assertRaises(ValueError) as caught:
-                    release.require_published_source_tag(Path("/fixture/source"), "checkpoint-test", "a" * 40, FakeGitHub())
+                    release.require_published_source_tag(Path("/fixture/source"), "checkpoint-test", "a" * 40)
                 self.assertNotIn(secret, str(caught.exception))
 
     def test_diagnostic_linux_validation_checks_package_without_claiming_native_qa(self):
@@ -709,6 +632,33 @@ class CandidateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "immutable manifest"):
                 release.validate(root)
 
+    def test_portable_linux_publication_uploads_the_rendered_shell_installer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = {
+                "schema": 1, "version": "0.3.0", "source_sha": "a" * 40,
+                "source_tree": "b" * 40, "cargo_lock_sha256": "c" * 64,
+                "platform": "linux-x64", "target": "x86_64-unknown-linux-gnu",
+                "asset": "nudox-linux-x64.tar.gz", "sha256": "d" * 64, "minimum_os": "Linux glibc 2.39",
+            }
+            (root / manifest["asset"]).write_bytes(b"fixture archive bytes")
+            (root / (manifest["asset"] + ".sha256")).write_text("fixture checksum\n")
+            (root / "release-manifest-linux-x64.json").write_text("{}")
+            (root / "native-qa-linux-x64.json").write_text("{}")
+            template = Path(release.__file__).with_name("install_linux.sh.in").read_bytes()
+            for tag, stable in (("v0.3.0-rc.1-linux-x64", False), ("v0.3.0", True)):
+                github = FakeGitHub()
+                with patch.object(release, "validate", return_value=manifest), patch.object(
+                    release, "linux_installer_template", return_value=template
+                ):
+                    github.publish_fixture(root, tag, stable, "linux-x64")
+                published = {asset["name"]: github.asset_data[asset["id"]] for asset in github.release["assets"]}
+                self.assertEqual(set(published), {
+                    "nudox-linux-x64.tar.gz", "nudox-linux-x64.tar.gz.sha256",
+                    "release-manifest-linux-x64.json", "native-qa-linux-x64.json", "install-linux.sh",
+                })
+                self.assertIn(f'TAG="{tag}"'.encode(), published["install-linux.sh"])
+
     def test_linux_publication_includes_checkpoint_or_channel_installer_under_stable_asset_name(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -717,6 +667,7 @@ class CandidateTests(unittest.TestCase):
                 "source_tree": "b" * 40, "cargo_lock_sha256": "c" * 64,
                 "platform": "linux-x64", "target": "x86_64-unknown-linux-gnu",
                 "asset": "nudox-linux-x86_64-aaaaaaaaaa.tar.gz", "sha256": "d" * 64,
+                "minimum_glibc": "2.39",
             }
             (root / manifest["asset"]).write_bytes(b"fixture archive bytes")
             (root / (manifest["asset"] + ".sha256")).write_text("fixture checksum\n")

@@ -656,7 +656,7 @@ class GitHub:
                 pinned_tag, pinned_installer, shell_assets = checkpoint
                 if tag != pinned_tag:
                     raise ValueError("Linux checkpoint shell can only publish under its exact pinned checkpoint tag")
-        require_published_source_tag(source, tag, manifest["source_sha"], self)
+        require_published_source_tag(source, tag, manifest["source_sha"])
         release = self.find_release(tag)
         if release is None:
             release = self.api("/releases", "POST", {"tag_name": tag, "name": "NuDox " + tag, "draft": True, "prerelease": not stable, "make_latest": "false", "body": f'Verified native artifacts. Canonical Forgejo Backend source: {manifest["source_sha"]}. The GitHub tag is a distribution identifier.'})
@@ -683,7 +683,11 @@ class GitHub:
             for kind in kinds:
                 (staging / f"{kind}-{selected}.json").write_bytes(metadata_path(directory, kind, selected).read_bytes())
             paths = [directory / name for name in names[:2]] + [staging / name for name in names[2:]]
-            if selected == "linux-x64":
+            if selected == "linux-x64" and "minimum_glibc" not in manifest:
+                installer = staging / "install-linux.sh"
+                installer.write_bytes(linux_shell_installer(linux_installer_template(source, manifest), tag, manifest))
+                paths.append(installer)
+            elif selected == "linux-x64":
                 bootstrap_name = "install-linux-x64-channel.py" if stable else "install-linux-x64.py"
                 bootstrap = directory / bootstrap_name
                 if bootstrap.is_symlink() or not bootstrap.is_file() or bootstrap.stat().st_size > 1024 * 1024:
@@ -699,7 +703,7 @@ class GitHub:
         if release["draft"] and not draft_only:
             # Uploads can outlive the initial observation. Re-admit both refs
             # immediately before making the draft public; never repair refs here.
-            require_published_source_tag(source, tag, manifest["source_sha"], self)
+            require_published_source_tag(source, tag, manifest["source_sha"])
             self.api(f'/releases/{release["id"]}', "PATCH", {"draft": False, "prerelease": not stable, "make_latest": "false"})
         return manifest
 
@@ -718,8 +722,37 @@ class GitHub:
                 raise ValueError("published release is missing an expected asset; use a new version")
 
 
-def require_published_source_tag(source, tag, source_sha, github):
-    """Require the canonical Forgejo tag and GitHub distribution tag to pin source_sha."""
+def linux_installer_template(source, manifest):
+    """The installer template from the exact release source, not the working tree."""
+    return subprocess.check_output(["git", "-C", str(source), "show", f'{manifest["source_sha"]}:tools/package/install_linux.sh.in'], timeout=30)
+
+
+def linux_shell_installer(template, tag, manifest):
+    """Render install-linux.sh pinned to one tag, archive and SHA-256."""
+    floor = re.fullmatch(r"Linux glibc ([0-9]+\.[0-9]+)", manifest["minimum_os"])
+    if floor is None:
+        raise ValueError("portable Linux candidate has no glibc floor in minimum_os")
+    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[0-9]+-linux-x64)?", tag):
+        raise ValueError("Linux installer tag must be v<version> or its linux-x64 candidate tag")
+    text = template.decode()
+    for key, value in (("@TAG@", tag), ("@ARCHIVE@", manifest["asset"]), ("@SHA256@", manifest["sha256"]), ("@MINIMUM_GLIBC@", floor.group(1))):
+        if key not in text:
+            raise ValueError(f"Linux installer template lacks {key}")
+        text = text.replace(key, value)
+    if re.search(r"@[A-Z_]+@", text):
+        raise ValueError("Linux installer template has an unknown placeholder")
+    return text.encode()
+
+
+def require_published_source_tag(source, tag, source_sha):
+    """Require the canonical Forgejo tag to pin source_sha.
+
+    The GitHub distribution repository (nudoxorg/releases, since W9.2) holds
+    binaries only, never Backend source, so its tag cannot point at a Backend
+    commit: GitHub creates it on the releases repository's own branch when the
+    release is published. The source identity is the Forgejo tag checked here,
+    plus the source marker in the release body and every release manifest.
+    """
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", tag) or not re.fullmatch(r"[a-f0-9]{40}", source_sha):
         raise ValueError("release tag or source revision is invalid")
 
@@ -769,29 +802,6 @@ def require_published_source_tag(source, tag, source_sha, github):
     forgejo_sha = forgejo_objects.get(f"refs/tags/{tag}^{{}}", forgejo_objects[f"refs/tags/{tag}"])
     if forgejo_sha != source_sha:
         raise ValueError("canonical Forgejo release tag does not resolve to the candidate source revision")
-
-    reference = github.api("/git/ref/tags/" + urllib.parse.quote(tag, safe=""))
-    if not isinstance(reference, dict) or reference.get("ref") != f"refs/tags/{tag}":
-        raise ValueError("GitHub distribution tag reference is missing or does not match")
-    target = reference.get("object", {})
-    for _ in range(8):
-        if not isinstance(target, dict):
-            raise ValueError("GitHub distribution tag has a malformed target")
-        object_type = target.get("type")
-        object_sha = target.get("sha")
-        if not isinstance(object_sha, str) or not re.fullmatch(r"[a-f0-9]{40}", object_sha):
-            raise ValueError("GitHub distribution tag has an invalid target")
-        if object_type == "commit":
-            if object_sha != source_sha:
-                raise ValueError("GitHub distribution tag does not resolve to the candidate source revision")
-            return
-        if object_type != "tag":
-            raise ValueError("GitHub distribution tag does not resolve to a commit")
-        annotated = github.api("/git/tags/" + object_sha)
-        if not isinstance(annotated, dict):
-            raise ValueError("GitHub annotated tag response is malformed")
-        target = annotated.get("object", {})
-    raise ValueError("GitHub distribution tag has too many annotated-tag layers")
 
 
 def _is_canonical_forgejo_origin(origin):

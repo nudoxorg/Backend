@@ -118,3 +118,21 @@ Before expiry, run them explicitly with their required pinned tool inputs in a
 managed deep lane and either remove the ignore or retain current reviewed native
 evidence and a specific integration task. No native pass is claimed from the
 metadata/lexer checks; no guard is bypassed or ignored test silently enabled.
+
+## Managed native renewal 2026-11-10
+
+The eight `managed-native-prerequisites` source ignores from the 2026-10-16
+intake (five due October30, the PocketBase diagnostic due October31, the two
+qualified owner-upgrade controls due November2) expired unreviewed and failed
+every fast run from then on, including canonical's. Renewed for 14 days, to
+November24 UTC, with Robert's go (2026-11-09: get fast green).
+
+Current observation, not new evidence: each attribute is still present at its
+registered line (the source inventory check confirms this), and no lane yet
+supplies their prerequisites. Nothing sets `TSZ_PROGRAM_TEST_NODE`,
+`TSZ_PROGRAM_TEST_TYPESCRIPT_API`, `NUDOX_TEST_QUALIFIED_CLI`, genuine managed
+CPython/uv or the retained PocketBase corpus, and no lane runs `--ignored`. They
+remain skipped exactly as before. No native pass is claimed and no test is
+reenabled. The work to remove them is unchanged: a managed deep lane that
+provides these pinned inputs (CI rework T3). Without that lane, the next review
+must either delete the controls or record why they stay.

@@ -120,9 +120,18 @@ and `Nudox/resources/build-manifest.json`. Embedded build evidence includes
 required helper/runtime; a portable archive cannot depend on the developer's Nix store.
 Linux staging must dereference links: release archives reject links/special files.
 
-Linux/Windows build and installer tooling is not supplied by this publishing pipeline.
-Their developers must provide portable payloads and genuine native/signing evidence meeting
-this contract; native worker enrollment can automate that handoff later. Intel Mac and ARM
+linux-x64 builds itself (B7). Changing `workspace.package.version` on canonical makes the
+release pipeline plan a candidate (`linux_release_ci.py`), `cargo build --release` it, package
+it with `linux_formal_release.py --release-dir` (GUI libraries, launchers, glibc floor), run
+every linux-x64 QA case in stock Ubuntu 24.04 (`linux_release_qa.py`), tag it on Forgejo and
+submit it. Publication uploads `install-linux.sh` rendered from `install_linux.sh.in`, pinned
+to that tag and archive hash. To release with red non-fast lanes, commit
+`tools/package/release-ci-waiver.json` (`version`, `contexts`, `reason`, `approved_by`,
+`approved_at`) with the version bump; it applies to that version only. MachineConfigurations
+`docs/backend-release.md` has the job-level detail.
+
+linux-arm64 and Windows build tooling is not supplied by this pipeline. Their developers must
+provide portable payloads and genuine native/signing evidence meeting this contract. Intel Mac and ARM
 Windows are not part of the current website architecture contract.
 
 ## Operator promotion
