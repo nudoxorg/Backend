@@ -88,8 +88,8 @@ impl Work {
             && self.max_bytes.saturating_sub(self.bytes) >= 5 * MAX_STYLO_RELATION_ROW_BYTES
     }
 }
-type RelationHandle = backend_engine::workspace::WorkspaceRelationHandle<StyloAnalysisRelation>;
-fn selected_native_relation(
+pub(super) type RelationHandle = backend_engine::workspace::WorkspaceRelationHandle<StyloAnalysisRelation>;
+pub(super) fn selected_native_relation(
     snapshot: &WorkspaceSnapshot,
 ) -> Result<Option<RelationHandle>, BuiltinModelError> {
     let relation = stylo_analysis_relation(snapshot).map_err(error)?;
@@ -226,6 +226,65 @@ fn selector(
         _ => Err(error("native selector ownership is unavailable")),
     }
 }
+/// Classify the exact attempt linked to a selected relation row. Missing
+/// historical evidence remains unknown; mismatched linkage is an error.
+pub(super) fn classify_attempt(
+    project: [u8; 32],
+    selected_row: Option<&StyloAnalysisRecord>,
+    attempt: Option<StyloAnalysisRecord>,
+) -> Result<(StyloAttemptState, StyloWorkerCapability), BuiltinModelError> {
+    let selection_digest = selected_row
+        .map(|row| stylo_rows_digest(&[(stylo_selection_key(project), row)]))
+        .transpose()
+        .map_err(error)?;
+    let result = match attempt {
+        None => (
+            if selected_row.is_some() {
+                StyloAttemptState::UnknownLegacy
+            } else {
+                StyloAttemptState::NoSelectedAnalysis
+            },
+            StyloWorkerCapability::Unknown,
+        ),
+        Some(StyloAnalysisRecord::Attempt {
+            project: owner,
+            outcome,
+            worker_artifact,
+            served_selection,
+            ..
+        }) if owner == project && served_selection == selection_digest => {
+            let capability = match worker_artifact {
+                backend_engine::builtin::StyloAttemptArtifact::Admitted(id) => {
+                    StyloWorkerCapability::Admitted(id)
+                }
+                backend_engine::builtin::StyloAttemptArtifact::NoPermit => {
+                    StyloWorkerCapability::NoPermit
+                }
+                backend_engine::builtin::StyloAttemptArtifact::Unknown => {
+                    StyloWorkerCapability::Unknown
+                }
+            };
+            let state = match (outcome, selected_row.is_some()) {
+                (StyloAttemptOutcome::Observed, true) => StyloAttemptState::LatestObserved,
+                (StyloAttemptOutcome::Unavailable(reason), true) => {
+                    StyloAttemptState::RetainedAfterUnavailable {
+                        reason: failure(reason),
+                    }
+                }
+                (StyloAttemptOutcome::Unavailable(reason), false) => {
+                    StyloAttemptState::Unavailable {
+                        reason: failure(reason),
+                    }
+                }
+                _ => return Err(error("invalid latest native attempt")),
+            };
+            (state, capability)
+        }
+        _ => return Err(error("native attempt does not own selected facts")),
+    };
+    Ok(result)
+}
+
 /// Query an already owner-selected snapshot. `secret` is the durable product owner authority.
 pub(super) fn query(
     snapshot: &WorkspaceSnapshot,
@@ -292,56 +351,7 @@ pub(super) fn query(
     };
     let selected_row = lookup(&relation, &stylo_selection_key(project), &mut work)?;
     let attempt = lookup(&relation, &stylo_attempt_key(project), &mut work)?;
-    let selection_digest = selected_row
-        .as_ref()
-        .map(|row| stylo_rows_digest(&[(stylo_selection_key(project), row)]))
-        .transpose()
-        .map_err(error)?;
-    let (attempt_state, worker_capability) = match attempt {
-        None => (
-            if selected_row.is_some() {
-                StyloAttemptState::UnknownLegacy
-            } else {
-                StyloAttemptState::NoSelectedAnalysis
-            },
-            StyloWorkerCapability::Unknown,
-        ),
-        Some(StyloAnalysisRecord::Attempt {
-            project: owner,
-            outcome,
-            worker_artifact,
-            served_selection,
-            ..
-        }) if owner == project && served_selection == selection_digest => {
-            let capability = match worker_artifact {
-                backend_engine::builtin::StyloAttemptArtifact::Admitted(id) => {
-                    StyloWorkerCapability::Admitted(id)
-                }
-                backend_engine::builtin::StyloAttemptArtifact::NoPermit => {
-                    StyloWorkerCapability::NoPermit
-                }
-                backend_engine::builtin::StyloAttemptArtifact::Unknown => {
-                    StyloWorkerCapability::Unknown
-                }
-            };
-            let state = match (outcome, selected_row.is_some()) {
-                (StyloAttemptOutcome::Observed, true) => StyloAttemptState::LatestObserved,
-                (StyloAttemptOutcome::Unavailable(reason), true) => {
-                    StyloAttemptState::RetainedAfterUnavailable {
-                        reason: failure(reason),
-                    }
-                }
-                (StyloAttemptOutcome::Unavailable(reason), false) => {
-                    StyloAttemptState::Unavailable {
-                        reason: failure(reason),
-                    }
-                }
-                _ => return Err(error("invalid latest native attempt")),
-            };
-            (state, capability)
-        }
-        _ => return Err(error("native attempt does not own selected facts")),
-    };
+    let (attempt_state, worker_capability) = classify_attempt(project, selected_row.as_ref(), attempt)?;
     let (selection, complete) = match selected_row {
         Some(StyloAnalysisRecord::Selection {
             project: owner,
@@ -786,6 +796,24 @@ mod tests {
     };
 
     #[test]
+    fn selected_attempt_distinguishes_observed_retained_unknown_and_bad_link() {
+        use backend_engine::builtin::{StyloAnalysisProfile, StyloAttemptArtifact, StyloAttemptOutcome, StyloInventory, StyloWorkerPolicy, stylo_rows_digest, stylo_selection_key};
+        use backend_library::stylo_query::{StyloAttemptState, StyloFailure, StyloWorkerCapability};
+        let project = [1; 32];
+        let selection = StyloAnalysisRecord::Selection { project, source_root: "/project".into(), profile: StyloAnalysisProfile::StyloStandaloneV1, recipe: "fixture".into(), producer: [2; 32], worker_artifact: [3; 32], adapter: [4; 32], discovery: [5; 32], policy_complete: false, max_worker_attempts: None, inventory: StyloInventory::Incomplete, inventory_digest: [6; 32], inventory_count: 0, host_count: 0, host_digest: [7; 32] };
+        let digest = stylo_rows_digest(&[(stylo_selection_key(project), &selection)]).unwrap();
+        let mut attempt = StyloAnalysisRecord::Attempt { project, source_root: "/project".into(), profile: StyloAnalysisProfile::StyloStandaloneV1, scope_policy: [8; 32], discovery: Some([5; 32]), policy_complete: false, max_worker_attempts: None, inventory: Some(StyloInventory::Incomplete), inventory_digest: Some([6; 32]), inventory_count: Some(0), expected_producer: Some([2; 32]), expected_recipe: Some("fixture".into()), adapter: [4; 32], worker_artifact: StyloAttemptArtifact::Admitted([3; 32]), requested_policy: StyloWorkerPolicy { wall_time_nanos: 1, input_bytes: 1024, stdout_bytes: 1024, stderr_bytes: 64, output_bytes: 2048, memory_bytes: None }, outcome: StyloAttemptOutcome::Observed, served_selection: Some(digest) };
+        assert!(attempt.validate().is_ok());
+        assert_eq!(super::classify_attempt(project, Some(&selection), Some(attempt.clone())).unwrap(), (StyloAttemptState::LatestObserved, StyloWorkerCapability::Admitted([3; 32])));
+        if let StyloAnalysisRecord::Attempt { outcome, worker_artifact, .. } = &mut attempt { *outcome = StyloAttemptOutcome::Unavailable(StyloUnavailable::ParserUnavailable); *worker_artifact = StyloAttemptArtifact::NoPermit; }
+        assert!(attempt.validate().is_ok());
+        assert_eq!(super::classify_attempt(project, Some(&selection), Some(attempt.clone())).unwrap(), (StyloAttemptState::RetainedAfterUnavailable { reason: StyloFailure::ParserUnavailable }, StyloWorkerCapability::NoPermit));
+        assert_eq!(super::classify_attempt(project, Some(&selection), None).unwrap(), (StyloAttemptState::UnknownLegacy, StyloWorkerCapability::Unknown));
+        if let StyloAnalysisRecord::Attempt { served_selection, .. } = &mut attempt { *served_selection = Some([9; 32]); }
+        assert!(super::classify_attempt(project, Some(&selection), Some(attempt)).is_err());
+    }
+
+    #[test]
     fn owner_key_uses_full_analysis_basis_not_parser_configuration() {
         let selection = Selected {
             project: [1; 32],
@@ -977,5 +1005,117 @@ pub(super) fn read_site(
         end: site.end,
         line_1,
         text: extent.text().to_owned(),
+    })
+}
+
+/// Candidate-only impact from one authenticated authored custom-property site.
+/// This intentionally uses the same root-selected scan and continuation as the
+/// native query; equal names support a possible provider, never a binding.
+pub(super) fn impact(
+    snapshot: &WorkspaceSnapshot,
+    secret: &[u8; 32],
+    request: &backend_library::stylo_impact::StyloImpactRequest,
+) -> Result<backend_library::stylo_impact::StyloImpactPage, BuiltinModelError> {
+    use backend_library::stylo_impact::{
+        StyloImpactCursor, StyloImpactPage, StyloImpactRow, StyloImpactStrength,
+        StyloImpactTerminal,
+    };
+    request.admit().map_err(error)?;
+    let seed = request.seed.verify(secret).map_err(error)?;
+    let project = backend_library::package_key(request.query.package.as_str()).to_bytes();
+    if seed.project != project || seed.manifest_root != *snapshot.root().as_bytes() {
+        return Err(error(
+            "impact seed expired or belongs to another project; reselect the source site",
+        ));
+    }
+    let relation = selected_native_relation(snapshot)?
+        .ok_or_else(|| error("impact seed expired: selected CSS root unavailable"))?;
+    if seed.native_root != *relation.root().as_bytes() {
+        return Err(error(
+            "impact seed expired: CSS root changed; reselect the source site",
+        ));
+    }
+    let mut preflight = Work {
+        rows: 0,
+        bytes: 0,
+        max_rows: request.query.scan_rows as usize,
+        max_bytes: request.query.scan_bytes as usize,
+    };
+    let selection = lookup(&relation, &stylo_selection_key(project), &mut preflight)?;
+    if !matches!(selection, Some(StyloAnalysisRecord::Selection { project: owner, .. }) if owner == project)
+    {
+        return Err(error("impact seed has no selected project owner"));
+    }
+    let host = lookup(&relation, &seed.host, &mut preflight)?;
+    if !matches!(host, Some(StyloAnalysisRecord::Host { project: owner, terminal: backend_engine::builtin::StyloTerminal::Parsed(_), .. }) if owner == project)
+    {
+        return Err(error("impact seed host is not selected and parsed"));
+    }
+    let site = lookup(&relation, &seed.site, &mut preflight)?;
+    if !matches!(site, Some(StyloAnalysisRecord::Fact { host, fact: StyloProjectedRow::SourceOccurrence(ref site), .. }) if host == seed.host && site.role == StyloSourceRole::CustomPropertyDeclarationName && site.decoded == request.query.name)
+    {
+        return Err(error(
+            "impact seed is not the requested authored custom-property declaration",
+        ));
+    }
+    let mut scan = request.query.clone();
+    // Reserve framing space for the seed and authenticated impact cursor.
+    scan.output_bytes -= backend_library::stylo_impact::STYLO_IMPACT_ENVELOPE_RESERVE;
+    scan.scan_rows -= u32::try_from(preflight.rows).map_err(error)?;
+    scan.scan_bytes -= u32::try_from(preflight.bytes).map_err(error)?;
+    if let Some(cursor) = &request.continuation {
+        cursor.verify(&request.seed, secret).map_err(error)?;
+        scan.continuation = Some(cursor.scan().clone());
+    }
+    let page = query(snapshot, secret, &scan)?;
+    if page.basis.native_root != Some(seed.native_root)
+        || page.basis.manifest_root != seed.manifest_root
+    {
+        return Err(error("impact selected basis changed"));
+    }
+    let rows = page
+        .hits
+        .into_iter()
+        .filter_map(|witness| match witness {
+            StyloQueryHit::NativeDependency { .. } => Some(StyloImpactRow {
+                strength: StyloImpactStrength::Candidate,
+                witness,
+            }),
+            _ => None,
+        })
+        .collect();
+    let wrap =
+        |cursor| StyloImpactCursor::issue(request.seed.clone(), cursor, secret).map_err(error);
+    let terminal = match page.terminal {
+        StyloQueryTerminal::Complete => StyloImpactTerminal::Complete,
+        StyloQueryTerminal::Unavailable => StyloImpactTerminal::Unavailable,
+        StyloQueryTerminal::More {
+            continuation,
+            work_limited,
+        } => StyloImpactTerminal::More {
+            continuation: wrap(continuation)?,
+            work_limited,
+        },
+        StyloQueryTerminal::OutputLimit {
+            required_bytes,
+            continuation,
+        } => {
+            let total = required_bytes
+                .saturating_add(backend_library::stylo_impact::STYLO_IMPACT_ENVELOPE_RESERVE);
+            StyloImpactTerminal::OutputLimit {
+                required_bytes: total,
+                continuation: if total <= 4_194_304 {
+                    continuation.map(wrap).transpose()?
+                } else {
+                    None
+                },
+            }
+        }
+    };
+    Ok(StyloImpactPage {
+        basis: page.basis,
+        seed: request.seed.clone(),
+        rows,
+        terminal,
     })
 }

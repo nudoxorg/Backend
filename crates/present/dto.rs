@@ -1480,6 +1480,31 @@ impl ProductDto {
                         basis: page.basis.clone(), terminal: page.terminal.clone(), first_source, returned: page.hits.len(),
                     }))
                 }
+                (Some(Detail::Summary), Some(crate::ProductSemanticData::ImpactCompare(page))) => {
+                    Some(crate::ProductSemanticData::ImpactCompareSummary(crate::product::ImpactCompareSummary {
+                        base: page.base.clone(), target: page.target.clone(), side: page.side,
+                        relation_gapped: page.relation_gapped, source_gapped: page.source_gapped,
+                        base_attempt_at_capture: page.base_attempt_at_capture.clone(), target_attempt_at_capture: page.target_attempt_at_capture.clone(), base_worker_at_capture: page.base_worker_at_capture, target_worker_at_capture: page.target_worker_at_capture, provider_unknown: page.provider_unknown, missing_owner: page.missing_owner,
+                        counters: page.counters.clone(), terminal: page.terminal.clone(), returned: page.rows.len(),
+                    }))
+                }
+                (Some(Detail::Summary), Some(crate::ProductSemanticData::ImpactDiff(page))) => {
+                    Some(crate::ProductSemanticData::ImpactDiffSummary(crate::product::ImpactDiffSummary {
+                        base: page.base.clone(), target: page.target.clone(), domain: page.domain,
+                        base_capture_complete: page.base_capture_complete, target_capture_complete: page.target_capture_complete,
+                        semantic_gapped: page.semantic_gapped, provider_unknown: page.provider_unknown,
+                        walk_limited: page.walk_limited, context_gapped: page.context_gapped, missing_owner: page.missing_owner,
+                        comparisons: page.comparisons, compared_bytes: page.compared_bytes, counters: page.counters.clone(), terminal: page.terminal.clone(), returned: page.rows.len(),
+                    }))
+                }
+                (Some(Detail::Summary), Some(crate::ProductSemanticData::StyloImpact(page))) => {
+                    Some(crate::ProductSemanticData::StyloImpactSummary(
+                        crate::product::StyloImpactSummary {
+                            basis: page.basis.clone(), seed: page.seed.clone(),
+                            terminal: page.terminal.clone(), returned: page.rows.len(),
+                        },
+                    ))
+                }
                 _ => view.semantic_data().cloned(),
             },
             semantic_versions_summary: match (detail, view.semantic_data()) {

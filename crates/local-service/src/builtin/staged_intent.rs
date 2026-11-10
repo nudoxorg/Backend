@@ -41,6 +41,7 @@ schema!(RawSourcePage, 10);
 schema!(SourceRowsPage, 11);
 schema!(CompleteFactsPage, 12);
 schema!(StagedManifest, 13);
+schema!(SqlReceiptIdPage, 14);
 
 pub(super) fn admit_manifest_object(object: &TypedObject) -> Result<StageBasis, StoreError> {
     if object.schema() != SchemaIdentity::new(0x96, 13, 1)
@@ -48,21 +49,22 @@ pub(super) fn admit_manifest_object(object: &TypedObject) -> Result<StageBasis, 
     {
         return Err(StoreError::Corrupt);
     }
-    decode_manifest(object.bytes()).map(|(basis, _)| basis)
+    decode_manifest_any(object.bytes()).map(|(basis, _, _)| basis)
 }
 
 pub(super) fn staged_member_count(object: &TypedObject) -> Result<u64, StoreError> {
     admit_manifest_object(object)?;
-    let (_, chains) = decode_manifest(object.bytes())?;
-    chains.iter().try_fold(1_u64, |count, chain| {
+    let (_, chains, sql) = decode_manifest_any(object.bytes())?;
+    let count = chains.iter().try_fold(1_u64, |count, chain| {
         count.checked_add(chain.pages).ok_or(StoreError::Bounds)
-    })
+    })?;
+    match sql { Some(scope) => count.checked_add(scope.chain.pages).and_then(|n| n.checked_add(scope.count)).ok_or(StoreError::Bounds), None => Ok(count) }
 }
 
 pub(super) fn staged_scope_limits(object: &TypedObject) -> Result<(usize, u64), StoreError> {
     admit_manifest_object(object)?;
-    let (_, chains) = decode_manifest(object.bytes())?;
-    let (pages, bytes) = chains
+    let (_, chains, sql) = decode_manifest_any(object.bytes())?;
+    let (mut pages, mut bytes) = chains
         .iter()
         .try_fold((0_u64, 0_u64), |(pages, bytes), chain| {
             Ok::<_, StoreError>((
@@ -70,10 +72,11 @@ pub(super) fn staged_scope_limits(object: &TypedObject) -> Result<(usize, u64), 
                 bytes.checked_add(chain.bytes).ok_or(StoreError::Bounds)?,
             ))
         })?;
-    Ok((
-        usize::try_from(pages).map_err(|_| StoreError::Bounds)?,
-        bytes,
-    ))
+    if let Some(scope) = sql {
+        pages = pages.checked_add(scope.chain.pages).and_then(|n| n.checked_add(scope.count)).ok_or(StoreError::Bounds)?;
+        bytes = bytes.checked_add(scope.chain.bytes).and_then(|n| n.checked_add(scope.object_bytes)).ok_or(StoreError::Bounds)?;
+    }
+    Ok((usize::try_from(pages).map_err(|_| StoreError::Bounds)?, bytes))
 }
 
 /// Different kinds remain separated even for identical payload bytes.
@@ -458,6 +461,8 @@ impl StagePool {
             chains: [Chain::default(); 3],
             pending: std::array::from_fn(|_| Vec::new()),
             ids: Vec::new(),
+            sql_receipts: Vec::new(),
+            sql_receipt_bytes: 0,
             queued: Vec::with_capacity(PAGE_BATCH),
             payload_bytes: 0,
             poisoned: false,
@@ -495,6 +500,8 @@ pub(super) struct StageWriter {
     chains: [Chain; 3],
     pending: [Vec<u8>; 3],
     ids: Vec<ObjectId>,
+    sql_receipts: Vec<ObjectId>,
+    sql_receipt_bytes: u64,
     queued: Vec<TypedObject>,
     payload_bytes: u64,
     poisoned: bool,
@@ -503,6 +510,40 @@ pub(super) struct StageWriter {
 }
 
 impl StageWriter {
+    /// Retain a previously owner-verified receipt which belongs to the exact
+    /// pinned predecessor. This only stages storage evidence; selected index
+    /// and MAC admission remain the caller's responsibility.
+    pub(super) fn retain_sql_receipt(
+        &mut self,
+        receipt: &super::sql_receipt::VerifiedSqlReceipt,
+        predecessor: &backend_store::DurableClosureManifest,
+    ) -> Result<(), StoreError> {
+        if self.poisoned { return Err(StoreError::Corrupt); }
+        let result = (|| {
+            let object = receipt.object().map_err(|_| StoreError::Corrupt)?;
+            let id = object.id();
+            if !receipt.matches_stage(self.basis) || object.bytes().is_empty() || object.bytes().len() > 8192 || !predecessor.contains(id)?
+                || self.sql_receipts.last().is_some_and(|previous| *previous >= id) {
+                return Err(StoreError::Corrupt);
+            }
+            let count = self.sql_receipts.len().checked_add(1).ok_or(StoreError::Bounds)?;
+            let payload = self.sql_receipt_bytes.checked_add(object.bytes().len() as u64).ok_or(StoreError::Bounds)?;
+            let id_bytes = (count as u64).checked_mul(32).ok_or(StoreError::Bounds)?;
+            let pages = id_bytes.checked_add(PAGE_BYTES as u64 - 1).ok_or(StoreError::Bounds)? / PAGE_BYTES as u64;
+            let pending_pages = self.pending.iter().filter(|page| !page.is_empty()).count();
+            let members = self.ids.len().checked_add(count).and_then(|n| n.checked_add(pages as usize)).and_then(|n| n.checked_add(pending_pages)).ok_or(StoreError::Bounds)?;
+            if count as u64 > MAX_STAGED_SQL_RECEIPTS || payload > MAX_STAGED_SQL_RECEIPT_BYTES
+                || members > self.pool.max_pages || self.payload_bytes.checked_add(payload).and_then(|n| n.checked_add(id_bytes)).ok_or(StoreError::Bounds)? > self.lease.bytes {
+                return Err(StoreError::Bounds);
+            }
+            self.sql_receipts.try_reserve(1).map_err(|_| StoreError::Bounds)?;
+            self.sql_receipts.push(id);
+            self.sql_receipt_bytes = payload;
+            Ok(())
+        })();
+        if result.is_err() { self.poisoned = true; }
+        result
+    }
     /// Caller supplies a finite canonical stream for exactly one kind.
     /// Repeated calls append to the same ordered stream, never publish it.
     pub(super) fn append(
@@ -545,12 +586,20 @@ impl StageWriter {
                 .payload_bytes
                 .checked_add(length as u64)
                 .ok_or(StoreError::Bounds)?;
-            if charged > self.lease.bytes {
+            let reserved_receipts = self.sql_receipt_bytes.checked_add((self.sql_receipts.len() as u64).checked_mul(32).ok_or(StoreError::Bounds)?).ok_or(StoreError::Bounds)?;
+            if charged.checked_add(reserved_receipts).ok_or(StoreError::Bounds)? > self.lease.bytes {
                 return Err(StoreError::Bounds);
             }
             self.payload_bytes = charged;
             let mut at = 0;
             while at < length {
+                if self.pending[kind.slot()].is_empty() {
+                    let id_bytes = self.sql_receipts.len().checked_mul(32).ok_or(StoreError::Bounds)?;
+                    let id_pages = id_bytes.checked_add(PAGE_BYTES - 1).ok_or(StoreError::Bounds)? / PAGE_BYTES;
+                    let pending_pages = self.pending.iter().filter(|page| !page.is_empty()).count();
+                    let reserved = self.ids.len().checked_add(self.sql_receipts.len()).and_then(|n| n.checked_add(id_pages)).and_then(|n| n.checked_add(pending_pages)).ok_or(StoreError::Bounds)?;
+                    if reserved >= self.pool.max_pages { return Err(StoreError::Bounds); }
+                }
                 let take = (PAGE_BYTES - self.pending[kind.slot()].len()).min(length - at);
                 self.pending[kind.slot()].extend_from_slice(&buffer[at..at + take]);
                 at += take;
@@ -562,7 +611,11 @@ impl StageWriter {
         }
     }
     fn write_page(&mut self, kind: EvidenceKind, payload: &[u8]) -> Result<(), StoreError> {
-        if self.ids.len() >= self.pool.max_pages {
+        let receipt_id_bytes = self.sql_receipts.len().checked_mul(32).ok_or(StoreError::Bounds)?;
+        let receipt_pages = receipt_id_bytes.checked_add(PAGE_BYTES - 1).ok_or(StoreError::Bounds)? / PAGE_BYTES;
+        let reserved = self.sql_receipts.len().checked_add(receipt_pages).ok_or(StoreError::Bounds)?;
+        let pending_pages = self.pending.iter().filter(|page| !page.is_empty()).count();
+        if self.ids.len().checked_add(reserved).and_then(|n| n.checked_add(pending_pages)).ok_or(StoreError::Bounds)? >= self.pool.max_pages {
             return Err(StoreError::Bounds);
         }
         let chain = &mut self.chains[kind.slot()];
@@ -602,7 +655,34 @@ impl StageWriter {
                 self.write_page(kind, &pending)?;
             }
         }
-        let manifest = encode_manifest(self.basis, self.chains);
+        let manifest = if self.sql_receipts.is_empty() {
+            encode_manifest(self.basis, self.chains)
+        } else {
+            let mut chain = Chain::default();
+            let mut offset = 0usize;
+            while offset < self.sql_receipts.len() {
+                let end = (offset + PAGE_BYTES / 32).min(self.sql_receipts.len());
+                let mut bytes = Vec::with_capacity(PAGE_HEADER + (end - offset) * 32);
+                bytes.extend_from_slice(b"BSP1");
+                bytes.extend_from_slice(&chain.pages.to_be_bytes());
+                bytes.extend_from_slice(&chain.tail);
+                for id in &self.sql_receipts[offset..end] { bytes.extend_from_slice(id.as_bytes()); }
+                let page = typed::<SqlReceiptIdPage>(&bytes);
+                let id = page.id();
+                chain.tail = *id.as_bytes();
+                chain.pages = chain.pages.checked_add(1).ok_or(StoreError::Bounds)?;
+                chain.bytes = chain.bytes.checked_add(((end - offset) * 32) as u64).ok_or(StoreError::Bounds)?;
+                self.ids.push(id);
+                self.queued.push(page);
+                if self.queued.len() >= PAGE_BATCH { self.flush_queued()?; }
+                offset = end;
+            }
+            self.ids.extend(self.sql_receipts.iter().copied());
+            self.payload_bytes = self.payload_bytes.checked_add(chain.bytes).and_then(|n| n.checked_add(self.sql_receipt_bytes)).ok_or(StoreError::Bounds)?;
+            encode_sql_manifest(self.basis, self.chains, SqlStagedReceiptScope {
+                chain, count: self.sql_receipts.len() as u64, object_bytes: self.sql_receipt_bytes,
+            })?
+        };
         let manifest = typed::<StagedManifest>(&manifest);
         let manifest_id = manifest.id();
         self.queued.push(manifest);
@@ -632,7 +712,7 @@ impl StageWriter {
                     .checked_mul(PAGE_HEADER as u64)
                     .ok_or(StoreError::Bounds)?,
             )
-            .and_then(|n| n.checked_add(MANIFEST_BYTES as u64))
+            .and_then(|n| n.checked_add(SQL_MANIFEST_BYTES as u64))
             .ok_or(StoreError::Bounds)?;
         let receipt = self.store.compose_closure_index(
             None,
@@ -769,6 +849,9 @@ fn read_bounded(
         value if value == SchemaIdentity::new(0x96, 11, 1) => typed::<SourceRowsPage>(&bytes),
         value if value == SchemaIdentity::new(0x96, 12, 1) => typed::<CompleteFactsPage>(&bytes),
         value if value == SchemaIdentity::new(0x96, 13, 1) => typed::<StagedManifest>(&bytes),
+        value if value == SchemaIdentity::new(0x96, 14, 1) => typed::<SqlReceiptIdPage>(&bytes),
+        value if value == SchemaIdentity::new(0x7a, 0xc00d, 1) => super::sql_receipt::SqlReceipt::decode(&bytes)
+            .and_then(|receipt| receipt.object()).map_err(|_| StoreError::Corrupt)?,
         _ => return Err(StoreError::Corrupt),
     };
     if canonical.id() != id {
@@ -795,6 +878,7 @@ pub(super) fn visit_staged(
         expected,
         budget,
         Some(receipt.receipt().object_count()),
+        None,
         visit,
     )
 }
@@ -806,14 +890,17 @@ pub(super) fn visit_staged_scope(
     expected: StageBasis,
     budget: ArtifactBudget,
     exact_count: Option<u64>,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
     mut visit: impl FnMut(EvidenceKind, &[u8]) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
+    let check = || if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) { Err(StoreError::Io("staged hydration cancelled".into())) } else { Ok(()) };
+    check()?;
     // A receipt may have been produced by another FileStore containing the
     // same CAS closure. Pin this reader's store across the entire traversal.
     let _local_pin = store.pin_garbage_collection()?;
     let sink = store.artifact_sink(budget);
     let mut seen = BTreeSet::new();
-    let (schema, manifest) = read_bounded(&sink, manifest_id, MANIFEST_BYTES)?;
+    let (schema, manifest) = read_bounded(&sink, manifest_id, SQL_MANIFEST_BYTES)?;
     if schema != SchemaIdentity::new(0x96, 13, 1)
         || sink
             .verify_closure_member(
@@ -824,7 +911,7 @@ pub(super) fn visit_staged_scope(
     {
         return Err(StoreError::Corrupt);
     }
-    let (basis, chains) = decode_manifest(&manifest)?;
+    let (basis, chains, sql_scope) = decode_manifest_any(&manifest)?;
     if basis != expected {
         return Err(StoreError::WrongBase);
     }
@@ -879,6 +966,57 @@ pub(super) fn visit_staged_scope(
             visit(kind, &bytes[PAGE_HEADER..])?;
         }
     }
+    if let Some(scope) = sql_scope {
+        check()?;
+        total = total.checked_add(scope.chain.bytes).and_then(|n| n.checked_add(scope.object_bytes)).ok_or(StoreError::Bounds)?;
+        if total > budget.max_payload_bytes || scope.chain.pages.checked_add(scope.count).ok_or(StoreError::Bounds)? > budget.max_changes as u64 {
+            return Err(StoreError::Bounds);
+        }
+        let mut cursor = scope.chain.tail;
+        let mut pages = Vec::new();
+        let mut length = 0u64;
+        for ordinal in (0..scope.chain.pages).rev() {
+            check()?;
+            let id = sink.verify_closure_member(closure, UntrustedObjectId::from_bytes(cursor))?.ok_or(StoreError::Corrupt)?.object_id();
+            if seen.len() >= budget.max_closure_objects || !seen.insert(id) { return Err(StoreError::Corrupt); }
+            let (schema, bytes) = read_bounded(&sink, id, PAGE_HEADER + PAGE_BYTES)?;
+            let expected_payload = if ordinal + 1 < scope.chain.pages { PAGE_BYTES as u64 }
+                else { scope.chain.bytes.checked_sub((scope.chain.pages - 1).checked_mul(PAGE_BYTES as u64).ok_or(StoreError::Bounds)?).ok_or(StoreError::Bounds)? };
+            if schema != SchemaIdentity::new(0x96, 14, 1) || bytes.len() <= PAGE_HEADER
+                || (bytes.len() - PAGE_HEADER) as u64 != expected_payload
+                || &bytes[..4] != b"BSP1" || u64::from_be_bytes(bytes[4..12].try_into().map_err(|_| StoreError::Corrupt)?) != ordinal {
+                return Err(StoreError::Corrupt);
+            }
+            cursor = bytes[12..44].try_into().map_err(|_| StoreError::Corrupt)?;
+            length = length.checked_add((bytes.len() - PAGE_HEADER) as u64).ok_or(StoreError::Bounds)?;
+            pages.push(id);
+        }
+        if cursor != [0; 32] || length != scope.chain.bytes { return Err(StoreError::Corrupt); }
+        let mut previous = None;
+        let mut count = 0u64;
+        let mut receipt_bytes = 0u64;
+        for page in pages.into_iter().rev() {
+            check()?;
+            let (_, bytes) = read_bounded(&sink, page, PAGE_HEADER + PAGE_BYTES)?;
+            let payload = &bytes[PAGE_HEADER..];
+            if payload.len() % 32 != 0 { return Err(StoreError::Corrupt); }
+            for bytes in payload.chunks_exact(32) {
+                check()?;
+                let claim: [u8; 32] = bytes.try_into().map_err(|_| StoreError::Corrupt)?;
+                if previous.is_some_and(|value| value >= claim) { return Err(StoreError::Corrupt); }
+                previous = Some(claim);
+                let id = sink.verify_closure_member(closure, UntrustedObjectId::from_bytes(claim))?.ok_or(StoreError::Corrupt)?.object_id();
+                if seen.len() >= budget.max_closure_objects || !seen.insert(id) { return Err(StoreError::Corrupt); }
+                let (schema, receipt) = read_bounded(&sink, id, 8192)?;
+                if schema != SchemaIdentity::new(0x7a, 0xc00d, 1) || receipt.is_empty() { return Err(StoreError::Corrupt); }
+                count = count.checked_add(1).ok_or(StoreError::Bounds)?;
+                receipt_bytes = receipt_bytes.checked_add(receipt.len() as u64).ok_or(StoreError::Bounds)?;
+                if count > scope.count || receipt_bytes > scope.object_bytes { return Err(StoreError::Bounds); }
+            }
+        }
+        if count != scope.count || receipt_bytes != scope.object_bytes { return Err(StoreError::Corrupt); }
+    }
+    check()?;
     if exact_count.is_some_and(|count| seen.len() as u64 != count) {
         return Err(StoreError::Corrupt);
     }
@@ -975,6 +1113,45 @@ mod tests {
     }
     fn budget() -> ArtifactBudget {
         ArtifactBudget::new(32, 33, 1024 * 1024, PAGE_BYTES, 1024)
+    }
+
+    #[test]
+    fn sql_stage_scope_rejects_missing_duplicate_and_cancelled_members() -> Result<(), String> {
+        let directory = Directory::new()?;
+        let store = FileStore::open(directory.path(), 1024 * 1024).test_value()?;
+        // This fixture tests storage membership only; the arbitrary seal is
+        // deliberately not a native authority or an owner admission.
+        let receipt = super::super::sql_receipt::unverified_test_receipt_object();
+        store.write_object(&receipt).test_value()?;
+        let fixture = |duplicates: bool, include_receipt: bool| -> Result<(ObjectId, PinnedStoredClosureReceipt), String> {
+            let mut payload = Vec::from(&b"BSP1"[..]);
+            payload.extend_from_slice(&0u64.to_be_bytes());
+            payload.extend_from_slice(&[0; 32]);
+            payload.extend_from_slice(receipt.id().as_bytes());
+            if duplicates { payload.extend_from_slice(receipt.id().as_bytes()); }
+            let page = typed::<SqlReceiptIdPage>(&payload);
+            store.write_object(&page).test_value()?;
+            let count = if duplicates { 2 } else { 1 };
+            let scope = SqlStagedReceiptScope { chain: Chain { tail: *page.id().as_bytes(), pages: 1, bytes: count * 32 }, count,
+                object_bytes: count * receipt.bytes().len() as u64 };
+            let manifest = typed::<StagedManifest>(&encode_sql_manifest(basis(), [Chain::default(); 3], scope).test_value()?);
+            store.write_object(&manifest).test_value()?;
+            let mut ids = vec![page.id(), manifest.id()];
+            if include_receipt { ids.push(receipt.id()); }
+            let mut edits = ids.into_iter().map(ClosureMembershipChange::add).collect::<Vec<_>>();
+            edits.sort_by_key(|edit| edit.object_id());
+            let closure = store.compose_closure_index(None, &edits, ClosureCompositionBudget::new(33, 33, 1024 * 1024, StagePool::metadata_required(32).test_value()?)).test_value()?;
+            Ok((manifest.id(), closure))
+        };
+        let (manifest, closure) = fixture(false, true)?;
+        visit_staged(&store, manifest, &closure, basis(), budget(), |_, _| Ok(())).test_value()?;
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        assert!(visit_staged_scope(&store, manifest, closure.receipt().closure(), basis(), budget(), None, Some(&cancelled), |_, _| Ok(())).is_err());
+        let (missing, closure) = fixture(false, false)?;
+        assert!(visit_staged(&store, missing, &closure, basis(), budget(), |_, _| Ok(())).is_err());
+        let (duplicate, closure) = fixture(true, true)?;
+        assert!(visit_staged(&store, duplicate, &closure, basis(), budget(), |_, _| Ok(())).is_err());
+        Ok(())
     }
 
     #[test]
@@ -1737,5 +1914,91 @@ fn stage_checkpoint(phase: StagePhase) -> Result<(), StoreError> {
         )))
     } else {
         Ok(())
+    }
+}
+
+// Reserved SQL staging extension. BSM1 encoding and decoding remain strict
+// and unchanged; this grammar is not selected by the stage writer yet.
+const SQL_MANIFEST_BYTES: usize = MANIFEST_BYTES + 32 + 8 * 4;
+const MAX_STAGED_SQL_RECEIPTS: u64 = 4096;
+const MAX_STAGED_SQL_RECEIPT_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Exact receipt-ID page chain and aggregate charged object bytes. This is a
+/// storage claim; individual receipt objects and their owner seals still need
+/// independent admission against the selected predecessor/index.
+#[derive(Clone, Copy)]
+struct SqlStagedReceiptScope {
+    chain: Chain,
+    count: u64,
+    object_bytes: u64,
+}
+fn decode_manifest_any(bytes: &[u8]) -> Result<(StageBasis, [Chain; 3], Option<SqlStagedReceiptScope>), StoreError> {
+    if bytes.starts_with(b"BSM1") {
+        let (basis, chains) = decode_manifest(bytes)?;
+        Ok((basis, chains, None))
+    } else {
+        let (basis, chains, scope) = decode_sql_manifest(bytes)?;
+        Ok((basis, chains, Some(scope)))
+    }
+}
+fn encode_sql_manifest(basis: StageBasis, chains: [Chain; 3], scope: SqlStagedReceiptScope) -> Result<Vec<u8>, StoreError> {
+    let mut bytes = encode_manifest(basis, chains);
+    bytes[..4].copy_from_slice(b"BSM2");
+    bytes.extend_from_slice(&scope.chain.tail);
+    bytes.extend_from_slice(&scope.chain.pages.to_be_bytes());
+    bytes.extend_from_slice(&scope.chain.bytes.to_be_bytes());
+    bytes.extend_from_slice(&scope.count.to_be_bytes());
+    bytes.extend_from_slice(&scope.object_bytes.to_be_bytes());
+    decode_sql_manifest(&bytes)?;
+    Ok(bytes)
+}
+fn decode_sql_manifest(bytes: &[u8]) -> Result<(StageBasis, [Chain; 3], SqlStagedReceiptScope), StoreError> {
+    if bytes.len() != SQL_MANIFEST_BYTES || &bytes[..4] != b"BSM2" { return Err(StoreError::Corrupt); }
+    let mut original = bytes[..MANIFEST_BYTES].to_vec();
+    original[..4].copy_from_slice(b"BSM1");
+    let (basis, chains) = decode_manifest(&original)?;
+    let mut at = MANIFEST_BYTES;
+    let tail = bytes[at..at + 32].try_into().map_err(|_| StoreError::Corrupt)?; at += 32;
+    let mut next = || { let value = u64::from_be_bytes(bytes[at..at + 8].try_into().expect("fixed manifest length")); at += 8; value };
+    let pages = next();
+    let page_bytes = next();
+    let count = next();
+    let object_bytes = next();
+    let expected_bytes = count.checked_mul(32).ok_or(StoreError::Bounds)?;
+    let expected_pages = expected_bytes.checked_add(PAGE_BYTES as u64 - 1).ok_or(StoreError::Bounds)? / PAGE_BYTES as u64;
+    if count == 0 || count > MAX_STAGED_SQL_RECEIPTS || object_bytes > MAX_STAGED_SQL_RECEIPT_BYTES
+        || page_bytes != expected_bytes || pages != expected_pages
+        || object_bytes < count || object_bytes > count.checked_mul(8192).ok_or(StoreError::Bounds)?
+        || (count == 0) != (tail == [0; 32]) || (count == 0) != (object_bytes == 0) {
+        return Err(StoreError::Corrupt);
+    }
+    Ok((basis, chains, SqlStagedReceiptScope { chain: Chain { tail, pages, bytes: page_bytes }, count, object_bytes }))
+}
+
+#[cfg(test)]
+mod sql_manifest_tests {
+    use super::*;
+    #[test]
+    fn sql_stage_manifest_is_bounded_and_distinct_from_legacy() {
+        let basis = StageBasis { owner_epoch: 1, workspace_sequence: 2, owner_fence: [3; 32], workspace_root: [4; 32], closure_id: [5; 32], source_capture: [6; 32] };
+        let chains = [Chain::default(); 3];
+        let legacy = encode_manifest(basis, chains);
+        assert!(decode_manifest(&legacy).is_ok());
+        let scope = SqlStagedReceiptScope { chain: Chain { tail: [7; 32], pages: 1, bytes: 64 }, count: 2, object_bytes: 400 };
+        let sql = encode_sql_manifest(basis, chains, scope).expect("encode SQL stage");
+        assert!(decode_manifest(&sql).is_err());
+        let (actual, _, decoded) = decode_sql_manifest(&sql).expect("decode SQL stage");
+        assert_eq!(actual, basis);
+        assert_eq!(decoded.count, 2);
+        assert_eq!(decoded.object_bytes, 400);
+        let object = typed::<StagedManifest>(&sql);
+        assert_eq!(staged_member_count(&object).expect("member count"), 4);
+        assert_eq!(staged_scope_limits(&object).expect("scope"), (3, 464));
+        let mut extra = sql.clone(); extra.push(0);
+        assert!(decode_sql_manifest(&extra).is_err());
+        let empty = SqlStagedReceiptScope { chain: Chain::default(), count: 0, object_bytes: 0 };
+        assert!(encode_sql_manifest(basis, chains, empty).is_err());
+        let wrong = SqlStagedReceiptScope { chain: Chain { tail: [7; 32], pages: 1, bytes: 63 }, ..scope };
+        assert!(encode_sql_manifest(basis, chains, wrong).is_err());
     }
 }

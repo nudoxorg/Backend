@@ -4,7 +4,9 @@ use crate::{
     NativeOwnerStatement, PackageReference, ProductAdmissionError, seal_native_owner_statement,
     verify_native_owner_statement,
 };
-pub use backend_semantic::sql_analysis::SqlFact;
+pub use backend_semantic::sql_analysis::{
+    SqlDefinitionAction, SqlFact, SqlObjectKind, SqlResolution, SqlStatementSupport,
+};
 use backend_semantic::sql_analysis::{SqlCoverage, SqlDialect, SqliteLineageCoverage};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
@@ -17,6 +19,17 @@ pub enum SqlQueryRole {
     Relation,
     OutputLineage,
     Diagnostic,
+    /// Native PostgreSQL SELECT-column reads, qualified by proposed context.
+    ColumnRead,
+    /// Every statement of every selected file, with how completely it was modeled.
+    Statement,
+    /// Statements that were not fully modeled: the places where "no reference
+    /// found" must not be read as "no reference exists".
+    Gap,
+    /// Tables, columns, views, indexes, triggers, functions, types and their changes.
+    Definition,
+    /// Every written mention of an object, bound to the object it names.
+    Reference,
 }
 impl SqlQueryRole {
     fn byte(self) -> u8 {
@@ -25,6 +38,11 @@ impl SqlQueryRole {
             Self::Relation => 1,
             Self::OutputLineage => 2,
             Self::Diagnostic => 3,
+            Self::ColumnRead => 4,
+            Self::Statement => 5,
+            Self::Gap => 6,
+            Self::Definition => 7,
+            Self::Reference => 8,
         }
     }
     fn from_byte(value: u8) -> Result<Self, ProductAdmissionError> {
@@ -33,18 +51,40 @@ impl SqlQueryRole {
             1 => Ok(Self::Relation),
             2 => Ok(Self::OutputLineage),
             3 => Ok(Self::Diagnostic),
+            4 => Ok(Self::ColumnRead),
+            5 => Ok(Self::Statement),
+            6 => Ok(Self::Gap),
+            7 => Ok(Self::Definition),
+            8 => Ok(Self::Reference),
             _ => Err(ProductAdmissionError::SemanticVersionShape),
         }
     }
 }
+/// Largest relation-row scan one SQL request may ask for.
+pub const SQL_MAX_SCAN_ROWS: u32 = 262_144;
+/// Largest relation-byte scan one SQL request may ask for.
+pub const SQL_MAX_SCAN_BYTES: u32 = 64 * 1024 * 1024;
 /// One exact-project, bounded SQL native-fact page request.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SqlQueryRequest {
     pub package: PackageReference,
     pub role: SqlQueryRole,
-    /// Optional exact native model name; no SQL case folding is guessed here.
+    /// Optional exact name. For `relation` and `output_lineage` the native model
+    /// name; for `definition` and `reference` the dialect-normalized name (SQLite
+    /// folds ASCII case, PostgreSQL folds unquoted names to lower case).
     pub name: Option<String>,
+    /// `definition` / `reference` only: restrict to one kind of object.
+    #[serde(default)]
+    pub kind: Option<SqlObjectKind>,
+    /// `definition` only: the owning table or view of a column, index or trigger.
+    #[serde(default)]
+    pub parent: Option<String>,
+    /// `reference` only: mentions that bind to this object, written `table` or
+    /// `table.column` (optionally schema-qualified). A table also matches mentions
+    /// of its columns and `*` expansions that include it.
+    #[serde(default)]
+    pub uses: Option<String>,
     pub page_rows: u16,
     pub output_bytes: u32,
     pub scan_rows: u32,
@@ -58,14 +98,25 @@ impl SqlQueryRequest {
             || self.page_rows == 0
             || self.page_rows > 128
             || !(131_072..=4_194_304).contains(&self.output_bytes)
-            || !(7..=4096).contains(&self.scan_rows)
-            || !(229_376..=4_194_304).contains(&self.scan_bytes)
-            || self
-                .name
-                .as_ref()
-                .is_some_and(|name| name.is_empty() || name.len() > 256 || name.contains('\0'))
+            || !(7..=SQL_MAX_SCAN_ROWS).contains(&self.scan_rows)
+            || !(229_376..=SQL_MAX_SCAN_BYTES).contains(&self.scan_bytes)
+            || [&self.name, &self.parent, &self.uses]
+                .into_iter()
+                .flatten()
+                .any(|name| name.is_empty() || name.len() > 256 || name.contains('\0'))
             || self.name.is_some()
-                && matches!(self.role, SqlQueryRole::Any | SqlQueryRole::Diagnostic)
+                && matches!(
+                    self.role,
+                    SqlQueryRole::Any
+                        | SqlQueryRole::Diagnostic
+                        | SqlQueryRole::ColumnRead
+                        | SqlQueryRole::Statement
+                        | SqlQueryRole::Gap
+                )
+            || (self.kind.is_some()
+                && !matches!(self.role, SqlQueryRole::Definition | SqlQueryRole::Reference))
+            || (self.parent.is_some() && self.role != SqlQueryRole::Definition)
+            || (self.uses.is_some() && self.role != SqlQueryRole::Reference)
         {
             return Err(ProductAdmissionError::SemanticVersionShape);
         }
@@ -84,6 +135,9 @@ pub struct SqlCursorClaims {
     pub project: [u8; 32],
     pub role: SqlQueryRole,
     pub name: Option<String>,
+    pub kind: Option<SqlObjectKind>,
+    pub parent: Option<String>,
+    pub uses: Option<String>,
     pub page_rows: u16,
     pub output_bytes: u32,
     pub scan_rows: u32,
@@ -116,16 +170,26 @@ impl SqlQueryCursor {
         secret: &[u8; 32],
     ) -> Result<Self, ProductAdmissionError> {
         let name = claims.name.as_deref().unwrap_or("").as_bytes();
-        if name.len() > 256
-            || name.contains(&0)
-            || claims.name.as_ref().is_some_and(String::is_empty)
+        let parent = claims.parent.as_deref().unwrap_or("").as_bytes();
+        let uses = claims.uses.as_deref().unwrap_or("").as_bytes();
+        if [name, parent, uses].iter().any(|v| v.len() > 256 || v.contains(&0))
+            || [&claims.name, &claims.parent, &claims.uses]
+                .into_iter()
+                .any(|v| v.as_ref().is_some_and(String::is_empty))
             || (claims.name.is_some()
-                && matches!(claims.role, SqlQueryRole::Any | SqlQueryRole::Diagnostic))
+                && matches!(
+                    claims.role,
+                    SqlQueryRole::Any
+                        | SqlQueryRole::Diagnostic
+                        | SqlQueryRole::ColumnRead
+                        | SqlQueryRole::Statement
+                        | SqlQueryRole::Gap
+                ))
             || claims.page_rows == 0
             || claims.page_rows > 128
             || !(131_072..=4_194_304).contains(&claims.output_bytes)
-            || !(7..=4096).contains(&claims.scan_rows)
-            || !(229_376..=4_194_304).contains(&claims.scan_bytes)
+            || !(7..=SQL_MAX_SCAN_ROWS).contains(&claims.scan_rows)
+            || !(229_376..=SQL_MAX_SCAN_BYTES).contains(&claims.scan_bytes)
         {
             return Err(ProductAdmissionError::SemanticVersionShape);
         }
@@ -137,6 +201,11 @@ impl SqlQueryCursor {
         out.push(claims.role.byte());
         out.extend_from_slice(&(name.len() as u16).to_be_bytes());
         out.extend_from_slice(name);
+        out.push(claims.kind.map_or(0, kind_byte));
+        out.extend_from_slice(&(parent.len() as u16).to_be_bytes());
+        out.extend_from_slice(parent);
+        out.extend_from_slice(&(uses.len() as u16).to_be_bytes());
+        out.extend_from_slice(uses);
         out.extend_from_slice(&claims.page_rows.to_be_bytes());
         out.extend_from_slice(&claims.output_bytes.to_be_bytes());
         out.extend_from_slice(&claims.scan_rows.to_be_bytes());
@@ -146,7 +215,7 @@ impl SqlQueryCursor {
         Ok(Self(URL_SAFE_NO_PAD.encode(out)))
     }
     fn decode(&self) -> Result<(SqlCursorClaims, [u8; 32]), ProductAdmissionError> {
-        let bytes = decode(&self.0, 1024)?;
+        let bytes = decode(&self.0, 2048)?;
         let mut r = Reader { rest: &bytes };
         if r.array::<2>()? != [1, 1] {
             return Err(ProductAdmissionError::SemanticVersionShape);
@@ -168,6 +237,23 @@ impl SqlQueryCursor {
                     .to_owned(),
             )
         };
+        let kind = kind_from_byte(r.array::<1>()?[0])?;
+        let mut text = |r: &mut Reader<'_>| -> Result<Option<String>, ProductAdmissionError> {
+            let len = u16::from_be_bytes(r.array()?) as usize;
+            if len > 256 {
+                return Err(ProductAdmissionError::SemanticVersionShape);
+            }
+            if len == 0 {
+                return Ok(None);
+            }
+            Ok(Some(
+                std::str::from_utf8(r.take(len)?)
+                    .map_err(|_| ProductAdmissionError::SemanticVersionShape)?
+                    .to_owned(),
+            ))
+        };
+        let parent = text(&mut r)?;
+        let uses = text(&mut r)?;
         let page_rows = u16::from_be_bytes(r.array()?);
         let output_bytes = u32::from_be_bytes(r.array()?);
         let scan_rows = u32::from_be_bytes(r.array()?);
@@ -182,6 +268,9 @@ impl SqlQueryCursor {
                 project,
                 role,
                 name,
+                kind,
+                parent,
+                uses,
                 page_rows,
                 output_bytes,
                 scan_rows,
@@ -198,7 +287,7 @@ impl SqlQueryCursor {
         Ok(claim)
     }
 }
-/// Exact owner-sealed selected diagnostic-site reference.
+/// Exact owner-sealed selected native source-site reference.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SqlSourceClaims {
@@ -272,6 +361,34 @@ impl SqlSourceReference {
         verify_native_owner_statement(secret, &claim, &seal)?;
         Ok(claim)
     }
+}
+fn kind_byte(kind: SqlObjectKind) -> u8 {
+    match kind {
+        SqlObjectKind::Schema => 1,
+        SqlObjectKind::Table => 2,
+        SqlObjectKind::View => 3,
+        SqlObjectKind::Column => 4,
+        SqlObjectKind::Index => 5,
+        SqlObjectKind::Trigger => 6,
+        SqlObjectKind::Function => 7,
+        SqlObjectKind::Type => 8,
+        SqlObjectKind::Sequence => 9,
+    }
+}
+fn kind_from_byte(value: u8) -> Result<Option<SqlObjectKind>, ProductAdmissionError> {
+    Ok(Some(match value {
+        0 => return Ok(None),
+        1 => SqlObjectKind::Schema,
+        2 => SqlObjectKind::Table,
+        3 => SqlObjectKind::View,
+        4 => SqlObjectKind::Column,
+        5 => SqlObjectKind::Index,
+        6 => SqlObjectKind::Trigger,
+        7 => SqlObjectKind::Function,
+        8 => SqlObjectKind::Type,
+        9 => SqlObjectKind::Sequence,
+        _ => return Err(ProductAdmissionError::SemanticVersionShape),
+    }))
 }
 fn decode(value: &str, max: usize) -> Result<Vec<u8>, ProductAdmissionError> {
     if value.len() > max {
@@ -361,9 +478,17 @@ pub struct SqlQueryBasis {
     pub policy_complete: bool,
     /// Source references and catalog binding are incomplete in this profile.
     pub source_occurrences_complete: bool,
+    /// Where this project's analysis is known to be incomplete. Read with
+    /// `inventory_complete`: a page with no hits is a known-empty answer only if
+    /// the inventory is complete and these are all zero.
+    #[serde(default)]
+    pub gaps: backend_semantic::sql_analysis::SqlGapCounts,
+    /// No settings file exists; every `.sql` file was selected and each dialect inferred.
+    #[serde(default)]
+    pub implicit_selection: bool,
     pub catalog_is_deployed: bool,
 }
-/// One native claim, with source access only for a verified diagnostic extent.
+/// One native claim; source access requires a native-proven exact extent.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SqlQueryHit {
@@ -384,6 +509,8 @@ pub struct SqlHostBasis {
     pub input: [u8; 32],
     pub source: [u8; 32],
     pub length: u64,
+    /// Worker artifact, native basis, and owner source/lock projection digest.
+    /// This is not a proof of the owner executable or toolchain identity.
     pub producer: [u8; 32],
     pub settings: [u8; 32],
     /// Context is a project-proposed catalog digest, never a deployed catalog.
@@ -420,7 +547,7 @@ pub struct SqlQueryPage {
     pub hits: Vec<SqlQueryHit>,
     pub terminal: SqlQueryTerminal,
 }
-/// Result of rechecking actual selected host bytes for one diagnostic extent.
+/// Result of rechecking actual selected host bytes for one native extent.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SqlSourceRead {
@@ -447,6 +574,25 @@ pub enum SqlSourceRead {
 mod tests {
     use super::*;
     #[test]
+    fn postgres_column_read_does_not_guess_decoded_name_filters() {
+        let mut request = SqlQueryRequest {
+            package: PackageReference::parse("/tmp/sql-project").unwrap(),
+            role: SqlQueryRole::ColumnRead,
+            name: None,
+            kind: None,
+            parent: None,
+            uses: None,
+            page_rows: 1,
+            output_bytes: 131_072,
+            scan_rows: 7,
+            scan_bytes: 229_376,
+            continuation: None,
+        };
+        assert!(request.validate().is_ok());
+        request.name = Some("id".into());
+        assert!(request.validate().is_err());
+    }
+    #[test]
     fn cursors_are_compact_and_bind_roots_filter_and_owner() {
         let claims = SqlCursorClaims {
             manifest_root: [1; 32],
@@ -454,6 +600,9 @@ mod tests {
             project: [3; 32],
             role: SqlQueryRole::Relation,
             name: Some("users".into()),
+            kind: None,
+            parent: None,
+            uses: None,
             page_rows: 20,
             output_bytes: 131072,
             scan_rows: 100,
@@ -480,6 +629,9 @@ mod tests {
             package: PackageReference::parse("/tmp/sql-project").unwrap(),
             role: SqlQueryRole::Relation,
             name: Some("users".into()),
+            kind: None,
+            parent: None,
+            uses: None,
             page_rows: 1,
             output_bytes: 131_072,
             scan_rows: 7,
@@ -496,6 +648,8 @@ mod tests {
                 inventory_complete: false,
                 policy_complete: false,
                 source_occurrences_complete: false,
+                gaps: Default::default(),
+                implicit_selection: false,
                 catalog_is_deployed: false,
             },
             hits: vec![SqlQueryHit {

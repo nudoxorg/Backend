@@ -1578,7 +1578,7 @@ pub struct SourcePropertyDeclarationDrain<'a> {
 #[derive(Debug, Eq, PartialEq, ToShmem)]
 pub struct UnparsedValue {
     /// The variable value, references and so on.
-    pub(super) variable_value: custom_properties::VariableValue,
+    pub variable_value: custom_properties::VariableValue,
     /// The shorthand this came from.
     from_shorthand: Option<ShorthandId>,
 }

@@ -82,7 +82,7 @@ pub use diagnostics::{
 };
 #[doc(inline)]
 #[cfg(feature = "analysis")]
-pub use engine::Analyzer;
+pub use engine::{Analyzer, NativeReference, NativeReferenceKind, NativeReferenceObservation};
 #[doc(inline)]
 #[cfg(feature = "analysis")]
 pub use lineage::{

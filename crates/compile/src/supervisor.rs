@@ -42,6 +42,20 @@ struct ChildReaperState {
 
 pub(crate) struct ChildReaperPermit {
     state: Arc<ChildReaperState>,
+    // Retained through a delegated reap; used by a validated private loader
+    // resource whose lifetime must not end while the child can still use it.
+    custody: Option<AuxiliaryCustody>,
+}
+
+// Only the sealed, bounded library lease is available in production. Test
+// probes exercise the exact same permit/reaper transfer without creating a
+// public arbitrary-destructor hook on the shared reaper.
+#[allow(dead_code)]
+enum AuxiliaryCustody {
+    #[cfg(target_os = "linux")]
+    NativeLibrary(Arc<crate::NativeLibraryLease>),
+    #[cfg(all(test, target_os = "linux"))]
+    Test(Arc<dyn Send + Sync>),
 }
 
 pub(crate) struct ChildReapTicket {
@@ -73,6 +87,8 @@ static CHILD_REAPER: OnceLock<Mutex<Option<Arc<ChildReaperState>>>> = OnceLock::
 
 #[cfg(test)]
 static GROUP_RETIREMENT_ATTEMPTS: Mutex<Vec<(u32, usize)>> = Mutex::new(Vec::new());
+#[cfg(test)]
+static GROUP_RETIREMENT_FAILURES: Mutex<Vec<(u32, usize)>> = Mutex::new(Vec::new());
 
 #[cfg(test)]
 pub(crate) fn group_retirement_attempts(process_id: u32) -> usize {
@@ -144,13 +160,14 @@ impl ProcessSupervisor {
         &self,
         cancellation: &C,
     ) -> Result<RunningProcess, ProcessError> {
-        self.start_with_observer_optional_deadline(cancellation, None)
+        self.start_with_observer_optional_deadline(cancellation, None, None)
     }
 
     fn start_with_observer_optional_deadline<C: CancellationObserver + ?Sized>(
         &self,
         cancellation: &C,
         deadline: Option<Instant>,
+        custody: Option<AuxiliaryCustody>,
     ) -> Result<RunningProcess, ProcessError> {
         cancellation.checkpoint().map_err(ProcessError::from)?;
         let command_deadline = Instant::now()
@@ -190,7 +207,8 @@ impl ProcessSupervisor {
         if Instant::now() >= start_deadline {
             return Err(ProcessError::Deadline);
         }
-        let reaper_permit = reserve_child_reaper()?;
+        let mut reaper_permit = reserve_child_reaper()?;
+        reaper_permit.custody = custody;
         check_observer_deadline(cancellation, start_deadline)?;
         let mut child = OwnedChild::new(
             spawn(
@@ -486,8 +504,62 @@ impl ProcessSupervisor {
         cancellation: &C,
         deadline: Instant,
     ) -> Result<ProcessReceipt, ProcessError> {
-        self.start_with_observer_optional_deadline(cancellation, Some(deadline))?
+        self.start_with_observer_optional_deadline(cancellation, Some(deadline), None)?
             .finish_with_observer_until(cancellation, deadline)
+    }
+
+    /// Run with an already-admitted private Linux library lease retained in
+    /// bounded child custody, including asynchronous reaper handoff.
+    ///
+    /// The command must name exactly this dependency and loader environment.
+    /// Callers must separately admit the executable, library and source basis.
+    ///
+    /// # Errors
+    /// Returns the same startup, deadline and terminal errors as
+    /// [`Self::run_with_observer_until`].
+    #[cfg(target_os = "linux")]
+    pub fn run_with_observer_and_library_until<C: CancellationObserver + ?Sized>(
+        &self,
+        cancellation: &C,
+        deadline: Instant,
+        library: Arc<crate::NativeLibraryLease>,
+    ) -> Result<ProcessReceipt, ProcessError> {
+        if self
+            .command
+            .toolchain_artifact()
+            .is_none_or(|artifact| artifact.dependencies() != [library.digest()])
+            || self.command.environment() != &library.environment()?
+        {
+            return Err(ProcessError::IdentityMismatch);
+        }
+        library.verify(cancellation, deadline)?;
+        let receipt = self
+            .start_with_observer_optional_deadline(
+                cancellation,
+                Some(deadline),
+                Some(AuxiliaryCustody::NativeLibrary(Arc::clone(&library))),
+            )?
+            .finish_with_observer_until(cancellation, deadline)?;
+        if !receipt.reaped() {
+            return Err(ProcessError::NotReaped);
+        }
+        library.verify(cancellation, deadline)?;
+        Ok(receipt)
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    fn run_with_observer_and_test_custody_until<C: CancellationObserver + ?Sized>(
+        &self,
+        cancellation: &C,
+        deadline: Instant,
+        custody: Arc<dyn Send + Sync>,
+    ) -> Result<ProcessReceipt, ProcessError> {
+        self.start_with_observer_optional_deadline(
+            cancellation,
+            Some(deadline),
+            Some(AuxiliaryCustody::Test(custody)),
+        )?
+        .finish_with_observer_until(cancellation, deadline)
     }
 }
 
@@ -535,6 +607,10 @@ enum LeaderCustodyView {
 impl OwnedChild {
     pub(crate) fn new(child: Child, permit: ChildReaperPermit) -> Self {
         Self(OwnedChildState::Owned { child, permit })
+    }
+
+    fn has_custody(&self) -> bool {
+        matches!(&self.0, OwnedChildState::Owned { permit, .. } if permit.custody.is_some())
     }
 
     fn view(&mut self) -> LeaderCustodyView {
@@ -783,7 +859,10 @@ fn reserve_child_reaper_slot(
             .compare_exchange_weak(reserved, reserved + 1, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
-            return Ok(ChildReaperPermit { state });
+            return Ok(ChildReaperPermit {
+                state,
+                custody: None,
+            });
         }
     }
 }
@@ -857,6 +936,12 @@ fn child_reaper_worker(state: Arc<ChildReaperState>) {
             break;
         };
         let ready = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // A guarded child retains its PID while waitable. Retry group
+            // retirement before reaping so the guard is never released on a
+            // failed group operation or a recycled process-group identity.
+            if job._permit.custody.is_some() && terminate_process_group(job.child.id()).is_err() {
+                return Ok(false);
+            }
             child_ready_to_reap(&mut job.child)
         }));
         if matches!(ready, Ok(Ok(true))) {
@@ -2143,6 +2228,13 @@ impl RunningProcess {
         )))]
         let group_result: Result<(), ProcessError> = Ok(());
 
+        if let Err(error) = group_result {
+            if self.child.has_custody() {
+                self.child.transfer_to_reaper()?;
+                return Err(error);
+            }
+        }
+
         #[cfg(all(
             unix,
             not(any(
@@ -2236,6 +2328,13 @@ impl RunningProcess {
             let group_result = self.group_retirement.retire();
             if !child_exited_without_reaping(child_pid).unwrap_or(false) {
                 let _ = self.child.child_mut()?.kill();
+            }
+            if let Err(error) = group_result {
+                if self.child.has_custody() {
+                    self.child.transfer_to_reaper()?;
+                    self.group_retired = false;
+                    return Err(error);
+                }
             }
             if !matches!(wait_for_child_exit_without_reaping(child_pid), Ok(true)) {
                 let _ = self.child.transfer_to_reaper();
@@ -2422,6 +2521,12 @@ pub(crate) fn terminate_child_with_group(
     if !child_exited_without_reaping(child_pid).unwrap_or(false) {
         let _ = child.child_mut()?.kill();
     }
+    if let Err(error) = group_result {
+        if child.has_custody() {
+            child.transfer_to_reaper()?;
+            return Err(error);
+        }
+    }
     if !matches!(wait_for_child_exit_without_reaping(child_pid), Ok(true)) {
         child.transfer_to_reaper()?;
         return Err(ProcessError::NotReaped);
@@ -2480,6 +2585,21 @@ fn terminate_process_group(pid: u32) -> Result<(), ProcessError> {
             *count = count.saturating_add(1);
         } else {
             attempts.push((pid, 1));
+        }
+    }
+    #[cfg(test)]
+    {
+        let mut failures = GROUP_RETIREMENT_FAILURES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, remaining)) = failures
+            .iter_mut()
+            .find(|(recorded_pid, _)| *recorded_pid == pid)
+        {
+            if *remaining > 0 {
+                *remaining -= 1;
+                return Err(ProcessError::NotReaped);
+            }
         }
     }
     #[cfg(target_os = "macos")]
@@ -2738,6 +2858,113 @@ impl TempOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    struct CustodyDropProbe(Arc<AtomicBool>);
+    #[cfg(target_os = "linux")]
+    impl Drop for CustodyDropProbe {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn custody_releases_on_prespawn_cancel_and_after_successful_reap() {
+        use crate::{ProcessEnvironment, ProcessLimits};
+        let command = SupervisedCommand::new(
+            PathBuf::from("/bin/sh"),
+            vec!["-c".into(), "exit 0".into()],
+            std::env::current_dir().unwrap(),
+            ProcessEnvironment::new(vec![]).unwrap(),
+            ProcessLimits::new(4096, 4096, Duration::from_secs(10), 8192).unwrap(),
+        )
+        .unwrap();
+        let supervisor = ProcessSupervisor::new(command);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let cancelled = AtomicBool::new(true);
+        let guard: Arc<dyn Send + Sync> = Arc::new(CustodyDropProbe(Arc::clone(&dropped)));
+        assert!(matches!(
+            supervisor.run_with_observer_and_test_custody_until(
+                &cancelled,
+                Instant::now() + Duration::from_secs(10),
+                guard
+            ),
+            Err(ProcessError::Cancelled)
+        ));
+        assert!(dropped.load(Ordering::Acquire));
+
+        dropped.store(false, Ordering::Release);
+        let running = AtomicBool::new(false);
+        let guard: Arc<dyn Send + Sync> = Arc::new(CustodyDropProbe(Arc::clone(&dropped)));
+        let receipt = supervisor
+            .run_with_observer_and_test_custody_until(
+                &running,
+                Instant::now() + Duration::from_secs(10),
+                guard,
+            )
+            .unwrap();
+        assert!(receipt.reaped());
+        assert!(dropped.load(Ordering::Acquire));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn group_failure_retains_custody_until_retry_and_reap() {
+        let state = ChildReaperState::new(1);
+        let mut permit = reserve_child_reaper_slot(Arc::clone(&state)).unwrap();
+        let dropped = Arc::new(AtomicBool::new(false));
+        permit.custody = Some(AuxiliaryCustody::Test(Arc::new(CustodyDropProbe(
+            Arc::clone(&dropped),
+        ))));
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "IFS= read -r line"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        configure_process_group(&mut command);
+        let child = command.spawn().unwrap();
+        let pid = child.id();
+        GROUP_RETIREMENT_FAILURES
+            .lock()
+            .unwrap()
+            .push((pid, 1_000_000));
+        let mut owned = OwnedChild::new(child, permit);
+        let retirement = ProcessGroupRetirement::new(pid);
+        assert!(matches!(
+            terminate_child_with_group(&mut owned, &retirement),
+            Err(ProcessError::NotReaped)
+        ));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while group_retirement_attempts(pid) < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "reaper did not retry group retirement"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!dropped.load(Ordering::Acquire));
+        assert_eq!(state.reserved.load(Ordering::Acquire), 1);
+        if let Some((_, remaining)) = GROUP_RETIREMENT_FAILURES
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|(id, _)| *id == pid)
+        {
+            *remaining = 0;
+        }
+        while !dropped.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "reaper failed to retire and release custody"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(state.reserved.load(Ordering::Acquire), 0);
+        drop(owned);
+        stop_test_child_reaper(&state);
+    }
 
     #[cfg(unix)]
     #[test]

@@ -10,7 +10,9 @@ use backend_engine::{
     },
 };
 use backend_library::sql_query::*;
-use backend_semantic::sql_analysis::SqlFact;
+use backend_semantic::sql_analysis::{
+    SqlDefinition, SqlDefinitionAction, SqlEntityRef, SqlFact, SqlObjectKind, SqlResolution,
+};
 use backend_version::Relation;
 use std::path::Path;
 
@@ -72,7 +74,104 @@ fn lookup(
     work.charge(row.as_ref())?;
     Ok(row)
 }
-fn matches_filter(fact: &SqlFact, request: &SqlQueryRequest) -> bool {
+/// Entities selected by a `uses` filter: the named object, plus every column it owns.
+struct UsesSet {
+    entities: std::collections::BTreeSet<SqlEntityRef>,
+}
+impl UsesSet {
+    fn mentions(&self, resolution: &SqlResolution) -> bool {
+        match resolution {
+            SqlResolution::Resolved { target, .. } => self.entities.contains(target),
+            SqlResolution::Relation { relation, .. } => self.entities.contains(relation),
+            SqlResolution::Expands { targets } => targets.iter().any(|target| self.entities.contains(target)),
+            SqlResolution::Ambiguous { candidates, .. } => candidates.iter().any(|candidate| self.entities.contains(candidate)),
+            SqlResolution::Local | SqlResolution::Unresolved { .. } => false,
+        }
+    }
+}
+/// Resolve `table`, `schema.table`, `table.column` or `schema.table.column` against
+/// the definitions of the selected project, by head name (after every rename).
+fn resolve_uses(
+    relation: &RelationHandle,
+    project: [u8; 32],
+    spec: &str,
+    work: &mut Work,
+) -> Result<UsesSet, BuiltinModelError> {
+    let mut paths = std::collections::BTreeMap::<[u8; 32], String>::new();
+    let mut definitions = Vec::<([u8; 32], u32, Box<SqlDefinition>)>::new();
+    let mut after = None;
+    loop {
+        let page = relation
+            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+            .map_err(error)?;
+        for (key, row) in page.entries() {
+            work.charge(Some(row))?;
+            match row {
+                SqlAnalysisRecord::Host { project: owner, path, .. } if *owner == project => {
+                    paths.insert(*key, path.clone());
+                }
+                SqlAnalysisRecord::Fact { host, ordinal, fact: SqlFact::Definition(definition) } => {
+                    definitions.push((*host, *ordinal, definition.clone()));
+                }
+                _ => {}
+            }
+        }
+        match page.next().copied() {
+            Some(next) if after != Some(next) => after = Some(next),
+            Some(_) => return Err(error("SQL scan page did not advance")),
+            None => break,
+        }
+    }
+    let parts: Vec<String> = spec.split('.').map(|part| part.to_ascii_lowercase()).collect();
+    let lower = |value: &Option<String>| value.as_deref().map(str::to_ascii_lowercase);
+    let creates = |definition: &SqlDefinition| {
+        matches!(definition.action, SqlDefinitionAction::Create | SqlDefinitionAction::AddColumn)
+    };
+    let mut entities = std::collections::BTreeSet::new();
+    for (host, ordinal, definition) in &definitions {
+        let Some(path) = paths.get(host) else { continue };
+        if !creates(definition) {
+            continue;
+        }
+        let name = lower(&definition.head_name);
+        let parent = lower(&definition.head_parent);
+        let schema = lower(&definition.schema);
+        let parent_schema = lower(&definition.parent_schema);
+        let is_column = definition.kind == SqlObjectKind::Column;
+        let hit = match (is_column, parts.len()) {
+            (false, 1) => name.as_deref() == Some(parts[0].as_str()),
+            (false, 2) => schema.as_deref() == Some(parts[0].as_str()) && name.as_deref() == Some(parts[1].as_str()),
+            (true, 2) => parent.as_deref() == Some(parts[0].as_str()) && name.as_deref() == Some(parts[1].as_str()),
+            (true, 3) => {
+                parent.as_deref() == Some(parts[1].as_str())
+                    && name.as_deref() == Some(parts[2].as_str())
+                    && (schema.as_deref() == Some(parts[0].as_str()) || parent_schema.as_deref() == Some(parts[0].as_str()))
+            }
+            _ => false,
+        };
+        if hit {
+            entities.insert(SqlEntityRef { path: path.clone(), ordinal: *ordinal });
+        }
+    }
+    // A relation also stands for the columns it owns.
+    let owners = entities.clone();
+    for (host, ordinal, definition) in &definitions {
+        let Some(path) = paths.get(host) else { continue };
+        if creates(definition)
+            && definition.kind == SqlObjectKind::Column
+            && definition.parent_entity.as_ref().is_some_and(|parent| owners.contains(parent))
+        {
+            entities.insert(SqlEntityRef { path: path.clone(), ordinal: *ordinal });
+        }
+    }
+    Ok(UsesSet { entities })
+}
+fn matches_filter(fact: &SqlFact, request: &SqlQueryRequest, uses: Option<&UsesSet>) -> bool {
+    use backend_semantic::sql_analysis::{SqlObjectKind as K, SqlRefKind as R, SqlStatementSupport};
+    let lowered = |value: &str| value.to_ascii_lowercase();
+    let name_is = |names: &[&str]| {
+        request.name.as_ref().is_none_or(|wanted| names.iter().any(|name| lowered(name) == lowered(wanted)))
+    };
     match (request.role, fact) {
         (SqlQueryRole::Any, _) => true,
         (SqlQueryRole::Relation, SqlFact::SqliteRelation { name, .. }) => {
@@ -82,6 +181,37 @@ fn matches_filter(fact: &SqlFact, request: &SqlQueryRequest) -> bool {
             request.name.as_ref().is_none_or(|n| n == output_name)
         }
         (SqlQueryRole::Diagnostic, SqlFact::Diagnostic { .. }) => true,
+        (SqlQueryRole::ColumnRead, SqlFact::PostgresColumnRead { .. }) => true,
+        (SqlQueryRole::Statement, SqlFact::Statement { .. }) => true,
+        (SqlQueryRole::Gap, SqlFact::Statement { support, .. }) => {
+            !matches!(support, SqlStatementSupport::Full)
+        }
+        (SqlQueryRole::Definition, SqlFact::Definition(definition)) => {
+            let head = definition.head_name.as_deref().unwrap_or(&definition.name);
+            name_is(&[definition.name.as_str(), head])
+                && request.kind.is_none_or(|kind| kind == definition.kind)
+                && request.parent.as_ref().is_none_or(|wanted| {
+                    [definition.parent.as_deref(), definition.head_parent.as_deref()]
+                        .into_iter()
+                        .flatten()
+                        .any(|parent| lowered(parent) == lowered(wanted))
+                })
+        }
+        (SqlQueryRole::Reference, SqlFact::Reference(reference)) => {
+            name_is(&[reference.name.as_str()])
+                && request.kind.is_none_or(|kind| match (kind, reference.kind) {
+                    (K::Table | K::View, R::Relation)
+                    | (K::Column, R::Column)
+                    | (K::Function, R::Function)
+                    | (K::Type, R::Type)
+                    | (K::Schema, R::Schema)
+                    | (K::Index, R::Index)
+                    | (K::Sequence, R::Sequence)
+                    | (K::Trigger, R::Trigger) => true,
+                    _ => false,
+                })
+                && uses.is_none_or(|set| set.mentions(&reference.resolution))
+        }
         _ => false,
     }
 }
@@ -100,6 +230,9 @@ fn cursor(
             project,
             role: request.role,
             name: request.name.clone(),
+            kind: request.kind,
+            parent: request.parent.clone(),
+            uses: request.uses.clone(),
             page_rows: request.page_rows,
             output_bytes: request.output_bytes,
             scan_rows: request.scan_rows,
@@ -109,6 +242,16 @@ fn cursor(
         secret,
     )
     .map_err(error)
+}
+/// The exact written byte range a fact points at, if it has one.
+fn fact_extent(fact: &SqlFact) -> Option<backend_semantic::sql_analysis::SqlByteRange> {
+    match fact {
+        SqlFact::Diagnostic { extent, .. } => *extent,
+        SqlFact::PostgresColumnRead { extent, .. } | SqlFact::Statement { extent, .. } => Some(*extent),
+        SqlFact::Definition(definition) => Some(definition.name_extent),
+        SqlFact::Reference(reference) => Some(reference.extent),
+        SqlFact::SqliteRelation { .. } | SqlFact::SqliteOutputLineage { .. } => None,
+    }
 }
 fn empty(
     manifest_root: [u8; 32],
@@ -126,6 +269,8 @@ fn empty(
             inventory_complete: false,
             policy_complete: false,
             source_occurrences_complete: false,
+            gaps: Default::default(),
+            implicit_selection: false,
             catalog_is_deployed: false,
         },
         hits: Vec::new(),
@@ -133,7 +278,7 @@ fn empty(
     }
 }
 /// Query a selected snapshot with a durable owner sealing authority.
-pub(super) fn query(
+pub(in crate::builtin) fn query(
     snapshot: &WorkspaceSnapshot,
     secret: &[u8; 32],
     request: &SqlQueryRequest,
@@ -212,17 +357,21 @@ pub(super) fn query(
         }
         _ => return Err(error("SQL selection or attempt mismatch")),
     };
-    let (inventory_complete, policy_complete) = match &selection {
+    let (inventory_complete, policy_complete, gaps, implicit_selection) = match &selection {
         Some(SqlAnalysisRecord::Selection {
             project: owner,
             inventory,
             policy_complete,
+            gaps,
+            implicit,
             ..
         }) if *owner == project => (
             matches!(inventory, SqlInventory::Complete),
             *policy_complete,
+            *gaps,
+            *implicit,
         ),
-        None => (false, false),
+        None => (false, false, Default::default(), false),
         _ => return Err(error("invalid SQL selection")),
     };
     let basis = SqlQueryBasis {
@@ -234,6 +383,8 @@ pub(super) fn query(
         inventory_complete,
         policy_complete,
         source_occurrences_complete: false,
+        gaps,
+        implicit_selection,
         catalog_is_deployed: false,
     };
     if selection.is_none() {
@@ -255,6 +406,9 @@ pub(super) fn query(
                 || claims.project != project
                 || claims.role != request.role
                 || claims.name != request.name
+                || claims.kind != request.kind
+                || claims.parent != request.parent
+                || claims.uses != request.uses
                 || claims.page_rows != request.page_rows
                 || claims.output_bytes != request.output_bytes
                 || claims.scan_rows != request.scan_rows
@@ -264,6 +418,10 @@ pub(super) fn query(
             }
             Some(claims.after)
         }
+    };
+    let uses = match &request.uses {
+        Some(spec) => Some(resolve_uses(&relation, project, spec, &mut work)?),
+        None => None,
     };
     let mut hits = Vec::new();
     let mut output = serde_json::to_vec(&basis).map_err(error)?.len() + 2048;
@@ -301,7 +459,7 @@ pub(super) fn query(
             fact,
         } = row
         {
-            if matches_filter(fact, request) {
+            if matches_filter(fact, request, uses.as_ref()) {
                 let host_row = lookup(&relation, host, &mut work)?
                     .ok_or_else(|| error("SQL fact host missing"))?;
                 let SqlAnalysisRecord::Host {
@@ -347,13 +505,7 @@ pub(super) fn query(
                             return Err(error("SQL fact has unavailable host"));
                         }
                     };
-                    let source_ref = if matches!(
-                        fact,
-                        SqlFact::Diagnostic {
-                            extent: Some(_),
-                            ..
-                        }
-                    ) {
+                    let source_ref = if fact_extent(fact).is_some() {
                         Some(
                             SqlSourceReference::issue(
                                 SqlSourceClaims {
@@ -508,16 +660,12 @@ pub(super) fn read_source(
     if backend_engine::builtin::sql_host_key(project, &path).map_err(error)? != claim.host {
         return Err(error("SQL source host key mismatch"));
     }
-    let Some(SqlAnalysisRecord::Fact {
-        host,
-        ordinal,
-        fact: SqlFact::Diagnostic {
-            extent: Some(extent),
-            ..
-        },
-    }) = relation.lookup(&claim.fact).map_err(error)?
+    let Some(SqlAnalysisRecord::Fact { host, ordinal, fact }) = relation.lookup(&claim.fact).map_err(error)?
     else {
         return Err(error("SQL source fact unavailable"));
+    };
+    let Some(extent) = fact_extent(&fact) else {
+        return Err(error("SQL source fact has no exact extent"));
     };
     if host != claim.host
         || sql_fact_key(
@@ -593,6 +741,9 @@ mod tests {
             package: PackageReference::parse("/tmp/project").unwrap(),
             role: SqlQueryRole::Relation,
             name: Some("Users".into()),
+            kind: None,
+            parent: None,
+            uses: None,
             page_rows: 1,
             output_bytes: 131_072,
             scan_rows: 7,
@@ -603,11 +754,11 @@ mod tests {
             name: "users".into(),
             relation_kind: SqliteRelationKind::Table,
         };
-        assert!(!matches_filter(&fact, &request));
+        assert!(!matches_filter(&fact, &request, None));
         request.name = Some("users".into());
-        assert!(matches_filter(&fact, &request));
+        assert!(matches_filter(&fact, &request, None));
         request.role = SqlQueryRole::Diagnostic;
         request.name = None;
-        assert!(!matches_filter(&fact, &request));
+        assert!(!matches_filter(&fact, &request, None));
     }
 }

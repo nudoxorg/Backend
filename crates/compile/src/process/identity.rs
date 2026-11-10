@@ -850,7 +850,7 @@ fn toolchain_digest_until<C: CancellationObserver + ?Sized>(
         .map_err(|_| ProcessError::ExecutableDrift)
 }
 
-fn private_temp_directory(label: &str) -> Result<PathBuf, ProcessError> {
+pub(crate) fn private_temp_directory(label: &str) -> Result<PathBuf, ProcessError> {
     let base = std::env::temp_dir();
     for _ in 0..16 {
         let nonce = EXECUTABLE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);

@@ -470,6 +470,9 @@ pub struct BuiltinIntent {
     stylo_proof: Option<super::stylo_admission::StyloLiveProof>,
     // Transient only: canonical intent bytes cannot mint this capability.
     native_evidence_proof: Option<NativeTsLiveProof>,
+    // Transient source capability; serialized SQL rows remain untrusted claims.
+    sql_proof: Option<SqlLiveProofRef>,
+    sql_extension: Option<super::sql_intent::SqlIntentExtension>,
     semantic_selection: Option<BuiltinSemanticSelectionIntent>,
     operation_key: Option<[u8; 32]>,
     capture_basis: Option<BuiltinCaptureBasis>,
@@ -478,6 +481,16 @@ pub struct BuiltinIntent {
 
 #[derive(Clone)]
 struct NativeTsLiveProof(Arc<super::native_ts_admission::RefreshedNativeTsEvidencePlan>);
+
+#[derive(Clone)]
+struct SqlLiveProofRef(Arc<super::sql_admission::SqlLiveProof>);
+impl fmt::Debug for SqlLiveProofRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.debug_struct("SqlLiveProofRef").finish_non_exhaustive() }
+}
+impl PartialEq for SqlLiveProofRef {
+    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+}
+impl Eq for SqlLiveProofRef {}
 
 impl fmt::Debug for NativeTsLiveProof {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -680,6 +693,7 @@ impl BuiltinIntent {
     const CARGO_TARGET_VERSION: u8 = 11;
     const STYLO_ANALYSIS_VERSION: u8 = 12;
     const NATIVE_EVIDENCE_VERSION: u8 = 13;
+    const SQL_VERSION: u8 = super::sql_intent::SQL_INTENT_VERSION;
     const MAX_NATIVE_EVIDENCE_CHANGES: usize = 2 * backend_engine::builtin::MAX_NATIVE_EVIDENCE_ROWS;
     const MAX_NATIVE_EVIDENCE_DELTA_BYTES: usize = 2 * backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES + Self::MAX_NATIVE_EVIDENCE_CHANGES * 42;
     // New v13 policy ceiling for inherited sections, not a claim that all
@@ -1047,6 +1061,7 @@ impl BuiltinIntent {
                 | Self::CARGO_TARGET_VERSION
                 | Self::STYLO_ANALYSIS_VERSION
                 | Self::NATIVE_EVIDENCE_VERSION
+                | Self::SQL_VERSION
         ) || (encoding_version < Self::VERSION
             && (matches!(operation, BuiltinIntentOperation::SelectSemanticGeneration)
                 || semantic_selection.is_some()))
@@ -1061,6 +1076,7 @@ impl BuiltinIntent {
                 && encoding_version != Self::CARGO_TARGET_VERSION
                 && encoding_version != Self::STYLO_ANALYSIS_VERSION
                 && encoding_version != Self::NATIVE_EVIDENCE_VERSION
+                && encoding_version != Self::SQL_VERSION
                 && operation_key.is_some())
             || (encoding_version == Self::CAPTURE_BASIS_VERSION
                 && (capture_changes.is_empty() || capture_basis.is_none()))
@@ -1272,6 +1288,8 @@ impl BuiltinIntent {
             stylo_basis: None,
             stylo_proof: None,
             native_evidence_proof: None,
+            sql_proof: None,
+            sql_extension: None,
             semantic_selection,
             operation_key,
             capture_basis,
@@ -1418,6 +1436,7 @@ impl BuiltinIntent {
             Self::CARGO_TARGET_VERSION => b"BPIB",
             Self::STYLO_ANALYSIS_VERSION => b"BPIC",
             Self::NATIVE_EVIDENCE_VERSION => b"BPID",
+            Self::SQL_VERSION => super::sql_intent::SQL_INTENT_MAGIC,
             _ => b"BPI9",
         });
         bytes.push(self.encoding_version);
@@ -1565,6 +1584,9 @@ impl BuiltinIntent {
             if self.encoding_version == Self::STYLO_ANALYSIS_VERSION
                 || (self.encoding_version >= Self::NATIVE_EVIDENCE_VERSION && self.stylo_basis.is_some())
             {
+                let length_position = if self.encoding_version == Self::SQL_VERSION {
+                    let position = bytes.len(); bytes.extend_from_slice(&[0; 4]); Some(position)
+                } else { None };
                 let basis = self
                     .stylo_basis
                     .expect("native intent constructors validate the Stylo basis");
@@ -1584,8 +1606,19 @@ impl BuiltinIntent {
                     encode_optional_stylo_record(change.expected.as_ref(), &mut bytes);
                     encode_optional_stylo_record(change.after.as_ref(), &mut bytes);
                 }
+                if let Some(position) = length_position {
+                    let length = u32::try_from(bytes.len() - position - 4).expect("admitted Stylo section length");
+                    bytes[position..position+4].copy_from_slice(&length.to_be_bytes());
+                }
             }
-            if self.encoding_version >= Self::NATIVE_EVIDENCE_VERSION {
+            if self.encoding_version == Self::SQL_VERSION {
+                bytes.push(u8::from(self.native_evidence_basis.is_some()));
+            }
+            if self.encoding_version == Self::NATIVE_EVIDENCE_VERSION
+                || (self.encoding_version == Self::SQL_VERSION && self.native_evidence_basis.is_some()) {
+                let length_position = if self.encoding_version == Self::SQL_VERSION {
+                    let position = bytes.len(); bytes.extend_from_slice(&[0; 4]); Some(position)
+                } else { None };
                 let basis = self.native_evidence_basis.expect("native evidence basis validated");
                 bytes.extend_from_slice(&basis.workspace_root);
                 bytes.extend_from_slice(&basis.sequence.to_be_bytes());
@@ -1599,6 +1632,21 @@ impl BuiltinIntent {
                     bytes.extend_from_slice(&change.key);
                     encode_optional_native_evidence(change.expected.as_ref(), &mut bytes);
                     encode_optional_native_evidence(change.after.as_ref(), &mut bytes);
+                }
+                if let Some(position) = length_position {
+                    let length = u32::try_from(bytes.len() - position - 4).expect("admitted native evidence section length");
+                    bytes[position..position+4].copy_from_slice(&length.to_be_bytes());
+                }
+            }
+            if self.encoding_version == Self::SQL_VERSION {
+                match &self.sql_extension {
+                    None => bytes.push(0),
+                    Some(extension) => {
+                        bytes.push(1);
+                        let encoded = extension.encode().expect("SQL extension is admitted at attachment");
+                        bytes.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+                        bytes.extend_from_slice(&encoded);
+                    }
                 }
             }
         }
@@ -1621,6 +1669,7 @@ impl BuiltinIntent {
             self.native_frontier_changes = Box::new([]);
             self.stylo_changes = Box::new([]);
             self.native_evidence_changes = Box::new([]);
+            self.sql_extension = None;
         }
     }
 
@@ -1637,6 +1686,7 @@ impl BuiltinIntent {
             self.native_frontier_changes = Box::new([]);
             self.stylo_changes = Box::new([]);
             self.native_evidence_changes = Box::new([]);
+            self.sql_extension = None;
             self.semantic_selection = None;
         }
         self
@@ -1755,13 +1805,41 @@ impl BuiltinIntent {
         Ok(intent)
     }
 
+    /// An intent whose only delta is the project's SQL analysis.
+    pub(super) fn sql_only(
+        package: backend_engine::PackageKey,
+        label: &str,
+        base: &WorkspaceSnapshot,
+        proof: Arc<super::sql_admission::SqlLiveProof>,
+    ) -> Result<Self, BuiltinModelError> {
+        let intent = Self::new_with_version(
+            Self::SQL_VERSION,
+            BuiltinIntentOperation::Index,
+            package,
+            label,
+            vec![],
+            vec![],
+            None,
+            None,
+            None,
+            vec![],
+            vec![],
+            vec![],
+        )?;
+        let intent = intent.with_sql_capture(base, proof)?;
+        if intent.sql_extension.is_none() {
+            return Err(BuiltinModelError("SQL-only intent has no delta".into()));
+        }
+        Ok(intent)
+    }
+
     fn set_stylo_changes(
         &mut self,
         basis: StyloAnalysisBasis,
         changes: Vec<super::stylo_admission::StyloAnalysisChange>,
     ) -> Result<(), BuiltinModelError> {
         if self.native_evidence_basis.is_some()
-            || !matches!(self.encoding_version, Self::STYLO_ANALYSIS_VERSION | Self::NATIVE_EVIDENCE_VERSION)
+            || !matches!(self.encoding_version, Self::STYLO_ANALYSIS_VERSION | Self::NATIVE_EVIDENCE_VERSION | Self::SQL_VERSION)
             || basis.workspace_root == [0; 32]
             || basis.closure == [0; 32]
             || basis.sequence == u64::MAX
@@ -1810,7 +1888,7 @@ impl BuiltinIntent {
         changes: Vec<NativeEvidenceChange>,
     ) -> Result<(), BuiltinModelError> {
         if self.native_evidence_basis.is_some()
-            || self.encoding_version != Self::NATIVE_EVIDENCE_VERSION
+            || !matches!(self.encoding_version, Self::NATIVE_EVIDENCE_VERSION | Self::SQL_VERSION)
             || basis.workspace_root == [0; 32]
             || basis.closure == [0; 32]
             || basis.sequence == u64::MAX
@@ -1931,20 +2009,66 @@ impl BuiltinIntent {
         Ok(self)
     }
 
+    /// Attach the private source capture after other builders. The resulting
+    /// row claims remain subject to the owner barrier and persisted replay.
+    pub(super) fn with_sql_capture(
+        mut self,
+        base: &WorkspaceSnapshot,
+        proof: Arc<super::sql_admission::SqlLiveProof>,
+    ) -> Result<Self, BuiltinModelError> {
+        if self.sql_extension.is_some() || self.sql_proof.is_some()
+            || self.operation != BuiltinIntentOperation::Index
+            || proof.capture.project() != self.package.to_bytes()
+        {
+            return Err(BuiltinModelError("invalid SQL capture attachment".into()));
+        }
+        let changes = super::sql_admission::plan_sql_update(base, &proof).map_err(BuiltinModelError)?;
+        if changes.is_empty() { return Ok(self); }
+        let basis = super::sql_admission::sql_basis_for_snapshot(base).map_err(BuiltinModelError)?;
+        let extension = super::sql_intent::SqlIntentExtension { basis, changes };
+        // Establish bounded canonical size before retaining an intent.
+        extension.encode().map_err(BuiltinModelError)?;
+        self.sql_extension = Some(extension);
+        self.sql_proof = Some(SqlLiveProofRef(proof));
+        self.encoding_version = Self::SQL_VERSION;
+        Ok(self)
+    }
+
     /// Native evidence staging and hydration belong on the publication worker.
     pub(super) fn has_native_ts_evidence(&self) -> bool {
         self.encoding_version == Self::NATIVE_EVIDENCE_VERSION
+            || (self.encoding_version == Self::SQL_VERSION && self.native_evidence_basis.is_some())
+    }
+    /// SQL proof hydration and source revalidation must run on the worker.
+    pub(super) fn has_sql_evidence(&self) -> bool {
+        self.encoding_version == Self::SQL_VERSION && (self.sql_proof.is_some() || self.sql_extension.is_some())
+    }
+    /// Whether the full live intent actually replaces one project's SQL rows.
+    /// A proof-bound no-op must retain its existing receipt.
+    pub(super) fn replaces_sql_project(&self) -> bool {
+        self.sql_extension.as_ref().is_some_and(|section| section.changes.iter().any(|change| {
+            [&change.expected, &change.after].into_iter().flatten()
+                .any(|row| !matches!(row, backend_engine::builtin::SqlAnalysisRecord::Attempt { .. }))
+        }))
+    }
+    /// A staged v14 carrier can shed its sections and private proof. Refuse
+    /// synchronous hydration based on its durable version, not in-memory data.
+    pub(super) fn requires_v14_worker(&self) -> bool {
+        self.encoding_version == Self::SQL_VERSION
     }
 
     pub(super) fn validate_native_stage_cancellation(
         &self,
         cancellation: &Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<(), BuiltinModelError> {
-        if self.encoding_version == Self::NATIVE_EVIDENCE_VERSION
+        if self.has_native_ts_evidence()
             && !self.native_evidence_proof.as_ref()
                 .is_some_and(|proof| proof.0.matches_cancellation(cancellation))
         {
             return Err(BuiltinModelError("native evidence staging cancellation differs from capture".into()));
+        }
+        if self.has_sql_evidence() && !self.sql_proof.as_ref().is_some_and(|proof| Arc::ptr_eq(&proof.0.cancellation, cancellation)) {
+            return Err(BuiltinModelError("SQL staging cancellation differs from capture".into()));
         }
         Ok(())
     }
@@ -2026,6 +2150,11 @@ impl BuiltinIntent {
         let native_frontier_changes = decoder.native_frontier_changes()?;
         let (stylo_basis, stylo_changes) = decoder.stylo_changes()?;
         let (native_evidence_basis, native_evidence_changes) = decoder.native_evidence_changes()?;
+        let sql_extension = decoder.sql_extension()?;
+        if encoding_version == Self::SQL_VERSION && stylo_basis.is_none()
+            && native_evidence_basis.is_none() && sql_extension.is_none() {
+            return Err(BuiltinModelError("empty v14 native section set".into()));
+        }
         decoder.finish()?;
         let mut intent = Self::new_with_version(
             encoding_version,
@@ -2047,6 +2176,7 @@ impl BuiltinIntent {
         if let Some(basis) = native_evidence_basis {
             intent.set_native_evidence_changes(basis, native_evidence_changes)?;
         }
+        intent.sql_extension = sql_extension;
         if encoding_version < Self::CAPTURE_VERSION && !intent.capture_changes.is_empty() {
             return Err(BuiltinModelError(
                 "capture markers require the v6 intent encoding".to_owned(),
@@ -2473,7 +2603,11 @@ impl backend_engine::queue::QueueSized for BuiltinIntent {
                 .ok_or(backend_engine::QueueError::Accounting)?,
             None => 0,
         };
-        encoded.checked_add(proof).ok_or(backend_engine::QueueError::Accounting)
+        let sql_proof = match &self.sql_proof {
+            Some(proof) => proof.0.checked_retained_bytes().ok_or(backend_engine::QueueError::Accounting)?,
+            None => 0,
+        };
+        encoded.checked_add(proof).and_then(|bytes| bytes.checked_add(sql_proof)).ok_or(backend_engine::QueueError::Accounting)
     }
 }
 
@@ -2493,6 +2627,8 @@ impl<'a> IntentDecoder<'a> {
             || (version == BuiltinIntent::NATIVE_EVIDENCE_VERSION
                 && bytes.len() > BuiltinIntent::MAX_NATIVE_EVIDENCE_DELTA_BYTES
                     + BuiltinIntent::MAX_NATIVE_EVIDENCE_FIRST_METADATA)
+            || (version == BuiltinIntent::SQL_VERSION
+                && bytes.len() > BuiltinIntent::MAX_NATIVE_EVIDENCE_INTENT_BYTES + 64 * 1024 * 1024)
             || !matches!(
                 (bytes.get(..4), version),
                 (Some(b"BPI3"), 3)
@@ -2506,6 +2642,7 @@ impl<'a> IntentDecoder<'a> {
                     | (Some(b"BPIB"), 11)
                     | (Some(b"BPIC"), 12)
                     | (Some(b"BPID"), 13)
+                    | (Some(b"BPIE"), 14)
             )
         {
             return Err(BuiltinModelError(
@@ -2779,7 +2916,16 @@ impl<'a> IntentDecoder<'a> {
         if self.version >= BuiltinIntent::NATIVE_EVIDENCE_VERSION {
             match self.take(1)?[0] {
                 0 => return Ok((None, Vec::new())),
-                1 => return Err(BuiltinModelError("native evidence first slice forbids Stylo section".into())),
+                1 if self.version == BuiltinIntent::NATIVE_EVIDENCE_VERSION => return Err(BuiltinModelError("native evidence first slice forbids Stylo section".into())),
+                1 => {
+                    let length = self.read_u32()? as usize;
+                    if length > BuiltinIntent::MAX_STYLO_DELTA_BYTES { return Err(BuiltinModelError("Stylo section byte limit".into())); }
+                    let bytes = self.take(length)?;
+                    let mut nested = IntentDecoder { bytes, at: 0, version: BuiltinIntent::STYLO_ANALYSIS_VERSION };
+                    let value = nested.stylo_changes()?;
+                    nested.finish()?;
+                    return Ok(value);
+                },
                 _ => return Err(BuiltinModelError("invalid Stylo section tag".into())),
             }
         }
@@ -2869,6 +3015,21 @@ impl<'a> IntentDecoder<'a> {
         if self.version < BuiltinIntent::NATIVE_EVIDENCE_VERSION {
             return Ok((None, Vec::new()));
         }
+        if self.version == BuiltinIntent::SQL_VERSION {
+            match self.take(1)?[0] {
+                0 => return Ok((None, Vec::new())),
+                1 => {
+                    let length = self.read_u32()? as usize;
+                    if length > BuiltinIntent::MAX_NATIVE_EVIDENCE_DELTA_BYTES { return Err(BuiltinModelError("native evidence section byte limit".into())); }
+                    let bytes = self.take(length)?;
+                    let mut nested = IntentDecoder { bytes, at: 0, version: BuiltinIntent::NATIVE_EVIDENCE_VERSION };
+                    let value = nested.native_evidence_changes()?;
+                    nested.finish()?;
+                    return Ok(value);
+                },
+                _ => return Err(BuiltinModelError("invalid native evidence section tag".into())),
+            }
+        }
         let workspace_root = self
             .take(32)?
             .try_into()
@@ -2891,14 +3052,18 @@ impl<'a> IntentDecoder<'a> {
         let remaining = self.bytes.len().saturating_sub(self.at);
         if count > BuiltinIntent::MAX_NATIVE_EVIDENCE_CHANGES
             || count > remaining / 34
-            || remaining > BuiltinIntent::MAX_NATIVE_EVIDENCE_DELTA_BYTES
+            || (self.version == BuiltinIntent::NATIVE_EVIDENCE_VERSION && remaining > BuiltinIntent::MAX_NATIVE_EVIDENCE_DELTA_BYTES)
         {
             return Err(BuiltinModelError(
                 "invalid native evidence delta bounds".into(),
             ));
         }
         let mut changes = Vec::with_capacity(count);
+        let start = self.at;
         for _ in 0..count {
+            if self.at.saturating_sub(start) > BuiltinIntent::MAX_NATIVE_EVIDENCE_DELTA_BYTES {
+                return Err(BuiltinModelError("native evidence delta byte limit".into()));
+            }
             let key = self
                 .take(32)?
                 .try_into()
@@ -2910,6 +3075,9 @@ impl<'a> IntentDecoder<'a> {
                 expected,
                 after,
             });
+        }
+        if self.at.saturating_sub(start) > BuiltinIntent::MAX_NATIVE_EVIDENCE_DELTA_BYTES {
+            return Err(BuiltinModelError("native evidence delta byte limit".into()));
         }
         Ok((
             Some(NativeEvidenceBasis {
@@ -3295,6 +3463,20 @@ impl<'a> IntentDecoder<'a> {
         Ok(value)
     }
 
+    fn sql_extension(&mut self) -> Result<Option<super::sql_intent::SqlIntentExtension>, BuiltinModelError> {
+        if self.version < BuiltinIntent::SQL_VERSION { return Ok(None); }
+        match self.take(1)?[0] {
+            0 => Ok(None),
+            1 => {
+                let length = self.read_u32()? as usize;
+                if length > 64 * 1024 * 1024 { return Err(BuiltinModelError("SQL extension exceeds byte budget".into())); }
+                super::sql_intent::SqlIntentExtension::decode(self.take(length)?)
+                    .map(Some).map_err(BuiltinModelError)
+            }
+            _ => Err(BuiltinModelError("invalid SQL extension tag".into())),
+        }
+    }
+
     fn finish(self) -> Result<(), BuiltinModelError> {
         if self.at == self.bytes.len() {
             Ok(())
@@ -3324,13 +3506,13 @@ pub struct BuiltinModel {
     receipt_context: Option<Arc<super::owner_receipt_context::OwnerReceiptContext>>,
 }
 
-/// Legacy/test model without configured receipt authority.
+/// Legacy/test model without receipt authority; SQL receipt replay fails closed.
 #[allow(non_upper_case_globals)]
 pub const BuiltinModel: BuiltinModel = BuiltinModel { receipt_context: None };
 
 impl BuiltinModel {
-    pub(super) fn with_receipt_authority(key: Option<[u8; 32]>, workspace: std::path::PathBuf) -> Self {
-        Self { receipt_context: key.map(|key| Arc::new(super::owner_receipt_context::OwnerReceiptContext::new(key, workspace))) }
+    pub(super) fn with_receipt_context(receipt_context: Option<Arc<super::owner_receipt_context::OwnerReceiptContext>>) -> Self {
+        Self { receipt_context }
     }
 }
 
@@ -3364,6 +3546,7 @@ impl WorkspaceModel for BuiltinModel {
             decoded.set_staged(Arc::clone(staged), false);
             decoded.stylo_proof = intent.stylo_proof.clone();
             decoded.native_evidence_proof = intent.native_evidence_proof.clone();
+            decoded.sql_proof = intent.sql_proof.clone();
             hydrated = decoded;
             &hydrated
         } else {
@@ -3373,7 +3556,7 @@ impl WorkspaceModel for BuiltinModel {
             .relation::<BuiltinWorkspaceRelation>()
             .map_err(|error| BuiltinModelError(format!("open product source: {error}")))?;
         let update = prepare_source_update(&relation, intent.package.to_bytes(), intent.changes())?;
-        prepare_transition_with_source_update(base, intent, transaction, &relation, update)
+        prepare_transition_with_owner_context(base, intent, transaction, &relation, update, self.receipt_context.as_deref())
     }
 
     fn admit_persisted(
@@ -3549,6 +3732,11 @@ fn validate_live_stylo(
 /// Recheck the private native source witness after a potentially blocking
 /// publication barrier. The captured predecessor and exact delta remain the
 /// same; this does not claim exclusion of writes after the check.
+#[cfg(test)]
+pub(super) fn test_stylo_intent_shape(intent: &BuiltinIntent) -> (usize, bool) {
+    (intent.stylo_changes.len(), intent.stylo_proof.is_some())
+}
+
 pub(super) fn revalidate_stylo_intent(
     base: &WorkspaceSnapshot,
     intent: &BuiltinIntent,
@@ -3559,6 +3747,14 @@ pub(super) fn revalidate_stylo_intent(
     {
         return Err(BuiltinModelError("staged Stylo validation requires the publication worker".into()));
     }
+    let hydrated;
+    let intent = if intent.encoding_version == BuiltinIntent::SQL_VERSION
+        && intent.stylo_basis.is_some() && intent.stylo_changes.is_empty() && intent.staged().is_some() {
+        let mut decoded = intent.staged().expect("checked staged intent").hydrate(Some(base))?;
+        decoded.stylo_proof = intent.stylo_proof.clone();
+        hydrated = decoded;
+        &hydrated
+    } else { intent };
     if intent.stylo_changes.is_empty() {
         return Ok(());
     }
@@ -3640,11 +3836,34 @@ fn native_evidence_delta_matches_plan(
     positive.next().is_none() && retired.next().is_none()
 }
 
+/// Revalidate the private SQL capture against the same predecessor and exact
+/// target Project after-image at the owner grant barrier.
+pub(super) fn revalidate_sql_intent(base: &WorkspaceSnapshot, intent: &BuiltinIntent) -> Result<(), BuiltinModelError> {
+    if intent.encoding_version != BuiltinIntent::SQL_VERSION { return Ok(()); }
+    let hydrated;
+    let intent = if let Some(staged) = intent.staged() {
+        let mut decoded = staged.hydrate(Some(base))?;
+        decoded.sql_proof = intent.sql_proof.clone();
+        hydrated = decoded;
+        &hydrated
+    } else { intent };
+    let Some(extension) = &intent.sql_extension else {
+        return if intent.sql_proof.is_none() { Ok(()) } else { Err(BuiltinModelError("SQL proof lost its extension".into())) };
+    };
+    let proof = &intent.sql_proof.as_ref().ok_or_else(|| BuiltinModelError("SQL intent lacks live proof".into()))?.0;
+    let source = base.relation::<BuiltinWorkspaceRelation>().map_err(|error| BuiltinModelError(format!("open SQL owning project: {error}")))?;
+    let project = if let Some(change) = intent.changes.iter().find(|change| change.key == intent.package.to_bytes()) {
+        change.after.clone()
+    } else { source.lookup(&intent.package.to_bytes()).map_err(|error| BuiltinModelError(format!("read SQL owning project: {error}")))? };
+    let validated = super::sql_admission::validate_sql_live(base, proof, extension.basis, &extension.changes, project.as_ref()).map_err(BuiltinModelError)?;
+    validated.revalidate_before_grant().map_err(BuiltinModelError)
+}
+
 fn precheck_native_ts_intent(
     base: &WorkspaceSnapshot,
     intent: &BuiltinIntent,
 ) -> Result<(), BuiltinModelError> {
-    if intent.encoding_version != BuiltinIntent::NATIVE_EVIDENCE_VERSION {
+    if !intent.has_native_ts_evidence() {
         return Ok(());
     }
     let proof = intent.native_evidence_proof.as_ref()
@@ -3662,7 +3881,7 @@ pub(super) fn revalidate_native_ts_intent(
     base: &WorkspaceSnapshot,
     intent: &BuiltinIntent,
 ) -> Result<(), BuiltinModelError> {
-    if intent.encoding_version != BuiltinIntent::NATIVE_EVIDENCE_VERSION {
+    if !intent.has_native_ts_evidence() {
         return Ok(());
     }
     // Reject a missing/stale private capability before reading staged payloads.
@@ -3924,10 +4143,27 @@ pub(super) fn prepare_transition_with_source_update(
     relation: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
     update: LazyPreparedUpdate<BuiltinWorkspaceRelation>,
 ) -> Result<PreparedTransition, BuiltinModelError> {
-    if intent.encoding_version == BuiltinIntent::NATIVE_EVIDENCE_VERSION {
+    prepare_transition_with_owner_context(base, intent, transaction, relation, update, None)
+}
+
+fn prepare_transition_with_owner_context(
+    base: &WorkspaceSnapshot,
+    intent: &BuiltinIntent,
+    transaction: TransactionId,
+    relation: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    update: LazyPreparedUpdate<BuiltinWorkspaceRelation>,
+    owner_context: Option<&super::owner_receipt_context::OwnerReceiptContext>,
+) -> Result<PreparedTransition, BuiltinModelError> {
+    if intent.encoding_version == BuiltinIntent::SQL_VERSION && intent.staged().is_none() && intent.sql_proof.is_none() {
+        // A SQL intent is only meaningful with its live proof, or as the hydrated
+        // form of a staged carrier. Bare bytes carry no authority to publish.
+        return Err(BuiltinModelError("SQL publication requires its live capture proof".into()));
+    }
+    if intent.has_native_ts_evidence() {
         revalidate_native_ts_intent(base, intent)?;
     }
-    if intent.encoding_version == BuiltinIntent::STYLO_ANALYSIS_VERSION {
+    if intent.encoding_version == BuiltinIntent::STYLO_ANALYSIS_VERSION
+        || (intent.encoding_version == BuiltinIntent::SQL_VERSION && intent.stylo_basis.is_some()) {
         validate_live_stylo(base, intent, relation)?;
     }
     validate_live_stylo_target(base, intent, relation)?;
@@ -3940,6 +4176,35 @@ pub(super) fn prepare_transition_with_source_update(
     let native_frontier_update = prepare_native_frontier_relation_update(base, intent)?;
     let stylo_update = prepare_stylo_relation_update(base, intent)?;
     let native_evidence_update = prepare_native_evidence_relation_update(base, intent)?;
+    super::sql_index::trace(format_args!(
+        "preparing transition: version {} sql extension {} proof {}",
+        intent.encoding_version, intent.sql_extension.is_some(), intent.sql_proof.is_some()
+    ));
+    let (sql_update, receipt_update) = if let Some(extension) = &intent.sql_extension {
+        let proof = &intent.sql_proof.as_ref().ok_or_else(|| BuiltinModelError("SQL intent lacks live proof".into()))?.0;
+        let after_project = if let Some(change) = intent.changes.iter().find(|change| change.key == intent.package.to_bytes()) {
+            change.after.clone()
+        } else {
+            relation.lookup(&intent.package.to_bytes()).map_err(|error| BuiltinModelError(format!("read SQL owning project: {error}")))?
+        };
+        let validated = super::sql_admission::validate_sql_live(base, proof, extension.basis, &extension.changes, after_project.as_ref()).map_err(BuiltinModelError)?;
+        if intent.replaces_sql_project() {
+            let owner = owner_context.ok_or_else(|| BuiltinModelError("SQL receipt owner context missing".into()))?;
+            // Workspace root is independent of the later SQL receipt closure,
+            // so it can identify the actual PUBLISHED issuance without a cycle.
+            let issuing_root = workspace_manifest_from_root(&update.target_root(), &semantic_update.target_root())?.root();
+            let issuing_generation = base.sequence().checked_add(1).ok_or_else(|| BuiltinModelError("SQL receipt generation overflow".into()))?;
+            let (sql_update, issued) = super::sql_receipt::SqlReceipt::issue(owner, &validated, transaction, *issuing_root.as_bytes(), issuing_generation)?;
+            let receipt_index = super::sql_receipt_index::prepare_receipt_index(base, &issued)?;
+            (sql_update, Some(receipt_index))
+        } else {
+            // A new unavailable attempt leaves any selected native facts and
+            // their previously admitted receipt unchanged.
+            (super::sql_admission::prepare_sql_relation_update(&validated).map_err(BuiltinModelError)?, None)
+        }
+    } else {
+        (super::sql_admission::PreparedSqlRelationUpdate { node_objects: Vec::new(), pointer: None }, None)
+    };
     let source_change_count = update.delta().changes().count();
     let semantic_change_count = semantic_update.delta().changes().count();
     let source_changed = source_change_count != 0;
@@ -4023,6 +4288,11 @@ pub(super) fn prepare_transition_with_source_update(
             stylo_pointer: stylo_update.pointer.as_ref(),
             native_evidence_objects: &native_evidence_update.node_objects,
             native_evidence_pointer: native_evidence_update.pointer.as_ref(),
+            sql_objects: &sql_update.node_objects,
+            sql_pointer: sql_update.pointer.as_ref(),
+            sql_receipt_index_objects: receipt_update.as_ref().map_or(&[], |update| update.node_objects.as_slice()),
+            sql_receipt_index_pointer: receipt_update.as_ref().map(|update| &update.pointer),
+            sql_receipt: receipt_update.as_ref().map(|update| &update.receipt),
         },
     )?;
     if let Some(pointer) = stylo_update.pointer.as_ref() {
@@ -4050,6 +4320,23 @@ pub(super) fn prepare_transition_with_source_update(
         if !closure.contains(pointer.id()).map_err(|error| BuiltinModelError(format!("prove target native evidence pointer: {error:?}")))?
             || !closure.contains(root.id()).map_err(|error| BuiltinModelError(format!("prove target native evidence root: {error:?}")))? {
             return Err(BuiltinModelError("native evidence target outside closure".into()));
+        }
+    }
+    if let Some(pointer) = sql_update.pointer.as_ref() {
+        let root = sql_update.node_objects.iter().find(|object| pointer.bytes() == object.version())
+            .ok_or_else(|| BuiltinModelError("SQL target root object missing".into()))?;
+        if !closure.contains(pointer.id()).map_err(|error| BuiltinModelError(format!("prove SQL pointer: {error:?}")))?
+            || !closure.contains(root.id()).map_err(|error| BuiltinModelError(format!("prove SQL root: {error:?}")))? {
+            return Err(BuiltinModelError("SQL target outside closure".into()));
+        }
+    }
+    if let Some(receipt) = &receipt_update {
+        let root = receipt.node_objects.iter().find(|object| receipt.pointer.bytes() == object.version())
+            .ok_or_else(|| BuiltinModelError("SQL receipt index target root missing".into()))?;
+        for object in [&receipt.pointer, root, &receipt.receipt] {
+            if !closure.contains(object.id()).map_err(|error| BuiltinModelError(format!("prove SQL receipt selection: {error:?}")))? {
+                return Err(BuiltinModelError("SQL receipt target outside closure".into()));
+            }
         }
     }
     let registry = super::product_relation_registry()?;
@@ -4156,6 +4443,22 @@ pub(super) fn prepare_transition_with_source_update(
     } else {
         transition
     };
+    let transition = if let Some(pointer) = sql_update.pointer {
+        let root = sql_update.node_objects.iter().find(|object| pointer.bytes() == object.version())
+            .cloned().ok_or_else(|| BuiltinModelError("SQL target root object missing".into()))?;
+        transition.replace_object_family([pointer], &registry)
+            .map_err(|error| BuiltinModelError(format!("select SQL pointer: {error}")))?
+            .replace_object_family([root], &registry)
+            .map_err(|error| BuiltinModelError(format!("select SQL root: {error}")))?
+    } else { transition };
+    let transition = if let Some(receipt) = receipt_update {
+        let root = receipt.node_objects.iter().find(|object| receipt.pointer.bytes() == object.version())
+            .cloned().ok_or_else(|| BuiltinModelError("SQL receipt index target root missing".into()))?;
+        transition.replace_object_family([receipt.pointer], &registry)
+            .map_err(|error| BuiltinModelError(format!("select SQL receipt index pointer: {error}")))?
+            .replace_object_family([root], &registry)
+            .map_err(|error| BuiltinModelError(format!("select SQL receipt index root: {error}")))?
+    } else { transition };
     let transition = transition
         .replace_object_family([intent_object], &registry)
         .map_err(|error| BuiltinModelError(format!("retain current intent: {error}")))?;
@@ -4526,6 +4829,7 @@ fn checked_product_change_count(
         intent.capture_changes().len(),
         intent.stylo_changes.len(),
         intent.native_evidence_changes.len(),
+        intent.sql_extension.as_ref().map_or(0, |section| section.changes.len()),
     ]
     .into_iter()
     .try_fold(0_usize, usize::checked_add)
@@ -5258,6 +5562,11 @@ fn admit_persisted_intent(objects: &[TypedObject]) -> Result<BuiltinIntent, Buil
     }
     let persisted_intent = BuiltinIntent::decode(intent_object.bytes())
         .map_err(|error| BuiltinModelError(format!("decode persisted builtin intent: {error}")))?;
+    if persisted_intent.encoding_version == BuiltinIntent::SQL_VERSION {
+        // SQL transitions are always persisted as staged carriers (`BPS1`), which
+        // take the other admission path. An unstaged SQL intent cannot be genuine.
+        return Err(BuiltinModelError("SQL intents are persisted only as staged carriers".into()));
+    }
     // The object key is derived from these exact bytes, so an intent that
     // re-encodes differently cannot be replayed under its own identity. That
     // happens when the bytes were written by a build whose canonical form
@@ -5542,11 +5851,23 @@ fn admit_persisted_relations(
                     backend_engine::builtin::NativeSourceEvidenceRootSchema::TYPE,
                     backend_engine::builtin::NativeSourceEvidenceRootSchema::VERSION,
                 );
+                let sql_schema = backend_version::SchemaIdentity::new(
+                    backend_engine::builtin::SqlAnalysisRootSchema::DOMAIN,
+                    backend_engine::builtin::SqlAnalysisRootSchema::TYPE,
+                    backend_engine::builtin::SqlAnalysisRootSchema::VERSION,
+                );
+                let receipt_index_schema = backend_version::SchemaIdentity::new(
+                    backend_engine::builtin::SqlReceiptIndexRootSchema::DOMAIN,
+                    backend_engine::builtin::SqlReceiptIndexRootSchema::TYPE,
+                    backend_engine::builtin::SqlReceiptIndexRootSchema::VERSION,
+                );
                 if pointer.schema() != capture_schema
                     && pointer.schema() != facts_schema
                     && pointer.schema() != native_frontier_schema
                     && pointer.schema() != stylo_schema
                     && pointer.schema() != evidence_schema
+                    && pointer.schema() != sql_schema
+                    && pointer.schema() != receipt_index_schema
                 {
                     continue;
                 }
@@ -5569,9 +5890,17 @@ fn admit_persisted_relations(
                     persisted
                         .relation::<backend_engine::builtin::StyloAnalysisRelation>(store, root)
                         .and_then(|tree| tree.root_object())
-                } else {
+                } else if pointer.schema() == evidence_schema {
                     persisted
                         .relation::<backend_engine::builtin::NativeSourceEvidenceRelation>(store, root)
+                        .and_then(|tree| tree.root_object())
+                } else if pointer.schema() == receipt_index_schema {
+                    persisted
+                        .relation::<backend_engine::builtin::SqlReceiptIndexRelation>(store, root)
+                        .and_then(|tree| tree.root_object())
+                } else {
+                    persisted
+                        .relation::<backend_engine::builtin::SqlAnalysisRelation>(store, root)
                         .and_then(|tree| tree.root_object())
                 }
                 .map_err(|e| {
@@ -5655,6 +5984,11 @@ fn admit_persisted_relations(
         &target_tree,
         selected.descriptor().target_generation(),
         closure_id,
+        persisted_objects.objects(),
+    )?;
+    validate_persisted_sql(
+        persisted, store, &persisted_intent, &base_manifest, &manifest,
+        &target_tree, selected.descriptor().target_generation(), closure_id,
         persisted_objects.objects(),
     )?;
     let physical_roots = persisted_objects
@@ -6411,7 +6745,7 @@ fn validate_persisted_native_evidence(
     }
     backend_engine::builtin::validate_native_source_evidence_rows(&rows)
         .map_err(|error| BuiltinModelError(format!("invalid native evidence target: {error}")))?;
-    if intent.encoding_version == BuiltinIntent::NATIVE_EVIDENCE_VERSION {
+    if intent.has_native_ts_evidence() {
         // A new selected Program must also witness unchanged rows retained for
         // that same project/profile. Pending and failed captures are not a new
         // Program and continue to inherit their authenticated predecessor.
@@ -6787,6 +7121,407 @@ fn validate_persisted_stylo(
             if !owned {
                 return Err(BuiltinModelError(
                     "native Stylo delta changes another project".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn selected_sql_root_from_objects(
+    objects: &[TypedObject],
+) -> Result<Option<[u8; 32]>, BuiltinModelError> {
+    use backend_engine::builtin::SqlAnalysisRootSchema;
+    let schema = backend_version::SchemaIdentity::new(
+        SqlAnalysisRootSchema::DOMAIN,
+        SqlAnalysisRootSchema::TYPE,
+        SqlAnalysisRootSchema::VERSION,
+    );
+    let mut pointers = objects.iter().filter(|object| object.schema() == schema);
+    let Some(pointer) = pointers.next() else {
+        return Ok(None);
+    };
+    if pointers.next().is_some() {
+        return Err(BuiltinModelError("multiple native SQL pointers".into()));
+    }
+    let root: [u8; 32] = pointer
+        .bytes()
+        .try_into()
+        .map_err(|_| BuiltinModelError("invalid native SQL pointer length".into()))?;
+    let key = backend_engine::builtin::sql_analysis_root_pointer_key();
+    let version = ObjectVersion::<SqlAnalysisRootSchema>::from_value(&root);
+    if pointer.key() != &key || pointer.version() != version.as_bytes() || root == [0; 32] {
+        return Err(BuiltinModelError(
+            "invalid native SQL pointer identity".into(),
+        ));
+    }
+    Ok(Some(root))
+}
+
+
+fn validate_persisted_sql(
+    persisted: &backend_engine::PersistedTransition,
+    store: &backend_engine::FileStore,
+    intent: &BuiltinIntent,
+    base_manifest: &WorkspaceManifest,
+    target_manifest: &WorkspaceManifest,
+    target_source: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    target_sequence: u64,
+    target_closure: backend_store::ClosureId,
+    target_objects: &[TypedObject],
+) -> Result<(), BuiltinModelError> {
+    use backend_engine::builtin::{
+        SqlAnalysisRecord, SqlAnalysisRelation, SqlAnalysisRootSchema,
+    };
+    let sql_basis = intent.sql_extension.as_ref().map(|section| section.basis);
+    let sql_changes: &[super::sql_admission::SqlAnalysisChange] = intent.sql_extension.as_ref().map_or(&[], |section| section.changes.as_slice());
+    let target_root = selected_sql_root_from_objects(target_objects)?;
+    let sequence = target_sequence
+        .checked_sub(1)
+        .ok_or_else(|| BuiltinModelError("native SQL predecessor sequence missing".into()))?;
+    let prior = store
+        .workspace_base_publication(*target_manifest.root().as_bytes(), target_sequence)
+        .map_err(|error| {
+            BuiltinModelError(format!("resolve native SQL predecessor: {error:?}"))
+        })?;
+    let (base_closure, base_objects) = if sequence == 0 {
+        if prior.is_some() {
+            return Err(BuiltinModelError(
+                "unexpected native SQL genesis predecessor".into(),
+            ));
+        }
+        let genesis = super::genesis()?;
+        if genesis.root() != base_manifest.root() {
+            return Err(BuiltinModelError("native SQL genesis mismatch".into()));
+        }
+        (
+            *genesis.closure().binding().closure().as_bytes(),
+            genesis.closure().control_manifest().clone(),
+        )
+    } else {
+        let prior =
+            prior.ok_or_else(|| BuiltinModelError("native SQL predecessor missing".into()))?;
+        let descriptor = prior.descriptor();
+        if descriptor.target() != *base_manifest.root().as_bytes()
+            || descriptor.target_generation() != sequence
+        {
+            return Err(BuiltinModelError(
+                "native SQL predecessor descriptor mismatch".into(),
+            ));
+        }
+        let controls = backend_engine::workspace::recovery::control_frontier(store, &descriptor)
+            .map_err(|error| {
+                BuiltinModelError(format!("read native SQL predecessor controls: {error}"))
+            })?;
+        let intent_schema = backend_version::SchemaIdentity::new(
+            BuiltinIntentSchema::DOMAIN,
+            BuiltinIntentSchema::TYPE,
+            BuiltinIntentSchema::VERSION,
+        );
+        let staged = controls
+            .objects()
+            .iter()
+            .any(|object| object.schema() == intent_schema && object.bytes().starts_with(b"BPS1"));
+        let objects = if staged {
+            controls
+        } else {
+            admit_persisted_intent(controls.objects())?;
+            store
+                .read_workspace_root_closure(descriptor.closure())
+                .map_err(|error| {
+                    BuiltinModelError(format!("read native SQL predecessor closure: {error:?}"))
+                })?
+        };
+        (*descriptor.closure().as_bytes(), objects)
+    };
+    let base_root = selected_sql_root_from_objects(base_objects.objects())?;
+    if let Some(basis) = sql_basis {
+        if basis.workspace_root != *base_manifest.root().as_bytes()
+            || basis.sequence != sequence
+            || basis.closure != base_closure
+            || basis.analysis_root != base_root
+        {
+            return Err(BuiltinModelError(
+                "native SQL predecessor basis mismatch".into(),
+            ));
+        }
+    } else if !sql_changes.is_empty() {
+        return Err(BuiltinModelError(
+            "native SQL delta has no predecessor basis".into(),
+        ));
+    }
+    if persisted
+        .membership_id()
+        .is_some_and(|id| id != target_closure)
+    {
+        return Err(BuiltinModelError(
+            "native SQL selected membership mismatch".into(),
+        ));
+    }
+    let base_membership = store
+        .open_closure(backend_store::ClosureId::from_bytes(base_closure))
+        .map_err(|error| {
+            BuiltinModelError(format!(
+                "open native SQL predecessor membership: {error:?}"
+            ))
+        })?;
+    let target_membership = store.open_closure(target_closure).map_err(|error| {
+        BuiltinModelError(format!("open native SQL target membership: {error:?}"))
+    })?;
+    let schema = backend_version::SchemaIdentity::new(
+        SqlAnalysisRootSchema::DOMAIN,
+        SqlAnalysisRootSchema::TYPE,
+        SqlAnalysisRootSchema::VERSION,
+    );
+    for (objects, membership) in [
+        (base_objects.objects(), &base_membership),
+        (target_objects, &target_membership),
+    ] {
+        if let Some(pointer) = objects.iter().find(|object| object.schema() == schema) {
+            if !membership
+                .contains_object_id(pointer.id())
+                .map_err(|error| {
+                    BuiltinModelError(format!("prove native SQL pointer membership: {error:?}"))
+                })?
+            {
+                return Err(BuiltinModelError(
+                    "native SQL pointer outside selected closure".into(),
+                ));
+            }
+        }
+    }
+    let base = base_root
+        .map(|root| persisted.relation::<SqlAnalysisRelation>(store, root))
+        .transpose()
+        .map_err(|error| BuiltinModelError(format!("open native SQL predecessor: {error}")))?;
+    if let Some(relation) = &base {
+        let object = relation.root_object().map_err(|error| {
+            BuiltinModelError(format!("read native SQL predecessor root: {error}"))
+        })?;
+        if !base_membership
+            .contains_object_id(object.id())
+            .map_err(|error| {
+                BuiltinModelError(format!("prove native SQL predecessor root: {error:?}"))
+            })?
+        {
+            return Err(BuiltinModelError(
+                "native SQL predecessor root outside closure".into(),
+            ));
+        }
+    }
+    if sql_changes.is_empty() {
+        if base_root != target_root {
+            return Err(BuiltinModelError(
+                "native SQL pointer changed without delta".into(),
+            ));
+        }
+        if target_root.is_none() {
+            return Ok(());
+        } // historical absence is unknown
+    }
+    let Some(target_root) = target_root else {
+        return Err(BuiltinModelError(
+            "native SQL target pointer missing".into(),
+        ));
+    };
+    let target = persisted
+        .relation::<SqlAnalysisRelation>(store, target_root)
+        .map_err(|error| BuiltinModelError(format!("open native SQL target: {error}")))?;
+    let target_object = target
+        .root_object()
+        .map_err(|error| BuiltinModelError(format!("read native SQL target root: {error}")))?;
+    if !target_membership
+        .contains_object_id(target_object.id())
+        .map_err(|error| BuiltinModelError(format!("prove native SQL target root: {error:?}")))?
+    {
+        return Err(BuiltinModelError(
+            "native SQL target root outside closure".into(),
+        ));
+    }
+    if !sql_changes.is_empty() {
+        let changes = sql_changes
+            .iter()
+            .map(|change| TreeChange {
+                key: change.key,
+                after: change.after.clone(),
+            })
+            .collect::<Vec<_>>();
+        let computed = if let Some(relation) = &base {
+            *relation
+                .prepare_update(&changes)
+                .map_err(|error| {
+                    BuiltinModelError(format!("recompute native SQL delta: {error}"))
+                })?
+                .target()
+                .root()
+                .as_bytes()
+        } else {
+            if sql_changes
+                .iter()
+                .any(|change| change.expected.is_some() || change.after.is_none())
+            {
+                return Err(BuiltinModelError(
+                    "invalid initial native SQL delta".into(),
+                ));
+            }
+            let entries = sql_changes
+                .iter()
+                .filter_map(|change| change.after.clone().map(|row| (change.key, row)))
+                .collect::<Vec<_>>();
+            *backend_engine::RelationState::<SqlAnalysisRelation>::from_entries(
+                entries,
+                super::admitted_coverage()?,
+            )
+            .map_err(|error| {
+                BuiltinModelError(format!("recompute native SQL initial root: {error}"))
+            })?
+            .root()
+            .as_bytes()
+        };
+        if computed != target_root {
+            return Err(BuiltinModelError(
+                "native SQL target differs from exact delta".into(),
+            ));
+        }
+        for change in sql_changes {
+            let before = base
+                .as_ref()
+                .map(|tree| tree.lookup(&change.key))
+                .transpose()
+                .map_err(|error| {
+                    BuiltinModelError(format!("read native SQL before row: {error}"))
+                })?
+                .flatten();
+            let after = target.lookup(&change.key).map_err(|error| {
+                BuiltinModelError(format!("read native SQL after row: {error}"))
+            })?;
+            if before != change.expected || after != change.after {
+                return Err(BuiltinModelError(
+                    "native SQL persisted row mismatch".into(),
+                ));
+            }
+        }
+    }
+    let mut rows = Vec::new();
+    let mut after = None;
+    let mut bytes = 0usize;
+    loop {
+        let page = target
+            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+            .map_err(|error| BuiltinModelError(format!("page native SQL relation: {error}")))?;
+        for (key, row) in page.entries() {
+            let mut encoded = Vec::new();
+            SqlAnalysisRelation::encode_value(row, &mut encoded);
+            bytes = bytes
+                .checked_add(encoded.len()).and_then(|work| work.checked_add(40))
+                .ok_or_else(|| BuiltinModelError("native SQL replay work overflow".into()))?;
+            if bytes > 64 * 1024 * 1024 || rows.len() >= 262_144 {
+                return Err(BuiltinModelError(
+                    "native SQL replay exceeds relation budget".into(),
+                ));
+            }
+            rows.try_reserve(1).map_err(|_| BuiltinModelError("native SQL replay allocation limit".into()))?;
+            rows.push((*key, row.clone()));
+        }
+        match page.next().copied() {
+            Some(next) if after != Some(next) => after = Some(next),
+            Some(_) => return Err(BuiltinModelError("native SQL replay page did not advance".into())),
+            None => break,
+        }
+    }
+    let refs = rows
+        .iter()
+        .map(|(key, row)| (*key, row))
+        .collect::<Vec<_>>();
+    backend_engine::builtin::admit_sql_relation(&refs).map_err(BuiltinModelError)?;
+    for (_, row) in &rows {
+        if let SqlAnalysisRecord::Selection { project, .. }
+        | SqlAnalysisRecord::Attempt { project, .. } = row
+        {
+            let owner = target_source.lookup(project).map_err(|error| {
+                BuiltinModelError(format!("read native SQL source Project: {error}"))
+            })?;
+            if owner
+                .as_ref()
+                .and_then(|row| row.project_fields())
+                .is_none()
+            {
+                return Err(BuiltinModelError(
+                    "native SQL selection has no source Project".into(),
+                ));
+            }
+        }
+    }
+    for (_, row) in &rows {
+        if let SqlAnalysisRecord::Selection { project, source_root, .. } = row {
+            let owner = target_source.lookup(project).map_err(|error| BuiltinModelError(format!("read SQL source Project: {error}")))?
+                .ok_or_else(|| BuiltinModelError("SQL selected Project missing".into()))?;
+            let fields = owner.project_fields().ok_or_else(|| BuiltinModelError("SQL owner is not a Project".into()))?;
+            if fields.label != source_root.as_str() || backend_engine::PackageKey::from_value(fields.label).to_bytes() != *project
+                || !std::path::Path::new(source_root).is_absolute() {
+                return Err(BuiltinModelError("SQL selected root differs from Project label".into()));
+            }
+        }
+    }
+    let own_project = target_source
+        .lookup(intent.package.as_bytes())
+        .map_err(|error| BuiltinModelError(format!("read native SQL source Project: {error}")))?;
+    if !sql_changes.is_empty()
+        && own_project
+            .as_ref()
+            .and_then(|row| row.project_fields())
+            .is_none()
+    {
+        let source_deleted = intent.operation == BuiltinIntentOperation::Remove
+            && intent
+                .changes
+                .iter()
+                .any(|change| change.key == intent.package.to_bytes() && change.after.is_none());
+        let exact_retirement = sql_changes
+            .iter()
+            .all(|change| change.after.is_none());
+        let selection_remains = rows.iter().any(|(_, row)| matches!(row, SqlAnalysisRecord::Selection { project, .. } | SqlAnalysisRecord::Attempt { project, .. } | SqlAnalysisRecord::Host { project, .. } if *project == intent.package.to_bytes()));
+        if !source_deleted || !exact_retirement || selection_remains {
+            return Err(BuiltinModelError(
+                "native SQL source removal requires exact retirement".into(),
+            ));
+        }
+    }
+    // All modified rows must belong to this project or one of its before/after hosts.
+    let mut hosts = std::collections::BTreeSet::new();
+    for (key, row) in &rows {
+        if matches!(row, SqlAnalysisRecord::Host { project, .. } if *project == intent.package.to_bytes())
+        {
+            hosts.insert(*key);
+        }
+    }
+    for change in sql_changes {
+        for row in [change.expected.as_ref(), change.after.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if matches!(row, SqlAnalysisRecord::Host { project, .. } if *project == intent.package.to_bytes())
+            {
+                hosts.insert(change.key);
+            }
+        }
+    }
+    for change in sql_changes {
+        for row in [change.expected.as_ref(), change.after.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            let owned = match row {
+                SqlAnalysisRecord::Selection { project, .. }
+                | SqlAnalysisRecord::Attempt { project, .. }
+                | SqlAnalysisRecord::Host { project, .. } => {
+                    *project == intent.package.to_bytes()
+                }
+                SqlAnalysisRecord::Fact { host, .. } => hosts.contains(host),
+            };
+            if !owned {
+                return Err(BuiltinModelError(
+                    "native SQL delta changes another project".into(),
                 ));
             }
         }
@@ -7212,7 +7947,7 @@ fn validate_persisted_capture_changes(
                             .to_owned(),
                     ));
                 }
-                if intent.encoding_version == BuiltinIntent::NATIVE_EVIDENCE_VERSION {
+                if intent.has_native_ts_evidence() {
                     let generation = change.key.for_generation(claim.binding().identity);
                     let record = target_semantic.lookup(&generation).map_err(|error| {
                         BuiltinModelError(format!("read published capture generation: {error}"))
@@ -7394,6 +8129,41 @@ mod persisted_intent_tests {
         fn encode(value: &Self::Value, output: &mut Vec<u8>) {
             output.extend_from_slice(value);
         }
+    }
+
+    #[test]
+    fn sql_v14_envelope_roundtrips_bounded_claims() {
+        use backend_engine::builtin::{SqlAnalysisRecord, SqlAttemptOutcome, SqlUnavailable, sql_attempt_key};
+        let label = "/tmp/sql-v14";
+        let package = backend_engine::PackageKey::from_value(label);
+        let project = package.to_bytes();
+        let mut intent = BuiltinIntent::new_with_version(
+            BuiltinIntent::SQL_VERSION, BuiltinIntentOperation::Index, package, label,
+            vec![], vec![], None, None, None, vec![], vec![], vec![],
+        ).unwrap();
+        intent.sql_extension = Some(super::super::sql_intent::SqlIntentExtension {
+            basis: super::super::sql_admission::SqlAnalysisBasis {
+                workspace_root: [1; 32], sequence: 1, closure: [2; 32], analysis_root: None,
+            },
+            changes: vec![super::super::sql_admission::SqlAnalysisChange {
+                key: sql_attempt_key(project), expected: None,
+                after: Some(SqlAnalysisRecord::Attempt { project, outcome: SqlAttemptOutcome::Unavailable(SqlUnavailable::EngineNotAdmitted), served_selection: None }),
+            }],
+        });
+        let encoded = intent.canonical_bytes();
+        assert_eq!(&encoded[..5], b"BPIE\x0e");
+        assert_eq!(BuiltinIntent::decode(&encoded).unwrap(), intent);
+        // A queue carrier can shed SQL claims and proof; its version must
+        // still refuse synchronous hydration. This also covers CSS-only v14
+        // without requiring it to carry an SQL cancellation proof.
+        let mut carrier = intent.clone();
+        carrier.sql_extension = None;
+        assert!(!carrier.has_sql_evidence());
+        assert!(carrier.requires_v14_worker());
+        assert!(BuiltinIntent::decode(&encoded[..encoded.len()-1]).is_err());
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert!(BuiltinIntent::decode(&trailing).is_err());
     }
 
     #[test]

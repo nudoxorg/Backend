@@ -35,6 +35,12 @@ mod cursor;
 /// Native Stylo source and semantic query DTOs.
 pub mod stylo_query;
 pub mod vue_query;
+/// Owner-bound ephemeral comparison operands.
+pub mod impact_comparison;
+/// Bounded, candidate-only CSS impact contract.
+pub mod stylo_impact;
+/// Cross-language impact-of-change request and reply contract.
+pub mod impact;
 mod declaration_selector;
 mod delta;
 mod error;

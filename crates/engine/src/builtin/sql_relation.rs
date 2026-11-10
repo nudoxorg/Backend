@@ -12,6 +12,8 @@ const MAGIC: &[u8; 4] = b"SQL1";
 const ROOT_KEY: [u8; 32] = [0x53; 32];
 /// Maximum encoded bytes for one SQL row.
 pub const MAX_SQL_ROW_BYTES: usize = 32 * 1024;
+/// Maximum facts one SQL host may own.
+pub const MAX_SQL_FACTS_PER_HOST: u32 = 65_536;
 /// Maximum selected SQL hosts per project.
 pub const MAX_SQL_HOSTS: u32 = 256;
 /// Dedicated SQL native-analysis relation (0x97/16).
@@ -81,6 +83,11 @@ pub enum SqlAnalysisRecord {
         config_length: u32,
         discovery: Option<[u8; 32]>,
         policy_complete: bool,
+        /// No settings file existed: every `.sql` file of the bounded walk was
+        /// selected and each dialect was inferred from the file.
+        implicit: bool,
+        /// Where the analysis of this selection is known to be incomplete.
+        gaps: backend_semantic::sql_analysis::SqlGapCounts,
         inventory: SqlInventory,
         inventory_digest: [u8; 32],
         host_count: u32,
@@ -127,6 +134,53 @@ fn valid_path(path: &str) -> bool {
 fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 256 && !name.contains('\0')
 }
+fn valid_entity(entity: &backend_semantic::sql_analysis::SqlEntityRef) -> bool {
+    valid_path(&entity.path) && entity.ordinal < MAX_SQL_FACTS_PER_HOST
+}
+fn valid_range(range: &backend_semantic::sql_analysis::SqlByteRange) -> bool {
+    range.start < range.end
+}
+fn valid_definition(definition: &backend_semantic::sql_analysis::SqlDefinition) -> bool {
+    use backend_semantic::sql_analysis::SqlDefinitionAction;
+    valid_name(&definition.name)
+        && definition.schema.as_deref().is_none_or(valid_name)
+        && definition.parent.as_deref().is_none_or(valid_name)
+        && definition.parent_schema.as_deref().is_none_or(valid_name)
+        && definition.detail.as_deref().is_none_or(|v| v.len() <= 512 && !v.contains('\0'))
+        && valid_range(&definition.name_extent)
+        && valid_range(&definition.extent)
+        && definition.statement < MAX_SQL_FACTS_PER_HOST
+        && definition.entity.as_ref().is_none_or(valid_entity)
+        && definition.parent_entity.as_ref().is_none_or(valid_entity)
+        && definition.head_name.as_deref().is_none_or(valid_name)
+        && definition.head_parent.as_deref().is_none_or(valid_name)
+        && match &definition.action {
+            SqlDefinitionAction::Rename { to, to_extent } => valid_name(to) && valid_range(to_extent),
+            _ => true,
+        }
+}
+fn valid_reference(reference: &backend_semantic::sql_analysis::SqlReference) -> bool {
+    use backend_semantic::sql_analysis::SqlResolution;
+    valid_name(&reference.name)
+        && reference.schema.as_deref().is_none_or(valid_name)
+        && reference.qualifier.as_deref().is_none_or(valid_name)
+        && valid_range(&reference.extent)
+        && valid_range(&reference.full_extent)
+        && reference.statement < MAX_SQL_FACTS_PER_HOST
+        && reference.in_object.as_ref().is_none_or(|object| valid_name(&object.name))
+        && match &reference.resolution {
+            SqlResolution::Resolved { target, .. } => valid_entity(target),
+            SqlResolution::Relation { relation, .. } => valid_entity(relation),
+            SqlResolution::Expands { targets } => targets.len() <= 64 && targets.iter().all(valid_entity),
+            SqlResolution::Ambiguous { candidates, .. } => {
+                (2..=16).contains(&candidates.len()) && candidates.iter().all(valid_entity)
+            }
+            SqlResolution::Local | SqlResolution::Unresolved { .. } => true,
+        }
+}
+fn outline_host_ok(terminal: &SqlHostTerminal) -> bool {
+    matches!(terminal, SqlHostTerminal::Parsed { source: SqlCoverage::Partial, .. })
+}
 impl SqlAnalysisRecord {
     /// Validate local shape; this never proves project membership or producer authority.
     pub fn validate(&self) -> Result<(), String> {
@@ -169,7 +223,7 @@ impl SqlAnalysisRecord {
                 fact_count,
                 ..
             } => {
-                if *project == [0; 32] || !valid_path(path) || *fact_count > 4096 {
+                if *project == [0; 32] || !valid_path(path) || *fact_count > MAX_SQL_FACTS_PER_HOST {
                     return Err("invalid SQL host".into());
                 }
                 if [input, source, producer, settings, context]
@@ -222,7 +276,7 @@ impl SqlAnalysisRecord {
                 ordinal,
                 fact,
             } => {
-                if *host == [0; 32] || *ordinal >= 4096 {
+                if *host == [0; 32] || *ordinal >= MAX_SQL_FACTS_PER_HOST {
                     return Err("invalid SQL fact host".into());
                 }
                 match fact {
@@ -245,6 +299,22 @@ impl SqlAnalysisRecord {
                         ..
                     } if range.start > range.end => {
                         return Err("invalid SQL diagnostic extent".into());
+                    }
+                    SqlFact::PostgresColumnRead {
+                        relation_oid,
+                        attribute,
+                        extent,
+                    } if *relation_oid == 0 || *attribute == 0 || extent.start >= extent.end => {
+                        return Err("invalid PostgreSQL read claim".into());
+                    }
+                    SqlFact::Statement { extent, .. } if extent.start >= extent.end => {
+                        return Err("invalid SQL statement extent".into());
+                    }
+                    SqlFact::Definition(definition) if !valid_definition(definition) => {
+                        return Err("invalid SQL definition".into());
+                    }
+                    SqlFact::Reference(reference) if !valid_reference(reference) => {
+                        return Err("invalid SQL reference".into());
                     }
                     _ => {}
                 }
@@ -399,7 +469,7 @@ pub fn sql_inventory_digest(hosts: &[(String, SqlDialect)]) -> Result<[u8; 32], 
 }
 /// Digest facts in contiguous native ordinal order, not Merkle-key order.
 pub fn sql_host_fact_digest(facts: &[([u8; 32], &SqlAnalysisRecord)]) -> Result<[u8; 32], String> {
-    if facts.len() > 4096 {
+    if facts.len() > MAX_SQL_FACTS_PER_HOST as usize {
         return Err("SQL host fact limit".into());
     }
     let mut hash = blake3::Hasher::new();
@@ -618,6 +688,42 @@ pub fn admit_sql_relation(rows: &[([u8; 32], &SqlAnalysisRecord)]) -> Result<(),
                 } if u64::from(range.end) > *length => {
                     return Err("SQL diagnostic extent outside host claim".into());
                 }
+                SqlFact::Statement { extent, .. }
+                    if !outline_host_ok(terminal) || u64::from(extent.end) > *length =>
+                {
+                    return Err("SQL statement lacks an outline host or exact extent".into());
+                }
+                SqlFact::Definition(definition)
+                    if !outline_host_ok(terminal)
+                        || [definition.name_extent, definition.extent]
+                            .iter()
+                            .any(|range| u64::from(range.end) > *length) =>
+                {
+                    return Err("SQL definition lacks an outline host or exact extent".into());
+                }
+                SqlFact::Reference(reference)
+                    if !outline_host_ok(terminal)
+                        || [reference.extent, reference.full_extent]
+                            .iter()
+                            .any(|range| u64::from(range.end) > *length) =>
+                {
+                    return Err("SQL reference lacks an outline host or exact extent".into());
+                }
+                SqlFact::PostgresColumnRead { extent, .. }
+                    if *dialect != SqlDialect::Postgres
+                        || context.is_none()
+                        || !matches!(
+                            terminal,
+                            SqlHostTerminal::Parsed {
+                                source: SqlCoverage::Partial,
+                                contextual: SqlCoverage::Partial,
+                                sqlite_lineage: None
+                            }
+                        )
+                        || u64::from(extent.end) > *length =>
+                {
+                    return Err("PostgreSQL read lacks contextual host or exact extent".into());
+                }
                 _ => {}
             }
         }
@@ -632,6 +738,119 @@ pub fn admit_sql_relation(rows: &[([u8; 32], &SqlAnalysisRecord)]) -> Result<(),
 mod tests {
     use super::*;
     use backend_semantic::sql_analysis::{SqlByteRange, SqlDiagnostic};
+    #[test]
+    fn postgres_read_is_a_context_scoped_nonempty_native_extent() {
+        let host = [1; 32];
+        let fact = |relation_oid, attribute, start, end| SqlAnalysisRecord::Fact {
+            host,
+            ordinal: 0,
+            fact: SqlFact::PostgresColumnRead {
+                relation_oid,
+                attribute,
+                extent: SqlByteRange { start, end },
+            },
+        };
+        assert!(fact(7, 1, 2, 5).validate().is_ok());
+        assert!(fact(0, 1, 2, 5).validate().is_err());
+        assert!(fact(7, 0, 2, 5).validate().is_err());
+        assert!(fact(7, 1, 2, 2).validate().is_err());
+        let mut bytes = Vec::new();
+        SqlAnalysisRelation::encode_value(&fact(7, 1, 2, 5), &mut bytes);
+        assert_eq!(
+            SqlAnalysisRelation::decode_value(&bytes).unwrap(),
+            fact(7, 1, 2, 5)
+        );
+    }
+    #[test]
+    fn postgres_read_requires_the_exact_contextual_host_and_in_bounds_extent() {
+        let project = [1; 32];
+        let host_key = sql_host_key(project, "a.sql").unwrap();
+        let context = Some([6; 32]);
+        let key = sql_fact_key(
+            host_key,
+            SqlDialect::Postgres,
+            [2; 32],
+            [3; 32],
+            [4; 32],
+            [5; 32],
+            context,
+            0,
+        );
+        let fact = SqlAnalysisRecord::Fact {
+            host: host_key,
+            ordinal: 0,
+            fact: SqlFact::PostgresColumnRead {
+                relation_oid: 7,
+                attribute: 1,
+                extent: SqlByteRange { start: 1, end: 3 },
+            },
+        };
+        let mut host = SqlAnalysisRecord::Host {
+            project,
+            path: "a.sql".into(),
+            dialect: SqlDialect::Postgres,
+            input: Some([2; 32]),
+            source: Some([3; 32]),
+            length: Some(8),
+            producer: Some([4; 32]),
+            settings: Some([5; 32]),
+            context,
+            terminal: SqlHostTerminal::Parsed {
+                source: SqlCoverage::Partial,
+                contextual: SqlCoverage::Partial,
+                sqlite_lineage: None,
+            },
+            fact_count: 1,
+            fact_digest: sql_host_fact_digest(&[(key, &fact)]).unwrap(),
+        };
+        let selection = SqlAnalysisRecord::Selection {
+            project,
+            source_root: "/fixture".into(),
+            config_input: [7; 32],
+            config_source: [8; 32],
+            config_length: 32,
+            discovery: None,
+            policy_complete: false,
+            implicit: false,
+            gaps: Default::default(),
+            inventory: SqlInventory::Incomplete,
+            inventory_digest: sql_inventory_digest(&[("a.sql".into(), SqlDialect::Postgres)])
+                .unwrap(),
+            host_count: 1,
+        };
+        let attempt = SqlAnalysisRecord::Attempt {
+            project,
+            outcome: SqlAttemptOutcome::Observed,
+            served_selection: Some(sql_selection_digest(project, &selection).unwrap()),
+        };
+        let admit = |host: &SqlAnalysisRecord| {
+            let mut rows = vec![
+                (sql_selection_key(project), &selection),
+                (sql_attempt_key(project), &attempt),
+                (host_key, host),
+                (key, &fact),
+            ];
+            rows.sort_by_key(|row| row.0);
+            admit_sql_relation(&rows)
+        };
+        assert!(admit(&host).is_ok());
+        if let SqlAnalysisRecord::Host { length, .. } = &mut host {
+            *length = Some(2);
+        }
+        assert!(admit(&host).is_err());
+        if let SqlAnalysisRecord::Host {
+            length, terminal, ..
+        } = &mut host
+        {
+            *length = Some(8);
+            *terminal = SqlHostTerminal::Parsed {
+                source: SqlCoverage::Unavailable,
+                contextual: SqlCoverage::Partial,
+                sqlite_lineage: None,
+            };
+        }
+        assert!(admit(&host).is_err());
+    }
     #[test]
     fn strict_rows_and_identity_bind_the_full_analysis_basis() {
         let host = sql_host_key([1; 32], "queries/a.sql").unwrap();
@@ -771,6 +990,8 @@ mod tests {
             config_length: 32,
             discovery: None,
             policy_complete: false,
+            implicit: false,
+            gaps: Default::default(),
             inventory: SqlInventory::Incomplete,
             inventory_digest: sql_inventory_digest(&[("a.sql".into(), SqlDialect::Sqlite)])
                 .unwrap(),

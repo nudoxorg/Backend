@@ -963,6 +963,17 @@ fn property(spec: ArgumentSpec) -> Value {
         schema["description"] = json!(spec.help());
         return schema;
     }
+    let impact_schema = match spec.kind() {
+        ArgumentKind::ImpactCaptureRequest => Some(backend_library::impact_comparison::ImpactCaptureRequest::json_schema()),
+        ArgumentKind::ImpactCompareRequest => Some(backend_library::impact_comparison::ImpactCompareRequest::json_schema()),
+        ArgumentKind::ImpactSourceRequest => Some(backend_library::impact_comparison::ImpactReadSourceRequest::json_schema()),
+        ArgumentKind::ImpactDiffRequest => Some(backend_library::impact_comparison::ImpactDiffRequest::json_schema()),
+        _ => None,
+    };
+    if let Some(mut schema) = impact_schema {
+        schema["description"] = json!(spec.help());
+        return schema;
+    }
     if spec.kind() == ArgumentKind::IndexJobTicket {
         return ticket_schema();
     }

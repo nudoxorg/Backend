@@ -157,6 +157,18 @@ pub enum CommandId {
     StyloQuery,
     /// Read one verified authored CSS source site.
     StyloReadSite,
+    /// Capture current admitted comparison material.
+    ImpactCapture,
+    /// Traverse one retained comparison side.
+    ImpactCompare,
+    /// Read one source site from historical captured bytes.
+    ImpactReadSource,
+    /// Compare retained exact native facts and verified source images.
+    ImpactDiff,
+    /// Find candidate impacts of an authored custom property.
+    StyloImpact,
+    /// Find what a change to a selector, variable, component or schema object affects.
+    Impact,
     /// Read one snapshot-bound page of exact selected Project source members.
     PackageSourceMembership,
     /// Select an exact immutable compiler generation.

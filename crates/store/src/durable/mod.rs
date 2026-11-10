@@ -39,6 +39,7 @@ mod objects;
 mod publication;
 mod publication_api;
 mod recovery;
+pub use recovery::WorkspaceHistoryError;
 mod store_api;
 mod streaming_closure;
 

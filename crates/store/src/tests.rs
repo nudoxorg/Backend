@@ -2347,3 +2347,42 @@ fn selected_ancestor_requires_current_head_exact_history_and_a_scan_budget() {
     drop(raw_store);
     must(std::fs::remove_dir_all(raw_path));
 }
+
+#[test]
+fn workspace_history_is_bounded_selected_and_never_promotes_prepared() {
+    use std::sync::atomic::AtomicBool;
+    let path = std::env::temp_dir().join(format!("backend-store-history-{}-{}", std::process::id(), state_byte(47)));
+    let _ = std::fs::remove_dir_all(&path);
+    let store = must(FileStore::open(&path, 8192));
+    let authority_version = backend_version::ObjectVersion::<TestCoverageSchema>::from_value(&7);
+    let manifest = must(backend_version::CheckedWorkspaceManifest::from_versions(1, Vec::new(), Vec::new(), authority_version, coverage()));
+    let object = TypedObject::from_value(&backend_version::ObjectKey::<TestCoverageSchema>::from_value(&7), &7);
+    let closure = must(ClosureManifest::new(vec![object]));
+    let layout = LayoutId::derive(b"bounded-history");
+    let pack = must(encode_pack(&checked_map([(b"pack".to_vec(), v(1))]), layout, 8192));
+    let pack = must(store.write_pack(&pack));
+    let authority = must(store.acquire_publication_authority());
+    let first = CheckedWorkspacePublication::new(&manifest, closure.clone(), layout, pack, None);
+    must(must(must(store.prepare_checked_workspace_publication(first)).durable()).publish_with_authority(&authority));
+    let first_head = present(must(store.head()));
+    let second = CheckedWorkspacePublication::new(&manifest, closure.clone(), layout, pack, Some(first_head.as_base()));
+    must(must(must(store.prepare_checked_workspace_publication(second)).durable()).publish_with_authority(&authority));
+    let selected = present(must(store.head()));
+    let pending = CheckedWorkspacePublication::new(&manifest, closure, layout, pack, Some(selected.as_base()));
+    let _prepared_only = must(must(store.prepare_checked_workspace_publication(pending)).durable());
+    let cancelled = AtomicBool::new(false);
+    let history = must(store.selected_workspace_history(selected, &[1, 2], 100, &cancelled));
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0], first_head);
+    assert_eq!(history[1], selected);
+    assert!(matches!(store.selected_workspace_history(selected, &[3], 100, &cancelled), Err(WorkspaceHistoryError::Missing)));
+    assert!(matches!(store.selected_workspace_history(first_head, &[1], 100, &cancelled), Err(WorkspaceHistoryError::Store(StoreError::WrongBase))));
+    assert!(matches!(store.selected_workspace_history(selected, &[1], 1, &cancelled), Err(WorkspaceHistoryError::Limit)));
+    assert!(matches!(store.selected_workspace_history(selected, &[2, 1], 100, &cancelled), Err(WorkspaceHistoryError::Limit)));
+    cancelled.store(true, std::sync::atomic::Ordering::Release);
+    assert!(matches!(store.selected_workspace_history(selected, &[1], 100, &cancelled), Err(WorkspaceHistoryError::Cancelled)));
+    drop(_prepared_only);
+    drop(authority);
+    drop(store);
+    must(std::fs::remove_dir_all(path));
+}

@@ -39,6 +39,12 @@ impl ReadHeadIdentity {
     }
 }
 
+/// SQL files written under the project root and the admitted workers that parse them.
+struct SqlFixture {
+    files: Vec<(String, Vec<u8>)>,
+    workers: crate::builtin::sql_index::SqlWorkers,
+}
+
 struct SourceWire {
     // Keep the fixture's private workspace alive until the production owner
     // has closed and every tracked worker has joined.
@@ -56,6 +62,7 @@ struct SourceWire {
     operation: backend_library::IndexOperationKey,
     ticket: backend_library::IndexJobTicket,
     source: PathBuf,
+    preserve_failure: bool,
 }
 
 impl SourceWire {
@@ -104,6 +111,37 @@ impl SourceWire {
         stylo_worker: Option<Arc<crate::builtin::stylo_worker::StyloWorkerPermit>>,
         mixed: bool,
     ) -> Self {
+        Self::start_full(
+            stage,
+            panic_after_release,
+            cluster,
+            refuse_start,
+            structural,
+            stylo_worker,
+            mixed,
+            None,
+        )
+    }
+
+    /// Real SQL project files and admitted native SQL workers on the same owner.
+    fn start_sql(
+        stage: TestStage,
+        structural: bool,
+        sql: SqlFixture,
+    ) -> Self {
+        Self::start_full(stage, false, false, false, structural, None, false, Some(sql))
+    }
+
+    fn start_full(
+        stage: TestStage,
+        panic_after_release: bool,
+        cluster: bool,
+        refuse_start: bool,
+        structural: bool,
+        stylo_worker: Option<Arc<crate::builtin::stylo_worker::StyloWorkerPermit>>,
+        mixed: bool,
+        sql: Option<SqlFixture>,
+    ) -> Self {
         let mut fixture = AdapterFixture::new();
         if mixed {
             super::install_mixed_native_compiler(&mut fixture);
@@ -134,9 +172,17 @@ impl SourceWire {
             fs::write(Path::new(&label).join("site.css"), ".one { --ink: red; }")
                 .expect("real CSS input");
         }
+        if let Some(sql) = &sql {
+            for (relative, bytes) in &sql.files {
+                let path = Path::new(&label).join(relative);
+                fs::create_dir_all(path.parent().expect("SQL file parent")).expect("SQL directory");
+                fs::write(&path, bytes).expect("real SQL input");
+            }
+        }
         // Two actual admitted package rows force a multipage reset at credit 1.
         let (adapter, daemon) = fixture.parts();
         adapter.stylo_test_worker = stylo_worker;
+        adapter.sql_test_workers = sql.map(|sql| sql.workers);
         let read_head = Arc::new(Mutex::new(None));
         let deferred_head = Arc::clone(&read_head);
         adapter.stylo_test_observer = Some(Box::new(move |daemon| {
@@ -254,12 +300,17 @@ impl SourceWire {
             operation,
             ticket,
             source,
+            preserve_failure: mixed,
         }
     }
 
     fn wait_at_source(&self) {
+        self.wait_at_source_within(Duration::from_secs(5));
+    }
+
+    fn wait_at_source_within(&self, budget: Duration) {
         self.entered
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(budget)
             .expect("completed scan reaches real source worker");
     }
 
@@ -365,7 +416,12 @@ impl SourceWire {
     }
 
     fn wait_terminal(&self) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        self.wait_terminal_within(Duration::from_secs(5));
+    }
+
+    /// For journeys whose workers are real processes on a shared build host.
+    fn wait_terminal_within(&self, budget: Duration) {
+        let deadline = Instant::now() + budget;
         loop {
             if self.commands.lock().expect("observer").indexing.is_none() {
                 return;
@@ -387,6 +443,11 @@ impl Drop for SourceWire {
         self.stopped.request();
         if let Some(thread) = self.thread.take() {
             thread.join().expect("all owner workers joined");
+        }
+        // Preserve the private mixed fixture for read-only postmortem.
+        if self.preserve_failure && std::thread::panicking() {
+            let path = std::mem::take(&mut self.fixture.root.0);
+            eprintln!("mixed native diagnostic retained workspace: {}", path.display());
         }
         // The production service has closed before its fixture is removed.
         let _ = &self.fixture;
@@ -1296,6 +1357,8 @@ fn mixed_css_site(
         else {
             panic!("CSS query reply")
         };
+        eprintln!("mixed CSS query diagnostic: hits={:?} terminal={:?} basis={:?}",
+            page.hits.iter().take(20).collect::<Vec<_>>(), page.terminal, page.basis);
         if let Some(source) = page.hits.iter().find_map(|hit| match hit {
             StyloQueryHit::SourceSite { source, .. } => Some(source.clone()),
             _ => None,
@@ -1476,6 +1539,10 @@ fn mixed_owner_journey(reject_frontends: bool) {
     fs::write(project.join("site.css"), ".six { --ink: red; }").expect("edit unchanged CSS at grant");
     release.send(()).expect("release unchanged grant");
     wire.wait_terminal();
+    let changed_read = mixed_css_site(&mut session, &project, "one");
+    eprintln!("mixed CSS read after grant-race: {changed_read:?}");
+    let after = wire.read_head.lock().expect("head").clone();
+    eprintln!("mixed head after grant-race: {after:?}");
     {
         let commands = wire.commands.lock().expect("adapter");
         let Some(JournalEntry::Retained(entry)) = commands.index_operations.entry(wire.operation).expect("receipt") else { panic!("missing unchanged terminal") };
@@ -1489,8 +1556,8 @@ fn mixed_owner_journey(reject_frontends: bool) {
         .expect("restore selected TS");
     fs::write(project.join("site.css"), ".one { --ink: red; }").expect("restore selected CSS");
     assert!(matches!(mixed_css_site(&mut session, &project, "one"), StyloSourceRead::Available { ref text, .. } if text == "one"));
-    // A changed stylesheet must publish and remain readable when there is no
-    // intervening edit at the grant.
+    // A changed stylesheet must also publish and remain readable when no
+    // intervening edit races the grant.
     fs::write(project.join("site.css"), ".two { --ink: red; }").expect("positive CSS edit");
     mixed_start_again(&mut wire, 0xd5);
     wire.wait_terminal();
@@ -1642,3 +1709,6 @@ fn mixed_native_ts_css_without_worker_reports_gap() {
         StyloAttemptState::Unavailable { .. }
     ));
 }
+
+#[path = "sql_journey.rs"]
+mod sql_journey;

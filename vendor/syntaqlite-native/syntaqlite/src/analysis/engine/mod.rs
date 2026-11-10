@@ -27,6 +27,8 @@ use helpers::{extract_macro_registration, parse_error_span};
 use super::stmt_reader::StmtReader;
 
 mod helpers;
+mod nudox_observer;
+pub use nudox_observer::{NativeReference, NativeReferenceKind, NativeReferenceObservation};
 mod query_scope;
 mod statement_visitor;
 pub(crate) mod tokens;
@@ -156,6 +158,23 @@ impl Analyzer {
     /// ```
     pub fn analyze(&mut self, source: &str, ctx: &mut AnalysisContext<'_>) -> Analysis {
         self.analyze_with_visitor(source, ctx, &mut NoopVisitor)
+    }
+
+    /// Run the same semantic pass while retaining at most `limit` native walk
+    /// occurrences. Consumers must validate each range against actual source
+    /// bytes and qualify parser errors, unobserved roles, and overflow.
+    pub fn analyze_with_native_references(
+        &mut self,
+        source: &str,
+        ctx: &mut AnalysisContext<'_>,
+        limit: usize,
+    ) -> (Analysis, NativeReferenceObservation) {
+        let mut observer = nudox_observer::Observer {
+            result: NativeReferenceObservation { references: Vec::new(), limit_reached: false },
+            limit: limit.min(512),
+        };
+        let result = self.analyze_with_visitor(source, ctx, &mut observer);
+        (result, observer.result)
     }
 
     /// Run a complete single-pass analysis, forwarding walk events to

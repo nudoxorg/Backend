@@ -1,5 +1,241 @@
 use backend_sql_contract::{Binding, Dialect, Request, Settings, Syntax};
 use std::path::Path;
+
+#[test]
+fn checked_worker_respects_caller_deadline_and_empty_environment_policy() {
+    use backend_sql_contract::{
+        Cancellation, CheckedError, CheckedLaunch, ProcessEnvironment, ProcessError, ProcessLimits,
+        ToolchainArtifact, VerifiedSourceText, analyze_checked_until,
+    };
+    use std::time::{Duration, Instant};
+    let host = b"SELECT 1";
+    let verified = VerifiedSourceText::capture(host).unwrap();
+    let input = verified.content();
+    let source = verified.extent(0..host.len()).unwrap().source();
+    let worker = Path::new(env!("CARGO_BIN_EXE_sqlite-worker"));
+    let artifact = ToolchainArtifact::from_path(worker, vec![]).unwrap();
+    let cwd = std::env::current_dir().unwrap();
+    let limits = ProcessLimits::new(65536, 65536, Duration::from_secs(5), 131072).unwrap();
+    let (cancel, _) = Cancellation::new();
+    let launch = |environment| CheckedLaunch {
+        program: worker,
+        workspace: &cwd,
+        artifact: artifact.clone(),
+        environment,
+        limits,
+        cancellation: &cancel,
+    };
+    let request = Request {
+        version: backend_sql_contract::PROTOCOL_VERSION,
+        expected_basis: Some(backend_frontend_sqlite_experimental::observed_basis()),
+        source: host.to_vec(),
+        settings: Settings::ProcessDefaults,
+        context: None,
+    };
+    assert!(matches!(
+        analyze_checked_until(
+            &request,
+            host,
+            input,
+            source,
+            launch(ProcessEnvironment::new(vec![]).unwrap()),
+            Dialect::Sqlite,
+            backend_sql_contract::Engine::Syntaqlite4e4de76,
+            Instant::now()
+        ),
+        Err(CheckedError::Process(ProcessError::Deadline))
+    ));
+    let polluted =
+        ProcessEnvironment::new(vec![("LD_LIBRARY_PATH".into(), "/tmp/untrusted".into())]).unwrap();
+    assert!(matches!(
+        analyze_checked_until(
+            &request,
+            host,
+            input,
+            source,
+            launch(polluted),
+            Dialect::Sqlite,
+            backend_sql_contract::Engine::Syntaqlite4e4de76,
+            Instant::now() + Duration::from_secs(5)
+        ),
+        Err(CheckedError::UnsupportedSettings)
+    ));
+}
+
+/// Actual Linux loader/lease oracle, using explicit fixture paths supplied only
+/// to this ignored test. This is not an installed product permit.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires explicit paired Linux libgcc and loader fixtures"]
+fn linux_private_library_lease_selects_exact_libgcc_and_runs_checked_sqlite() {
+    use backend_sql_contract::{
+        Cancellation, CheckedLaunch, ExecutableIdentity, NativeLibraryLease, ProcessEnvironment,
+        ProcessLimits, ToolchainArtifact, VerifiedSourceText,
+        analyze_checked_with_linux_library_until,
+    };
+    use std::{
+        os::unix::fs::PermissionsExt as _,
+        time::{Duration, Instant},
+    };
+    let library = std::path::PathBuf::from(
+        std::env::var_os("NUDOX_TEST_SQLITE_LIBGCC").expect("paired libgcc fixture"),
+    );
+    let loader = std::path::PathBuf::from(
+        std::env::var_os("NUDOX_TEST_SQLITE_LOADER").expect("loader fixture"),
+    );
+    let worker = Path::new(env!("CARGO_BIN_EXE_sqlite-worker"));
+    let (cancel, _) = Cancellation::new();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let library_identity =
+        ExecutableIdentity::from_path_until(&library, &cancel, deadline).unwrap();
+    let executable = ExecutableIdentity::from_path_until(worker, &cancel, deadline).unwrap();
+    let artifact = ToolchainArtifact::new(executable, vec![library_identity.digest()]);
+    let lease =
+        NativeLibraryLease::prepare(&library, &library_identity, &artifact, &cancel, deadline)
+            .unwrap();
+    let environment = lease.environment().unwrap();
+    let private_dir = std::path::PathBuf::from(&environment.variables()[0].1);
+    let scratch =
+        std::env::temp_dir().join(format!("nudox-sqlite-loader-oracle-{}", std::process::id()));
+    std::fs::create_dir(&scratch).unwrap();
+    std::fs::set_permissions(&scratch, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let private_worker = scratch.join("worker");
+    std::fs::copy(worker, &private_worker).unwrap();
+    // Invoke the selected loader on a private worker copy under the exact
+    // lease environment. The bounded supervisor owns/reaps this oracle too.
+    let limits = ProcessLimits::new(65536, 65536, Duration::from_secs(10), 131072).unwrap();
+    let loader_command = backend_sql_contract::SupervisedCommand::new(
+        loader,
+        vec!["--list".into(), private_worker.to_str().unwrap().into()],
+        scratch.clone(),
+        environment.clone(),
+        limits,
+    )
+    .unwrap();
+    let loader_receipt = backend_sql_contract::ProcessSupervisor::new(loader_command)
+        .run_with_observer_until(&cancel, deadline)
+        .unwrap();
+    assert!(loader_receipt.reaped());
+    assert_eq!(
+        loader_receipt.terminal(),
+        backend_sql_contract::ProcessTerminal::Success
+    );
+    let listing = std::str::from_utf8(loader_receipt.stdout()).unwrap();
+    let expected = private_dir.join("libgcc_s.so.1");
+    assert!(listing.lines().any(|line| line.contains("libgcc_s.so.1") && line.contains(expected.to_str().unwrap())));
+    assert_eq!(
+        listing
+            .lines()
+            .filter(|line| line.contains("libgcc_s.so.1"))
+            .count(),
+        1
+    );
+    std::fs::remove_file(private_worker).unwrap();
+    std::fs::remove_dir(scratch).unwrap();
+
+    let host = b"SELECT 1 AS value;";
+    let verified = VerifiedSourceText::capture(host).unwrap();
+    let request = Request {
+        version: backend_sql_contract::PROTOCOL_VERSION,
+        expected_basis: Some(backend_frontend_sqlite_experimental::observed_basis()),
+        source: host.to_vec(),
+        settings: Settings::ProcessDefaults,
+        context: None,
+    };
+    let cwd = std::env::current_dir().unwrap();
+    let launch = CheckedLaunch {
+        program: worker,
+        workspace: &cwd,
+        artifact,
+        environment,
+        limits: ProcessLimits::new(
+            8 * 1024 * 1024,
+            128 * 1024,
+            Duration::from_secs(10),
+            9 * 1024 * 1024,
+        )
+        .unwrap(),
+        cancellation: &cancel,
+    };
+    let response = analyze_checked_with_linux_library_until(
+        &request,
+        host,
+        verified.content(),
+        verified.extent(0..host.len()).unwrap().source(),
+        launch,
+        Dialect::Sqlite,
+        backend_sql_contract::Engine::Syntaqlite4e4de76,
+        deadline,
+        lease,
+    )
+    .unwrap();
+    assert!(matches!(
+        response.response().syntax,
+        Syntax::Parsed { statements: 1, .. }
+    ));
+    assert!(
+        !private_dir.exists(),
+        "reaped lease directory must be removed"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_checked_library_rejects_mismatched_loader_environment_before_spawn() {
+    use backend_sql_contract::{
+        Cancellation, CheckedError, CheckedLaunch, ExecutableIdentity, NativeLibraryLease,
+        ProcessEnvironment, ProcessLimits, ToolchainArtifact, VerifiedSourceText,
+        analyze_checked_with_linux_library_until,
+    };
+    use std::time::{Duration, Instant};
+    let root =
+        std::env::temp_dir().join(format!("nudox-sqlite-env-negative-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let library = root.join("libgcc_s.so.1");
+    std::fs::write(&library, b"not-a-library").unwrap();
+    let worker = Path::new(env!("CARGO_BIN_EXE_sqlite-worker"));
+    let (cancel, _) = Cancellation::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let identity = ExecutableIdentity::from_path_until(&library, &cancel, deadline).unwrap();
+    let artifact = ToolchainArtifact::new(
+        ExecutableIdentity::from_path_until(worker, &cancel, deadline).unwrap(),
+        vec![identity.digest()],
+    );
+    let lease =
+        NativeLibraryLease::prepare(&library, &identity, &artifact, &cancel, deadline).unwrap();
+    let host = b"SELECT 1";
+    let verified = VerifiedSourceText::capture(host).unwrap();
+    let request = Request {
+        version: backend_sql_contract::PROTOCOL_VERSION,
+        expected_basis: Some(backend_frontend_sqlite_experimental::observed_basis()),
+        source: host.to_vec(),
+        settings: Settings::ProcessDefaults,
+        context: None,
+    };
+    let cwd = std::env::current_dir().unwrap();
+    let launch = CheckedLaunch {
+        program: worker,
+        workspace: &cwd,
+        artifact,
+        environment: ProcessEnvironment::new(vec![]).unwrap(),
+        limits: ProcessLimits::new(65536, 65536, Duration::from_secs(5), 131072).unwrap(),
+        cancellation: &cancel,
+    };
+    let result = analyze_checked_with_linux_library_until(
+        &request,
+        host,
+        verified.content(),
+        verified.extent(0..host.len()).unwrap().source(),
+        launch,
+        Dialect::Sqlite,
+        backend_sql_contract::Engine::Syntaqlite4e4de76,
+        deadline,
+        lease,
+    );
+    assert!(matches!(result, Err(CheckedError::UnsupportedSettings)));
+    std::fs::remove_file(library).unwrap();
+    std::fs::remove_dir(root).unwrap();
+}
 #[test]
 fn sqlite_uses_shared_isolated_worker_frame() {
     let req = Request {
@@ -82,7 +318,11 @@ fn proposed_catalog_worker_reports_native_unknown_column_and_epoch() {
         payload: b"{}".to_vec(),
     });
     let malformed = backend_frontend_sqlite_experimental::analyze(worker, &req);
-    assert_eq!(malformed.binding, Binding::UnsupportedContext, "{malformed:?}");
+    assert_eq!(
+        malformed.binding,
+        Binding::UnsupportedContext,
+        "{malformed:?}"
+    );
 }
 
 #[test]

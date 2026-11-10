@@ -87,6 +87,7 @@ pub(super) struct PreparedScanSource {
     pub(super) workspace_snapshot: Option<ingest::CompilerWorkspaceSnapshot>,
     pub(super) profiles: PreparedScanProfiles,
     pub(super) stylo_proof: Option<crate::builtin::stylo_admission::StyloLiveProof>,
+    pub(super) sql_proof: Option<Arc<crate::builtin::sql_admission::SqlLiveProof>>,
 }
 
 pub(super) enum PreparedScanProfiles {
@@ -839,6 +840,8 @@ pub(super) fn prepare_scan_source(
         reusable,
         stylo_worker,
         stylo_selection_failure,
+        sql_workers,
+        sql_prior,
         ..
     } = work;
 
@@ -1074,6 +1077,25 @@ pub(super) fn prepare_scan_source(
         // Claimed by native Stylo; parse and inventory coverage remain separate.
         css.files = 0;
     }
+    let sql_projection = crate::builtin::sql_index::sql_projection(
+        &scan.sql_walk,
+        revision_fence,
+        source_root,
+        sql_prior,
+        &sql_workers,
+        &cancellation,
+    )?;
+    if let Some(projection) = &sql_projection {
+        if let Some(sql) = source_selection
+            .unsupported_extensions
+            .iter_mut()
+            .find(|row| row.extension == "sql")
+        {
+            // Hosts selected for SQL analysis are claimed; only files beyond the
+            // selection bound remain disclosed as unsupported.
+            sql.files = sql.files.saturating_sub(projection.host_count() as u64);
+        }
+    }
     let project_update = ProductSourceRecord::project_with_membership_pages_and_source_selection(
         &label,
         scan.source_version,
@@ -1142,6 +1164,10 @@ pub(super) fn prepare_scan_source(
     } else {
         None
     };
+    let sql_proof = sql_projection
+        .map(|projection| crate::builtin::sql_index::sql_proof(projection, &project, &cancellation))
+        .transpose()?;
+    crate::builtin::sql_index::trace(format_args!("proof captured: {}", sql_proof.is_some()));
     let mut changes = Vec::new();
     if before.as_ref() != Some(&project) {
         changes.push(BuiltinSourceChange {
@@ -1390,6 +1416,7 @@ pub(super) fn prepare_scan_source(
         workspace_snapshot,
         profiles,
         stylo_proof,
+        sql_proof,
     })
 }
 
@@ -1425,6 +1452,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
         workspace_snapshot,
         profiles,
         stylo_proof,
+        sql_proof,
         ..
     } = prepare_scan_source(
         base_snapshot,
@@ -1457,6 +1485,13 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
         .transpose()
         .map_err(BuiltinModelError)?
         .is_some_and(|changes| !changes.is_empty());
+    let sql_changed = sql_proof
+        .as_ref()
+        .map(|proof| crate::builtin::sql_admission::plan_sql_update(base_snapshot, proof))
+        .transpose()
+        .map_err(BuiltinModelError)?
+        .is_some_and(|changes| !changes.is_empty());
+    crate::builtin::sql_index::trace(format_args!("rows changed against the base: {sql_changed}"));
     let mixed_stylo_noop = if native_typescript.is_some() && !native_changed {
         stylo_proof.clone()
     } else {
@@ -1482,20 +1517,38 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
                     && source_facts_changes.is_empty()
                     && native_frontier_changes.is_empty()
                     && !native_changed
+                    && !sql_changed
                 {
                     None
                 } else if changes.is_empty()
                     && source_facts_changes.is_empty()
                     && native_frontier_changes.is_empty()
+                    && !native_changed
                 {
-                    Some(BuiltinIntent::stylo_only(
+                    Some(BuiltinIntent::sql_only(
+                        package,
+                        &label,
+                        base_snapshot,
+                        sql_proof
+                            .clone()
+                            .ok_or_else(|| BuiltinModelError("missing SQL proof".into()))?,
+                    )?)
+                } else if changes.is_empty()
+                    && source_facts_changes.is_empty()
+                    && native_frontier_changes.is_empty()
+                {
+                    let intent = BuiltinIntent::stylo_only(
                         package,
                         &label,
                         base_snapshot,
                         stylo_proof
                             .clone()
                             .ok_or_else(|| BuiltinModelError("missing Stylo proof".into()))?,
-                    )?)
+                    )?;
+                    Some(match sql_proof.clone() {
+                        Some(proof) => intent.with_sql_capture(base_snapshot, proof)?,
+                        None => intent,
+                    })
                 } else {
                     let mut intent = reused_profiles_intent(
                         package,
@@ -1509,6 +1562,9 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
                     }
                     if let Some(proof) = stylo_proof.clone() {
                         intent = intent.with_stylo_capture(base_snapshot, proof)?;
+                    }
+                    if let Some(proof) = sql_proof.clone() {
+                        intent = intent.with_sql_capture(base_snapshot, proof)?;
                     }
                     Some(intent)
                 };
@@ -1559,6 +1615,14 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
                     )?;
                 }
                 intent = intent.with_stylo_capture(base_snapshot, proof)?;
+            }
+            if let Some(proof) = sql_proof.clone() {
+                if intent.has_capture_changes() && intent.capture_basis().is_none() {
+                    intent = intent.with_capture_basis(
+                        crate::builtin::capture_basis_for_snapshot(base_snapshot)?,
+                    )?;
+                }
+                intent = intent.with_sql_capture(base_snapshot, proof)?;
             }
             let selection = PreparedProductSelection {
                 native_noop_expectation: None,
@@ -1654,6 +1718,13 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
                 .with_capture_basis(crate::builtin::capture_basis_for_snapshot(base_snapshot)?)?;
         }
         intent = intent.with_stylo_capture(base_snapshot, proof)?;
+    }
+    if let Some(proof) = sql_proof {
+        if intent.has_capture_changes() && intent.capture_basis().is_none() {
+            intent = intent
+                .with_capture_basis(crate::builtin::capture_basis_for_snapshot(base_snapshot)?)?;
+        }
+        intent = intent.with_sql_capture(base_snapshot, proof)?;
     }
     let selection = PreparedProductSelection {
         native_noop_expectation: None,

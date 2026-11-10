@@ -398,8 +398,8 @@ fn analyze_input(
                         .map_err(|_| StyloError::Serialization)?;
                     add_text(&mut text_used, &property, result.config.limits.text_bytes)?;
                     add_text(&mut text_used, &value, result.config.limits.text_bytes)?;
-                    let dependency_coverage =
-                        if let PropertyDeclaration::Custom(custom) = declaration {
+                    let dependency_coverage = match declaration {
+                        PropertyDeclaration::Custom(custom) => {
                             if let CustomDeclarationValue::Unparsed(value) = &custom.value {
                                 add_dependencies(
                                     &value.references,
@@ -414,9 +414,24 @@ fn analyze_input(
                             } else {
                                 StyloDependencyCoverage::Unknown
                             }
-                        } else {
-                            StyloDependencyCoverage::Unknown
-                        };
+                        }
+                        // Ordinary declarations which use var()/env()/attr(), including
+                        // longhands expanded from a shorthand whose value Stylo does not
+                        // serialize. The references are the parser's own, not a text scan.
+                        PropertyDeclaration::WithVariables(with_variables) => {
+                            add_dependencies(
+                                &with_variables.value.variable_value.references,
+                                &path,
+                                ordinal,
+                                &[],
+                                &mut result,
+                                &mut text_used,
+                                &mut records_used,
+                            )?;
+                            StyloDependencyCoverage::Known
+                        }
+                        _ => StyloDependencyCoverage::Unknown,
+                    };
                     let kind = match declaration {
                         PropertyDeclaration::Custom(_) => StyloDeclarationKind::Custom,
                         PropertyDeclaration::WithVariables(_) => {
@@ -456,6 +471,74 @@ fn analyze_input(
                     Some(location(node.source_location, false)),
                     Some(condition),
                 )
+            }
+            // At-rules whose preludes are projected as native serialized text. They stay
+            // `Other`: their semantics are not evaluated, so coverage remains partial.
+            CssRule::Supports(node) => {
+                result.coverage = StyloCoverage::Partial;
+                let prelude = style_traits::ToCss::to_css_string(&node.condition);
+                add_text(&mut text_used, &prelude, result.config.limits.text_bytes)?;
+                (
+                    StyloRuleKind::Other,
+                    Some(location(node.source_location, false)),
+                    Some(prelude),
+                )
+            }
+            CssRule::LayerBlock(node) => {
+                result.coverage = StyloCoverage::Partial;
+                let prelude = node
+                    .name
+                    .as_ref()
+                    .map(style_traits::ToCss::to_css_string)
+                    .unwrap_or_default();
+                add_text(&mut text_used, &prelude, result.config.limits.text_bytes)?;
+                (
+                    StyloRuleKind::Other,
+                    Some(location(node.source_location, false)),
+                    Some(prelude),
+                )
+            }
+            CssRule::LayerStatement(node) => {
+                result.coverage = StyloCoverage::Partial;
+                let prelude = node
+                    .names
+                    .iter()
+                    .map(style_traits::ToCss::to_css_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                add_text(&mut text_used, &prelude, result.config.limits.text_bytes)?;
+                (
+                    StyloRuleKind::Other,
+                    Some(location(node.source_location, false)),
+                    Some(prelude),
+                )
+            }
+            CssRule::Keyframes(node) => {
+                result.coverage = StyloCoverage::Partial;
+                let node = node.read_with(&guard);
+                let prelude = style_traits::ToCss::to_css_string(&node.name);
+                add_text(&mut text_used, &prelude, result.config.limits.text_bytes)?;
+                (
+                    StyloRuleKind::Other,
+                    Some(location(node.source_location, false)),
+                    Some(prelude),
+                )
+            }
+            CssRule::Container(node) => {
+                result.coverage = StyloCoverage::Partial;
+                let prelude = style_traits::ToCss::to_css_string(&node.conditions);
+                add_text(&mut text_used, &prelude, result.config.limits.text_bytes)?;
+                (
+                    StyloRuleKind::Other,
+                    Some(location(node.source_location, false)),
+                    Some(prelude),
+                )
+            }
+            CssRule::Property(node) => {
+                result.coverage = StyloCoverage::Partial;
+                let prelude = style_traits::ToCss::to_css_string(&node.name);
+                add_text(&mut text_used, &prelude, result.config.limits.text_bytes)?;
+                (StyloRuleKind::Other, None, Some(prelude))
             }
             _ => {
                 result.coverage = StyloCoverage::Partial;

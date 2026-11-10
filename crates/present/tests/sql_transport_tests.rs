@@ -27,3 +27,14 @@ fn cli_and_mcp_lower_same_exact_sql_filter() {
     cli.set("role", "diagnostic");
     assert!(lower(&cli, PROJECT).is_err());
 }
+
+#[test]
+fn postgres_column_read_does_not_accept_guessed_name_filter() {
+    let grammar = grammar_for("sql-query").expect("SQL grammar");
+    let mut cli = Invocation::new(grammar);
+    cli.push(PROJECT);
+    cli.set("role", "column_read");
+    assert!(lower(&cli, PROJECT).is_ok());
+    cli.set("name", "id");
+    assert!(lower(&cli, PROJECT).is_err());
+}

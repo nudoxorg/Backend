@@ -19,6 +19,7 @@ use std::thread::JoinHandle;
 
 #[must_use = "settle every original writer and retire prior read payloads"]
 pub(super) struct PublicationWork {
+    pub(super) receipt_context: Option<Arc<crate::builtin::owner_receipt_context::OwnerReceiptContext>>,
     pub(super) semantic: Option<DetachedSemanticAuthority>,
     pub(super) journal: Option<PublicationJournalWriter>,
     pub(super) projection: Option<ProjectionWriter>,
@@ -253,6 +254,7 @@ impl PublicationWork {
             _ => Vec::new(),
         };
         Self {
+            receipt_context: None,
             semantic,
             journal,
             projection,
@@ -583,7 +585,7 @@ impl PublicationWork {
         }
         #[cfg(test)]
         self.observed.phase("stage-intent");
-        let staged = prepare_builtin_intent_at_snapshot(
+        let staged = prepare_builtin_intent_with_owner_at_snapshot(
             &self.base,
             &intent,
             self.prepared
@@ -591,6 +593,7 @@ impl PublicationWork {
                 .as_ref()
                 .map(|f| f.canonical_root()),
             Arc::clone(&self.cancellation),
+            self.receipt_context.as_deref(),
         )?;
         if let Some(progress) = &self.source_observation {
             progress.phase("prepare-workspace");
@@ -764,6 +767,7 @@ impl PublicationWork {
                         #[cfg(test)]
                         if test_hook.as_ref().is_some_and(|hook| hook.stage == TestStage::BeforeGrantValidation) {
                             let hook = test_hook.take().expect("one-shot post-barrier validation seam");
+                            eprintln!("mixed grant diagnostic: source_capture={source_capture} cleanup={cleanup_phase} retained_noop={} stylo_intent={:?}", stylo_noop.is_some(), crate::builtin::profile::test_stylo_intent_shape(&staged.intent));
                             (hook.run)();
                         }
                         // The durable Prepared barrier may block. Revalidate
@@ -784,6 +788,7 @@ impl PublicationWork {
                                 .map_err(BuiltinModelError)?;
                         }
                         crate::builtin::profile::revalidate_native_ts_intent(base, &staged.intent)?;
+                        crate::builtin::profile::revalidate_sql_intent(base, &staged.intent)?;
                     }
                     select_head(head, candidate, events, grant_accepted,
                         #[cfg(test)] test_hook, cancellation, source_observation.as_deref(), #[cfg(test)] observed)

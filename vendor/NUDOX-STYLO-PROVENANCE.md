@@ -22,3 +22,12 @@ unobserved roles and nested or complex syntax. It does not evaluate cascade or
 claim exact authored sites for native serialization. The reproducible original
 archive checks, patches and fixture commands are in
 `experiments/stylo-observer-proof/README.md`.
+
+## Read access to ordinary variable references
+
+`stylo/properties/mod.rs` declares `UnparsedValue::variable_value` as `pub` instead
+of `pub(super)`. This is the only change; it lets the frontend read the parser's own
+`References` for declarations which use `var()`, `env()` or `attr()`, including
+longhands expanded from a shorthand (Stylo serializes no text for those). Before this
+change only custom-property declarations exposed structured references, and the
+impact query had to scan serialized values, which are empty for shorthand expansions.

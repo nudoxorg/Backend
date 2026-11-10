@@ -275,7 +275,18 @@ pub(super) fn stage(
     source_root: Option<&Path>,
     cancellation: Arc<AtomicBool>,
 ) -> Result<BuiltinIntent, BuiltinModelError> {
-    stage_inner(intent, snapshot, source_root, cancellation, false)
+    stage_inner(intent, snapshot, source_root, cancellation, false, None)
+}
+
+/// Owner-worker staging with the single already-bound receipt authority.
+pub(super) fn stage_with_owner(
+    intent: BuiltinIntent,
+    snapshot: &WorkspaceSnapshot,
+    source_root: Option<&Path>,
+    cancellation: Arc<AtomicBool>,
+    owner: Option<&super::owner_receipt_context::OwnerReceiptContext>,
+) -> Result<BuiltinIntent, BuiltinModelError> {
+    stage_inner(intent, snapshot, source_root, cancellation, false, owner)
 }
 
 #[cfg(test)]
@@ -285,7 +296,7 @@ pub(super) fn stage_for_test(
     source_root: Option<&Path>,
     cancellation: Arc<AtomicBool>,
 ) -> Result<BuiltinIntent, BuiltinModelError> {
-    stage_inner(intent, snapshot, source_root, cancellation, true)
+    stage_inner(intent, snapshot, source_root, cancellation, true, None)
 }
 
 fn stage_inner(
@@ -294,13 +305,25 @@ fn stage_inner(
     source_root: Option<&Path>,
     cancellation: Arc<AtomicBool>,
     force: bool,
+    owner: Option<&super::owner_receipt_context::OwnerReceiptContext>,
 ) -> Result<BuiltinIntent, BuiltinModelError> {
     intent.validate_native_stage_cancellation(&cancellation)?;
     if intent.staged().is_some() {
         return Ok(intent);
     }
     let (bytes, source_end) = intent.staging_parts();
+    // Every later workspace transaction must preserve already selected SQL
+    // receipt members, even when its own intent is an older non-SQL version.
+    let has_sql_base = backend_engine::builtin::sql_analysis_relation(snapshot)
+        .map_err(|e| BuiltinModelError(format!("open SQL staging basis: {e}")))?.is_some();
+    let has_receipt_base = backend_engine::builtin::sql_receipt_index_relation(snapshot)
+        .map_err(|e| BuiltinModelError(format!("open SQL receipt staging basis: {e}")))?.is_some();
+    let needs_receipt_custody = intent.requires_v14_worker() || has_sql_base || has_receipt_base;
+    if needs_receipt_custody && owner.is_none() {
+        return Err(BuiltinModelError("SQL receipt custody requires the publication worker".into()));
+    }
     if !force
+        && !needs_receipt_custody
         && bytes.len() <= QUEUE_STAGE_THRESHOLD
         && snapshot.closure().stored_membership().is_none()
     {
@@ -366,6 +389,15 @@ fn stage_inner(
         DurableClosureManifest::from_pinned(store, receipt, base_budget)
             .map_err(|e| error("lease exact staged base membership", e))?
     };
+    if needs_receipt_custody {
+        let owner = owner.ok_or_else(|| BuiltinModelError("SQL receipt staging owner unavailable".into()))?;
+        let excluded = intent.replaces_sql_project().then_some(intent.package.to_bytes());
+        let retained = super::sql_receipt_index::collect_retained_receipts(snapshot, owner, excluded, cancellation.as_ref())?;
+        for receipt in &retained {
+            cancelled(&cancellation).map_err(|e| error("SQL receipt staging cancelled", e))?;
+            writer.retain_sql_receipt(receipt, &base_membership).map_err(|e| error("stage retained SQL receipt", e))?;
+        }
+    }
     writer
         .append(
             EvidenceKind::SourceRows,
@@ -514,7 +546,7 @@ impl StagedIntent {
             if object.id() == self.manifest {
                 continue;
             }
-            if object.schema().domain() == 0x96 && matches!(object.schema().ty(), 10..=13) {
+            if object.schema().domain() == 0x96 && matches!(object.schema().ty(), 10..=14) {
                 return Err(BuiltinModelError(
                     "staged page entered typed control frontier".to_owned(),
                 ));
@@ -533,9 +565,14 @@ impl StagedIntent {
             }
         }
         if membership.object_count() != count {
-            return Err(BuiltinModelError(
-                "selected membership is not exact union of controls and staged evidence".to_owned(),
-            ));
+            return Err(BuiltinModelError(format!(
+                "selected membership is not exact union of controls and staged evidence: \
+                 membership {} objects, expected {} (controls {}, staged members {})",
+                membership.object_count(),
+                count,
+                controls.objects().len(),
+                staged_intent::staged_member_count(&manifest).unwrap_or(0),
+            )));
         }
         Ok(())
     }
@@ -645,6 +682,7 @@ impl StagedIntent {
             self.basis,
             artifact_budget,
             None,
+            Some(self.cancelled.as_ref()),
             |kind, payload| {
                 cancelled(&self.cancelled)?;
                 if kind == EvidenceKind::RawSource {

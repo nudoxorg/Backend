@@ -773,8 +773,17 @@ impl ProductState {
                         .to_owned(),
                 );
             }
-            SurfaceCommand::StyloQuery { .. } | SurfaceCommand::StyloReadSite { .. } => {
-                return Err("native CSS reads require the durable owner snapshot adapter".to_owned());
+            SurfaceCommand::StyloQuery { .. }
+            | SurfaceCommand::StyloReadSite { .. }
+            | SurfaceCommand::StyloImpact { .. }
+            | SurfaceCommand::ImpactCapture { .. }
+            | SurfaceCommand::ImpactCompare { .. }
+            | SurfaceCommand::ImpactReadSource { .. }
+            | SurfaceCommand::ImpactDiff { .. }
+            | SurfaceCommand::Impact { .. } => {
+                return Err(
+                    "native CSS reads require the durable owner snapshot adapter".to_owned(),
+                );
             }
             SurfaceCommand::SqlQuery { .. } | SurfaceCommand::SqlReadSource { .. } => {
                 return Err("native SQL reads require the durable owner snapshot adapter".to_owned());

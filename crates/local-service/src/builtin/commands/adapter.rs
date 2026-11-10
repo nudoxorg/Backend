@@ -409,6 +409,7 @@ fn classify_add_target(label: &str) -> Result<AddTarget, BuiltinModelError> {
 }
 
 pub(in crate::builtin) struct CommandAdapter {
+    receipt_context: Option<Arc<super::super::owner_receipt_context::OwnerReceiptContext>>,
     sql_projection: super::super::sql_projection::ProjectionOwner,
     registry: Option<RegistryGateway>,
     registry_configured: bool,
@@ -439,6 +440,7 @@ pub(in crate::builtin) struct CommandAdapter {
     generations: super::super::generation_residence::SemanticGenerationResidence,
     semantic_authority: super::super::semantic_authority::SemanticAuthority,
     semantic_source_plan: Option<super::semantic_source::SourceReadPlan>,
+    impact_retention: Option<super::impact_retention::LeaseStore>,
     owner_cluster: Option<Arc<super::super::cluster_dispatch::OwnerCompilerClusterRuntime>>,
     pending_stored_acks: Option<Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     dependencies: Option<ResidentDependencies>,
@@ -470,6 +472,8 @@ pub(in crate::builtin) struct CommandAdapter {
     source_worker_start_refusal: bool,
     #[cfg(test)]
     stylo_test_worker: Option<Arc<crate::builtin::stylo_worker::StyloWorkerPermit>>,
+    #[cfg(test)]
+    sql_test_workers: Option<crate::builtin::sql_index::SqlWorkers>,
     #[cfg(test)]
     stylo_test_observer: Option<Box<dyn Fn(&ProductDaemon) + Send>>,
     #[cfg(test)]
@@ -683,6 +687,12 @@ fn answers_while_indexing(command: &Command) -> bool {
                 | S::StyloReadSite { .. }
                 | S::SqlQuery { .. }
                 | S::SqlReadSource { .. }
+                | S::ImpactCapture { .. }
+                | S::ImpactCompare { .. }
+                | S::ImpactReadSource { .. }
+                | S::ImpactDiff { .. }
+                | S::StyloImpact { .. }
+                | S::Impact { .. }
                 | S::SemanticShapes { .. }
                 | S::PackageSourceMembership { .. }
                 | S::PackageProfile { .. }
@@ -845,6 +855,26 @@ impl ResidentCatalog {
 }
 
 impl CommandAdapter {
+    /// Retain comparison material from the currently selected owner snapshot.
+    /// This internal hook is deliberately not a public historical read route.
+    fn capture_css_impact<F: FnMut() -> bool>(
+        &mut self,
+        daemon: &ProductDaemon,
+        project: [u8; 32],
+        limits: super::stylo_impact_capture::CaptureLimits,
+        now: std::time::Instant,
+        mut cancelled: F,
+    ) -> Result<super::impact_retention::LeaseId, BuiltinModelError> {
+        let store = self.impact_retention.as_mut().ok_or_else(|| BuiltinModelError("CSS impact retention unavailable".into()))?;
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let material = super::stylo_impact_capture::capture(&snapshot, project, limits, &mut cancelled)?;
+        store.insert(material, now, cancelled)
+            .map_err(|error| BuiltinModelError(format!("CSS impact retention: {error:?}")))
+    }
+
+    pub(in crate::builtin) fn set_receipt_context(&mut self, context: Option<Arc<super::super::owner_receipt_context::OwnerReceiptContext>>) {
+        self.receipt_context = context;
+    }
     fn can_answer_short_control(&self, command: &Command, origin: &DeferredCommandOrigin) -> bool {
         if !answers_while_indexing(command) {
             return false;
@@ -922,6 +952,7 @@ impl CommandAdapter {
                 .map_err(BuiltinModelError)?;
         index_operations.observe_changes(journal_readiness.changed());
         Ok(Self {
+            receipt_context: None,
             sql_projection: super::super::sql_projection::ProjectionOwner::new(sql_projection),
             registry_configured: registry.is_some(),
             registry,
@@ -947,6 +978,7 @@ impl CommandAdapter {
             structural_calls: super::super::view_build::StructuralCallResidence::default(),
             generations,
             semantic_authority,
+            impact_retention: super::impact_retention::LeaseStore::new_random(),
             semantic_source_plan: None,
             owner_cluster,
             pending_stored_acks,
@@ -971,6 +1003,8 @@ impl CommandAdapter {
             source_worker_start_refusal: false,
             #[cfg(test)]
             stylo_test_worker: None,
+            #[cfg(test)]
+            sql_test_workers: None,
             #[cfg(test)]
             stylo_test_observer: None,
             #[cfg(test)]
@@ -2984,6 +3018,7 @@ impl CommandAdapter {
             },
             finalization_observation,
         ));
+        work.receipt_context = self.receipt_context.clone();
         let reserved = self.reserve_index_phase_writers(daemon, &mut work);
         #[cfg(test)]
         {
@@ -4521,6 +4556,10 @@ impl CommandAdapter {
         if let Some(permit) = &self.stylo_test_worker {
             work.stylo_worker = Some(Arc::clone(permit));
         }
+        #[cfg(test)]
+        if let Some(workers) = &self.sql_test_workers {
+            work.sql_workers = workers.clone();
+        }
         work.observation = work.observation.or_else(|| {
             self.product_state.workspace_path().ok().and_then(|path| {
                 crate::builtin::index_work_observation::IndexWorkObservation::enabled(
@@ -4698,9 +4737,10 @@ impl CommandAdapter {
             None
         };
         if prepared_intent.as_ref().is_some_and(BuiltinIntent::has_native_ts_evidence) {
-            return Err(BuiltinModelError(
-                "native TypeScript evidence requires the publication worker".into(),
-            ).into());
+            return Err(BuiltinModelError("native TypeScript evidence requires the publication worker".into()).into());
+        }
+        if prepared_intent.as_ref().is_some_and(BuiltinIntent::requires_v14_worker) {
+            return Err(BuiltinModelError("v14 native sections require the publication worker".into()).into());
         }
         let intent = match (prepared_intent.clone(), operation_key) {
             (Some(intent), Some(operation_key)) => Some(intent.with_operation_key(operation_key)?),
@@ -4779,6 +4819,7 @@ impl CommandAdapter {
                     if let Some(prepared) = prepared_intent.as_ref() {
                         crate::builtin::profile::revalidate_stylo_intent(&snapshot, &prepared.intent)?;
                         crate::builtin::profile::revalidate_native_ts_intent(&snapshot, &prepared.intent)?;
+                        crate::builtin::profile::revalidate_sql_intent(&snapshot, &prepared.intent)?;
                     }
                     prepared_intent
                         .map(|prepared| {
@@ -7026,6 +7067,54 @@ impl CommandAdapter {
                         |page| CommandReply::Surface(backend_engine::SurfaceReply::StyloQuery(page)),
                     )
             }
+            backend_engine::SurfaceCommand::ImpactCapture { request } => {
+                let snapshot = daemon.engine().daemon().owner().snapshot();
+                let result = self.semantic_authority.product_statement_authority().map_err(|e| e.to_string()).and_then(|secret| {
+                    let store = self.impact_retention.as_mut().ok_or_else(|| "impact retention unavailable".to_owned())?;
+                    super::impact_comparison_owner::capture(store, &snapshot, secret, &request, std::time::Instant::now(), || false).map_err(|e| format!("{e:?}"))
+                });
+                result.map_or_else(|error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error)), |page| CommandReply::Surface(backend_engine::SurfaceReply::ImpactCapture(page)))
+            }
+            backend_engine::SurfaceCommand::ImpactCompare { request } => {
+                let result = self.semantic_authority.product_statement_authority().map_err(|e| e.to_string()).and_then(|secret| {
+                    let store = self.impact_retention.as_mut().ok_or_else(|| "impact retention unavailable".to_owned())?;
+                    super::impact_comparison_owner::compare(store, secret, &request, std::time::Instant::now(), || false).map_err(|e| format!("{e:?}"))
+                });
+                result.map_or_else(|error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error)), |page| CommandReply::Surface(backend_engine::SurfaceReply::ImpactCompare(page)))
+            }
+            backend_engine::SurfaceCommand::ImpactDiff { request } => {
+                let result = self.semantic_authority.product_statement_authority().map_err(|e| e.to_string()).and_then(|secret| {
+                    let store = self.impact_retention.as_mut().ok_or_else(|| "impact retention unavailable".to_owned())?;
+                    super::impact_comparison_owner::diff(store, secret, &request, std::time::Instant::now(), || false).map_err(|e| format!("{e:?}"))
+                });
+                result.map_or_else(|error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error)), |page| CommandReply::Surface(backend_engine::SurfaceReply::ImpactDiff(page)))
+            }
+            backend_engine::SurfaceCommand::ImpactReadSource { request } => {
+                let result = self.semantic_authority.product_statement_authority().map_err(|e| e.to_string()).and_then(|secret| {
+                    let store = self.impact_retention.as_mut().ok_or_else(|| "impact retention unavailable".to_owned())?;
+                    super::impact_comparison_owner::read_source(store, secret, &request, std::time::Instant::now()).map_err(|e| format!("{e:?}"))
+                });
+                result.map_or_else(|error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error)), |page| CommandReply::Surface(backend_engine::SurfaceReply::ImpactReadSource(page)))
+            }
+            backend_engine::SurfaceCommand::StyloImpact { request } => {
+                let snapshot = daemon.engine().daemon().owner().snapshot();
+                self.semantic_authority.product_statement_authority()
+                    .and_then(|secret| super::stylo_query::impact(&snapshot, secret, &request))
+                    .map_or_else(
+                        |error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error.to_string())),
+                        |page| CommandReply::Surface(backend_engine::SurfaceReply::StyloImpact(page)),
+                    )
+            }
+            backend_engine::SurfaceCommand::Impact { request } => {
+                let snapshot = daemon.engine().daemon().owner().snapshot();
+                self.semantic_authority.product_statement_authority()
+                    .map_err(|error| error.to_string())
+                    .and_then(|secret| super::impact_framework::execute(&snapshot, secret, &request, &|| false))
+                    .map_or_else(
+                        |error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error)),
+                        |report| CommandReply::Surface(backend_engine::SurfaceReply::Impact(report)),
+                    )
+            }
             backend_engine::SurfaceCommand::StyloReadSite { reference } => {
                 let snapshot = daemon.engine().daemon().owner().snapshot();
                 self.semantic_authority.product_statement_authority()
@@ -7921,6 +8010,9 @@ pub(in crate::builtin) fn commit_prepared_builtin_intent(
     if prepared.intent.has_native_ts_evidence() {
         return Err(BuiltinModelError("native TypeScript evidence requires the publication worker".into()));
     }
+    if prepared.intent.requires_v14_worker() {
+        return Err(BuiltinModelError("v14 native sections require the publication worker".into()));
+    }
     let owner = daemon.engine().daemon().owner();
     let snapshot = owner.snapshot();
     if *snapshot.root().as_bytes() != prepared.base_workspace_root
@@ -8001,12 +8093,16 @@ pub(in crate::builtin) fn prepare_owned_builtin_intent(
     if intent.has_native_ts_evidence() {
         return Err(BuiltinModelError("native TypeScript evidence requires the publication worker".into()));
     }
+    if intent.requires_v14_worker() {
+        return Err(BuiltinModelError("v14 native sections require the publication worker".into()));
+    }
     let snapshot = daemon.engine().daemon().owner().snapshot();
     prepare_owned_builtin_intent_at_snapshot(
         &snapshot,
         intent,
         None,
         Arc::new(AtomicBool::new(false)),
+        None,
     )
 }
 
@@ -8018,6 +8114,9 @@ fn prepare_builtin_intent_at(
 ) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
     if intent.has_native_ts_evidence() {
         return Err(BuiltinModelError("native TypeScript evidence requires the publication worker".into()));
+    }
+    if intent.requires_v14_worker() {
+        return Err(BuiltinModelError("v14 native sections require the publication worker".into()));
     }
     let snapshot = daemon.engine().daemon().owner().snapshot();
     prepare_builtin_intent_at_snapshot(&snapshot, intent, source_root, cancellation)
@@ -8031,7 +8130,17 @@ fn prepare_builtin_intent_at_snapshot(
     source_root: Option<&Path>,
     cancellation: Arc<AtomicBool>,
 ) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
-    prepare_owned_builtin_intent_at_snapshot(snapshot, intent.clone(), source_root, cancellation)
+    prepare_owned_builtin_intent_at_snapshot(snapshot, intent.clone(), source_root, cancellation, None)
+}
+
+fn prepare_builtin_intent_with_owner_at_snapshot(
+    snapshot: &backend_engine::WorkspaceSnapshot,
+    intent: &BuiltinIntent,
+    source_root: Option<&Path>,
+    cancellation: Arc<AtomicBool>,
+    owner: Option<&super::super::owner_receipt_context::OwnerReceiptContext>,
+) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
+    prepare_owned_builtin_intent_at_snapshot(snapshot, intent.clone(), source_root, cancellation, owner)
 }
 
 /// Consumes the private frontier; callers needing descriptors for later view
@@ -8041,6 +8150,7 @@ fn prepare_owned_builtin_intent_at_snapshot(
     intent: BuiltinIntent,
     source_root: Option<&Path>,
     cancellation: Arc<AtomicBool>,
+    owner: Option<&super::super::owner_receipt_context::OwnerReceiptContext>,
 ) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
     let intent = if intent.has_capture_changes() && intent.capture_basis().is_none() {
         intent.with_capture_basis(capture_basis_for_snapshot(snapshot)?)?
@@ -8049,7 +8159,7 @@ fn prepare_owned_builtin_intent_at_snapshot(
     };
     let request_identity = BuiltinModel.request_id(&intent);
     let intent =
-        super::super::staged_transport::stage(intent, snapshot, source_root, cancellation)?;
+        super::super::staged_transport::stage_with_owner(intent, snapshot, source_root, cancellation, owner)?;
     Ok(PreparedBuiltinIntent {
         intent,
         request_identity,
@@ -9025,9 +9135,17 @@ mod tests {
                     .expect("test dispatcher");
             let registry = super::super::super::product_relation_registry()
                 .expect("product relation registry");
+            // The product owner binds a receipt context to its leased store; the
+            // fixture does the same so SQL receipts can be issued and replayed.
+            let receipt_context = Arc::new(
+                crate::builtin::owner_receipt_context::OwnerReceiptContext::new(
+                    [0x67; 32],
+                    workspace.clone(),
+                ),
+            );
             let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
                 &workspace,
-                BuiltinModel,
+                BuiltinModel::with_receipt_context(Some(Arc::clone(&receipt_context))),
                 genesis().expect("product genesis"),
                 dispatcher,
                 backend_engine::DaemonConfig::default(),
@@ -9179,6 +9297,8 @@ mod tests {
                 None,
             )
             .expect("build command adapter");
+            let mut adapter = adapter;
+            adapter.set_receipt_context(Some(receipt_context));
 
             Self {
                 root,

@@ -4,6 +4,8 @@ use crate::{
     IndexSearchCursor, NativeOwnerStatement, PackageReference, ProductAdmissionError,
     seal_native_owner_statement, verify_native_owner_statement,
 };
+/// Authored lexical role of a source site, for presentation.
+pub use backend_semantic::stylo_analysis::StyloSourceRole;
 use backend_semantic::stylo_analysis::{
     StyloDeclaration, StyloRule, StyloSelector, StyloSourceGap, StyloSourceOccurrence,
     StyloVariableDependency,

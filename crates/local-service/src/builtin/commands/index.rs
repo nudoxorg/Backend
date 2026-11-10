@@ -402,6 +402,8 @@ pub(super) fn capture_index_scan(
         stylo_worker: None,
         stylo_prior,
         stylo_selection_failure: None,
+        sql_workers: crate::builtin::sql_index::SqlWorkers::default(),
+        sql_prior: crate::builtin::sql_index::sql_prior(&snapshot, project_key)?,
         observation: None,
     })
 }
@@ -500,6 +502,9 @@ pub(super) fn run_index_scan(mut work: IndexScanWork) -> Result<IndexScanResult,
         )?;
         work.stylo_worker = permit;
         work.stylo_selection_failure = failure;
+    }
+    if work.sql_workers.sqlite.is_none() && work.sql_workers.postgres.is_none() {
+        work.sql_workers = crate::builtin::sql_worker_install::selected_installed_sql_workers();
     }
     if let Some(PythonEnvironmentInput::Captured(environment)) = &scan.python_environment {
         // Preserve source inventory and structural rows for browsing. The
@@ -711,6 +716,7 @@ pub(super) fn finish_index_scan(
         cancellation,
         workspace_snapshot,
         mut stylo_proof,
+        mut sql_proof,
         profiles,
     } = prepare_scan_source(
         &base_snapshot,
@@ -796,6 +802,16 @@ pub(super) fn finish_index_scan(
                         )?;
                     }
                     capture_intent = capture_intent.with_stylo_capture(&base_snapshot, proof)?;
+                }
+                if let Some(proof) = sql_proof.take() {
+                    if capture_intent.has_capture_changes()
+                        && capture_intent.capture_basis().is_none()
+                    {
+                        capture_intent = capture_intent.with_capture_basis(
+                            super::super::capture_basis_for_snapshot(&base_snapshot)?,
+                        )?;
+                    }
+                    capture_intent = capture_intent.with_sql_capture(&base_snapshot, proof)?;
                 }
                 let capture_request =
                     super::adapter::prepare_owned_builtin_intent(daemon, capture_intent)?;
@@ -918,6 +934,15 @@ pub(super) fn finish_index_scan(
                     )?;
                 }
                 capture_intent = capture_intent.with_stylo_capture(&base_snapshot, proof)?;
+            }
+            if let Some(proof) = sql_proof.take() {
+                if capture_intent.has_capture_changes() && capture_intent.capture_basis().is_none()
+                {
+                    capture_intent = capture_intent.with_capture_basis(
+                        super::super::capture_basis_for_snapshot(&base_snapshot)?,
+                    )?;
+                }
+                capture_intent = capture_intent.with_sql_capture(&base_snapshot, proof)?;
             }
             let capture_request =
                 super::adapter::prepare_owned_builtin_intent(daemon, capture_intent)?;
@@ -1126,12 +1151,19 @@ pub(super) fn finish_index_scan(
         .transpose()
         .map_err(BuiltinModelError)?
         .is_some_and(|changes| !changes.is_empty());
+    let sql_changed = sql_proof
+        .as_ref()
+        .map(|proof| super::super::sql_admission::plan_sql_update(&final_snapshot, proof))
+        .transpose()
+        .map_err(BuiltinModelError)?
+        .is_some_and(|changes| !changes.is_empty());
     let intent = if changes.is_empty()
         && semantic_changes.is_empty()
         && capture_changes.is_empty()
         && source_facts_changes.is_empty()
         && native_frontier_changes.is_empty()
         && !native_changed
+        && !sql_changed
     {
         None
     } else if changes.is_empty()
@@ -1139,15 +1171,30 @@ pub(super) fn finish_index_scan(
         && capture_changes.is_empty()
         && source_facts_changes.is_empty()
         && native_frontier_changes.is_empty()
+        && !native_changed
     {
-        Some(BuiltinIntent::stylo_only(
+        let proof = sql_proof
+            .take()
+            .ok_or_else(|| BuiltinModelError("missing SQL proof".into()))?;
+        Some(BuiltinIntent::sql_only(package, &label, &final_snapshot, proof)?)
+    } else if changes.is_empty()
+        && semantic_changes.is_empty()
+        && capture_changes.is_empty()
+        && source_facts_changes.is_empty()
+        && native_frontier_changes.is_empty()
+    {
+        let intent = BuiltinIntent::stylo_only(
             package,
             &label,
             &final_snapshot,
             stylo_proof
                 .take()
                 .ok_or_else(|| BuiltinModelError("missing Stylo attempt proof".into()))?,
-        )?)
+        )?;
+        Some(match sql_proof.take() {
+            Some(proof) => intent.with_sql_capture(&final_snapshot, proof)?,
+            None => intent,
+        })
     } else {
         let mut intent = if !source_facts_changes.is_empty() {
             BuiltinIntent::index_with_source_facts(
@@ -1184,6 +1231,14 @@ pub(super) fn finish_index_scan(
                 )?)?;
             }
             intent = intent.with_stylo_capture(&final_snapshot, proof)?;
+        }
+        if let Some(proof) = sql_proof.take() {
+            if intent.has_capture_changes() && intent.capture_basis().is_none() {
+                intent = intent.with_capture_basis(super::super::capture_basis_for_snapshot(
+                    &final_snapshot,
+                )?)?;
+            }
+            intent = intent.with_sql_capture(&final_snapshot, proof)?;
         }
         Some(intent)
     };
@@ -2214,6 +2269,9 @@ pub(super) struct IndexScanWork {
     pub(super) stylo_worker: Option<Arc<crate::builtin::stylo_worker::StyloWorkerPermit>>,
     stylo_prior: bool,
     stylo_selection_failure: Option<backend_engine::builtin::StyloUnavailable>,
+    /// Owner-admitted native SQL workers; production bootstrap may leave these absent.
+    pub(super) sql_workers: crate::builtin::sql_index::SqlWorkers,
+    pub(super) sql_prior: bool,
     pub(super) observation:
         Option<Arc<crate::builtin::index_work_observation::IndexWorkObservation>>,
 }

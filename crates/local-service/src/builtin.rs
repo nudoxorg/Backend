@@ -68,6 +68,14 @@ mod owner_receipt_context;
 mod sql_capture;
 mod sql_admission;
 mod sql_intent;
+mod sql_receipt;
+mod sql_receipt_index;
+mod sql_catalog;
+mod sql_index;
+#[cfg(test)]
+mod sql_journey_support;
+mod sql_resolve;
+mod sql_worker_install;
 #[path = "builtin/source_range.rs"]
 mod source_range;
 #[path = "builtin/profile.rs"]
@@ -118,6 +126,8 @@ pub(super) fn product_relation_registry() -> Result<RelationAdmissionRegistry, B
         .map_err(|error| BuiltinModelError(format!("register native source evidence relation: {error:?}")))?
         .with_relation::<backend_engine::builtin::SqlAnalysisRelation>()
         .map_err(|error| BuiltinModelError(format!("register native SQL relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::SqlReceiptIndexRelation>()
+        .map_err(|error| BuiltinModelError(format!("register SQL receipt index: {error:?}")))?
         .with_relation::<backend_frontend_vue::VueInventoryRelation>()
         .map_err(|error| BuiltinModelError(format!("register Vue inventory relation: {error:?}")))
 }
@@ -459,6 +469,11 @@ pub(super) struct LazyClosureUpdate<'a> {
     pub(super) stylo_pointer: Option<&'a TypedObject>,
     pub(super) native_evidence_objects: &'a [TypedObject],
     pub(super) native_evidence_pointer: Option<&'a TypedObject>,
+    pub(super) sql_objects: &'a [TypedObject],
+    pub(super) sql_pointer: Option<&'a TypedObject>,
+    pub(super) sql_receipt_index_objects: &'a [TypedObject],
+    pub(super) sql_receipt_index_pointer: Option<&'a TypedObject>,
+    pub(super) sql_receipt: Option<&'a TypedObject>,
 }
 
 fn transition_closure_lazy(
@@ -549,6 +564,15 @@ fn transition_closure_lazy(
     if let Some(pointer) = update.native_evidence_pointer {
         objects.push(pointer.clone());
     }
+    objects.extend(update.sql_objects.iter().filter(|object| {
+        update.sql_pointer.is_some_and(|pointer| pointer.bytes() == object.version())
+    }).cloned());
+    if let Some(pointer) = update.sql_pointer { objects.push(pointer.clone()); }
+    objects.extend(update.sql_receipt_index_objects.iter().filter(|object| {
+        update.sql_receipt_index_pointer.is_some_and(|pointer| pointer.bytes() == object.version())
+    }).cloned());
+    if let Some(pointer) = update.sql_receipt_index_pointer { objects.push(pointer.clone()); }
+    if let Some(receipt) = update.sql_receipt { objects.push(receipt.clone()); }
     let registry = product_relation_registry()?;
     let mut frontier = update
         .capture_objects
@@ -557,6 +581,8 @@ fn transition_closure_lazy(
         .chain(update.native_frontier_objects)
         .chain(update.stylo_objects)
         .chain(update.native_evidence_objects)
+        .chain(update.sql_objects)
+        .chain(update.sql_receipt_index_objects)
         .cloned()
         .collect::<Vec<_>>();
     let closure = if update.changed_sources.is_empty() {
@@ -1987,6 +2013,9 @@ fn compose_owner_timed(
             })?,
         )
     };
+    // One configured, non-owning receipt context is shared with the worker;
+    // the actual owner lease/store bind occurs only inside WorkspaceModel.
+    let receipt_context = product_secret.map(|key| Arc::new(owner_receipt_context::OwnerReceiptContext::new(key, config.workspace.clone())));
     let profile = profile_descriptor(profile).map_err(ProcessError::Profile)?;
     // The attempt lease spans one closure exchange, one execution/fallback
     // exchange, and the worker's declared wall budget. All values use the
@@ -2007,7 +2036,7 @@ fn compose_owner_timed(
     }
     let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
         &config.workspace,
-        BuiltinModel::with_receipt_authority(product_secret, config.workspace.clone()),
+        BuiltinModel::with_receipt_context(receipt_context.clone()),
         genesis,
         dispatcher,
         DaemonConfig::default(),
@@ -2407,6 +2436,7 @@ fn compose_owner_timed(
         pending_stored_acks,
     )
     .map_err(|error| ProcessError::Profile(format!("start command read lane: {error}")))?;
+    commands.set_receipt_context(receipt_context);
     // A previous owner process may have died between committing a Pending
     // source capture and recording its terminal. Pending is not a lease, so
     // close every such marker now, before the first client read can observe

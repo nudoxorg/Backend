@@ -1,0 +1,13 @@
+:root {
+  --brand: #2255ff;
+  --brand-contrast: #ffffff;
+  --accent: var(--brand);
+  --surface: #ffffff;
+  --space-3: 12px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #101418;
+  }
+}

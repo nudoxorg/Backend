@@ -82,8 +82,9 @@ pub enum SqlDialect {
     Sqlite,
     Postgres,
 }
-/// Declared semantic inputs. SQLite entries describe name presence only, not
-/// column order, deployed schema, or an observed database connection.
+/// Project-proposed dialect-specific inputs; neither variant proves a
+/// deployed schema or an observed database connection. SQLite entries carry
+/// name presence only; PostgreSQL keeps the declared order separately.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SqlProjectContext {
@@ -96,6 +97,34 @@ pub enum SqlProjectContext {
         /// Sorted table-name entries with sorted known column-name lists.
         tables: Vec<SqliteProjectTable>,
     },
+    /// Proposed PostgreSQL catalog and ordered search path; this is not a live database.
+    PostgresProposed {
+        /// Explicit configuration epoch, not a database identity.
+        epoch: u64,
+        /// Ordered, unique names of explicitly provided schemas.
+        search_path: Vec<String>,
+        /// Strictly ordered schema definitions for the finite native resolver.
+        schemas: Vec<PostgresProjectSchema>,
+    },
+}
+/// One proposed PostgreSQL schema.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresProjectSchema {
+    /// Restricted unquoted lowercase ASCII identifier (`a-z`, digits, underscore).
+    pub name: String,
+    /// Strictly ordered proposed table definitions.
+    pub tables: Vec<PostgresProjectTable>,
+}
+/// One proposed PostgreSQL table; column order is explicit and preserved.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresProjectTable {
+    /// Restricted unquoted lowercase ASCII identifier (`a-z`, digits, underscore).
+    pub name: String,
+    /// Ordered, unique proposed column names; the current finite native
+    /// resolver models these as int4, not observed deployed column types.
+    pub columns: Vec<String>,
 }
 /// A proposed SQLite table and known column-name set.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -120,6 +149,14 @@ fn valid_name(name: &str) -> bool {
         && name.len() <= 256
         && !name.contains('\0')
         && name == name.to_ascii_lowercase()
+}
+fn valid_postgres_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    name.len() <= 63
+        && bytes
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 impl SqlProjectSettings {
     /// Check finite grammar, per-host dialect/context compatibility and uniqueness.
@@ -158,6 +195,50 @@ impl SqlProjectSettings {
                         return Err("invalid proposed SQLite catalog");
                     }
                 }
+                (
+                    SqlDialect::Postgres,
+                    SqlProjectContext::PostgresProposed {
+                        search_path,
+                        schemas,
+                        ..
+                    },
+                ) => {
+                    if schemas.is_empty()
+                        || schemas.len() > 16
+                        || search_path.is_empty()
+                        || search_path.len() > 16
+                        || schemas.windows(2).any(|pair| pair[0].name >= pair[1].name)
+                        || search_path.iter().enumerate().any(|(i, name)| {
+                            search_path[..i].contains(name)
+                                || !schemas.iter().any(|schema| &schema.name == name)
+                        })
+                        || schemas.iter().any(|schema| {
+                            !valid_postgres_name(&schema.name)
+                                || schema.name == "pg_catalog"
+                                || schema.tables.len() > 64
+                                || schema
+                                    .tables
+                                    .windows(2)
+                                    .any(|pair| pair[0].name >= pair[1].name)
+                                || schema.tables.iter().any(|table| {
+                                    !valid_postgres_name(&table.name)
+                                        || table.columns.is_empty()
+                                        || table.columns.len() > 128
+                                        || table
+                                            .columns
+                                            .iter()
+                                            .any(|column| !valid_postgres_name(column))
+                                        || table
+                                            .columns
+                                            .iter()
+                                            .enumerate()
+                                            .any(|(i, column)| table.columns[..i].contains(column))
+                                })
+                        })
+                    {
+                        return Err("invalid proposed PostgreSQL catalog");
+                    }
+                }
                 _ => return Err("SQL context does not match selected dialect"),
             }
         }
@@ -193,5 +274,38 @@ mod tests {
         ] {
             assert!(ParsedSqlProjectSettings::parse(source.as_bytes()).is_err());
         }
+    }
+    #[test]
+    fn postgres_context_preserves_search_path_and_column_order() {
+        let bytes = br#"{"version":1,"sources":[{"path":"q.sql","dialect":"postgres","context":{"kind":"postgres_proposed","epoch":3,"search_path":["z","a"],"schemas":[{"name":"a","tables":[{"name":"t","columns":["z","a"]}]},{"name":"z","tables":[]}]}}]}"#;
+        let parsed = ParsedSqlProjectSettings::parse(bytes).unwrap();
+        let SqlProjectContext::PostgresProposed {
+            search_path,
+            schemas,
+            ..
+        } = &parsed.settings().sources[0].context
+        else {
+            panic!("expected PostgreSQL context")
+        };
+        assert_eq!(
+            search_path.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["z", "a"]
+        );
+        assert_eq!(
+            schemas[0].tables[0]
+                .columns
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["z", "a"]
+        );
+        let bad = String::from_utf8(bytes.to_vec())
+            .unwrap()
+            .replace("[\"z\",\"a\"],\"schemas\"", "[\"z\",\"z\"],\"schemas\"");
+        assert!(ParsedSqlProjectSettings::parse(bad.as_bytes()).is_err());
+        let wrong = String::from_utf8(bytes.to_vec())
+            .unwrap()
+            .replace("\"dialect\":\"postgres\"", "\"dialect\":\"sqlite\"");
+        assert!(ParsedSqlProjectSettings::parse(wrong.as_bytes()).is_err());
     }
 }

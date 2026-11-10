@@ -30,8 +30,42 @@ pub(super) struct SqlAnalysisBasis {
 #[derive(Clone)]
 pub(super) struct SqlLiveProof {
     pub(super) capture: Arc<SqlProjectProjection>,
-    pub(super) project: backend_engine::ProductSourceRecord,
+    project_label: Arc<str>,
+    project_bytes: Arc<[u8]>,
     pub(super) cancellation: Arc<AtomicBool>,
+}
+impl SqlLiveProof {
+    /// Conservative charge for every retained Arc allocation and capacity.
+    pub(super) fn checked_retained_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(self.capture.checked_retained_bytes()?)?
+            .checked_add(self.project_label.len())?
+            .checked_add(self.project_bytes.len())?
+            .checked_add(std::mem::size_of::<AtomicBool>())?
+            .checked_add(8 * std::mem::size_of::<usize>())
+    }
+    /// Capture an exact bounded Project after-image alongside the private
+    /// source witness; serialized bytes alone do not construct this proof.
+    pub(super) fn new(capture: Arc<SqlProjectProjection>, project: &backend_engine::ProductSourceRecord,
+        cancellation: Arc<AtomicBool>) -> Result<Self, String> {
+        if !capture.matches_cancellation(&cancellation) {
+            return Err("SQL proof cancellation differs from capture".into());
+        }
+        let fields = project.project_fields().ok_or("SQL proof is not a source Project")?;
+        if backend_engine::PackageKey::from_value(fields.label).to_bytes() != capture.project() {
+            return Err("SQL proof belongs to another source Project".into());
+        }
+        let mut bytes = Vec::new();
+        backend_engine::ProductSourceRelation::encode_value(project, &mut bytes);
+        if bytes.len() > backend_engine::ProductSourceRecord::ROW_VALUE_CAPACITY { return Err("SQL Project after-image too large".into()); }
+        Ok(Self { capture, project_label: Arc::from(fields.label), project_bytes: Arc::from(bytes), cancellation })
+    }
+    fn matches_project(&self, project: Option<&backend_engine::ProductSourceRecord>) -> bool {
+        let Some(project) = project else { return false; };
+        let mut bytes = Vec::new();
+        backend_engine::ProductSourceRelation::encode_value(project, &mut bytes);
+        bytes.as_slice() == self.project_bytes.as_ref()
+    }
 }
 impl std::fmt::Debug for SqlLiveProof {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -179,11 +213,8 @@ pub(super) fn plan_sql_update(
         .revalidate(&proof.cancellation)
         .map_err(|e| format!("SQL live source: {e:?}"))?;
     let project = proof.capture.project();
-    let project_fields = proof
-        .project
-        .project_fields()
-        .ok_or("SQL proof is not a source Project")?;
-    if backend_engine::PackageKey::from_value(project_fields.label).to_bytes() != project {
+    let project_label = proof.project_label.as_ref();
+    if backend_engine::PackageKey::from_value(project_label).to_bytes() != project {
         return Err("SQL proof belongs to another source Project".into());
     }
     let captured_root = proof
@@ -199,10 +230,10 @@ pub(super) fn plan_sql_update(
             _ => None,
         })
         .ok_or("SQL proof selection missing")?;
-    let actual_root = std::path::Path::new(project_fields.label)
+    let actual_root = std::path::Path::new(project_label)
         .canonicalize()
         .map_err(|_| "SQL project root unavailable")?;
-    if actual_root.as_os_str() != std::ffi::OsStr::new(project_fields.label)
+    if actual_root.as_os_str() != std::ffi::OsStr::new(project_label)
         || actual_root.as_os_str() != std::ffi::OsStr::new(captured_root)
     {
         return Err("SQL proof root differs from selected project".into());
@@ -302,7 +333,51 @@ pub(super) struct ValidatedSqlDelta<'a> {
     changes: &'a [SqlAnalysisChange],
     _proof: &'a SqlLiveProof,
 }
+/// Derived only from an already validated live delta. These values are still
+/// private inputs to a receipt, not independent admission authority.
+pub(super) struct SqlReceiptInputs {
+    pub(super) basis: SqlAnalysisBasis,
+    pub(super) project: [u8; 32],
+    pub(super) project_after_image: [u8; 32],
+    pub(super) changes: [u8; 32],
+    pub(super) checked_capture: [u8; 32],
+    pub(super) project_rows: [u8; 32],
+}
 impl ValidatedSqlDelta<'_> {
+    pub(super) fn cancellation(&self) -> &Arc<AtomicBool> { &self._proof.cancellation }
+    pub(super) fn receipt_inputs(&self) -> Result<SqlReceiptInputs, String> {
+        self.revalidate_before_grant()?;
+        let cancellation = &self._proof.cancellation;
+        let mut changes = blake3::Hasher::new();
+        changes.update(b"nudox.sql.receipt-changes.v1\0");
+        changes.update(&(self.changes.len() as u64).to_be_bytes());
+        let mut bytes = Vec::new();
+        for change in self.changes {
+            if cancellation.load(Ordering::Acquire) { return Err("SQL receipt cancelled".into()); }
+            changes.update(&change.key);
+            for row in [&change.expected, &change.after] {
+                match row {
+                    Some(row) => {
+                        bytes.clear();
+                        SqlAnalysisRelation::encode_value(row, &mut bytes);
+                        changes.update(&[1]);
+                        changes.update(&(bytes.len() as u64).to_be_bytes());
+                        changes.update(&bytes);
+                    }
+                    None => { changes.update(&[0]); }
+                }
+            }
+        }
+        let mut project = blake3::Hasher::new();
+        project.update(b"nudox.sql.receipt-project.v1\0");
+        project.update(&(self._proof.project_bytes.len() as u64).to_be_bytes());
+        project.update(&self._proof.project_bytes);
+        let checked_capture = self._proof.capture.checked_capture_digest(cancellation).map_err(|e| format!("SQL receipt capture: {e:?}"))?;
+        let project_rows = self._proof.capture.project_rows_digest(cancellation).map_err(|e| format!("SQL receipt rows: {e:?}"))?;
+        if cancellation.load(Ordering::Acquire) { return Err("SQL receipt cancelled".into()); }
+        Ok(SqlReceiptInputs { basis: sql_basis_for_snapshot(self.base)?, project: self._proof.capture.project(),
+            project_after_image: *project.finalize().as_bytes(), changes: *changes.finalize().as_bytes(), checked_capture, project_rows })
+    }
     /// Re-read the confined configuration and hosts at the owner grant barrier.
     /// The caller must also recheck the target Project after-image at that barrier.
     pub(super) fn revalidate_before_grant(&self) -> Result<(), String> {
@@ -321,7 +396,7 @@ pub(super) fn validate_sql_live<'a>(
     changes: &'a [SqlAnalysisChange],
     selected_project_after: Option<&backend_engine::ProductSourceRecord>,
 ) -> Result<ValidatedSqlDelta<'a>, String> {
-    if selected_project_after != Some(&proof.project) {
+    if !proof.matches_project(selected_project_after) {
         return Err("SQL source Project after-image mismatch".into());
     }
     if sql_basis_for_snapshot(base)? != basis {
@@ -430,7 +505,7 @@ pub(super) fn validate_sql_noop(
         .map_err(|e| e.to_string())?
         .lookup(&proof.capture.project())
         .map_err(|e| e.to_string())?;
-    if selected.as_ref() != Some(&proof.project) {
+    if !proof.matches_project(selected.as_ref()) {
         return Err("SQL no-op Project changed".into());
     }
     if !plan_sql_update(base, proof)?.is_empty() {

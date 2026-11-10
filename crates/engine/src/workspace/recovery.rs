@@ -22,17 +22,30 @@ pub fn control_frontier(
     store: &FileStore,
     descriptor: &backend_store::PublicationDescriptor,
 ) -> Result<backend_store::ClosureManifest, WorkspaceError> {
+    control_frontier_with_transaction(store, descriptor).map(|(_, controls)| controls)
+}
+
+/// Opens the same authenticated recovery frontier and returns its exact
+/// engine transaction. A caller must first prove the descriptor was selected.
+///
+/// # Errors
+/// Rejects missing or malformed historical pack/closure membership.
+pub fn control_frontier_with_transaction(
+    store: &FileStore,
+    descriptor: &backend_store::PublicationDescriptor,
+) -> Result<(super::transition::TransactionId, backend_store::ClosureManifest), WorkspaceError> {
     let membership = store
         .open_closure(descriptor.closure())
         .map_err(WorkspaceError::store)?;
     let index = read_workspace_pack_index(store, descriptor, &membership)?;
+    let transaction = index.transaction;
     let persisted = persisted_from_store_manifest(
         &membership,
-        index.transaction,
+        transaction,
         index.payloads,
         &index.auxiliary,
     )?;
-    Ok(persisted.closure_manifest().clone())
+    Ok((transaction, persisted.closure_manifest().clone()))
 }
 
 /// Opens the bounded transition payload of a publication proven to be in the

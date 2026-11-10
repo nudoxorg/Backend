@@ -3,12 +3,18 @@ pub use backend_compile::{
     Cancellation, InputContentVersion, ProcessEnvironment, ProcessError, ProcessLimits,
     ProcessTerminal, SourceVerificationError, ToolchainArtifact, VerifiedSourceText,
 };
+#[cfg(target_os = "linux")]
+pub use backend_compile::{
+    ExecutableIdentity, NativeLibraryLease, ProcessSupervisor, SupervisedCommand,
+};
 pub use backend_version::{ContentId, SourceFactDomain};
 use serde::{Deserialize, Serialize};
 pub const MAX_SOURCE_BYTES: usize = 512 * 1024;
 pub const MAX_CONTEXT_BYTES: usize = 128 * 1024;
 pub const MAX_TOKENS: usize = 100_000;
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
+mod outline;
+pub use outline::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Dialect {
     Postgres,
@@ -197,6 +203,8 @@ pub struct Response {
     pub content_sha256: [u8; 32],
     pub syntax: Syntax,
     pub binding: Binding,
+    /// Syntactic outline of the whole source; present exactly when `syntax` is `Parsed`.
+    pub outline: Option<Outline>,
 }
 
 /// Launch a one-shot adapter process; failed transport is never an empty result.
@@ -238,6 +246,7 @@ fn call_worker_with_timeout(
         content_sha256: digest,
         syntax: Syntax::InitializationUnavailable,
         binding: Binding::NotAttempted,
+            outline: None,
     };
     if request.version != PROTOCOL_VERSION {
         return unavailable();
@@ -252,6 +261,7 @@ fn call_worker_with_timeout(
             content_sha256: digest,
             syntax: Syntax::ResourceLimit,
             binding: Binding::NotAttempted,
+            outline: None,
         };
     }
     if request.source.len() > MAX_SOURCE_BYTES {
@@ -263,6 +273,7 @@ fn call_worker_with_timeout(
             content_sha256: digest,
             syntax: Syntax::ResourceLimit,
             binding: Binding::NotAttempted,
+            outline: None,
         };
     }
     let Ok(encoded) = serde_json::to_vec(request) else {
@@ -315,6 +326,7 @@ fn call_worker_with_timeout(
                     content_sha256: digest,
                     syntax: Syntax::TimedOut,
                     binding: Binding::NotAttempted,
+            outline: None,
                 };
             }
             Err(_) => {
@@ -335,6 +347,7 @@ fn call_worker_with_timeout(
         content_sha256: digest,
         syntax: Syntax::TimedOut,
         binding: Binding::NotAttempted,
+            outline: None,
     };
     let wrote = match write_rx.recv_timeout(timeout.saturating_sub(started.elapsed())) {
         Ok(wrote) => wrote,
@@ -361,6 +374,7 @@ fn call_worker_with_timeout(
             content_sha256: digest,
             syntax: Syntax::ResourceLimit,
             binding: Binding::NotAttempted,
+            outline: None,
         };
     }
     decode_response(&output, request, dialect, engine, digest).unwrap_or_else(unavailable)
@@ -499,6 +513,10 @@ fn decode_response(
         if *identifier_coverage == IdentifierCoverage::Unavailable && !identifiers.is_empty() {
             return None;
         }
+        match &response.outline {
+            Some(outline) if outline.validate(&request.source) => {}
+            _ => return None,
+        }
         let mut previous_end = 0;
         for identifier in identifiers {
             let extent = &identifier.extent;
@@ -511,7 +529,7 @@ fn decode_response(
             }
             previous_end = extent.end;
         }
-    } else if response.binding != Binding::NotAttempted {
+    } else if response.binding != Binding::NotAttempted || response.outline.is_some() {
         return None;
     }
     Some(response)
@@ -603,11 +621,6 @@ pub fn analyze_checked<'a>(
     dialect: Dialect,
     engine: Engine,
 ) -> Result<CheckedResponse<'a>, CheckedError> {
-    use backend_compile::{
-        ProcessEnvironment, ProcessStdin, ProcessSupervisor, ProcessTerminal, ProtocolDescriptor,
-        SupervisedCommand, VerifiedSourceText,
-    };
-    use sha2::{Digest, Sha256};
     if launch.cancellation.is_cancelled() {
         return Err(CheckedError::Cancelled);
     }
@@ -616,8 +629,134 @@ pub fn analyze_checked<'a>(
         .ok_or(CheckedError::Process(
             backend_compile::ProcessError::Deadline,
         ))?;
-    if !launch.environment.variables().is_empty() {
-        return Err(CheckedError::UnsupportedSettings);
+    analyze_checked_until(
+        request,
+        host,
+        expected_input,
+        expected_source,
+        launch,
+        dialect,
+        engine,
+        deadline,
+    )
+}
+
+/// Run the checked protocol under a caller's existing absolute deadline.
+///
+/// This preserves the empty-environment admission policy and never extends
+/// either the supplied deadline or the launch's own wall-time bound.
+///
+/// # Errors
+/// Returns the same source, policy, process and response errors as [`analyze_checked`].
+pub fn analyze_checked_until<'a>(
+    request: &Request,
+    host: &'a [u8],
+    expected_input: backend_compile::InputContentVersion,
+    expected_source: backend_version::ContentId<backend_version::SourceFactDomain>,
+    launch: CheckedLaunch<'_>,
+    dialect: Dialect,
+    engine: Engine,
+    deadline: std::time::Instant,
+) -> Result<CheckedResponse<'a>, CheckedError> {
+    analyze_checked_inner(
+        request,
+        host,
+        expected_input,
+        expected_source,
+        launch,
+        dialect,
+        engine,
+        deadline,
+        CheckedPrivateLibrary::None,
+    )
+}
+
+enum CheckedPrivateLibrary {
+    None,
+    #[cfg(target_os = "linux")]
+    Linux(std::sync::Arc<backend_compile::NativeLibraryLease>),
+}
+
+/// Run a checked SQLite worker with one already-admitted private Linux libgcc.
+///
+/// The lease's exact typed dependency and derived loader environment must
+/// match the command. Its lifetime follows child/reaper custody on errors.
+/// The caller must prepare the lease and invoke this function under one
+/// absolute deadline; this does not admit the installed worker or source.
+///
+/// # Errors
+/// Returns the same checked errors as [`analyze_checked_until`], including
+/// dependency, environment, deadline, process and cleanup failures.
+#[cfg(target_os = "linux")]
+pub fn analyze_checked_with_linux_library_until<'a>(
+    request: &Request,
+    host: &'a [u8],
+    expected_input: backend_compile::InputContentVersion,
+    expected_source: backend_version::ContentId<backend_version::SourceFactDomain>,
+    launch: CheckedLaunch<'_>,
+    dialect: Dialect,
+    engine: Engine,
+    deadline: std::time::Instant,
+    library: backend_compile::NativeLibraryLease,
+) -> Result<CheckedResponse<'a>, CheckedError> {
+    analyze_checked_inner(
+        request,
+        host,
+        expected_input,
+        expected_source,
+        launch,
+        dialect,
+        engine,
+        deadline,
+        CheckedPrivateLibrary::Linux(std::sync::Arc::new(library)),
+    )
+}
+
+fn analyze_checked_inner<'a>(
+    request: &Request,
+    host: &'a [u8],
+    expected_input: backend_compile::InputContentVersion,
+    expected_source: backend_version::ContentId<backend_version::SourceFactDomain>,
+    launch: CheckedLaunch<'_>,
+    dialect: Dialect,
+    engine: Engine,
+    deadline: std::time::Instant,
+    library: CheckedPrivateLibrary,
+) -> Result<CheckedResponse<'a>, CheckedError> {
+    use backend_compile::{
+        ProcessEnvironment, ProcessStdin, ProcessSupervisor, ProcessTerminal, ProtocolDescriptor,
+        SupervisedCommand, VerifiedSourceText,
+    };
+    use sha2::{Digest, Sha256};
+    if launch.cancellation.is_cancelled() {
+        return Err(CheckedError::Cancelled);
+    }
+    let command_deadline = std::time::Instant::now()
+        .checked_add(launch.limits.wall_time())
+        .ok_or(CheckedError::Process(
+            backend_compile::ProcessError::Deadline,
+        ))?;
+    let deadline = deadline.min(command_deadline);
+    if std::time::Instant::now() >= deadline {
+        return Err(CheckedError::Process(
+            backend_compile::ProcessError::Deadline,
+        ));
+    }
+    match &library {
+        CheckedPrivateLibrary::None if !launch.environment.variables().is_empty() => {
+            return Err(CheckedError::UnsupportedSettings);
+        }
+        #[cfg(target_os = "linux")]
+        CheckedPrivateLibrary::Linux(lease) => {
+            if dialect != Dialect::Sqlite
+                || engine != Engine::Syntaqlite4e4de76
+                || launch.artifact.dependencies() != [lease.digest()]
+                || launch.environment != lease.environment().map_err(CheckedError::Process)?
+            {
+                return Err(CheckedError::UnsupportedSettings);
+            }
+        }
+        _ => {}
     }
     if host.len() > MAX_SOURCE_BYTES
         || request.source.len() > MAX_SOURCE_BYTES
@@ -658,9 +797,27 @@ pub fn analyze_checked<'a>(
     )
     .map_err(CheckedError::Process)?;
     let command_id = command.identity();
-    let receipt = ProcessSupervisor::new(command)
-        .run_with_observer_until(launch.cancellation, deadline)
-        .map_err(CheckedError::Process)?;
+    let supervisor = ProcessSupervisor::new(command);
+    let receipt = match &library {
+        CheckedPrivateLibrary::None => {
+            supervisor.run_with_observer_until(launch.cancellation, deadline)
+        }
+        #[cfg(target_os = "linux")]
+        CheckedPrivateLibrary::Linux(lease) => supervisor.run_with_observer_and_library_until(
+            launch.cancellation,
+            deadline,
+            std::sync::Arc::clone(lease),
+        ),
+    }
+    .map_err(CheckedError::Process)?;
+    #[cfg(target_os = "linux")]
+    if let CheckedPrivateLibrary::Linux(lease) = library {
+        let mut lease = std::sync::Arc::try_unwrap(lease)
+            .map_err(|_| CheckedError::Process(backend_compile::ProcessError::NotReaped))?;
+        lease
+            .close_after_reaped(&receipt)
+            .map_err(CheckedError::Process)?;
+    }
     if receipt.terminal() != ProcessTerminal::Success || !receipt.reaped() {
         return Err(CheckedError::Terminal(receipt.terminal()));
     }
@@ -679,6 +836,15 @@ pub fn analyze_checked<'a>(
             extents.push(
                 verified
                     .extent(identifier.extent.start..identifier.extent.end)
+                    .map_err(CheckedError::Source)?,
+            );
+        }
+    }
+    if let Some(outline) = &response.outline {
+        for extent in outline.extents() {
+            extents.push(
+                verified
+                    .extent(extent.start..extent.end)
                     .map_err(CheckedError::Source)?,
             );
         }

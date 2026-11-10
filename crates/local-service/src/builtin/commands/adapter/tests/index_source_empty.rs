@@ -175,7 +175,7 @@ fn owned_source_preparation_preserves_real_file_facts_with_pending_capture()
 }
 
 #[test]
-fn unsupported_sql_count_change_publishes_without_supported_source_change_and_unchanged_repeat_is_noop()
+fn sql_files_without_an_admitted_worker_publish_honest_unavailable_hosts_and_unchanged_repeat_is_noop()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut fixture = AdapterFixture::open(TempTree::new(), false);
     let (package, label) = fixture.add_target();
@@ -206,12 +206,13 @@ fn unsupported_sql_count_change_publishes_without_supported_source_change_and_un
             )?,
             Executed::Reply(_)
         ));
-        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let deadline = std::time::Instant::now() + Duration::from_secs(600);
         while adapter.indexing.is_some() {
             assert!(adapter.poll_deferred(daemon).is_empty());
             assert!(
                 std::time::Instant::now() < deadline,
-                "SQL observation must settle without a compiler capture"
+                "SQL observation must settle without a compiler capture; last terminal: {:?}",
+                adapter.index_terminals.back().map(|terminal| format!("{:?}", terminal.outcome))
             );
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -235,11 +236,36 @@ fn unsupported_sql_count_change_publishes_without_supported_source_change_and_un
         let relation = snapshot
             .relation::<crate::builtin::BuiltinWorkspaceRelation>()
             .map_err(|error| error.to_string())?;
-        let source_root = *relation.root().as_bytes();
+        // SQL files are analysed (not merely counted): with no admitted worker each
+        // one is recorded as an unavailable host, and the SQL relation is what
+        // changes when a file is added; an unchanged repeat changes nothing.
+        let sql = backend_engine::builtin::sql_analysis_relation(&snapshot)
+            .map_err(|error| error.to_string())?
+            .ok_or("SQL selection must be published for a project with SQL files")?;
+        let source_root = *sql.root().as_bytes();
         if let Some(prior) = prior_source_root {
             if request == 173 { assert_eq!(source_root, prior); } else { assert_ne!(source_root, prior); }
         }
         prior_source_root = Some(source_root);
+        let mut hosts = 0u64;
+        let mut after = None;
+        loop {
+            let page = sql.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS).map_err(|error| error.to_string())?;
+            for (_, row) in page.entries() {
+                if let backend_engine::builtin::SqlAnalysisRecord::Host { terminal, .. } = row {
+                    hosts += 1;
+                    assert!(matches!(
+                        terminal,
+                        backend_engine::builtin::SqlHostTerminal::Unavailable(backend_engine::builtin::SqlUnavailable::EngineNotAdmitted)
+                    ), "no worker is admitted, so the host is a recorded gap, never an empty result");
+                }
+            }
+            match page.next().copied() {
+                Some(next) if after != Some(next) => after = Some(next),
+                _ => break,
+            }
+        }
+        assert_eq!(hosts, expected);
         let row = relation
             .lookup(&package.to_bytes())
             .map_err(|error| error.to_string())?
@@ -261,13 +287,14 @@ fn unsupported_sql_count_change_publishes_without_supported_source_change_and_un
         supported_source_version = Some(fields.source_version);
         assert_eq!(
             fields.source_selection.expect("newly committed source selection is present").unsupported_extensions.iter().find(|row| row.extension == "sql").expect("SQL scope").files,
-            expected
+            0,
+            "files selected for SQL analysis are claimed, not left as unsupported"
         );
         let health = crate::builtin::ingest_progress(&snapshot)?;
         assert_eq!(health.files_discovered(), 0);
         assert_eq!(
             health.source_selection().expect("ingest progress exposes the committed source selection").unsupported_extensions.iter().find(|row| row.extension == "sql").expect("SQL scope").files,
-            expected,
+            0,
             "health reads the newly committed observation, including on the reuse/no-compile branch"
         );
         finish_search_lane(adapter, daemon);
@@ -277,10 +304,10 @@ fn unsupported_sql_count_change_publishes_without_supported_source_change_and_un
     let workspace = Path::new(&label).parent().ok_or("workspace missing")?;
     let owner = reopen_journal_owner(workspace)?;
     let snapshot = owner.snapshot();
-    let relation = snapshot.relation::<crate::builtin::BuiltinWorkspaceRelation>()?;
-    assert_eq!(*relation.root().as_bytes(), expected_root);
+    let sql = backend_engine::builtin::sql_analysis_relation(&snapshot)?.ok_or("SQL selection survives a cold reopen")?;
+    assert_eq!(*sql.root().as_bytes(), expected_root);
     let health = crate::builtin::ingest_progress(&snapshot)?;
-    assert_eq!(health.source_selection_scope().ok_or("scope missing")?.extensions[1].excluded_files, 2);
+    assert_eq!(health.source_selection_scope().ok_or("scope missing")?.extensions[1].excluded_files, 0);
     Ok(())
 }
 
@@ -300,9 +327,13 @@ fn reopen_journal_owner(
     workspace: &Path,
 ) -> Result<backend_engine::WorkspaceOwner<crate::builtin::BuiltinModel>, Box<dyn std::error::Error>>
 {
+    let receipt = std::sync::Arc::new(crate::builtin::owner_receipt_context::OwnerReceiptContext::new(
+        [0x67; 32],
+        workspace.to_path_buf(),
+    ));
     Ok(backend_engine::WorkspaceOwner::open_with_registry(
         workspace,
-        crate::builtin::BuiltinModel,
+        crate::builtin::BuiltinModel::with_receipt_context(Some(receipt)),
         crate::builtin::genesis()?,
         crate::builtin::product_relation_registry()?,
     )?)

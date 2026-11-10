@@ -1313,8 +1313,127 @@ fn admit_surface_reply_internal(
         if records.len() != locators.len()
             || records.iter().zip(locators.iter()).any(|(record, locator)| record.label != *locator)
         {
-            return Err(ReplyAdmissionError::Protocol("read records differ from requested locators".into()));
+            return Err(ReplyAdmissionError::Protocol(
+                "read records differ from requested locators".into(),
+            ));
         }
+    }
+    if let crate::SurfaceCommand::Impact { request } = command {
+        let crate::SurfaceReply::Impact(report) = reply else {
+            return Err(ReplyAdmissionError::Protocol("impact reply kind changed".into()));
+        };
+        if report.direction != request.direction
+            || report.depth != request.depth
+            || report.strength_filter != request.strength
+            || report.rows.len() > usize::from(request.page_rows)
+        {
+            return Err(ReplyAdmissionError::Protocol(
+                "impact reply differs from the request".into(),
+            ));
+        }
+        if let (crate::impact::ImpactSeed::Named(spec), crate::impact::ImpactSeedState::Resolved) =
+            (&request.seed, &report.seed_state)
+        {
+            if report.seeds.iter().any(|seed| seed.domain != spec.domain) {
+                return Err(ReplyAdmissionError::Protocol(
+                    "impact seeds belong to another domain than requested".into(),
+                ));
+            }
+        }
+    }
+    if let crate::SurfaceCommand::StyloImpact { request } = command {
+        let crate::SurfaceReply::StyloImpact(page) = reply else {
+            return Err(ReplyAdmissionError::Protocol(
+                "CSS impact reply kind changed".into(),
+            ));
+        };
+        let cursor_matches = match &page.terminal {
+            crate::stylo_impact::StyloImpactTerminal::More { continuation, .. } => continuation.matches_seed(&request.seed),
+            crate::stylo_impact::StyloImpactTerminal::OutputLimit { continuation: Some(cursor), .. } => cursor.matches_seed(&request.seed),
+            _ => true,
+        };
+        if page.seed != request.seed
+            || !cursor_matches
+            || page.rows.len() > usize::from(request.query.page_rows)
+            || crate::surface::serialized_json_size(reply) > request.query.output_bytes as usize
+            || page
+                .rows
+                .iter()
+                .any(|row| !stylo_hit_matches_request(&row.witness, &request.query))
+        {
+            return Err(ReplyAdmissionError::Protocol(
+                "CSS impact reply differs from request or exceeds its budget".into(),
+            ));
+        }
+    }
+    if let crate::SurfaceCommand::ImpactCapture { request } = command {
+        let crate::SurfaceReply::ImpactCapture(reply) = reply else { return Err(ReplyAdmissionError::Protocol("impact capture reply kind changed".into())); };
+        if reply.seed != request.seed || reply.lease.claims().project != crate::package_key(request.package.as_str()).to_bytes() {
+            return Err(ReplyAdmissionError::Protocol("impact capture reply differs from request".into()));
+        }
+    }
+    if let crate::SurfaceCommand::ImpactCompare { request } = command {
+        let crate::SurfaceReply::ImpactCompare(page) = reply else { return Err(ReplyAdmissionError::Protocol("impact comparison reply kind changed".into())); };
+        let seed = match request.side { crate::impact_comparison::ImpactSide::Base => request.base.claims().seed, crate::impact_comparison::ImpactSide::Target => request.target.claims().seed };
+        let offset = request.continuation.as_ref().map_or(0, |cursor| cursor.claims().offset);
+        let witness_bytes = page.rows.iter().try_fold(0usize, |sum, row| row.witness.len().checked_mul(32).and_then(|n| sum.checked_add(n))).unwrap_or(usize::MAX);
+        let counters_complete = page.counters.input_rows.is_some() && page.counters.input_bytes.is_some() && page.counters.temporary_bytes.is_some() && page.counters.edges.is_some() && page.counters.nodes.is_some() && page.counters.witness_bytes.is_some();
+        let cursor_matches = match &page.terminal {
+            crate::impact_comparison::ImpactTerminal::More { continuation } => {
+                let c = continuation.claims();
+                !page.rows.is_empty() && counters_complete && request.recipe().is_ok_and(|recipe| c.recipe == recipe)
+                    && u32::try_from(page.rows.len()).ok().and_then(|n| offset.checked_add(n)) == Some(c.offset)
+            },
+            crate::impact_comparison::ImpactTerminal::WorkLimit { reason } => reason.len() <= 128,
+            crate::impact_comparison::ImpactTerminal::Expired | crate::impact_comparison::ImpactTerminal::SeedUnavailable => page.rows.is_empty(),
+            _ => true,
+        };
+        if page.base != request.base || page.target != request.target || page.side != request.side || !cursor_matches
+            || page.rows.len() > usize::from(request.limits.page_rows) || witness_bytes > request.limits.witness_bytes as usize
+            || crate::surface::serialized_json_size(reply) > request.limits.output_bytes as usize
+            || page.counters.input_rows.is_some_and(|n| n > request.limits.input_rows) || page.counters.input_bytes.is_some_and(|n| n > request.limits.input_bytes) || page.counters.temporary_bytes.is_some_and(|n| n > request.limits.temporary_bytes) || page.counters.edges.is_some_and(|n| n > request.limits.edges) || page.counters.nodes.is_some_and(|n| n > request.limits.nodes) || page.counters.witness_bytes.is_some_and(|n| n > request.limits.witness_bytes)
+            || page.rows.iter().any(|row| seed.as_ref() != row.witness.first() || !row.witness.contains(&row.dependency)) {
+            return Err(ReplyAdmissionError::Protocol("impact comparison reply differs from request or exceeds its bounds".into()));
+        }
+    }
+    if let crate::SurfaceCommand::ImpactDiff { request } = command {
+        use crate::impact_comparison::{ImpactDiffCertainty as Certainty, ImpactDiffDomain as Domain, ImpactDiffSide as Side, ImpactDiffTerminal as Terminal, ImpactSide};
+        let crate::SurfaceReply::ImpactDiff(page) = reply else { return Err(ReplyAdmissionError::Protocol("impact diff reply kind changed".into())); };
+        let offset = request.continuation.as_ref().map_or(0, |cursor| cursor.claims().offset);
+        let cursor_ok = match &page.terminal {
+            Terminal::More { continuation } => !page.rows.is_empty() && request.recipe().is_ok_and(|recipe| continuation.claims().recipe == recipe) && u32::try_from(page.rows.len()).ok().and_then(|n| offset.checked_add(n)) == Some(continuation.claims().offset) && !page.walk_limited && page.counters.is_some() && page.comparisons.is_some() && page.compared_bytes.is_some(),
+            Terminal::WorkLimit { reason } => reason.len() <= 128,
+            Terminal::Expired | Terminal::Cancelled => page.rows.is_empty(),
+            Terminal::Complete => !page.walk_limited && page.counters.is_some() && page.comparisons.is_some() && page.compared_bytes.is_some(),
+        };
+        let valid_rows = page.rows.iter().all(|row| {
+            let certainty_ok = match (row.side, row.certainty) {
+                (Side::BaseOnly, Certainty::ExactCapturedRow) => page.target_capture_complete,
+                (Side::TargetOnly, Certainty::ExactCapturedRow) => page.base_capture_complete,
+                (Side::BothChanged, Certainty::ExactCapturedRow) => true,
+                (Side::BaseOnly, Certainty::CandidateMissing) => !page.target_capture_complete,
+                (Side::TargetOnly, Certainty::CandidateMissing) => !page.base_capture_complete,
+                (Side::BothChanged, Certainty::CandidateMissing) => false,
+            };
+            let base_source_ok = row.base_source.as_ref().is_none_or(|source| matches!(row.side, Side::BaseOnly | Side::BothChanged) && source.claims().lease == request.base && source.claims().site == row.id);
+            let target_source_ok = row.target_source.as_ref().is_none_or(|source| matches!(row.side, Side::TargetOnly | Side::BothChanged) && source.claims().lease == request.target && source.claims().site == row.id);
+            certainty_ok && base_source_ok && target_source_ok && (request.domain != Domain::VerifiedSourceImages || (row.impacts.is_empty() && row.base_source.is_none() && row.target_source.is_none())) && row.impacts.iter().all(|path| {
+                (path.path.is_some() || page.context_gapped) && path.witness.first() == Some(&row.id) && path.witness.contains(&path.dependency) && matches!((row.side, path.side), (Side::BaseOnly, ImpactSide::Base) | (Side::TargetOnly, ImpactSide::Target) | (Side::BothChanged, _))
+            })
+        });
+        let impact_count = page.rows.iter().try_fold(0usize, |sum, row| sum.checked_add(row.impacts.len())).unwrap_or(usize::MAX);
+        let witness_bytes = page.rows.iter().flat_map(|row| &row.impacts).try_fold(0usize, |sum, path| path.witness.len().checked_mul(32).and_then(|n| sum.checked_add(n))).unwrap_or(usize::MAX);
+        let path_bytes = page.rows.iter().flat_map(|row| &row.impacts).try_fold(0usize, |sum, path| sum.checked_add(path.path.as_ref().map_or(0, String::len))).unwrap_or(usize::MAX);
+        let counters_ok = page.counters.as_ref().is_none_or(|c| c.scan_rows <= request.limits.scan_rows && c.scan_bytes <= request.limits.scan_bytes && c.temporary_bytes <= request.limits.temporary_bytes && c.seed_walks <= u32::from(request.limits.seed_walks) && c.walk_input_rows <= request.limits.walk_input_rows && c.walk_input_bytes <= request.limits.walk_input_bytes && c.walk_edges <= request.limits.walk_edges && c.walk_nodes <= request.limits.walk_nodes && c.walk_rows <= request.limits.walk_rows && c.witness_bytes <= request.limits.witness_bytes && c.walk_path_bytes <= request.limits.walk_path_bytes && c.walk_temporary_peak <= request.limits.temporary_bytes);
+        if page.base != request.base || page.target != request.target || page.domain != request.domain || !cursor_ok || !valid_rows || !counters_ok
+            || page.rows.len() > usize::from(request.limits.page_rows) || impact_count > request.limits.walk_rows as usize || witness_bytes > request.limits.witness_bytes as usize || path_bytes > request.limits.walk_path_bytes as usize
+            || crate::surface::serialized_json_size(reply) > request.limits.output_bytes as usize
+            || page.comparisons.is_some_and(|n| n > request.limits.comparisons) || page.compared_bytes.is_some_and(|n| n > request.limits.compared_bytes) {
+            return Err(ReplyAdmissionError::Protocol("impact diff reply differs from request or exceeds its bounds".into()));
+        }
+    }
+    if let crate::SurfaceCommand::ImpactReadSource { .. } = command {
+        if !matches!(reply, crate::SurfaceReply::ImpactReadSource(_)) { return Err(ReplyAdmissionError::Protocol("impact source reply kind changed".into())); }
     }
     if let crate::SurfaceCommand::StyloQuery { request } = command {
         let crate::SurfaceReply::StyloQuery(page) = reply else {
@@ -1348,6 +1467,29 @@ fn admit_surface_reply_internal(
                 (SqlQueryRole::Relation, SqlFact::SqliteRelation { name, .. }) => request.name.as_ref().is_none_or(|value| value == name),
                 (SqlQueryRole::OutputLineage, SqlFact::SqliteOutputLineage { output_name, .. }) => request.name.as_ref().is_none_or(|value| value == output_name),
                 (SqlQueryRole::Diagnostic, SqlFact::Diagnostic { .. }) => true,
+                (SqlQueryRole::ColumnRead, SqlFact::PostgresColumnRead { .. }) => true,
+                (SqlQueryRole::Statement, SqlFact::Statement { .. }) => true,
+                (SqlQueryRole::Gap, SqlFact::Statement { support, .. }) => {
+                    !matches!(support, backend_semantic::sql_analysis::SqlStatementSupport::Full)
+                }
+                (SqlQueryRole::Definition, SqlFact::Definition(definition)) => {
+                    request.name.as_ref().is_none_or(|value| {
+                        value == &definition.name || definition.head_name.as_ref() == Some(value)
+                    }) && request.kind.is_none_or(|kind| kind == definition.kind)
+                        && request.parent.as_ref().is_none_or(|value| {
+                            definition.parent.as_ref() == Some(value) || definition.head_parent.as_ref() == Some(value)
+                        })
+                }
+                (SqlQueryRole::Reference, SqlFact::Reference(reference)) => {
+                    use backend_semantic::sql_analysis::{SqlObjectKind as K, SqlRefKind as R};
+                    request.name.as_ref().is_none_or(|value| value == &reference.name)
+                        && request.kind.is_none_or(|kind| match (kind, reference.kind) {
+                            (K::Table | K::View, R::Relation) | (K::Column, R::Column) | (K::Function, R::Function)
+                            | (K::Type, R::Type) | (K::Schema, R::Schema) | (K::Index, R::Index)
+                            | (K::Sequence, R::Sequence) | (K::Trigger, R::Trigger) => true,
+                            _ => false,
+                        })
+                }
                 _ => false,
             }) {
             return Err(ReplyAdmissionError::Protocol("SQL query reply exceeds request or filter".into()));

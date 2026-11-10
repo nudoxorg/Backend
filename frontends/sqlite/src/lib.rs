@@ -6,6 +6,7 @@ use backend_sql_contract::{
     SqliteRelationAccess, SqliteRelationKind, Syntax,
 };
 use sha2::{Digest, Sha256};
+mod outline;
 /// Observe the pinned syntaqlite default parser version/flags and analyzer DQS policy.
 pub fn observed_basis() -> ProducerBasis {
     use syntaqlite::util::SqliteFlag;
@@ -183,6 +184,7 @@ pub fn analyze_native(request: &Request) -> Response {
         content_sha256: Sha256::digest(&request.source).into(),
         syntax: Syntax::Rejected,
         binding: Binding::NotAttempted,
+        outline: None,
     };
     if request
         .expected_basis
@@ -206,10 +208,16 @@ pub fn analyze_native(request: &Request) -> Response {
     if request.source.contains(&0) {
         return result;
     }
-    let parser = syntaqlite::Parser::new();
+    let parser = syntaqlite::Parser::with_config(
+        &syntaqlite::parse::ParserConfig::default()
+            .with_collect_tokens(true)
+            .with_collect_node_extents(true),
+    );
     let mut session = parser.parse(source);
     let mut count = 0;
     let mut select_only = true;
+    let mut builder = outline::Builder::new();
+    let mut outline_ok = true;
     loop {
         match session.next() {
             syntaqlite::ParseOutcome::Ok(stmt) => {
@@ -222,6 +230,7 @@ pub fn analyze_native(request: &Request) -> Response {
                     ),
                     _ => false,
                 };
+                outline_ok &= builder.add(&stmt).is_ok();
             }
             syntaqlite::ParseOutcome::Err(_) => {
                 result.syntax = Syntax::NativeError;
@@ -230,6 +239,12 @@ pub fn analyze_native(request: &Request) -> Response {
             syntaqlite::ParseOutcome::Done => break,
         }
     }
+    let outline = builder.finish();
+    if !outline_ok || !outline.validate(&request.source) {
+        // The parser's coordinates did not hold together; never report a doubtful outline.
+        return result;
+    }
+    result.outline = Some(outline);
     result.syntax = Syntax::Parsed {
         statements: count,
         identifiers: vec![],
@@ -251,6 +266,75 @@ pub fn analyze_native(request: &Request) -> Response {
 mod tests {
     use super::*;
     use backend_sql_contract::Settings;
+    #[test]
+    fn native_reference_observer_preserves_exact_repeated_utf8_ranges_and_limit() {
+        use syntaqlite::analysis::{CatalogLayer, NativeReferenceKind, TableDef};
+        use syntaqlite::{AnalysisContext, Analyzer, Catalog, sqlite_dialect};
+        let source = "SELECT \"π\", \"π\" FROM \"t\"";
+        let make_catalog = || {
+            let mut catalog = Catalog::new(sqlite_dialect());
+            catalog
+                .layer_mut(CatalogLayer::Database)
+                .insert_table(TableDef::new("t").columns(["π"]));
+            catalog
+        };
+        let mut plain_catalog = make_catalog();
+        let plain = Analyzer::new().analyze(source, &mut AnalysisContext::new(&mut plain_catalog));
+        let mut catalog = make_catalog();
+        let (observed, refs) = Analyzer::new().analyze_with_native_references(
+            source,
+            &mut AnalysisContext::new(&mut catalog),
+            512,
+        );
+        assert_eq!(plain.diagnostics().count(), observed.diagnostics().count());
+        assert_eq!(plain.statements().len(), observed.statements().len());
+        let columns = refs
+            .references
+            .iter()
+            .filter(|r| r.kind == NativeReferenceKind::Column)
+            .collect::<Vec<_>>();
+        assert_eq!(columns.len(), 2);
+        assert_ne!(columns[0].start, columns[1].start);
+        for reference in columns {
+            assert_eq!(
+                source.get(reference.start as usize..reference.end as usize),
+                Some("\"π\"")
+            );
+        }
+        assert!(
+            refs.references
+                .iter()
+                .any(|r| r.kind == NativeReferenceKind::Relation
+                    && source.get(r.start as usize..r.end as usize) == Some("\"t\""))
+        );
+        let mut bounded_catalog = make_catalog();
+        let (_, bounded) = Analyzer::new().analyze_with_native_references(
+            source,
+            &mut AnalysisContext::new(&mut bounded_catalog),
+            1,
+        );
+        assert_eq!(bounded.references.len(), 1);
+        assert!(bounded.limit_reached);
+    }
+    #[test]
+    fn native_observer_does_not_claim_double_quoted_string_as_resolved_column() {
+        use syntaqlite::analysis::NativeReferenceKind;
+        use syntaqlite::{AnalysisContext, Analyzer, Catalog, sqlite_dialect};
+        let source = "SELECT \"not_a_column\"";
+        let mut catalog = Catalog::new(sqlite_dialect());
+        let (model, observed) = Analyzer::new().analyze_with_native_references(
+            source,
+            &mut AnalysisContext::new(&mut catalog),
+            512,
+        );
+        assert!(!model.has_diagnostics());
+        assert!(
+            !observed
+                .references
+                .iter()
+                .any(|event| event.kind == NativeReferenceKind::Column && event.resolved)
+        );
+    }
     #[test]
     fn native_sqlite_model_projects_relations_and_output_origins() {
         let payload = ProposedCatalog {

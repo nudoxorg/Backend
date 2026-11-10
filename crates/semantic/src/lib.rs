@@ -40,6 +40,8 @@ pub mod registry;
 pub mod sql_analysis;
 /// Native Stylo stylesheet analysis vocabulary.
 pub mod stylo_analysis;
+/// Bounded causal reachability over already admitted facts.
+pub mod impact;
 pub mod vocabulary;
 
 pub use canonical::*;

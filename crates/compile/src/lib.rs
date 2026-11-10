@@ -114,6 +114,8 @@ pub use prepared::{
     PreparationCache, PreparationCacheConfig, PreparationCacheStats, PreparationError,
     PreparationKey, PreparedCompilationCache, PreparedRequest,
 };
+#[cfg(target_os = "linux")]
+pub use process::NativeLibraryLease;
 pub use process::{
     ExecutableIdentity, MAX_EXECUTABLE_BYTES, ProcessEnvironment, ProcessLimits, ProcessReceipt,
     ProcessStdin, ProcessTerminal, Stdin, StdinSpec, SupervisedCommand, ToolchainArtifact,

@@ -109,6 +109,12 @@ impl OwnerReceiptContext {
         }).map_err(|_| error("receipt owner binding changed"))?;
         self.bound.set(bound).map_err(|_| error("receipt authority is already bound"))
     }
+    /// Compare a supplied store's retained handle to the lease-bound object
+    /// directory. Call only inside `with_bound` and check before and after IO.
+    pub(super) fn verify_store(&self, store: &FileStore) -> Result<(), BuiltinModelError> {
+        let bound = self.bound.get().ok_or_else(|| error("receipt authority is not bound"))?;
+        store.verify_owner_root(&bound.objects).map_err(|_| error("receipt store identity changed"))
+    }
     /// Run one receipt operation while the original owner lease remains held.
     /// Pathname-based store operations are checked on both sides; same-user
     /// namespace replacement is not made atomic.
@@ -156,6 +162,8 @@ mod tests {
         assert!(context.bind(&admission, &foreign).is_err());
         context.bind(&admission, &store).expect("retry correct binding");
         assert!(context.bind(&admission, &store).is_err());
+        assert!(context.with_bound(|_, _| context.verify_store(&foreign)).is_err());
+        assert!(context.with_bound(|_, _| context.verify_store(&store)).is_ok());
         assert!(context.with_bound(|key, _| { assert_eq!(key, &[42; 32]); Ok(()) }).is_ok());
         #[cfg(unix)]
         {

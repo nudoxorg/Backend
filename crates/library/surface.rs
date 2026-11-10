@@ -3660,6 +3660,24 @@ pub enum SurfaceCommand {
         /// Exact decoded name and bounded paging policy.
         request: crate::stylo_query::StyloQueryRequest,
     },
+    /// Capture one selected native comparison basis.
+    ImpactCapture { request: crate::impact_comparison::ImpactCaptureRequest },
+    /// Query a retained comparison side.
+    ImpactCompare { request: crate::impact_comparison::ImpactCompareRequest },
+    /// Compare exact retained native facts or verified source images.
+    ImpactDiff { request: crate::impact_comparison::ImpactDiffRequest },
+    /// Read a site only from captured historical bytes.
+    ImpactReadSource { request: crate::impact_comparison::ImpactReadSourceRequest },
+    /// Find candidate native CSS impacts from an authored site.
+    StyloImpact {
+        /// Exact seed and bounded scan.
+        request: crate::stylo_impact::StyloImpactRequest,
+    },
+    /// Find what a change affects across languages.
+    Impact {
+        /// Seed, direction, depth and paging.
+        request: crate::impact::ImpactRequest,
+    },
     /// Read one verified authored CSS site.
     StyloReadSite {
         /// Owner-issued source-site reference.
@@ -3890,6 +3908,12 @@ impl SurfaceCommand {
             Self::StyloReadSite { .. } => CommandId::StyloReadSite,
             Self::SqlQuery { .. } => CommandId::SqlQuery,
             Self::SqlReadSource { .. } => CommandId::SqlReadSource,
+            Self::ImpactCapture { .. } => CommandId::ImpactCapture,
+            Self::ImpactCompare { .. } => CommandId::ImpactCompare,
+            Self::ImpactReadSource { .. } => CommandId::ImpactReadSource,
+            Self::ImpactDiff { .. } => CommandId::ImpactDiff,
+            Self::StyloImpact { .. } => CommandId::StyloImpact,
+            Self::Impact { .. } => CommandId::Impact,
             Self::SemanticShapes { .. } => CommandId::SemanticShapes,
             Self::PackageSourceMembership { .. } => CommandId::PackageSourceMembership,
             Self::SelectSemanticVersion { .. } => CommandId::SelectSemanticVersion,
@@ -3934,6 +3958,12 @@ impl SurfaceCommand {
             Self::StyloReadSite { reference } => reference.admit_shape(),
             Self::SqlQuery { request } => request.validate(),
             Self::SqlReadSource { reference } => reference.admit_shape(),
+            Self::ImpactCapture { request } => request.admit(),
+            Self::ImpactCompare { request } => request.limits.admit(),
+            Self::ImpactReadSource { .. } => Ok(()),
+            Self::ImpactDiff { request } => request.limits.admit(),
+            Self::StyloImpact { request } => request.admit(),
+            Self::Impact { request } => request.admit(),
             Self::Read { locators } if locators.len() > MAX_PRODUCT_ROWS => {
                 Err(ProductAdmissionError::RowBound)
             }
@@ -5525,6 +5555,18 @@ pub enum SurfaceReply {
     SemanticSource(crate::SemanticSourceChunk),
     /// Selected native CSS evidence with explicit scope.
     StyloQuery(crate::stylo_query::StyloQueryPage),
+    /// Captured comparison lease and optional historical source handle.
+    ImpactCapture(crate::impact_comparison::ImpactCaptureReply),
+    /// Bounded candidate comparison page.
+    ImpactCompare(crate::impact_comparison::ImpactCompareReply),
+    /// Bounded retained-row or source-image diff.
+    ImpactDiff(crate::impact_comparison::ImpactDiffReply),
+    /// Historical source-site result.
+    ImpactReadSource(crate::impact_comparison::ImpactSourceReply),
+    /// Candidate CSS dependency impacts with explicit gaps.
+    StyloImpact(crate::stylo_impact::StyloImpactPage),
+    /// Cross-language change impact with coverage and freshness.
+    Impact(crate::impact::ImpactReport),
     /// Verified authored CSS site or an explicit unavailable state.
     StyloReadSite(crate::stylo_query::StyloSourceRead),
     /// Egress view exported after direct shape certificate admission.
@@ -5642,6 +5684,12 @@ impl SurfaceReply {
             Self::StyloReadSite(_) => CommandId::StyloReadSite,
             Self::SqlQuery(_) => CommandId::SqlQuery,
             Self::SqlReadSource(_) => CommandId::SqlReadSource,
+            Self::ImpactCapture(_) => CommandId::ImpactCapture,
+            Self::ImpactCompare(_) => CommandId::ImpactCompare,
+            Self::ImpactReadSource(_) => CommandId::ImpactReadSource,
+            Self::ImpactDiff(_) => CommandId::ImpactDiff,
+            Self::StyloImpact(_) => CommandId::StyloImpact,
+            Self::Impact(_) => CommandId::Impact,
             Self::SemanticShapes(_) => CommandId::SemanticShapes,
             Self::PackageSourceMembershipPage(_) => CommandId::PackageSourceMembership,
             Self::IndexStarted(_) => CommandId::IndexStart,
@@ -5762,6 +5810,59 @@ impl SurfaceReply {
                 admit_stylo_page(page)?;
                 page.hits.len()
             }
+            Self::ImpactCapture(reply) => {
+                if let Some(seed) = &reply.seed { seed.admit_shape()?; }
+                if reply.seed.is_some() != reply.lease.claims().seed.is_some() || reply.lease.claims().seed.is_some() != reply.lease.claims().host.is_some() || !reply.relation_gapped || !reply.source_gapped || reply.attempt_at_capture != reply.lease.claims().attempt_at_capture || reply.worker_at_capture != reply.lease.claims().worker_at_capture { return Err(ProductAdmissionError::SemanticVersionShape); }
+                if let Some(source) = &reply.source {
+                    let claims = source.claims();
+                    if claims.lease != reply.lease || Some(claims.host) != reply.lease.claims().host || Some(claims.site) != reply.lease.claims().seed { return Err(ProductAdmissionError::SemanticVersionShape); }
+                }
+                1
+            },
+            Self::ImpactCompare(page) => {
+                if !page.relation_gapped || !page.source_gapped || page.base_attempt_at_capture != page.base.claims().attempt_at_capture || page.target_attempt_at_capture != page.target.claims().attempt_at_capture || page.base_worker_at_capture != page.base.claims().worker_at_capture || page.target_worker_at_capture != page.target.claims().worker_at_capture || !page.provider_unknown || page.rows.len() > 128 || page.rows.iter().any(|row| row.witness.len() > 258 || row.path.as_ref().is_some_and(|path| !valid_stylo_path(path))) { return Err(ProductAdmissionError::SemanticVersionShape); }
+                page.rows.len()
+            }
+            Self::ImpactDiff(page) => {
+                let (base_complete, target_complete) = match page.domain {
+                    crate::impact_comparison::ImpactDiffDomain::NativeFacts => (page.base.claims().native_rows_complete, page.target.claims().native_rows_complete),
+                    crate::impact_comparison::ImpactDiffDomain::VerifiedSourceImages => (page.base.claims().native_host_sources_complete, page.target.claims().native_host_sources_complete),
+                };
+                if page.base_capture_complete != base_complete || page.target_capture_complete != target_complete || !page.semantic_gapped || !page.provider_unknown || page.rows.len() > 128 || page.rows.iter().any(|item| item.impacts.len() > 262_144 || item.impacts.iter().any(|path| path.witness.len() > 258 || path.path.as_ref().is_some_and(|path| !valid_stylo_path(path)))) { return Err(ProductAdmissionError::SemanticVersionShape); }
+                page.rows.len()
+            }
+            Self::ImpactReadSource(source) => {
+                if let crate::impact_comparison::ImpactSourceReply::Available { text, start, end } = source {
+                    if *start >= *end || *end - *start != text.len() as u64 || text.len() > 32 * 1024 { return Err(ProductAdmissionError::SemanticVersionShape); }
+                }
+                1
+            }
+            Self::StyloImpact(page) => {
+                use crate::stylo_impact::StyloImpactTerminal as Terminal;
+                use crate::stylo_query::StyloQueryTerminal as QueryTerminal;
+                page.seed.admit_shape()?;
+                let terminal = match &page.terminal {
+                    Terminal::Complete => QueryTerminal::Complete,
+                    Terminal::Unavailable => QueryTerminal::Unavailable,
+                    Terminal::More { continuation, work_limited } => {
+                        continuation.admit_shape()?;
+                        QueryTerminal::More { continuation: continuation.scan().clone(), work_limited: *work_limited }
+                    }
+                    Terminal::OutputLimit { required_bytes, continuation } => {
+                        if let Some(cursor) = continuation { cursor.admit_shape()?; }
+                        QueryTerminal::OutputLimit { required_bytes: *required_bytes, continuation: continuation.as_ref().map(|cursor| cursor.scan().clone()) }
+                    }
+                };
+                if page.rows.len() > 128 || page.rows.iter().any(|row| !matches!(row.witness, crate::stylo_query::StyloQueryHit::NativeDependency { .. })) {
+                    return Err(ProductAdmissionError::SemanticVersionShape);
+                }
+                let checked = crate::stylo_query::StyloQueryPage {
+                    basis: page.basis.clone(), hits: page.rows.iter().map(|row| row.witness.clone()).collect(), terminal,
+                };
+                admit_stylo_page(&checked)?;
+                page.rows.len()
+            }
+            Self::Impact(report) => report.admit()?,
             Self::StyloReadSite(source) => {
                 admit_stylo_source(source)?;
                 1
@@ -6097,6 +6198,12 @@ impl SurfaceReply {
             Self::StyloReadSite(source) => serialized_json_size(source),
             Self::SqlQuery(page) => serialized_json_size(page),
             Self::SqlReadSource(source) => serialized_json_size(source),
+            Self::ImpactCapture(reply) => serialized_json_size(reply),
+            Self::ImpactCompare(reply) => serialized_json_size(reply),
+            Self::ImpactReadSource(reply) => serialized_json_size(reply),
+            Self::ImpactDiff(reply) => serialized_json_size(reply),
+            Self::StyloImpact(page) => serialized_json_size(page),
+            Self::Impact(report) => serialized_json_size(report),
             Self::SemanticVersionsPage(page) => serialized_json_size(page),
             Self::SemanticVersions(records) => records.iter().fold(0_usize, |bound, record| {
                 bound
@@ -6244,6 +6351,40 @@ fn admit_sql_page(page: &crate::sql_query::SqlQueryPage) -> Result<(), ProductAd
                     if range.start > range.end || u64::from(range.end) > hit.host_basis.length { return Err(invalid()); }
                     hit.source.as_ref().ok_or_else(invalid)?.admit_shape()?;
                 } else if hit.source.is_some() { return Err(invalid()); }
+            }
+            SqlFact::Statement { extent, .. } => {
+                if extent.start >= extent.end || u64::from(extent.end) > hit.host_basis.length
+                    || !matches!(hit.host_basis.terminal, SqlNativeTerminal::Parsed { source: SqlCoverage::Partial, .. }) {
+                    return Err(invalid());
+                }
+                hit.source.as_ref().ok_or_else(invalid)?.admit_shape()?;
+            }
+            SqlFact::Definition(definition) => {
+                if definition.name.is_empty() || definition.name.len() > 256 || definition.name.contains('\0')
+                    || definition.name_extent.start >= definition.name_extent.end
+                    || u64::from(definition.extent.end) > hit.host_basis.length
+                    || !matches!(hit.host_basis.terminal, SqlNativeTerminal::Parsed { source: SqlCoverage::Partial, .. }) {
+                    return Err(invalid());
+                }
+                hit.source.as_ref().ok_or_else(invalid)?.admit_shape()?;
+            }
+            SqlFact::Reference(reference) => {
+                if reference.name.is_empty() || reference.name.len() > 256 || reference.name.contains('\0')
+                    || reference.extent.start >= reference.extent.end
+                    || u64::from(reference.full_extent.end) > hit.host_basis.length
+                    || !matches!(hit.host_basis.terminal, SqlNativeTerminal::Parsed { source: SqlCoverage::Partial, .. }) {
+                    return Err(invalid());
+                }
+                hit.source.as_ref().ok_or_else(invalid)?.admit_shape()?;
+            }
+            SqlFact::PostgresColumnRead { relation_oid, attribute, extent } => {
+                if hit.dialect != SqlDialect::Postgres || *relation_oid == 0 || *attribute == 0
+                    || hit.host_basis.proposed_context.is_none() || extent.start >= extent.end
+                    || u64::from(extent.end) > hit.host_basis.length
+                    || !matches!(hit.host_basis.terminal, SqlNativeTerminal::Parsed { source: SqlCoverage::Partial, contextual: SqlCoverage::Partial, sqlite_lineage: None }) {
+                    return Err(invalid());
+                }
+                hit.source.as_ref().ok_or_else(invalid)?.admit_shape()?;
             }
         }
     }

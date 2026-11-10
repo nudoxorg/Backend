@@ -151,6 +151,17 @@ pub(super) struct SqlWalkEvidence {
 }
 impl SqlWalkEvidence {
     pub(super) fn root(&self) -> &Path { &self.root }
+    /// Number of candidate `.sql` files in the (possibly truncated) walk.
+    pub(super) fn file_count(&self) -> usize { self.files.len() }
+    /// Whether the bounded walk saw every candidate `.sql` file.
+    pub(super) fn inventory_complete(&self) -> bool { self.inventory_complete }
+    pub(super) fn checked_retained_bytes(&self) -> Option<usize> {
+        let mut total = std::mem::size_of::<Self>();
+        sql_charge_allocation(&mut total, self.root.capacity())?;
+        sql_charge_allocation(&mut total, self.files.capacity().checked_mul(std::mem::size_of::<CompilerFileRevision>())?)?;
+        for file in &self.files { sql_charge_allocation(&mut total, file.relative_path.capacity())?; }
+        Some(total)
+    }
 }
 impl StyloWalkEvidence {
     pub(super) fn project(&self) -> [u8; 32] {
@@ -274,6 +285,20 @@ impl CompilerRevisionFence {
         total.checked_add(256)
     }
 
+    /// Exact capacity-based charge for SQL's retained scan fence. Reuse
+    /// witnesses are refused until their nested ownership is accounted for.
+    pub(super) fn checked_sql_retained_bytes(&self) -> Option<usize> {
+        if !self.typescript_reuse.is_empty() { return None; }
+        let mut total = std::mem::size_of::<Self>();
+        sql_charge_allocation(&mut total, self.requested_root.capacity())?;
+        sql_charge_allocation(&mut total, self.root.capacity())?;
+        sql_charge_allocation(&mut total, self.directories.capacity().checked_mul(std::mem::size_of::<(PathBuf, Option<FileSystemRevision>)>())?)?;
+        for (path, _) in &self.directories { sql_charge_allocation(&mut total, path.capacity())?; }
+        sql_charge_allocation(&mut total, self.files.capacity().checked_mul(std::mem::size_of::<CompilerFileRevision>())?)?;
+        for file in &self.files { sql_charge_allocation(&mut total, file.relative_path.capacity())?; }
+        sql_charge_allocation(&mut total, self.typescript_reuse.capacity().checked_mul(std::mem::size_of::<backend_engine::application::TypeScriptSnapshotReuse>())?)?;
+        Some(total)
+    }
     /// Canonical root pinned by this source scan. Filesystem reads that happen
     /// after admission must use this path rather than resolving the caller's
     /// original spelling again.
@@ -4219,7 +4244,9 @@ fn project_paths_with_policy(
                     .extension()
                     .and_then(|ext| ext.to_str())
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("css"));
-            let is_sql_source = frontends.is_some() && claimed.is_none()
+            // The static discovery walk carries no frontends but is flagged native;
+            // like CSS, SQL is collected by both the static and the legacy walk.
+            let is_sql_source = (frontends.is_some() || native_typescript) && !recognized
                 && entry.path().extension().and_then(|ext| ext.to_str())
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("sql"));
             if is_sql_source {
@@ -9714,8 +9741,13 @@ mod profile_tests {
         fs::create_dir_all(scratch.0.join(".nudox")).map_err(|e| e.to_string())?;
         fs::write(scratch.0.join("query.sql"), b"SELECT id FROM t").map_err(|e| e.to_string())?;
         let initial_scan = scan(&scratch)?;
-        let cancelled = AtomicBool::new(false);
-        assert!(matches!(capture_sql_project(&initial_scan.sql_walk, &initial_scan.revision_fence, &scratch.0, &cancelled), Err(SqlCaptureFailure::NoConfiguration)));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        // Without a settings file the same walk selects every `.sql` file, each dialect inferred.
+        let implicit = capture_sql_project(&initial_scan.sql_walk, &initial_scan.revision_fence, &scratch.0, &cancelled)
+            .map_err(|e| format!("{e:?}"))?;
+        assert!(implicit.implicit());
+        assert_eq!(implicit.hosts().len(), 1);
+        assert!(implicit.hosts()[0].inferred() && implicit.hosts()[0].oracle(), "no token decides the dialect of `SELECT id FROM t`");
         cancelled.store(true, Ordering::Release);
         assert!(matches!(capture_sql_project(&initial_scan.sql_walk, &initial_scan.revision_fence, &scratch.0, &cancelled), Err(SqlCaptureFailure::Cancelled)));
         cancelled.store(false, Ordering::Release);
@@ -9725,22 +9757,104 @@ mod profile_tests {
         let captured = std::sync::Arc::new(capture_sql_project(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled).map_err(|e| format!("{e:?}"))?);
         assert_eq!(captured.hosts().len(), 1);
         assert_eq!(captured.hosts()[0].bytes(), b"SELECT id FROM t");
+        let witness = captured.witness();
+        assert!(witness.revalidate(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled).is_ok());
+        let other = Arc::new(AtomicBool::new(false));
+        assert!(matches!(witness.revalidate(&scan.sql_walk, &scan.revision_fence, &scratch.0, &other), Err(SqlCaptureFailure::Invalid)));
+        assert!(matches!(captured.revalidate(&scan.sql_walk, &scan.revision_fence, &scratch.0, &other), Err(SqlCaptureFailure::Invalid)));
         assert!(captured.revalidate(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled).is_ok());
         cancelled.store(true, Ordering::Release);
         assert!(matches!(captured.revalidate(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled), Err(SqlCaptureFailure::Cancelled)));
         cancelled.store(false, Ordering::Release);
         let projection = super::super::sql_capture::project_sql_project(std::sync::Arc::clone(&captured),
-            scan.sql_walk.clone(), scan.revision_fence.clone(), scratch.0.clone(), None, &cancelled)
+            scan.sql_walk.clone(), scan.revision_fence.clone(), scratch.0.clone(), None, None, &cancelled)
             .map_err(|e| format!("{e:?}"))?;
         assert!(projection.rows().iter().any(|(_, row)| matches!(row,
             backend_engine::builtin::SqlAnalysisRecord::Host { terminal: backend_engine::builtin::SqlHostTerminal::Unavailable(
                 backend_engine::builtin::SqlUnavailable::EngineNotAdmitted), .. })));
         assert!(!projection.rows().iter().any(|(_, row)| matches!(row, backend_engine::builtin::SqlAnalysisRecord::Fact { .. })));
         fs::write(scratch.0.join("query.sql"), b"SELECT ix FROM t").map_err(|e| e.to_string())?;
+        assert!(matches!(witness.revalidate(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled), Err(SqlCaptureFailure::Stale)));
         assert!(matches!(captured.revalidate(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled), Err(SqlCaptureFailure::Stale)));
         fs::write(scratch.0.join("query.sql"), b"SELECT id FROM t").map_err(|e| e.to_string())?;
         fs::write(scratch.0.join(".nudox/sql.json"), b"{} ").map_err(|e| e.to_string())?;
         assert!(matches!(captured.revalidate(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled), Err(SqlCaptureFailure::Stale)));
+        Ok(())
+    }
+
+    #[test]
+    fn sql_project_queue_proof_drops_host_buffers_and_rechecks_them() -> Result<(), String> {
+        let mut scratch = scratch("sql-compact")?;
+        scratch.0 = scratch.0.canonicalize().map_err(|e| e.to_string())?;
+        fs::create_dir_all(scratch.0.join(".nudox")).map_err(|e| e.to_string())?;
+        let sql = vec![b' '; 400 * 1024];
+        fs::write(scratch.0.join("query.sql"), &sql).map_err(|e| e.to_string())?;
+        let config = br#"{"version":1,"sources":[{"path":"query.sql","dialect":"sqlite","context":{"kind":"unavailable"}}]}"#;
+        fs::write(scratch.0.join(".nudox/sql.json"), config).map_err(|e| e.to_string())?;
+        let label = scratch.0.to_str().ok_or("invalid test root")?;
+        let scan = scan_project(label, backend_engine::PackageKey::from_value(label).to_bytes(), &BTreeMap::new())?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let captured = Arc::new(capture_sql_project(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled).map_err(|e| format!("{e:?}"))?);
+        let projection = super::super::sql_capture::project_sql_project(captured, scan.sql_walk.clone(), scan.revision_fence.clone(), scratch.0.clone(), None, None, &cancelled).map_err(|e| format!("{e:?}"))?;
+        assert!(projection.checked_retained_bytes().ok_or("unaccounted retained proof")? < sql.len());
+        assert!(projection.revalidate(&cancelled).is_ok());
+        let other = Arc::new(AtomicBool::new(false));
+        assert!(!projection.matches_cancellation(&other));
+        assert!(matches!(projection.revalidate(&other), Err(SqlCaptureFailure::Invalid)));
+        let digest = projection.checked_capture_digest(&cancelled).map_err(|e| format!("{e:?}"))?;
+        assert_eq!(digest, projection.checked_capture_digest(&cancelled).map_err(|e| format!("{e:?}"))?);
+        assert!(projection.checked_capture_digest(&other).is_err());
+        let selected_digest = projection.project_rows_digest(&cancelled).map_err(|e| format!("{e:?}"))?;
+        let mut retained_rows = projection.rows().to_vec();
+        let attempt = retained_rows.iter_mut().find_map(|(_, row)| match row {
+            backend_engine::builtin::SqlAnalysisRecord::Attempt { outcome, .. } => Some(outcome), _ => None,
+        }).ok_or("missing SQL attempt")?;
+        *attempt = backend_engine::builtin::SqlAttemptOutcome::Unavailable(backend_engine::builtin::SqlUnavailable::Read);
+        assert_eq!(selected_digest, super::super::sql_capture::sql_project_rows_digest(projection.project(), &retained_rows, cancelled.as_ref()).map_err(|e| format!("{e:?}"))?);
+        retained_rows.retain(|(_, row)| !matches!(row, backend_engine::builtin::SqlAnalysisRecord::Host { .. }));
+        assert!(super::super::sql_capture::sql_project_rows_digest(projection.project(), &retained_rows, cancelled.as_ref()).is_err());
+        cancelled.store(true, Ordering::Release);
+        assert!(matches!(projection.checked_capture_digest(&cancelled), Err(backend_engine::builtin::SqlUnavailable::Cancelled)));
+        cancelled.store(false, Ordering::Release);
+        let project = ProductSourceRecord::project_with_membership_pages_and_source_selection(
+            label, scan.source_version, scan.files.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+            None, Some(scan.source_selection.clone()),
+        )?.project_record().clone();
+        let projection = Arc::new(projection);
+        assert!(super::super::sql_admission::SqlLiveProof::new(Arc::clone(&projection), &project, Arc::clone(&other)).is_err());
+        assert!(super::super::sql_admission::SqlLiveProof::new(Arc::clone(&projection), &project, Arc::clone(&cancelled)).is_ok());
+        let mut edited = sql; edited[0] = b'x';
+        fs::write(scratch.0.join("query.sql"), edited).map_err(|e| e.to_string())?;
+        assert!(matches!(projection.revalidate(&cancelled), Err(SqlCaptureFailure::Stale)));
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires an independently built PostgreSQL worker and its actual producer basis"]
+    fn postgres_project_capture_observes_native_column_source() -> Result<(), String> {
+        let mut scratch = scratch("sql-postgres")?;
+        scratch.0 = scratch.0.canonicalize().map_err(|e| e.to_string())?;
+        fs::create_dir_all(scratch.0.join(".nudox")).map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("query.sql"), b"SELECT id, id FROM t;").map_err(|e| e.to_string())?;
+        let config = br#"{"version":1,"sources":[{"path":"query.sql","dialect":"postgres","context":{"kind":"postgres_proposed","epoch":1,"search_path":["s1"],"schemas":[{"name":"s1","tables":[{"name":"t","columns":["id"]}]}]}}]}"#;
+        fs::write(scratch.0.join(".nudox/sql.json"), config).map_err(|e| e.to_string())?;
+        let scan = scan(&scratch)?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let captured = std::sync::Arc::new(capture_sql_project(&scan.sql_walk, &scan.revision_fence, &scratch.0, &cancelled).map_err(|e| format!("{e:?}"))?);
+        let worker = std::path::PathBuf::from(std::env::var_os("NUDOX_TEST_POSTGRES_WORKER").ok_or("worker path missing")?);
+        let basis: backend_sql_contract::ProducerBasis = serde_json::from_str(&std::env::var("NUDOX_TEST_POSTGRES_BASIS").map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        let artifact = backend_compile::ToolchainArtifact::from_path(&worker, vec![]).map_err(|e| format!("{e:?}"))?;
+        let permit = super::super::sql_capture::PostgresWorkerPermit::from_admitted(worker, artifact, basis).map_err(str::to_owned)?;
+        let projected = super::super::sql_capture::project_sql_project(captured, scan.sql_walk.clone(), scan.revision_fence.clone(), scratch.0.clone(), None, Some(&permit), &cancelled).map_err(|e| format!("{e:?}"))?;
+        let reads = projected.rows().iter().filter_map(|(_, row)| match row {
+            backend_engine::builtin::SqlAnalysisRecord::Fact { fact: backend_semantic::sql_analysis::SqlFact::PostgresColumnRead { extent, .. }, .. } => Some(*extent),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(reads.len(), 2);
+        assert_ne!(reads[0].start, reads[1].start);
+        for read in reads {
+            assert_eq!(b"SELECT id, id FROM t;".get(read.start as usize..read.end as usize), Some(&b"id"[..]));
+        }
         Ok(())
     }
 
@@ -11809,12 +11923,43 @@ pub(super) struct SqlProjectCapture {
     settings_bytes: Vec<u8>,
     settings: backend_library::sql_workspace::ParsedSqlProjectSettings,
     hosts: Vec<SqlCapturedHost>,
+    cancellation: Arc<AtomicBool>,
+    /// True when no `.nudox/sql.json` exists and the selection was derived from
+    /// the same bounded walk (every `.sql` file, dialect inferred per file).
+    implicit: bool,
 }
 pub(super) struct SqlCapturedHost {
     selected: backend_library::sql_workspace::SqlProjectSource,
+    /// Dialect was inferred, not declared. `oracle` means the inference found no
+    /// signal, so the owner may try the other dialect when the first rejects it.
+    inferred: bool,
+    oracle: bool,
+    /// The host was selected but could not be read in full; no bytes were captured.
+    fault: Option<backend_engine::builtin::SqlUnavailable>,
     bytes: Vec<u8>,
     input: backend_compile::InputContentVersion,
     source: backend_version::ContentId<backend_version::SourceFactDomain>,
+}
+/// Private replay witness after worker projection. It retains identities and
+/// paths, not source/configuration byte buffers or catalog authority.
+pub(super) struct SqlProjectWitness {
+    implicit: bool,
+    project: [u8; 32],
+    config_input: backend_compile::InputContentVersion,
+    config_source: backend_version::ContentId<backend_version::SourceFactDomain>,
+    config_len: usize,
+    hosts: Vec<SqlHostWitness>,
+    cancellation: Arc<AtomicBool>,
+}
+fn sql_charge_allocation(total: &mut usize, capacity: usize) -> Option<()> {
+    if capacity != 0 { *total = total.checked_add(capacity)?.checked_add(2 * std::mem::size_of::<usize>())?; }
+    Some(())
+}
+struct SqlHostWitness {
+    path: String,
+    input: backend_compile::InputContentVersion,
+    source: backend_version::ContentId<backend_version::SourceFactDomain>,
+    length: usize,
 }
 #[derive(Debug)]
 pub(super) enum SqlCaptureFailure {
@@ -11832,13 +11977,24 @@ impl SqlProjectCapture {
     pub(super) fn hosts(&self) -> &[SqlCapturedHost] { &self.hosts }
     /// Project claim carried by the source walk.
     pub(super) fn project(&self) -> [u8; 32] { self.project }
+    pub(super) fn matches_cancellation(&self, cancellation: &Arc<AtomicBool>) -> bool { Arc::ptr_eq(&self.cancellation, cancellation) }
     pub(super) fn settings_len(&self) -> usize { self.settings_bytes.len() }
+    /// Whether the selection was derived from the walk because no settings file exists.
+    pub(super) fn implicit(&self) -> bool { self.implicit }
+    pub(super) fn witness(&self) -> SqlProjectWitness {
+        SqlProjectWitness { implicit: self.implicit, project: self.project, config_input: self.settings.input(),
+            config_source: self.settings.source(), config_len: self.settings_bytes.len(),
+            hosts: self.hosts.iter().filter(|host| host.fault.is_none()).map(|host| SqlHostWitness {
+                path: host.selected.path.clone(), input: host.input, source: host.source, length: host.bytes.len(),
+            }).collect(), cancellation: Arc::clone(&self.cancellation) }
+    }
     /// Re-read actual configuration and every host before owner publication.
     pub(super) fn revalidate(&self, walk: &SqlWalkEvidence, fence: &CompilerRevisionFence,
-        requested_root: &Path, cancellation: &AtomicBool) -> Result<(), SqlCaptureFailure> {
+        requested_root: &Path, cancellation: &Arc<AtomicBool>) -> Result<(), SqlCaptureFailure> {
+        if !self.matches_cancellation(cancellation) { return Err(SqlCaptureFailure::Invalid); }
         if self.project != walk.project || walk.root != fence.root { return Err(SqlCaptureFailure::Stale); }
         if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
-        let current = compiler_revision_is_current_with_cancellation(fence, Some(cancellation))
+        let current = compiler_revision_is_current_with_cancellation(fence, Some(cancellation.as_ref()))
             .map_err(|_| if cancellation.load(Ordering::Acquire) { SqlCaptureFailure::Cancelled } else { SqlCaptureFailure::Unavailable })?;
         if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
         if !current {
@@ -11851,9 +12007,18 @@ impl SqlProjectCapture {
         let config_result = root.read(Path::new(backend_library::sql_workspace::SQL_PROJECT_SETTINGS_PATH),
             backend_library::sql_workspace::MAX_SQL_PROJECT_SETTINGS_BYTES);
         if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
-        let config = config_result.map_err(sql_capture_fault)?;
-        if config != self.settings_bytes { return Err(SqlCaptureFailure::Stale); }
-        for host in &self.hosts {
+        if self.implicit {
+            // An implicit selection stays valid only while no settings file exists.
+            match config_result {
+                Err(SourceFault::Vanished) => {}
+                Ok(_) => return Err(SqlCaptureFailure::Stale),
+                Err(error) => return Err(sql_capture_fault(error)),
+            }
+        } else {
+            let config = config_result.map_err(sql_capture_fault)?;
+            if config != self.settings_bytes { return Err(SqlCaptureFailure::Stale); }
+        }
+        for host in self.hosts.iter().filter(|host| host.fault.is_none()) {
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
             let result = root.read(Path::new(&host.selected.path), 512 * 1024);
             if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
@@ -11863,13 +12028,68 @@ impl SqlProjectCapture {
             let extent = verified.extent(0..bytes.len()).map_err(|_| SqlCaptureFailure::Stale)?;
             if extent.text().as_bytes() != host.bytes { return Err(SqlCaptureFailure::Stale); }
         }
-        let current = compiler_revision_is_current_with_cancellation(fence, Some(cancellation))
+        let current = compiler_revision_is_current_with_cancellation(fence, Some(cancellation.as_ref()))
             .map_err(|_| if cancellation.load(Ordering::Acquire) { SqlCaptureFailure::Cancelled } else { SqlCaptureFailure::Unavailable })?;
         if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
         if !current {
             return Err(SqlCaptureFailure::Stale);
         }
         Ok(())
+    }
+}
+impl SqlProjectWitness {
+    pub(super) fn project(&self) -> [u8; 32] { self.project }
+    pub(super) fn matches_cancellation(&self, cancellation: &Arc<AtomicBool>) -> bool { Arc::ptr_eq(&self.cancellation, cancellation) }
+    pub(super) fn checked_retained_bytes(&self) -> Option<usize> {
+        let mut total = std::mem::size_of::<Self>();
+        sql_charge_allocation(&mut total, self.hosts.capacity().checked_mul(std::mem::size_of::<SqlHostWitness>())?)?;
+        for host in &self.hosts { sql_charge_allocation(&mut total, host.path.capacity())?; }
+        total.checked_add(std::mem::size_of::<AtomicBool>())?.checked_add(2 * std::mem::size_of::<usize>())
+    }
+    /// Recheck both typed content domains from the same confined bytes.
+    pub(super) fn revalidate(&self, walk: &SqlWalkEvidence, fence: &CompilerRevisionFence,
+        requested_root: &Path, cancellation: &Arc<AtomicBool>) -> Result<(), SqlCaptureFailure> {
+        if !self.matches_cancellation(cancellation) { return Err(SqlCaptureFailure::Invalid); }
+        if self.project != walk.project || walk.root != fence.root { return Err(SqlCaptureFailure::Stale); }
+        let check_fence = || -> Result<(), SqlCaptureFailure> {
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let current = compiler_revision_is_current_with_cancellation(fence, Some(cancellation.as_ref()))
+                .map_err(|_| if cancellation.load(Ordering::Acquire) { SqlCaptureFailure::Cancelled } else { SqlCaptureFailure::Unavailable })?;
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            if !current { return Err(SqlCaptureFailure::Stale); }
+            Ok(())
+        };
+        check_fence()?;
+        let root_result = fence.open_bound_root(requested_root);
+        if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+        let root = root_result.map_err(|_| SqlCaptureFailure::Stale)?;
+        let check_bytes = |relative: &Path, limit: usize, length: usize,
+                           input: backend_compile::InputContentVersion,
+                           source: backend_version::ContentId<backend_version::SourceFactDomain>| -> Result<(), SqlCaptureFailure> {
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let result = root.read(relative, limit);
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let bytes = result.map_err(sql_capture_fault)?;
+            if bytes.len() != length { return Err(SqlCaptureFailure::Stale); }
+            backend_compile::VerifiedSourceText::admit(&bytes, input, source).map_err(|_| SqlCaptureFailure::Stale)?;
+            Ok(())
+        };
+        if self.implicit {
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let result = root.read(Path::new(backend_library::sql_workspace::SQL_PROJECT_SETTINGS_PATH),
+                backend_library::sql_workspace::MAX_SQL_PROJECT_SETTINGS_BYTES);
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            match result {
+                Err(SourceFault::Vanished) => {}
+                Ok(_) => return Err(SqlCaptureFailure::Stale),
+                Err(error) => return Err(sql_capture_fault(error)),
+            }
+        } else {
+            check_bytes(Path::new(backend_library::sql_workspace::SQL_PROJECT_SETTINGS_PATH),
+                backend_library::sql_workspace::MAX_SQL_PROJECT_SETTINGS_BYTES, self.config_len, self.config_input, self.config_source)?;
+        }
+        for host in &self.hosts { check_bytes(Path::new(&host.path), 512 * 1024, host.length, host.input, host.source)?; }
+        check_fence()
     }
 }
 impl SqlCapturedHost {
@@ -11879,6 +12099,19 @@ impl SqlCapturedHost {
     pub(super) fn bytes(&self) -> &[u8] { &self.bytes }
     pub(super) fn input(&self) -> backend_compile::InputContentVersion { self.input }
     pub(super) fn source(&self) -> backend_version::ContentId<backend_version::SourceFactDomain> { self.source }
+    /// Why the host could not be captured, if it was selected but unreadable.
+    pub(super) fn fault(&self) -> Option<backend_engine::builtin::SqlUnavailable> { self.fault }
+    /// Whether the dialect was inferred from the file rather than declared.
+    pub(super) fn inferred(&self) -> bool { self.inferred }
+    /// Whether no signal decided the dialect, so the parsers should.
+    pub(super) fn oracle(&self) -> bool { self.oracle }
+    /// A copy of this host re-targeted at the other dialect.
+    pub(super) fn as_dialect(&self, dialect: backend_library::sql_workspace::SqlDialect) -> Self {
+        let mut other = Self { selected: self.selected.clone(), inferred: self.inferred, oracle: self.oracle, fault: self.fault,
+            bytes: self.bytes.clone(), input: self.input, source: self.source };
+        other.selected.dialect = dialect;
+        other
+    }
 }
 fn sql_capture_fault(fault: SourceFault) -> SqlCaptureFailure {
     match fault {
@@ -11893,42 +12126,131 @@ fn sql_capture_fault(fault: SourceFault) -> SqlCaptureFailure {
 /// A missing settings file selects no SQL profile; missing/ignored configured
 /// hosts and incomplete walks remain unavailable, not a complete empty result.
 pub(super) fn capture_sql_project(walk: &SqlWalkEvidence, fence: &CompilerRevisionFence,
-    requested_root: &Path, cancellation: &AtomicBool) -> Result<SqlProjectCapture, SqlCaptureFailure> {
+    requested_root: &Path, cancellation: &Arc<AtomicBool>) -> Result<SqlProjectCapture, SqlCaptureFailure> {
     if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
-    if walk.root != fence.root || !walk.inventory_complete { return Err(SqlCaptureFailure::Unavailable); }
+    if walk.root != fence.root { return Err(SqlCaptureFailure::Unavailable); }
     let root_result = fence.open_bound_root(requested_root);
     if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
     let root = root_result.map_err(|_| SqlCaptureFailure::Stale)?;
     let config_result = root.read(Path::new(backend_library::sql_workspace::SQL_PROJECT_SETTINGS_PATH),
         backend_library::sql_workspace::MAX_SQL_PROJECT_SETTINGS_BYTES);
     if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
-    let config = match config_result {
-        Ok(bytes) => bytes,
-        Err(SourceFault::Vanished) => return Err(SqlCaptureFailure::NoConfiguration),
+    let (config, implicit) = match config_result {
+        Ok(bytes) => (bytes, false),
+        Err(SourceFault::Vanished) => (Vec::new(), true),
         Err(error) => return Err(sql_capture_fault(error)),
     };
-    let settings = backend_library::sql_workspace::ParsedSqlProjectSettings::parse(&config)
-        .map_err(|_| SqlCaptureFailure::Invalid)?;
-    let mut hosts = Vec::with_capacity(settings.settings().sources.len());
+    let mut hosts = Vec::new();
     let mut total = 0usize;
-    for selected in &settings.settings().sources {
-        if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
-        let path = Path::new(&selected.path);
-        if !walk.files.iter().any(|file| file.relative_path == path && file.metadata.is_some()) {
-            return Err(SqlCaptureFailure::Unavailable);
+    let (settings, config) = if implicit {
+        // No settings file: select every `.sql` file of the same bounded walk.
+        let mut paths = Vec::new();
+        for file in &walk.files {
+            if file.metadata.is_none() { continue; }
+            let Some(text) = file.relative_path.to_str() else { return Err(SqlCaptureFailure::Invalid) };
+            let text = text.replace('\\', "/");
+            if text == backend_library::sql_workspace::SQL_PROJECT_SETTINGS_PATH
+                || !text.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("sql")) { continue; }
+            paths.push(text);
         }
-        let result = root.read(path, 512 * 1024);
-        if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
-        let bytes = result.map_err(sql_capture_fault)?;
-        total = total.checked_add(bytes.len()).ok_or(SqlCaptureFailure::Limit)?;
-        if total > 16 * 1024 * 1024 { return Err(SqlCaptureFailure::Limit); }
-        let verified = backend_compile::VerifiedSourceText::capture(&bytes).map_err(|_| SqlCaptureFailure::Invalid)?;
-        let input = verified.content();
-        let source = verified.extent(0..bytes.len()).map_err(|_| SqlCaptureFailure::Invalid)?.source();
-        hosts.push(SqlCapturedHost { selected: selected.clone(), bytes, input, source });
-    }
+        paths.sort();
+        paths.dedup();
+        if paths.len() > backend_library::sql_workspace::MAX_SQL_PROJECT_HOSTS { return Err(SqlCaptureFailure::Limit); }
+        let mut sources = Vec::with_capacity(paths.len());
+        let mut read = Vec::with_capacity(paths.len());
+        for path in &paths {
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let result = root.read(Path::new(path), 512 * 1024);
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let (bytes, fault) = match result {
+                Ok(bytes) => (bytes, None),
+                // Too large or unreadable hosts are still selected so that the
+                // gap is recorded per host rather than silently dropped.
+                Err(error) => match sql_capture_fault(error) {
+                    SqlCaptureFailure::Limit => (Vec::new(), Some(backend_engine::builtin::SqlUnavailable::Limit)),
+                    SqlCaptureFailure::Unavailable => (Vec::new(), Some(backend_engine::builtin::SqlUnavailable::Read)),
+                    other => return Err(other),
+                },
+            };
+            total = total.checked_add(bytes.len()).ok_or(SqlCaptureFailure::Limit)?;
+            if total > 16 * 1024 * 1024 { return Err(SqlCaptureFailure::Limit); }
+            let guess = infer_sql_dialect(path, &bytes);
+            read.push((path.clone(), bytes, fault, guess));
+        }
+        // The migrations of one project share a dialect: when every file that
+        // shows a signal agrees, the files with none inherit it. Only a genuine
+        // mix leaves a file to the parsers.
+        let mut seen = read.iter().filter_map(|(_, _, _, guess)| *guess).collect::<Vec<_>>();
+        seen.sort_by_key(|dialect| matches!(dialect, backend_library::sql_workspace::SqlDialect::Postgres));
+        seen.dedup();
+        let consensus = (seen.len() == 1).then(|| seen[0]);
+        for (path, bytes, fault, guess) in read {
+            let decided = guess.or(consensus);
+            let dialect = decided.unwrap_or(backend_library::sql_workspace::SqlDialect::Sqlite);
+            let selected = backend_library::sql_workspace::SqlProjectSource {
+                path: path.clone(), dialect, context: backend_library::sql_workspace::SqlProjectContext::Unavailable,
+            };
+            let verified = backend_compile::VerifiedSourceText::capture(&bytes).map_err(|_| SqlCaptureFailure::Invalid)?;
+            let input = verified.content();
+            let source = verified.extent(0..bytes.len()).map_err(|_| SqlCaptureFailure::Invalid)?.source();
+            sources.push(selected.clone());
+            hosts.push(SqlCapturedHost { selected, inferred: true, oracle: decided.is_none(), fault, bytes, input, source });
+        }
+        let bytes = serde_json::to_vec(&backend_library::sql_workspace::SqlProjectSettings { version: 1, sources })
+            .map_err(|_| SqlCaptureFailure::Invalid)?;
+        let settings = backend_library::sql_workspace::ParsedSqlProjectSettings::parse(&bytes)
+            .map_err(|_| SqlCaptureFailure::Invalid)?;
+        (settings, bytes)
+    } else {
+        // A settings file selects hosts by name; a truncated walk cannot prove
+        // that every named file is present and unignored.
+        if !walk.inventory_complete { return Err(SqlCaptureFailure::Unavailable); }
+        let settings = backend_library::sql_workspace::ParsedSqlProjectSettings::parse(&config)
+            .map_err(|_| SqlCaptureFailure::Invalid)?;
+        for selected in &settings.settings().sources {
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let path = Path::new(&selected.path);
+            if !walk.files.iter().any(|file| file.relative_path == path && file.metadata.is_some()) {
+                return Err(SqlCaptureFailure::Unavailable);
+            }
+            let result = root.read(path, 512 * 1024);
+            if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
+            let bytes = result.map_err(sql_capture_fault)?;
+            total = total.checked_add(bytes.len()).ok_or(SqlCaptureFailure::Limit)?;
+            if total > 16 * 1024 * 1024 { return Err(SqlCaptureFailure::Limit); }
+            let verified = backend_compile::VerifiedSourceText::capture(&bytes).map_err(|_| SqlCaptureFailure::Invalid)?;
+            let input = verified.content();
+            let source = verified.extent(0..bytes.len()).map_err(|_| SqlCaptureFailure::Invalid)?.source();
+            hosts.push(SqlCapturedHost { selected: selected.clone(), inferred: false, oracle: false, fault: None, bytes, input, source });
+        }
+        (settings, config)
+    };
     if cancellation.load(Ordering::Acquire) { return Err(SqlCaptureFailure::Cancelled); }
-    Ok(SqlProjectCapture { project: walk.project, settings_bytes: config, settings, hosts })
+    Ok(SqlProjectCapture { project: walk.project, settings_bytes: config, settings, hosts, cancellation: Arc::clone(cancellation), implicit })
+}
+
+/// Choose a dialect from the file's path and its own tokens. `None` means no
+/// signal; the owner then lets the native parsers decide. Never a guess that
+/// is hidden: such hosts are recorded as inferred.
+fn infer_sql_dialect(path: &str, bytes: &[u8]) -> Option<backend_library::sql_workspace::SqlDialect> {
+    use backend_library::sql_workspace::SqlDialect;
+    let lower_path = path.to_ascii_lowercase();
+    let head = &bytes[..bytes.len().min(256 * 1024)];
+    let text = String::from_utf8_lossy(head).to_ascii_lowercase();
+    const POSTGRES: &[&str] = &["$$", "::", "create extension", "plpgsql", " serial", "bigserial", "timestamptz",
+        "jsonb", "create schema", "returns ", "language sql", "set search_path", "create type", " uuid", "using gin",
+        "generated always as identity", "create or replace function", "create sequence", "materialized view", "on conflict"];
+    const SQLITE: &[&str] = &["pragma ", "autoincrement", "without rowid", "insert or replace", "insert or ignore",
+        "sqlite_", "create virtual table", "strict;"];
+    let pg = POSTGRES.iter().filter(|needle| text.contains(**needle)).count()
+        + usize::from(lower_path.contains("postgres") || lower_path.contains("pgsql") || lower_path.contains("psql"));
+    let lite = SQLITE.iter().filter(|needle| text.contains(**needle)).count()
+        + usize::from(lower_path.contains("sqlite"));
+    match (pg > 0, lite > 0) {
+        (true, false) => Some(SqlDialect::Postgres),
+        (false, true) => Some(SqlDialect::Sqlite),
+        _ => None,
+    }
 }
 
 /// Private same-walk Vue host capture. This capability does not authorize a
