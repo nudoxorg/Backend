@@ -429,7 +429,10 @@ fn rust_ingest_publication_summary_reopens_with_exact_authenticated_source_facts
     assert!((750_000..850_000).contains(&source_bytes));
     let (expected_facts, expected_summary, selected_root, selected_sequence) = {
         let (adapter, daemon) = fixture.parts();
-        let scan = run_index_scan(capture_index_scan(
+        // This test commits through the synchronous route, which carries no SQL
+        // custody; `query.sql` stays counted as unsupported here, and the owned
+        // route's SQL analysis is covered by the SQL journeys.
+        let mut work = capture_index_scan(
             daemon,
             package,
             &label,
@@ -440,7 +443,9 @@ fn rust_ingest_publication_summary_reopens_with_exact_authenticated_source_facts
             false,
             Arc::new(AtomicBool::new(false)),
             None,
-        )?)
+        )?;
+        work.capture_sql = false;
+        let scan = run_index_scan(work)
         .map_err(|failure| match failure {
             IndexScanFailure::Cancelled => {
                 BuiltinModelError("Rust scan unexpectedly cancelled".into())

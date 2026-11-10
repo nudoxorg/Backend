@@ -260,7 +260,7 @@ fn prepare_index_project_at(
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     defer: bool,
 ) -> Result<PreparedIndex, BuiltinModelError> {
-    let work = capture_index_scan(
+    let mut work = capture_index_scan(
         daemon,
         package,
         label,
@@ -272,6 +272,9 @@ fn prepare_index_project_at(
         Arc::new(AtomicBool::new(false)),
         compiler.python_interpreter_admission(),
     )?;
+    // The synchronous route commits without the publication worker, which SQL
+    // receipt custody requires; the owned index operation is the SQL route.
+    work.capture_sql = false;
     let mut committed_captures = BTreeMap::new();
     let result = finish_index_scan(
         daemon,
@@ -404,6 +407,7 @@ pub(super) fn capture_index_scan(
         stylo_selection_failure: None,
         sql_workers: crate::builtin::sql_index::SqlWorkers::default(),
         sql_prior: crate::builtin::sql_index::sql_prior(&snapshot, project_key)?,
+        capture_sql: true,
         observation: None,
     })
 }
@@ -2272,6 +2276,9 @@ pub(super) struct IndexScanWork {
     /// Owner-admitted native SQL workers; production bootstrap may leave these absent.
     pub(super) sql_workers: crate::builtin::sql_index::SqlWorkers,
     pub(super) sql_prior: bool,
+    /// False on the legacy synchronous route, whose commit cannot carry SQL custody
+    /// (receipts need the publication worker): SQL files then stay counted as unsupported.
+    pub(super) capture_sql: bool,
     pub(super) observation:
         Option<Arc<crate::builtin::index_work_observation::IndexWorkObservation>>,
 }
