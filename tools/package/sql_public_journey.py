@@ -724,7 +724,7 @@ if EMBEDDED:
     expect(text, [f"src/db.ts:{find_line}", f"src/db.ts:{debit_line}", "exact"], "impact-balance")
     # The table also reaches the SQL built at run time, but only as a candidate; the gap is named.
     _, text = impact("impact-table", "--sql-table", "accounts")
-    expect(text, [f"src/db.ts:{built_line}", f"src/report.py:{py_line}", "candidate", "sql.embedded-sql"], "impact-table")
+    expect(text, [f"src/db.ts:{built_line}", f"src/report.py:{py_line}", "possible", "sql.embedded-sql"], "impact-table")
     # Seeds for views and indexes.
     _, text = impact("impact-view", "--sql-view", "account_spend")
     expect(text, ["src/db.ts", sql_path("db/queries/accounts.sql")], "impact-view")
