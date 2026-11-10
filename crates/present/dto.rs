@@ -666,6 +666,13 @@ pub struct RecordListDto {
     /// Semantic ranking is explicitly pending, not queried, or unavailable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_preparation: Option<backend_library::PublishedSemanticReadiness>,
+    /// Import and external rows removed from this page by `declarations_only`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub hidden_non_declarations: usize,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 impl RecordListDto {
@@ -698,6 +705,7 @@ impl RecordListDto {
                 .coverage()
                 .published_names()
                 .map(|readiness| readiness.semantic),
+            hidden_non_declarations: list.hidden_non_declarations(),
         }
     }
 }
@@ -886,6 +894,9 @@ pub struct OutlineDto {
     /// Native paging scope, absent for the legacy plain outline query.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<OutlinePageDto>,
+    /// Nodes a kind filter removed from this page; absent when none was removed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub filtered_out: usize,
 }
 
 impl OutlineDto {
@@ -909,6 +920,7 @@ impl OutlineDto {
                 schema: page.basis.schema,
                 sequence: page.sequence,
             }),
+            filtered_out: tree.filtered_out(),
         }
     }
 }

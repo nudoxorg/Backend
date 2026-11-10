@@ -260,6 +260,7 @@ pub fn encode_answer_with_call(
                     search_scope: list.coverage().published_names().map(|_| "published_names_only"),
                     full_search: list.coverage().published_names().map(|readiness| readiness.full_search),
                     semantic_preparation: list.coverage().published_names().map(|readiness| readiness.semantic),
+                    hidden_non_declarations: list.hidden_non_declarations(),
                 },
                 budget,
                 continuation_call,
@@ -310,6 +311,7 @@ pub fn encode_answer_with_call(
                         declarations: outline.declarations,
                         unnamed: outline.unnamed,
                         page: outline.page,
+                        filtered_out: outline.filtered_out,
                     },
                     budget,
                     continuation_call,
@@ -784,6 +786,12 @@ struct SummaryRecordsDto<'a> {
     full_search: Option<backend_library::FullSearchReadiness>,
     #[serde(skip_serializing_if = "Option::is_none")]
     semantic_preparation: Option<backend_library::PublishedSemanticReadiness>,
+    #[serde(skip_serializing_if = "is_zero")]
+    hidden_non_declarations: usize,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 #[derive(Serialize)]
@@ -822,6 +830,8 @@ struct SummaryOutlineDto {
     unnamed: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     page: Option<crate::dto::OutlinePageDto>,
+    #[serde(skip_serializing_if = "is_zero")]
+    filtered_out: usize,
 }
 
 #[derive(Serialize)]

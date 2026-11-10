@@ -153,7 +153,7 @@ pub use identity::{
 };
 pub use language::Language;
 pub use mcp_invocation::{MCP_REGISTERED_CALL_TOOL, McpExecutableCall, McpExposure, McpInvocation};
-pub use outline::{OutlineEntry, OutlineTree, row_resolver};
+pub use outline::{KindFilter, OutlineEntry, OutlineTree, row_resolver};
 pub use package_graph::{PackageGraphPageSelection, package_graph_json_alternative};
 pub use page::{
     Member, MemberGroup, Page, Prose, Relation, RelationGroup, Source, SourceLine, SourceSite,

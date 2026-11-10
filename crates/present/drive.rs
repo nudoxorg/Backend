@@ -410,7 +410,11 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
             coordinate,
             incoming,
         } => neighbourhood(engine, coordinate, *incoming),
-        Request::Search { text, limit } => {
+        Request::Search {
+            text,
+            limit,
+            declarations_only,
+        } => {
             let reply = read(
                 engine,
                 Probe::Search {
@@ -419,7 +423,7 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
                 },
             )?;
             let (snapshot, semantic_search, published_names) = search_snapshot(reply, "search")?;
-            let list = record_list(text, &snapshot);
+            let list = search_view(record_list(text, &snapshot), *declarations_only);
             let list = if let Some(status) = semantic_search {
                 list.with_semantic_search_status(status)
             } else {
@@ -430,7 +434,10 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
             } else {
                 list
             };
-            let list = if list.is_empty() {
+            let list = if list.is_empty() && list.hidden_non_declarations() > 0 {
+                let reason = hidden_only_reason(list.hidden_non_declarations(), list.has_more());
+                list.with_empty_reason(reason)
+            } else if list.is_empty() {
                 list.with_empty_reason(empty_search_reason(published_names.is_some(), text))
             } else {
                 list
@@ -456,6 +463,28 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
             answer_paged(engine, request, None)
         }
         Request::Surface(command) => surface(engine, command),
+    }
+}
+
+/// Explains a page whose every row was an import or an external reference.
+fn hidden_only_reason(hidden: usize, more: bool) -> String {
+    let mut reason = format!(
+        "all {hidden} row(s) on this page were imports or external references, which declarations_only leaves out"
+    );
+    reason.push_str(if more {
+        "; later pages may hold declarations, so continue with the cursor, or drop declarations_only to see these rows"
+    } else {
+        "; drop declarations_only to see them"
+    });
+    reason
+}
+
+/// Applies the caller's `declarations_only` choice to one search page.
+fn search_view(list: RecordList, declarations_only: bool) -> RecordList {
+    if declarations_only {
+        list.declarations_only_view()
+    } else {
+        list
     }
 }
 
@@ -489,9 +518,13 @@ pub fn empty_search_reason(published_names_only: bool, text: &str) -> String {
 /// Returns the existing catalog projection fault for a changed reply shape or failed command.
 pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer, Fault> {
     match request {
-        Request::Search { text, .. } => {
+        Request::Search {
+            text,
+            declarations_only,
+            ..
+        } => {
             let (snapshot, semantic_search, published_names) = search_snapshot(reply, "search")?;
-            let list = record_list(text, &snapshot);
+            let list = search_view(record_list(text, &snapshot), *declarations_only);
             let list = if let Some(status) = semantic_search {
                 list.with_semantic_search_status(status)
             } else {
@@ -502,7 +535,10 @@ pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer,
             } else {
                 list
             };
-            let list = if list.is_empty() {
+            let list = if list.is_empty() && list.hidden_non_declarations() > 0 {
+                let reason = hidden_only_reason(list.hidden_non_declarations(), list.has_more());
+                list.with_empty_reason(reason)
+            } else if list.is_empty() {
                 list.with_empty_reason(empty_search_reason(published_names.is_some(), text))
             } else {
                 list
@@ -543,7 +579,7 @@ pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer,
             }
             Ok(Answer::Records(Box::new(records)))
         }
-        Request::OutlinePage { path, limit } => {
+        Request::OutlinePage { path, limit, kinds } => {
             let CommandReply::ProjectionPage(page) = reply.reply else {
                 return Err(shape("outline-page"));
             };
@@ -562,6 +598,7 @@ pub fn catalog_page_answer(request: &Request, reply: ReplyDto) -> Result<Answer,
                 .as_ref()
                 .ok_or_else(|| shape("outline-page order"))?;
             crate::outline::page_tree(path, &page.snapshot, *limit, order)
+                .map(|tree| tree.filtered(kinds))
                 .map(Box::new)
                 .map(Answer::Outline)
                 .map_err(|error| Fault::from_client_error(&error, Operand::Path(path.clone())))
@@ -578,7 +615,11 @@ pub fn answer_paged(
     continuation: Option<PageContinuation>,
 ) -> Result<Answer, Fault> {
     match request {
-        Request::Search { text, limit } => {
+        Request::Search {
+            text,
+            limit,
+            declarations_only,
+        } => {
             let reply = read_page(
                 engine,
                 Probe::Search {
@@ -588,7 +629,7 @@ pub fn answer_paged(
                 continuation,
             )?;
             let (snapshot, semantic_search, published_names) = search_snapshot(reply, "search")?;
-            let list = record_list(text, &snapshot);
+            let list = search_view(record_list(text, &snapshot), *declarations_only);
             let list = if let Some(status) = semantic_search {
                 list.with_semantic_search_status(status)
             } else {
@@ -599,7 +640,10 @@ pub fn answer_paged(
             } else {
                 list
             };
-            let list = if list.is_empty() {
+            let list = if list.is_empty() && list.hidden_non_declarations() > 0 {
+                let reason = hidden_only_reason(list.hidden_non_declarations(), list.has_more());
+                list.with_empty_reason(reason)
+            } else if list.is_empty() {
                 list.with_empty_reason(
                     if published_names.is_some() {
                         "no current declaration names matched; full lexical search has not been queried in this result stage. For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package; for SQL objects and analysis gaps, use sql-query or backend.sql_query"
@@ -656,7 +700,7 @@ pub fn answer_paged(
                 reply,
             )
         }
-        Request::OutlinePage { path, limit } => {
+        Request::OutlinePage { path, limit, .. } => {
             let reply = read_page(
                 engine,
                 Probe::OutlinePage {
@@ -2485,6 +2529,73 @@ mod declaration_resolution_controls {
         };
         let names: Vec<_> = list.records().iter().map(|record| (record.identity().name().to_owned(), record.kind())).collect();
         assert_eq!(names, [("request".to_owned(), Some(DeclarationKind::Function))]);
+    }
+    fn search_page(labels: &[(&str, DeclarationKind)]) -> ReplyDto {
+        let basis = Basis::new(view_state_root(&[]), object_version(b"search noise control"));
+        let package = package_key("/workspace/ts");
+        let rows = labels
+            .iter()
+            .map(|(suffix, kind)| {
+                let label = format!("/workspace/ts::{suffix}");
+                Row::in_package(RowId::Symbol(symbol_key(&label)), basis, package, label)
+                    .with_kind(*kind)
+            })
+            .collect::<Vec<_>>();
+        let root = ViewRoot::new_incomplete(
+            view_key(b"search noise"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 1),
+            rows,
+            vec![],
+        )
+        .expect("rows");
+        ReplyDto::new(
+            1,
+            CommandReply::Search(ViewSnapshot {
+                root,
+                freshness: Freshness::Current,
+                next: None,
+                graph_relations: None,
+                rich_graph: None,
+            }),
+        )
+    }
+    #[test]
+    fn declarations_only_search_leaves_out_imports_and_externals_and_counts_them() {
+        // Imports and externals came back from search with no way to leave them out.
+        let rows = [
+            ("api.ts:3::request", DeclarationKind::Function),
+            ("page.tsx:1::request", DeclarationKind::Import),
+            ("external::lib.dom::request", DeclarationKind::Function),
+        ];
+        let search = |declarations_only| Request::Search {
+            text: "request".to_owned(),
+            limit: 10,
+            declarations_only,
+        };
+        let Answer::Records(all) = catalog_page_answer(&search(false), search_page(&rows)).expect("all rows") else {
+            panic!("records");
+        };
+        assert_eq!(all.records().len(), 3);
+        assert_eq!(all.hidden_non_declarations(), 0);
+        let Answer::Records(only) = catalog_page_answer(&search(true), search_page(&rows)).expect("filtered") else {
+            panic!("records");
+        };
+        let kept: Vec<_> = only.records().iter().map(|r| r.identity().name().to_owned()).collect();
+        assert_eq!(kept, ["request"], "only the declaration remains");
+        assert_eq!(only.records()[0].kind(), Some(DeclarationKind::Function));
+        assert_eq!(only.hidden_non_declarations(), 2);
+        let json = crate::dto::RecordListDto::new(&only);
+        assert_eq!(json.hidden_non_declarations, 2);
+
+        // A page made only of imports says why it is empty and where the rows went.
+        let only_imports = [("page.tsx:1::request", DeclarationKind::Import)];
+        let Answer::Records(empty) = catalog_page_answer(&search(true), search_page(&only_imports)).expect("filtered") else {
+            panic!("records");
+        };
+        assert!(empty.records().is_empty());
+        let reason = empty.empty_reason().expect("an explained empty page");
+        assert!(reason.contains("declarations_only") && reason.contains("1 row"), "{reason}");
     }
     #[test]
     fn a_continuation_prevents_a_false_unique_result() {

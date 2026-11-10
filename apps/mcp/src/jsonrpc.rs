@@ -1427,13 +1427,23 @@ impl<P: Product> Server<P> {
                     backend_present::Operand::Whole,
                 ))
             })?;
-        no_extra(arguments, &["path", "limit", "cursor", "detail"])?;
+        no_extra(
+            arguments,
+            &["path", "limit", "cursor", "detail", "kind", "exclude_kind"],
+        )?;
+        let kinds = backend_present::KindFilter::parse(
+            arguments.get("kind").and_then(Value::as_str),
+            arguments.get("exclude_kind").and_then(Value::as_str),
+        )
+        .map_err(RpcError::invalid)?;
         let grammar = backend_present::grammar_for_tool("backend.outline")
             .ok_or_else(|| RpcError::new(-32602, "Unknown tool"))?;
         let mut command = arguments.clone();
         command.remove("detail");
         command.remove("limit");
         command.remove("cursor");
+        command.remove("kind");
+        command.remove("exclude_kind");
         validate_registry_arguments(grammar, &command)
             .map_err(|fault| RpcError::from_fault(&fault))?;
         let planned_invocation = Invocation::from_json(grammar, &command)
@@ -1485,7 +1495,11 @@ impl<P: Product> Server<P> {
             if outline_owner_token.is_none() {
                 self.reimport_catalog_cursor(&page_arguments, detail, invocation, continuation)?;
             }
-            let selected = Request::OutlinePage { path: path.clone(), limit: effective };
+            let selected = Request::OutlinePage {
+                path: path.clone(),
+                limit: effective,
+                kinds: kinds.clone(),
+            };
             let probe = Probe::OutlinePage { path: &path, limit: effective };
             let window = record_pages::query_window(effective, delivery)?;
             let reply = if let Some(token) = outline_owner_token.as_deref() {
@@ -1538,8 +1552,13 @@ impl<P: Product> Server<P> {
                     .get("structuredContent")
                     .is_some_and(|value| value.get("nextCursor").is_some())
             {
-                let next_arguments =
+                let mut next_arguments =
                     json!({"path":path, "limit":effective, "detail":detail.name()});
+                for key in ["kind", "exclude_kind"] {
+                    if let Some(value) = arguments.get(key) {
+                        next_arguments[key] = value.clone();
+                    }
+                }
                 if let Some(text) = result
                     .get_mut("content")
                     .and_then(Value::as_array_mut)

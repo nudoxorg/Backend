@@ -178,6 +178,9 @@ fn records_with_cursor(
 ) -> String {
     let mut lines = Lines::new();
     lines.push(coverage(list.coverage(), theme));
+    if list.hidden_non_declarations() > 0 {
+        lines.push(format!("{} import/external row(s) on this page left out by --declarations-only", list.hidden_non_declarations()));
+    }
     if let Some(gap) = list.graph_gap() {
         lines.push(format!("graph relations incomplete: {gap}"));
     }
@@ -540,6 +543,9 @@ pub fn outline(tree: &OutlineTree, theme: Theme) -> String {
     summary.push_str(" (outline pagination only; analysis coverage is not certified)");
     if tree.unresolved() > 0 {
         let _ = write!(summary, " · {} unnamed", tree.unresolved());
+    }
+    if tree.filtered_out() > 0 {
+        let _ = write!(summary, " · {} left out by the kind filter", tree.filtered_out());
     }
     lines.push(theme.paint(Style::Dim, &summary));
     if let Some(page) = tree.page().filter(|page| page.continuation.is_some()) {

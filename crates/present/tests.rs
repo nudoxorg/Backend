@@ -2721,3 +2721,40 @@ fn related_paging_keeps_selected_identity_and_coordinate_assertion() {
         selector: backend_library::DeclarationSelector::SelectedAt { coordinate, .. }, limit: 11, cursor: None
     }) if coordinate == "@/src/main.ts:1::main"));
 }
+
+#[test]
+fn declarations_only_and_outline_kind_options_reach_the_request() {
+    let mut search = Invocation::new(grammar_for("search").expect("search grammar"));
+    search.push("request");
+    assert!(matches!(
+        lower(&search, PROJECT).expect("plain search"),
+        Request::Search { declarations_only: false, .. }
+    ));
+    search.raise("declarations-only");
+    assert!(matches!(
+        lower(&search, PROJECT).expect("declarations-only search"),
+        Request::Search { declarations_only: true, .. }
+    ));
+    // The MCP spelling reaches the same flag.
+    let grammar = grammar_for("search").expect("search grammar");
+    let json = serde_json::json!({"query": "request", "declarations_only": true});
+    let invocation = Invocation::from_json(grammar, json.as_object().expect("arguments"))
+        .expect("declarations_only is an accepted MCP argument");
+    assert!(matches!(
+        lower(&invocation, PROJECT).expect("lowers"),
+        Request::Search { declarations_only: true, .. }
+    ));
+
+    let mut outline = Invocation::new(grammar_for("outline").expect("outline grammar"));
+    assert!(matches!(lower(&outline, PROJECT).expect("bare outline"), Request::Outline(_)));
+    outline.set("exclude-kind", "variable");
+    let Request::OutlinePage { kinds, .. } = lower(&outline, PROJECT).expect("filtered outline") else {
+        panic!("a kind filter selects the bounded outline page");
+    };
+    assert!(!kinds.is_empty());
+    outline.set("kind", "klass");
+    assert_eq!(
+        lower(&outline, PROJECT).expect_err("unknown kind").slug(),
+        FaultSlug::Usage
+    );
+}
