@@ -114,6 +114,7 @@ pub(super) fn index_project_intent_with_cluster_and_intent(
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
+    sql_workers: Option<crate::builtin::sql_index::SqlWorkers>,
 ) -> Result<Option<PreparedProductSelection>, BuiltinModelError> {
     index_project_intent_at_with_cluster_and_intent(
         daemon,
@@ -127,6 +128,7 @@ pub(super) fn index_project_intent_with_cluster_and_intent(
         semantic_authority,
         owner_cluster,
         pending_stored_acks,
+        sql_workers,
     )
 }
 
@@ -157,6 +159,7 @@ pub(super) fn prepare_index_project(
         None,
         None,
         true,
+        None,
     )
 }
 
@@ -208,6 +211,7 @@ fn index_project_intent_at_with_cluster(
         semantic_authority,
         owner_cluster,
         pending_stored_acks,
+        None,
     )
 }
 
@@ -223,6 +227,7 @@ fn index_project_intent_at_with_cluster_and_intent(
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
+    sql_workers: Option<crate::builtin::sql_index::SqlWorkers>,
 ) -> Result<Option<PreparedProductSelection>, BuiltinModelError> {
     match prepare_index_project_at(
         daemon,
@@ -237,6 +242,7 @@ fn index_project_intent_at_with_cluster_and_intent(
         owner_cluster,
         pending_stored_acks,
         false,
+        sql_workers,
     )? {
         PreparedIndex::Ready(prepared) => Ok(prepared.into_option()),
         PreparedIndex::Compile(_) | PreparedIndex::Cluster(_) | PreparedIndex::CSharpParked(..) => Err(BuiltinModelError(
@@ -259,6 +265,7 @@ fn prepare_index_project_at(
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     defer: bool,
+    sql_workers: Option<crate::builtin::sql_index::SqlWorkers>,
 ) -> Result<PreparedIndex, BuiltinModelError> {
     let mut work = capture_index_scan(
         daemon,
@@ -272,9 +279,15 @@ fn prepare_index_project_at(
         Arc::new(AtomicBool::new(false)),
         compiler.python_interpreter_admission(),
     )?;
-    // The synchronous route commits without the publication worker, which SQL
-    // receipt custody requires; the owned index operation is the SQL route.
-    work.capture_sql = false;
+    // A local project added on the synchronous route carries SQL custody too:
+    // the owner stages and commits it with its own receipt authority (see
+    // `finish_add`), so `add` analyses SQL however it is reached. A registry
+    // archive is a dependency, not the project's own SQL, and a deferred compile
+    // is committed by the publication worker.
+    work.capture_sql = coordinate.is_none() && !defer;
+    if let Some(workers) = sql_workers {
+        work.sql_workers = workers;
+    }
     let mut committed_captures = BTreeMap::new();
     let result = finish_index_scan(
         daemon,

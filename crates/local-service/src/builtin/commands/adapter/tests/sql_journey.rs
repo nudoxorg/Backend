@@ -1195,3 +1195,47 @@ fn deleting_a_project_retires_its_sql_rows_and_the_workspace_reopens_clean() {
     assert_eq!(reopened.sql_rows, 0, "no SQL row survives the deletion");
     assert!(!reopened.analysis);
 }
+
+/// `add` behaves the same however it is reached. The synchronous route (a
+/// `Command::Add` executed in place, outside the owner's deferred lane) used to
+/// leave `.sql` files counted as unsupported; it now carries SQL custody, so
+/// the project's SQL is analysed, receipted and queryable exactly as after an
+/// owned index operation.
+#[test]
+fn the_synchronous_add_route_analyses_sql_like_the_owned_index_operation() {
+    let workers = admitted_workers(Some(frontend_worker("sqlite", "sqlite-worker")), None);
+    let mut fixture = AdapterFixture::new();
+    let (package, label) = fixture.add_target();
+    for (relative, bytes) in sqlite_files() {
+        let path = Path::new(&label).join(&relative);
+        fs::create_dir_all(path.parent().expect("parent")).expect("SQL directory");
+        fs::write(&path, bytes).expect("real SQL input");
+    }
+    fs::write(Path::new(&label).join("notes.txt"), "notes\n").expect("structural input");
+    let (adapter, daemon) = fixture.parts();
+    adapter.sql_test_workers = Some(workers);
+    let add = BuiltinIntent::add(package, label.clone()).expect("target source scope");
+    super::super::commit_builtin_intent(daemon, 0xc001, &add).expect("admit target");
+    adapter.publish_view(daemon, Some(&add)).expect("publish target");
+
+    adapter
+        .execute(daemon, &add_body(0xc002, package, &label))
+        .expect("synchronous add of a project with SQL");
+
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let (rows, embedded) = crate::builtin::sql_journey_support::count_rows(&snapshot).expect("SQL relation");
+    assert!(rows > 0, "the synchronous route published the SQL analysis");
+    assert_eq!(embedded, 0);
+    // Queried through the same read the CLI uses.
+    let mut query = request(Path::new(&label), SqlQueryRole::Definition);
+    query.kind = Some(SqlObjectKind::Table);
+    let page = crate::builtin::commands::sql_query::query(&snapshot, &[0x67; 32], &query).expect("query");
+    assert!(matches!(page.terminal, SqlQueryTerminal::Complete));
+    assert_eq!(page.hits.len(), 2, "accounts and orders");
+    // A second add of the unchanged project is a no-op, as on the owned route.
+    adapter
+        .execute(daemon, &add_body(0xc003, package, &label))
+        .expect("synchronous re-add");
+    let again = crate::builtin::sql_journey_support::count_rows(&daemon.engine().daemon().owner().snapshot()).expect("SQL relation");
+    assert_eq!(again.0, rows);
+}

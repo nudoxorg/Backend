@@ -24,7 +24,7 @@ pub(super) struct Reopened {
 }
 
 /// Count the rows (and embedded hosts) of the selected SQL relation.
-fn count_rows(snapshot: &backend_engine::WorkspaceSnapshot) -> Result<(usize, usize), Box<dyn Error>> {
+pub(super) fn count_rows(snapshot: &backend_engine::WorkspaceSnapshot) -> Result<(usize, usize), Box<dyn Error>> {
     use backend_engine::builtin::{SqlAnalysisRecord, sql_analysis_relation};
     let Some(relation) = sql_analysis_relation(snapshot).map_err(|e| e.to_string())? else { return Ok((0, 0)) };
     let (mut rows, mut embedded) = (0, 0);

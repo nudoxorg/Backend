@@ -4776,21 +4776,28 @@ impl CommandAdapter {
         if prepared_intent.as_ref().is_some_and(BuiltinIntent::has_native_ts_evidence) {
             return Err(BuiltinModelError("native TypeScript evidence requires the publication worker".into()).into());
         }
-        if prepared_intent.as_ref().is_some_and(BuiltinIntent::requires_v14_worker) {
+        // SQL custody needs the owner's receipt authority, which the owner holds
+        // for every workspace it opened; without it only the worker can commit.
+        let sql_custody = prepared_intent.as_ref().is_some_and(BuiltinIntent::requires_v14_worker);
+        if sql_custody && self.receipt_context.is_none() {
             return Err(BuiltinModelError("v14 native sections require the publication worker".into()).into());
         }
         let intent = match (prepared_intent.clone(), operation_key) {
             (Some(intent), Some(operation_key)) => Some(intent.with_operation_key(operation_key)?),
             (intent, _) => intent,
         };
+        let owner_context = self.receipt_context.clone();
         let prepared_intent = intent
             .as_ref()
             .map(|intent| {
-                prepare_builtin_intent_at(
-                    daemon,
+                // Staging is bound to the SQL proof's own cancellation token.
+                let staging = intent.sql_proof_cancellation().unwrap_or_else(|| Arc::clone(&cancellation));
+                prepare_builtin_intent_with_owner_at_snapshot(
+                    &daemon.engine().daemon().owner().snapshot(),
                     intent,
                     revision_fence.as_ref().map(|fence| fence.canonical_root()),
-                    Arc::clone(&cancellation),
+                    staging,
+                    owner_context.as_deref(),
                 )
             })
             .transpose()?;
@@ -4861,7 +4868,7 @@ impl CommandAdapter {
                     prepared_intent
                         .map(|prepared| {
                             let intent = prepared.intent.clone();
-                            commit_prepared_builtin_intent(daemon, request_id, prepared).map_err(
+                            commit_prepared_builtin_intent_inner(daemon, request_id, prepared, sql_custody).map_err(
                                 |error| {
                                     BuiltinModelError(format!(
                                         "commit product source intent: {error}"
@@ -5499,6 +5506,16 @@ impl CommandAdapter {
                 &mut self.semantic_authority,
                 self.owner_cluster.as_deref(),
                 self.pending_stored_acks.as_ref(),
+                {
+                    #[cfg(test)]
+                    {
+                        self.sql_test_workers.clone()
+                    }
+                    #[cfg(not(test))]
+                    {
+                        None
+                    }
+                },
             ) {
                 Ok(prepared) => prepared.unwrap_or(PreparedProductSelection {
                     native_noop_expectation: None,
