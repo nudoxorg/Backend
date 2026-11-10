@@ -20,13 +20,15 @@ mod profile;
 mod relation;
 mod semantic_capture_relation;
 mod semantic_relation;
+mod code_links;
 mod stylo_identity;
 mod stylo_projection;
 mod stylo_relation;
 mod csharp_receipt;
 pub use csharp_receipt::{admit_csharp_receipt_members, admit_csharp_receipt_relation, admit_csharp_receipt_relation_cancellable, admit_csharp_receipt_row, csharp_receipt_key, csharp_receipt_matches_source, csharp_receipt_members_digest, csharp_receipt_publication, csharp_receipt_relation, csharp_receipt_root_object, csharp_receipt_root_pointer_key, CSharpInputCoverage, CSharpInputObservation, CSharpMemberOutcome, CSharpReceiptImage, CSharpReceiptRecord, CSharpReceiptRelation, CSharpReceiptRootSchema, CSharpReceiptUnit, MAX_CSHARP_RECEIPT_MEMBERS, MAX_CSHARP_RECEIPT_ROW_BYTES};
 
-pub use stylo_relation::{admit_stylo_relation, admit_stylo_selection, stylo_analysis_relation, stylo_analysis_root_object, stylo_analysis_root_pointer_key, stylo_attempt_key, stylo_selection_key, stylo_host_key, stylo_rows_digest, StyloInventoryWitness, StyloAnalysisProfile, StyloAnalysisRecord, StyloAttemptArtifact, StyloAttemptOutcome, StyloAnalysisRelation, StyloAnalysisRootSchema, StyloInventory, StyloTerminal, StyloUnavailable, MAX_STYLO_RELATION_ROW_BYTES};
+pub use code_links::{CodeFactRow, CodeHostState, CodeImported, CodeSelection, CodeUnavailable, CODE_LINK_RECIPE, MAX_CODE_FACTS_PER_HOST, MAX_CODE_FACT_TEXT};
+pub use stylo_relation::{code_fact_key, code_host_key, admit_stylo_relation, admit_stylo_selection, stylo_analysis_relation, stylo_analysis_root_object, stylo_analysis_root_pointer_key, stylo_attempt_key, stylo_selection_key, stylo_host_key, stylo_rows_digest, StyloInventoryWitness, StyloAnalysisProfile, StyloAnalysisRecord, StyloAttemptArtifact, StyloAttemptOutcome, StyloAnalysisRelation, StyloAnalysisRootSchema, StyloInventory, StyloTerminal, StyloUnavailable, MAX_STYLO_RELATION_ROW_BYTES};
 pub use stylo_projection::{project_stylo_facts, stylo_parser_configuration_id, StyloProjectedFact, StyloProjectedRow, StyloProjectionBasis, StyloWorkerPolicy, MAX_STYLO_PROJECTED_ROW_BYTES, MAX_STYLO_PROJECTED_BYTES};
 pub use stylo_identity::{stylo_record_key, stylo_source_occurrence_key, StyloRecordKind, MAX_STYLO_RULE_DEPTH};
 pub use authority::WorkspaceViewProducerAdmission;

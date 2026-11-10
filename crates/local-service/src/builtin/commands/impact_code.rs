@@ -44,14 +44,14 @@ const CLASS_ATTRIBUTES: &[&str] = &["className", "class"];
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum Imported {
+pub(in crate::builtin) enum Imported {
     Default,
     Named(String),
     Namespace,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct ImportBinding {
+pub(in crate::builtin) struct ImportBinding {
     pub local: String,
     pub spec: String,
     pub imported: Imported,
@@ -59,7 +59,7 @@ pub(super) struct ImportBinding {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct ClassUse {
+pub(in crate::builtin) struct ClassUse {
     pub token: String,
     pub line: u32,
     pub owner: Option<String>,
@@ -68,7 +68,7 @@ pub(super) struct ClassUse {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct ModuleClassUse {
+pub(in crate::builtin) struct ModuleClassUse {
     /// Index into `imports` of the stylesheet binding.
     pub binding: usize,
     pub class: String,
@@ -77,7 +77,7 @@ pub(super) struct ModuleClassUse {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct RenderUse {
+pub(in crate::builtin) struct RenderUse {
     /// Local component name used as a JSX tag.
     pub local: String,
     pub line: u32,
@@ -85,7 +85,7 @@ pub(super) struct RenderUse {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct PropertyUse {
+pub(in crate::builtin) struct PropertyUse {
     pub name: String,
     pub line: u32,
     pub owner: Option<String>,
@@ -93,7 +93,7 @@ pub(super) struct PropertyUse {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(super) struct FileScan {
+pub(in crate::builtin) struct FileScan {
     pub path: String,
     pub imports: Vec<ImportBinding>,
     /// Stylesheet imports without bindings.
@@ -134,7 +134,7 @@ fn class_tokens(text: &str) -> impl Iterator<Item = &str> {
 }
 
 /// Scan one parsed module.
-fn scan_module(path: &str, source: &str, module: &OxcModule<'_>) -> FileScan {
+pub(in crate::builtin) fn scan_module(path: &str, source: &str, module: &OxcModule<'_>) -> FileScan {
     let semantic = &module.semantic;
     let nodes = semantic.nodes();
     let starts = line_starts(source);
@@ -587,6 +587,7 @@ pub(super) fn build_graph(scans: &BTreeMap<String, FileScan>) -> (BTreeMap<Key, 
     let mut edges: Vec<Edge> = Vec::new();
     let mut alias_imports = 0u32;
     let mut dynamic = 0u32;
+    let mut dynamic_files: Vec<&str> = Vec::new();
     let mut unresolved_renders = 0u32;
     let mut owner_node = |nodes: &mut BTreeMap<Key, Node>, file: &str, owner: &Option<String>, line: u32| -> Key {
         match owner {
@@ -614,6 +615,9 @@ pub(super) fn build_graph(scans: &BTreeMap<String, FileScan>) -> (BTreeMap<Key, 
     };
     for (file, scan) in scans {
         dynamic += scan.dynamic_class_expressions;
+        if scan.dynamic_class_expressions > 0 {
+            dynamic_files.push(file.as_str());
+        }
         // Declared components exist even when nothing links to them yet.
         for (name, line) in &scan.components {
             nodes.entry(component_key(file, name)).or_insert_with(|| {
@@ -768,7 +772,11 @@ pub(super) fn build_graph(scans: &BTreeMap<String, FileScan>) -> (BTreeMap<Key, 
     if dynamic > 0 {
         gaps.push(ImpactGap {
             facet: "code.dynamic-class".to_owned(),
-            note: "className expressions with runtime parts; only their static tokens are linked".to_owned(),
+            note: format!(
+                "className expressions with runtime parts in {}{}; only their static tokens are linked, and every link from them is a candidate",
+                dynamic_files.iter().take(4).copied().collect::<Vec<_>>().join(", "),
+                if dynamic_files.len() > 4 { format!(" and {} more", dynamic_files.len() - 4) } else { String::new() },
+            ),
             count: Some(dynamic),
         });
     }
@@ -804,7 +812,7 @@ struct IndexedFile {
     source: Key,
 }
 
-fn profile_for(path: &str) -> Option<TypeScriptSource> {
+pub(in crate::builtin) fn profile_for(path: &str) -> Option<TypeScriptSource> {
     match path.rsplit('.').next()? {
         "tsx" | "jsx" | "js" | "mjs" | "cjs" => Some(TypeScriptSource::Tsx),
         "ts" | "mts" | "cts" => Some(TypeScriptSource::TypeScript),
@@ -875,10 +883,52 @@ impl ImpactAdapter for CodeAdapter {
         let mut gaps = Vec::new();
         let mut reasons = Vec::new();
         let (mut stale, mut unparsed, mut total) = (Vec::new(), Vec::new(), 0usize);
+        // Links the index published are the graph; a file with no published
+        // facts (older index, budget, no CSS worker) is scanned here instead.
+        let persisted = match super::code_links::read_persisted(cx.snapshot, cx.project, cx.cancelled) {
+            Ok(persisted) => persisted,
+            Err(error) => {
+                if (cx.cancelled)() {
+                    return empty(ImpactDomainState::Unavailable { reason: "cancelled".to_owned() });
+                }
+                reasons.push(format!("the published code links could not be read ({error}); sources were scanned at query time"));
+                None
+            }
+        };
+        let mut from_index = 0u32;
+        let mut at_query = 0u32;
         for (index, file) in listed.iter().enumerate() {
             if (cx.cancelled)() {
                 return empty(ImpactDomainState::Unavailable { reason: "cancelled".to_owned() });
             }
+            if let Some(host) = persisted.as_ref().and_then(|code| code.hosts.get(&file.path)) {
+                let same_bytes = host.source == file.source && file.length.is_none_or(|length| length == host.byte_length);
+                if same_bytes {
+                    witnesses.push(FileWitness {
+                        root: root.clone(),
+                        path: file.path.clone(),
+                        length: host.byte_length,
+                        source: file.source,
+                    });
+                    match host.state {
+                        backend_engine::builtin::CodeHostState::Scanned { dynamic_class_expressions } => {
+                            scans.insert(
+                                file.path.clone(),
+                                super::code_links::scan_from_facts(&file.path, dynamic_class_expressions, &host.facts),
+                            );
+                            from_index += 1;
+                            continue;
+                        }
+                        backend_engine::builtin::CodeHostState::Unparsed => {
+                            unparsed.push(file.path.clone());
+                            continue;
+                        }
+                        // The index could not scan it; try here.
+                        backend_engine::builtin::CodeHostState::Unavailable(_) => {}
+                    }
+                }
+            }
+            at_query += 1;
             if index >= MAX_FILES || total >= MAX_TOTAL_BYTES {
                 reasons.push(format!("only the first {index} of {} sources were scanned", listed.len()));
                 gaps.push(ImpactGap {
@@ -932,6 +982,15 @@ impl ImpactAdapter for CodeAdapter {
                 facet: "code.unparsed-files".to_owned(),
                 note: format!("syntax errors, not scanned: {}", unparsed.iter().take(4).cloned().collect::<Vec<_>>().join(", ")),
                 count: Some(unparsed.len() as u32),
+            });
+        }
+        if at_query > 0 {
+            gaps.push(ImpactGap {
+                facet: "code.links-unpublished".to_owned(),
+                note: format!(
+                    "the index published style links for {from_index} sources; {at_query} were scanned at query time because no published facts matched their indexed bytes"
+                ),
+                count: Some(at_query),
             });
         }
         if listed.is_empty() {

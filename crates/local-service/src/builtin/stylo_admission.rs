@@ -32,6 +32,8 @@ pub(super) fn stylo_adapter_fingerprint() -> [u8; 32] {
         include_bytes!("../builtin.rs"),
         include_bytes!("commands/index.rs"),
         include_bytes!("commands/index_source_preparation.rs"),
+        include_bytes!("commands/code_links.rs"),
+        include_bytes!("commands/impact_code.rs"),
         include_bytes!("ingest.rs"),
         include_bytes!("source_budget.rs"),
         include_bytes!("source_frontier.rs"),
@@ -341,7 +343,12 @@ pub(super) fn plan_stylo_project_update(
     let owned_hosts: BTreeSet<_> = selected
         .iter()
         .filter_map(|(key, row)| match row {
-            StyloAnalysisRecord::Host { project: owner, .. } if owner == project => Some(*key),
+            StyloAnalysisRecord::Host { project: owner, .. }
+            | StyloAnalysisRecord::CodeHost { project: owner, .. }
+                if owner == project =>
+            {
+                Some(*key)
+            }
             _ => None,
         })
         .collect();
@@ -350,8 +357,10 @@ pub(super) fn plan_stylo_project_update(
         .filter(|(_, row)| match row {
             StyloAnalysisRecord::Selection { project: owner, .. }
             | StyloAnalysisRecord::Attempt { project: owner, .. }
-            | StyloAnalysisRecord::Host { project: owner, .. } => owner == project,
-            StyloAnalysisRecord::Fact { host, .. } => owned_hosts.contains(host),
+            | StyloAnalysisRecord::Host { project: owner, .. }
+            | StyloAnalysisRecord::CodeHost { project: owner, .. } => owner == project,
+            StyloAnalysisRecord::Fact { host, .. }
+            | StyloAnalysisRecord::CodeFact { host, .. } => owned_hosts.contains(host),
         })
         .map(|(key, row)| (*key, row.clone()))
         .collect();
@@ -504,7 +513,12 @@ pub(super) fn plan_stylo_retirement(
     let hosts = rows
         .iter()
         .filter_map(|(key, row)| match row {
-            StyloAnalysisRecord::Host { project: owner, .. } if *owner == project => Some(*key),
+            StyloAnalysisRecord::Host { project: owner, .. }
+            | StyloAnalysisRecord::CodeHost { project: owner, .. }
+                if *owner == project =>
+            {
+                Some(*key)
+            }
             _ => None,
         })
         .collect::<BTreeSet<_>>();
@@ -514,8 +528,10 @@ pub(super) fn plan_stylo_retirement(
             let owned = match &row {
                 StyloAnalysisRecord::Selection { project: owner, .. }
                 | StyloAnalysisRecord::Attempt { project: owner, .. }
-                | StyloAnalysisRecord::Host { project: owner, .. } => *owner == project,
-                StyloAnalysisRecord::Fact { host, .. } => hosts.contains(host),
+                | StyloAnalysisRecord::Host { project: owner, .. }
+                | StyloAnalysisRecord::CodeHost { project: owner, .. } => *owner == project,
+                StyloAnalysisRecord::Fact { host, .. }
+                | StyloAnalysisRecord::CodeFact { host, .. } => hosts.contains(host),
             };
             owned.then_some(StyloAnalysisChange {
                 key,
