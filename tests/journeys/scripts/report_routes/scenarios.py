@@ -738,6 +738,50 @@ def probe_owner_retirement(bin_dir, out):
                                    f"{[x['offset_ms'] for x in lost]}"}}
 
 
+def _cpu_seconds(pid):
+    """utime+stime of a live process, from /proc: stable under host load, unlike wall time."""
+    try:
+        fields = pathlib.Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def perf_timing(bin_dir, out):
+    """How long does indexing take, in wall time and in CPU time, with the host load beside it."""
+    rows = []
+    for kind in ("tiny", "crm", "budget"):
+        o = out / kind
+        r = Route(bin_dir, o)
+        try:
+            proj = _project(r, kind)
+            t = time.monotonic()
+            r.start_owner(proj)
+            startup = time.monotonic() - t
+            load0 = pathlib.Path("/proc/loadavg").read_text().split()[:3]
+            t = time.monotonic()
+            code, _, _ = r.cli("add", ["add", str(proj), "--wait", "--wait-timeout", "900"], proj)
+            cold = time.monotonic() - t
+            cpu_cold = _cpu_seconds(r.owner.pid)
+            t = time.monotonic()
+            code2, _, _ = r.cli("add-again", ["add", str(proj), "--wait", "--wait-timeout", "900"], proj)
+            warm = time.monotonic() - t
+            cpu_warm = _cpu_seconds(r.owner.pid)
+            load1 = pathlib.Path("/proc/loadavg").read_text().split()[:3]
+            files = sum(1 for p in proj.rglob("*") if p.is_file() and "node_modules" not in p.parts)
+            rows.append({"project": kind, "files": files, "owner_startup_s": round(startup, 2),
+                         "first_add_wall_s": round(cold, 2), "first_add_exit": code,
+                         "owner_cpu_s_after_first_add": cpu_cold,
+                         "second_add_wall_s": round(warm, 2), "second_add_exit": code2,
+                         "owner_cpu_s_after_second_add": cpu_warm,
+                         "loadavg_before": load0, "loadavg_after": load1,
+                         "cores": os.cpu_count()})
+        finally:
+            r.stop()
+    (out / "timings.json").write_text(json.dumps(rows, indent=1))
+    return {"index_timing": {"pass": all(x["first_add_exit"] == 0 for x in rows), "detail": json.dumps(rows)}}
+
+
 def gate_on_signed_out(bin_dir, out):
     """Which routes still answer when the account gate is ON and nobody is signed in.
 
@@ -760,5 +804,5 @@ def gate_on_signed_out(bin_dir, out):
         r.stop()
 
 
-SCENARIOS = {"probe_owner_retirement": probe_owner_retirement, "query_output": query_output, "gate_on_signed_out": gate_on_signed_out, "verify_budget": verify_budget, "probe_budget_no_csharp": probe_budget_no_csharp, "probe_budget_no_appshell": probe_budget_no_appshell, "probe_budget_no_next": probe_budget_no_next, "probe_refusals": probe_refusals, "probe_refs_mixed": probe_refs_mixed, "startup_missing_checker": startup_missing_checker, "probe_crm": probe_crm, "probe_budget_diag": probe_budget_diag, "probe_reindex_refusal": probe_reindex_refusal, "probe_refs_nested": probe_refs_nested, "probe_refs_gap": probe_refs_gap, "probe_react_variants": probe_react_variants, "probe_budget": probe_budget, "startup_path": startup_path, "probe_refs": probe_refs,
+SCENARIOS = {"perf_timing": perf_timing, "probe_owner_retirement": probe_owner_retirement, "query_output": query_output, "gate_on_signed_out": gate_on_signed_out, "verify_budget": verify_budget, "probe_budget_no_csharp": probe_budget_no_csharp, "probe_budget_no_appshell": probe_budget_no_appshell, "probe_budget_no_next": probe_budget_no_next, "probe_refusals": probe_refusals, "probe_refs_mixed": probe_refs_mixed, "startup_missing_checker": startup_missing_checker, "probe_crm": probe_crm, "probe_budget_diag": probe_budget_diag, "probe_reindex_refusal": probe_reindex_refusal, "probe_refs_nested": probe_refs_nested, "probe_refs_gap": probe_refs_gap, "probe_react_variants": probe_react_variants, "probe_budget": probe_budget, "startup_path": startup_path, "probe_refs": probe_refs,
              "probe_edits": probe_edits, "probe_churn": probe_churn, "probe_mcp": probe_mcp}
