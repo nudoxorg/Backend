@@ -675,6 +675,12 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
     if let Some(note) = view.note() {
         lines.push(format!("  {note}"));
         if view.records().is_empty() {
+            if view.is_references_result() {
+                lines.push(theme.paint(
+                    Style::Dim,
+                    "  no reference records captured at this revision",
+                ));
+            }
             index_search_page_footer(view, &mut lines);
             index_job_footer(view, &mut lines, theme);
             return lines.finish();
