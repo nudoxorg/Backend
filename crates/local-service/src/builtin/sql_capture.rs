@@ -1043,6 +1043,7 @@ pub(super) fn project_sql_project(
             ));
             continue;
         }
+        let started = std::time::Instant::now();
         let mut result = match (dialect, permit) {
             (SqlDialect::Sqlite, Some(permit)) => {
                 capture_sqlite_host(project, walk.root(), host, permit, cancellation.as_ref())
@@ -1055,6 +1056,18 @@ pub(super) fn project_sql_project(
                 None => Err(SqlUnavailable::UnsupportedDialect),
             },
         };
+        // Per-host timing for the worker wall: visible only with NUDOX_TRACE set.
+        super::sql_index::trace(format_args!(
+            "host {} ({} bytes, {:?}): {} ms, {}",
+            host.selected().path,
+            host.bytes().len(),
+            dialect,
+            started.elapsed().as_millis(),
+            match &result {
+                Ok(draft) => format!("{:?}", draft.terminal),
+                Err(reason) => format!("unavailable {reason:?}"),
+            }
+        ));
         // A host with no dialect signal is offered to the other native parser when
         // the first one rejects it. The accepted dialect is what gets recorded.
         if host.oracle() && dialect == SqlDialect::Sqlite {
