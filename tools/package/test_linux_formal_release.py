@@ -64,6 +64,44 @@ def make_t1_artifact(root: Path, source_sha: str = "a" * 40) -> dict:
     return manifest
 
 
+def fake_run(command):
+    """readelf/ldd/patchelf/strip stand-ins: relocation appends bytes, nothing else changes."""
+    tool, operation = Path(command[0]).name, command[1]
+    if tool == "fake-readelf":
+        if operation == "-h":
+            return "Class: ELF64\nMachine: Advanced Micro Devices X86-64\n"
+        if operation == "-d":
+            return ""
+        if operation == "-l":
+            return f"Requesting program interpreter: {release.INTERPRETER}]\n"
+        if operation == "--version-info":
+            return "GLIBC_2.17"
+    if tool == "fake-ldd":
+        return "linux-vdso.so.1 (0x00007fff0000)\n"
+    if tool == "fake-patchelf":
+        packaged = Path(command[-1])
+        if operation == "--set-interpreter":
+            packaged.write_bytes(packaged.read_bytes() + b"relocated")
+            return ""
+        if operation == "--set-rpath":
+            return ""
+        if operation == "--print-rpath":
+            return "$ORIGIN/../lib"
+    if tool == "fake-strip" and operation == "--strip-all":
+        packaged = Path(command[-1])
+        packaged.write_bytes(packaged.read_bytes()[:4])
+        return ""
+    raise AssertionError(f"unexpected fake tool command: {command}")
+
+
+def fake_tools():
+    return (
+        patch.object(release, "run", side_effect=fake_run),
+        patch.dict(release.elf_info.__globals__, {"run": fake_run}),
+        patch.object(release, "require_tool", side_effect=lambda path, label: Path(path)),
+    )
+
+
 class LoadT1ManifestTests(unittest.TestCase):
     def test_accepts_a_well_formed_linux_x64_artifact(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -224,28 +262,6 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
             t1_manifest = make_t1_artifact(artifact, revision)
             output = root / "candidate"
 
-            def fake_run(command):
-                tool, operation = Path(command[0]).name, command[1]
-                if tool == "fake-readelf":
-                    if operation == "-h":
-                        return "Class: ELF64\nMachine: Advanced Micro Devices X86-64\n"
-                    if operation == "-d":
-                        return ""
-                    if operation == "-l":
-                        return f"Requesting program interpreter: {release.INTERPRETER}]\n"
-                    if operation == "--version-info":
-                        return "GLIBC_2.17"
-                if tool == "fake-ldd":
-                    return "linux-vdso.so.1 (0x00007fff0000)\n"
-                if tool == "fake-patchelf":
-                    packaged = Path(command[-1])
-                    if operation == "--set-interpreter":
-                        packaged.write_bytes(packaged.read_bytes() + b"relocated")
-                        return ""
-                    if operation == "--print-rpath":
-                        return "$ORIGIN/../lib"
-                raise AssertionError(f"unexpected fake tool command: {command}")
-
             with (
                 patch.object(release, "run", side_effect=fake_run),
                 patch.dict(release.elf_info.__globals__, {"run": fake_run}),
@@ -275,6 +291,93 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
                     self.assertEqual(record["bytes"], len(packaged_bytes))
                     self.assertEqual(record["t1_artifact_sha256"], t1_record["sha256"])
                     self.assertEqual(record["t1_artifact_bytes"], t1_record["bytes"])
+
+    def test_release_build_with_gui_libraries_passes_the_real_release_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            revision, tree, _ = make_source_repo(source)
+            build = root / "target" / "release"
+            build.mkdir(parents=True)
+            for name in release.EXECUTABLES:
+                (build / name).write_bytes(b"\x7fELF with debug info")
+            gui = root / "gui-libs"
+            gui.mkdir()
+            for soname in ("libxkbcommon.so.0", "libwayland-client.so.0"):
+                (gui / soname).write_bytes(b"\x7fELF " + soname.encode())
+            sonames = root / "gui-sonames.txt"
+            sonames.write_text("# fixture\nlibxkbcommon.so.0\nlibwayland-client.so.0\nlibc.so.6\n")
+            output = root / "candidate"
+            run_patch, elf_patch, tool_patch = fake_tools()
+            with (
+                run_patch, elf_patch, tool_patch,
+                patch.object(release, "GUI_SONAMES", sonames),
+                patch.object(sys, "argv", [
+                    "linux_formal_release.py", "--release-dir", str(build),
+                    "--source", str(source), "--output", str(output),
+                    "--patchelf", "fake-patchelf", "--readelf", "fake-readelf", "--ldd", "fake-ldd",
+                    "--strip", "fake-strip", "--gui-library-path", f"{root / 'absent'}:{gui}",
+                ]),
+            ):
+                self.assertEqual(release.main(), 0)
+
+            self.assertFalse((output / "stage").exists(), "the stripped stage is not part of the candidate")
+            admitted = release_contract.validate(output, source=source, platform="linux-x64", require_qa=False)
+            self.assertEqual((admitted["source_sha"], admitted["source_tree"]), (revision, tree))
+            with tarfile.open(output / release.ASSET, "r:gz") as bundle:
+                names = set(bundle.getnames())
+                build_manifest = json.load(bundle.extractfile("Nudox/resources/build-manifest.json"))
+                launcher = bundle.extractfile("Nudox/bin/nudox-desktop").read().decode()
+                library = bundle.getmember("Nudox/lib/libxkbcommon.so.0")
+            self.assertTrue({"Nudox/lib/libxkbcommon.so.0", "Nudox/lib/libwayland-client.so.0"} <= names)
+            self.assertNotIn("Nudox/lib/libc.so.6", names, "glibc comes from the host")
+            self.assertTrue({f"Nudox/bin/{name}" for name in release.LAUNCHERS} <= names)
+            self.assertIn('exec "$here/backend-desktop" "$@"', launcher)
+            self.assertEqual(library.mode & 0o777, 0o755)
+            self.assertEqual(build_manifest["profile"], "release")
+            record = build_manifest["executables"]["backend-cli"]
+            self.assertEqual(record["t1_artifact_bytes"], 4, "the stripped bytes are what was relocated")
+
+    def test_release_build_refuses_a_missing_gui_library(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            make_source_repo(source)
+            build = root / "release"
+            build.mkdir()
+            for name in release.EXECUTABLES:
+                (build / name).write_bytes(b"\x7fELF")
+            sonames = root / "gui-sonames.txt"
+            sonames.write_text("libvulkan.so.1\n")
+            run_patch, elf_patch, tool_patch = fake_tools()
+            with (
+                run_patch, elf_patch, tool_patch,
+                patch.object(release, "GUI_SONAMES", sonames),
+                patch.object(sys, "argv", [
+                    "linux_formal_release.py", "--release-dir", str(build),
+                    "--source", str(source), "--output", str(root / "candidate"),
+                    "--patchelf", "fake-patchelf", "--readelf", "fake-readelf", "--ldd", "fake-ldd",
+                    "--strip", "fake-strip", "--gui-library-path", str(root),
+                ]),
+            ):
+                with self.assertRaisesRegex(ValueError, "libvulkan.so.1"):
+                    release.main()
+
+    def test_portable_linux_publication_uploads_a_pinned_shell_installer(self):
+        manifest = {"asset": release.ASSET, "sha256": "d" * 64, "minimum_os": "Linux glibc 2.39"}
+        template = Path(release.__file__).with_name("install_linux.sh.in").read_bytes()
+        script = release_contract.linux_shell_installer(template, "v0.3.0-rc.2-linux-x64", manifest).decode()
+        self.assertIn('TAG="v0.3.0-rc.2-linux-x64"', script)
+        self.assertIn(f'SHA256="{"d" * 64}"', script)
+        self.assertIn('MINIMUM_GLIBC="2.39"', script)
+        self.assertNotRegex(script, r"@[A-Z_]+@")
+        for tag in ("v0.3.0-rc.2-macos", "checkpoint-x", "v0.3.0; rm -rf /"):
+            with self.assertRaises(ValueError):
+                release_contract.linux_shell_installer(template, tag, manifest)
+        with self.assertRaisesRegex(ValueError, "glibc floor"):
+            release_contract.linux_shell_installer(template, "v0.3.0", {**manifest, "minimum_os": "Linux"})
 
     def test_archive_contents_are_nudox_prefixed_with_no_links(self):
         with tempfile.TemporaryDirectory() as directory:
