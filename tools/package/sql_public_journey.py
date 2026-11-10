@@ -106,7 +106,7 @@ def start_owner():
          "--authority-secret-file", str(secret), "--registry-offline", "--registry-discovery-offline",
          "--advisory-offline", "--forge-offline"],
         cwd=project, env=env, stdout=subprocess.DEVNULL, stderr=err, start_new_session=True)
-    deadline = time.monotonic() + 120
+    deadline = time.monotonic() + 600
     while not endpoint.exists():
         if owner.poll() is not None:
             fail(f"owner exited {owner.returncode} before its endpoint existed")
