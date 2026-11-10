@@ -135,10 +135,23 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         let selected = self.frozen_python_paths(home)?;
         if explicit {
             if let Some(path) = selected.into_iter().next() {
-                paths.push((
-                    LocalHostVariable::NudoxPython,
-                    self.canonical_configured_selection_path(LocalHostVariable::NudoxPython, path)?,
-                ));
+                // The selected interpreter is executed only when a project asks for an
+                // installed environment, so an unusable spelling must not stop the owner:
+                // it is frozen as written and that request fails with its own typed error.
+                // Every other language, and every Python project that needs no installed
+                // environment, keeps working.
+                let admitted = match self
+                    .canonical_configured_selection_path(LocalHostVariable::NudoxPython, path.clone())
+                {
+                    Ok(canonical) => canonical,
+                    Err(
+                        LocalCompilerHostError::ConfiguredPath { .. }
+                        | LocalCompilerHostError::ConfiguredPathKind { .. }
+                        | LocalCompilerHostError::Canonicalize { .. },
+                    ) => path,
+                    Err(error) => return Err(error),
+                };
+                paths.push((LocalHostVariable::NudoxPython, admitted));
             }
         } else {
             paths.extend(INSTALLED_PYTHON_ROLES.into_iter().zip(selected));
