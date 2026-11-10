@@ -583,6 +583,122 @@ def verify_budget(bin_dir, out):
         r.stop()
 
 
+def _poll_kind(result):
+    body = result.get("structuredContent", {})
+    return (body.get("surface", {}) or {}).get("result")
+
+
+def query_output(bin_dir, out):
+    """Query and output behaviour, through real CLI and MCP processes."""
+    checks = {}
+
+    def ok(finding, condition, detail):
+        entry = checks.setdefault(finding, {"pass": True, "detail": []})
+        entry["pass"] = entry["pass"] and bool(condition)
+        entry["detail"].append(("ok: " if condition else "FAIL: ") + str(detail))
+
+    r = Route(bin_dir, out)
+    try:
+        proj = _project(r, "budget")
+        r.start_owner(proj)
+        r.start_mcp(proj)
+        # Index through MCP and classify every poll by size and kind.
+        result = r.tool("backend.index", {"path": str(proj)})
+        polls = [("index", len(json.dumps(result)))]
+        deadline = time.monotonic() + 1500
+        while True:
+            call = result.get("structuredContent", {}).get("index_poll", {}).get("call")
+            if not call:
+                break
+            if time.monotonic() > deadline:
+                raise RuntimeError("MCP index timed out")
+            time.sleep(0.5)
+            result = r.rpc("tools/call", call)
+            polls.append((_poll_kind(result) or "terminal", len(json.dumps(result))))
+        (out / "poll-sizes.json").write_text(json.dumps(polls))
+        unchanged = [size for kind, size in polls if kind == "index-progress-unchanged"]
+        changed = [size for kind, size in polls[1:] if kind != "index-progress-unchanged"]
+        ok("poll_size", unchanged and max(unchanged) < 1000, f"unchanged polls {unchanged} bytes (base 2359)")
+        ok("poll_size", changed and max(changed) < 8000, f"changed polls {changed} bytes (base 5521-8936)")
+        ok("poll_size", not result.get("isError"), "final poll is not an error")
+        r.cli("add", ["add", str(proj), "--wait", "--wait-timeout", "900"], proj)
+
+        # packages names the languages and their file counts.
+        _, pk, _ = r.cli("packages", ["packages"], proj)
+        profiles = (((pk or {}).get("projects") or [{}])[0]).get("source_profiles") or []
+        by = {p["profile"]: p for p in profiles}
+        ok("shelf_languages", "csharp" in by and by["csharp"]["files"] > 0, f"source_profiles={profiles}")
+        ok("shelf_languages", any(k in by for k in ("typescript", "tsx")), "a TypeScript profile is listed")
+        _, md, text = r.cli("packages-text", ["--format", "markdown", "packages"], proj, json_out=False)
+        ok("shelf_languages", "csharp" in text and "file(s)" in text, f"markdown packages: {text[:300]!r}")
+
+        # The layout tag is named as such and the revision follows the edit.
+        _, _, before = r.cli("status-before", ["--format", "markdown", "status"], proj, json_out=False)
+        api = proj / "frontend/lib/api.ts"
+        api.write_text(api.read_text() + "\nexport const rqEdited = 1;\n")
+        r.cli("re-add", ["add", str(proj), "--wait", "--wait-timeout", "900"], proj)
+        _, _, after = r.cli("status-after", ["--format", "markdown", "status"], proj, json_out=False)
+        import re
+        rev = lambda t: (re.search(r"revision ([0-9a-f]{8})", t) or [None, None])[1]
+        lay = lambda t: (re.search(r"store layout ([0-9a-f]{8})", t) or [None, None])[1]
+        ok("status_layout", rev(before) and rev(after) and rev(before) != rev(after), f"revision {rev(before)} -> {rev(after)}")
+        ok("status_layout", lay(before) and lay(before) == lay(after), f"store layout {lay(before)} -> {lay(after)}, constant")
+        ok("status_layout", " source " not in after.splitlines()[0], "the status line no longer calls the layout tag `source`")
+
+        # declarations_only on CLI and MCP.
+        _, allrows, _ = r.cli("search-all", ["search", "Button", "--limit", "50"], proj)
+        _, only, _ = r.cli("search-decl", ["search", "Button", "--limit", "50", "--declarations-only"], proj)
+        kinds = lambda o: [row.get("kind") for row in _rows(o)]
+        ok("declarations_only", "import" in kinds(allrows), f"unfiltered search returns imports: {kinds(allrows)}")
+        ok("declarations_only", "import" not in kinds(only) and only.get("hidden_non_declarations", 0) > 0,
+           f"filtered kinds={kinds(only)} hidden={only.get('hidden_non_declarations')}")
+        ok("declarations_only", len(kinds(only)) + only.get("hidden_non_declarations", 0) == len(kinds(allrows)),
+           "no row is lost: kept + hidden == all")
+        mcp = r.tool("backend.search", {"query": "Button", "limit": 50, "declarations_only": True})
+        sc = mcp.get("structuredContent", {})
+        ok("declarations_only", not mcp.get("isError") and "import" not in [x.get("kind") for x in sc.get("records", [])]
+           and sc.get("hidden_non_declarations", 0) > 0, f"MCP kinds={[x.get('kind') for x in sc.get('records', [])]}")
+
+        # Outline kind filter on CLI and MCP.
+        _, full, _ = r.cli("outline-all", ["outline", "--limit", "200"], proj)
+        _, slim, _ = r.cli("outline-slim", ["outline", "--limit", "200", "--exclude-kind", "variable"], proj)
+
+        def walk(nodes):
+            for node in nodes:
+                yield node
+                yield from walk(node.get("children", []))
+        ok("outline_kind_filter", any(n.get("kind") == "variable" for n in walk(full.get("roots", []))), "unfiltered outline lists variables (parameters/locals)")
+        ok("outline_kind_filter", not any(n.get("kind") == "variable" for n in walk(slim.get("roots", []))) and slim.get("filtered_out", 0) > 0,
+           f"filtered outline has no variables, filtered_out={slim.get('filtered_out')}")
+        bad = r.cli("outline-badkind", ["outline", "--kind", "klass"], proj)
+        ok("outline_kind_filter", bad[0] != 0 and "variable" in bad[2], "an unknown kind is refused with the closed list")
+        m = r.tool("backend.outline", {"limit": 200, "exclude_kind": "variable"})
+        msc = m.get("structuredContent", {})
+        ok("outline_kind_filter", not m.get("isError") and not any(n.get("kind") == "variable" for n in walk(msc.get("roots", []))) and msc.get("filtered_out", 0) > 0,
+           f"MCP outline filtered_out={msc.get('filtered_out')} isError={m.get('isError')}")
+
+        # A limit-1 MCP search cursor is a short handle that resumes the next page.
+        first = r.tool("backend.search", {"query": "Button", "limit": 1})
+        fsc = first.get("structuredContent", {})
+        cursor = fsc.get("nextCursor")
+        ok("cursor_handle", cursor and len(cursor) < 120, f"nextCursor is {len(cursor or '')} bytes (base 2470); result {len(json.dumps(first))} bytes (base 3575)")
+        second = r.tool("backend.search", {"query": "Button", "limit": 1, "cursor": cursor})
+        ssc = second.get("structuredContent", {})
+        ok("cursor_handle", not second.get("isError") and ssc.get("records") and ssc["records"][0]["identity"]["coordinate"] != fsc["records"][0]["identity"]["coordinate"],
+           "the handle resumes the following page")
+        wrong = r.tool("backend.search", {"query": "AppShell", "limit": 1, "cursor": cursor}, allow_error=True)
+        ok("cursor_handle", wrong.get("isError") or wrong.get("code"), f"the handle does not resume a different call: {json.dumps(wrong)[:200]}")
+        # A restarted server no longer holds the handle and says so.
+        r.mcp.stdin.close(); r.mcp.wait(timeout=10); r.pending = bytearray()
+        r.start_mcp(proj)
+        stale = r.tool("backend.search", {"query": "Button", "limit": 1, "cursor": cursor}, allow_error=True)
+        text = json.dumps(stale)
+        ok("cursor_handle", "short-lived" in text and "without a cursor" in text, f"expired handle is refused honestly: {text[:240]}")
+        return checks
+    finally:
+        r.stop()
+
+
 def gate_on_signed_out(bin_dir, out):
     """Which routes still answer when the account gate is ON and nobody is signed in.
 
@@ -605,5 +721,5 @@ def gate_on_signed_out(bin_dir, out):
         r.stop()
 
 
-SCENARIOS = {"gate_on_signed_out": gate_on_signed_out, "verify_budget": verify_budget, "probe_budget_no_csharp": probe_budget_no_csharp, "probe_budget_no_appshell": probe_budget_no_appshell, "probe_budget_no_next": probe_budget_no_next, "probe_refusals": probe_refusals, "probe_refs_mixed": probe_refs_mixed, "startup_missing_checker": startup_missing_checker, "probe_crm": probe_crm, "probe_budget_diag": probe_budget_diag, "probe_reindex_refusal": probe_reindex_refusal, "probe_refs_nested": probe_refs_nested, "probe_refs_gap": probe_refs_gap, "probe_react_variants": probe_react_variants, "probe_budget": probe_budget, "startup_path": startup_path, "probe_refs": probe_refs,
+SCENARIOS = {"query_output": query_output, "gate_on_signed_out": gate_on_signed_out, "verify_budget": verify_budget, "probe_budget_no_csharp": probe_budget_no_csharp, "probe_budget_no_appshell": probe_budget_no_appshell, "probe_budget_no_next": probe_budget_no_next, "probe_refusals": probe_refusals, "probe_refs_mixed": probe_refs_mixed, "startup_missing_checker": startup_missing_checker, "probe_crm": probe_crm, "probe_budget_diag": probe_budget_diag, "probe_reindex_refusal": probe_reindex_refusal, "probe_refs_nested": probe_refs_nested, "probe_refs_gap": probe_refs_gap, "probe_react_variants": probe_react_variants, "probe_budget": probe_budget, "startup_path": startup_path, "probe_refs": probe_refs,
              "probe_edits": probe_edits, "probe_churn": probe_churn, "probe_mcp": probe_mcp}
