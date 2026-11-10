@@ -1454,4 +1454,57 @@ mod tests {
         assert!(gap.note.contains("indexed before @import was recorded"), "{}", gap.note);
         assert_eq!(gap.count, Some(1));
     }
+
+    #[test]
+    fn vue_style_blocks_own_their_classes_and_report_lines_in_the_vue_file() {
+        use backend_engine::builtin::StyloFragment;
+        // Badge.vue: <style scoped> content starts on line 12; <style> (global) on line 20.
+        let scoped = HostModel {
+            key: [1; 32],
+            path: "src/Badge.vue#style/2".into(),
+            parsed: true,
+            imports_captured: true,
+            fragment: Some(StyloFragment { file: "src/Badge.vue".into(), block: 2, start: 100, end: 160, line: 12, scoped: true, module: false }),
+            rules: vec![rule(&[0], StyloRuleKind::Style, "Style", None, 1)],
+            selectors: vec![selector(&[0], 0, ".badge")],
+            source: Some([5; 32]),
+            byte_length: Some(400),
+            ..HostModel::default()
+        };
+        let global = HostModel {
+            key: [2; 32],
+            path: "src/Badge.vue#style/3".into(),
+            parsed: true,
+            imports_captured: true,
+            fragment: Some(StyloFragment { file: "src/Badge.vue".into(), block: 3, start: 200, end: 240, line: 20, scoped: false, module: false }),
+            rules: vec![rule(&[0], StyloRuleKind::Style, "Style", None, 0)],
+            selectors: vec![selector(&[0], 0, ".ribbon")],
+            source: Some([5; 32]),
+            byte_length: Some(400),
+            ..HostModel::default()
+        };
+        let model = CssModel {
+            state: ImpactDomainState::Analyzed,
+            source_root: Some(std::path::PathBuf::from("/project")),
+            hosts: vec![scoped, global],
+            inventory_incomplete: false,
+        };
+        let (load, parsed) = build_graph(&model, &|_, _| None);
+        assert_eq!(parsed, 2);
+        // One file node and one witness per file, however many blocks it holds.
+        assert_eq!(load.files.len(), 1);
+        assert_eq!(load.files[0].path, "src/Badge.vue");
+        assert_eq!(load.nodes.values().filter(|node| node.kind == "file").count(), 1);
+        // A scoped block's class belongs to its component; an unscoped block's is global.
+        assert_eq!(load.nodes.get(&module_class_key("src/Badge.vue", "badge")).map(|node| node.name.as_str()), Some("badge"));
+        assert!(load.nodes.get(&global_class_key("badge")).is_none(), "a scoped class is not global");
+        assert!(load.nodes.get(&global_class_key("ribbon")).is_some());
+        let badge = &load.nodes[&module_class_key("src/Badge.vue", "badge")];
+        assert_eq!(badge.path.as_deref(), Some("src/Badge.vue"));
+        assert_eq!(badge.line, Some(13), "line of the rule in the .vue file: block starts on 12, rule on its second line");
+        assert!(badge.within.as_deref().is_some_and(|within| within.contains("scoped")), "{:?}", badge.within);
+        assert_eq!(load.nodes[&global_class_key("ribbon")].line, Some(20));
+        let report = ask(&model, "class", "ribbon", ImpactDirection::Dependents, 2);
+        assert!(matches!(report.seed_state, ImpactSeedState::Resolved), "{report:?}");
+    }
 }
