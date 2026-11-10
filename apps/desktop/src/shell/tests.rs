@@ -134,6 +134,7 @@ pub(crate) fn page(name: &str) -> SymbolPage {
             other: Arc::from([]),
         }),
         rose: Rose {
+            relations_gap: None,
             up: Known::Known(Arc::from([relation("Display", DeclarationKind::Trait)])),
             down: Known::Known(Arc::from([relation("Typed", DeclarationKind::Variant), relation("Related", DeclarationKind::Variant)])),
             left: Known::Unknown(unknown(GapReason::NoSemanticPublication)),
@@ -141,6 +142,7 @@ pub(crate) fn page(name: &str) -> SymbolPage {
             implemented_by: Known::Known(Arc::from([])),
         },
         references: Known::Unknown(unknown(GapReason::NoSemanticPublication)),
+        references_gap: None,
         workspace: Arc::from([]),
         outline: Known::Unknown(unknown(GapReason::NotServed)),
     }
@@ -280,6 +282,7 @@ impl PageReader for Fixture {
                     declaration: Known::Known(LineSpan { first: 138, last: 140 }),
                     identifiers: Known::Known(Arc::from([])),
                     uses: Known::Known(Arc::from([])),
+                    references_gap: None,
                     uses_elsewhere: Arc::from([]),
                 })
             }
@@ -2051,7 +2054,7 @@ fn appearance_zoom_choices_stay_in_the_visible_control_when_resized_at_200_perce
         }
         assert_eq!(
             seen,
-            labels.iter().cloned().collect(),
+            labels.iter().cloned().collect::<std::collections::BTreeSet<_>>(),
             "every zoom option is actually visible and reachable at {width:.0}px and 200%"
         );
     }

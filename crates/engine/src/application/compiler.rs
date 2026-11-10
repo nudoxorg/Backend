@@ -548,6 +548,24 @@ impl<'source> PackageSource<'source> {
     }
 }
 
+/// Exact ordered in-package project and ancestor configuration probes.
+pub(crate) fn csharp_config_probe_paths(unit: &CompilationUnitKeyV2) -> Option<Vec<String>> {
+    let CompilationUnitKeyV2::CSharpProject { project_path } = unit else { return None; };
+    let path: &str = project_path.as_ref();
+    PackageSource::validate_path(path).ok()?;
+    if !path.to_ascii_lowercase().ends_with(".csproj") { return None; }
+    let mut result = vec![path.to_owned()];
+    let mut directory = path.rsplit_once('/').map_or("", |(directory, _)| directory);
+    for _ in 0..8 {
+        let prefix = if directory.is_empty() { String::new() } else { format!("{directory}/") };
+        result.push(format!("{prefix}Directory.Build.props"));
+        result.push(format!("{prefix}Directory.Build.targets"));
+        if directory.is_empty() { return Some(result); }
+        directory = directory.rsplit_once('/').map_or("", |(parent, _)| parent);
+    }
+    None
+}
+
 /// Checked package-wide semantic compilation input.
 #[derive(Clone, Debug)]
 pub struct PackageSourceSet<'source> {
@@ -555,6 +573,8 @@ pub struct PackageSourceSet<'source> {
     package_target: CompilerPackageTargetV2,
     package_root: &'source Path,
     sources: &'source [PackageSource<'source>],
+    csharp_config: Option<&'source [backend_frontend_csharp::legacy::CSharpCapturedConfig<'source>]>,
+    csharp_sdk_probes: Option<&'source [backend_frontend_csharp::legacy::CSharpSdkProbe<'source>]>,
     python_raw_sources: Option<
         &'source [backend_frontend_python::legacy::checker::PythonProjectBytesSource<'source>],
     >,
@@ -633,6 +653,8 @@ impl<'source> PackageSourceSet<'source> {
             package_target: package_target.clone(),
             package_root,
             sources,
+            csharp_config: None,
+            csharp_sdk_probes: None,
             python_raw_sources: None,
             input_claim: None,
             embedding_provisioning_failure: None,
@@ -643,6 +665,32 @@ impl<'source> PackageSourceSet<'source> {
             native_clang_candidate: false,
             expected_rust_target_source_closure: None,
         })
+    }
+
+    /// Attaches owner-captured C# project/configuration probes to an exact unit.
+    /// This is an input claim, not source or publication authority.
+    pub fn with_csharp_config(
+        mut self,
+        config: &'source [backend_frontend_csharp::legacy::CSharpCapturedConfig<'source>],
+    ) -> Result<Self, PackageSourceSetError> {
+        let expected = csharp_config_probe_paths(self.package_target.unit_key())
+            .ok_or(PackageSourceSetError::NativeCSharpProfileMismatch)?;
+        if !matches!(self.request.target.profile, LanguageProfile::CSharp(_))
+            || config.len() != expected.len() || config.first().is_none_or(|probe| probe.text.is_none())
+            || config.iter().zip(expected.iter()).any(|(probe, path)| probe.path != path) {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        let size = config.iter().try_fold(0usize, |total, probe| {
+            total.checked_add(probe.path.len())?.checked_add(probe.text.map_or(0, str::len))
+        }).ok_or(PackageSourceSetError::NativeCSharpProfileMismatch)?;
+        if size > 2 * 1024 * 1024 { return Err(PackageSourceSetError::NativeCSharpProfileMismatch); }
+        self.csharp_config = Some(config);
+        Ok(self)
+    }
+
+    pub(crate) fn with_csharp_sdk_probes(mut self, probes: &'source [backend_frontend_csharp::legacy::CSharpSdkProbe<'source>]) -> Self {
+        self.csharp_sdk_probes = Some(probes);
+        self
     }
 
     /// Marks this exact checked package frontier as compiler-only native Clang input.
@@ -779,7 +827,7 @@ impl<'source> PackageSourceSet<'source> {
     }
 }
 
-fn unit_source_matches(unit: &CompilationUnitKeyV2, relative_path: &str) -> bool {
+pub(crate) fn unit_source_matches(unit: &CompilationUnitKeyV2, relative_path: &str) -> bool {
     match unit {
         CompilationUnitKeyV2::PackageRoot => true,
         CompilationUnitKeyV2::RustCrate { root, .. } => relative_path == root.as_ref(),
@@ -954,6 +1002,9 @@ pub enum PackageSourceSetError {
     /// The distinct native C# candidate route was requested for a non-C# profile.
     #[error("native C# source candidates require a C# profile and UTF-8 bytes")]
     NativeCSharpProfileMismatch,
+    /// Captured SDK inputs cannot be ignored while native SDK observation is unavailable.
+    #[error("captured C# SDK selection is not yet available")]
+    CSharpSdkObservationUnavailable,
     /// Package roots must have host-independent absolute identity.
     #[error("package source root is relative")]
     RelativeRoot,
@@ -1598,6 +1649,7 @@ mod typescript_snapshot_outcome_tests {
                 Gap::SourceRejectedByNativeCompiler,
                 Gap::SourceNotRepresentable,
                 Gap::RustSourceOutsideActiveCargoTarget,
+                Gap::RustSourceSharedByCargoTargets,
                 Gap::PythonSourceSyntaxUnavailable,
                 Gap::PythonSourceEncodingUnavailable,
                 Gap::PythonSourceDependencyUnavailable,
@@ -1696,6 +1748,108 @@ impl StagedSemanticPackage {
             && self.target_identity == manifest.package_target().target()
             && self.profile == manifest.invocation_recipe().profile()
             && self.stage == manifest.invocation_recipe().stage()
+    }
+
+    /// Same-attempt C# project/configuration presence and absence claims.
+    #[must_use]
+    pub fn csharp_config_probes(&self) -> &[StagedCSharpConfigProbe] {
+        &self.staged.csharp_config
+    }
+
+    /// Same-attempt C# invocation claims. These are not selected source authority.
+    #[must_use]
+    pub fn csharp_invocation_evidence(&self) -> &[StagedCSharpInvocationEvidence] {
+        &self.staged.csharp_evidence
+    }
+
+    /// Builds a bounded claim-only C# evidence aggregate tied to these staged
+    /// image bytes and this exact input. Publication selection is still required.
+    pub fn csharp_invocation_evidence_object(&self, input: [u8; 32]) -> Option<Vec<u8>> {
+        use backend_semantic::ir::{ImageProvenance, SemanticCoreReader};
+        let unit = self.staged.csharp_unit.as_deref()?;
+        let unit_key = CompilationUnitKeyV2::CSharpProject { project_path: unit.into() };
+        let expected_probes = csharp_config_probe_paths(&unit_key)?;
+        let runtime = self.admitted_runtime().ok()?;
+        if !matches!(self.profile, LanguageProfile::CSharp(_)) || *self.input.input_root() != input
+            || self.staged.csharp_config.len() != expected_probes.len()
+            || self.staged.csharp_config.first().is_none_or(|probe| probe.text.is_none())
+            || self.staged.csharp_config.iter().zip(expected_probes.iter()).any(|(probe, path)| probe.path.as_ref() != path)
+            || self.staged.csharp_evidence.is_empty()
+            || self.staged.csharp_evidence.windows(2).any(|pair| pair[0].path >= pair[1].path)
+            || self.staged.csharp_evidence.len() != self.artifacts.len() || !self.staged.coverage_gaps.is_empty() {
+            return None;
+        }
+        let mut images = BTreeMap::new();
+        for (ordinal, artifact) in self.artifacts.iter().enumerate() {
+            let observed = self.with_semantic_reader(ordinal, |reader, _| -> Result<_, io::Error> {
+                let ImageProvenance::Captured { source, recipe, scope, .. } = reader.image_facts().provenance else {
+                    return Err(io::Error::other("C# image provenance unavailable"));
+                };
+                if recipe.tool != NativeTool::CSharpCompiler || recipe.profile != self.profile
+                    || recipe.toolchain.as_ref() != &runtime.toolchain { return Err(io::Error::other("wrong C# producer")); }
+                let path = reader.atom(scope.path).ok_or_else(|| io::Error::other("C# source path unavailable"))?;
+                Ok((String::from_utf8(path.to_vec()).map_err(io::Error::other)?, source))
+            }).ok()?;
+            if observed.1 != artifact.source() || images.insert(observed.0, (observed.1, artifact.semantic_image())).is_some() {
+                return None;
+            }
+        }
+        // Forecast the complete framing before allocating so growth cannot
+        // temporarily retain two large aggregate buffers.
+        let mut total = 0usize;
+        fn charge(total: &mut usize, length: usize) -> Option<()> {
+            *total = total.checked_add(4)?.checked_add(length)?;
+            if *total > backend_semantic::ir::MAX_CSHARP_INVOCATION_EVIDENCE_BYTES { return None; }
+            Some(())
+        }
+        for length in [4, 32, 32, 2, unit.len(), 4] { charge(&mut total, length)?; }
+        for probe in self.staged.csharp_config.iter() {
+            charge(&mut total, probe.path.len())?;
+            charge(&mut total, 1)?;
+            if let Some(text) = &probe.text { charge(&mut total, text.len())?; }
+        }
+        charge(&mut total, 4)?;
+        for invocation in self.staged.csharp_evidence.iter() {
+            for length in [invocation.path.len(), 32, 4, 32, 32, 32, 4, invocation.evidence.len()] {
+                charge(&mut total, length)?;
+            }
+        }
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(total).ok()?;
+        fn add(output: &mut Vec<u8>, value: &[u8]) -> Option<()> {
+            let length = u32::try_from(value.len()).ok()?;
+            let total = output.len().checked_add(4)?.checked_add(value.len())?;
+            if total > backend_semantic::ir::MAX_CSHARP_INVOCATION_EVIDENCE_BYTES { return None; }
+            output.extend_from_slice(&length.to_be_bytes()); output.extend_from_slice(value); Some(())
+        }
+        add(&mut bytes, b"CSE1")?;
+        add(&mut bytes, self.target_identity.as_ref())?;
+        add(&mut bytes, &input)?;
+        add(&mut bytes, &<[u8; 2]>::from(self.profile))?;
+        add(&mut bytes, unit.as_bytes())?;
+        add(&mut bytes, &(u32::try_from(self.staged.csharp_config.len()).ok()?).to_be_bytes())?;
+        for probe in self.staged.csharp_config.iter() {
+            add(&mut bytes, probe.path.as_bytes())?;
+            match &probe.text {
+                Some(text) => { add(&mut bytes, &[1])?; add(&mut bytes, text.as_bytes())?; },
+                None => add(&mut bytes, &[0])?,
+            }
+        }
+        add(&mut bytes, &(u32::try_from(self.staged.csharp_evidence.len()).ok()?).to_be_bytes())?;
+        for invocation in self.staged.csharp_evidence.iter() {
+            let (source, image) = images.remove(invocation.path.as_ref())?;
+            if source != invocation.source { return None; }
+            add(&mut bytes, invocation.path.as_bytes())?;
+            add(&mut bytes, source.identity.as_ref())?;
+            add(&mut bytes, &source.byte_len.to_be_bytes())?;
+            add(&mut bytes, &invocation.input_content)?;
+            add(&mut bytes, &invocation.source_sha256)?;
+            add(&mut bytes, image.identity.as_ref())?;
+            add(&mut bytes, &image.byte_length.to_be_bytes())?;
+            add(&mut bytes, &invocation.evidence)?;
+        }
+        if !images.is_empty() || bytes.len() != total { return None; }
+        Some(bytes)
     }
 
     /// Exact compiler-observed coverage causes, authenticated with this publication.
@@ -2304,6 +2458,12 @@ pub enum PackageSemanticError {
     /// One produced forest image could not bind to its actual program owner.
     #[error("native TypeScript forest image is invalid")]
     NativeProgramImage(#[source] SemanticImageReopenError),
+    /// The captured C# SDK slice lacks a required observed input or binding.
+    #[error("C# SDK unavailable: {reason}")]
+    CSharpSdkUnavailable {
+        /// Bounded, non-sensitive refusal reason.
+        reason: &'static str,
+    },
     /// A checked size computation overflowed or exceeded the package budget.
     #[error("package semantic publication exceeds its {lane} byte budget")]
     Capacity {
@@ -2795,6 +2955,43 @@ mod source_degradation_tests {
     }
 
     #[test]
+    fn a_rust_source_shared_by_cargo_targets_is_not_reported_as_unowned() {
+        use backend_library::interface::{
+            CompilerDiagnostic, RustSourceScopeFailureKind, RustTargetResolutionKind,
+        };
+        let scope = |failure| {
+            compile(CompilerCause::Authority {
+                phase: backend_semantic::vocabulary::AuthorityPhase::Resolve,
+                class: AuthorityDiagnosticClass::SourceScope,
+                diagnostic: Some(CompilerDiagnostic::from_rust_source_scope_failure(failure)),
+            })
+        };
+        assert_eq!(
+            rust_source_scope_gap_cause(&scope(RustSourceScopeFailureKind::AmbiguousSourceOwner {
+                definition_count: 2,
+                omitted_definition_count: 0,
+                target_resolution: RustTargetResolutionKind::NoExactTarget,
+            })),
+            PackageSourceCoverageGapCause::RustSourceSharedByCargoTargets,
+            "a helper two integration tests declare is inside targets, with no single scope"
+        );
+        assert_eq!(
+            rust_source_scope_gap_cause(&scope(RustSourceScopeFailureKind::DetachedSource {
+                active_hir_root_count: 3,
+            })),
+            PackageSourceCoverageGapCause::RustSourceOutsideActiveCargoTarget,
+        );
+        assert_eq!(
+            rust_source_scope_gap_cause(&compile(CompilerCause::Authority {
+                phase: backend_semantic::vocabulary::AuthorityPhase::Resolve,
+                class: AuthorityDiagnosticClass::SourceScope,
+                diagnostic: None,
+            })),
+            PackageSourceCoverageGapCause::RustSourceOutsideActiveCargoTarget,
+        );
+    }
+
+    #[test]
     fn a_sources_own_failures_become_typed_gaps_and_shared_ones_stay_refusals() {
         use PackageSourceCoverageGapCause as Gap;
         let own = [
@@ -3210,6 +3407,70 @@ pub(crate) enum PackageExecutionAuthority {
     },
 }
 
+/// Digest of everything the SDK observation and the captured project options
+/// contributed to a C# compile: the installed SDK location, the selected
+/// framework and compiler options, reference directories, usings, defines,
+/// and the captured global.json and project configuration texts.
+fn csharp_sdk_observation_fingerprint(
+    observed: &backend_frontend_csharp::legacy::CSharpSdkObservation,
+    probes: &[backend_frontend_csharp::legacy::CSharpSdkProbe<'_>],
+    config: &[backend_frontend_csharp::legacy::CSharpCapturedConfig<'_>],
+    requested_framework: &str,
+) -> [u8; 32] {
+    fn text(hasher: &mut blake3::Hasher, value: &str) {
+        hasher.update(&(value.len() as u64).to_be_bytes());
+        hasher.update(value.as_bytes());
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"compiler.csharp.sdk-observation.v1\0");
+    text(&mut hasher, &observed.sdk_directory.to_string_lossy());
+    text(&mut hasher, requested_framework);
+    text(&mut hasher, &observed.target_framework);
+    text(&mut hasher, &observed.nullable);
+    hasher.update(&[u8::from(observed.allow_unsafe), u8::from(observed.outside_root_unknown)]);
+    text(&mut hasher, &observed.language_version);
+    text(&mut hasher, &observed.output_type);
+    hasher.update(&(observed.targeting_directories.len() as u64).to_be_bytes());
+    for directory in &observed.targeting_directories {
+        text(&mut hasher, &directory.to_string_lossy());
+    }
+    hasher.update(&(observed.usings.len() as u64).to_be_bytes());
+    for item in &observed.usings {
+        text(&mut hasher, item);
+    }
+    hasher.update(&(observed.defines.len() as u64).to_be_bytes());
+    for item in &observed.defines {
+        text(&mut hasher, item);
+    }
+    hasher.update(&(probes.len() as u64).to_be_bytes());
+    for probe in probes {
+        text(&mut hasher, probe.path);
+        match probe.text {
+            Some(body) => {
+                hasher.update(&[1]);
+                text(&mut hasher, body);
+            }
+            None => {
+                hasher.update(&[0]);
+            }
+        }
+    }
+    hasher.update(&(config.len() as u64).to_be_bytes());
+    for entry in config {
+        text(&mut hasher, &entry.path);
+        match entry.text {
+            Some(body) => {
+                hasher.update(&[1]);
+                text(&mut hasher, body);
+            }
+            None => {
+                hasher.update(&[0]);
+            }
+        }
+    }
+    *hasher.finalize().as_bytes()
+}
+
 impl PackageExecutionAuthority {
     pub(super) fn identities(
         self,
@@ -3253,11 +3514,15 @@ pub(crate) struct StagedCompilerArtifact {
 
 /// Fully owned complete package result waiting for the durable publication owner.
 pub(crate) struct StagedPackageCompilation {
+    // Dynamic SDK inputs are observed but not yet bound to a durable receipt.
     compilation_attempt_id: CompilationAttemptId,
     artifacts: Vec<StagedPackageArtifact>,
     coverage_gaps: Box<[PackageSourceCoverageGap]>,
     image_plan: Box<[crate::publication::manifest::SemanticImageRegion]>,
     semantic_images: Box<[u8]>,
+    csharp_evidence: Box<[StagedCSharpInvocationEvidence]>,
+    csharp_config: Box<[StagedCSharpConfigProbe]>,
+    csharp_unit: Option<Box<str>>,
     package_identity: [u8; 32],
     target_identity: ContentId<backend_version::CompilationTargetDomain>,
     profile: backend_semantic::vocabulary::LanguageProfile,
@@ -3279,6 +3544,46 @@ pub(crate) struct StagedPackageCompilation {
     python_witness: Option<StagedPythonProjectWitness>,
     embeddings: Option<StagedEmbeddingOutput>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
+}
+
+/// One same-attempt captured C# configuration presence or absence probe.
+pub struct StagedCSharpConfigProbe {
+    path: Box<str>,
+    text: Option<Box<str>>,
+}
+impl StagedCSharpConfigProbe {
+    /// Exact package-relative probe path.
+    #[must_use]
+    pub fn path(&self) -> &str { &self.path }
+    /// Captured UTF-8 text, or an observed absence.
+    #[must_use]
+    pub fn text(&self) -> Option<&str> { self.text.as_deref() }
+}
+
+/// Claim-only evidence from one C# helper invocation, retained through staging.
+pub struct StagedCSharpInvocationEvidence {
+    path: Box<str>,
+    source: backend_semantic::ir::SourceIdentity,
+    input_content: [u8; 32],
+    source_sha256: [u8; 32],
+    evidence: Box<[u8]>,
+}
+impl StagedCSharpInvocationEvidence {
+    /// Captured package-relative source binding.
+    #[must_use]
+    pub fn path(&self) -> &str { &self.path }
+    /// SourceFact-domain identity and length measured from this exact source buffer.
+    #[must_use]
+    pub const fn source(&self) -> backend_semantic::ir::SourceIdentity { self.source }
+    /// InputContentSchema object version measured from that same buffer.
+    #[must_use]
+    pub const fn input_content(&self) -> [u8; 32] { self.input_content }
+    /// Roslyn source-binding SHA-256 measured from that same buffer.
+    #[must_use]
+    pub const fn source_sha256(&self) -> [u8; 32] { self.source_sha256 }
+    /// Checked helper sidecar; selected authority requires a separate owner join.
+    #[must_use]
+    pub fn evidence(&self) -> &[u8] { &self.evidence }
 }
 
 struct StagedPythonProjectWitness {
@@ -3719,6 +4024,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             source_path: &resolved.source_path,
             source: &resolved.bytes,
             java_sourcepath: &[],
+            csharp_sources: None,
+            csharp_config: None,
             unit_key: &unit_key,
             profile: application_request.profile,
             toolchain,
@@ -3977,7 +4284,71 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             },
             None => None,
         };
+        // The SDK probe runs only on an explicitly captured simple unit. Its
+        // observed paths/options remain attempt-local and never inherit a
+        // startup fingerprint or establish input-closure authority.
+        let mut sdk_fingerprint: Option<[u8; 32]> = None;
+        let sdk_observation = if let Some(probes) = package.csharp_sdk_probes {
+            let config = package.csharp_config.ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "captured C# project configuration" })?;
+            let options = super::csharp_sdk_options::simple_csharp_sdk_options(
+                config.first().and_then(|entry| entry.text).ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "captured C# project configuration" })?,
+                config.iter().skip(1).all(|entry| entry.text.is_none()),
+            ).ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "unsupported C# SDK project options" })?;
+            let CompilationUnitKeyV2::CSharpProject { project_path } = package.package_target.unit_key() else {
+                return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK project unit" });
+            };
+            let toolchain = match self.toolchain(first_application_request) {
+                Ok(ToolchainSelection::ResolvedNative(toolchain)) => toolchain.external().map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" })?,
+                _ => return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" }),
+            };
+            let observed = backend_frontend_csharp::legacy::observe_csharp_sdk_with(
+                toolchain.executable(), project_path, probes, options.kind, &options.target_framework,
+                options.implicit_usings, &options.properties, control.deadline, cancelled,
+            ).map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK observation unavailable" })?;
+            // With no global.json inside the captured root the installed SDK's own
+            // default applies; a pin above the captured root is not observable
+            // here. The flag is sealed into the plane identity so the result never
+            // claims more than the SDK actually used.
+            let expected_language = match target.profile {
+                LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp10) => "10.0",
+                LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp11) => "11.0",
+                LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp12) => "12.0",
+                LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp13) => "13.0",
+                LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp14) => "14.0",
+                _ => return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK language profile unsupported" }),
+            };
+            if observed.language_version != expected_language { return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK language profile differs" }); }
+            // The SDK facts are observations of this host's installed SDK, so
+            // no portable execution identity may stand for them. They are
+            // sealed into the host-local plane identity below instead.
+            execution_identity = None;
+            sdk_fingerprint = Some(csharp_sdk_observation_fingerprint(&observed, probes, config, &options.target_framework));
+            Some(observed)
+        } else { None };
+        let sdk_reference_paths = sdk_observation.as_ref().map(|observation| observation.targeting_directories.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+        let mut sdk_using_names = sdk_observation.as_ref().map(|observation| observation.usings.iter().map(String::as_str).collect::<Vec<_>>());
+        let mut sdk_define_names = sdk_observation.as_ref().map(|observation| observation.defines.iter().map(String::as_str).collect::<Vec<_>>());
         let mut package_authority_configuration = self.package_authority;
+        if let Some(paths) = sdk_reference_paths.as_deref() {
+            let csharp = package_authority_configuration.csharp.as_mut().ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# helper unavailable" })?;
+            if csharp.configuration.reference_directory.is_some() || !csharp.configuration.additional_reference_directories.is_empty() || paths.is_empty() {
+                return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "conflicting C# reference selection" });
+            }
+            let names = sdk_using_names.as_mut().ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK usings unavailable" })?;
+            names.extend_from_slice(csharp.configuration.extra_usings);
+            let defines = sdk_define_names.as_mut().ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK defines unavailable" })?;
+            defines.extend_from_slice(csharp.configuration.define_symbols);
+            csharp.configuration.define_symbols = defines;
+            csharp.configuration.exact_define_symbols = true;
+            csharp.configuration.target_framework = sdk_observation.as_ref().map(|observation| observation.target_framework.as_str());
+            csharp.configuration.exact_nullable = sdk_observation.as_ref().map(|observation| observation.nullable.as_str());
+            csharp.configuration.exact_unsafe = sdk_observation.as_ref().map(|observation| observation.allow_unsafe);
+            csharp.configuration.exact_output_type = sdk_observation.as_ref().map(|observation| observation.output_type.as_str());
+            csharp.configuration.reference_directory = Some(paths[0]);
+            csharp.configuration.additional_reference_directories = &paths[1..];
+            csharp.configuration.extra_usings = names;
+            csharp.configuration.implicit_usings = false;
+        }
         if let Some(project) = typescript_project.as_ref() {
             package_authority_configuration.typescript = project.checker();
         }
@@ -4339,6 +4710,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         source_path: &first_source_path,
                         source: first_source.source.as_bytes(),
                         java_sourcepath: &[],
+                        csharp_sources: None,
+                        csharp_config: None,
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
                         toolchain,
@@ -4377,7 +4750,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         }
         // Captured configuration and actual producer facts must affect identity,
         // including direct callers whose source-only fallback claim omits config.
-        let mut plane_execution_seed = if let Some(project) = python_project.as_ref() {
+        let mut plane_execution_seed = if let Some(fingerprint) = sdk_fingerprint {
+            plane_execution_seed.map(|seed| seed.with_csharp_sdk_observation(fingerprint))
+        } else if let Some(project) = python_project.as_ref() {
             let fingerprint = project.witness().fingerprint();
             // An admitted caller claim identifies its exact publication attempt.
             // Preserve that opaque provenance; the execution seed below still
@@ -4580,6 +4955,13 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             .try_reserve_exact(source_count)
             .map_err(PackageSemanticError::Allocation)?;
         let mut semantic_images = Vec::new();
+        let mut csharp_evidence = Vec::new();
+        let csharp_config = package.csharp_config.map_or_else(Vec::new, |probes| {
+            probes.iter().map(|probe| StagedCSharpConfigProbe {
+                path: probe.path.into(), text: probe.text.map(Into::into),
+            }).collect::<Vec<_>>()
+        });
+        let mut csharp_evidence_bytes = 0usize;
         let mut fragment_bytes = 0_usize;
         let mut semantic_bytes = 0_usize;
 
@@ -4900,6 +5282,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         source_path: &source_path,
                         source: first_source.source.as_bytes(),
                         java_sourcepath: &[],
+                        csharp_sources: None,
+                        csharp_config: None,
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
                         toolchain,
@@ -4966,6 +5350,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         source_path: &go_first_source_path,
                         source: first_source.source.as_bytes(),
                         java_sourcepath: &[],
+                        csharp_sources: None,
+                        csharp_config: None,
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
                         toolchain,
@@ -5157,6 +5543,15 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             } else {
                 Vec::new()
             };
+            let csharp_sources = matches!(target.profile, LanguageProfile::CSharp(_)).then(|| {
+                package
+                    .compilation_sources()
+                    .map(|captured| backend_frontend_csharp::legacy::CSharpCapturedSource {
+                        path: captured.relative_path(),
+                        text: captured.source(),
+                    })
+                    .collect::<Vec<_>>()
+            });
             let go_owner = match go_authority.as_mut() {
                 Some(go) => match go.owner(&source_path) {
                     Ok(owner) => Some(owner),
@@ -5192,6 +5587,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             source_path: &source_path,
                             source: source.source.as_bytes(),
                             java_sourcepath: &java_sourcepath,
+                            csharp_sources: csharp_sources.as_deref(),
+                            csharp_config: package.csharp_config,
                             unit_key: package.package_target.unit_key(),
                             profile: target.profile,
                             toolchain,
@@ -5354,11 +5751,39 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     coverage_gaps.push(PackageSourceCoverageGap {
                         source: source_authority,
                         relative_path: source.relative_path.into(),
-                        cause: PackageSourceCoverageGapCause::RustSourceOutsideActiveCargoTarget,
+                        cause: rust_source_scope_gap_cause(&terminal),
                         python_source_status: None,
                         native_python_diagnostics: Box::new([]),
                         typescript_diagnostic: None,
                     });
+                    continue;
+                }
+                // A Rust source the lowering lane cannot represent (a module of
+                // only cfg-selected items has no supported declaration; a
+                // projection conflicts on parentage) is that source's own
+                // failure, like Go's: it becomes a coverage gap and the rest
+                // of the package keeps its facts. Authority and native-process
+                // failures stay refusals of the whole package, and a package
+                // none of whose sources compile still refuses with the first
+                // terminal.
+                Err(terminal)
+                    if target.profile.language() == backend_semantic::vocabulary::Language::Rust
+                        && matches!(
+                            &terminal,
+                            CompilerTerminal::Compile {
+                                attempted,
+                                cause: CompilerCause::Lowering(_)
+                                    | CompilerCause::Fragment(_)
+                                    | CompilerCause::FragmentFailure(_),
+                            } if attempted.source == source_authority
+                        ) =>
+                {
+                    degraded.degrade(
+                        terminal,
+                        source.relative_path,
+                        source_authority,
+                        &mut coverage_gaps,
+                    )?;
                     continue;
                 }
                 Err(terminal)
@@ -5404,6 +5829,40 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     continue;
                 }
             };
+            // SDK-observed projects bind through their plane identity; the
+            // per-source invocation aggregate is only minted for captured units
+            // whose references are fully caller-supplied.
+            if sdk_fingerprint.is_none() && let Some(super::package_authority::PackageAuthorityOwner::CSharp {
+                evidence: Some(evidence), ..
+            }) = transient_authority.as_ref() {
+                csharp_evidence_bytes = csharp_evidence_bytes
+                    .checked_add(evidence.len())
+                    .and_then(|total| total.checked_add(source.relative_path.len()))
+                    .and_then(|total| total.checked_add(std::mem::size_of::<StagedCSharpInvocationEvidence>()))
+                    .ok_or(PackageSemanticError::Capacity { lane: "C# invocation evidence" })?;
+                if csharp_evidence_bytes > 32 * 1024 * 1024 {
+                    return Err(PackageSemanticError::Capacity { lane: "C# invocation evidence" });
+                }
+                csharp_evidence.try_reserve(1).map_err(PackageSemanticError::Allocation)?;
+                let mut copy = Vec::new();
+                copy.try_reserve_exact(evidence.len()).map_err(PackageSemanticError::Allocation)?;
+                copy.extend_from_slice(evidence);
+                let verified = backend_compile::VerifiedSourceText::capture(source.source.as_bytes())
+                    .map_err(|_| PackageSemanticError::Capacity { lane: "C# invocation source" })?;
+                let source_identity = backend_semantic::ir::SourceIdentity::from_bytes(source.source.as_bytes())
+                    .ok_or(PackageSemanticError::Capacity { lane: "C# invocation source" })?;
+                if source_identity != compiled.source {
+                    return Err(PackageSemanticError::Capacity { lane: "C# invocation source identity" });
+                }
+                use sha2::{Digest, Sha256};
+                csharp_evidence.push(StagedCSharpInvocationEvidence {
+                    path: source.relative_path.into(),
+                    source: source_identity,
+                    input_content: verified.content().to_bytes(),
+                    source_sha256: Sha256::digest(source.source.as_bytes()).into(),
+                    evidence: copy.into_boxed_slice(),
+                });
+            }
             let fragment_length = compiled.fragment.len();
             fragment_bytes =
                 checked_package_fragment_bytes(fragment_bytes, fragment_length, target.profile)?;
@@ -5863,6 +6322,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             coverage_gaps: coverage_gaps.into_boxed_slice(),
             image_plan: image_plan.into_boxed_slice(),
             semantic_images: semantic_images.into_boxed_slice(),
+            csharp_evidence: csharp_evidence.into_boxed_slice(),
+            csharp_config: csharp_config.into_boxed_slice(),
+            csharp_unit: match package.package_target.unit_key() {
+                CompilationUnitKeyV2::CSharpProject { project_path } if package.csharp_config.is_some() && package.csharp_sdk_probes.is_none() => Some(project_path.clone()),
+                _ => None,
+            },
             package_identity: *package.request.as_ref().identity.as_ref(),
             target_identity: package.package_target.target(),
             profile: target.profile,
@@ -7166,6 +7631,31 @@ fn with_typescript_stop_site(
     }
 }
 
+/// The coverage gap a Rust source-scope refusal is reported as. A file that no
+/// active Cargo target owns is outside every target; a file several targets
+/// own (a helper two integration tests both declare with `mod common;`) is
+/// inside targets but has no single scope, and is reported as exactly that
+/// rather than as unreachable.
+fn rust_source_scope_gap_cause(terminal: &CompilerTerminal) -> PackageSourceCoverageGapCause {
+    match terminal {
+        CompilerTerminal::Compile {
+            cause:
+                CompilerCause::Authority {
+                    diagnostic: Some(diagnostic),
+                    ..
+                },
+            ..
+        } if matches!(
+            diagnostic.rust_source_scope_failure,
+            Some(backend_library::interface::RustSourceScopeFailureKind::AmbiguousSourceOwner { .. })
+        ) =>
+        {
+            PackageSourceCoverageGapCause::RustSourceSharedByCargoTargets
+        }
+        _ => PackageSourceCoverageGapCause::RustSourceOutsideActiveCargoTarget,
+    }
+}
+
 #[allow(
     clippy::result_large_err,
     reason = "the public compiler terminal retains one bounded cold authority diagnostic"
@@ -7763,6 +8253,11 @@ fn package_authority_projection(
             (Phase::Resolve, Class::Authority)
         }
         PackageAuthorityError::GoOracle(cause) => go_authority_projection(cause),
+        // Roslyn bound the project and reported errors: a type-level refusal of this
+        // project's inputs, not a fault of the compiler runtime.
+        PackageAuthorityError::CSharp(
+            backend_frontend_csharp::legacy::CSharpAuthorityError::CompilationIncomplete { .. },
+        ) => (Phase::TypeCheck, Class::Type),
         PackageAuthorityError::CSharp(_) => (Phase::TypeCheck, Class::Authority),
         PackageAuthorityError::TypeScript(_) => (Phase::TypeCheck, Class::Authority),
         PackageAuthorityError::TypeScriptTsz(_) => (Phase::Resolve, Class::Authority),

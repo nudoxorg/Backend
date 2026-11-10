@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Security.Cryptography;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 
@@ -77,7 +78,50 @@ internal static class Program
 
         if (options.AuthorityImage)
         {
-            AuthorityImage.Write(loaded, options.SourceBinding!, output);
+            if (options.CaptureEvidencePath is null)
+            {
+                AuthorityImage.Write(loaded, options.SourceBinding!, output);
+                return 0;
+            }
+            if (loaded.CapturedBytes is null || loaded.CapturedConfigDigest is null || loaded.CapturedReferences is null
+                || loaded.CapturedAcceptedUsings is null || loaded.CapturedDefines is null)
+                throw new OracleFailure("captured evidence inputs are unavailable");
+            using var image = new MemoryStream();
+            var occurrences = AuthorityImage.Write(loaded, options.SourceBinding!, image, captureOccurrences: true);
+            if (image.Length > 32 * 1024 * 1024) throw new OracleFailure("captured image exceeds limit");
+            var imageBytes = image.ToArray();
+            var sources = loaded.CapturedBytes.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => new
+            {
+                path = Path.GetRelativePath(loaded.Root, pair.Key).Replace('\\', '/'),
+                length = pair.Value.LongLength,
+                sha256 = Convert.ToHexString(SHA256.HashData(pair.Value)).ToLowerInvariant(),
+            });
+            using var evidenceStream = new LimitedEvidenceStream(2 * 1024 * 1024);
+            JsonSerializer.Serialize(evidenceStream, new
+            {
+                format = 2,
+                nonce = options.CaptureEvidenceNonce,
+                sourceBinding = Path.GetRelativePath(loaded.Root, options.SourceBinding!).Replace('\\', '/'),
+                imageSha256 = Convert.ToHexString(SHA256.HashData(imageBytes)).ToLowerInvariant(),
+                imageLength = imageBytes.LongLength,
+                configSha256 = loaded.CapturedConfigDigest,
+                sources,
+                references = loaded.CapturedReferences,
+                occurrences = occurrences.Select(item => new { owner = item.Owner, start = item.Start, end = item.End, target = item.Target }),
+                assembly = loaded.AssemblyName,
+                framework = loaded.TargetFramework,
+                language = options.LanguageVersion.ToString(),
+                outputKind = loaded.Compilation.Options.OutputKind.ToString(),
+                defines = loaded.CapturedDefines,
+                usings = loaded.CapturedAcceptedUsings,
+                generators = "unknown",
+                inputClosure = "unknown",
+                errors = loaded.ErrorCount,
+            });
+            var evidence = evidenceStream.ToArray();
+            using (var evidenceFile = new FileStream(options.CaptureEvidencePath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                evidenceFile.Write(evidence);
+            output.Write(imageBytes);
             return 0;
         }
 
@@ -104,6 +148,19 @@ internal static class Program
 
         return 0;
     }
+}
+
+// Keep evidence serialization bounded while it is written, not only after a
+// potentially much larger temporary JSON allocation has already occurred.
+internal sealed class LimitedEvidenceStream(long limit) : MemoryStream
+{
+    private void Check(int count)
+    {
+        if (count < 0 || Position > limit - count) throw new OracleFailure("captured evidence exceeds limit");
+    }
+    public override void Write(byte[] buffer, int offset, int count) { Check(count); base.Write(buffer, offset, count); }
+    public override void Write(ReadOnlySpan<byte> buffer) { Check(buffer.Length); base.Write(buffer); }
+    public override void WriteByte(byte value) { Check(1); base.WriteByte(value); }
 }
 
 /// <summary>Raised for a malformed command line; the caller prints usage.</summary>
@@ -142,6 +199,13 @@ internal sealed record OracleOptions
     /// <summary>Exact C# source file whose raw bytes bind a binary authority image.</summary>
     public string? SourceBinding { get; init; }
 
+    /// <summary>Read exact captured source members from standard input.</summary>
+    public bool CapturedSources { get; init; }
+    public string? CapturedSourcesPath { get; init; }
+    public string? CapturedConfigPath { get; init; }
+    public string? CaptureEvidencePath { get; init; }
+    public string? CaptureEvidenceNonce { get; init; }
+
     /// <summary>Overrides the assembly name inferred from the roots.</summary>
     public string? AssemblyName { get; init; }
 
@@ -149,13 +213,22 @@ internal sealed record OracleOptions
     public string? ProjectFile { get; init; }
 
     /// <summary>Directory of reference assemblies; <c>null</c> means the running runtime's.</summary>
-    public string? ReferenceDirectory { get; init; }
+    public IReadOnlyList<string> ReferenceDirectories { get; init; } = [];
 
     /// <summary>
     /// Extra <c>#define</c> symbols. The target-framework set is always defined;
     /// these are added on top for packages that gate on their own symbols.
     /// </summary>
     public IReadOnlyList<string> DefineSymbols { get; init; } = [];
+    /// <summary>Use only the explicitly supplied captured SDK defines.</summary>
+    public bool ExactDefineSymbols { get; init; }
+    /// <summary>Captured SDK target framework, if explicitly observed.</summary>
+    public string? TargetFramework { get; init; }
+    /// <summary>Captured nullable and unsafe compiler options, if observed.</summary>
+    public string? ExactNullable { get; init; }
+    public bool? ExactUnsafe { get; init; }
+    /// <summary>Captured SDK output type, when observed.</summary>
+    public string? ExactOutputType { get; init; }
 
     /// <summary>Additional namespaces to make globally visible.</summary>
     public IReadOnlyList<string> ExtraUsings { get; init; } = [];
@@ -190,10 +263,13 @@ internal sealed record OracleOptions
           --out FILE            Write the JSON document here instead of stdout.
           --authority-image     Emit the fixed binary authority image, not JSON.
           --source-binding FILE Bind the authority image to this configured source file.
+          --captured-sources   Read a bounded JSON source manifest from standard input.
+          --captured-sources-file FILE Read a bounded captured source manifest from FILE.
+          --captured-config-file FILE Read bounded project and ancestor probes from FILE.
           --lang-version VER   C# language version (csharp-10 through csharp-14).
           --assembly-name NAME  Override the inferred assembly name.
           --project-file FILE  Select this exact project beneath the package root.
-          --ref-dir DIR         Reference assemblies (default: the running runtime's).
+          --ref-dir DIR         Reference assembly directory; repeat for multiple packs.
           --define SYM          Extra preprocessor symbol. Repeatable.
           --using NS            Extra global using. Repeatable.
           --no-implicit-usings  Do not supply the SDK's implicit global usings.
@@ -211,11 +287,21 @@ internal sealed record OracleOptions
         var usings = new List<string>();
         string? outPath = null;
         string? assemblyName = null;
+        string? targetFramework = null;
+        string? exactNullable = null;
+        bool? exactUnsafe = null;
+        string? exactOutputType = null;
         string? projectFile = null;
-        string? refDir = null;
+        var refDirs = new List<string>();
         var includeNonPublic = true;
         var implicitUsings = true;
+        var exactDefines = false;
         var authorityImage = false;
+        var capturedSources = false;
+        string? capturedSourcesPath = null;
+        string? capturedConfigPath = null;
+        string? captureEvidencePath = null;
+        string? captureEvidenceNonce = null;
         string? sourceBinding = null;
         var languageVersion = LanguageVersion.Preview;
 
@@ -254,6 +340,21 @@ internal sealed record OracleOptions
                 case "--authority-image":
                     authorityImage = true;
                     break;
+                case "--captured-sources":
+                    capturedSources = true;
+                    break;
+                case "--captured-sources-file":
+                    capturedSourcesPath = Value("--captured-sources-file");
+                    break;
+                case "--captured-config-file":
+                    capturedConfigPath = Value("--captured-config-file");
+                    break;
+                case "--capture-evidence-file":
+                    captureEvidencePath = Value("--capture-evidence-file");
+                    break;
+                case "--capture-evidence-nonce":
+                    captureEvidenceNonce = Value("--capture-evidence-nonce");
+                    break;
                 case "--lang-version":
                     languageVersion = ParseLanguageVersion(Value("--lang-version"));
                     break;
@@ -263,14 +364,30 @@ internal sealed record OracleOptions
                 case "--assembly-name":
                     assemblyName = Value("--assembly-name");
                     break;
+                case "--target-framework":
+                    targetFramework = Value("--target-framework");
+                    break;
+                case "--exact-output-type":
+                    exactOutputType = Value("--exact-output-type");
+                    break;
+                case "--exact-nullable":
+                    exactNullable = Value("--exact-nullable");
+                    break;
+                case "--exact-unsafe":
+                    var unsafeValue = Value("--exact-unsafe");
+                    exactUnsafe = unsafeValue switch { "true" => true, "false" => false, _ => throw new OracleUsageException("invalid exact unsafe option") };
+                    break;
                 case "--project-file":
                     projectFile = Value("--project-file");
                     break;
                 case "--ref-dir":
-                    refDir = Value("--ref-dir");
+                    refDirs.Add(Value("--ref-dir"));
                     break;
                 case "--define":
                     defines.Add(Value("--define"));
+                    break;
+                case "--exact-defines":
+                    exactDefines = true;
                     break;
                 case "--using":
                     usings.Add(Value("--using"));
@@ -298,6 +415,26 @@ internal sealed record OracleOptions
         {
             throw new OracleUsageException("--authority-image requires --source-binding FILE");
         }
+        if (capturedSources && capturedSourcesPath is not null)
+            throw new OracleUsageException("choose one captured source manifest input");
+        if (capturedConfigPath is not null && ((!capturedSources && capturedSourcesPath is null) || projectFile is null))
+            throw new OracleUsageException("captured configuration requires captured sources and exact project");
+        if (exactDefines && (capturedConfigPath is null || (!capturedSources && capturedSourcesPath is null)))
+            throw new OracleUsageException("exact defines require captured source and configuration");
+        if (targetFramework is not null && (capturedConfigPath is null || (!capturedSources && capturedSourcesPath is null)
+            || targetFramework.Length is < 4 or > 32 || !targetFramework.StartsWith("net", StringComparison.Ordinal)
+            || !targetFramework.AsSpan(3).ToArray().All(c => char.IsAsciiDigit(c) || c == '.')))
+            throw new OracleUsageException("target framework requires captured inputs and a simple net target");
+        if ((exactNullable is not null || exactUnsafe is not null) && (capturedConfigPath is null
+            || (!capturedSources && capturedSourcesPath is null) || exactNullable is not ("disable" or "enable" or "warnings" or "annotations") || exactUnsafe is null))
+            throw new OracleUsageException("exact nullable and unsafe require captured inputs and valid values");
+        if (exactOutputType is not null && (capturedConfigPath is null || (!capturedSources && capturedSourcesPath is null)
+            || exactOutputType is not ("Exe" or "Library" or "WinExe")))
+            throw new OracleUsageException("exact output type requires captured inputs and a valid output type");
+        if ((captureEvidencePath is null) != (captureEvidenceNonce is null)
+            || (captureEvidencePath is not null && (!authorityImage || capturedConfigPath is null
+                || captureEvidenceNonce!.Length != 32 || !captureEvidenceNonce.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f'))))
+            throw new OracleUsageException("captured evidence requires an image, captured inputs, and a lowercase nonce");
 
         if (mode == OracleMode.Metadata)
         {
@@ -323,10 +460,20 @@ internal sealed record OracleOptions
             AuthorityImage = authorityImage,
             LanguageVersion = languageVersion,
             SourceBinding = sourceBinding,
+            CapturedSources = capturedSources,
+            CapturedSourcesPath = capturedSourcesPath,
+            CapturedConfigPath = capturedConfigPath,
+            CaptureEvidencePath = captureEvidencePath,
+            CaptureEvidenceNonce = captureEvidenceNonce,
             AssemblyName = assemblyName,
             ProjectFile = projectFile,
-            ReferenceDirectory = refDir,
+            ReferenceDirectories = refDirs,
             DefineSymbols = defines,
+            ExactDefineSymbols = exactDefines,
+            TargetFramework = targetFramework,
+            ExactNullable = exactNullable,
+            ExactUnsafe = exactUnsafe,
+            ExactOutputType = exactOutputType,
             ExtraUsings = usings,
             ImplicitUsings = implicitUsings,
             IncludeNonPublic = includeNonPublic,

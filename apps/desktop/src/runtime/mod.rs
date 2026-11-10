@@ -41,6 +41,8 @@ mod acquire_tests;
 #[cfg(test)]
 mod frame_tests;
 #[cfg(test)]
+mod source_journey_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 pub(crate) mod wait;

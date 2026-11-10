@@ -1,0 +1,39 @@
+[package]
+name = "syntaqlite-syntax"
+version = "0.13.5"
+edition = "2024"
+links = "syntaqlite_syntax"
+description = "Internal parser and tokenizer for syntaqlite — not intended for direct use"
+license = "Apache-2.0"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+
+[features]
+default = ["sqlite"]
+sqlite-minimal = []
+sqlite = ["sqlite-minimal"]
+fmt = []            # compile SyntaqliteDialectTemplate with formatter fields
+analysis = []     # compile SyntaqliteDialectTemplate with semantic-role fields
+serde = ["dep:serde"]
+serde-json = ["serde", "dep:serde_json"]
+dynload = ["dep:libloading"]
+pin-version = ["sqlite"]
+pin-cflags = ["sqlite"]
+no-bundled-parser = []
+# Internal: exposes hand-written C sources/headers as Rust constants for
+# syntaqlite-buildtools amalgamation. No generated files; safe to compile
+# from a clean checkout without running codegen first.
+embedded-sources = []
+
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", optional = true }
+serde_json = { version = "1", optional = true }
+libloading = { version = "0.8", optional = true }
+
+[build-dependencies]
+cc = "1.0"

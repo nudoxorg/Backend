@@ -11,7 +11,7 @@
 //! Nothing here performs I/O, and nothing here renders. An operand the engine
 //! cannot admit fails with a [`Fault`] naming that exact operand.
 
-use crate::fault::{Fault, Operand};
+use crate::fault::{Affordance, Fault, Operand};
 use crate::grammar::{ArgumentKind, ArgumentSpec, CommandGrammar, grammar_for};
 use backend_library::{
     CommandId, CompileExecutionIntent, DeclarationRead, DeclarationSelector, IndexJobTicket,
@@ -220,9 +220,9 @@ fn take_json(
         return Ok(());
     }
     if spec.kind() == ArgumentKind::Flag {
-        let enabled = value.as_bool().ok_or_else(|| {
-            Fault::usage(spec.name(), "a flag takes a JSON boolean")
-        })?;
+        let enabled = value
+            .as_bool()
+            .ok_or_else(|| Fault::usage(spec.name(), "a flag takes a JSON boolean"))?;
         if enabled {
             call.raise(spec.name());
         }
@@ -666,8 +666,28 @@ fn text(invocation: &Invocation, index: usize) -> Result<ProductText, Fault> {
 
 fn package(invocation: &Invocation, index: usize) -> Result<PackageReference, Fault> {
     let value = invocation.require(index)?;
-    PackageReference::parse(value)
-        .map_err(|error| Fault::admission(error, Operand::Argument(value.to_owned())))
+    PackageReference::parse(value).map_err(|error| {
+        let unversioned_name = value
+            .strip_prefix("pkg:")
+            .and_then(|purl| purl.split_once('/'))
+            .filter(|(ecosystem, path)| {
+                !ecosystem.is_empty() && !path.contains(['?', '#'])
+            })
+            .and_then(|(_, path)| path.rsplit('/').next())
+            .filter(|name| !name.is_empty() && !name.contains('@'));
+        if let Some(name) = unversioned_name {
+            Fault::usage(
+                value,
+                "registry package facts require an exact version; search the configured registry index by package name, then choose a returned pinned coordinate. An empty or unavailable index may require registry discovery to be configured",
+            )
+            .with_affordance(Affordance::UseCommand {
+                name: "index-search",
+                args: Box::new([name.to_owned()]),
+            })
+        } else {
+            Fault::admission(error, Operand::Argument(value.to_owned()))
+        }
+    })
 }
 
 fn selector(invocation: &Invocation, index: usize) -> Result<ProjectSelector, Fault> {
@@ -1003,6 +1023,81 @@ fn surface(
                     format!("invalid semantic source request: {error}"),
                 )
             })?,
+        },
+        CommandId::StyloQuery => {
+            use backend_library::stylo_query::{
+                StyloNameRole, StyloQueryCursor, StyloQueryRequest,
+            };
+            let (role, name) = match (
+                invocation.option("class"),
+                invocation.option("custom-property"),
+            ) {
+                (Some(name), None) => (StyloNameRole::Class, name),
+                (None, Some(name)) => (StyloNameRole::CustomProperty, name),
+                _ => {
+                    return Err(Fault::usage(
+                        "class",
+                        "supply exactly one of --class or --custom-property",
+                    ));
+                }
+            };
+            let number = |key: &str, default: u32| -> Result<u32, Fault> {
+                invocation.option(key).map_or(Ok(default), |value| {
+                    value
+                        .parse::<u32>()
+                        .map_err(|_| Fault::usage(key, "expected a non-negative integer"))
+                })
+            };
+            let page_rows = limit(invocation)?;
+            let request = StyloQueryRequest {
+                package: package(invocation, 0)?,
+                role,
+                name: name.to_owned(),
+                page_rows,
+                output_bytes: number("output-bytes", 131_072)?,
+                scan_rows: number("scan-rows", 256)?,
+                scan_bytes: number("scan-bytes", 4_194_304)?,
+                continuation: invocation
+                    .option("cursor")
+                    .map(|value| StyloQueryCursor::parse(value.to_owned()))
+                    .transpose()
+                    .map_err(|error| Fault::usage("cursor", error.to_string()))?,
+            };
+            request
+                .normalized_name()
+                .map_err(|error| Fault::usage("query", error.to_string()))?;
+            SurfaceCommand::StyloQuery { request }
+        }
+        CommandId::StyloReadSite => SurfaceCommand::StyloReadSite {
+            reference: backend_library::stylo_query::StyloSourceReference::parse(
+                invocation.require(0)?.to_owned(),
+            )
+            .map_err(|error| Fault::usage("reference", error.to_string()))?,
+        },
+        CommandId::SqlQuery => {
+            use backend_library::sql_query::{SqlQueryCursor, SqlQueryRequest, SqlQueryRole};
+            let role = match invocation.option("role").unwrap_or("any") {
+                "any" => SqlQueryRole::Any, "relation" => SqlQueryRole::Relation,
+                "output_lineage" => SqlQueryRole::OutputLineage, "diagnostic" => SqlQueryRole::Diagnostic,
+                _ => return Err(Fault::usage("role", "expected any, relation, output_lineage, or diagnostic")),
+            };
+            let number = |key: &str, default: u32| -> Result<u32, Fault> {
+                invocation.option(key).map_or(Ok(default), |value| value.parse::<u32>()
+                    .map_err(|_| Fault::usage(key, "expected a non-negative integer")))
+            };
+            let request = SqlQueryRequest { package: package(invocation, 0)?, role,
+                name: invocation.option("name").map(str::to_owned), page_rows: limit(invocation)?,
+                output_bytes: number("output-bytes", 131_072)?, scan_rows: number("scan-rows", 256)?,
+                scan_bytes: number("scan-bytes", 4_194_304)?,
+                continuation: invocation.option("cursor").map(|value| SqlQueryCursor::parse(value.to_owned()))
+                    .transpose().map_err(|error| Fault::usage("cursor", error.to_string()))?,
+            };
+            request.validate().map_err(|error| Fault::usage("query", error.to_string()))?;
+            SurfaceCommand::SqlQuery { request }
+        }
+        CommandId::SqlReadSource => SurfaceCommand::SqlReadSource {
+            reference: backend_library::sql_query::SqlSourceReference::parse(invocation.require(0)?.to_owned())
+                .map_err(|error| Fault::usage("reference", error.to_string()))?,
         },
         CommandId::SemanticShapes => {
             let request = serde_json::from_str::<backend_library::SemanticShapeReadRequest>(

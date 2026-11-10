@@ -60,6 +60,24 @@ fn encoded(answer: &Answer, detail: Detail) -> Value {
 }
 
 #[test]
+fn standard_page_omits_duplicate_tokens_but_preserves_selected_identity_and_faults() {
+    let answer = Answer::Page(Box::new(captured()));
+    let standard = encoded(&answer, Detail::Standard);
+    let full = encoded(&answer, Detail::Full);
+    assert!(standard.get("tokens").is_none());
+    assert!(
+        full["tokens"]
+            .as_array()
+            .is_some_and(|tokens| !tokens.is_empty())
+    );
+    for field in ["identity", "signature", "source", "notes"] {
+        assert_eq!(standard[field], full[field], "{field}");
+    }
+    assert!(standard["budget"]["bytes"].as_u64() < full["budget"]["bytes"].as_u64());
+    serde_json::from_value::<PageDto>(standard).expect("compact page remains decodable");
+}
+
+#[test]
 fn page_projection_summary_omits_evidence_without_replacing_or_mutating_it() {
     let page = captured();
     let original = page.clone();
@@ -158,6 +176,9 @@ fn page_projection_summary_omits_evidence_without_replacing_or_mutating_it() {
         assert_eq!(value["source"]["path"], "src/entry.ts");
         assert_eq!(value["source"]["line"], 42);
         assert_eq!(value["source"]["extent"], "truncated");
+        // A truncated source says how to read the rest instead of stopping mid-word.
+        let hint = value["source"]["continue_with"].as_str().expect("continuation hint");
+        assert!(hint.contains(COORDINATE) && hint.contains("--byte-range"), "{hint}");
         assert_eq!(value["source"]["lines"][0], SOURCE);
         assert_eq!(
             value["source"]["lines"].as_array().expect("source").len(),
@@ -170,7 +191,11 @@ fn page_projection_summary_omits_evidence_without_replacing_or_mutating_it() {
         );
         assert_eq!(value["relations"][0]["relations"][0]["name"], RELATION);
         assert_eq!(value["notes"][0]["detail"], NOTE);
-        assert!(!value["tokens"].as_array().expect("tokens").is_empty());
+        if detail == Detail::Full {
+            assert!(!value["tokens"].as_array().expect("tokens").is_empty());
+        } else {
+            assert!(value.get("tokens").is_none());
+        }
         assert!(value.get("source_fault").is_none());
         for rendered in [
             markdown::answer_with_detail(&answer, detail, None, ContinuationTarget::CliOption),

@@ -13,6 +13,69 @@ const NAME: &str = "HTTPieArgumentParser";
 const HEADER: &str = "class HTTPieArgumentParser(BaseHTTPieArgumentParser):";
 const SOURCE: &str = include_str!("../fixtures/httpie-signature/argparser.py");
 
+#[test]
+fn selected_graph_reports_missing_relation_coverage_at_every_detail() {
+    let coordinate = format!("{SHELF}::box.ts:1::item");
+    let symbol = symbol_key("selected-graph-gap");
+    let view = root(vec![
+        Row::new(RowId::Package(package_key(SHELF)), basis(), SHELF),
+        Row::in_package(
+            RowId::Symbol(symbol),
+            basis(),
+            package_key(SHELF),
+            &coordinate,
+        ),
+    ]);
+    let library = Library::from_view(view.clone(), backend_library::Cursor::for_view_root(&view))
+        .expect("immutable view");
+    let mut server = server(library);
+    for detail in ["summary", "standard", "full"] {
+        for tool in ["backend.graph", "backend.related"] {
+            let arguments = json!({"selected_symbol":{"kind":"selected-symbol-id","value":symbol.as_bytes()}, "detail":detail});
+            for registered in [false, true] {
+                let result = if registered {
+                    invoke(
+                        &mut server,
+                        "backend.call",
+                        json!({"name":tool,"arguments":arguments.clone()}),
+                    )
+                } else {
+                    invoke(&mut server, tool, arguments.clone())
+                };
+                assert_eq!(result["isError"], false, "{tool} {detail}: {result}");
+                let gap = result["structuredContent"]["graph_gap"]
+                    .as_str()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "missing graph gap: {tool} {detail} registered={registered}: {result}"
+                        )
+                    });
+                assert!(gap.contains("relation"), "{result}");
+                assert!(
+                    result["content"][0]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("graph relations incomplete")),
+                    "{result}"
+                );
+            }
+        }
+        let page = invoke(
+            &mut server,
+            "backend.call",
+            json!({"name":"backend.graph", "arguments": {
+                "selected_symbol":{"kind":"selected-symbol-id","value":symbol.as_bytes()}, "detail":detail, "limit":1
+            }}),
+        );
+        assert_eq!(page["isError"], false, "paged graph: {page}");
+        assert!(
+            page["structuredContent"]["graph_gap"]
+                .as_str()
+                .is_some_and(|gap| gap.contains("not certified")),
+            "{page}"
+        );
+    }
+}
+
 struct RetainedProduct {
     library: Library,
     selected_documents: Vec<(String, SymbolKey)>,

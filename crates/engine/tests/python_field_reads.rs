@@ -908,7 +908,7 @@ fn python_enclosing_class_ambiguous_local_methods_stays_universe() -> Result<(),
         .entities()
         .filter(|entity| {
             entity.kind == EntityKind::Function
-                && atoms.get(entity.name.raw as usize).copied() == Some(b"note")
+                && atoms.get(entity.name.raw as usize).copied() == Some(&b"note"[..])
         })
         .map(|entity| entity.entity)
         .collect();

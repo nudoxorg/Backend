@@ -351,6 +351,10 @@ pub(super) fn body(
     leaves.push(Leaf::new(
         text(ty::MONO_ROW, &measure, palette.ink2).role(gpui::Role::Label).aria_label(crumb.clone()).child(crumb),
     ));
+    if let Some(gap) = &view.references_gap {
+        let warning = ctx.say(format!("Reference coverage incomplete: {}", gap.detail));
+        leaves.push(Leaf::new(quiet(warning.clone(), &measure, palette).role(gpui::Role::Status).aria_label(warning)));
+    }
     match view.text.known() {
         Some(source) => {
             if source.origin == SourceOrigin::LocalFile
@@ -1371,6 +1375,10 @@ fn margin(
     let mut column = div().flex().flex_col().gap(measure.space(Space::Base));
     let name = ctx.say(view.symbol.name.to_string());
     column = column.child(text(ty::MONO_ROW, &measure, palette.ink0).role(gpui::Role::Label).aria_label(name.clone()).child(name));
+    if let Some(gap) = &page.rose.relations_gap {
+        let warning = ctx.say(format!("Graph relation coverage incomplete: {}", gap.detail));
+        column = column.child(quiet(warning.clone(), &measure, palette).role(gpui::Role::Status).aria_label(warning));
+    }
     let prose = DocFragment::plain_text(&page.docs);
     if let Some(sentence) = prose
         .split_terminator(['.', '\n'])

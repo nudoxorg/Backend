@@ -45,8 +45,12 @@ mod semantic_selection;
 mod semantic_source_pages;
 #[path = "tests/source_membership_pages.rs"]
 mod source_membership_pages;
+#[path = "tests/source_continuation.rs"]
+mod source_continuation;
 #[path = "tests/surface_fidelity.rs"]
 mod surface_fidelity;
+#[path = "tests/stylo_transport.rs"]
+mod stylo_transport;
 #[path = "tests/token_outline.rs"]
 mod token_outline;
 #[path = "tests/typescript_admission.rs"]
@@ -693,6 +697,17 @@ struct Fake {
     outline_owner_tokens: Vec<String>,
     /// Exact source availability returned by the document/source boundary.
     document_override: Option<Document>,
+    /// Exact host bytes for source-range routing fixtures.
+    source_range_bytes: Option<String>,
+    /// Scope asserted by the fixture owner, never inferred by the wrapper.
+    source_range_scope: backend_library::SourceRangeScope,
+    /// Raw fixture claim, never an authenticated local-session admission.
+    source_range_policy: Option<backend_library::SourcePolicyQualification>,
+    source_range_policy_mismatch: bool,
+    /// Test-only lease sentinel; never establishes authenticated-owner proof.
+    source_range_lease_sentinel: bool,
+    source_range_disconnect_after: Option<usize>,
+    source_range_calls: usize,
     /// Negative control: withhold an overridden document from the member projection.
     omit_document_override_member: bool,
     /// Optional graph rows used to exercise the complete-page admission cap.
@@ -1437,7 +1452,10 @@ impl Engine for Fake {
             })),
             SurfaceCommand::References { target } => Ok(SurfaceReply::References {
                 target,
+                coverage: backend_library::ReferenceCoverage::default(),
                 references: Box::new([backend_library::ReferenceRecord {
+                site_symbol: None,
+                source_policy: Default::default(),
                     site: backend_library::ProductText::new("pkg::semantic::caller")
                         .expect("site text"),
                     target: backend_library::SemanticLinkTarget::Local {
@@ -1472,6 +1490,53 @@ impl Engine for Fake {
 }
 
 impl Product for Fake {
+    fn qualified_source_ranges_from_authenticated_session(&self) -> bool {
+        self.source_range_lease_sentinel
+    }
+
+    fn declaration_source_range(
+        &mut self,
+        _selector: &backend_library::DeclarationSelector,
+        expected_root: Option<&str>,
+        range: backend_library::SourceRangeRequest,
+    ) -> Result<ReplyDto, ClientError> {
+        let calls = self.source_range_calls;
+        self.source_range_calls += 1;
+        if self.source_range_disconnect_after == Some(calls) {
+            return Err(ClientError::Disconnected(std::io::ErrorKind::ConnectionReset));
+        }
+        let root = view_state_root(&[]);
+        if self.stale_cursor || expected_root.is_some_and(|expected| expected != encode_id(root.as_bytes())) {
+            return Err(ClientError::StaleCursor);
+        }
+        let text = self.source_range_bytes.as_deref().ok_or_else(|| ClientError::CommandFailed(
+            backend_library::CommandFailure::InvalidQuery("exact source unavailable".to_owned())
+        ))?;
+        let identity = [7; 32];
+        let start = usize::try_from(range.start).map_err(|_| ClientError::StaleCursor)?;
+        if !range.valid() || range.source_identity.is_some_and(|expected| expected != identity)
+            || start > text.len() || !text.is_char_boundary(start) {
+            return Err(ClientError::StaleCursor);
+        }
+        let mut end = start.saturating_add(usize::from(range.limit)).min(text.len());
+        while !text.is_char_boundary(end) { end -= 1; }
+        let mut document = document();
+        let source_policy = self.source_range_policy.clone().unwrap_or_default();
+        if !self.source_range_policy_mismatch {
+            document.source_policy = source_policy.clone();
+        }
+        document.source_range = Some(backend_library::SourceRangePage {
+            source_policy,
+            text: text[start..end].to_owned(), start: range.start,
+            end: u32::try_from(end).map_err(|_| ClientError::StaleCursor)?,
+            total: u32::try_from(text.len()).map_err(|_| ClientError::StaleCursor)?,
+            scope: self.source_range_scope,
+            source_identity: identity, owner_start: 0,
+            owner_end: u32::try_from(text.len()).map_err(|_| ClientError::StaleCursor)?,
+        });
+        Ok(ReplyDto::new(1, CommandReply::Document(document)))
+    }
+
     fn set_request_context(&mut self, context: Option<RequestContext>) -> Result<(), ClientError> {
         if let Some(context) = context {
             context.check()?;
@@ -1642,7 +1707,7 @@ impl Product for Fake {
 // ---------------------------------------------------------------------------
 // driving the server
 // ---------------------------------------------------------------------------
-fn ready(product: Fake) -> Server<Fake> {
+fn ready<P: Product>(product: P) -> Server<P> {
     let mut server = Server::with_authority(product, PROJECT.to_owned(), [9; 32]);
     server
         .handle(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#)
@@ -1655,7 +1720,15 @@ fn ready(product: Fake) -> Server<Fake> {
     server
 }
 
-fn request(server: &mut Server<Fake>, method: &str, params: &Value) -> Value {
+fn ready_with_document(document: Document) -> Server<Fake> {
+    let mut fake = Fake { document_override: Some(document), ..Fake::default() };
+    let catalog = fake.fixture_catalog(PROJECT).expect("immutable fixture catalog");
+    fake.document_override.as_mut().expect("fixture document").basis = catalog.revision_root();
+    fake.page_catalog = Some(catalog);
+    ready(fake)
+}
+
+fn request<P: Product>(server: &mut Server<P>, method: &str, params: &Value) -> Value {
     let message = json!({ "jsonrpc": "2.0", "id": 9, "method": method, "params": params });
     server
         .handle(
@@ -1673,7 +1746,7 @@ fn encoded_stdio_reply(reply: Value) -> Value {
     serde_json::from_slice(&line).expect("encoded stdio response")
 }
 
-fn call(server: &mut Server<Fake>, tool: &str, arguments: &Value) -> Value {
+fn call<P: Product>(server: &mut Server<P>, tool: &str, arguments: &Value) -> Value {
     request(
         server,
         "tools/call",
@@ -4487,12 +4560,12 @@ fn document_and_source_tools_advertise_their_useful_default_detail() {
             tool["outputSchema"]["properties"]["answer"]["description"],
             "Tagged answer; product responses may include a fault and retain the operation receipt."
         );
-        assert_eq!(
-            tool["outputSchema"]["properties"]["answer"]["enum"],
-            json!([
-                "page", "records", "shelf", "outline", "status", "product", "fault"
-            ])
-        );
+        let expected = if name == "backend.source" {
+            json!(["page", "source_range", "fault"])
+        } else {
+            json!(["page", "records", "shelf", "outline", "status", "product", "fault"])
+        };
+        assert_eq!(tool["outputSchema"]["properties"]["answer"]["enum"], expected);
     }
     let search = tool_named(&listed["result"]["tools"], "backend.search");
     assert_eq!(
@@ -4537,10 +4610,7 @@ fn explicit_source_refuses_unavailable_text_while_document_retains_its_native_id
         )
         .with_location(location)
         .with_excerpt(excerpt);
-        let mut server = ready(Fake {
-            document_override: Some(document),
-            ..Fake::default()
-        });
+        let mut server = ready_with_document(document);
         let args = json!({"coordinate":coordinate,"detail":"full"});
         let page = call(&mut server, "backend.document", &args);
         assert_eq!(page["isError"], false);
@@ -4564,23 +4634,17 @@ fn explicit_source_refuses_unavailable_text_while_document_retains_its_native_id
         assert_eq!(source["structuredContent"]["operand"], coordinate);
     }
 
-    let mut server = ready(Fake::default());
+    let body = "pub fn ferris() -> Beacon {\n    Beacon\n}";
+    let mut server = ready(Fake { source_range_bytes: Some(body.to_owned()), ..Fake::default() });
     let captured = call(
         &mut server,
         "backend.source",
-        &json!({"coordinate":DECLARATION,"detail":"full"}),
+        &json!({"coordinate":DECLARATION,"detail":"full","byte_range":true}),
     );
     assert_eq!(captured["isError"], false);
-    assert_eq!(
-        captured["structuredContent"]["source"]["path"],
-        "src/lib.rs"
-    );
-    assert_eq!(captured["structuredContent"]["source"]["line"], 2);
-    assert_eq!(
-        captured["structuredContent"]["source"]["lines"][0],
-        "pub fn ferris() -> Beacon {"
-    );
-    assert!(captured["structuredContent"]["source_fault"].is_null());
+    assert_eq!(captured["structuredContent"]["source"]["text"], body);
+    assert_eq!(captured["structuredContent"]["source"]["start"], 0);
+    assert!(captured["structuredContent"]["nextCursor"].is_null());
 }
 
 #[test]
@@ -4676,24 +4740,28 @@ fn routed_batch_reads_keep_wire_extent_exact_text_and_signature_fallback_within_
     assert!(retained.len() < original.len());
     let surface = SurfaceReply::Read(Box::new([
         DeclarationRecord {
+            source_policy: backend_library::SourcePolicyQualification::Unknown,
             label: ProductText::new(&coordinates[0]).expect("requested coordinate"),
             stable_id: Some([0x11; 32]),
             signature: Some(ProductText::new(retained).expect("retained source")),
             extent: Some(DeclarationReadExtent::Truncated),
         },
         DeclarationRecord {
+            source_policy: backend_library::SourcePolicyQualification::Unknown,
             label: ProductText::new(&coordinates[1]).expect("requested coordinate"),
             stable_id: Some([0x22; 32]),
             signature: Some(ProductText::new("class WeekService {}").expect("complete source")),
             extent: Some(DeclarationReadExtent::Complete),
         },
         DeclarationRecord {
+            source_policy: backend_library::SourcePolicyQualification::Unknown,
             label: ProductText::new(&coordinates[2]).expect("requested coordinate"),
             stable_id: Some([0x33; 32]),
             signature: Some(ProductText::new("class AuthService").expect("signature fallback")),
             extent: None,
         },
         DeclarationRecord {
+            source_policy: backend_library::SourcePolicyQualification::Unknown,
             label: ProductText::new(&coordinates[3]).expect("requested coordinate"),
             stable_id: None,
             signature: None,
@@ -4792,10 +4860,15 @@ fn page_projection_mcp_summary_omits_captured_body_and_preserves_exact_identity(
     document.signature = Some("fn MCP_SIGNATURE_SENTINEL() -> Beacon".to_owned());
     document = document.with_excerpt(excerpt);
     let native = document.symbol;
-    let mut server = ready(Fake {
+    let mut fake = Fake {
         document_override: Some(document),
         ..Fake::default()
-    });
+    };
+    // The selected document and its member pages must share one revision.
+    let catalog = fake.fixture_catalog(PROJECT).expect("immutable fixture catalog");
+    fake.document_override.as_mut().expect("fixture document").basis = catalog.revision_root();
+    fake.page_catalog = Some(catalog);
+    let mut server = ready(fake);
     for tool in ["backend.document", "backend.source"] {
         let response = request(
             &mut server,
@@ -4809,7 +4882,7 @@ fn page_projection_mcp_summary_omits_captured_body_and_preserves_exact_identity(
             .expect("complete summary response")
             .len();
         let summary = &response["result"];
-        assert_eq!(summary["isError"], false);
+        assert_eq!(summary["isError"], false, "{tool}: {response}");
         assert_eq!(
             summary["structuredContent"]["identity"]["coordinate"],
             DECLARATION
@@ -4919,10 +4992,7 @@ fn page_projection_mcp_summary_keeps_source_failure_and_source_tool_refusal() {
         .with_location(location)
         .with_excerpt(excerpt);
         document.signature = Some("fn unavailable_page()".to_owned());
-        let mut server = ready(Fake {
-            document_override: Some(document),
-            ..Fake::default()
-        });
+        let mut server = ready_with_document(document);
         let arguments = json!({"coordinate": DECLARATION, "detail": "summary"});
         let page = call(&mut server, "backend.document", &arguments);
         assert_eq!(page["isError"], false);
@@ -7985,6 +8055,8 @@ fn high_fanout_graph_and_surface_pages_refuse_atomically() {
 
     let references = (0..256)
         .map(|index| backend_library::ReferenceRecord {
+                site_symbol: None,
+                source_policy: Default::default(),
             site: backend_library::ProductText::new(format!(
                 "pkg::caller_{index}::{}",
                 "x".repeat(160)
@@ -8012,6 +8084,7 @@ fn high_fanout_graph_and_surface_pages_refuse_atomically() {
         surface_reply: Some(SurfaceReply::References {
             target: backend_library::ProductText::new("pkg::semantic::callee")
                 .expect("target text"),
+            coverage: backend_library::ReferenceCoverage::default(),
             references,
         }),
         ..Fake::default()
@@ -8251,8 +8324,7 @@ fn direct_and_generic_graph_routes_preserve_typed_domain_and_protocol_failures()
 }
 
 #[test]
-fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_same_mcp_wire_result()
- {
+fn partial_terminal_is_qualified_success_with_exact_ticket_partition_and_receipt() {
     use backend_library::{
         IndexJobOutcome, IndexJobPartialPublication, IndexOperationFailureReason,
         IndexOperationKey, IndexOperationObservation, IndexOperationProfileRefusal,
@@ -8353,7 +8425,7 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
             &json!({"name":INDEX_PROGRESS_TOOL, "arguments":{"ticket":ticket, "after_sequence":0, "detail":detail}}),
         );
         assert!(wire.get("error").is_none(), "{wire}");
-        assert_eq!(wire["result"]["isError"], true);
+        assert_eq!(wire["result"]["isError"], false);
         let content = &wire["result"]["structuredContent"];
         assert_eq!(
             content["surface"]["data"],
@@ -8366,23 +8438,42 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
             ))
             .expect("exact job projection")
         );
-        assert_eq!(content["fault"]["slug"], "partially-published");
+        assert!(content["fault"].is_null());
         assert_eq!(
-            content["fault"]["partial_publication"],
-            serde_json::to_value(&partial)
-                .expect("exact receipt, partition, refusals and source tuple")
+            content["partial_publication_warning"]["published_profiles"],
+            1
         );
         assert_eq!(
-            content["fault"]["partial_publication"]["receipt"],
+            content["partial_publication_warning"]["refused_profiles"],
+            1
+        );
+        assert_eq!(
+            content["partial_publication_warning"]["receipt"],
             serde_json::to_value(&partial.receipt).expect("receipt")
         );
         let text = text_of(&wire["result"]);
-        assert!(text.contains("python: published 236 source files with Complete coverage"));
+        assert!(text.contains("python: published 236 source files with complete coverage"), "{text}");
         assert!(text.contains("typescript: unavailable"));
         assert!(text.contains("NUDOX_TSC"));
         assert_context_bounded(&wire);
         assert_eq!(server.product.surface_commands.len(), 1);
     }
+    let mut registered_server = ready(Fake {
+        surface_reply: Some(reply.clone()),
+        ..Fake::default()
+    });
+    let registered = call(
+        &mut registered_server,
+        "backend.call",
+        &json!({
+            "name": INDEX_PROGRESS_TOOL,
+            "arguments": {"ticket":ticket_value(&ticket), "after_sequence":0}
+        }),
+    );
+    assert_eq!(registered["isError"], false);
+    let warning_call = &registered["structuredContent"]["partial_publication_warning"]["call"];
+    assert_eq!(warning_call["name"], "backend.call");
+    assert_eq!(warning_call["arguments"]["name"], "backend.package_profile");
     let mut compact_server = ready(Fake {
         surface_reply: Some(reply.clone()),
         ..Fake::default()
@@ -8396,9 +8487,9 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
             "compact_receipt":true
         }),
     );
-    assert_eq!(compact["isError"], true);
+    assert_eq!(compact["isError"], false);
     let compact_data = serde_json::to_value(&observation).expect("exact partial observation");
-    assert_compact_index_job_receipt(&compact, &compact_data["data"]);
+    assert_compact_index_job_receipt(&compact, &compact_data);
     let compact_value = &compact["structuredContent"]["surface"]["index_job"]["value"]["detail"];
     assert_eq!(
         compact_value["ticket"]["owner_epoch"],
@@ -8417,12 +8508,49 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
         "rejected"
     );
     assert_context_bounded(&compact);
+    // Exercise the complete JSON-RPC envelope with warning text that must
+    // be bounded in the middle of multibyte UTF-8 while preserving evidence.
+    let long_package = PackageReference::parse(format!("/{}", "é".repeat(1300))).expect("bounded package");
+    let mut long_partial = partial.clone();
+    long_partial.package = long_package.clone();
+    long_partial.admit().expect("long typed partial");
+    let long_ticket = IndexJobTicket::new(std::num::NonZeroU64::new(32).expect("ticket"), [19;16], long_package);
+    let long_observation = IndexJobObservation::Terminal(IndexJobTerminal { ticket: long_ticket.clone(), outcome: IndexJobOutcome::PartiallyPublished(long_partial.clone()) });
+    let mut long_server = ready(Fake { surface_reply: Some(SurfaceReply::IndexProgress(long_observation.clone())), ..Fake::default() });
+    let long_wire = request(&mut long_server, "tools/call", &json!({"name": INDEX_PROGRESS_TOOL, "arguments": {"ticket":ticket_value(&long_ticket), "after_sequence":0, "compact_receipt":true}}));
+    assert_eq!(long_wire["result"]["isError"], false, "{long_wire}");
+    assert_context_bounded(&long_wire);
+    let wire_budget = &long_wire["result"]["_meta"]["backend/wireBudget"];
+    println!("partial warning envelope: {} bytes, {} estimated tokens", wire_budget["bytes"], wire_budget["estimatedTokens"]);
+    let long_content = &long_wire["result"]["structuredContent"];
+    let long_detail = long_content["partial_publication_warning"]["detail"].as_str().expect("warning detail");
+    assert!(long_detail.len() < 1200);
+    assert!(long_detail.contains("additional profile details are retained"));
+    assert_eq!(long_content["partial_publication_warning"]["receipt"], serde_json::to_value(&long_partial.receipt).expect("exact receipt"));
+    assert_compact_index_job_receipt(&long_wire["result"], &serde_json::to_value(&long_observation).expect("exact observation"));
+
+    let refused_reply =
+        SurfaceReply::IndexProgress(IndexJobObservation::Terminal(IndexJobTerminal {
+            ticket: ticket.clone(),
+            outcome: IndexJobOutcome::Refused(ProductText::from_static("all profiles refused")),
+        }));
+    let mut refused_server = ready(Fake {
+        surface_reply: Some(refused_reply),
+        ..Fake::default()
+    });
+    let refused = call(
+        &mut refused_server,
+        INDEX_PROGRESS_TOOL,
+        &json!({"ticket":ticket_value(&ticket),"after_sequence":0}),
+    );
+    assert_eq!(refused["isError"], true);
+    assert_eq!(refused["structuredContent"]["fault"]["slug"], "rejected");
+    assert!(refused["structuredContent"]["partial_publication_warning"].is_null());
     let expected_cause = backend_present::product_view(&reply)
-        .fault()
-        .expect("legacy partial fault")
-        .cause()
-        .sentence()
-        .to_owned();
+        .partial_publication_warning()
+        .expect("qualified publication warning")
+        .detail
+        .clone();
     let key = IndexOperationKey::from_bytes([0x41; 32]).expect("durable key");
     let capture = IndexOperationSourceCaptureReceipt::from_checked_parts(
         key,
@@ -8511,7 +8639,11 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
                 );
                 assert!(wire.get("error").is_none(), "{wire}");
                 assert_eq!(wire["id"], 9);
-                assert_eq!(wire["result"]["isError"], fault_slug.is_some(), "{wire}");
+                assert_eq!(
+                    wire["result"]["isError"],
+                    fault_slug == Some("rejected"),
+                    "{wire}"
+                );
                 let content = &wire["result"]["structuredContent"];
                 if fault_slug.is_none() {
                     assert_eq!(
@@ -8540,19 +8672,26 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
                     "bd8be50867ceba6df5959b6a6fdb3651b3f510574692c386858435e6e3c26897"
                 );
                 if fault_slug == Some("partially-published") {
-                    let fault = backend_present::product_view(&reply);
+                    let view = backend_present::product_view(&reply);
+                    assert!(view.fault().is_none());
                     assert_eq!(
-                        fault
-                            .fault()
-                            .expect("durable partial fault")
-                            .cause()
-                            .sentence(),
+                        view.partial_publication_warning()
+                            .expect("durable warning")
+                            .detail,
                         expected_cause
                     );
-                    assert_eq!(content["fault"]["slug"], "partially-published");
-                    assert!(
-                        content["fault"]["partial_publication"].is_null(),
-                        "no manufactured legacy source tuple"
+                    assert!(content["fault"].is_null());
+                    assert_eq!(
+                        content["partial_publication_warning"]["receipt"],
+                        serde_json::to_value(&partial.receipt).expect("receipt")
+                    );
+                    assert_eq!(
+                        content["partial_publication_warning"]["published_profiles"],
+                        1
+                    );
+                    assert_eq!(
+                        content["partial_publication_warning"]["refused_profiles"],
+                        1
                     );
                     assert_eq!(
                         content["surface"]["data"]["detail"]["source_capture"],
@@ -8561,7 +8700,7 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
                     );
                     let text = text_of(&wire["result"]);
                     assert!(
-                        text.contains("python: published 236 source files with Complete coverage")
+                        text.contains("python: published 236 source files with complete coverage")
                     );
                     assert!(text.contains("typescript: unavailable"));
                     assert!(text.contains("Set NUDOX_TSC"));

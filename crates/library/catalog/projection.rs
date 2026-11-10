@@ -1374,6 +1374,8 @@ impl Library {
                     .row_label(RowId::Symbol(fact.site))
                     .ok_or(LibraryError::NotFound)?;
                 Ok(ReferenceRecord {
+                site_symbol: None,
+                source_policy: Default::default(),
                     site: crate::ProductText::new(label).map_err(|_| {
                         LibraryError::InvalidQuery(
                             "reference site coordinate violates the text bound".to_owned(),

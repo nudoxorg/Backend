@@ -63,12 +63,24 @@ const ECHO_AUTHORITY_SECRET: [u8; 32] = [0x5a; 32];
 mod index_work_observation;
 #[path = "builtin/ingest.rs"]
 mod ingest;
+mod native_ts_admission;
+mod owner_receipt_context;
+mod sql_capture;
+mod sql_admission;
+mod sql_intent;
+#[path = "builtin/source_range.rs"]
+mod source_range;
 #[path = "builtin/profile.rs"]
 mod profile;
 #[path = "builtin/source_budget.rs"]
 mod source_budget;
 #[path = "builtin/source_frontier.rs"]
 mod source_frontier;
+mod stylo_worker;
+mod stylo_worker_install;
+mod stylo_capture;
+mod stylo_admission;
+mod csharp_admission;
 #[path = "builtin/staged_intent.rs"]
 mod staged_intent;
 #[path = "builtin/staged_transport.rs"]
@@ -99,10 +111,23 @@ pub(super) fn product_relation_registry() -> Result<RelationAdmissionRegistry, B
         .with_relation::<backend_engine::builtin::ProductSourceFileFactsRelation>()
         .map_err(|error| BuiltinModelError(format!("register source facts relation: {error:?}")))?
         .with_relation::<backend_engine::builtin::ProductNativeFrontierRelation>()
-        .map_err(|error| BuiltinModelError(format!("register native frontier relation: {error:?}")))
+        .map_err(|error| BuiltinModelError(format!("register native frontier relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::StyloAnalysisRelation>()
+        .map_err(|error| BuiltinModelError(format!("register native Stylo relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::NativeSourceEvidenceRelation>()
+        .map_err(|error| BuiltinModelError(format!("register native source evidence relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::SqlAnalysisRelation>()
+        .map_err(|error| BuiltinModelError(format!("register native SQL relation: {error:?}")))?
+        .with_relation::<backend_frontend_vue::VueInventoryRelation>()
+        .map_err(|error| BuiltinModelError(format!("register Vue inventory relation: {error:?}")))
 }
 
 type ProductDaemon = crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>;
+
+#[path = "builtin/vue_style.rs"]
+mod vue_style;
+#[path = "builtin/vue_admission.rs"]
+mod vue_admission;
 
 #[path = "builtin/replication.rs"]
 mod replication;
@@ -430,6 +455,10 @@ pub(super) struct LazyClosureUpdate<'a> {
     pub(super) source_facts_pointer: Option<&'a TypedObject>,
     pub(super) native_frontier_objects: &'a [TypedObject],
     pub(super) native_frontier_pointer: Option<&'a TypedObject>,
+    pub(super) stylo_objects: &'a [TypedObject],
+    pub(super) stylo_pointer: Option<&'a TypedObject>,
+    pub(super) native_evidence_objects: &'a [TypedObject],
+    pub(super) native_evidence_pointer: Option<&'a TypedObject>,
 }
 
 fn transition_closure_lazy(
@@ -492,12 +521,42 @@ fn transition_closure_lazy(
     if let Some(pointer) = update.native_frontier_pointer {
         objects.push(pointer.clone());
     }
+    objects.extend(
+        update
+            .stylo_objects
+            .iter()
+            .filter(|object| {
+                update
+                    .stylo_pointer
+                    .is_some_and(|pointer| pointer.bytes() == object.version())
+            })
+            .cloned(),
+    );
+    if let Some(pointer) = update.stylo_pointer {
+        objects.push(pointer.clone());
+    }
+    objects.extend(
+        update
+            .native_evidence_objects
+            .iter()
+            .filter(|object| {
+                update
+                    .native_evidence_pointer
+                    .is_some_and(|pointer| pointer.bytes() == object.version())
+            })
+            .cloned(),
+    );
+    if let Some(pointer) = update.native_evidence_pointer {
+        objects.push(pointer.clone());
+    }
     let registry = product_relation_registry()?;
     let mut frontier = update
         .capture_objects
         .iter()
         .chain(update.source_facts_objects)
         .chain(update.native_frontier_objects)
+        .chain(update.stylo_objects)
+        .chain(update.native_evidence_objects)
         .cloned()
         .collect::<Vec<_>>();
     let closure = if update.changed_sources.is_empty() {
@@ -1948,7 +2007,7 @@ fn compose_owner_timed(
     }
     let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
         &config.workspace,
-        BuiltinModel,
+        BuiltinModel::with_receipt_authority(product_secret, config.workspace.clone()),
         genesis,
         dispatcher,
         DaemonConfig::default(),
@@ -2809,6 +2868,14 @@ pub fn run(config: ProcessConfig) -> ExitCode {
 
 #[path = "builtin/projection.rs"]
 mod projection;
+#[cfg(all(test, unix))]
+#[path = "builtin/native_ts_react_owner_journey_tests.rs"]
+mod native_ts_react_owner_journey_tests;
+
+#[cfg(all(test, unix))]
+#[path = "builtin/native_ts_owner_journey_tests.rs"]
+mod native_ts_owner_journey_tests;
+
 #[cfg(test)]
 #[path = "builtin/publication_transport_tests.rs"]
 mod publication_transport_tests;

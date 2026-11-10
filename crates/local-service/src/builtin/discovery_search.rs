@@ -2,7 +2,7 @@
 
 use crate::discovery::{DiscoverySearchDocument, DiscoveryStore};
 use backend_engine::registry::{
-    DiscoveryFacet, DiscoveryMetadata, DiscoverySourceIdentity, RegistryEcosystem,
+    DiscoveryFact, DiscoveryFacet, DiscoveryMetadata, DiscoverySourceIdentity, RegistryEcosystem,
 };
 use backend_engine::{
     CommittedViewDelta, DependencyFacts, ForgeAcquisitionResult, ForgeCoordinate, ForgeFact,
@@ -52,7 +52,7 @@ const MAX_LINEAGE_FACET_VALUES: usize = 16_384;
 const SEARCH_PROJECTION_DIRECTORY: &str = "v1";
 const SEARCH_PROJECTION_MANIFEST: &str = "selected-root-v1";
 const SEARCH_PROJECTION_ROOT_LEASE: &str = ".backend-root-reader.lock";
-const SEARCH_PROJECTION_SCHEMA: &[u8] = b"backend-discovery-tantivy-v4\0";
+const SEARCH_PROJECTION_SCHEMA: &[u8] = b"backend-discovery-tantivy-v6\0";
 const MAX_RETAINED_SEARCH_PROJECTIONS: usize = 4;
 const MAX_SEARCH_PROJECTION_FILES: usize = 196_608;
 const MAX_SEARCH_PROJECTION_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
@@ -2083,12 +2083,15 @@ impl DiscoverySearchIndex {
             for (source, fact) in store.facts() {
                 note_source_build_fact_visit();
                 let lineage = qualified_lineage(&fact.coordinate)?;
+                let metadata = registry_search_metadata(store, *source, fact);
+                let generic_terms = registry_search_terms(store, *source, fact);
                 add_discovery_document(
                     &mut inner,
                     *source,
                     fact.coordinate.clone(),
                     &lineage,
-                    &fact.metadata,
+                    &metadata,
+                    &generic_terms,
                 )?;
                 let discovery_source = DiscoverySearchSource::Registry(*source);
                 let key = DiscoverySearchKey {
@@ -2103,7 +2106,7 @@ impl DiscoverySearchIndex {
                 lineage_changes.push((
                     identity,
                     lineage_key,
-                    lineage_release_document(key, &fact.metadata, None, &[]),
+                    lineage_release_document(key, &metadata, None, &generic_terms),
                 ));
             }
         }
@@ -2356,10 +2359,11 @@ impl DiscoverySearchIndex {
         {
             let mut lineage_changes = Vec::with_capacity(changes.len());
             for change in changes {
-                let metadata = &store
+                let fact = store
                     .fact(change.source, change.coordinate.as_str())
-                    .ok_or_else(|| "search change has no selected discovery fact".to_owned())?
-                    .metadata;
+                    .ok_or_else(|| "search change has no selected discovery fact".to_owned())?;
+                let metadata = registry_search_metadata(store, change.source, fact);
+                let generic_terms = registry_search_terms(store, change.source, fact);
                 let source = DiscoverySearchSource::Registry(change.source);
                 let coordinate_text = change.coordinate.as_str().to_owned();
                 let key = DiscoverySearchKey {
@@ -2374,9 +2378,9 @@ impl DiscoverySearchIndex {
                 lineage_changes.push((
                     identity,
                     lineage_key,
-                    lineage_release_document(key, metadata, None, &[]),
+                    lineage_release_document(key, &metadata, None, &generic_terms),
                 ));
-                replace_discovery_document(&mut self.inner, change, metadata)?;
+                replace_discovery_document(&mut self.inner, change, &metadata, &generic_terms)?;
             }
             self.inner.commit()?;
             self.lineages.apply_batch(lineage_changes)?;
@@ -3818,12 +3822,54 @@ impl<'a> SearchTextFacet<'a> {
     }
 }
 
+// Search may index a retained advisory without merging it into the current
+// source observation. Hydration must return that fact with its own provenance.
+fn registry_search_metadata<'a>(
+    store: &DiscoveryStore,
+    source: DiscoverySourceIdentity,
+    fact: &'a DiscoveryFact,
+) -> std::borrow::Cow<'a, DiscoveryMetadata> {
+    if let Some(retained) = store.retained_advisory(source, fact.coordinate.as_str()) {
+        let mut metadata = fact.metadata.clone();
+        metadata.advisories = retained.metadata.advisories.clone();
+        std::borrow::Cow::Owned(metadata)
+    } else {
+        std::borrow::Cow::Borrowed(&fact.metadata)
+    }
+}
+
+// Only a release with retained history needs cross-observation search terms.
+// These are private postings; result hydration still uses one real source fact.
+fn registry_search_terms(
+    store: &DiscoveryStore,
+    source: DiscoverySourceIdentity,
+    fact: &DiscoveryFact,
+) -> Vec<String> {
+    let Some(retained) = store.retained_advisory(source, fact.coordinate.as_str()) else {
+        return Vec::new();
+    };
+    let mut terms = vec![fact.coordinate.as_str().to_owned()];
+    for metadata in [&fact.metadata, &retained.metadata] {
+        let text = discovery_search_text(metadata);
+        terms.extend(
+            text.aliases.values().iter()
+                .chain(text.keywords.values())
+                .chain(text.descriptions.values())
+                .chain(text.advisories.values())
+                .chain(text.generic.iter())
+                .map(|value| (*value).to_owned()),
+        );
+    }
+    terms
+}
+
 fn add_discovery_document(
     index: &mut TextSearchIndex<DiscoverySearchKey>,
     source: DiscoverySourceIdentity,
     coordinate: ProductPackageCoordinate,
     lineage: &str,
     metadata: &DiscoveryMetadata,
+    generic_terms: &[String],
 ) -> Result<(), String> {
     let coordinate_text = coordinate.as_str().to_owned();
     let source = DiscoverySearchSource::Registry(source);
@@ -3837,6 +3883,7 @@ fn add_discovery_document(
     let lineage_key = discovery_lineage_key(&source, source.ecosystem(), lineage);
     let group_key = lineage_sort_key(&lineage_key);
     let mut search_text = discovery_search_text(metadata);
+    search_text.generic.extend(generic_terms.iter().map(String::as_str));
     search_text.lineage_group = Some(&group_key);
     index.add_document_with_search_text(
         key,
@@ -3852,6 +3899,7 @@ fn replace_discovery_document(
     index: &mut TextSearchIndex<DiscoverySearchKey>,
     document: DiscoverySearchDocument,
     metadata: &DiscoveryMetadata,
+    generic_terms: &[String],
 ) -> Result<(), String> {
     let source = DiscoverySearchSource::Registry(document.source);
     let coordinate_text = document.coordinate.as_str().to_owned();
@@ -3866,6 +3914,7 @@ fn replace_discovery_document(
     let lineage_key = discovery_lineage_key(&source, source.ecosystem(), &lineage);
     let group_key = lineage_sort_key(&lineage_key);
     let mut search_text = discovery_search_text(metadata);
+    search_text.generic.extend(generic_terms.iter().map(String::as_str));
     search_text.lineage_group = Some(&group_key);
     index.replace_document_with_search_text(
         identity.clone(),
@@ -3885,12 +3934,15 @@ fn rebuild_discovery_search_index(
     let mut rebuilt = TextSearchIndex::new()?;
     for (source, fact) in store.facts() {
         let lineage = qualified_lineage(&fact.coordinate)?;
+        let metadata = registry_search_metadata(store, *source, fact);
+        let generic_terms = registry_search_terms(store, *source, fact);
         add_discovery_document(
             &mut rebuilt,
             *source,
             fact.coordinate.clone(),
             &lineage,
-            &fact.metadata,
+            &metadata,
+            &generic_terms,
         )?;
     }
     for (identity, document) in forge_documents {
@@ -3908,6 +3960,8 @@ fn rebuild_lineage_search_index(
     let mut changes = Vec::new();
     for (source, fact) in store.facts() {
         let lineage = qualified_lineage(&fact.coordinate)?;
+        let metadata = registry_search_metadata(store, *source, fact);
+        let generic_terms = registry_search_terms(store, *source, fact);
         let source = DiscoverySearchSource::Registry(*source);
         let key = DiscoverySearchKey {
             source: source.clone(),
@@ -3920,7 +3974,7 @@ fn rebuild_lineage_search_index(
         changes.push((
             identity,
             lineage_key,
-            lineage_release_document(key, &fact.metadata, None, &[]),
+            lineage_release_document(key, &metadata, None, &generic_terms),
         ));
     }
     for (identity, document) in forge_documents {
@@ -4134,6 +4188,8 @@ fn selected_discovery_root(
     if let Some(store) = store {
         for (source, fact) in store.facts() {
             note_source_root_fact_visit();
+            let metadata = registry_search_metadata(store, *source, fact);
+            let generic_terms = registry_search_terms(store, *source, fact);
             let source = DiscoverySearchSource::Registry(*source);
             let lineage = qualified_lineage(&fact.coordinate)?;
             let key = DiscoverySearchKey {
@@ -4146,7 +4202,7 @@ fn selected_discovery_root(
             if !release_ids.insert(identity) {
                 return Err("discovery source repeats one package release identity".to_owned());
             }
-            let document = lineage_release_document(key, &fact.metadata, None, &[]);
+            let document = lineage_release_document(key, &metadata, None, &generic_terms);
             xor_fingerprint(&mut fingerprint_xor, document.fingerprint);
             document_count = document_count.saturating_add(1);
         }
@@ -5189,6 +5245,58 @@ fn token_set<'a>(values: impl IntoIterator<Item = &'a str>) -> BTreeSet<String> 
         );
     }
     tokens
+}
+
+/// Whether a query names a retained advisory and whether that advisory's own
+/// source observation supplies every query token. The latter distinguishes a
+/// release match from a match combining observations at different times.
+pub(super) fn advisory_query_provenance(
+    metadata: &DiscoveryMetadata,
+    coordinate: &backend_engine::registry::PackageCoordinate,
+    query: &str,
+) -> (bool, bool) {
+    let query_tokens = token_set(std::iter::once(query));
+    if query_tokens.is_empty() || query_tokens.iter().any(|token| token.chars().count() > 40) {
+        return (false, false);
+    }
+    let DiscoveryFacet::Known(advisories) = &metadata.advisories else {
+        return (false, false);
+    };
+    let mentions_identifier = advisories.iter().any(|advisory| {
+        let aliases = match &advisory.aliases {
+            DiscoveryFacet::Known(aliases) => aliases.as_slice(),
+            DiscoveryFacet::Absent | DiscoveryFacet::Unknown => &[],
+        };
+        std::iter::once(advisory.id.as_str())
+            .chain(aliases.iter().map(String::as_str))
+            .any(|identifier| {
+                let identifier_tokens = token_set(std::iter::once(identifier));
+                !identifier_tokens.is_empty() && identifier_tokens.is_subset(&query_tokens)
+            })
+    });
+    (mentions_identifier, observation_query_matches(metadata, coordinate, query))
+}
+
+/// Checks tokens against one observation, never an index's mixed postings.
+pub(super) fn observation_query_matches(
+    metadata: &DiscoveryMetadata,
+    coordinate: &backend_engine::registry::PackageCoordinate,
+    query: &str,
+) -> bool {
+    let query_tokens = token_set(std::iter::once(query));
+    if query_tokens.is_empty() || query_tokens.iter().any(|token| token.chars().count() > 40) {
+        return false;
+    }
+    let text = discovery_search_text(metadata);
+    let tokens = token_set(
+        std::iter::once(coordinate.as_str())
+            .chain(text.aliases.values().iter().copied())
+            .chain(text.keywords.values().iter().copied())
+            .chain(text.descriptions.values().iter().copied())
+            .chain(text.advisories.values().iter().copied())
+            .chain(text.generic.iter().copied()),
+    );
+    query_tokens.is_subset(&tokens)
 }
 
 fn discovery_lineage_key(

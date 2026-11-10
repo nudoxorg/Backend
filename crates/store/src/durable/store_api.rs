@@ -57,6 +57,7 @@ impl FileStore {
         let gc_identity = collection_pin_root_identity(&root);
         let store = Self {
             root,
+            root_directory,
             gc_identity,
             max_pack_bytes,
             lock: Arc::new(Mutex::new(())),
@@ -81,6 +82,19 @@ impl FileStore {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Check that an existing owner-held directory capability is the exact
+    /// directory opened by this store, and that its stored path still resolves
+    /// to the same object. FileStore clones retain the same pinned handle.
+    ///
+    /// # Errors
+    /// Returns an error if the path drifted or the capabilities differ.
+    pub fn verify_owner_root(&self, owner: &backend_platform::directory::DirectoryCapability) -> Result<(), StoreError> {
+        if !self.root_directory.is_same_directory(owner).map_err(|error| io_error(&error))? {
+            return Err(io_error(&std::io::Error::new(std::io::ErrorKind::PermissionDenied, "owner and store directories differ")));
+        }
+        Ok(())
     }
 
     /// Returns the maximum admitted logical pack payload size.

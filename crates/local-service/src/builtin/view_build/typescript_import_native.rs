@@ -197,7 +197,7 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
         produced,
         ["src/route.ts".to_owned(), "src/scheduler.ts".to_owned()]
             .into_iter()
-            .collect(),
+            .collect::<std::collections::BTreeSet<_>>(),
         "only selected authored sources own published images"
     );
     let key = ProductSemanticPublicationKey::new(
@@ -614,4 +614,449 @@ fn direct_tsz_named_imports_share_authored_rows_and_survive_cold_search() {
     );
     assert_eq!(cold.projection_opens(), 1);
     assert_eq!(cold.projection_builds(), 0);
+}
+
+#[test]
+fn direct_tsz_owner_extents_page_exact_same_file_declarations_without_syntax() {
+    use backend_engine::application::DocumentationSession;
+    let root = tempfile::tempdir().expect("fixture root");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("private fixture root");
+    }
+    let project = root.path().join("project");
+    std::fs::create_dir_all(&project).expect("project");
+    let lines = (0..150)
+        .map(|index| format!("  const value_{index} = \"é漢🦀\";\r\n"))
+        .collect::<String>();
+    let owners = ["alpha", "bravo"].map(|name| format!("export function {name}() {{\r\n{lines}}}"));
+    let source = format!("{}\r\n{}\r\n", owners[0], owners[1]);
+    std::fs::write(project.join("same.ts"), &source).expect("fixture source");
+    let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+    let coordinate =
+        PackageUrl::parse("pkg:npm/native-source-fixture@1.0.0".to_owned()).expect("coordinate");
+    let client = LocalCompilerHost::new(
+        DirectHost(root.path().join("compiler")),
+        LocalHostDiscovery::ExplicitOnly,
+    )
+    .open()
+    .expect("direct TSZ");
+    let request = PackageCompileRequest::new(
+        GenerateTarget {
+            correlation: CorrelationId(312),
+            profile,
+            stage: Stage::LowerIr,
+        },
+        coordinate.clone(),
+    )
+    .expect("request");
+    let staged = client
+        .compile_package_sources_staged(
+            OwnedPackageSourceSet::new(
+                request,
+                project.clone(),
+                vec![OwnedPackageSource::new("same.ts", &source).expect("source")]
+                    .into_boxed_slice(),
+            )
+            .expect("source set"),
+        )
+        .expect("native TSZ compilation");
+    let package = backend_engine::PackageKey::from_value("/native-fixture");
+    let source_identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes());
+    let input = backend_compile::typed_of::<backend_compile::InputContentSchema>(source.as_bytes())
+        .to_bytes();
+    let mut found = std::collections::BTreeMap::new();
+    for ordinal in 0..staged.artifacts().len() {
+        let object = staged
+            .semantic_output_object(ordinal)
+            .expect("native image");
+        let image = backend_semantic::ir::SemanticImageView::reopen(object.bytes())
+            .expect("native image proof");
+        let (path, identity) = semantic::compiled_source(&image).expect("image source provenance");
+        if path != "same.ts" {
+            continue;
+        }
+        assert_eq!(identity, source_identity);
+        let session = DocumentationSession::new(&image);
+        for item in session.publication_entities() {
+            let item = item.expect("native declaration");
+            let Some(name) = item.name.named_bytes() else {
+                continue;
+            };
+            let Some(index) = [b"alpha".as_slice(), b"bravo".as_slice()]
+                .iter()
+                .position(|candidate| *candidate == name)
+            else {
+                continue;
+            };
+            let selected = backend_engine::RowId::Symbol(super::identity::semantic_symbol(
+                package,
+                item.entity.version.identity(),
+            ));
+            let extent = semantic::native_extent_in_image(&image, package, "same.ts", selected)
+                .expect("native extent admission")
+                .expect("selected native extent");
+            let mut offset = 0;
+            let mut reconstructed = String::new();
+            loop {
+                let page = super::super::source_range::native_page(
+                    source.as_bytes(),
+                    source_identity,
+                    input,
+                    extent,
+                    offset,
+                    2048,
+                )
+                .expect("verified native range");
+                reconstructed.push_str(page.text);
+                offset = page.end;
+                if page.end == page.total {
+                    break;
+                }
+            }
+            let expected = owners[index]
+                .strip_prefix("export ")
+                .expect("exported fixture");
+            assert_eq!(
+                reconstructed.as_bytes(),
+                expected.as_bytes(),
+                "exact TSZ declaration span (the export modifier is outside this native extent)"
+            );
+            assert!(
+                found
+                    .insert(index, (selected, extent, item.entity.version.identity()))
+                    .is_none(),
+                "duplicate native row"
+            );
+        }
+    }
+    assert_eq!(found.len(), 2, "both native declarations retained");
+    assert_ne!(found[&0].0, found[&1].0);
+    assert_ne!(found[&0].1, found[&1].1);
+    assert_eq!(found[&0].1.1 - found[&0].1.0, found[&1].1.1 - found[&1].1.0);
+
+    // Admit those compiler images through the durable selected-publication
+    // owner with an empty declaration set. No syntax capture is constructed.
+    use backend_engine::builtin::{
+        ProductSemanticCaptureOutcome, SemanticSourceCapture, semantic_capture_relation,
+    };
+    let key = ProductSemanticPublicationKey::new(
+        backend_engine::PackageReference::parse(project.to_str().expect("project path").to_owned())
+            .expect("package reference"),
+        coordinate,
+        profile,
+    )
+    .expect("publication key");
+    let real_package = key.package_key();
+    let workspace = root.path().join("workspace");
+    let mut daemon = open_owner(&workspace);
+    let mut authority = SemanticAuthority::open(&workspace).expect("semantic authority");
+    let input_digest = *staged.input_witness().input_root();
+    let observation = authority
+        .observe(&key, input_digest, 1)
+        .expect("source observation");
+    let source_version = *blake3::hash(source.as_bytes()).as_bytes();
+    let capture = SemanticSourceCapture::new(
+        None,
+        source_version,
+        input_digest,
+        observation.sequence(),
+        1,
+    )
+    .expect("native source capture");
+    let file_key = backend_engine::product_source_file_key(real_package.to_bytes(), "same.ts");
+    let file = ProductSourceRecord::file(
+        real_package.to_bytes(),
+        "same.ts",
+        backend_compile::SourceLanguage::TypeScript,
+        input,
+        [9; 32],
+        Vec::<backend_compile::SourceDeclaration>::new(),
+    )
+    .expect("empty source declarations")
+    .with_source_identity(source_identity)
+    .expect("source identity");
+    let project_record =
+        ProductSourceRecord::project(key.package().as_str(), source_version, vec![file_key])
+            .expect("source frontier");
+    let pending = BuiltinIntent::index_with_capture(
+        real_package,
+        key.package().as_str(),
+        vec![
+            BuiltinSourceChange {
+                key: real_package.to_bytes(),
+                after: Some(project_record),
+            },
+            BuiltinSourceChange {
+                key: file_key,
+                after: Some(file),
+            },
+        ],
+        Vec::new(),
+        vec![super::super::BuiltinCaptureChange {
+            cargo_target: None,
+            key: key.clone(),
+            expected: None,
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Pending { prior: None },
+            compiler_failure: None,
+        }],
+    )
+    .expect("source-first pending capture");
+    super::super::commands::commit_builtin_intent(&mut daemon, 4, &pending)
+        .expect("commit selected source and pending capture");
+    let pending_record = semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
+        .expect("capture relation")
+        .expect("selected capture")
+        .lookup(&key)
+        .expect("capture lookup")
+        .expect("pending capture");
+    let attempt = authority
+        .begin_candidate_attempt(&key, &observation)
+        .expect("candidate");
+    let claim = authority
+        .publish_staged(&key, attempt, &staged, |_| Ok(()))
+        .expect("publish native images")
+        .0;
+    let coverage = SemanticPublicationCoverage::Complete;
+    let publication = ProductSemanticPublicationRecord::Published { coverage, claim };
+    let generation = key
+        .for_generation_bytes(*claim.binding().identity.as_ref())
+        .expect("generation");
+    let terminal = BuiltinIntent::index_with_capture(
+        real_package,
+        key.package().as_str(),
+        Vec::new(),
+        vec![
+            BuiltinSemanticChange {
+                key: generation,
+                after: Some(publication.clone()),
+            },
+            BuiltinSemanticChange {
+                key: key.clone(),
+                after: Some(publication),
+            },
+        ],
+        vec![super::super::BuiltinCaptureChange {
+            cargo_target: None,
+            key: key.clone(),
+            expected: Some(pending_record),
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Published { coverage, claim },
+            compiler_failure: None,
+        }],
+    )
+    .expect("selected publication terminal");
+    authority
+        .commit_product_selection_changes(vec![(key.clone(), claim)], Vec::new(), || {
+            super::super::commands::commit_builtin_intent(&mut daemon, 5, &terminal)
+        })
+        .expect("commit selected native publication");
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let admitted_sources = super::super::read_package_sources(&snapshot, real_package)
+        .expect("admit current source frontier");
+    let mut generations = SemanticGenerationResidence::default();
+    authority.install_image_loader(&mut generations);
+    for index in 0..2 {
+        let selected = backend_engine::RowId::Symbol(super::identity::semantic_symbol(
+            real_package,
+            found[&index].2,
+        ));
+        let admitted_file = semantic::admitted_native_source_file(
+            &admitted_sources,
+            &snapshot,
+            &client,
+            real_package,
+            selected,
+            &mut generations,
+        )
+        .expect("selected publication file admission")
+        .expect("native file");
+        assert_eq!(admitted_file, ("same.ts".to_owned(), source_identity));
+        let admitted = semantic::admitted_native_source_extent(
+            &admitted_sources,
+            &snapshot,
+            &client,
+            real_package,
+            selected,
+            &mut generations,
+        )
+        .expect("selected publication admission")
+        .expect("native owner");
+        assert_eq!(
+            admitted,
+            ("same.ts".to_owned(), source_identity, found[&index].1)
+        );
+    }
+}
+
+#[test]
+fn direct_tsz_abstract_extern_import_source_authority_probe() {
+    use backend_engine::application::DocumentationSession;
+    use backend_semantic::ir::{SemanticCoreReader as _, SemanticReader as _};
+    let root = tempfile::tempdir().expect("private native fixture");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("private fixture permissions");
+    }
+    let project = root.path().join("project");
+    std::fs::create_dir_all(&project).expect("project directory");
+    let source = concat!(
+        "import { ext } from './other';\n",
+        "export declare function call(x: number): number;\n",
+        "export abstract class Shape { abstract area(): number; }\n",
+        "export interface Merge { first: number; }\n",
+        "const gap = 1;\n",
+        "export interface Merge { second: number; }\n",
+        "export const useExt = ext;\n",
+    );
+    let other = "export const ext = 1;\n";
+    std::fs::write(project.join("probe.ts"), source).expect("fixture source");
+    std::fs::write(project.join("other.ts"), other).expect("fixture dependency");
+    let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+    let coordinate =
+        PackageUrl::parse("pkg:npm/native-authority-probe@1.0.0".to_owned()).expect("coordinate");
+    let client = LocalCompilerHost::new(
+        DirectHost(root.path().join("compiler")),
+        LocalHostDiscovery::ExplicitOnly,
+    )
+    .open()
+    .expect("direct TSZ");
+    let request = PackageCompileRequest::new(
+        GenerateTarget {
+            correlation: CorrelationId(313),
+            profile,
+            stage: Stage::LowerIr,
+        },
+        coordinate,
+    )
+    .expect("native request");
+    let staged = client
+        .compile_package_sources_staged(
+            OwnedPackageSourceSet::new(
+                request,
+                project,
+                vec![
+                    OwnedPackageSource::new("other.ts", other).expect("other"),
+                    OwnedPackageSource::new("probe.ts", source).expect("probe"),
+                ]
+                .into_boxed_slice(),
+            )
+            .expect("source set"),
+        )
+        .expect("native compilation");
+    let package = backend_engine::PackageKey::from_value("/native-authority-probe");
+    let mut signatures = 0usize;
+    let mut file_without_owner = 0usize;
+    let mut signature_without_file = 0usize;
+    let mut merged_primary = 0usize;
+    for ordinal in 0..staged.artifacts().len() {
+        let object = staged
+            .semantic_output_object(ordinal)
+            .expect("native image");
+        let image = backend_semantic::ir::SemanticImageView::reopen(object.bytes())
+            .expect("native image proof");
+        let image_identity = *staged.artifacts()[ordinal]
+            .semantic_image()
+            .identity
+            .as_ref();
+        let backend_semantic::ir::ImageProvenance::Captured {
+            source: provenance_source,
+            scope,
+            ..
+        } = image.image_facts().provenance
+        else {
+            panic!("native image source provenance");
+        };
+        let image_path = image.atom(scope.path).expect("native source path");
+        eprintln!(
+            "native image path={:?} image_id={image_identity:02x?} source_id={:02x?}",
+            String::from_utf8_lossy(image_path),
+            provenance_source.identity.as_ref(),
+        );
+        for entity in DocumentationSession::new(&image).publication_entities() {
+            let entity = entity.expect("native entity");
+            if image_path == b"probe.ts" && entity.name.named_bytes() == Some(b"Merge".as_slice()) {
+                let span = entity.entity.source.expect("merged primary span");
+                assert_eq!(image.atom(span.file()), Some(image_path));
+                let input = backend_compile::typed_of::<backend_compile::InputContentSchema>(
+                    source.as_bytes(),
+                )
+                .to_bytes();
+                let verified = backend_compile::VerifiedSourceText::admit_stored(
+                    source.as_bytes(),
+                    input,
+                    provenance_source.identity,
+                )
+                .expect("exact merged host bytes");
+                let primary = verified
+                    .extent(span.start() as usize..span.end() as usize)
+                    .expect("verified merged primary span");
+                assert!(primary.text().contains("first"));
+                assert!(!primary.text().contains("second"));
+                assert!(
+                    (span.end() as usize)
+                        < source
+                            .find("interface Merge { second")
+                            .expect("second part")
+                );
+                merged_primary += 1;
+            }
+            let content =
+                semantic::semantic_row_content(profile, &image, &entity, package, image_identity)
+                    .expect("native signature projection");
+            let has_file = entity.entity.authority.source_file
+                == backend_semantic::ir::FactAvailability::Captured
+                && entity
+                    .entity
+                    .source
+                    .is_some_and(|span| image.atom(span.file()) == Some(image_path));
+            let has_owner = entity.entity.authority.source
+                == backend_semantic::ir::FactAvailability::Captured
+                && entity.entity.source.is_some_and(|span| !span.is_empty());
+            let native_row =
+                super::identity::semantic_symbol(package, entity.entity.version.identity());
+            let span = entity.entity.source.map(|span| {
+                (
+                    span.start(),
+                    span.end(),
+                    image.atom(span.file()).map(String::from_utf8_lossy),
+                )
+            });
+            eprintln!(
+                "native entity={:?} kind={:?} row={} signature={} source_file_authority={:?} source_authority={:?} span={span:?} file={has_file} owner={has_owner}",
+                entity.name.named_bytes().map(String::from_utf8_lossy),
+                entity.entity.kind,
+                backend_library::encode_id(native_row.as_bytes()),
+                content.signature.is_some(),
+                entity.entity.authority.source_file,
+                entity.entity.authority.source,
+            );
+            if content.signature.is_none() {
+                continue;
+            }
+            signatures += 1;
+            if has_file && !has_owner {
+                file_without_owner += 1;
+            }
+            if !has_file {
+                signature_without_file += 1;
+            }
+        }
+    }
+    assert!(
+        signatures > 0,
+        "fixture must produce native signature metadata"
+    );
+    assert_eq!(
+        merged_primary, 1,
+        "one selected merged declaration with a primary span"
+    );
+    eprintln!(
+        "native signature count={signatures}, file-without-owner={file_without_owner}, signature-without-file={signature_without_file}"
+    );
 }

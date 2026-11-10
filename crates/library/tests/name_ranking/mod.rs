@@ -9,6 +9,77 @@ fn ordered_ids(page: &ViewSnapshot) -> Vec<RowId> {
 }
 
 #[test]
+fn exact_case_precedes_case_insensitive_match_across_pages() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let exact = RowId::Symbol(symbol_key("exact-case"));
+    let folded = RowId::Symbol(symbol_key("folded-case"));
+    let partial = RowId::Symbol(symbol_key("partial-case"));
+    let original = projection(vec![
+        Row::new(folded, basis, "a::fieldErrors").with_kind(DeclarationKind::Field),
+        Row::new(exact, basis, "z::FieldErrors").with_kind(DeclarationKind::Type),
+        Row::new(partial, basis, "a::FieldErrorsExtra").with_kind(DeclarationKind::Class),
+    ]);
+    for credit in [1, 2, 5] {
+        let query = NameQuery::new(
+            "FieldErrors",
+            original.revision_root(),
+            QueryLimit::new(credit).unwrap(),
+        );
+        let mut owner = original.clone();
+        let mut continued = query.clone();
+        let mut seen = Vec::new();
+        loop {
+            let page = owner.names(&continued).expect("name page");
+            seen.extend(ordered_ids(&page));
+            let Some(next) = page.next else { break };
+            owner = Library::from_view(owner.view().clone(), owner.cursor()).expect("reopen");
+            continued = query.clone().with_cursor(next);
+        }
+        assert_eq!(seen, [exact, folded, partial], "credit {credit}");
+    }
+}
+
+#[test]
+fn exact_case_beats_a_same_priority_local_constant_with_the_same_letters() {
+    // `const fieldErrors` inside a function and `type FieldErrors` have equal declaration
+    // priority; only the spelling tells a reader which one `FieldErrors` meant. Row identities
+    // are hashes, so try several pairs: no ordering of identities can hide the spelling rule.
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    for round in 0..12 {
+        let local = RowId::Symbol(symbol_key(&format!("local-constant-{round}")));
+        let declared = RowId::Symbol(symbol_key(&format!("declared-type-{round}")));
+        let original = projection(vec![
+            Row::new(local, basis, "a::fieldErrors").with_kind(DeclarationKind::Constant),
+            Row::new(declared, basis, "z::FieldErrors").with_kind(DeclarationKind::Type),
+        ]);
+        let query = NameQuery::new("FieldErrors", original.revision_root(), QueryLimit::new(5).unwrap());
+        let page = original.names(&query).expect("name page");
+        assert_eq!(ordered_ids(&page), [declared, local], "round {round}");
+    }
+}
+
+#[test]
+fn a_migration_class_that_contains_the_searched_name_is_listed_below_the_exact_matches() {
+    // Renaming `BankAccount` must surface `AddBankAccounts`: the class that migrates the table
+    // contains the name even though it neither starts nor ends with it.
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let exact = RowId::Symbol(symbol_key("exact"));
+    let migration = RowId::Symbol(symbol_key("migration"));
+    let unrelated = RowId::Symbol(symbol_key("unrelated"));
+    let original = projection(vec![
+        Row::new(unrelated, basis, "z::Unrelated").with_kind(DeclarationKind::Class),
+        Row::new(migration, basis, "m::Migrations::AddBankAccounts").with_kind(DeclarationKind::Class),
+        Row::new(exact, basis, "a::BankAccount").with_kind(DeclarationKind::Class),
+    ]);
+    let query = NameQuery::new("BankAccount", original.revision_root(), QueryLimit::new(10).unwrap());
+    let page = original.names(&query).expect("name page");
+    assert_eq!(ordered_ids(&page), [exact, migration]);
+}
+
+#[test]
 fn exact_names_precede_partial_names_through_bounded_pages_and_cold_reopen() {
     let (root, object) = source();
     let basis = Basis::new(root, object);

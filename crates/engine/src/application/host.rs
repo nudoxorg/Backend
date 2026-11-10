@@ -57,7 +57,8 @@ pub use rust_selection::{
 pub use snapshot::{
     ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError,
     LocalCompilerHostSelection, LocalCompilerHostSelectionIssue, LocalCompilerHostSelectionSource,
-    LocalHostCargoHomeSelection, MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES,
+    LocalHostCargoHomeSelection, LocalPythonCheckerFailure, LocalPythonCheckerFailureCause,
+    LocalPythonCheckerIoKind, MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES,
 };
 
 const PLATFORM_PATH_CAPACITY: usize = 12;
@@ -281,6 +282,11 @@ pub trait LocalHostEnvironment {
         LocalHostCargoHomeSelection::Strict
     }
 
+    /// Exact failed explicit Python-checker selection carried by a closed snapshot.
+    fn python_checker_failure(&self) -> Option<&LocalPythonCheckerFailure> {
+        None
+    }
+
     /// Windows user home when HOME is absent.
     fn user_profile(&self) -> Option<OsString> { None }
 }
@@ -419,10 +425,10 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     /// a long-lived owner. PATH and Go cache variables are consulted only during this call.
     ///
     /// Explicit NUDOX_* paths take precedence and are validated as their declared object
-    /// kind. An invalid explicit Go path is retained as a Go-only admission failure so it
-    /// cannot prevent other languages from starting; other invalid explicit paths return their
-    /// typed error instead of choosing a PATH alternative. The returned selection contains no
-    /// ambient search inputs. An absent default Cargo home is recorded as typed deferred
+    /// kind. Invalid explicit Go and Pyrefly paths are retained as language-only admission
+    /// failures so they cannot prevent other languages from starting. Other invalid explicit
+    /// paths return their typed error instead of choosing a PATH alternative. The returned
+    /// selection contains no ambient search inputs. An absent default Cargo home is recorded as typed deferred
     /// authority and is not created during capture.
     ///
     /// # Errors
@@ -465,6 +471,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         let mut paths =
             Vec::with_capacity(LocalHostVariable::CLOSED_ENVIRONMENT_SNAPSHOT_ROLE_COUNT);
         let mut go_failure = self.go_authority_failure;
+        let mut python_checker_failure = self.environment.python_checker_failure().cloned();
         for variable in LocalHostVariable::closed_environment_snapshot_roles() {
             if matches!(
                 variable,
@@ -559,7 +566,19 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             ));
         }
 
-        self.capture_installed_python_paths(&mut paths, home.as_deref())?;
+        if python_checker_failure.is_some() {
+            // Preserve a previously closed failed selection rather than rediscovering
+            // interpreters from this process's ambient PATH during recapture.
+            for variable in std::iter::once(LocalHostVariable::NudoxPython)
+                .chain(python_environment::INSTALLED_PYTHON_ROLES)
+            {
+                if let Some(path) = self.optional_absolute_path(variable)? {
+                    paths.push((variable, path));
+                }
+            }
+        } else {
+            self.capture_installed_python_paths(&mut paths, home.as_deref())?;
+        }
         for (variable, role, tool) in [(
             LocalHostVariable::NudoxGo,
             LocalHostPathRole::Native(NativeTool::GoCompiler),
@@ -580,12 +599,37 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 Err(error) => return Err(error),
             }
         }
-        if let Some(pyrefly) = self.executable(
-            LocalHostVariable::NudoxPyrefly,
-            LocalHostPathRole::Pyrefly,
-            self.auxiliary_candidates(home.as_deref(), "pyrefly"),
-        )? {
-            paths.push((LocalHostVariable::NudoxPyrefly, pyrefly));
+        if python_checker_failure.is_some() {
+            if self
+                .environment
+                .value(LocalHostVariable::NudoxPyrefly)
+                .is_some()
+            {
+                return Err(LocalCompilerHostError::HostSnapshot(
+                    ClosedLocalHostEnvironmentSnapshotError::ConflictingPythonChecker,
+                ));
+            }
+        } else {
+            match self.executable(
+                LocalHostVariable::NudoxPyrefly,
+                LocalHostPathRole::Pyrefly,
+                self.auxiliary_candidates(home.as_deref(), "pyrefly"),
+            ) {
+                Ok(Some(pyrefly)) => paths.push((LocalHostVariable::NudoxPyrefly, pyrefly)),
+                Ok(None) => {}
+                Err(error) => {
+                    let Some(configured) = self.environment.value(LocalHostVariable::NudoxPyrefly)
+                    else {
+                        return Err(error);
+                    };
+                    let Some(failure) =
+                        LocalPythonCheckerFailure::from_error(PathBuf::from(configured), &error)
+                    else {
+                        return Err(error);
+                    };
+                    python_checker_failure = Some(failure);
+                }
+            }
         }
         let go_selected = paths
             .iter()
@@ -619,6 +663,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         }
 
         let mut snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths(paths.clone())
+            .and_then(|snapshot| snapshot.with_python_checker_failure(python_checker_failure))
             .map_err(LocalCompilerHostError::HostSnapshot)?;
         if deferred_default_cargo_home {
             snapshot = snapshot
@@ -636,8 +681,9 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     ///
     /// Returns exact path, resource-bound, authority, configuration, or worker-startup causes.
     /// Broken Go configuration is retained as a Go-only unavailable state and fails when a Go
-    /// package is requested; it does not block unrelated language owners. Other explicitly
-    /// configured broken paths fail admission. A genuinely absent optional tool remains an
+    /// package is requested; it does not block unrelated language owners. A closed Pyrefly
+    /// failure similarly withholds Python checker authority. Other explicitly configured broken
+    /// paths fail admission. A genuinely absent optional tool remains an
     /// honest unavailable row.
     pub fn open(&self) -> Result<LocalCompilerClient, LocalCompilerHostError> {
         self.open_with_embedding_state(None, None, EmbeddingRequirement::Optional)
@@ -741,7 +787,8 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         let use_external_python_checker = self
             .environment
             .value(LocalHostVariable::NudoxPyrefly)
-            .is_some();
+            .is_some()
+            || self.environment.python_checker_failure().is_some();
         let (go, mut go_discovery_failure) = match self.executable(
             LocalHostVariable::NudoxGo,
             LocalHostPathRole::Native(NativeTool::GoCompiler),
@@ -1304,6 +1351,383 @@ mod tests {
         drop(absent);
         drop(client);
         Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unconfigured_direct_host_does_not_discover_ambient_pyrefly() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = PrivateTestDirectory::create("direct-host-no-pyrefly-discovery").unwrap();
+        let home = fixture.path().join("home");
+        let bin = home.join(".local/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let marker = fixture.path().join("unexpected-pyrefly-probe");
+        let checker = bin.join("pyrefly");
+        fs::write(
+            &checker,
+            format!(
+                "#!/bin/sh\nprintf invoked > '{}'\nprintf 'pyrefly 1.0.0\n'\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&checker, fs::Permissions::from_mode(0o700)).unwrap();
+        for discovery in [
+            LocalHostDiscovery::ExplicitOnly,
+            LocalHostDiscovery::PlatformDefaults,
+        ] {
+            let host = LocalCompilerHost::new(
+                StartupEnvironment(vec![
+                    (
+                        LocalHostVariable::NudoxDataRoot,
+                        fixture.path().join("unused").into_os_string(),
+                    ),
+                    (LocalHostVariable::Home, home.clone().into_os_string()),
+                ]),
+                discovery,
+            );
+            let python = host
+                .inspect_capabilities()
+                .expect("unconfigured host remains usable")
+                .for_profile(LanguageProfile::Python(PythonVersion::Python314));
+            assert!(matches!(
+                python.state(),
+                crate::application::LocalCompilerCapabilityState::Ready
+                    | crate::application::LocalCompilerCapabilityState::Deferred
+            ));
+            assert_eq!(python.setup_issue(), None);
+            assert!(
+                !marker.exists(),
+                "unconfigured direct host must not probe ambient Pyrefly"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_explicit_python_checker_survives_closed_restart_without_fallback() {
+        use crate::application::{OwnedPackageSource, OwnedPackageSourceSet};
+        use backend_library::interface::{
+            CompilerCapability, CompilerReadiness, CompilerRequest, CompilerToolFailure,
+            CompilerToolIssue, CompilerToolRequirement, CorrelationId, GenerateTarget,
+            PackageCompileRequest, PackageUrl,
+        };
+        use std::os::unix::fs::PermissionsExt;
+
+        #[derive(Clone)]
+        struct Launch {
+            home: PathBuf,
+            python: PathBuf,
+            checker: PathBuf,
+        }
+        impl LocalHostEnvironment for Launch {
+            fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
+                match variable {
+                    LocalHostVariable::Home => Some(self.home.clone().into_os_string()),
+                    LocalHostVariable::NudoxPython => Some(self.python.clone().into_os_string()),
+                    LocalHostVariable::NudoxPyrefly => Some(self.checker.clone().into_os_string()),
+                    _ => None,
+                }
+            }
+        }
+        struct Closed {
+            root: PathBuf,
+            snapshot: ClosedLocalHostEnvironmentSnapshot,
+            search_path: Option<OsString>,
+            conflicting_checker: Option<OsString>,
+        }
+        impl LocalHostEnvironment for Closed {
+            fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
+                if variable == LocalHostVariable::NudoxDataRoot {
+                    Some(self.root.clone().into_os_string())
+                } else if variable == LocalHostVariable::NudoxPyrefly
+                    && self.conflicting_checker.is_some()
+                {
+                    self.conflicting_checker.clone()
+                } else {
+                    self.snapshot
+                        .path(variable)
+                        .map(|path| path.as_os_str().to_owned())
+                }
+            }
+            fn search_path(&self) -> Option<OsString> {
+                self.search_path.clone()
+            }
+            fn python_checker_failure(&self) -> Option<&LocalPythonCheckerFailure> {
+                self.snapshot.python_checker_failure()
+            }
+            fn cargo_home_selection(&self) -> LocalHostCargoHomeSelection {
+                self.snapshot.cargo_home_selection()
+            }
+        }
+        let fixture = PrivateTestDirectory::create("missing-explicit-checker").unwrap();
+        let python = fixture.path().join("python3");
+        fs::write(&python, b"#!/bin/sh\nprintf 'Python 3.14.0\n'\n").unwrap();
+        fs::set_permissions(&python, fs::Permissions::from_mode(0o700)).unwrap();
+        let checker = fixture.path().join("missing-pyrefly");
+        let selection = LocalCompilerHost::new(
+            Launch {
+                home: fixture.path().to_path_buf(),
+                python: python.clone(),
+                checker: checker.clone(),
+            },
+            LocalHostDiscovery::InstalledTools,
+        )
+        .capture_installed_selection()
+        .expect("failed checker is retained, not a startup failure");
+        let failure = selection
+            .snapshot()
+            .python_checker_failure()
+            .expect("typed checker failure");
+        assert_eq!(failure.variable(), LocalHostVariable::NudoxPyrefly);
+        assert_eq!(failure.path(), checker);
+        assert!(matches!(
+            failure.cause(),
+            LocalPythonCheckerFailureCause::Filesystem {
+                kind: LocalPythonCheckerIoKind::NotFound,
+                ..
+            }
+        ));
+        assert!(
+            selection
+                .snapshot()
+                .path(LocalHostVariable::NudoxPyrefly)
+                .is_none()
+        );
+        assert_eq!(
+            failure.cause(),
+            LocalPythonCheckerFailureCause::Filesystem {
+                kind: LocalPythonCheckerIoKind::NotFound,
+                os_code: fs::metadata(&checker).unwrap_err().raw_os_error(),
+            }
+        );
+        for (configured, expected) in [
+            (PathBuf::new(), LocalPythonCheckerFailureCause::RelativePath),
+            (
+                PathBuf::from("relative-pyrefly"),
+                LocalPythonCheckerFailureCause::RelativePath,
+            ),
+            (
+                fixture.path().to_path_buf(),
+                LocalPythonCheckerFailureCause::NotFile,
+            ),
+            (
+                python.join("child"),
+                LocalPythonCheckerFailureCause::Filesystem {
+                    kind: LocalPythonCheckerIoKind::NotDirectory,
+                    os_code: fs::metadata(python.join("child"))
+                        .unwrap_err()
+                        .raw_os_error(),
+                },
+            ),
+        ] {
+            let failed = LocalCompilerHost::new(
+                Launch {
+                    home: fixture.path().to_path_buf(),
+                    python: python.clone(),
+                    checker: configured.clone(),
+                },
+                LocalHostDiscovery::InstalledTools,
+            )
+            .capture_installed_selection()
+            .expect("explicit failure remains lane-local");
+            let failure = failed.snapshot().python_checker_failure().unwrap();
+            assert_eq!(failure.path(), configured);
+            assert_eq!(failure.cause(), expected);
+            let closed =
+                ClosedLocalHostEnvironmentSnapshot::parse(&failed.snapshot().encode().unwrap())
+                    .unwrap();
+            assert_eq!(closed.python_checker_failure(), Some(failure));
+        }
+        let package_root = fixture.path().join("typescript-project");
+        fs::create_dir_all(package_root.join("src")).unwrap();
+        fs::write(
+            package_root.join("package.json"),
+            r#"{"name":"checker-isolation","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(package_root.join("tsconfig.json"), r#"{"compilerOptions":{"strict":true,"target":"ES2022","module":"ESNext"},"include":["src/**/*.ts"]}"#).unwrap();
+        const TYPESCRIPT_SOURCE: &str = "export const answer: number = 42;\n";
+        fs::write(package_root.join("src/index.ts"), TYPESCRIPT_SOURCE).unwrap();
+        let encoded = selection.snapshot().encode().unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_str(&selection.encode_receipt().unwrap()).unwrap();
+        let receipt_snapshot =
+            ClosedLocalHostEnvironmentSnapshot::parse(receipt["snapshot"].as_str().unwrap())
+                .unwrap();
+        let receipt_failure = receipt_snapshot.python_checker_failure().unwrap();
+        assert_eq!(receipt_failure.variable(), LocalHostVariable::NudoxPyrefly);
+        assert_eq!(receipt_failure.path(), checker);
+        assert_eq!(receipt_failure.cause(), failure.cause());
+        assert!(
+            receipt["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue.get("python_checker_unavailable").is_some())
+        );
+        let decoded = ClosedLocalHostEnvironmentSnapshot::parse(&encoded).unwrap();
+        assert_eq!(decoded, *selection.snapshot());
+        // Repairing the file after capture must not silently turn the closed failed
+        // selection into a different authority on owner startup or restart.
+        fs::write(&checker, b"#!/bin/sh\nprintf 'pyrefly 1.0.0\n'\n").unwrap();
+        fs::set_permissions(&checker, fs::Permissions::from_mode(0o700)).unwrap();
+        let ambient = fixture.path().join("ambient");
+        fs::create_dir(&ambient).unwrap();
+        let ambient_checker = ambient.join("pyrefly");
+        fs::write(&ambient_checker, b"#!/bin/sh\nprintf 'pyrefly 2.0.0\n'\n").unwrap();
+        fs::set_permissions(&ambient_checker, fs::Permissions::from_mode(0o700)).unwrap();
+        let ambient_path = std::env::join_paths([&ambient]).unwrap();
+        let inherited = Closed {
+            root: fixture.path().join("recapture-unused"),
+            snapshot: decoded.clone(),
+            search_path: Some(ambient_path.clone()),
+            conflicting_checker: None,
+        };
+        let recaptured = LocalCompilerHost::new(inherited, LocalHostDiscovery::InstalledTools)
+            .capture_installed_selection()
+            .expect("recapture preserves the closed checker failure");
+        assert_eq!(
+            recaptured.snapshot().python_checker_failure(),
+            decoded.python_checker_failure()
+        );
+        assert_eq!(
+            recaptured.snapshot().path(LocalHostVariable::NudoxPython),
+            decoded.path(LocalHostVariable::NudoxPython)
+        );
+        assert!(
+            recaptured
+                .snapshot()
+                .path(LocalHostVariable::NudoxPyrefly)
+                .is_none()
+        );
+        let recaptured_wire = recaptured.snapshot().encode().unwrap();
+        let restarted = ClosedLocalHostEnvironmentSnapshot::parse(&recaptured_wire).unwrap();
+        assert_eq!(
+            restarted.python_checker_failure(),
+            decoded.python_checker_failure()
+        );
+        let conflicting = Closed {
+            root: fixture.path().join("conflict-unused"),
+            snapshot: decoded.clone(),
+            search_path: Some(ambient_path.clone()),
+            conflicting_checker: Some(checker.clone().into_os_string()),
+        };
+        assert!(matches!(
+            LocalCompilerHost::new(conflicting, LocalHostDiscovery::InstalledTools)
+                .capture_installed_selection(),
+            Err(LocalCompilerHostError::HostSnapshot(
+                ClosedLocalHostEnvironmentSnapshotError::ConflictingPythonChecker
+            ))
+        ));
+        let repaired = LocalCompilerHost::new(
+            Launch {
+                home: fixture.path().to_path_buf(),
+                python: python.clone(),
+                checker: checker.clone(),
+            },
+            LocalHostDiscovery::InstalledTools,
+        )
+        .capture_installed_selection()
+        .expect("fresh capture may select the repaired explicit checker");
+        assert!(repaired.snapshot().python_checker_failure().is_none());
+        assert_eq!(
+            repaired.snapshot().path(LocalHostVariable::NudoxPyrefly),
+            Some(checker.canonicalize().unwrap().as_path())
+        );
+        let invalid_root = LocalCompilerHost::new(
+            Closed {
+                root: PathBuf::from("relative-storage"),
+                snapshot: restarted.clone(),
+                search_path: Some(ambient_path.clone()),
+                conflicting_checker: None,
+            },
+            LocalHostDiscovery::ClosedSnapshot,
+        )
+        .open();
+        assert!(
+            matches!(
+                invalid_root,
+                Err(LocalCompilerHostError::RelativeEnvironmentPath {
+                    variable: LocalHostVariable::NudoxDataRoot,
+                    ..
+                })
+            ),
+            "a checker failure cannot mask a broken durable root"
+        );
+        for attempt in 0..2 {
+            let mut owner = LocalCompilerHost::new(
+                Closed {
+                    root: fixture.path().join(format!("owner-{attempt}")),
+                    snapshot: restarted.clone(),
+                    search_path: Some(ambient_path.clone()),
+                    conflicting_checker: None,
+                },
+                LocalHostDiscovery::ClosedSnapshot,
+            )
+            .open()
+            .expect("unrelated owner status remains available");
+            assert_eq!(owner.readiness(), CompilerReadiness::Ready);
+            let python = owner
+                .capabilities()
+                .for_profile(LanguageProfile::Python(PythonVersion::Python314));
+            assert_eq!(
+                python.state(),
+                crate::application::LocalCompilerCapabilityState::ProbeFailed
+            );
+            assert_eq!(
+                python.setup_issue(),
+                Some(CompilerToolIssue {
+                    requirement: CompilerToolRequirement::PythonChecker,
+                    failure: CompilerToolFailure::ProbeFailed,
+                })
+            );
+            assert!(
+                owner
+                    .generate(CompilerRequest {
+                        profile: LanguageProfile::Python(PythonVersion::Python314),
+                        stage: Stage::LowerIr,
+                        source: "answer = 42\n",
+                    })
+                    .is_err(),
+                "a failed selected checker must not fall back to native Python"
+            );
+            assert_ne!(
+                owner
+                    .capabilities()
+                    .for_profile(LanguageProfile::TypeScript(TypeScriptSource::TypeScript))
+                    .state(),
+                crate::application::LocalCompilerCapabilityState::ProbeFailed
+            );
+            if attempt == 0 {
+                let request = PackageCompileRequest::new(
+                    GenerateTarget {
+                        correlation: CorrelationId(1),
+                        profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                        stage: Stage::LowerIr,
+                    },
+                    PackageUrl::try_from("pkg:npm/checker-isolation@1.0.0#src/index.ts".to_owned())
+                        .unwrap(),
+                )
+                .unwrap();
+                let package = OwnedPackageSourceSet::new(
+                    request,
+                    package_root.clone(),
+                    vec![OwnedPackageSource::new("src/index.ts", TYPESCRIPT_SOURCE).unwrap()]
+                        .into_boxed_slice(),
+                )
+                .unwrap();
+                assert_eq!(
+                    owner
+                        .compile_package_sources_staged(package)
+                        .expect("unrelated TypeScript still compiles")
+                        .artifacts()
+                        .len(),
+                    1
+                );
+            }
+            drop(owner);
+        }
     }
 
     #[cfg(unix)]

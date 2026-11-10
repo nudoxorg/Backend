@@ -101,7 +101,7 @@ fn python_from_imports_project_only_real_bindings_and_keep_distinct_repeated_sit
         );
         assert_eq!(
             identities,
-            declarations.iter().map(|row| row.id.stable_key()).collect()
+            declarations.iter().map(|row| row.id.stable_key()).collect::<BTreeSet<_>>()
         );
     }
     Ok(())

@@ -37,6 +37,43 @@ use backend_library::{
 use crate::identity::KeyTag;
 use serde::{Deserialize, Serialize};
 
+/// Render an untrusted claim using its own selected coordinate, never the row label.
+pub(crate) fn source_policy_note(
+    policy: &backend_library::SourcePolicyQualification,
+) -> Option<String> {
+    if policy.is_unknown() {
+        return None;
+    }
+    // The current library keeps the statement fields private. Read its public
+    // serialized representation without interpreting the seal as authority.
+    let coordinate = serde_json::to_value(policy).ok().and_then(|value| {
+        value
+            .get("data")?
+            .get("statement")?
+            .get("selection_coordinate")?
+            .as_str()
+            .map(str::to_owned)
+    });
+    Some(match coordinate {
+        Some(coordinate) => format!(
+            "Unverified captured-source claim for {coordinate}; effective ignore-policy stability unknown."
+        ),
+        None => "Unverified captured-source claim; selected coordinate unavailable; effective ignore-policy stability unknown."
+            .to_owned(),
+    })
+}
+
+/// Typed per-occurrence relation evidence, preserved without inferring source identity.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ReferenceDetails {
+    /// The endpoint supplied for this occurrence.
+    pub target: backend_library::SemanticLinkTarget,
+    /// The occurrence relation.
+    pub relation: backend_library::SemanticLinkKind,
+    /// Source span and confidence supplied for this occurrence.
+    pub evidence: backend_library::SemanticLinkEvidence,
+}
+
 /// One product record: a title, an operand to pass back, and its tags.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProductRecord {
@@ -53,6 +90,9 @@ pub struct ProductRecord {
     history_status: Option<ProductSemanticHistoryStatus>,
     compiler_profile: Option<SemanticLanguageProfile>,
     extent: Option<backend_library::DeclarationReadExtent>,
+    source_policy: backend_library::SourcePolicyQualification,
+    site_symbol: Option<[u8; 32]>,
+    reference_details: Option<ReferenceDetails>,
 }
 
 impl ProductRecord {
@@ -73,7 +113,38 @@ impl ProductRecord {
             history_status: None,
             compiler_profile: None,
             extent: None,
+            source_policy: backend_library::SourcePolicyQualification::Unknown,
+            site_symbol: None,
+            reference_details: None,
         }
+    }
+
+    /// Retains this record's owner-reported policy claim without creating authority.
+    #[must_use]
+    pub fn with_source_policy(
+        mut self,
+        policy: backend_library::SourcePolicyQualification,
+    ) -> Self {
+        self.source_policy = policy;
+        self
+    }
+
+    /// Returns this record's owner-reported source-policy claim.
+    #[must_use]
+    pub const fn source_policy(&self) -> &backend_library::SourcePolicyQualification {
+        &self.source_policy
+    }
+
+    /// Returns the owner-reported occurrence-site identity, if supplied.
+    #[must_use]
+    pub const fn site_symbol(&self) -> Option<[u8; 32]> {
+        self.site_symbol
+    }
+
+    /// Returns the typed per-occurrence relation evidence, when present.
+    #[must_use]
+    pub const fn reference_details(&self) -> Option<&ReferenceDetails> {
+        self.reference_details.as_ref()
     }
 
     /// Retains the source completeness reported by the batch read authority.
@@ -372,8 +443,114 @@ pub enum ProductSemanticData {
     VersionsPage(backend_library::SemanticVersionsPage),
     /// Exact native byte range of one complete captured semantic source.
     Source(backend_library::SemanticSourceChunk),
+    /// Full typed native CSS query result.
+    StyloQuery(backend_library::stylo_query::StyloQueryPage),
+    /// Compact CSS paging state and one executable source-site action.
+    StyloQuerySummary(StyloQuerySummary),
+    /// Full typed verified CSS source-site result.
+    StyloReadSite(backend_library::stylo_query::StyloSourceRead),
     /// Existing shape wire egress after certificate-bearing direct admission.
     Shapes(backend_library::SemanticShapeExport),
+    /// Full native SQL page scoped to project-proposed context.
+    SqlQuery(backend_library::sql_query::SqlQueryPage),
+    /// Compact native SQL page with one executable source action.
+    SqlQuerySummary(SqlQuerySummary),
+    /// Verified SQL diagnostic source result.
+    SqlReadSource(backend_library::sql_query::SqlSourceRead),
+}
+
+/// Shared basis and one source action for a compact SQL page.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SqlQuerySummary {
+    pub basis: backend_library::sql_query::SqlQueryBasis,
+    pub terminal: backend_library::sql_query::SqlQueryTerminal,
+    pub first_source: Option<backend_library::sql_query::SqlSourceReference>,
+    pub returned: usize,
+}
+
+/// Compact native CSS state for the default agent-facing response.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StyloQuerySummary {
+    /// Shared selected roots, freshness, producer and capability gaps.
+    pub basis: backend_library::stylo_query::StyloQueryBasis,
+    /// Exact owner-issued continuation or terminal.
+    pub terminal: backend_library::stylo_query::StyloQueryTerminal,
+    /// First available source-site reference, when present.
+    pub first_site: Option<backend_library::stylo_query::StyloSourceReference>,
+    /// Number of evidence rows in this page.
+    pub returned: usize,
+}
+
+fn published_profile_count(profiles: &[backend_library::IndexOperationSourceProfile]) -> usize {
+    profiles
+        .iter()
+        .filter(|profile| {
+            matches!(
+                profile.state,
+                backend_library::IndexOperationSemanticProfileState::Published { .. }
+            )
+        })
+        .count()
+}
+
+fn bounded_publication_detail(detail: &str) -> String {
+    const MAX_BYTES: usize = 1024;
+    if detail.len() <= MAX_BYTES {
+        return detail.to_owned();
+    }
+    let mut end = MAX_BYTES;
+    while !detail.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}… additional profile details are retained in the typed publication outcome",
+        &detail[..end]
+    )
+}
+
+/// Qualified success for a publication with incomplete semantic coverage.
+/// Exact profile outcomes remain in the associated typed job or operation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PartialPublicationWarning {
+    /// Human-readable explanation of published and unavailable profiles.
+    pub detail: String,
+    /// Package whose retained compiler outcomes explain the coverage gap.
+    pub package: backend_library::PackageReference,
+    /// Exact committed publication receipt.
+    pub receipt: backend_library::IndexOperationPublicationReceipt,
+    /// Executable read-only diagnostic follow-up, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<serde_json::Value>,
+    /// CLI spelling of the diagnostic follow-up, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    /// Number of published profiles, or `None` when source capture is unavailable.
+    pub published_profiles: Option<usize>,
+    /// Number of explicitly refused or unavailable profiles.
+    pub refused_profiles: usize,
+}
+
+/// One exact source byte page and its revision-bound continuation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeclarationSourceRange {
+    /// Full selected immutable view root, encoded as lowercase hexadecimal.
+    pub revision: String,
+    /// Exact selected native or structural symbol, encoded as lowercase hexadecimal.
+    pub selected_symbol: String,
+    /// Selected declaration coordinate, when retained by the owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinate: Option<String>,
+    /// The owner checked the current host against both indexed source identities.
+    pub verified_at_read: bool,
+    /// Exact source bytes and their owner-relative offsets.
+    pub source: backend_library::SourceRangePage,
+    /// Authenticated continuation; absent at the exact end of the owner extent.
+    #[serde(rename = "nextCursor", default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// One rendered product answer.
@@ -383,6 +560,8 @@ pub struct ProductView {
     records: Box<[ProductRecord]>,
     note: Option<String>,
     fault: Option<Fault>,
+    partial_publication_warning: Option<PartialPublicationWarning>,
+    declaration_source_range: Option<DeclarationSourceRange>,
     index_search_page: Option<IndexSearchPageInfo>,
     owner_cursor: Option<CursorProjection>,
     index_job: Option<IndexJobProjection>,
@@ -407,6 +586,9 @@ pub struct PackageDiscoveryProjection {
     pub package: backend_library::PackageCoordinate,
     /// Source-only positive, negative, or unavailable evidence.
     pub observation: backend_library::RegistryPackageDiscoveryObservation,
+    /// Current advisory authority, independent of source discovery facts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisory: Option<AdvisoryPackageDto>,
 }
 
 /// Exact owner-issued indexing state retained alongside its readable projection.
@@ -584,6 +766,13 @@ impl ProductView {
             .fault
             .take()
             .map(|fault| fault.with_mcp_exposure(exposure));
+        if let Some(warning) = &mut self.partial_publication_warning {
+            let advice = exposure.advice(crate::Affordance::ReadCompilerOutcomes {
+                package: warning.package.clone(),
+            });
+            warning.call = advice.tool_call();
+            warning.shell = advice.shell();
+        }
     }
 
     /// Returns the heading naming what was asked.
@@ -620,6 +809,25 @@ impl ProductView {
     #[must_use]
     pub const fn fault(&self) -> Option<&Fault> {
         self.fault.as_ref()
+    }
+
+    /// Returns the qualified publication warning, if useful work committed.
+    #[must_use]
+    pub const fn partial_publication_warning(&self) -> Option<&PartialPublicationWarning> {
+        self.partial_publication_warning.as_ref()
+    }
+
+    /// Returns a verified, exact declaration source range, when requested.
+    #[must_use]
+    pub const fn declaration_source_range(&self) -> Option<&DeclarationSourceRange> {
+        self.declaration_source_range.as_ref()
+    }
+
+    /// Attaches one admitted source range to a product response.
+    #[must_use]
+    pub fn with_declaration_source_range(mut self, range: DeclarationSourceRange) -> Self {
+        self.declaration_source_range = Some(range);
+        self
     }
 
     /// Returns page metadata when this answer came from index search.
@@ -1012,7 +1220,19 @@ impl ProductView {
             let operand = Operand::Text(index_ticket_json(&terminal.ticket));
             self.fault = match &terminal.outcome {
                 IndexJobOutcome::PartiallyPublished(partial) => {
-                    Some(Fault::partial_publication(partial, operand))
+                    let fault = Fault::partial_publication(partial, operand);
+                    self.partial_publication_warning = Some(PartialPublicationWarning {
+                        detail: bounded_publication_detail(fault.cause().sentence()),
+                        package: partial.package.clone(),
+                        receipt: partial.receipt.clone(),
+                        call: fault.affordance().tool_call(),
+                        shell: fault.affordance().shell(),
+                        published_profiles: Some(published_profile_count(
+                            &partial.source_capture.profiles,
+                        )),
+                        refused_profiles: partial.refused_profiles.len(),
+                    });
+                    None
                 }
                 IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } => {
                     Some(Fault::compiler_refusal(failure, operand))
@@ -1050,16 +1270,29 @@ impl ProductView {
                     receipt,
                     refused_profiles,
                 } => {
-                    self.fault = Some(Fault::partial_publication_facts(
+                    let profiles = status
+                        .source_capture
+                        .as_ref()
+                        .map_or(&[][..], |capture| capture.profiles());
+                    let warning = Fault::partial_publication_facts(
                         &status.package,
                         receipt,
-                        status
-                            .source_capture
-                            .as_ref()
-                            .map_or(&[], |capture| capture.profiles()),
+                        profiles,
                         refused_profiles,
                         Operand::Text(status.operation_key.to_hex()),
-                    ));
+                    );
+                    self.partial_publication_warning = Some(PartialPublicationWarning {
+                        detail: bounded_publication_detail(warning.cause().sentence()),
+                        package: status.package.clone(),
+                        receipt: receipt.clone(),
+                        call: warning.affordance().tool_call(),
+                        shell: warning.affordance().shell(),
+                        published_profiles: status
+                            .source_capture
+                            .as_ref()
+                            .map(|_| published_profile_count(profiles)),
+                        refused_profiles: refused_profiles.len(),
+                    });
                 }
                 backend_library::IndexOperationState::Failed {
                     reason,
@@ -1135,6 +1368,8 @@ impl ProductView {
             records: records.into_boxed_slice(),
             note: None,
             fault: None,
+            partial_publication_warning: None,
+            declaration_source_range: None,
             index_search_page: None,
             owner_cursor: None,
             index_job: None,
@@ -1161,6 +1396,8 @@ impl ProductView {
             records: Box::new([]),
             note: Some(note.into()),
             fault: None,
+            partial_publication_warning: None,
+            declaration_source_range: None,
             index_search_page: None,
             owner_cursor: None,
             index_job: None,
@@ -1185,6 +1422,8 @@ impl ProductView {
             records: records.into_boxed_slice(),
             note: None,
             fault: None,
+            partial_publication_warning: None,
+            declaration_source_range: None,
             index_search_page: None,
             owner_cursor: None,
             index_job: None,
@@ -1209,6 +1448,8 @@ impl ProductView {
             records: Box::new([]),
             note: Some(note.into()),
             fault: None,
+            partial_publication_warning: None,
+            declaration_source_range: None,
             index_search_page: None,
             owner_cursor: None,
             index_job: None,
@@ -1233,6 +1474,8 @@ impl ProductView {
             records: Box::new([]),
             note: None,
             fault: Some(fault),
+            partial_publication_warning: None,
+            declaration_source_range: None,
             index_search_page: None,
             owner_cursor: None,
             index_job: None,
@@ -1330,11 +1573,18 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::Read(records) => {
             ProductView::rows("read", records.iter().map(declaration_row).collect())
         }
-        SurfaceReply::References { target, references } => ProductView::rows(
-            format!("references to {}", target.as_str()).as_str(),
-            references.iter().map(reference_row).collect(),
-        )
-        .with_references_result(),
+        SurfaceReply::References { target, references, coverage } => {
+            let mut view = ProductView::rows(
+                format!("references to {}", target.as_str()).as_str(),
+                references.iter().map(reference_row).collect(),
+            ).with_references_result();
+            view.note = Some(match coverage {
+                backend_library::ReferenceCoverage::Complete => "Reference coverage: complete".to_owned(),
+                backend_library::ReferenceCoverage::Partial { reason } => format!("Reference coverage: partial. {}", reason.as_str()),
+                backend_library::ReferenceCoverage::Unknown { reason } => format!("Reference coverage: unknown. {}", reason.as_str()),
+            });
+            view
+        },
         SurfaceReply::Diff(records) => {
             ProductView::rows("diff", records.iter().map(diff_row).collect())
         }
@@ -1347,6 +1597,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::PackageDiscovery {
             package,
             observation,
+            advisory,
         } => {
             use backend_library::RegistryPackageDiscoveryObservation;
             let mut view = match observation {
@@ -1376,9 +1627,15 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                     )
                 }
             };
+            if let Some(advisory) = advisory {
+                let mut records = view.records.into_vec();
+                records.extend(advisory_view(advisory).records.into_vec());
+                view.records = records.into_boxed_slice();
+            }
             view.package_discovery = Some(PackageDiscoveryProjection {
                 package: package.clone(),
                 observation: observation.clone(),
+                advisory: advisory.clone(),
             });
             view
         }
@@ -1428,6 +1685,184 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
             ));
             view.semantic_data = Some(ProductSemanticData::Source(chunk.clone()));
             view
+        }
+        SurfaceReply::StyloQuery(page) => {
+            use backend_library::stylo_query::{StyloQueryHit, StyloQueryTerminal};
+            let mut first_source = true;
+            let rows = page
+                .hits
+                .iter()
+                .map(|hit| match hit {
+                    StyloQueryHit::SourceSite {
+                        path, site, source, ..
+                    } => {
+                        let mut tags = vec![path.clone(), "authored site".into()];
+                        if first_source {
+                            tags.push(format!("read: stylo-read-site {}", source.as_str()));
+                            first_source = false;
+                        }
+                        ProductRecord::new(site.decoded.clone(), None, tags)
+                    }
+                    StyloQueryHit::NativeSelector { path, selector, .. } => {
+                        let mut display = selector.canonical.chars().take(120).collect::<String>();
+                        if selector.canonical.chars().count() > 120 {
+                            display.push('…');
+                        }
+                        ProductRecord::new(
+                            display,
+                            None,
+                            vec![path.clone(), "native selector".into()],
+                        )
+                    }
+                    StyloQueryHit::NativeDeclaration {
+                        path, declaration, ..
+                    } => ProductRecord::new(
+                        declaration.property.clone(),
+                        None,
+                        vec![path.clone(), "retained native declaration".into()],
+                    ),
+                    StyloQueryHit::NativeDependency {
+                        path, dependency, ..
+                    } => ProductRecord::new(
+                        format!("var(--{})", dependency.name),
+                        None,
+                        vec![
+                            path.clone(),
+                            "native value dependency; source site and provider unknown".into(),
+                        ],
+                    ),
+                })
+                .collect();
+            let mut view = ProductView::rows("stylo-query", rows);
+            let next = match &page.terminal {
+                StyloQueryTerminal::Complete => "scan of retained records complete".to_owned(),
+                StyloQueryTerminal::More { continuation, work_limited } => {
+                    format!("{}continue with --cursor {}", if *work_limited { "scan work limit reached; " } else { "" }, continuation.as_str())
+                }
+                StyloQueryTerminal::OutputLimit {
+                    required_bytes,
+                    continuation,
+                } => match continuation {
+                    Some(cursor) => format!(
+                        "increase output budget to {required_bytes} bytes and continue with --cursor {}",
+                        cursor.as_str()
+                    ),
+                    None => format!("increase output budget to {required_bytes} bytes and retry"),
+                },
+                StyloQueryTerminal::Unavailable => "CSS analysis unavailable".to_owned(),
+            };
+            let freshness = match &page.basis.attempt {
+                backend_library::stylo_query::StyloAttemptState::LatestObserved => {
+                    "Latest indexed observation"
+                }
+                backend_library::stylo_query::StyloAttemptState::RetainedAfterUnavailable {
+                    ..
+                } => "Retained prior observation; latest attempt unavailable",
+                backend_library::stylo_query::StyloAttemptState::Unavailable { .. } => {
+                    "Latest attempt unavailable"
+                }
+                backend_library::stylo_query::StyloAttemptState::UnknownLegacy => {
+                    "Historical selection; latest attempt unknown"
+                }
+                backend_library::stylo_query::StyloAttemptState::NoSelectedAnalysis => {
+                    "No selected CSS analysis"
+                }
+                backend_library::stylo_query::StyloAttemptState::ProjectNotSelected => {
+                    "Project not selected"
+                }
+            };
+            let capability = if matches!(page.basis.worker_capability, backend_library::stylo_query::StyloWorkerCapability::NoPermit) {
+                "; no admitted CSS worker"
+            } else { "" };
+            use backend_library::stylo_query::{StyloAttemptState, StyloFailure};
+            let failure = match &page.basis.attempt {
+                StyloAttemptState::Unavailable { reason }
+                | StyloAttemptState::RetainedAfterUnavailable { reason } => match reason {
+                    StyloFailure::ReadUnavailable => "; source bytes unavailable",
+                    StyloFailure::SelectionUnavailable => "; selection evidence unavailable",
+                    StyloFailure::InvalidUtf8 => "; source is not valid UTF-8",
+                    StyloFailure::Limit => "; a work limit was reached",
+                    StyloFailure::ParserUnavailable => "; CSS worker unavailable",
+                    StyloFailure::UnsupportedHardLimit => "; required process limit unsupported",
+                    StyloFailure::Deadline => "; CSS worker deadline exceeded",
+                    StyloFailure::WorkerFailure => "; CSS worker or its protocol failed",
+                    StyloFailure::PreferencesChanged => "; parser preferences changed",
+                },
+                _ => "",
+            };
+            view.note = Some(format!(
+                "{freshness}{capability}{failure}; CSS scope partial and host parse health unknown; {next}. Full typed output includes all source references."
+            ));
+            view.semantic_data = Some(ProductSemanticData::StyloQuery(page.clone()));
+            view
+        }
+        SurfaceReply::StyloReadSite(source) => {
+            use backend_library::stylo_query::StyloSourceRead;
+            let mut view = match source {
+                StyloSourceRead::Available {
+                    served_root,
+                    path,
+                    line_1,
+                    text,
+                    ..
+                } => ProductView::rows(
+                    "stylo-read-site",
+                    vec![ProductRecord::new(
+                        text.clone(),
+                        None,
+                        vec![format!("{served_root}/{path}:{line_1}")],
+                    )],
+                ),
+                StyloSourceRead::SourceChanged => ProductView::scalar(
+                    "stylo-read-site",
+                    "Source changed; reindex and query again.",
+                ),
+                StyloSourceRead::BytesNotRetained => ProductView::scalar(
+                    "stylo-read-site",
+                    "Source bytes are not available at the served root.",
+                ),
+                StyloSourceRead::Expired => ProductView::scalar(
+                    "stylo-read-site",
+                    "Selection changed; query again for a current source reference.",
+                ),
+            };
+            view.semantic_data = Some(ProductSemanticData::StyloReadSite(source.clone()));
+            view
+        }
+        SurfaceReply::SqlQuery(page) => {
+            use backend_library::sql_query::SqlQueryTerminal;
+            use backend_library::sql_query::SqlFact;
+            let mut first_source = true;
+            let rows = page.hits.iter().map(|hit| {
+                let label = match &hit.fact {
+                    SqlFact::SqliteRelation { name, .. } => format!("relation {name}"),
+                    SqlFact::SqliteOutputLineage { output_name, .. } => format!("output {output_name}"),
+                    SqlFact::Diagnostic { code, .. } => format!("diagnostic {code:?}"),
+                };
+                let mut tags = vec![hit.path.clone(), format!("{:?}", hit.dialect)];
+                if first_source && let Some(source) = &hit.source {
+                    tags.push(format!("read: sql-read-source {}", source.as_str())); first_source = false;
+                }
+                ProductRecord::new(label, None, tags)
+            }).collect();
+            let mut view = ProductView::rows("sql-query", rows);
+            let terminal = match &page.terminal {
+                SqlQueryTerminal::Complete => "enumeration complete".to_owned(),
+                SqlQueryTerminal::More { continuation, work_limited } => format!("{}continue with --cursor {}", if *work_limited { "scan work limit reached; " } else { "" }, continuation.as_str()),
+                SqlQueryTerminal::Unavailable => "SQL analysis unavailable".to_owned(),
+            };
+            view.note = Some(format!("{terminal}; context may be project-proposed; request full detail for host basis. Source coverage is partial, policy and host health are unknown; no deployed catalog claimed."));
+            view.semantic_data = Some(ProductSemanticData::SqlQuery(page.clone())); view
+        }
+        SurfaceReply::SqlReadSource(source) => {
+            use backend_library::sql_query::SqlSourceRead;
+            let mut view = match source {
+                SqlSourceRead::Available { served_root, path, line_1, text, .. } => ProductView::rows("sql-read-source", vec![ProductRecord::new(text.clone(), None, vec![format!("{served_root}/{path}:{line_1}")])]),
+                SqlSourceRead::SourceChanged => ProductView::scalar("sql-read-source", "Source changed; reindex and query again."),
+                SqlSourceRead::BytesNotRetained => ProductView::scalar("sql-read-source", "Source bytes are unavailable at the served root."),
+                SqlSourceRead::Expired => ProductView::scalar("sql-read-source", "Selection changed; query again for a source reference."),
+            };
+            view.semantic_data = Some(ProductSemanticData::SqlReadSource(source.clone())); view
         }
         SurfaceReply::SemanticVersionsPage(page) => {
             let mut view = ProductView::rows(
@@ -1777,7 +2212,7 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                             generation,
                             coverage,
                         } => format!(
-                            "published generation {} with {coverage}",
+                            "published generation {} with {coverage} of the declared compiler profile scope; source discovery completeness is not established here",
                             lower_hex(&generation)
                         ),
                     };
@@ -1831,14 +2266,6 @@ fn index_terminal_view(terminal: &IndexJobTerminal) -> ProductView {
     let mut tags = vec![format!("outcome {state}")];
     if let Some(detail) = detail {
         tags.push(detail.to_owned());
-    }
-    if let IndexJobOutcome::PartiallyPublished(partial) = &terminal.outcome {
-        tags.push(
-            Fault::partial_publication(partial, Operand::Text(index_ticket_json(&terminal.ticket)))
-                .cause()
-                .sentence()
-                .to_owned(),
-        );
     }
     if let IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } = &terminal.outcome {
         let fault =
@@ -2028,10 +2455,11 @@ fn discovery_row(candidate: &RegistryDiscoveryCandidate) -> ProductRecord {
     let frontier = if candidate.caught_up {
         "source caught up"
     } else {
-        "source backfill in progress"
+        "source not caught up"
     };
     let mut tags = vec![
         "discovered · unacquired".to_owned(),
+        "README, dependency and engine metadata not included in discovery".to_owned(),
         standing.to_owned(),
         completeness.to_owned(),
         frontier.to_owned(),
@@ -2045,13 +2473,21 @@ fn discovery_row(candidate: &RegistryDiscoveryCandidate) -> ProductRecord {
     }
     match &candidate.metadata.advisories {
         RegistryEvidenceFacet::Known(advisories) if advisories.is_empty() => {
-            tags.push("no advisories reported".to_owned())
+            tags.push(
+                "source reports no advisory records · check advisory authority for coverage"
+                    .to_owned(),
+            )
         }
-        RegistryEvidenceFacet::Known(advisories) => {
-            tags.push(format!("{} advisory record(s)", advisories.len()))
-        }
-        RegistryEvidenceFacet::Absent => tags.push("advisories not published".to_owned()),
-        RegistryEvidenceFacet::Unknown => tags.push("advisories unknown".to_owned()),
+        RegistryEvidenceFacet::Known(advisories) => tags.push(format!(
+            "{} source advisory record(s) · check advisory authority for coverage",
+            advisories.len()
+        )),
+        RegistryEvidenceFacet::Absent => tags.push(
+            "source advisories not published · check advisory authority for coverage".to_owned(),
+        ),
+        RegistryEvidenceFacet::Unknown => tags.push(
+            "source advisories unknown · check advisory authority for coverage".to_owned(),
+        ),
     }
     ProductRecord::new(
         candidate.coordinate.as_str(),
@@ -2133,19 +2569,33 @@ fn forge_package_detail_row(detail: &ForgePackageDetailRecord) -> ProductRecord 
             "registry downloads unknown".to_owned()
         }
     };
-    let advisory = match &detail.registry.advisory.coverage {
-        backend_library::AdvisoryCoverage::Complete
+    let advisory = match (
+        detail.registry.advisory.coverage,
+        detail.registry.advisory.freshness,
+    ) {
+        (
+            backend_library::AdvisoryCoverage::Complete,
+            backend_library::FreshnessState::Fresh | backend_library::FreshnessState::NotModified,
+        )
             if detail.registry.advisory.advisories.is_empty() =>
         {
             "no registry advisories reported".to_owned()
         }
-        backend_library::AdvisoryCoverage::Complete => {
+        (
+            backend_library::AdvisoryCoverage::Complete,
+            backend_library::FreshnessState::Fresh | backend_library::FreshnessState::NotModified,
+        ) => {
             format!(
                 "{} registry advisory record(s)",
                 detail.registry.advisory.advisories.len()
             )
         }
-        _ => "registry advisories unknown".to_owned(),
+        (coverage, freshness) => format!(
+            "registry advisories: {} source record(s) · coverage: {} · freshness: {}",
+            detail.registry.advisory.advisories.len(),
+            wire_words(&coverage),
+            wire_words(&freshness)
+        ),
     };
     ProductRecord::new(
         title,
@@ -2206,7 +2656,7 @@ fn registry_search_group_row(group: &RegistryPackageSearchGroup) -> ProductRecor
         },
     ];
     if group.release_match_scope == RegistryReleaseMatchScope::LineageMetadataOnly {
-        tags.push("package metadata matched across releases".to_owned());
+        tags.push("package metadata matched across source observations".to_owned());
     }
     if group.more_releases {
         tags.push(match group.release_match_scope {
@@ -2215,6 +2665,12 @@ fn registry_search_group_row(group: &RegistryPackageSearchGroup) -> ProductRecor
         });
     }
     if let RegistrySearchGroupKind::Discovered = group.kind {
+        if group.releases.iter().any(|release| {
+            matches!(release, RegistrySearchRelease::Discovered(candidate)
+                if matches!(candidate.freshness, backend_library::RegistryDiscoveryFreshness::Historical { .. }))
+        }) {
+            tags.push("includes historical source evidence".to_owned());
+        }
         let known_yanks = group
             .releases
             .iter()
@@ -2315,7 +2771,7 @@ fn compiler_outcome_rows(
         Outcomes::Summary { source_capture, refusals, coverage, .. } => source_capture.profiles.iter().map(|profile| {
             let state = match profile.state {
                 State::Pending { .. } => "pending".to_owned(),
-                State::Published { coverage, .. } => format!("published with {coverage}"),
+                State::Published { coverage, .. } => format!("published with {coverage} of the declared compiler profile scope; source discovery completeness is not established here"),
                 State::Unavailable { reason } => format!("unavailable: {reason}"),
                 State::Failed { reason, .. } => format!("failed: {reason}; prior generation remains stale"),
             };
@@ -3330,8 +3786,20 @@ fn advisory_view(advisory: &AdvisoryPackageDto) -> ProductView {
             format!("decision: {decision}"),
             format!("coverage: {}", wire_words(&advisory.coverage)),
             format!("freshness: {}", wire_words(&advisory.freshness)),
-            format!("yanked: {}", advisory.yanked),
-            format!("unlisted: {}", advisory.unlisted),
+            if advisory.registry_standing_observed == Some(true) {
+                format!("yanked: {}", advisory.yanked)
+            } else if advisory.yanked {
+                "yanked: reported; current standing unverified".to_owned()
+            } else {
+                "yanked: unknown".to_owned()
+            },
+            if advisory.registry_standing_observed == Some(true) {
+                format!("unlisted: {}", advisory.unlisted)
+            } else if advisory.unlisted {
+                "unlisted: reported; current standing unverified".to_owned()
+            } else {
+                "unlisted: unknown".to_owned()
+            },
         ],
     )];
     if advisory.advisories.is_empty() {
@@ -3409,7 +3877,8 @@ fn declaration_row(record: &DeclarationRecord) -> ProductRecord {
         ),
         Some(record.label.as_str().to_owned()),
         tags,
-    );
+    )
+    .with_source_policy(record.source_policy.clone());
     match record.extent {
         Some(extent) => row.with_extent(extent),
         None => row,
@@ -3449,11 +3918,39 @@ fn reference_row(record: &backend_library::ReferenceRecord) -> ProductRecord {
         )),
         None => tags.push("site not captured".to_owned()),
     }
-    ProductRecord::new(
-        record.site.as_str().to_owned(),
-        Some(record.site.as_str().to_owned()),
-        tags,
-    )
+    let title = readable_site_title(
+        record.site.as_str(),
+        record.evidence.source.as_ref().map(|span| span.file.as_str()),
+    );
+    let mut row = ProductRecord::new(title, Some(record.site.as_str().to_owned()), tags)
+        .with_source_policy(record.source_policy.clone());
+    row.site_symbol = record.site_symbol;
+    row.reference_details = Some(ReferenceDetails {
+        target: record.target.clone(),
+        relation: record.relation,
+        evidence: record.evidence.clone(),
+    });
+    row
+}
+
+/// Names the calling declaration of a reference by what it is, not by its hash.
+///
+/// A compiler-owned site coordinate is `<project>::semantic::<64 hex digits>::<name>`; as a
+/// title it is unreadable, and an anonymous caller is only a hash. The exact coordinate stays
+/// the row's operand, so nothing is lost; the title gives the name and the file that holds it.
+fn readable_site_title(site: &str, file: Option<&str>) -> String {
+    if let Some((head, name)) = site.rsplit_once("::")
+        && let Some((_, digest)) = head.rsplit_once("::semantic::")
+        && digest.len() == 64
+        && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !name.is_empty()
+    {
+        return match file {
+            Some(file) => format!("{name} in {file}"),
+            None => name.to_owned(),
+        };
+    }
+    site.to_owned()
 }
 
 fn diff_row(record: &DiffRecord) -> ProductRecord {
@@ -3809,6 +4306,15 @@ fn operand(package: &PackageReference) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn publication_warning_detail_is_utf8_bounded_and_marks_omission() {
+        let detail = "🦀".repeat(1000);
+        let bounded = super::bounded_publication_detail(&detail);
+        assert!(bounded.len() < 1200);
+        assert!(bounded.contains("additional profile details are retained"));
+        assert!(std::str::from_utf8(bounded.as_bytes()).is_ok());
+        assert_eq!(super::bounded_publication_detail("complete"), "complete");
+    }
     use super::*;
 
     #[test]
@@ -3841,6 +4347,7 @@ mod tests {
             backend_library::DeclarationReadExtent::Truncated,
         ] {
             let reply = SurfaceReply::Read(Box::new([DeclarationRecord {
+                source_policy: backend_library::SourcePolicyQualification::Unknown,
                 label: backend_library::ProductText::new(
                     "/abs/app::src/weight.ts:1::WeightBurndownComponent",
                 )
@@ -4570,6 +5077,12 @@ mod tests {
             .into_boxed_slice(),
         })
         .with_source_capture(Some(partial_capture));
+        let scoped = IndexOperationObservation::Known(partial_status.clone());
+        let scoped_view = product_view(&SurfaceReply::IndexOperationStatus(scoped.clone()));
+        assert!(scoped_view.records()[0].tags().iter().any(|tag|
+            tag.contains("complete coverage of the declared compiler profile scope")
+                && tag.contains("source discovery completeness is not established")));
+        assert_eq!(crate::dto::ProductDto::new(&scoped_view).index_operation, Some(scoped));
         let compiler_failure = backend_library::PackageCompilerFailure::from_package_terminal(
             "classes/comparator.d.ts",
             &backend_library::interface::CompilerTerminal::Toolchain {
@@ -4715,8 +5228,23 @@ mod tests {
                         IndexOperationState::PartiallyPublished {
                             refused_profiles, ..
                         } => {
-                            let fault = view.fault().expect("partial publication fault");
-                            assert_eq!(fault.affordance(), &crate::Affordance::None);
+                            assert!(view.fault().is_none());
+                            let warning = view.partial_publication_warning().expect("partial publication warning");
+                            assert_eq!(warning.published_profiles, Some(1));
+                            assert_eq!(warning.refused_profiles, 1);
+                            for detail in [crate::Detail::Summary, crate::Detail::Standard, crate::Detail::Full] {
+                                let answer = crate::Answer::Product(Box::new(view.clone()));
+                                let encoded = crate::encode_answer(&answer, detail, None, crate::DEFAULT_RESPONSE_BUDGET_BYTES).expect("bounded qualified publication");
+                                let value: serde_json::Value = serde_json::from_slice(&encoded.bytes).expect("product JSON");
+                                assert!(value.get("fault").is_none());
+                                assert_eq!(value["partial_publication_warning"]["published_profiles"], 1);
+                                assert_eq!(value["partial_publication_warning"]["refused_profiles"], 1);
+                                assert!(!value["partial_publication_warning"]["receipt"].is_null());
+                                let mut forged = value["partial_publication_warning"].clone();
+                                forged["unexpected"] = serde_json::json!(true);
+                                assert!(serde_json::from_value::<super::PartialPublicationWarning>(forged).is_err());
+                                assert!(!value["index_operation"].is_null());
+                            }
                             assert_eq!(refused_profiles.len(), 1);
                             assert_eq!(
                                 status
@@ -5307,7 +5835,7 @@ mod tests {
         assert!(tags.iter().any(|tag| tag == "1 representative version(s)"));
         assert!(
             tags.iter()
-                .any(|tag| tag == "package metadata matched across releases")
+                .any(|tag| tag == "package metadata matched across source observations")
         );
         assert!(tags.iter().any(|tag| tag == "more versions in lineage"));
         assert!(!tags.iter().any(|tag| tag == "1 matching version(s)"));
@@ -5369,6 +5897,71 @@ mod tests {
             },
         };
         detail.admit().expect("valid source-pin details");
+        // A complete frontier can still be stale. Package summaries must not
+        // turn an old empty source result into a current clean assertion.
+        let mut advisory_gaps = Vec::new();
+        let mut positive = None;
+        for freshness in [
+            backend_library::FreshnessState::Stale,
+            backend_library::FreshnessState::Unknown,
+        ] {
+            let mut stale = detail.clone();
+            stale.registry.advisory.coverage = backend_library::AdvisoryCoverage::Complete;
+            stale.registry.advisory.freshness = freshness;
+            let tags = forge_package_detail_row(&stale).tags().to_vec();
+            if tags.iter().any(|tag| tag == "no registry advisories reported")
+                || !tags.iter().any(|tag| {
+                    tag.starts_with("registry advisories:")
+                        && tag.contains(&wire_words(&freshness))
+                })
+            {
+                advisory_gaps.push(format!("{freshness:?} empty: {tags:?}"));
+            }
+            stale.registry.advisory.advisories = Box::new([backend_library::AdvisorySurfaceDto {
+                schema: 1,
+                canonical_id: "OSV-HISTORY-1".to_owned(),
+                source_ids: Box::new([]),
+                aliases: Box::new([]),
+                statuses: Box::new([backend_library::AdvisoryStatus::Vulnerable]),
+                categories: Box::new([]),
+                affected: Box::new([]),
+                fixed_ranges: Box::new([]),
+                severity: backend_library::SeverityLevel::Unknown,
+                malware: backend_advisory::MalwareCoverage::NotCovered,
+                coverage: backend_library::AdvisoryCoverage::Complete,
+                freshness,
+                withdrawn: None,
+                yanked: false,
+                unlisted: false,
+                summary: None,
+            }]);
+            positive = Some(stale.registry.advisory.advisories[0].clone());
+            let positive_tags = forge_package_detail_row(&stale).tags().to_vec();
+            if !positive_tags.iter().any(|tag| {
+                tag.starts_with("registry advisories:") && tag.contains(&wire_words(&freshness))
+            }) {
+                advisory_gaps.push(format!("{freshness:?} positive: {positive_tags:?}"));
+            }
+        }
+        let mut fresh = detail.clone();
+        fresh.registry.advisory.coverage = backend_library::AdvisoryCoverage::Complete;
+        fresh.registry.advisory.freshness = backend_library::FreshnessState::Fresh;
+        assert!(
+            forge_package_detail_row(&fresh)
+                .tags()
+                .iter()
+                .any(|tag| tag == "no registry advisories reported")
+        );
+        let mut fresh_positive = positive.expect("positive fixture");
+        fresh_positive.freshness = backend_library::FreshnessState::Fresh;
+        fresh.registry.advisory.advisories = Box::new([fresh_positive]);
+        assert!(
+            forge_package_detail_row(&fresh)
+                .tags()
+                .iter()
+                .any(|tag| tag == "1 registry advisory record(s)")
+        );
+        assert!(advisory_gaps.is_empty(), "{}", advisory_gaps.join("; "));
         let mut unsafe_path = detail.clone();
         unsafe_path.manifest.path =
             backend_library::ProductText::new("nested\n\u{1b}[31m/setup.py".to_owned())
@@ -5463,6 +6056,116 @@ mod tests {
         );
         assert!(json["records"][0]["forge_package_detail"]["package_coordinate"].is_null());
         assert_eq!(json["records"][0]["operand"], source_text);
+
+        // A complete but stale feed is not a fresh negative, and stale
+        // positive records must remain visible with their qualification.
+        let input =
+            include_bytes!("../advisory/fixtures/rustsec/crates/bincode/RUSTSEC-2025-0141.md");
+        let advisory = backend_advisory::parse_rustsec(input, 7).expect("decode RustSec fixture");
+        let feed = backend_advisory::AuthorityFeed::from_entries(
+            backend_advisory::AdvisorySource::RustSec,
+            vec![advisory],
+            7,
+            None,
+            None,
+        );
+        let mut authority = backend_advisory::AdvisoryAuthority::new(10);
+        authority.apply(feed).expect("admit complete feed");
+        let security_at = |name, version, now| {
+            let identity = backend_advisory::normalize_package("cargo", name).expect("package");
+            let observation = authority.observe(&identity, version, false, false, now, false);
+            let gate = backend_advisory::AcquisitionGate {
+                offline: backend_advisory::OfflinePolicy::Warn,
+            };
+            backend_library::AdvisoryPackageDto::from_observation(
+                &observation,
+                gate.decide(&observation),
+            )
+        };
+        let mut stale = detail.clone();
+        stale.registry.advisory = security_at("toml", "0.8.23", 100);
+        assert_eq!(
+            stale.registry.advisory.coverage,
+            backend_library::AdvisoryCoverage::Complete
+        );
+        assert_eq!(
+            stale.registry.advisory.freshness,
+            backend_library::FreshnessState::Stale
+        );
+        let mut fresh = stale.clone();
+        fresh.registry.advisory = security_at("toml", "0.8.23", 7);
+        assert!(
+            forge_package_detail_row(&fresh)
+                .tags()
+                .iter()
+                .any(|tag| tag == "no registry advisories reported")
+        );
+        let registry_record = |advisory| {
+            let metadata = RegistryNativeMetadata::unavailable(RegistryEcosystem::Cargo, "test");
+            RegistryPackageRecord {
+                coordinate: PackageReference::parse("pkg:cargo/demo@1.0.0").expect("coordinate"),
+                ecosystem: RegistryEcosystem::Cargo,
+                name: backend_library::ProductText::new("demo").expect("name"),
+                version: backend_library::ProductText::new("1.0.0").expect("version"),
+                bytes: 0,
+                standing: RegistryReleaseStanding::Available,
+                downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unknown),
+                facts_version: [0; 32],
+                authority: None,
+                native_metadata_version: metadata.identity().expect("metadata identity"),
+                native_metadata: metadata,
+                forge_sources: Box::new([]),
+                advisory,
+            }
+        };
+        let row = forge_package_detail_row(&stale);
+        assert!(row.tags().iter().any(|tag| tag.contains("freshness: stale")));
+        assert!(
+            !row.tags()
+                .iter()
+                .any(|tag| tag == "no registry advisories reported")
+        );
+        let row = registry_row(&registry_record(stale.registry.advisory.clone()));
+        assert!(
+            row.tags()
+                .iter()
+                .any(|tag| tag == "advisory: complete / stale")
+        );
+        let security = advisory_view(&stale.registry.advisory);
+        assert!(
+            security.records()[0]
+                .tags()
+                .iter()
+                .any(|tag| tag == "freshness: stale")
+        );
+        stale.registry.advisory = security_at("bincode", "1.3.3", 100);
+        assert_eq!(stale.registry.advisory.advisories.len(), 1);
+        let row = forge_package_detail_row(&stale);
+        assert!(
+            row.tags()
+                .iter()
+                .any(|tag| tag.contains("1 source record(s)"))
+        );
+        assert!(row.tags().iter().any(|tag| tag.contains("freshness: stale")));
+        let row = registry_row(&registry_record(stale.registry.advisory.clone()));
+        assert!(
+            row.tags()
+                .iter()
+                .any(|tag| tag == "advisory: complete / stale")
+        );
+        let security = advisory_view(&stale.registry.advisory);
+        assert!(
+            security
+                .records()
+                .iter()
+                .any(|record| record.title() == "RUSTSEC-2025-0141")
+        );
+        assert!(
+            security.records()[0]
+                .tags()
+                .iter()
+                .any(|tag| tag == "freshness: stale")
+        );
     }
 
     #[test]
@@ -5483,6 +6186,7 @@ mod tests {
             let reply = SurfaceReply::PackageDiscovery {
                 package: package.clone(),
                 observation: observation.clone(),
+                advisory: None,
             };
             assert_eq!(reply.id(), backend_library::CommandId::Package);
             reply
@@ -5516,6 +6220,10 @@ mod project_lockfile_tests;
 #[cfg(test)]
 #[path = "package_metadata_cause_tests.rs"]
 mod package_metadata_cause_tests;
+
+#[cfg(test)]
+#[path = "product_discovery_security_tests.rs"]
+mod product_discovery_security_tests;
 
 #[cfg(test)]
 #[expect(
@@ -5860,5 +6568,29 @@ mod compiler_progress_projection_tests {
         assert!(
             matches!(view.index_job(), Some(IndexJobProjection::Progress(IndexJobObservation::Pending(actual))) if actual == &page)
         );
+    }
+}
+
+#[cfg(test)]
+mod reference_title_tests {
+    use super::readable_site_title;
+
+    #[test]
+    fn a_hashed_semantic_site_is_titled_by_name_and_file() {
+        let site = format!("/p/refs::semantic::{}::viaAlias", "ab".repeat(32));
+        assert_eq!(readable_site_title(&site, Some("src/ui/alias.ts")), "viaAlias in src/ui/alias.ts");
+        let anonymous = format!("/p/refs::semantic::{}::<anonymous callable>", "0f".repeat(32));
+        assert_eq!(
+            readable_site_title(&anonymous, Some("src/a.ts")),
+            "<anonymous callable> in src/a.ts"
+        );
+        assert_eq!(readable_site_title(&site, None), "viaAlias");
+    }
+
+    #[test]
+    fn other_coordinates_keep_their_exact_spelling() {
+        for site in ["pkg::semantic::caller", "/p::src/lib.rs:9::Outer::inner", "/p::semantic::zz::name"] {
+            assert_eq!(readable_site_title(site, Some("f.rs")), site);
+        }
     }
 }

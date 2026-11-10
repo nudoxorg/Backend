@@ -161,7 +161,30 @@ pub(super) fn read(
                         "compiler diagnostic source is absent from selected package".to_owned(),
                     )
                 })?;
-            super::super::profile::validate_compiler_failure_source(key, failure, &row)?;
+            if row.file_fields().is_some_and(|file| file.source_identity.is_some()) {
+                super::super::profile::validate_compiler_failure_source(key, failure, &row)?;
+            } else {
+                let checked = snapshot.with_persisted_transition(|_, store| {
+                    super::super::profile::validate_compiler_failure_source_in_capture(
+                        store, *snapshot.root().as_bytes(), snapshot.sequence(),
+                        *snapshot.root().as_bytes(), snapshot.sequence(), &source,
+                        key, failure, &row, record,
+                    )
+                });
+                match checked {
+                    Ok(Ok(())) => {},
+                    Ok(Err(error)) => {
+                        if matches!(snapshot.with_persisted_transition(|_, _| ()), Err(backend_engine::WorkspaceError::Corrupt("snapshot is no longer the selected durable head"))) {
+                            return Ok(unavailable(Unavailable::CaptureNotCurrent));
+                        }
+                        return Err(error);
+                    }
+                    Err(backend_engine::WorkspaceError::Corrupt("snapshot is no longer the selected durable head")) => {
+                        return Ok(unavailable(Unavailable::CaptureNotCurrent));
+                    }
+                    Err(error) => return Err(BuiltinModelError(format!("inspect compiler diagnostic basis: {error}"))),
+                }
+            }
         }
         if let State::Unavailable { reason } | State::Failed { reason, .. } = profile.state {
             let refusal = IndexOperationProfileRefusal {

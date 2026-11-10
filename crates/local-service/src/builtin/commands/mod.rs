@@ -4,7 +4,7 @@ mod adapter;
 mod browse_lane;
 mod diff;
 mod graph;
-mod index;
+pub(super) mod index;
 mod index_input_workers;
 mod index_operation;
 mod journal_readiness;
@@ -15,8 +15,14 @@ mod semantic_query;
 mod semantic_shapes;
 mod semantic_source;
 mod snapshot;
+mod stylo_query;
+mod sql_query;
+// Kept private until Vue owner replay and public-route admission are complete.
+mod vue_query;
 
-pub(in crate::builtin) use adapter::{CommandAdapter, Executed};
+pub(in crate::builtin) use adapter::{CommandAdapter, Executed, ExpectedNativeSourceOrigin, selected_native_policy_for_row};
+#[cfg(test)]
+pub(in crate::builtin) use adapter::test_native_document_freshness;
 #[cfg(any(test, feature = "test-support"))]
 pub(in crate::builtin) use adapter::{
     commit_builtin_intent, commit_prepared_builtin_intent,

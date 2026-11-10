@@ -80,6 +80,8 @@ pub enum PolicyReason {
     OverrideAccepted(OverrideEvidence),
     /// Cached evidence was allowed by policy.
     CachedEvidenceAllowed,
+    /// Advisory-only evaluation did not observe registry release standing.
+    RegistryStandingUnknown,
 }
 
 /// Installation/acquisition result with no prose parsing required by callers.

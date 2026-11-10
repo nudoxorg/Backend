@@ -19,8 +19,14 @@ exclude = [
     # T2 surface corpus and reviewed snapshots (data, not a crate).
     "tests/surface",
     "third_party/tsz",
+    # The PG native facade remains isolated until its AGPL intake is resolved.
+    "frontends/postgres",
+    "frontends/sqlite",
     "tools/package",
     "vendor/pyrefly_config_native_1_2",
+    "vendor/stylo-native",
+    "vendor/selectors-native",
+    "vendor/syntaqlite-native",
 ]
 
 [workspace.package]
@@ -205,6 +211,12 @@ panic = "abort"
 strip = "symbols"
 
 [patch.crates-io]
+# Read-only bounded CSS source-observer experiment; exact upstream pins and
+# patch receipt are in experiments/stylo-observer-proof/README.md.
+stylo = { path = "vendor/stylo-native" }
+# Pin ToCss result errors when the desktop also links serde_fmt.
+stylo_derive = { path = "vendor/stylo-derive-native" }
+selectors = { path = "vendor/selectors-native" }
 # Linux AT-SPI must not advertise disabled buttons as enabled/sensitive.
 # The pinned upstream adapter and regression coverage are documented beside it.
 accesskit_atspi_common = { path = "vendor/accesskit_atspi_common" }

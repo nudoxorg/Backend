@@ -270,16 +270,40 @@ impl RawSourceAdmission {
 }
 
 pub(super) fn stage(
-    mut intent: BuiltinIntent,
+    intent: BuiltinIntent,
     snapshot: &WorkspaceSnapshot,
     source_root: Option<&Path>,
     cancellation: Arc<AtomicBool>,
 ) -> Result<BuiltinIntent, BuiltinModelError> {
+    stage_inner(intent, snapshot, source_root, cancellation, false)
+}
+
+#[cfg(test)]
+pub(super) fn stage_for_test(
+    intent: BuiltinIntent,
+    snapshot: &WorkspaceSnapshot,
+    source_root: Option<&Path>,
+    cancellation: Arc<AtomicBool>,
+) -> Result<BuiltinIntent, BuiltinModelError> {
+    stage_inner(intent, snapshot, source_root, cancellation, true)
+}
+
+fn stage_inner(
+    mut intent: BuiltinIntent,
+    snapshot: &WorkspaceSnapshot,
+    source_root: Option<&Path>,
+    cancellation: Arc<AtomicBool>,
+    force: bool,
+) -> Result<BuiltinIntent, BuiltinModelError> {
+    intent.validate_native_stage_cancellation(&cancellation)?;
     if intent.staged().is_some() {
         return Ok(intent);
     }
     let (bytes, source_end) = intent.staging_parts();
-    if bytes.len() <= QUEUE_STAGE_THRESHOLD && snapshot.closure().stored_membership().is_none() {
+    if !force
+        && bytes.len() <= QUEUE_STAGE_THRESHOLD
+        && snapshot.closure().stored_membership().is_none()
+    {
         return Ok(intent);
     }
     let (maximum_bytes, maximum_pages) =
@@ -593,6 +617,9 @@ impl StagedIntent {
             bytes.extend_from_slice(&id);
         }
         bytes
+    }
+    pub(super) fn matches_cancellation(&self, cancellation: &Arc<AtomicBool>) -> bool {
+        Arc::ptr_eq(&self.cancelled, cancellation)
     }
     pub(super) fn hydrate(
         &self,

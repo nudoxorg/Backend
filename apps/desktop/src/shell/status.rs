@@ -372,7 +372,7 @@ impl Status {
     fn render_feedback(&mut self, snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>, measure: &Measure, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let feedback = feedback(snapshot, focus, notice, self.core.width(), window, cx);
         let palette = cx.facet().palette();
-        if self.details.as_deref() != Some(&feedback.message) { self.details = None; }
+        if self.details.as_deref() != Some(feedback.message.as_str()) { self.details = None; }
         let details_focus = window.use_keyed_state("status-details-focus", cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone();
         let close_focus = window.use_keyed_state("status-details-close-focus", cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone();
         let retry = retry_button(notice, snapshot, &self.links, measure, cx);

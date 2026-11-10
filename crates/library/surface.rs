@@ -97,9 +97,12 @@ impl ProductText {
         &self.0
     }
 
-    pub(crate) fn retained_capacity(&self) -> usize {
+    /// Retained string allocation capacity for bounded in-process accounting.
+    #[must_use]
+    pub fn retained_capacity(&self) -> usize {
         self.0.capacity()
     }
+
 }
 
 impl TryFrom<String> for ProductText {
@@ -3652,6 +3655,16 @@ pub enum SurfaceCommand {
         /// Exact owner reference and native byte range.
         request: crate::SemanticSourceRequest,
     },
+    /// Query selected native CSS evidence.
+    StyloQuery {
+        /// Exact decoded name and bounded paging policy.
+        request: crate::stylo_query::StyloQueryRequest,
+    },
+    /// Read one verified authored CSS site.
+    StyloReadSite {
+        /// Owner-issued source-site reference.
+        reference: crate::stylo_query::StyloSourceReference,
+    },
     /// Read compiler-owned member/type shapes for exact selected keys.
     SemanticShapes {
         /// Source selection and bounded full-key operands.
@@ -3846,6 +3859,10 @@ pub enum SurfaceCommand {
     },
     /// Refresh every configured advisory source.
     AdvisoryRefresh,
+    /// Query selected native SQL facts under an explicit context.
+    SqlQuery { request: crate::sql_query::SqlQueryRequest },
+    /// Reverify one native SQL diagnostic source extent.
+    SqlReadSource { reference: crate::sql_query::SqlSourceReference },
 }
 
 impl SurfaceCommand {
@@ -3869,6 +3886,10 @@ impl SurfaceCommand {
             Self::PackageVersions { .. } => CommandId::PackageVersions,
             Self::SemanticVersions { .. } => CommandId::SemanticVersions,
             Self::SemanticSource { .. } => CommandId::SemanticSource,
+            Self::StyloQuery { .. } => CommandId::StyloQuery,
+            Self::StyloReadSite { .. } => CommandId::StyloReadSite,
+            Self::SqlQuery { .. } => CommandId::SqlQuery,
+            Self::SqlReadSource { .. } => CommandId::SqlReadSource,
             Self::SemanticShapes { .. } => CommandId::SemanticShapes,
             Self::PackageSourceMembership { .. } => CommandId::PackageSourceMembership,
             Self::SelectSemanticVersion { .. } => CommandId::SelectSemanticVersion,
@@ -3909,17 +3930,25 @@ impl SurfaceCommand {
     /// fixed product row bound.
     pub fn admit(&self) -> Result<(), ProductAdmissionError> {
         match self {
+            Self::StyloQuery { request } => request.normalized_name().map(|_| ()),
+            Self::StyloReadSite { reference } => reference.admit_shape(),
+            Self::SqlQuery { request } => request.validate(),
+            Self::SqlReadSource { reference } => reference.admit_shape(),
             Self::Read { locators } if locators.len() > MAX_PRODUCT_ROWS => {
                 Err(ProductAdmissionError::RowBound)
             }
-            Self::Explore { limit, .. } | Self::IndexSearch { limit, .. } | Self::SemanticVersions { limit, .. }
+            Self::Explore { limit, .. }
+            | Self::IndexSearch { limit, .. }
+            | Self::SemanticVersions { limit, .. }
                 if *limit == 0 || usize::from(*limit) > MAX_PRODUCT_ROWS =>
             {
                 Err(ProductAdmissionError::RowBound)
             }
-            Self::SemanticSource { request } if request.range.max_bytes == 0
-                || usize::from(request.range.max_bytes) > MAX_PRODUCT_TEXT_BYTES
-                || request.range.offset >= request.reference.source.total_bytes => {
+            Self::SemanticSource { request }
+                if request.range.max_bytes == 0
+                    || usize::from(request.range.max_bytes) > MAX_PRODUCT_TEXT_BYTES
+                    || request.range.offset >= request.reference.source.total_bytes =>
+            {
                 Err(ProductAdmissionError::SemanticVersionShape)
             }
             Self::SelectSemanticVersion {
@@ -3994,6 +4023,9 @@ impl DeclarationReadExtent {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeclarationRecord {
+    /// Captured-policy claim; old and unqualified records remain unknown.
+    #[serde(default, skip_serializing_if = "crate::SourcePolicyQualification::is_unknown")]
+    pub source_policy: crate::SourcePolicyQualification,
     /// Requested label.
     pub label: ProductText,
     /// Stable row digest bytes when found.
@@ -4214,6 +4246,12 @@ impl SemanticLinkDelta {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReferenceRecord {
+    /// Raw caller symbol claim; this is not a typed identity capability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_symbol: Option<[u8; 32]>,
+    /// Per-occurrence observed policy claim, admitted only from a local peer.
+    #[serde(default, skip_serializing_if = "crate::SourcePolicyQualification::is_unknown")]
+    pub source_policy: crate::SourcePolicyQualification,
     /// Canonical coordinate of the declaration that uses the target.
     pub site: ProductText,
     /// Exact local or foreign endpoint this occurrence resolves to.
@@ -5368,6 +5406,53 @@ pub struct TreeNodeRecord {
     pub active: bool,
 }
 
+/// Coverage of the requested reference relation scope.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum ReferenceCoverage {
+    /// The producer proved the requested use-site scope exhaustive.
+    Complete,
+    /// Some uses were found, but the scope is not exhaustive.
+    Partial {
+        /// Why additional uses may be missing.
+        reason: ProductText,
+    },
+    /// No uses were found and the scope could not be established.
+    Unknown {
+        /// Why absence is not established.
+        reason: ProductText,
+    },
+}
+
+impl<'de> Deserialize<'de> for ReferenceCoverage {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Serde accepts extra fields on internally tagged unit variants even
+        // with deny_unknown_fields. An empty struct closes Complete as well.
+        #[derive(Deserialize)]
+        #[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+        enum StrictCoverage {
+            Complete {},
+            Partial { reason: ProductText },
+            Unknown { reason: ProductText },
+        }
+        Ok(match StrictCoverage::deserialize(deserializer)? {
+            StrictCoverage::Complete {} => Self::Complete,
+            StrictCoverage::Partial { reason } => Self::Partial { reason },
+            StrictCoverage::Unknown { reason } => Self::Unknown { reason },
+        })
+    }
+}
+
+impl Default for ReferenceCoverage {
+    fn default() -> Self {
+        Self::Unknown {
+            reason: ProductText::from_static(
+                "Reference coverage was not recorded; inspect package_profile and search source text.",
+            ),
+        }
+    }
+}
+
 /// Typed result algebra for durable product commands.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "result", content = "data", rename_all = "kebab-case")]
@@ -5382,6 +5467,9 @@ pub enum SurfaceReply {
         target: ProductText,
         /// Bounded use sites, ordered by source position.
         references: Box<[ReferenceRecord]>,
+        /// Whether the returned use sites cover the requested scope.
+        #[serde(default)]
+        coverage: ReferenceCoverage,
     },
     /// Declaration-level differences.
     Diff(Box<[DiffRecord]>),
@@ -5397,6 +5485,9 @@ pub enum SurfaceReply {
         package: PackageCoordinate,
         /// Positive, negative, or unavailable metadata evidence.
         observation: RegistryPackageDiscoveryObservation,
+        /// Advisory authority is separate from source-only package metadata.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        advisory: Option<AdvisoryPackageDto>,
     },
     /// Exact package records from registry and forge authorities, kept apart.
     PackageDetails {
@@ -5432,6 +5523,10 @@ pub enum SurfaceReply {
     SemanticVersionsPage(crate::SemanticVersionsPage),
     /// Exact range of a captured complete semantic-source object.
     SemanticSource(crate::SemanticSourceChunk),
+    /// Selected native CSS evidence with explicit scope.
+    StyloQuery(crate::stylo_query::StyloQueryPage),
+    /// Verified authored CSS site or an explicit unavailable state.
+    StyloReadSite(crate::stylo_query::StyloSourceRead),
     /// Egress view exported after direct shape certificate admission.
     SemanticShapes(crate::SemanticShapeExport),
     /// One bounded page of exact selected Project source membership.
@@ -5510,6 +5605,10 @@ pub enum SurfaceReply {
     CargoPackageReadmeLink(crate::CargoPackageReadmeLinkResultV1),
     /// Each advisory source after a refresh.
     AdvisoryRefreshed(Box<[crate::browse::AdvisorySourceState]>),
+    /// Native SQL page under a selected root.
+    SqlQuery(crate::sql_query::SqlQueryPage),
+    /// Verified SQL diagnostic source extent.
+    SqlReadSource(crate::sql_query::SqlSourceRead),
 }
 
 impl SurfaceReply {
@@ -5535,8 +5634,14 @@ impl SurfaceReply {
             Self::IndexSearchWithDiscovery(_) => CommandId::IndexSearch,
             Self::IndexSearchPage(_) => CommandId::IndexSearch,
             Self::PackageVersions(_) => CommandId::PackageVersions,
-            Self::SemanticVersions(_) | Self::SemanticVersionsPage(_) => CommandId::SemanticVersions,
+            Self::SemanticVersions(_) | Self::SemanticVersionsPage(_) => {
+                CommandId::SemanticVersions
+            }
             Self::SemanticSource(_) => CommandId::SemanticSource,
+            Self::StyloQuery(_) => CommandId::StyloQuery,
+            Self::StyloReadSite(_) => CommandId::StyloReadSite,
+            Self::SqlQuery(_) => CommandId::SqlQuery,
+            Self::SqlReadSource(_) => CommandId::SqlReadSource,
             Self::SemanticShapes(_) => CommandId::SemanticShapes,
             Self::PackageSourceMembershipPage(_) => CommandId::PackageSourceMembership,
             Self::IndexStarted(_) => CommandId::IndexStart,
@@ -5581,6 +5686,12 @@ impl SurfaceReply {
         reason = "distinct typed reply collections share only their length admission rule"
     )]
     pub fn admit(&self, expected: CommandId) -> Result<(), ProductAdmissionError> {
+        self.admit_with_local_source_policy(expected, false)
+    }
+
+    pub(crate) fn admit_with_local_source_policy(
+        &self, expected: CommandId, local_policy: bool,
+    ) -> Result<(), ProductAdmissionError> {
         if self.id() != expected {
             return Err(ProductAdmissionError::CommandMismatch);
         }
@@ -5588,14 +5699,24 @@ impl SurfaceReply {
             Self::Advisory(_) => 1,
             Self::Read(records) => {
                 if records.iter().any(|record| {
-                    record.extent.is_some()
+                    (!record.source_policy.is_unknown()
+                        && (!local_policy || !record.source_policy.matches_record(record)))
+                        || record.extent.is_some()
                         && (record.stable_id.is_none() || record.signature.is_none())
                 }) {
                     return Err(ProductAdmissionError::DeclarationReadShape);
                 }
                 records.len()
             }
-            Self::References { references, .. } => references.len(),
+            Self::References { references, coverage, .. } => {
+                let captured = references.iter().any(|record| !record.source_policy.is_unknown());
+                if (captured && !matches!(coverage, ReferenceCoverage::Partial { .. }))
+                    || references.iter().any(|record| !record.source_policy.is_unknown()
+                        && (!local_policy || !record.source_policy.matches_reference_shape(record))) {
+                    return Err(ProductAdmissionError::DeclarationReadShape);
+                }
+                references.len()
+            },
             Self::Diff(rows) => rows.iter().try_fold(rows.len(), |count, row| {
                 if !row.has_valid_identity_shape()
                     || row
@@ -5632,9 +5753,21 @@ impl SurfaceReply {
                 page.rows.len()
             }
             Self::SemanticSource(chunk) => {
-                chunk.admit().map_err(|_| ProductAdmissionError::SemanticVersionShape)?;
+                chunk
+                    .admit()
+                    .map_err(|_| ProductAdmissionError::SemanticVersionShape)?;
                 1
             }
+            Self::StyloQuery(page) => {
+                admit_stylo_page(page)?;
+                page.hits.len()
+            }
+            Self::StyloReadSite(source) => {
+                admit_stylo_source(source)?;
+                1
+            }
+            Self::SqlQuery(page) => { admit_sql_page(page)?; page.hits.len() }
+            Self::SqlReadSource(source) => { admit_sql_source(source)?; 1 }
             Self::SemanticVersionsPage(page) => {
                 page.admit()?;
                 page.entries.len()
@@ -5785,6 +5918,7 @@ impl SurfaceReply {
                 Self::PackageDiscovery {
                     package,
                     observation,
+                    ..
                 } => {
                     if let RegistryPackageDiscoveryObservation::Observed { candidates } =
                         observation
@@ -5888,12 +6022,16 @@ impl SurfaceReply {
             }),
             Self::Advisory(value) => fixed_record_bound()
                 .saturating_add(serde_json::to_vec(value).map_or(0, |bytes| bytes.len())),
-            Self::References { target, references } => references.iter().fold(
-                fixed_record_bound().saturating_add(text_bound(target)),
+            Self::References { target, references, coverage } => references.iter().fold(
+                fixed_record_bound().saturating_add(text_bound(target)).saturating_add(match coverage {
+                    ReferenceCoverage::Complete => 0,
+                    ReferenceCoverage::Partial { reason } | ReferenceCoverage::Unknown { reason } => text_bound(reason),
+                }),
                 |bound, record| {
                     bound
                         .saturating_add(fixed_record_bound())
                         .saturating_add(text_bound(&record.site))
+                        .saturating_add(record.source_policy.encoded_size_bound())
                         .saturating_add(semantic_link_evidence_bound(&record.evidence))
                 },
             ),
@@ -5937,9 +6075,11 @@ impl SurfaceReply {
             Self::PackageDiscovery {
                 package,
                 observation,
+                advisory,
             } => fixed_record_bound()
                 .saturating_add(package.as_str().len())
-                .saturating_add(serialized_json_size(observation)),
+                .saturating_add(serialized_json_size(observation))
+                .saturating_add(advisory.as_ref().map_or(0, serialized_json_size)),
             Self::ForgePackageAdded(record) | Self::ForgePackageReferenced(record) => {
                 fixed_record_bound()
                     .saturating_add(serde_json::to_vec(record).map_or(0, |bytes| bytes.len()))
@@ -5953,6 +6093,10 @@ impl SurfaceReply {
                     )
                 })),
             Self::SemanticSource(chunk) => chunk.base64url.len().saturating_add(512),
+            Self::StyloQuery(page) => serialized_json_size(page),
+            Self::StyloReadSite(source) => serialized_json_size(source),
+            Self::SqlQuery(page) => serialized_json_size(page),
+            Self::SqlReadSource(source) => serialized_json_size(source),
             Self::SemanticVersionsPage(page) => serialized_json_size(page),
             Self::SemanticVersions(records) => records.iter().fold(0_usize, |bound, record| {
                 bound
@@ -6058,6 +6202,220 @@ const fn fixed_record_bound() -> usize {
     512
 }
 
+fn admit_sql_page(page: &crate::sql_query::SqlQueryPage) -> Result<(), ProductAdmissionError> {
+    use crate::sql_query::{SqlAttemptState, SqlNativeTerminal, SqlQueryTerminal};
+    use backend_semantic::sql_analysis::{SqlCoverage, SqlDialect, SqlFact, SqliteLineageCoverage};
+    let invalid = || ProductAdmissionError::SemanticVersionShape;
+    let selected = matches!(page.basis.attempt, SqlAttemptState::LatestObserved | SqlAttemptState::RetainedAfterUnavailable { .. });
+    if page.hits.len() > 128 || serialized_json_size(page) > 4 * 1024 * 1024
+        || page.basis.source_occurrences_complete || page.basis.catalog_is_deployed
+        || (selected && (page.basis.sql_root.is_none() || matches!(page.terminal, SqlQueryTerminal::Unavailable)))
+        || (!selected && (!page.hits.is_empty() || page.basis.inventory_complete || page.basis.policy_complete || !matches!(page.terminal, SqlQueryTerminal::Unavailable)))
+        || (matches!(page.basis.attempt, SqlAttemptState::ProjectNotSelected) && page.basis.sql_root.is_some()) {
+        return Err(invalid());
+    }
+    if let SqlQueryTerminal::More { continuation, .. } = &page.terminal { continuation.admit_shape()?; }
+    for hit in &page.hits {
+        if !valid_stylo_path(&hit.path) || hit.host_basis.length > 512 * 1024
+            || [hit.host_basis.input,hit.host_basis.source,hit.host_basis.producer,hit.host_basis.settings].contains(&[0;32])
+            || hit.host_basis.proposed_context.is_some_and(|value| value == [0;32]) {
+            return Err(invalid());
+        }
+        match hit.host_basis.terminal {
+            SqlNativeTerminal::Parsed { contextual, sqlite_lineage, .. } => {
+                if contextual == SqlCoverage::Partial && hit.host_basis.proposed_context.is_none() { return Err(invalid()); }
+                if matches!(sqlite_lineage, Some(SqliteLineageCoverage::NativeComplete | SqliteLineageCoverage::NativePartial))
+                    && (hit.dialect != SqlDialect::Sqlite || contextual != SqlCoverage::Partial || hit.host_basis.proposed_context.is_none()) { return Err(invalid()); }
+            }
+            SqlNativeTerminal::NativeError => {},
+        }
+        match &hit.fact {
+            SqlFact::SqliteRelation { name, .. } => {
+                if hit.dialect != SqlDialect::Sqlite || name.is_empty() || name.len() > 256 || name.contains('\0') || hit.source.is_some()
+                    || !matches!(hit.host_basis.terminal, SqlNativeTerminal::Parsed { contextual: SqlCoverage::Partial, .. }) { return Err(invalid()); }
+            }
+            SqlFact::SqliteOutputLineage { output_name, origin, .. } => {
+                if hit.dialect != SqlDialect::Sqlite || output_name.is_empty() || output_name.len() > 256 || output_name.contains('\0') || hit.source.is_some()
+                    || origin.as_ref().is_some_and(|o| o.relation.is_empty() || o.column.is_empty() || o.relation.len() > 256 || o.column.len() > 256 || o.relation.contains('\0') || o.column.contains('\0'))
+                    || !matches!(hit.host_basis.terminal, SqlNativeTerminal::Parsed { contextual: SqlCoverage::Partial, .. }) { return Err(invalid()); }
+            }
+            SqlFact::Diagnostic { extent, .. } => {
+                if let Some(range) = extent {
+                    if range.start > range.end || u64::from(range.end) > hit.host_basis.length { return Err(invalid()); }
+                    hit.source.as_ref().ok_or_else(invalid)?.admit_shape()?;
+                } else if hit.source.is_some() { return Err(invalid()); }
+            }
+        }
+    }
+    Ok(())
+}
+fn admit_sql_source(source: &crate::sql_query::SqlSourceRead) -> Result<(), ProductAdmissionError> {
+    if let crate::sql_query::SqlSourceRead::Available { reference, served_root, path, start, end, line_1, text, .. } = source {
+        reference.admit_shape()?;
+        if served_root.is_empty() || served_root.len() > 4096 || served_root.contains('\0') || !valid_stylo_path(path)
+            || start > end || (*end - *start) as usize != text.len() || *line_1 == 0
+            || u64::from(*line_1) > u64::from(*start) + 1 || text.len() > 512 * 1024 {
+            return Err(ProductAdmissionError::SemanticVersionShape);
+        }
+    }
+    Ok(())
+}
+
+fn admit_stylo_page(
+    page: &crate::stylo_query::StyloQueryPage,
+) -> Result<(), ProductAdmissionError> {
+    use crate::stylo_query::{StyloAttemptState, StyloQueryHit, StyloQueryTerminal, StyloScopeGap};
+    let gaps = &page.basis.gaps;
+    let required = [
+        StyloScopeGap::AuthoredSourcePartial,
+        StyloScopeGap::AuthoredReferenceSitesUnavailable,
+        StyloScopeGap::OrdinaryVariableReferencesUnavailable,
+        StyloScopeGap::NativeDeclarationNameDecodeUnavailable,
+        StyloScopeGap::PreferenceStabilityUnknown,
+        StyloScopeGap::ImportsNotResolved,
+        StyloScopeGap::AncestorRuleContextNotReturned,
+        StyloScopeGap::FrameworkNotInterpreted,
+        StyloScopeGap::DomAndCascadeNotAttempted,
+        StyloScopeGap::ProviderUnknown,
+    ];
+    let selected = matches!(page.basis.attempt, StyloAttemptState::LatestObserved
+        | StyloAttemptState::RetainedAfterUnavailable { .. } | StyloAttemptState::UnknownLegacy);
+    if (selected && (page.basis.native_root.is_none() || page.basis.producer.is_none()
+        || matches!(page.terminal, StyloQueryTerminal::Unavailable)))
+        || (!selected && (page.basis.producer.is_some() || page.basis.selection_complete
+            || !matches!(page.terminal, StyloQueryTerminal::Unavailable) || !page.hits.is_empty()))
+        || (matches!(page.basis.attempt, StyloAttemptState::ProjectNotSelected) && page.basis.native_root.is_some()) {
+        return Err(ProductAdmissionError::SemanticVersionShape);
+    }
+    if !page.basis.source_partial
+        || (!page.hits.is_empty() && (page.basis.native_root.is_none() || page.basis.producer.is_none()))
+        || gaps.len() > 16
+        || required.iter().any(|gap| !gaps.contains(gap))
+        || page.hits.len() > 128
+        || serialized_json_size(page) > 4 * 1024 * 1024
+    {
+        return Err(ProductAdmissionError::SemanticVersionShape);
+    }
+    match &page.terminal {
+        StyloQueryTerminal::Unavailable if !page.hits.is_empty() => {
+            return Err(ProductAdmissionError::SemanticVersionShape);
+        }
+        StyloQueryTerminal::More { continuation, .. } => continuation.admit_shape()?,
+        StyloQueryTerminal::OutputLimit {
+            continuation: Some(cursor),
+            ..
+        } => cursor.admit_shape()?,
+        _ => {}
+    }
+    for hit in &page.hits {
+        let path = match hit {
+            StyloQueryHit::SourceSite {
+                path,
+                site,
+                rule,
+                selector,
+                source,
+                source_gaps,
+                ..
+            } => {
+                source.admit_shape()?;
+                if source_gaps.len() > 4 || site.start >= site.end || site.end - site.start != site.raw.len() as u64
+                    || site.rule_path != rule.path
+                    || selector.is_some() != site.selector_ordinal.is_some()
+                    || (site.role == backend_semantic::stylo_analysis::StyloSourceRole::ClassName && selector.is_none())
+                    || (site.role == backend_semantic::stylo_analysis::StyloSourceRole::CustomPropertyDeclarationName && selector.is_some())
+                    || selector.as_ref().is_some_and(|s| s.rule_path != rule.path || Some(s.ordinal) != site.selector_ordinal) {
+                    return Err(ProductAdmissionError::SemanticVersionShape);
+                }
+                path
+            }
+            StyloQueryHit::NativeSelector {
+                path,
+                rule,
+                selector,
+                ..
+            } => {
+                if selector.rule_path != rule.path {
+                    return Err(ProductAdmissionError::SemanticVersionShape);
+                }
+                path
+            }
+            StyloQueryHit::NativeDeclaration {
+                path,
+                rule,
+                declaration,
+                ..
+            } => {
+                if declaration.rule_path != rule.path {
+                    return Err(ProductAdmissionError::SemanticVersionShape);
+                }
+                path
+            }
+            StyloQueryHit::NativeDependency {
+                path,
+                rule,
+                declaration,
+                dependency,
+                ..
+            } => {
+                if dependency.kind != "var"
+                    || declaration.rule_path != rule.path
+                    || dependency.rule_path != rule.path
+                    || dependency.declaration_ordinal != declaration.ordinal
+                {
+                    return Err(ProductAdmissionError::SemanticVersionShape);
+                }
+                path
+            }
+        };
+        if !valid_stylo_path(path) {
+            return Err(ProductAdmissionError::SemanticVersionShape);
+        }
+    }
+    Ok(())
+}
+fn valid_stylo_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 4096
+        && !path.starts_with('/')
+        && !(path.as_bytes().get(1) == Some(&b':') && path.as_bytes()[0].is_ascii_alphabetic())
+        && !path.contains('\\')
+        && !path.bytes().any(|b| b.is_ascii_control())
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+fn admit_stylo_source(
+    source: &crate::stylo_query::StyloSourceRead,
+) -> Result<(), ProductAdmissionError> {
+    if let crate::stylo_query::StyloSourceRead::Available {
+        served_root,
+        path,
+        start,
+        end,
+        line_1,
+        text,
+    } = source
+    {
+        if served_root.is_empty()
+            || served_root.len() > 4096
+            || served_root.contains('\0')
+            || !valid_stylo_path(path)
+            || start >= end
+            || end - start != text.len() as u64
+            || *line_1 == 0
+            || u64::from(*line_1) > start.saturating_add(1)
+            || text.len() > 32 * 1024
+        {
+            return Err(ProductAdmissionError::SemanticVersionShape);
+        }
+    }
+    if serialized_json_size(source) > 4 * 1024 * 1024 {
+        return Err(ProductAdmissionError::SemanticVersionShape);
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct JsonSizeCounter(usize);
 
@@ -6073,7 +6431,7 @@ impl Write for JsonSizeCounter {
 }
 
 /// Counts the encoded size without allocating a temporary serialized copy.
-fn serialized_json_size(value: &impl Serialize) -> usize {
+pub(crate) fn serialized_json_size(value: &impl Serialize) -> usize {
     let mut counter = JsonSizeCounter::default();
     if serde_json::to_writer(&mut counter, value).is_ok() {
         counter.0
@@ -6096,6 +6454,7 @@ fn package_reference_bound(package: &PackageReference) -> usize {
 
 fn declaration_record_bound(record: &DeclarationRecord) -> usize {
     fixed_record_bound()
+        .saturating_add(record.source_policy.encoded_size_bound())
         .saturating_add(text_bound(&record.label))
         .saturating_add(optional_text_bound(record.signature.as_ref()))
 }
@@ -6357,6 +6716,15 @@ impl core::fmt::Display for ProductAdmissionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn product_text_retained_capacity_includes_unused_allocation() {
+        let mut input = String::with_capacity(512);
+        input.push_str("local-project");
+        let text = ProductText::new(input).expect("valid product text");
+        assert_eq!(text.as_str(), "local-project");
+        assert!(text.retained_capacity() >= 512);
+    }
 
     #[derive(Debug)]
     enum PackageCompilerFailureTestError {

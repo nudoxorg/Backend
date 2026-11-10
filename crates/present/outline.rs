@@ -406,7 +406,7 @@ mod page_scope_tests {
         for root in tree.roots() {
             keys(root, &mut actual);
         }
-        assert_eq!(actual, [a, b, c].into_iter().collect());
+        assert_eq!(actual, [a, b, c].into_iter().collect::<std::collections::BTreeSet<_>>());
         assert!(page_tree("/foreign", &page.snapshot, 3, page.outline_order.as_ref().expect("order")).is_err());
         assert!(page_tree(path, &page.snapshot, 0, page.outline_order.as_ref().expect("order")).is_err());
         assert_eq!(

@@ -350,6 +350,10 @@ const fn surface_is_repeatable(command: &SurfaceCommand) -> Repeatable {
         | SurfaceCommand::PackageVersions { .. }
         | SurfaceCommand::SemanticVersions { .. }
         | SurfaceCommand::SemanticSource { .. }
+        | SurfaceCommand::StyloQuery { .. }
+        | SurfaceCommand::StyloReadSite { .. }
+        | SurfaceCommand::SqlQuery { .. }
+        | SurfaceCommand::SqlReadSource { .. }
         | SurfaceCommand::PackageProfile { .. }
         | SurfaceCommand::ForgeReference { .. }
         | SurfaceCommand::Subscriptions
@@ -443,6 +447,23 @@ impl<E: Endpoint> Engine for Reconnecting<E> {
 }
 
 impl<E: Endpoint> Product for Reconnecting<E> {
+    fn qualified_source_ranges_from_authenticated_session(&self) -> bool {
+        self.product
+            .as_ref()
+            .is_some_and(|product| product.qualified_source_ranges_from_authenticated_session())
+    }
+
+    fn declaration_source_range(
+        &mut self,
+        selector: &backend_library::DeclarationSelector,
+        expected_root: Option<&str>,
+        range: backend_library::SourceRangeRequest,
+    ) -> Result<ReplyDto, ClientError> {
+        self.attempt(Repeatable::Yes, |product| {
+            product.declaration_source_range(selector, expected_root, range)
+        })
+    }
+
     fn supports_outline_owner_witness_route(&self) -> bool {
         self.product
             .as_ref()

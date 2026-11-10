@@ -554,7 +554,7 @@ impl DiscoveryGateway {
     }
 
     #[cfg(test)]
-    fn observe_package(
+    pub(crate) fn observe_package(
         &mut self,
         package: &PackageCoordinate,
     ) -> Option<RegistryPackageDiscoveryObservation> {

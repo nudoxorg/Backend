@@ -845,11 +845,32 @@ impl UnixCommandTransport {
 
     fn decode(&self, body: &[u8]) -> Result<ReplyDto, ClientError> {
         match self.peer.as_ref() {
-            Some(peer) => backend_library::decode_reply_body_with_verifier(body, peer)
-                .map_err(ClientError::Protocol),
+            Some(peer) => backend_library::decode_reply_body_with_local_source_policy(
+                body, peer,
+            ).map_err(ClientError::Protocol),
             None => backend_library::decode_reply_body(body).map_err(ClientError::Protocol),
         }
     }
+
+    fn admit_local_reply(
+        &self, request: &CommandDto, reply: ReplyDto, capability: Option<CoverageCapability>,
+    ) -> Result<ReplyDto, ClientError> {
+        let Some(peer) = self.peer.as_ref() else {
+            return admit_reply_with_capability(request, reply, capability);
+        };
+        backend_library::admit_reply_with_local_source_policy(
+            request, &reply, capability, peer,
+        ).map_err(map_reply)?;
+        if backend_library::reply_memory_bound(&reply) > MAX_FRAME {
+            return Err(ClientError::ResponseTooLarge { basis: query_continuation::basis(&request.command) });
+        }
+        let encoded = serde_json::to_vec(&reply).map_err(|error| ClientError::Protocol(error.to_string()))?;
+        if encoded.len() > MAX_FRAME {
+            return Err(ClientError::ResponseTooLarge { basis: query_continuation::basis(&request.command) });
+        }
+        Ok(reply)
+    }
+
 }
 
 #[cfg(any(unix, windows))]
@@ -896,7 +917,7 @@ impl CommandTransport for UnixCommandTransport {
         let body = encode_request(&request)?;
         let body = self.exchange_command(&request, &body)?;
         let reply = self.decode(&body)?;
-        admit_reply(&request, reply)
+        self.admit_local_reply(&request, reply, None)
     }
 
     fn request_with_budget(
@@ -921,7 +942,7 @@ impl CommandTransport for UnixCommandTransport {
         }
         let body = self.exchange_command_with_budget(&request, &body, remaining)?;
         let reply = self.decode(&body)?;
-        admit_reply(&request, reply)
+        self.admit_local_reply(&request, reply, None)
     }
 
     fn request_with_search_admission(
@@ -949,7 +970,7 @@ impl CommandTransport for UnixCommandTransport {
             self.exchange_command_with_search_admission(&request, &body, remaining, scope)?;
         scope.check()?;
         let reply = self.decode(&body)?;
-        admit_reply(&request, reply)
+        self.admit_local_reply(&request, reply, None)
     }
 
     fn reconnect(&mut self) -> Result<(), ClientError> {
@@ -987,13 +1008,13 @@ impl CertifiedCommandTransport for UnixCommandTransport {
         )?;
         let body = encode_request(&request)?;
         let body = self.exchange_command(&request, &body)?;
-        let reply = if capability.is_some() {
+        let reply = if self.peer.is_some() || capability.is_none() {
+            self.decode(&body)?
+        } else {
             ReplyDto::decode_with_certificate(&body, capability.clone())
                 .map_err(ClientError::Protocol)?
-        } else {
-            self.decode(&body)?
         };
-        admit_reply_with_capability(&request, reply, capability)
+        self.admit_local_reply(&request, reply, capability)
     }
 }
 
@@ -1834,6 +1855,33 @@ impl Session {
         )
     }
 
+    /// Reads a bounded source range without silently changing the expected revision.
+    ///
+    /// # Errors
+    /// Refuses a moved owner, invalid source range, transport or proof admission failure.
+    pub fn declaration_source_range(
+        &mut self,
+        selector: &DeclarationSelector,
+        expected_root: Option<&str>,
+        range: backend_library::SourceRangeRequest,
+    ) -> Result<ReplyDto, ClientError> {
+        if !range.valid() {
+            return Err(ClientError::Protocol("invalid source range".to_owned()));
+        }
+        let revision = self.revision()?;
+        if expected_root.is_some_and(|root| root != encode_id(revision.root.as_bytes())) {
+            return Err(ClientError::StaleCursor);
+        }
+        let certificate = declaration_certificate(revision.certificate, selector);
+        self.send_success(
+            Command::Source(
+                DocumentQuery::addressed(selector.address(), revision.root)
+                    .with_source_range(range),
+            ),
+            Some(certificate),
+        )
+    }
+
     /// Reads one project outline by its canonical coordinate.
     ///
     /// # Errors
@@ -2233,6 +2281,7 @@ impl Session {
             _ => None,
         };
         let expected = command.id();
+        let source_command = matches!(&command, SurfaceCommand::Read { .. } | SurfaceCommand::References { .. }).then(|| command.clone());
         let reply = if matches!(&command, SurfaceCommand::IndexSearch { .. }) {
             self.send_index_search_ready(command)?
         } else {
@@ -2252,6 +2301,15 @@ impl Session {
             chunk
                 .admit_range(&source, &range)
                 .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        } else if let Some(command) = source_command.as_ref() {
+            // Transport already admitted the response; this only rechecks
+            // bounded request correlation after extraction.
+            let result = match command {
+                SurfaceCommand::Read { .. } => backend_library::admit_surface_read_shape(command, &reply),
+                SurfaceCommand::References { .. } => backend_library::admit_surface_references_shape(command, &reply),
+                _ => unreachable!("source command was matched above"),
+            };
+            result.map_err(|error| ClientError::Protocol(error.to_string()))?;
         } else {
             reply
                 .admit(expected)

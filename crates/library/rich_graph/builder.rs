@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 impl RichGraphSnapshot {
     /// Builds a graph from a view root and typed compiler relation sidecar.
+    /// View rows do not carry per-node provenance, so none is inferred here.
     pub fn from_view(
         root: &ViewRoot,
         center: RowId,
@@ -40,7 +41,7 @@ impl RichGraphSnapshot {
                 Some(label),
                 row.kind.map(|kind| format!("{kind:?}")),
                 availability,
-                Some(provenance),
+                None,
             )?)?;
         }
         for relation in relations {
@@ -113,6 +114,16 @@ impl RichGraphBuilder {
 
     /// Publishes the checked immutable graph snapshot.
     pub fn finish(self) -> Result<RichGraphSnapshot, RichGraphError> {
+        self.finish_with_availability(GraphAvailability::Ready)
+    }
+
+    /// Publishes a checked graph with its actual scope availability. In
+    /// particular, captured observations must carry their unknown-scope gap
+    /// before validation; this method does not authenticate source claims.
+    pub fn finish_with_availability(
+        self,
+        availability: GraphAvailability,
+    ) -> Result<RichGraphSnapshot, RichGraphError> {
         if !self.nodes.contains_key(&self.center) {
             return Err(RichGraphError::CenterMissing);
         }
@@ -125,7 +136,7 @@ impl RichGraphBuilder {
             layout: GraphLayoutInput::new(self.revision, self.center, &nodes, &edges),
             nodes: Arc::from(nodes.into_boxed_slice()),
             edges: Arc::from(edges.into_boxed_slice()),
-            availability: GraphAvailability::Ready,
+            availability,
         };
         snapshot.admit()?;
         Ok(snapshot)

@@ -9,7 +9,7 @@ use std::{
     fs::{File, OpenOptions, TryLockError},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -29,6 +29,20 @@ static ACTIVE_GC_PINS: AtomicUsize = AtomicUsize::new(0);
 #[derive(Clone, Debug)]
 pub struct StorePublicationAuthority {
     inner: Arc<PublicationAuthorityInner>,
+}
+
+/// Non-owning observation of a publication lease. It cannot itself publish.
+#[derive(Clone, Debug)]
+pub struct WeakPublicationAuthority {
+    inner: Weak<PublicationAuthorityInner>,
+}
+
+impl WeakPublicationAuthority {
+    /// Runs an operation while the original kernel lease is still held.
+    pub fn with_live<T>(&self, operation: impl FnOnce() -> T) -> Option<T> {
+        let _held = self.inner.upgrade()?;
+        Some(operation())
+    }
 }
 
 /// Failure to acquire a store's kernel-held publication authority.
@@ -58,6 +72,12 @@ struct PublicationAuthorityInner {
 }
 
 impl StorePublicationAuthority {
+    /// Create a witness that does not keep the kernel lease alive.
+    #[must_use]
+    pub fn downgrade(&self) -> WeakPublicationAuthority {
+        WeakPublicationAuthority { inner: Arc::downgrade(&self.inner) }
+    }
+
     /// Acquires the kernel lease at `lock_path`.
     ///
     /// The path must be the canonical `OWNER.lock` path associated with the
@@ -501,6 +521,7 @@ impl SelectedHead {
 #[derive(Clone, Debug)]
 pub struct FileStore {
     pub(super) root: PathBuf,
+    pub(super) root_directory: backend_platform::OwnedWorkspaceDirectory,
     pub(super) gc_identity: Hash,
     pub(super) max_pack_bytes: usize,
     pub(super) lock: Arc<Mutex<()>>,

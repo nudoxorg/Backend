@@ -155,6 +155,17 @@ impl RowCount {
 }
 
 impl CoverageLine {
+    /// The enclosing view's complete coverage does not certify graph relations.
+    #[must_use]
+    pub(crate) fn without_graph_completion(mut self) -> Self {
+        for lane in &mut self.lanes {
+            if lane.lane == Lane::Graph && lane.state == LaneState::Complete {
+                lane.state = LaneState::Unobserved;
+            }
+        }
+        self
+    }
+
     /// Folds one reply's coverage slice into a per-lane statement.
     #[must_use]
     pub fn new(coverage: &[Coverage], rows: Option<u64>) -> Self {

@@ -219,7 +219,7 @@ fn public_alias_references_keep_original_target_through_selected_structural_cata
         &decoded,
     )
     .expect("references caller admission");
-    let CommandReply::Surface(SurfaceReply::References { target, references }) = decoded.reply
+    let CommandReply::Surface(SurfaceReply::References { target, references, .. }) = decoded.reply
     else {
         panic!("references alias remains useful");
     };

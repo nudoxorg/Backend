@@ -175,6 +175,35 @@ pub fn admit_reply_with_capability(
     reply: &ReplyDto,
     capability: Option<crate::CoverageCapability>,
 ) -> Result<(), ReplyAdmissionError> {
+    admit_reply_internal(request, reply, capability, false)
+}
+
+/// Admit a bounded observed policy claim on an independently authenticated
+/// local owner channel. The claim remains untrusted source metadata.
+///
+/// An arbitrary caller-created value cannot stand in for the authenticated peer:
+/// ```compile_fail
+/// # fn attempt(request: &backend_library::CommandDto, reply: &backend_library::ReplyDto) {
+/// let _ = backend_library::admit_reply_with_local_source_policy(request, reply, None, &());
+/// # }
+/// ```
+#[cfg(any(unix, windows))]
+pub fn admit_reply_with_local_source_policy(
+    request: &CommandDto,
+    reply: &ReplyDto,
+    capability: Option<crate::CoverageCapability>,
+    channel: &backend_replication::AuthenticatedLocalPeer,
+) -> Result<(), ReplyAdmissionError> {
+    let _authenticated_peer = channel;
+    admit_reply_internal(request, reply, capability, true)
+}
+
+fn admit_reply_internal(
+    request: &CommandDto,
+    reply: &ReplyDto,
+    capability: Option<crate::CoverageCapability>,
+    local_policy: bool,
+) -> Result<(), ReplyAdmissionError> {
     if request.request_id != reply.request_id {
         return Err(ReplyAdmissionError::RequestMismatch {
             expected: request.request_id,
@@ -186,7 +215,16 @@ pub fn admit_reply_with_capability(
             "semantic status exceeded the reply's search stage".to_owned(),
         ));
     }
-    admit_reply_shape(&request.command, &reply.reply)?;
+    if let CommandReply::Document(document) | CommandReply::Page(document) = &reply.reply
+        && (!document.source_policy.is_unknown()
+            || document.source_range.as_ref().is_some_and(|page| !page.source_policy.is_unknown()))
+        && (!local_policy || !document.source_policy.matches_document(document))
+    {
+        return Err(ReplyAdmissionError::Protocol(
+            "source policy claim requires selected owner admission".to_owned(),
+        ));
+    }
+    admit_reply_shape(&request.command, &reply.reply, local_policy)?;
     let expected_basis = command_basis(&request.command);
     match &reply.reply {
         CommandReply::Packages(snapshot)
@@ -207,7 +245,7 @@ pub fn admit_reply_with_capability(
                 })
                 .transpose()?;
             if let CommandReply::ProjectionPage(page) = &reply.reply {
-                admit_projection_page(&request.command, page)?;
+                admit_projection_page(&request.command, page, local_policy)?;
             }
             if matches!(
                 &reply.reply,
@@ -478,6 +516,7 @@ fn admit_graph_query_page(
 fn admit_projection_page(
     command: &Command,
     page: &crate::ProjectionPage,
+    local_policy: bool,
 ) -> Result<(), ReplyAdmissionError> {
     let expected_recipe = match command {
         Command::PackagePage(_) => {
@@ -603,6 +642,50 @@ fn admit_projection_page(
         ));
     }
 
+    // A bounded qualified graph page may carry its center as a result-only
+    // witness when the actual row belongs to another page. It is an observed
+    // claim on the authenticated local channel, not a raw-key authority mint.
+    if let Command::GraphPage { symbol, .. } = command
+        && let Some(graph) = &page.snapshot.rich_graph
+    {
+        let page_nodes = page.snapshot.root.rows().iter().map(|row| crate::GraphNodeId::for_row(row.id))
+            .collect::<std::collections::BTreeSet<_>>();
+        let captured = graph.nodes.iter().any(|node| !node.source_policy.is_unknown())
+            || graph.edges.iter().any(|edge| !edge.source_policy.is_unknown());
+        let center_is_witness = !page_nodes.contains(&graph.center);
+        if center_is_witness && !captured {
+            return Err(ReplyAdmissionError::Protocol("graph page center witness is not admitted".to_owned()));
+        }
+        if captured {
+            let invalid = || ReplyAdmissionError::Protocol("graph page center witness is not admitted".to_owned());
+            if !local_policy || (center_is_witness && page.snapshot.graph_relations.is_some())
+                || graph.revision.view_root != page.snapshot.root.root().to_bytes()
+                || graph.admit().is_err()
+            { return Err(invalid()); }
+            let Some(center) = graph.nodes.iter().find(|node| node.id == graph.center) else { return Err(invalid()) };
+            if center.source_policy.is_unknown()
+                || !center.source_policy.matches_graph_page_address(*symbol)
+                || graph.nodes.iter().any(|node| {
+                    (!page_nodes.contains(&node.id) && node.id != graph.center)
+                        || node.source_policy.is_unknown()
+                        || !node.source_policy.matches_graph_basis(page.snapshot.root.basis())
+                })
+                || page.snapshot.root.rows().iter().any(|row| {
+                    let id = crate::GraphNodeId::for_row(row.id);
+                    graph.nodes.iter().find(|node| node.id == id).is_none_or(|node| {
+                        node.label.as_str() != row.label.as_str()
+                            || node.coordinate.as_ref().map(|coordinate| coordinate.as_str()) != Some(row.label.as_str())
+                    })
+                })
+                || graph.edges.iter().any(|edge| {
+                    (center_is_witness && !page_nodes.contains(&edge.from) && !page_nodes.contains(&edge.to))
+                        || edge.source_policy.is_unknown()
+                        || !edge.source_policy.matches_graph_basis(page.snapshot.root.basis())
+                })
+            { return Err(invalid()); }
+        }
+    }
+
     if let Command::MembersPage { owner, .. } = command
         && owner
             .source_basis()
@@ -665,6 +748,30 @@ pub fn reply_memory_bound(reply: &ReplyDto) -> usize {
         | CommandReply::Search(snapshot)
         | CommandReply::Graph(snapshot) => {
             add_bound(&mut bound, snapshot.root.encoded_size_bound());
+            if let Some(graph) = &snapshot.rich_graph {
+                add_bound(&mut bound, match &graph.availability {
+                    crate::GraphAvailability::Unavailable(v) | crate::GraphAvailability::Failed(v) => v.as_str().len().saturating_mul(6),
+                    _ => 0,
+                });
+                for node in graph.nodes.iter() {
+                    add_bound(&mut bound, 512usize.saturating_add(node.source_policy.encoded_size_bound())
+                        .saturating_add(node.label.as_str().len().saturating_mul(6))
+                        .saturating_add(node.coordinate.as_ref().map_or(0, |v| v.as_str().len().saturating_mul(6)))
+                        .saturating_add(node.kind.as_ref().map_or(0, |v| v.as_str().len().saturating_mul(6)))
+                        .saturating_add(match &node.availability {
+                            crate::GraphAvailability::Unavailable(v) | crate::GraphAvailability::Failed(v) => v.as_str().len().saturating_mul(6),
+                            _ => 0,
+                        }));
+                }
+                for edge in graph.edges.iter() {
+                    add_bound(&mut bound, 512usize.saturating_add(edge.source_policy.encoded_size_bound())
+                        .saturating_add(edge.dependency_requirement.as_ref().map_or(0, |v| v.as_str().len().saturating_mul(6)))
+                        .saturating_add(match &edge.availability {
+                            crate::GraphAvailability::Unavailable(v) | crate::GraphAvailability::Failed(v) => v.as_str().len().saturating_mul(6),
+                            _ => 0,
+                        }));
+                }
+            }
             if let CommandReply::ProjectionPage(page) = &reply.reply {
                 if let Some(order) = &page.outline_order {
                     add_bound(&mut bound, 256usize.saturating_add(order.symbols().len().saturating_mul(128)));
@@ -781,6 +888,10 @@ fn add_document_bound(bound: &mut usize, document: &Document) {
         .saturating_add(document.selection.as_ref().map_or(0, |selection| {
             512usize.saturating_add(selection.coordinate().len())
         }))
+        .saturating_add(document.source_policy.encoded_size_bound())
+        .saturating_add(document.source_range.as_ref().map_or(0, |page| {
+            page.source_policy.encoded_size_bound().saturating_add(page.text.len().saturating_mul(6))
+        }))
         .saturating_add(document.signature.as_deref().map_or(0, str::len))
         .saturating_add(document.excerpt.text().map_or(0, str::len))
         .saturating_add(facts_bound(&document.facts));
@@ -880,7 +991,7 @@ fn add_claim_bound(bound: &mut usize, claim: &WireClaim) {
     add_bound(bound, bytes);
 }
 
-fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), ReplyAdmissionError> {
+fn admit_reply_shape(command: &Command, reply: &CommandReply, local_policy: bool) -> Result<(), ReplyAdmissionError> {
     let valid = match (command, reply) {
         (_, CommandReply::Failed(crate::CommandFailure::ReplyTooLarge { basis })) => {
             let expected = match command {
@@ -987,7 +1098,7 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
         | (Command::GraphQuery(_), CommandReply::GraphQueryPage(_)) => true,
         (Command::SemanticShapes(_), CommandReply::SemanticShapes(_)) => true,
         (Command::Surface(command), CommandReply::Surface(reply)) => {
-            admit_surface_reply(command, reply)?;
+            admit_surface_reply_internal(command, reply, local_policy)?;
             true
         }
         (Command::Add { package, .. }, CommandReply::Added(intent)) => {
@@ -1014,6 +1125,13 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
                 return Err(ReplyAdmissionError::Protocol(
                     "document reply identity does not match the query".to_owned(),
                 ));
+            }
+            match (query.source_range(), document.source_range.as_ref()) {
+                (Some(request), Some(page)) if page.admits(request) || (local_policy && document.source_policy.matches_document(document) && page.matches_request_shape(request)) => {}
+                (None, None) => {}
+                _ => return Err(ReplyAdmissionError::Protocol(
+                    "source range reply does not match the request".to_owned(),
+                )),
             }
             true
         }
@@ -1131,6 +1249,40 @@ pub fn admit_surface_reply(
     command: &crate::SurfaceCommand,
     reply: &crate::SurfaceReply,
 ) -> Result<(), ReplyAdmissionError> {
+    admit_surface_reply_internal(command, reply, false)
+}
+
+/// Checks only Read request/reply shape and claim correlation. This does not
+/// authenticate a peer or owner seal; call it only after a trusted transport
+/// has admitted the full response. Generic admission remains fail-closed.
+pub fn admit_surface_read_shape(
+    command: &crate::SurfaceCommand,
+    reply: &crate::SurfaceReply,
+) -> Result<(), ReplyAdmissionError> {
+    if !matches!(command, crate::SurfaceCommand::Read { .. }) {
+        return Err(ReplyAdmissionError::Protocol("expected Read request".into()));
+    }
+    admit_surface_reply_internal(command, reply, true)
+}
+
+/// Checks only References request/reply correlation and bounded raw claims.
+/// This grants no owner, peer, source-byte, or edge authority and is intended
+/// only after a trusted transport has admitted the complete response.
+pub fn admit_surface_references_shape(
+    command: &crate::SurfaceCommand,
+    reply: &crate::SurfaceReply,
+) -> Result<(), ReplyAdmissionError> {
+    if !matches!(command, crate::SurfaceCommand::References { .. }) {
+        return Err(ReplyAdmissionError::Protocol("expected References request".into()));
+    }
+    admit_surface_reply_internal(command, reply, true)
+}
+
+fn admit_surface_reply_internal(
+    command: &crate::SurfaceCommand,
+    reply: &crate::SurfaceReply,
+    local_policy: bool,
+) -> Result<(), ReplyAdmissionError> {
     if let (
         crate::SurfaceCommand::SemanticSource { request },
         crate::SurfaceReply::SemanticSource(chunk),
@@ -1143,8 +1295,70 @@ pub fn admit_surface_reply(
             .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
     } else {
         reply
-            .admit(command.id())
+            .admit_with_local_source_policy(command.id(), local_policy)
             .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+    }
+    if let crate::SurfaceCommand::References { target } = command {
+        let crate::SurfaceReply::References { target: actual, .. } = reply else {
+            return Err(ReplyAdmissionError::Protocol("references reply changed shape".into()));
+        };
+        if target != actual {
+            return Err(ReplyAdmissionError::Protocol("references target differs from request".into()));
+        }
+    }
+    if let crate::SurfaceCommand::Read { locators } = command {
+        let crate::SurfaceReply::Read(records) = reply else {
+            return Err(ReplyAdmissionError::Protocol("read reply changed shape".into()));
+        };
+        if records.len() != locators.len()
+            || records.iter().zip(locators.iter()).any(|(record, locator)| record.label != *locator)
+        {
+            return Err(ReplyAdmissionError::Protocol("read records differ from requested locators".into()));
+        }
+    }
+    if let crate::SurfaceCommand::StyloQuery { request } = command {
+        let crate::SurfaceReply::StyloQuery(page) = reply else {
+            return Err(ReplyAdmissionError::Protocol(
+                "CSS query reply kind changed".into(),
+            ));
+        };
+        if page.hits.len() > usize::from(request.page_rows)
+            || crate::surface::serialized_json_size(reply) > request.output_bytes as usize
+            || page
+                .hits
+                .iter()
+                .any(|hit| !stylo_hit_matches_request(hit, request))
+        {
+            return Err(ReplyAdmissionError::Protocol(
+                "CSS query reply exceeds requested budget".into(),
+            ));
+        }
+    }
+    if let crate::SurfaceCommand::SqlQuery { request } = command {
+        use crate::sql_query::SqlQueryRole;
+        use backend_semantic::sql_analysis::SqlFact;
+        let crate::SurfaceReply::SqlQuery(page) = reply else {
+            return Err(ReplyAdmissionError::Protocol("SQL query reply kind changed".into()));
+        };
+        if page.basis.project != crate::package_key(request.package.as_str()).to_bytes()
+            || page.hits.len() > usize::from(request.page_rows)
+            || crate::surface::serialized_json_size(reply) > request.output_bytes as usize
+            || page.hits.iter().any(|hit| !match (request.role, &hit.fact) {
+                (SqlQueryRole::Any, _) => true,
+                (SqlQueryRole::Relation, SqlFact::SqliteRelation { name, .. }) => request.name.as_ref().is_none_or(|value| value == name),
+                (SqlQueryRole::OutputLineage, SqlFact::SqliteOutputLineage { output_name, .. }) => request.name.as_ref().is_none_or(|value| value == output_name),
+                (SqlQueryRole::Diagnostic, SqlFact::Diagnostic { .. }) => true,
+                _ => false,
+            }) {
+            return Err(ReplyAdmissionError::Protocol("SQL query reply exceeds request or filter".into()));
+        }
+    }
+    if let (crate::SurfaceCommand::SqlReadSource { reference },
+        crate::SurfaceReply::SqlReadSource(crate::sql_query::SqlSourceRead::Available { reference: echoed, .. })) = (command, reply)
+    {
+        if reference != echoed {
+            return Err(ReplyAdmissionError::Protocol("SQL source reply reference changed".into()));
+        }
     }
     if let crate::SurfaceCommand::SemanticVersions {
         package,
@@ -1234,6 +1448,44 @@ pub fn admit_surface_reply(
         }
     }
     Ok(())
+}
+
+fn stylo_hit_matches_request(
+    hit: &crate::stylo_query::StyloQueryHit,
+    request: &crate::stylo_query::StyloQueryRequest,
+) -> bool {
+    use crate::stylo_query::{StyloNameRole as Role, StyloQueryHit as Hit};
+    use backend_semantic::stylo_analysis::{StyloSelectorComponentKind, StyloSourceRole};
+    match hit {
+        Hit::SourceSite { site, .. } => {
+            site.decoded == request.name
+                && matches!(
+                    (request.role, site.role),
+                    (Role::Class, StyloSourceRole::ClassName)
+                        | (
+                            Role::CustomProperty,
+                            StyloSourceRole::CustomPropertyDeclarationName
+                        )
+                )
+        }
+        Hit::NativeSelector { selector, .. } => {
+            request.role == Role::Class
+                && selector.components.iter().any(|component| {
+                    component.kind == StyloSelectorComponentKind::Class
+                        && component.name == request.name
+                })
+        }
+        Hit::NativeDeclaration { declaration, .. } => {
+            request.role == Role::CustomProperty
+                && !declaration.property.contains('\\')
+                && declaration.property == request.name
+        }
+        Hit::NativeDependency { dependency, .. } => {
+            request.role == Role::CustomProperty
+                && dependency.kind == "var"
+                && request.name.strip_prefix("--") == Some(dependency.name.as_str())
+        }
+    }
 }
 
 /// Internal consistency cannot authorize another caller's receipt.
@@ -1432,6 +1684,251 @@ mod query_preparation_tests {
     use super::*;
     use crate::{GraphQueryRequest, NameQuery, Query, QueryLimit, QueryPreparationState};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn centerless_graph_page_requires_request_bound_local_observed_witness() {
+        let basis = crate::Basis::new(crate::view_state_root(&[]), crate::object_version(b"graph-page-witness"));
+        let mut rows = (0..2).map(|index| {
+            let label = format!("fixture::node{index}");
+            crate::Row::new(crate::RowId::Symbol(crate::symbol_key(&label)), basis, label)
+        }).collect::<Vec<_>>();
+        rows.sort_by_key(|row| row.id);
+        let center = match rows[0].id { crate::RowId::Symbol(symbol) => symbol, _ => unreachable!() };
+        let neighbor = match rows[1].id { crate::RowId::Symbol(symbol) => symbol, _ => unreachable!() };
+        let root = crate::ViewRoot::new_checked(
+            crate::view_key(b"graph-page-witness"), basis,
+            crate::Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+            rows, vec![crate::Coverage::Complete], crate::wire::tests::capability(basis.object),
+        ).expect("root");
+        let library = crate::Library::from_view(root.clone(), crate::Cursor::for_view_root_at(&root, 0)).expect("library");
+        let ids = root.rows().iter().map(|row| row.id).collect::<Vec<_>>();
+        let issued = QueryLimit::new(2).expect("credit");
+        let window = crate::QueryWindow::new(issued, QueryLimit::new(1).expect("delivery")).expect("window");
+        let request = crate::PageRequest::new(library.revision_root(), issued).with_window(window).expect("request");
+        let address = crate::SymbolAddress::selected(center);
+        let first_request = request;
+        let mut first = library.graph_page_from_ids(center, address, request, &ids).expect("first page");
+        let crate::PageTerminal::More(next) = first.terminal else { panic!("continuation") };
+        let request = request.with_continuation(next);
+        let mut second = library.graph_page_from_ids(center, address, request, &ids).expect("second page");
+        assert_eq!(second.snapshot.root.rows().len(), 1);
+        assert_eq!(second.snapshot.root.rows()[0].id, crate::RowId::Symbol(neighbor));
+
+        let selected_basis = second.snapshot.root.basis();
+        let source_policy_at = |row: &crate::Row, basis| {
+            let selection = crate::DocumentSelection::from_row(row, basis).expect("selection");
+            let profile = crate::SemanticLanguageProfile::from_name("tsx").expect("profile");
+            crate::SourcePolicyQualification::issue_observed(&[7; 32], &selection, crate::SourcePolicyObservation {
+                workspace_root: [1; 32], evidence_root: [2; 32], project: [3; 32], profile, publication_profile: profile,
+                publication_coordinate: "pkg:npm/fixture@1.0.0".into(), source_path: "page.tsx".into(),
+                source_fact: [4; 32], input_digest: [5; 32], byte_len: 30, publication_binding: [6; 32],
+                image_identity: [7; 32], image_byte_len: 128, program_membership: [8; 32], entity_index: 1,
+                declaration_family: [9; 16], declaration_variant: [10; 16],
+            }).expect("claim")
+        };
+        let source_policy_for_row = |row: &crate::Row| source_policy_at(row, selected_basis);
+        let source_policy = |symbol| source_policy_for_row(root.row_ref(crate::RowId::Symbol(symbol)).expect("selected row"));
+        let generation = crate::SemanticGenerationId::new([11; 32]);
+        let revision = crate::RichGraphRevision::new(second.snapshot.root.root().to_bytes(), generation, [12; 32]);
+        let mut builder = crate::RichGraphBuilder::new(revision, crate::GraphNodeId::for_symbol(center));
+        for symbol in [center, neighbor] {
+            let row = root.row_ref(crate::RowId::Symbol(symbol)).expect("row");
+            let mut node = crate::RichGraphNode::new(crate::GraphNodeId::for_symbol(symbol), row.label.clone(), Some(row.label.clone()), None, crate::GraphAvailability::Ready, None).expect("node");
+            node.source_policy = source_policy(symbol);
+            builder.add_node(node).expect("add node");
+        }
+        let relation = crate::GraphRelation::new(crate::RowId::Symbol(center), crate::RowId::Symbol(neighbor), crate::SemanticLinkKind::Calls);
+        let mut edge = crate::RichGraphEdge::from_relation(relation, crate::GraphProvenance::semantic(generation, [12; 32], [13; 32], crate::SemanticConfidence::Compiler));
+        edge.source_policy = source_policy(center);
+        builder.add_edge(edge).expect("edge");
+        let gap = crate::GraphAvailability::Unavailable(crate::ProductText::from_static("observed policy unknown"));
+        second.snapshot.rich_graph = Some(builder.finish_with_availability(gap).expect("graph"));
+        second.snapshot.graph_relations = None;
+        let command = Command::GraphPage { symbol: address, page: request };
+        assert!(admit_projection_page(&command, &second, true).is_ok());
+        assert!(matches!(second.terminal, crate::PageTerminal::Complete));
+        assert!(admit_projection_page(&command, &second, false).is_err());
+        let wrong = Command::GraphPage { symbol: crate::SymbolAddress::selected(neighbor), page: request };
+        assert!(admit_projection_page(&wrong, &second, true).is_err());
+        // Removing every policy must not bypass center/request/peer admission.
+        let mut stripped = second.clone();
+        let graph = stripped.snapshot.rich_graph.as_mut().expect("graph");
+        for node in std::sync::Arc::make_mut(&mut graph.nodes) {
+            node.source_policy = crate::SourcePolicyQualification::Unknown;
+        }
+        for edge in std::sync::Arc::make_mut(&mut graph.edges) {
+            edge.source_policy = crate::SourcePolicyQualification::Unknown;
+        }
+        assert!(graph.admit().is_ok(), "the stripped graph is otherwise shape-valid");
+        assert!(admit_projection_page(&command, &stripped, true).is_err());
+        assert!(admit_projection_page(&command, &stripped, false).is_err());
+        assert!(admit_projection_page(&wrong, &stripped, true).is_err());
+        let mut missing = second.clone();
+        let graph = missing.snapshot.rich_graph.as_mut().expect("graph");
+        let center_id = graph.center;
+        std::sync::Arc::make_mut(&mut graph.nodes).iter_mut().find(|node| node.id == center_id).expect("center").source_policy = crate::SourcePolicyQualification::Unknown;
+        assert!(admit_projection_page(&command, &missing, true).is_err());
+        let mut swapped = second.clone();
+        let graph = swapped.snapshot.rich_graph.as_mut().expect("graph");
+        let center_id = graph.center;
+        let node = std::sync::Arc::make_mut(&mut graph.nodes).iter_mut().find(|node| node.id == center_id).expect("center");
+        // A whole carrier for another node cannot authenticate the center.
+        node.source_policy = source_policy(neighbor);
+        assert!(admit_projection_page(&command, &swapped, true).is_err());
+
+        // A valid claim and node for the same native key but a different
+        // coordinate must still match the independently admitted page row.
+        let mut relabelled = second.clone();
+        let graph = relabelled.snapshot.rich_graph.as_mut().expect("graph");
+        let mut forged_row = root.row_ref(crate::RowId::Symbol(neighbor)).expect("row").clone();
+        forged_row.label = "fixture::different".to_owned();
+        let node = std::sync::Arc::make_mut(&mut graph.nodes).iter_mut()
+            .find(|node| node.id == crate::GraphNodeId::for_symbol(neighbor)).expect("neighbor");
+        node.label = crate::ProductText::new(forged_row.label.clone()).expect("label");
+        node.coordinate = Some(crate::ProductText::new(forged_row.label.clone()).expect("coordinate"));
+        node.source_policy = source_policy_for_row(&forged_row);
+        assert!(graph.admit().is_ok(), "claim and node must be self-consistent before row comparison");
+        assert!(admit_projection_page(&command, &relabelled, true).is_err());
+
+        let mut foreign_basis = second.clone();
+        let graph = foreign_basis.snapshot.rich_graph.as_mut().expect("graph");
+        let center_id = graph.center;
+        let node = std::sync::Arc::make_mut(&mut graph.nodes).iter_mut().find(|node| node.id == center_id).expect("center");
+        let other_basis = crate::Basis::new(crate::view_state_root(&[]), crate::object_version(b"foreign"));
+        node.source_policy = source_policy_at(root.row_ref(crate::RowId::Symbol(center)).expect("center row"), other_basis);
+        assert!(admit_projection_page(&command, &foreign_basis, true).is_err());
+
+        let mut extra_witness = second.clone();
+        let original = extra_witness.snapshot.rich_graph.as_ref().expect("graph");
+        let mut builder = crate::RichGraphBuilder::new(original.revision, original.center);
+        for node in original.nodes.iter() { builder.add_node(node.clone()).expect("existing node"); }
+        for edge in original.edges.iter() { builder.add_edge(edge.clone()).expect("existing edge"); }
+        let extra_row = crate::Row::new(crate::RowId::Symbol(crate::symbol_key("fixture::extra")), selected_basis, "fixture::extra");
+        let mut extra = crate::RichGraphNode::new(crate::GraphNodeId::for_row(extra_row.id), extra_row.label.clone(), Some(extra_row.label.clone()), None, crate::GraphAvailability::Ready, None).expect("extra node");
+        extra.source_policy = source_policy_for_row(&extra_row);
+        builder.add_node(extra.clone()).expect("extra witness");
+        extra_witness.snapshot.rich_graph = Some(builder.finish_with_availability(crate::GraphAvailability::Unavailable(crate::ProductText::from_static("observed policy unknown"))).expect("shape-valid graph"));
+        assert!(admit_projection_page(&command, &extra_witness, true).is_err());
+
+        // Even a self-consistent replacement center, policy and edge cannot
+        // answer a request for a different selected declaration.
+        let mut wrong_center = second.clone();
+        let original = wrong_center.snapshot.rich_graph.as_ref().expect("graph");
+        let mut builder = crate::RichGraphBuilder::new(original.revision, extra.id);
+        builder.add_node(extra.clone()).expect("foreign center");
+        let neighbor_node = original.nodes.iter().find(|node| node.id == crate::GraphNodeId::for_symbol(neighbor)).expect("neighbor");
+        builder.add_node(neighbor_node.clone()).expect("neighbor");
+        let relation = crate::GraphRelation::new(extra_row.id, crate::RowId::Symbol(neighbor), crate::SemanticLinkKind::Calls);
+        let mut foreign_edge = crate::RichGraphEdge::from_relation(relation, crate::GraphProvenance::semantic(generation, [12; 32], [13; 32], crate::SemanticConfidence::Compiler));
+        foreign_edge.source_policy = source_policy_for_row(&extra_row);
+        builder.add_edge(foreign_edge).expect("foreign edge");
+        wrong_center.snapshot.rich_graph = Some(builder.finish_with_availability(crate::GraphAvailability::Unavailable(crate::ProductText::from_static("observed policy unknown"))).expect("shape-valid foreign graph"));
+        assert!(admit_projection_page(&command, &wrong_center, true).is_err());
+
+        let mut orphan = second.clone();
+        let graph = orphan.snapshot.rich_graph.as_mut().expect("graph");
+        std::sync::Arc::make_mut(&mut graph.edges)[0].to = crate::GraphNodeId::from_bytes([99; 32]);
+        assert!(admit_projection_page(&command, &orphan, true).is_err());
+
+        // The normal first page still accepts a typed relation sidecar.
+        let revision = crate::RichGraphRevision::new(first.snapshot.root.root().to_bytes(), generation, [12; 32]);
+        let mut builder = crate::RichGraphBuilder::new(revision, crate::GraphNodeId::for_symbol(center));
+        let row = root.row_ref(crate::RowId::Symbol(center)).expect("center row");
+        let mut node = crate::RichGraphNode::new(crate::GraphNodeId::for_symbol(center), row.label.clone(), Some(row.label.clone()), None, crate::GraphAvailability::Ready, None).expect("node");
+        node.source_policy = source_policy(center);
+        builder.add_node(node).expect("center");
+        first.snapshot.rich_graph = Some(builder.finish_with_availability(crate::GraphAvailability::Unavailable(crate::ProductText::from_static("observed policy unknown"))).expect("first graph"));
+        first.snapshot.graph_relations = Some(Box::new([]));
+        assert!(admit_projection_page(&Command::GraphPage { symbol: address, page: first_request }, &first, true).is_ok());
+        let mut legacy = first.clone();
+        let graph = legacy.snapshot.rich_graph.as_mut().expect("graph");
+        for node in std::sync::Arc::make_mut(&mut graph.nodes) {
+            node.source_policy = crate::SourcePolicyQualification::Unknown;
+        }
+        assert!(admit_projection_page(&Command::GraphPage { symbol: address, page: first_request }, &legacy, false).is_ok());
+
+        // Witness bytes are included in the ordinary graph reply bound.
+        let with_witness = ReplyDto::new(1, CommandReply::ProjectionPage(second.clone()));
+        let mut without = second.clone();
+        without.snapshot.rich_graph = None;
+        // The legacy None/None shape remains admissible, but carries no
+        // qualified graph edges; consumers must treat graph evidence as
+        // unavailable rather than a complete empty graph.
+        assert!(without.snapshot.graph_relations.is_none());
+        assert!(admit_projection_page(&command, &without, true).is_ok());
+        assert!(without.snapshot.rich_graph.is_none());
+        let without_witness = ReplyDto::new(1, CommandReply::ProjectionPage(without));
+        assert!(reply_memory_bound(&with_witness) > reply_memory_bound(&without_witness));
+        let encoded = crate::wire::encode_reply_body_bounded(&with_witness).expect("bounded encoding");
+        assert!(encoded.len() <= crate::wire::MAX_REPLY_BODY);
+        assert!(encoded.len() <= reply_memory_bound(&with_witness));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::{fs::PermissionsExt, net::{UnixListener, UnixStream}};
+            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos();
+            let directory = std::env::temp_dir().join(format!("nudox-graph-page-{}-{stamp}", std::process::id()));
+            std::fs::create_dir(&directory).expect("private directory");
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).expect("directory mode");
+            let path = directory.join("owner.sock");
+            let listener = UnixListener::bind(&path).expect("listener");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("socket mode");
+            let stream = UnixStream::connect(&path).expect("connect");
+            let (_server, _) = listener.accept().expect("accept");
+            let peer = backend_replication::AuthenticatedLocalPeer::authenticate(&stream, &path).expect("authenticate peer");
+            let materialized = &second.snapshot.root;
+            let selected_basis = materialized.basis();
+            let recipe = crate::QueryPageRecipe::graph_window(selected_basis.root, address, request.window());
+            let coverage = crate::wire::tests::capability(selected_basis.object);
+            let mut certificate = crate::WireCertificate::new()
+                .with_claim(crate::WireClaim::KeyBytes {
+                    schema: crate::WireSchema::ViewRecipe, id: crate::encode_id(materialized.recipe().as_bytes()),
+                    value: recipe.canonical_preimage().to_vec().into_boxed_slice(),
+                })
+                .with_claim(crate::WireClaim::Version {
+                    schema: crate::WireSchema::ViewVersion, id: crate::encode_id(materialized.version().as_bytes()),
+                    value: crate::view_version_preimage(materialized.recipe(), selected_basis, materialized.frontier(), materialized.root(), materialized.coverage()).into_boxed_slice(),
+                })
+                .with_claim(crate::WireClaim::Root {
+                    schema: crate::WireSchema::ViewRelation, id: crate::encode_id(materialized.root().as_bytes()),
+                    canonical: materialized.canonical_relation_bytes().expect("page relation").into_boxed_slice(),
+                })
+                .with_claim(crate::WireClaim::Root {
+                    schema: crate::WireSchema::ViewRelation, id: crate::encode_id(root.root().as_bytes()),
+                    canonical: root.canonical_relation_bytes().expect("selected relation").into_boxed_slice(),
+                })
+                .with_claim(crate::WireClaim::Version {
+                    schema: crate::WireSchema::Object, id: crate::encode_id(selected_basis.object.as_bytes()),
+                    value: b"graph-page-witness".to_vec().into_boxed_slice(),
+                })
+                .with_claim(crate::WireClaim::Coverage {
+                    scope: crate::encode_id(selected_basis.object.as_bytes()), observed: crate::encode_id(selected_basis.object.as_bytes()),
+                    producer: crate::encode_id(&coverage.producer_identity()), context: crate::encode_id(&coverage.context()),
+                    evidence: coverage.evidence().to_vec().into_boxed_slice(),
+                })
+                .with_claim(crate::WireClaim::Key {
+                    schema: crate::WireSchema::Branch, id: crate::encode_id(selected_basis.branch.as_bytes()), value: "main".to_owned(),
+                })
+                .with_claim(crate::WireClaim::Key {
+                    schema: crate::WireSchema::Log, id: crate::encode_id(selected_basis.log.as_bytes()), value: "library".to_owned(),
+                });
+            for row in materialized.rows() {
+                let crate::RowId::Symbol(symbol) = row.id else { panic!("symbol row") };
+                certificate = certificate.with_claim(crate::WireClaim::Key {
+                    schema: crate::WireSchema::Symbol, id: crate::encode_id(symbol.as_bytes()), value: row.label.clone(),
+                });
+            }
+            let certified = with_witness.clone().with_certificate(certificate);
+            let encoded = crate::wire::encode_reply_body_bounded(&certified).expect("certified encoding");
+            assert!(crate::decode_reply_body(&encoded).is_err());
+            let decoded = crate::decode_reply_body_with_local_source_policy(&encoded, &peer).expect("authenticated local decode");
+            let request = CommandDto::new(1, command.clone());
+            assert!(crate::admit_reply(&request, &decoded).is_err());
+            assert!(crate::admit_reply_with_local_source_policy(&request, &decoded, None, &peer).is_ok());
+            std::fs::remove_file(path).expect("remove fixture socket");
+            std::fs::remove_dir(directory).expect("remove fixture directory");
+        }
+    }
 
     #[test]
     fn index_search_preparation_is_observational_and_never_an_unrelated_surface_reply() {

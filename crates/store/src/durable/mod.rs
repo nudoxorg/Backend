@@ -55,7 +55,7 @@ pub use closure_composer::{
 pub use gc::{GcLimits, GcReport, GcRoot, GcRootResolver, GcRoots};
 pub use layout::{
     FileStore, GcPinGuard, PublicationAuthorityError, PublicationBase, PublicationDescriptor,
-    SelectedHead, StorePublicationAuthority, TransactionId,
+    SelectedHead, StorePublicationAuthority, WeakPublicationAuthority, TransactionId,
 };
 pub(crate) use membership_lease::ClosureMembershipLease;
 pub use nodes::{

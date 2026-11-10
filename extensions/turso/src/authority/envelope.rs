@@ -39,6 +39,7 @@ const METADATA_VERSION: u16 = 4;
 const PROGRAM_METADATA_VERSION: u16 = 5;
 const COVERAGE_METADATA_VERSION: u16 = 6;
 const TYPESCRIPT_SNAPSHOT_METADATA_VERSION: u16 = 7;
+const CSHARP_EVIDENCE_METADATA_VERSION: u16 = 8;
 const MAX_PROFILE_BYTES: usize = 256;
 /// Maximum number of members in one authenticated compiler publication closure.
 pub const MAX_COMPILER_PUBLICATION_MEMBER_IDS: usize = 100_000;
@@ -73,6 +74,34 @@ pub(super) const COMPILER_COVERAGE_METADATA_SCHEMA: SchemaIdentity =
 /// Metadata with a generation-bound TypeScript read-closure certificate.
 pub const COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA: SchemaIdentity =
     SchemaIdentity::new(0x7a, 0xc002, 7);
+/// Metadata with one bounded C# captured invocation evidence aggregate.
+pub const COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc002, 8);
+/// Typed CAS schema for the C# invocation evidence aggregate.
+pub const COMPILER_CSHARP_EVIDENCE_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc00c, 1);
+
+/// Claim to an immutable C# evidence aggregate. This is not source authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompilerCSharpEvidenceMember {
+    object_id: AuthorityHash,
+    byte_length: u32,
+}
+impl CompilerCSharpEvidenceMember {
+    /// Checks the typed object, content-derived key and bounded extent.
+    pub fn from_verified_object(object: VerifiedObjectEnvelope, bytes: &[u8]) -> Result<Self, CompilerEnvelopeError> {
+        let key = ObjectKey::<backend_semantic::ir::CSharpInvocationEvidenceSchema>::from_value(bytes);
+        if object.schema() != COMPILER_CSHARP_EVIDENCE_SCHEMA || object.key() != key.as_bytes()
+            || object.payload_len() != bytes.len() as u64 || bytes.is_empty()
+            || bytes.len() > backend_semantic::ir::MAX_CSHARP_INVOCATION_EVIDENCE_BYTES {
+            return Err(CompilerEnvelopeError::CSharpInvocationEvidence);
+        }
+        Ok(Self { object_id: *object.id().as_bytes(), byte_length: u32::try_from(bytes.len()).map_err(|_| CompilerEnvelopeError::CSharpInvocationEvidence)? })
+    }
+    /// Exact immutable object identity.
+    pub const fn object_id(&self) -> &AuthorityHash { &self.object_id }
+    /// Exact encoded payload length.
+    pub const fn byte_length(&self) -> u32 { self.byte_length }
+}
+
 /// Schema of the canonical immutable coverage catalog.
 pub(super) const COMPILER_SOURCE_COVERAGE_SCHEMA: SchemaIdentity =
     SchemaIdentity::new(0x7a, 0xc00a, 1);
@@ -392,6 +421,7 @@ pub struct CompilerPublicationMetadata {
     native_program_sources: Option<CompilerProgramSourceMember>,
     source_coverage: Option<CompilerSourceCoverageMember>,
     typescript_snapshot: Option<CompilerTypeScriptSnapshotMember>,
+    csharp_evidence: Option<CompilerCSharpEvidenceMember>,
 }
 
 impl CompilerPublicationMetadata {
@@ -488,6 +518,7 @@ impl CompilerPublicationMetadata {
             native_program_sources: None,
             source_coverage: None,
             typescript_snapshot: None,
+            csharp_evidence: None,
         })
     }
 
@@ -496,7 +527,7 @@ impl CompilerPublicationMetadata {
         mut self,
         member: CompilerProgramSourceMember,
     ) -> Result<Self, CompilerEnvelopeError> {
-        if metadata_member_ids(&self).len() >= MAX_MEMBER_IDS {
+        if self.csharp_evidence.is_some() || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS {
             return Err(CompilerEnvelopeError::MemberCount);
         }
         self.native_program_sources = Some(member);
@@ -514,7 +545,7 @@ impl CompilerPublicationMetadata {
         mut self,
         member: CompilerSourceCoverageMember,
     ) -> Result<Self, CompilerEnvelopeError> {
-        if self.native_program_sources.is_none() {
+        if self.native_program_sources.is_none() || self.csharp_evidence.is_some() {
             return Err(CompilerEnvelopeError::SourceCoverage);
         }
         if self.source_coverage.is_some() || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS {
@@ -534,6 +565,7 @@ impl CompilerPublicationMetadata {
         member: CompilerTypeScriptSnapshotMember,
     ) -> Result<Self, CompilerEnvelopeError> {
         if self.native_program_sources.is_none()
+            || self.csharp_evidence.is_some()
             || self.typescript_snapshot.is_some()
             || member.byte_length == 0
             || member.byte_length as usize
@@ -552,8 +584,24 @@ impl CompilerPublicationMetadata {
         self.typescript_snapshot.as_ref()
     }
 
+    /// Adds one C# invocation aggregate; no TS program/coverage may coexist.
+    pub fn with_csharp_evidence(mut self, member: CompilerCSharpEvidenceMember) -> Result<Self, CompilerEnvelopeError> {
+        if self.csharp_evidence.is_some() || self.native_program_sources.is_some()
+            || self.source_coverage.is_some() || self.typescript_snapshot.is_some()
+            || member.byte_length == 0 || member.byte_length as usize > backend_semantic::ir::MAX_CSHARP_INVOCATION_EVIDENCE_BYTES
+            || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS {
+            return Err(CompilerEnvelopeError::CSharpInvocationEvidence);
+        }
+        self.csharp_evidence = Some(member);
+        Ok(self)
+    }
+    /// Optional typed C# evidence object; this alone is not source authority.
+    pub const fn csharp_evidence(&self) -> Option<&CompilerCSharpEvidenceMember> { self.csharp_evidence.as_ref() }
+
     fn schema(&self) -> SchemaIdentity {
-        if self.typescript_snapshot.is_some() {
+        if self.csharp_evidence.is_some() {
+            COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA
+        } else if self.typescript_snapshot.is_some() {
             COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA
         } else if self.source_coverage.is_some() {
             COMPILER_COVERAGE_METADATA_SCHEMA
@@ -664,7 +712,9 @@ impl CompilerPublicationMetadata {
         );
         output.extend_from_slice(METADATA_MAGIC);
         output.extend_from_slice(
-            &if self.typescript_snapshot.is_some() {
+            &if self.csharp_evidence.is_some() {
+                CSHARP_EVIDENCE_METADATA_VERSION
+            } else if self.typescript_snapshot.is_some() {
                 TYPESCRIPT_SNAPSHOT_METADATA_VERSION
             } else if self.source_coverage.is_some() {
                 COVERAGE_METADATA_VERSION
@@ -729,13 +779,20 @@ impl CompilerPublicationMetadata {
                 output.extend_from_slice(&member.byte_length.to_le_bytes());
             }
         }
+        if let Some(member) = self.csharp_evidence {
+            output.extend_from_slice(&member.object_id);
+            output.extend_from_slice(&member.byte_length.to_le_bytes());
+        }
         output
     }
 
     /// Returns the typed FileStore metadata object.
     #[must_use]
     pub fn typed_object(&self) -> TypedObject {
-        if self.typescript_snapshot.is_some() {
+        if self.csharp_evidence.is_some() {
+            let key = ObjectKey::<CompilerCSharpEvidenceMetadataSchema>::from_value(self);
+            TypedObject::from_value(&key, self)
+        } else if self.typescript_snapshot.is_some() {
             let key = ObjectKey::<CompilerTypeScriptSnapshotMetadataSchema>::from_value(self);
             TypedObject::from_value(&key, self)
         } else if self.source_coverage.is_some() {
@@ -774,6 +831,7 @@ impl CompilerPublicationMetadata {
                 | PROGRAM_METADATA_VERSION
                 | COVERAGE_METADATA_VERSION
                 | TYPESCRIPT_SNAPSHOT_METADATA_VERSION
+                | CSHARP_EVIDENCE_METADATA_VERSION
         ) {
             return Err(CompilerEnvelopeError::MetadataVersion);
         }
@@ -879,6 +937,13 @@ impl CompilerPublicationMetadata {
         } else {
             None
         };
+        let csharp_evidence = if version == CSHARP_EVIDENCE_METADATA_VERSION {
+            let member = CompilerCSharpEvidenceMember { object_id: input.array::<32>()?, byte_length: input.u32()? };
+            if member.byte_length == 0 || member.byte_length as usize > backend_semantic::ir::MAX_CSHARP_INVOCATION_EVIDENCE_BYTES {
+                return Err(CompilerEnvelopeError::CSharpInvocationEvidence);
+            }
+            Some(member)
+        } else { None };
         if !input.is_empty() {
             return Err(CompilerEnvelopeError::TrailingBytes);
         }
@@ -903,6 +968,7 @@ impl CompilerPublicationMetadata {
         if let Some(member) = typescript_snapshot {
             metadata = metadata.with_typescript_snapshot_witness(member)?;
         }
+        if let Some(member) = csharp_evidence { metadata = metadata.with_csharp_evidence(member)?; }
         if metadata.canonical_bytes() != bytes {
             return Err(CompilerEnvelopeError::NonCanonical);
         }
@@ -1332,6 +1398,7 @@ pub fn reopen_selected_compiler_publication(
             | COMPILER_PROGRAM_METADATA_SCHEMA
             | COMPILER_COVERAGE_METADATA_SCHEMA
             | COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA
+            | COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA
     ) {
         return Err("selected compiler metadata has the wrong schema".to_owned());
     }
@@ -1346,6 +1413,7 @@ pub fn reopen_selected_compiler_publication(
         .validate_metadata(&metadata)
         .map_err(|error| error.to_string())?;
     let _ = reopen_typescript_snapshot_witness_bounded(store, &manifest, &metadata)?;
+    let _ = reopen_csharp_evidence_bounded(store, &manifest, &metadata)?;
     if selected.semantic_manifest_root().copied() != metadata.semantic_manifest_root().copied() {
         return Err("selected semantic-plane root differs from compiler metadata".to_owned());
     }
@@ -1416,6 +1484,7 @@ pub fn reopen_selected_compiler_metadata(
             | COMPILER_PROGRAM_METADATA_SCHEMA
             | COMPILER_COVERAGE_METADATA_SCHEMA
             | COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA
+            | COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA
     ) {
         return Err("selected compiler metadata has the wrong schema".to_owned());
     }
@@ -1568,6 +1637,7 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
                 | COMPILER_PROGRAM_METADATA_SCHEMA
                 | COMPILER_COVERAGE_METADATA_SCHEMA
                 | COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA
+                | COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA
         ) {
             return Err("compiler metadata object has the wrong schema".to_owned());
         }
@@ -1617,6 +1687,7 @@ fn metadata_member_ids(metadata: &CompilerPublicationMetadata) -> Vec<AuthorityH
     if let Some(member) = metadata.typescript_snapshot_witness() {
         members.push(*member.object_id());
     }
+    if let Some(member) = metadata.csharp_evidence() { members.push(*member.object_id()); }
     members.extend(metadata.images.iter().map(|image| image.object_id));
     if let Some(planes) = &metadata.versioned_planes {
         members.extend(
@@ -1747,6 +1818,38 @@ pub fn reopen_source_coverage(
         }
     }
     Ok(Some(coverage))
+}
+
+/// Reads the exact C# evidence aggregate from the selected compiler closure.
+/// The returned bytes are untrusted until the engine validates the full record
+/// and correlates it with the selected unit, images and current source.
+pub fn reopen_selected_csharp_evidence(store: &FileStore, selected: &SelectedGeneration) -> Result<Option<Vec<u8>>, String> {
+    let reopened = reopen_selected_compiler_metadata(store, selected)?;
+    let closure = store.open_closure_claim(ArtifactClosureClaim::from_bytes(*selected.closure_id()))
+        .map_err(|error| format!("open selected compiler closure: {error:?}"))?;
+    reopen_csharp_evidence_bounded(store, &closure, reopened.metadata())
+}
+
+fn reopen_csharp_evidence_bounded(
+    store: &FileStore, closure: &backend_store::DurableManifest, metadata: &CompilerPublicationMetadata,
+) -> Result<Option<Vec<u8>>, String> {
+    let Some(member) = metadata.csharp_evidence() else { return Ok(None); };
+    let length = usize::try_from(member.byte_length()).map_err(|_| "C# evidence extent overflow")?;
+    if length == 0 || length > backend_semantic::ir::MAX_CSHARP_INVOCATION_EVIDENCE_BYTES {
+        return Err("C# evidence extent invalid".to_owned());
+    }
+    let claim = UntrustedObjectId::from_bytes(*member.object_id());
+    closure.admit_claim(claim).map_err(|error| format!("admit C# evidence: {error:?}"))?
+        .ok_or("C# evidence absent from selected closure")?;
+    let mut bytes = Vec::new();
+    let verified = store.write_verified_object_payload(claim, u64::from(member.byte_length()), &mut bytes)
+        .map_err(|error| format!("read selected C# evidence: {error:?}"))?;
+    if verified.id().as_bytes() != member.object_id() || verified.schema() != COMPILER_CSHARP_EVIDENCE_SCHEMA
+        || verified.payload_len() != u64::from(member.byte_length()) || bytes.len() != length
+        || verified.key() != ObjectKey::<backend_semantic::ir::CSharpInvocationEvidenceSchema>::from_value(&bytes).as_bytes() {
+        return Err("C# evidence schema, identity, or extent mismatch".to_owned());
+    }
+    Ok(Some(bytes))
 }
 
 /// Reopens the selected closure's complete TypeScript observation certificate.
@@ -1928,6 +2031,7 @@ fn verify_semantic_image_members(
 ) -> Result<(), String> {
     let _coverage = reopen_source_coverage(manifest, metadata)?;
     let _ = reopen_typescript_snapshot_witness_bounded(store, manifest, metadata)?;
+    let _ = reopen_csharp_evidence_bounded(store, manifest, metadata)?;
     let program = reopen_native_program_sources(manifest, metadata)?;
     let mappings = program.as_ref().map(|program| {
         program
@@ -1952,6 +2056,17 @@ fn verify_semantic_image_members(
             );
         }
         verify_native_program_image(object.bytes(), program.as_ref(), mappings.as_ref())?;
+        if metadata.csharp_evidence().is_some() {
+            use backend_semantic::ir::{ImageProvenance, SemanticCoreReader, SemanticImageView};
+            let image = SemanticImageView::reopen(object.bytes()).map_err(|e| e.to_string())?;
+            let ImageProvenance::Captured { recipe, .. } = image.image_facts().provenance else {
+                return Err("C# evidence image has no captured provenance".to_owned());
+            };
+            if !matches!(recipe.profile, backend_semantic::vocabulary::LanguageProfile::CSharp(_))
+                || recipe.tool != backend_semantic::vocabulary::NativeTool::CSharpCompiler {
+                return Err("C# evidence image has the wrong producer".to_owned());
+            }
+        }
         let (observed, typed) = CompilerImageMember::from_bytes_for_ordinal(
             expected.artifact_ordinal(),
             object.bytes(),
@@ -2257,6 +2372,8 @@ pub enum CompilerEnvelopeError {
     SourceCoverage,
     /// A TypeScript snapshot certificate is malformed, oversized, or misbound.
     TypeScriptSnapshotWitness,
+    /// A C# invocation evidence object is malformed, oversized, or misbound.
+    CSharpInvocationEvidence,
     /// The canonical versioned-plane metadata is invalid.
     VersionedPlane(VersionedPlaneError),
 }
@@ -2442,6 +2559,15 @@ impl Schema for CompilerTypeScriptSnapshotMetadataSchema {
     fn encode(value: &Self::Value, output: &mut Vec<u8>) {
         output.extend_from_slice(&value.canonical_bytes());
     }
+}
+
+struct CompilerCSharpEvidenceMetadataSchema;
+impl Schema for CompilerCSharpEvidenceMetadataSchema {
+    const DOMAIN: u8 = 0x7a;
+    const TYPE: u16 = 0xc002;
+    const VERSION: u8 = 8;
+    type Value = CompilerPublicationMetadata;
+    fn encode(value: &Self::Value, output: &mut Vec<u8>) { output.extend_from_slice(&value.canonical_bytes()); }
 }
 
 struct CompilerSemanticImageSchema;
@@ -3007,12 +3133,53 @@ mod tests {
             Err(CompilerEnvelopeError::NativeProgramSources)
         );
         let mut future = bytes;
-        future[METADATA_MAGIC.len()..METADATA_MAGIC.len() + 2].copy_from_slice(&8u16.to_le_bytes());
+        future[METADATA_MAGIC.len()..METADATA_MAGIC.len() + 2].copy_from_slice(&9u16.to_le_bytes());
         assert_eq!(
             CompilerPublicationMetadata::decode(&future),
             Err(CompilerEnvelopeError::MetadataVersion)
         );
         drop(store);
+        std::fs::remove_dir_all(directory).expect("cleanup");
+    }
+
+    #[test]
+    fn csharp_metadata_v8_retains_exact_typed_evidence_and_legacy_bytes() {
+        let (image, _) = compiler_image();
+        let legacy = metadata(image);
+        let old_bytes = legacy.canonical_bytes();
+        let old_id = legacy.object_id();
+        let bytes = b"CSE1 bounded claim-only fixture";
+        let object = TypedObject::from_value(
+            &ObjectKey::<backend_semantic::ir::CSharpInvocationEvidenceSchema>::from_value(bytes), bytes,
+        );
+        let directory = scratch_store();
+        let store = FileStore::open(&directory, 1024 * 1024).expect("CAS");
+        store.write_object(&object).expect("write evidence");
+        let verified = store.verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes())).expect("verified evidence");
+        let evidence_member = CompilerCSharpEvidenceMember::from_verified_object(verified, bytes).expect("typed evidence");
+        let current = legacy.clone().with_csharp_evidence(evidence_member).expect("v8 evidence");
+        let reopened = CompilerPublicationMetadata::decode(&current.canonical_bytes()).expect("v8 roundtrip");
+        assert_eq!(reopened, current);
+        assert_eq!(reopened.typed_object().schema(), COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA);
+        assert!(metadata_member_ids(&reopened).contains(evidence_member.object_id()));
+        let closure_id = store.write_closure(&ClosureManifest::new(vec![object]).expect("closure")).expect("seal");
+        let closure = store.open_closure(closure_id).expect("open");
+        assert_eq!(reopen_csharp_evidence_bounded(&store, &closure, &reopened).unwrap().as_deref(), Some(bytes.as_slice()));
+        let mut wrong = reopened.clone();
+        wrong.csharp_evidence.as_mut().unwrap().byte_length += 1;
+        assert!(reopen_csharp_evidence_bounded(&store, &closure, &wrong).is_err());
+        let foreign_object = member(bytes);
+        store.write_object(&foreign_object).expect("foreign object");
+        let foreign_closure_id = store.write_closure(&ClosureManifest::new(vec![foreign_object.clone()]).expect("foreign closure")).expect("seal foreign");
+        let foreign_closure = store.open_closure(foreign_closure_id).expect("open foreign");
+        let mut wrong_schema = reopened.clone();
+        wrong_schema.csharp_evidence.as_mut().unwrap().object_id = *foreign_object.id().as_bytes();
+        assert!(reopen_csharp_evidence_bounded(&store, &foreign_closure, &wrong_schema).is_err());
+        assert!(reopen_csharp_evidence_bounded(&store, &foreign_closure, &reopened).is_err());
+        drop(foreign_closure);
+        assert_eq!(CompilerPublicationMetadata::decode(&old_bytes).unwrap().object_id(), old_id);
+        assert!(legacy.csharp_evidence().is_none());
+        drop(closure); drop(store);
         std::fs::remove_dir_all(directory).expect("cleanup");
     }
 

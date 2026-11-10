@@ -29,7 +29,7 @@ pub use model::WorkspaceModel;
 pub use owner::{
     OwnerLease, OwnerLeaseIdentity, PreparedWorkspaceCandidate, PublishGrant,
     PublishedWorkspaceWriter, RetiredWorkspaceHead, UnselectedWorkspaceCandidate,
-    WorkspaceCandidateClaim, WorkspaceDirectoryAdmission, WorkspaceError, WorkspaceGcPin, WorkspaceOwner,
+    WorkspaceCandidateClaim, WorkspaceDirectoryAdmission, WorkspaceDirectoryWitness, WorkspaceError, WorkspaceGcPin, WorkspaceOwner,
     WorkspacePublicationFailure, WorkspaceWriter,
 };
 pub use publication::{

@@ -5,6 +5,17 @@
 use backend_compile::{SourceAnalysis, SourceDeclaration, SyntaxError};
 use std::path::Path;
 
+#[test]
+fn captures_named_runtime_reexports_without_type_only_exports() -> Result<(), SyntaxError> {
+    let source = "export { Button as Action, type T } from './button';\nexport type { Hidden } from './button';\n";
+    let analysis = backend_frontend_typescript::syntax_frontend()?.analyze(Path::new("ui/index.ts"), source.as_bytes())?;
+    let action = analysis.declarations().iter().find(|d| d.name() == "Action").expect("runtime re-export");
+    assert_eq!(action.signature(), "reexport\n./button\nButton");
+    assert!(matches!(action.binding_identity(), backend_compile::SourceBindingIdentity::Exact(_)));
+    assert!(!analysis.declarations().iter().any(|d| matches!(d.name(), "T" | "Hidden")));
+    Ok(())
+}
+
 fn analyze(source: &str) -> Result<SourceAnalysis, SyntaxError> {
     backend_frontend_typescript::syntax_frontend()?
         .analyze(Path::new("scheduler.ts"), source.as_bytes())

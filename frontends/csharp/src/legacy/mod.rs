@@ -11,21 +11,28 @@
 mod image;
 mod oracle;
 mod producer;
+mod sdk;
 
 pub use self::image::{
     Atom, Attribute, CSharpImage, Declaration, DeclarationFlags, DeclarationIter, DeclarationKind,
-    Doc, DocIter, GenericIter, GenericParameter, GenericSlice, HeaderError, ImageError,
-    NullabilityCell, ParamIter, ParamSlice, Parameter, PartialRole, RefKind, ReferenceIter,
-    ReferenceTag, ResolvedReference, Section, TypeChild, TypeChildIter, TypeNode, TypeNodeKind,
-    TypeRef, VarianceTag,
+    Doc, DocIter, ForeignSourceTarget, GenericIter, GenericParameter, GenericSlice, HeaderError,
+    ImageError, NullabilityCell, ParamIter, ParamSlice, Parameter, PartialRole, RefKind,
+    ReferenceIter, ReferenceTag, ResolvedReference, Section, TOP_LEVEL_CONTEXT, TypeChild,
+    TypeChildIter, TypeNode, TypeNodeKind, TypeRef, VarianceTag, parse_foreign_source_claim,
 };
 pub use self::oracle::{
     CSharpOutput, DecodeError, Nullability, ToolingUnavailable, Type, decode, probe_dotnet,
     probe_dotnet_path,
 };
 pub use self::producer::{
+    CSHARP_CAPTURED_UNIT_POLICY_ID_V1, CSHARP_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1,
     CSharpAuthorityConfiguration, CSharpAuthorityControl, CSharpAuthorityError,
     CSharpAuthorityImage, CSharpAuthorityPhase, CSharpAuthorityProducer, CSharpAuthorityRequest,
-    CSharpOracle, CSHARP_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1, DEFAULT_IMAGE_LIMIT,
+    CSharpCapturedConfig, CSharpCapturedSource, CSharpOracle, DEFAULT_IMAGE_LIMIT,
     DEFAULT_OUTPUT_LIMIT, DEFAULT_SOURCE_LIMIT,
+};
+
+pub use self::sdk::{
+    observe_csharp_sdk, observe_csharp_sdk_with, CSharpSdkKind, CSharpSdkObservation,
+    CSharpSdkProbe, CSharpSdkProjectProperties,
 };

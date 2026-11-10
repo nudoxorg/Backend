@@ -35,6 +35,54 @@ pub fn control_frontier(
     Ok(persisted.closure_manifest().clone())
 }
 
+/// Opens the bounded transition payload of a publication proven to be in the
+/// exact selected workspace's journal history. This establishes membership in
+/// the selected store closure, but does not replace typed model or commit
+/// admission by the caller.
+///
+/// # Errors
+/// Refuses an unselected current head, an unknown/future ancestor, an
+/// oversized journal scan, or missing or malformed historical payloads.
+pub fn selected_ancestor_transition(
+    store: &FileStore,
+    current_root: [u8; 32],
+    current_sequence: u64,
+    ancestor_root: [u8; 32],
+    ancestor_sequence: u64,
+    max_journal_bytes: u64,
+) -> Result<super::transition::PersistedTransition, WorkspaceError> {
+    let selected = store
+        .workspace_selected_ancestor(
+            current_root,
+            current_sequence,
+            ancestor_root,
+            ancestor_sequence,
+            max_journal_bytes,
+        )
+        .map_err(WorkspaceError::store)?;
+    let descriptor = selected.descriptor();
+    let membership = store
+        .open_closure(descriptor.closure())
+        .map_err(WorkspaceError::store)?;
+    let index = read_workspace_pack_index(store, &descriptor, &membership)?;
+    let persisted = persisted_from_store_manifest(
+        &membership,
+        index.transaction,
+        index.payloads,
+        &index.auxiliary,
+    )?;
+    let current = store
+        .head()
+        .map_err(WorkspaceError::store)?
+        .ok_or(WorkspaceError::Corrupt("selected workspace disappeared"))?;
+    if current.descriptor().target() != current_root || current.generation() != current_sequence {
+        return Err(WorkspaceError::Corrupt(
+            "selected workspace changed during ancestor read",
+        ));
+    }
+    Ok(persisted)
+}
+
 /// Disposition of one durable transaction after journal replay.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransactionDisposition {

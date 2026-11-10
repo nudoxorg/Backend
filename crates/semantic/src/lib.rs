@@ -36,6 +36,10 @@ pub mod ir;
 pub mod ir_vocabulary;
 /// Static dispatch from closed language-stage requests to concrete native compiler tools.
 pub mod registry;
+/// Native SQL analysis vocabulary without a shared binder.
+pub mod sql_analysis;
+/// Native Stylo stylesheet analysis vocabulary.
+pub mod stylo_analysis;
 pub mod vocabulary;
 
 pub use canonical::*;

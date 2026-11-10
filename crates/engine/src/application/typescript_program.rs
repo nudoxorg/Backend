@@ -2432,7 +2432,7 @@ fn replay_observations(
                 if name.is_empty()
                     || name_path.is_absolute()
                     || name_path.components().count() != 1
-                    || name_path.file_name().and_then(|value| value.to_str()) != Some(name)
+                    || name_path.file_name().and_then(|value| value.to_str()) != Some(name.as_str())
                 {
                     return Err(closure_mismatch(
                         "TypeScript directory view contains a non-basename entry",

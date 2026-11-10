@@ -39,6 +39,7 @@ mod process;
 mod protocol;
 pub mod render;
 pub mod run;
+mod source_range;
 mod semantic_hydrate;
 mod transport;
 

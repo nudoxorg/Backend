@@ -178,6 +178,28 @@ fn records_with_cursor(
 ) -> String {
     let mut lines = Lines::new();
     lines.push(coverage(list.coverage(), theme));
+    if let Some(gap) = list.graph_gap() {
+        lines.push(format!("graph relations incomplete: {gap}"));
+    }
+    for policy in list.graph_source_policies() {
+        if let Some(note) = policy.note() {
+            lines.push(note);
+        }
+    }
+    for edge in list.graph_edges() {
+        lines.push(format!(
+            "graph edge {}: {} -> {}; relation {:?}; confidence {:?}; availability {:?}",
+            backend_library::encode_id(edge.id.as_bytes()),
+            backend_library::encode_id(edge.from.as_bytes()),
+            backend_library::encode_id(edge.to.as_bytes()),
+            edge.kind,
+            edge.provenance.confidence,
+            edge.availability,
+        ));
+        if let Some(note) = crate::product::source_policy_note(&edge.source_policy) {
+            lines.push(format!("  {note}"));
+        }
+    }
     let cursor_note = if list.has_more() && list.continuation().is_some() {
         cursor.map(|cursor| continuation_note(target, cursor))
     } else {
@@ -287,6 +309,13 @@ pub fn page_projection(page: &PageProjection<'_>, theme: Theme) -> String {
     } else if let Some(reason) = page.source_fault() {
         lines.blank();
         lines.push(fault(reason, theme));
+    }
+    if !page.source_policy().is_unknown() {
+        lines.blank();
+        lines.push(
+            "Unverified captured-source claim; effective ignore-policy stability unknown."
+                .to_owned(),
+        );
     }
     push_notes(&mut lines, page.notes(), theme);
     if let Some(window) = page.section_page() {
@@ -584,7 +613,9 @@ pub fn status(status: &Status, theme: Theme) -> String {
         lines.push("observed failed compiler attempt (served coverage above is unchanged)");
         lines.push(fault(cause, theme));
     }
-    if let Some(observation) = status.source_selection() {
+    if let Some(scope) = status.source_selection_scope() {
+        lines.push(scope.render());
+    } else if let Some(observation) = status.source_selection() {
         lines.push(observation.render());
     }
     lines.finish()
@@ -597,6 +628,25 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
 }
 
 fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> String {
+    if let Some(range) = view.declaration_source_range() {
+        let mut output = range.source.text.clone();
+        output.push_str("\n\n");
+        output.push_str(range.source.scope.description());
+        output.push_str("\n\n");
+        output.push_str(match (range.source.source_policy.is_unknown(), range.verified_at_read) {
+            (false, true) => "Source bytes match the indexed capture; unverified policy claim; ignore-policy stability unknown.",
+            (false, false) => "Unverified captured-source claim; ignore-policy stability unknown.",
+            (true, true) => "Source bytes match the indexed capture; effective ignore-policy stability is not established.",
+            (true, false) => "Effective ignore-policy stability is not established.",
+        });
+        if let Some(cursor) = &range.next_cursor {
+            output.push_str(
+                "\n\nMore source: repeat this source --byte-range command with --cursor ",
+            );
+            output.push_str(cursor);
+        }
+        return output;
+    }
     let mut lines = Lines::new();
     lines.push(theme.paint(Style::Heading, view.heading()));
     if detail == Detail::Summary
@@ -608,6 +658,12 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
         lines.push(
             "For native source references, request --detail full (fresh discovery).".to_owned(),
         );
+    }
+    if let Some(warning) = view.partial_publication_warning() {
+        lines.push(format!("Warning: {}", warning.detail));
+        if let Some(shell) = &warning.shell {
+            lines.push(format!("  → {shell}"));
+        }
     }
     if let Some(reason) = view.fault() {
         lines.push(fault(reason, theme));
@@ -650,6 +706,9 @@ fn product_projection(view: &ProductView, theme: Theme, detail: Detail) -> Strin
             );
         }
         lines.push(head);
+        if let Some(note) = crate::product::source_policy_note(record.source_policy()) {
+            lines.push(format!("  {note}"));
+        }
         if let Some(operand) = record.operand() {
             lines.push(format!("  {}", theme.paint(Style::Coordinate, operand)));
         }

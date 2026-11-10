@@ -1591,6 +1591,13 @@ impl OwnedWorkspaceDirectory {
         self.directory.validate_private()?;
         self.directory.verify_path(&self.path)
     }
+
+    /// Compare an already held directory object with this pinned workspace
+    /// directory after verifying that its path still names the original object.
+    pub fn is_same_directory(&self, other: &DirectoryCapability) -> io::Result<bool> {
+        self.verify_path()?;
+        self.directory.is_same_source_directory(other)
+    }
 }
 
 #[cfg(unix)]

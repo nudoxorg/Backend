@@ -250,6 +250,10 @@ pub fn encode_answer_with_call(
                     records: SummaryRecords(list.records()),
                     more: list.has_more(),
                     empty_reason: list.empty_reason(),
+                    graph_gap: list.graph_gap(),
+                    graph_center: list.graph_center(),
+                    graph_edges: list.graph_edges(),
+                    graph_source_policies: list.graph_source_policies(),
                     semantic_search: list.coverage().semantic_search_status(),
                     search_scope: list.coverage().published_names().map(|_| "published_names_only"),
                     full_search: list.coverage().published_names().map(|readiness| readiness.full_search),
@@ -315,6 +319,7 @@ pub fn encode_answer_with_call(
                     next_cursor,
                     SummaryStatusDto {
                         source_selection: status.source_selection,
+                        source_selection_scope: status.source_selection_scope,
                         availability: status.availability,
                         publication: status.publication,
                         readiness: status.readiness,
@@ -341,6 +346,8 @@ pub fn encode_answer_with_call(
                         records: product.records,
                         note: product.note,
                         fault: product.fault,
+                        partial_publication_warning: product.partial_publication_warning,
+                        declaration_source_range: product.declaration_source_range,
                         index_search_page: product.index_search_page,
                         index_job: product.index_job,
                         index_operation: product.index_operation,
@@ -360,14 +367,20 @@ pub fn encode_answer_with_call(
         };
     }
     match answer {
-        Answer::Page(page) => encode_typed_with_call(
-            answer.kind(),
-            detail,
-            next_cursor,
-            PageDto::from_projection(&PageProjection::new(page, detail)),
-            budget,
-            continuation_call,
-        ),
+        Answer::Page(page) => {
+            let mut projection = PageDto::from_projection(&PageProjection::new(page, detail));
+            if detail == Detail::Standard {
+                projection.tokens.clear();
+            }
+            encode_typed_with_call(
+                answer.kind(),
+                detail,
+                next_cursor,
+                projection,
+                budget,
+                continuation_call,
+            )
+        }
         Answer::Records(list) => encode_typed_with_call(
             answer.kind(),
             detail,
@@ -637,6 +650,8 @@ struct SummaryPageDto<'a> {
     signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     source_fault: Option<FaultDto>,
+    #[serde(skip_serializing_if = "backend_library::SourcePolicyQualification::is_unknown")]
+    source_policy: &'a backend_library::SourcePolicyQualification,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     notes: Vec<FaultDto>,
 }
@@ -650,6 +665,7 @@ impl<'a> SummaryPageDto<'a> {
             language: page.language().name(),
             signature: page.signature().map(crate::signature::Signature::text),
             source_fault: page.source_fault().map(FaultDto::new),
+            source_policy: page.source_policy(),
             notes: page.notes().iter().map(FaultDto::new).collect(),
         }
     }
@@ -744,6 +760,14 @@ struct SummaryRecordsDto<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     empty_reason: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    graph_gap: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    graph_center: Option<backend_library::GraphNodeId>,
+    #[serde(skip_serializing_if = "<[backend_library::RichGraphEdge]>::is_empty")]
+    graph_edges: &'a [backend_library::RichGraphEdge],
+    #[serde(skip_serializing_if = "<[crate::GraphSourcePolicy]>::is_empty")]
+    graph_source_policies: &'a [crate::GraphSourcePolicy],
+    #[serde(skip_serializing_if = "Option::is_none")]
     semantic_search: Option<backend_library::SemanticSearchStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     search_scope: Option<&'static str>,
@@ -791,6 +815,8 @@ struct SummaryOutlineDto {
 struct SummaryStatusDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     source_selection: Option<backend_library::SourceSelectionObservation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_selection_scope: Option<backend_library::SourceSelectionScopeCoverage>,
     availability: String,
     publication: String,
     readiness: String,
@@ -813,6 +839,10 @@ struct SummaryProductDto {
     note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<FaultDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    partial_publication_warning: Option<crate::PartialPublicationWarning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    declaration_source_range: Option<crate::DeclarationSourceRange>,
     #[serde(skip_serializing_if = "Option::is_none")]
     index_search_page: Option<ProductIndexSearchPageDto>,
     #[serde(skip_serializing_if = "Option::is_none")]

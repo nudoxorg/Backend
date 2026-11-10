@@ -1,6 +1,6 @@
 //! The Source board's read model: the deepest depth of one declaration.
 
-use super::common::{ByteSpan, DeclRef, Known, LineSpan};
+use super::common::{ByteSpan, DeclRef, Gap, Known, LineSpan};
 use super::symbol::{FileSpan, SymbolLink};
 use std::fmt;
 use std::sync::Arc;
@@ -384,6 +384,9 @@ pub struct SourceView {
     pub identifiers: Known<Arc<[IdentifierSpan]>>,
     /// Uses whose spans are proven to be in the displayed source bytes.
     pub uses: Known<Arc<[ByteSpan]>>,
+    /// Coverage gap accompanying the returned use sites.
+    #[serde(default)]
+    pub references_gap: Option<Gap>,
     /// Use sites not proven to be inside the displayed source bytes, as the
     /// producer spelled them. This may include this file outside a verified
     /// excerpt range.

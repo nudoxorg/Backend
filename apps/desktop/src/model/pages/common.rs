@@ -708,6 +708,8 @@ impl DeclRef {
 pub enum Provenance {
     /// A typed edge from the compiler graph authority, with its confidence.
     Semantic(SemanticConfidence),
+    /// A relation whose evidence strength was not supplied.
+    Unspecified,
     /// Containment read from the outline's parent pointers.
     Structural,
     /// A lexical name match inside the same package; never a proven link.
@@ -718,7 +720,7 @@ pub enum Provenance {
         /// What the derivation read.
         via: Derivation,
         /// Weakest confidence among the edges the derivation used.
-        confidence: SemanticConfidence,
+        confidence: Option<SemanticConfidence>,
     },
 }
 
@@ -736,6 +738,7 @@ impl Provenance {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Semantic(confidence) => confidence_name(confidence),
+            Self::Unspecified => "unspecified",
             Self::Structural => "structural",
             Self::ByName => "by-name",
             Self::Derived { .. } => "derived",

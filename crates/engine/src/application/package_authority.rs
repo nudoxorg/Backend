@@ -20,7 +20,7 @@ use crate::driver::{
 use backend_frontend_clang::ClangAuthorityEnvironment;
 use backend_frontend_csharp::legacy::{
     CSharpAuthorityConfiguration, CSharpAuthorityControl, CSharpAuthorityError,
-    CSharpAuthorityRequest, CSharpOracle,
+    CSharpAuthorityRequest, CSharpCapturedConfig, CSharpCapturedSource, CSharpOracle,
 };
 use backend_frontend_go::legacy::oracle::{
     GoPackageAuthorityWitness, GoPackageAuthorityWitnessError,
@@ -173,6 +173,10 @@ pub struct PackageAuthorityRequest<'request, 'config> {
     pub source: &'request [u8],
     /// Exact captured Java siblings available to javac without becoming explicit image inputs.
     pub java_sourcepath: &'request [JavaSource<'request>],
+    /// Captured members for one exact C# compilation unit.
+    pub csharp_sources: Option<&'request [CSharpCapturedSource<'request>]>,
+    /// Owner-captured C# project and configuration probes, if admitted.
+    pub csharp_config: Option<&'request [CSharpCapturedConfig<'request>]>,
     /// Exact native compilation unit selected by the admitted package target.
     pub unit_key: &'request CompilationUnitKeyV2,
     /// Closed language profile that determines the one allowed authority.
@@ -248,6 +252,8 @@ pub enum PackageAuthorityOwner<'workspace> {
         profile: LanguageProfile,
         /// Validated source-bound producer image bytes.
         image: Box<[u8]>,
+        /// Same-invocation evidence claim; not selected authority.
+        evidence: Option<Box<[u8]>>,
     },
     /// Java authority image and its doclet session retained until lowering.
     Java {
@@ -1060,6 +1066,8 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         source_path: request.source_path,
                         project_file: project_file.as_deref(),
                         source: request.source,
+                        captured_sources: request.csharp_sources,
+                        captured_config: request.csharp_config,
                         profile,
                         native_tool: resolved.tool,
                         toolchain: resolved.as_ref(),
@@ -1070,8 +1078,9 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         configuration: configuration.configuration,
                     })
                     .map_err(PackageAuthorityError::CSharp)?;
+                let (image, evidence) = image.into_parts();
                 let image = retain_image(
-                    image.into_bytes().into_vec(),
+                    image.into_vec(),
                     request.configuration.maximum_image_bytes,
                     request.profile,
                     PackageAuthorityStage::CSharpRoslyn,
@@ -1084,6 +1093,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                 PackageAuthorityOwner::CSharp {
                     profile: request.profile,
                     image,
+                    evidence,
                 }
             }
         };
@@ -1603,6 +1613,8 @@ mod tests {
             source_path: &source_path,
             source,
             java_sourcepath: &[],
+            csharp_sources: None,
+            csharp_config: None,
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::Go(GoVersion::Go125),
             toolchain: ToolchainSelection::ResolvedNative(go_toolchain()),
@@ -1642,6 +1654,8 @@ mod tests {
             source_path: &entry,
             source: b"int main(void) { return 0; }",
             java_sourcepath: &[],
+            csharp_sources: None,
+            csharp_config: None,
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::C(CStandard::C11),
             toolchain: ToolchainSelection::ResolvedNative(clang_toolchain()),
@@ -1671,6 +1685,8 @@ mod tests {
             source_path: Path::new("/packages/example/main.c"),
             source: b"int main(void) { return 0; }",
             java_sourcepath: &[],
+            csharp_sources: None,
+            csharp_config: None,
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::C(CStandard::C11),
             toolchain: ToolchainSelection::ResolvedNative(clang_toolchain()),
@@ -1701,6 +1717,8 @@ mod tests {
             source_path: Path::new("/packages/example/Library.cs"),
             source: b"public sealed class Library {}",
             java_sourcepath: &[],
+            csharp_sources: None,
+            csharp_config: None,
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
             toolchain: ToolchainSelection::ResolvedNative(csharp_toolchain()),

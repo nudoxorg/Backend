@@ -773,7 +773,7 @@ fn python_fragment_apply_base_decodes_to_the_list_builtin_row() -> Result<(), Te
         .ok_or(TestError::Falsified("base child row outside the type lane"))?;
     if row.record.tag != SemanticTypeTag::Primitive
         || row.record.payload0 != u32::from(PrimitiveShape::Builtin)
-        || row.record.text != Some(b"list")
+        || row.record.text != Some(&b"list"[..])
     {
         return Err(TestError::Falsified(
             "base child row is not the Primitive/Builtin list row",

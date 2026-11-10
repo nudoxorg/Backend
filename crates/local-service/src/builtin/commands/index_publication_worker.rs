@@ -385,7 +385,9 @@ impl PublicationWork {
                         observation.phase("deferred-index-finalize-start");
                     }
                     let result =
-                        super::super::index::finish_deferred_index_for_snapshot(&self.base, job);
+                        super::super::index::finish_deferred_index_for_snapshot(
+                            &self.base, job, Some(self.semantic.as_ref().expect("original semantic writer").authority()),
+                        );
                     if let Some(observation) = &self.source_observation {
                         observation.phase("deferred-index-finalize-returned");
                     }
@@ -465,6 +467,19 @@ impl PublicationWork {
             }
         }
         if self.prepared.intent.is_none() {
+            if let Some(expected) = self.prepared.native_noop_expectation {
+                let actual = crate::builtin::stylo_admission::stylo_basis_for_snapshot(&self.base)
+                    .map_err(BuiltinModelError)?
+                    .analysis_root;
+                if actual != expected {
+                    return Err(BuiltinModelError("native Stylo selection changed before no-op acknowledgement; retry indexing".into()));
+                }
+            }
+            if let Some(proof) = &self.prepared.native_noop_proof {
+                crate::builtin::stylo_admission::validate_stylo_noop(&self.base, proof).map_err(
+                    |error| BuiltinModelError(format!("native Stylo no-op proof: {error}")),
+                )?;
+            }
             if !matches!(self.preparation, Preparation::Publication { refusal: None })
                 || !self.prepared.selected.is_empty()
                 || !self.prepared.profile_refusals.is_empty()
@@ -520,9 +535,16 @@ impl PublicationWork {
         let original = self.prepared.intent.as_ref().ok_or_else(|| {
             BuiltinModelError("publication worker requires an actual source intent".to_owned())
         })?;
-        let intent = match self.operation_key {
-            Some(key) => original.clone().with_operation_key(key)?,
-            None => original.clone(),
+        let intent = if original.has_native_ts_evidence() {
+            if original.operation_key_bytes() != self.operation_key.map(|key| key.to_bytes()) {
+                return Err(BuiltinModelError("native evidence operation key changed".into()));
+            }
+            original.clone()
+        } else {
+            match self.operation_key {
+                Some(key) => original.clone().with_operation_key(key)?,
+                None => original.clone(),
+            }
         };
         if !self.prepared.profile_refusals.is_empty() && !self.prepared.selected.is_empty() {
             let producer = self
@@ -714,6 +736,9 @@ impl PublicationWork {
                 .journal_mut();
             let cancellation = &self.cancellation;
             let fence = &self.prepared.revision_fence;
+            let base = &self.base;
+            let stylo_noop = &self.prepared.native_noop_proof;
+            let target = self.candidate_snapshot.as_ref().expect("prepared target snapshot");
             let operation_key = self.operation_key;
             let plan = self.prepared.partial_plan.clone();
             let mut busy = false;
@@ -753,6 +778,12 @@ impl PublicationWork {
                             ).map_err(BuiltinModelError)? {
                             return Err(BuiltinModelError("compiler source or configuration changed before product selection".to_owned()));
                         }
+                        crate::builtin::profile::revalidate_stylo_intent_on_worker(base, &staged.intent)?;
+                        if let Some(proof) = stylo_noop {
+                            crate::builtin::stylo_admission::validate_stylo_noop_for_target(base, target, proof)
+                                .map_err(BuiltinModelError)?;
+                        }
+                        crate::builtin::profile::revalidate_native_ts_intent(base, &staged.intent)?;
                     }
                     select_head(head, candidate, events, grant_accepted,
                         #[cfg(test)] test_hook, cancellation, source_observation.as_deref(), #[cfg(test)] observed)
@@ -997,6 +1028,11 @@ impl PublicationWork {
                 )
                 .into());
             }
+            if let Some(proof) = &self.prepared.native_noop_proof {
+                crate::builtin::stylo_admission::validate_stylo_noop(&self.base, proof).map_err(
+                    |error| BuiltinModelError(format!("native Stylo no-op proof: {error}")),
+                )?;
+            }
             let (reply, received) = std::sync::mpsc::sync_channel(1);
             events
                 .send(Event::RefreshApproval {
@@ -1117,9 +1153,11 @@ impl PublicationWork {
             Head::Pending(ReadHeadPublicationFailure::Unsettled { error, .. }) => {
                 ("physical-selection-unsettled", None, error.to_string())
             }
-            Head::Pending(ReadHeadPublicationFailure::Rejected { error, .. }) => {
-                ("physical-selection-rejected", Some(false), error.to_string())
-            }
+            Head::Pending(ReadHeadPublicationFailure::Rejected { error, .. }) => (
+                "physical-selection-rejected",
+                Some(false),
+                error.to_string(),
+            ),
             Head::Published(_) => {
                 let phase = if !self.semantic_committed {
                     "semantic-selection"

@@ -6,6 +6,8 @@
 
 use super::*;
 mod external_identity_tests;
+mod stylo_transport_tests;
+mod sql_transport_tests;
 #[path = "signature/display_tests.rs"]
 mod signature_display_tests;
 use backend_library::{
@@ -17,6 +19,38 @@ use backend_library::{
 
 const PROJECT: &str = "/abs/polyglot";
 const DECLARATION: &str = "/abs/polyglot::src/lib.rs:2::ferris";
+
+#[test]
+fn unversioned_registry_operand_offers_discovery_without_selecting_a_version() {
+    for (operand, query) in [
+        ("pkg:npm/fixture", "fixture"),
+        ("pkg:npm/@scope/widget", "widget"),
+    ] {
+        for command in ["package", "package-versions"] {
+            let mut invocation = Invocation::new(grammar_for(command).expect("grammar"));
+            invocation.push(operand);
+            let fault = lower(&invocation, PROJECT).expect_err("version is required");
+            assert_eq!(fault.operand().render(), operand);
+            assert!(fault.cause().sentence().contains("exact version"));
+            assert_eq!(
+                fault.affordance().tool_call(),
+                Some(serde_json::json!({
+                    "name": "backend.index_search", "arguments": {"query": query}
+                }))
+            );
+        }
+    }
+    let mut malformed = Invocation::new(grammar_for("package").expect("grammar"));
+    malformed.push("pkg:npm/fixture@");
+    let fault = lower(&malformed, PROJECT).expect_err("malformed pinned coordinate");
+    assert_eq!(
+        fault.cause().sentence(),
+        "package reference is not canonical"
+    );
+    let mut pinned = Invocation::new(grammar_for("package").expect("grammar"));
+    pinned.push("pkg:npm/fixture@1.0.0");
+    assert!(lower(&pinned, PROJECT).is_ok());
+}
 
 #[test]
 fn search_requires_nonempty_query_and_preserves_nonempty_literal_text() {
@@ -84,6 +118,7 @@ fn page_limit_domains_preserve_defaults_and_admit_exact_engine_boundaries() {
                         backend_library::QueryLimit::MAX,
                         backend_library::DEFAULT_SEMANTIC_VERSIONS_LIMIT,
                     ),
+                    "stylo-query" => (128, 20),
                     _ => (200, DEFAULT_LIMIT),
                 };
                 assert_eq!(
@@ -798,6 +833,17 @@ fn declaration_row() -> backend_library::Row {
         )
         .expect("bounded excerpt"),
     )
+}
+
+#[test]
+fn stale_file_never_renders_captured_excerpt_as_current_source() {
+    let document = Document::new(symbol_key(DECLARATION), view_state_root(&[]), [])
+        .with_location(SourceAvailability::stale_file("src/lib.rs").expect("stale path"))
+        .with_excerpt(SourceExcerpt::captured("old source", SourceExcerptExtent::Complete).expect("excerpt"));
+    let page = page_from_document(DECLARATION, &document, &[], &[], Vec::new());
+    let fault = page.source().fault().expect("stale source warning");
+    assert!(fault.cause().sentence().contains("stale"));
+    assert!(!markdown::page(&page).contains("old source"));
 }
 
 #[test]
@@ -1963,7 +2009,10 @@ fn the_status_summary_replaces_the_capability_dump() {
 fn a_references_reply_renders_sites_with_their_provenance() {
     let reply = backend_library::SurfaceReply::References {
         target: backend_library::ProductText::new("pkg::semantic::callee").expect("target text"),
+        coverage: backend_library::ReferenceCoverage::default(),
         references: Box::new([backend_library::ReferenceRecord {
+                site_symbol: None,
+                source_policy: Default::default(),
             site: backend_library::ProductText::new("pkg::semantic::caller").expect("site text"),
             target: backend_library::SemanticLinkTarget::Local {
                 declaration: backend_library::SemanticDeclarationIdentity {
@@ -2002,6 +2051,7 @@ fn empty_references_result_does_not_claim_target_absence_or_reference_completene
     let reply = backend_library::SurfaceReply::References {
         target: backend_library::ProductText::new("pkg::semantic::callee")
             .expect("reference target"),
+        coverage: backend_library::ReferenceCoverage::default(),
         references: Box::new([]),
     };
     let view = product_view(&reply);
@@ -2027,7 +2077,7 @@ fn advisory_reply_renders_typed_coverage_and_decision() {
     let view = product_view(&reply);
     assert_eq!(view.heading(), "advisory");
     let summary = view.records().first().expect("decision summary");
-    assert!(summary.tags().iter().any(|tag| tag.contains("Unknown")));
+    assert!(summary.tags().iter().any(|tag| tag == "coverage: unknown"));
     assert!(summary.tags().iter().any(|tag| tag.contains("warn")));
     assert!(!summary.tags().iter().any(|tag| tag.contains("deny")));
 }

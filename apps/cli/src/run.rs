@@ -156,6 +156,16 @@ impl Engine for SessionEngine<'_> {
         let session = &mut *self.session;
         let recovery = &mut self.recovery;
         let context = session.request_context().cloned();
+        // These reads may carry source-policy claims admitted by the
+        // authenticated Session. The journal's generic transport admission
+        // intentionally cannot accept such claims; no index acknowledgment is
+        // needed for either read.
+        if matches!(command, SurfaceCommand::Read { .. } | SurfaceCommand::References { .. }) {
+            return match recovery.as_deref_mut() {
+                Some(recovery) => recovery.surface(session, command, context.as_ref()),
+                None => session.surface(command),
+            };
+        }
         match self.paths {
             Some(paths) => {
                 backend_client::surface_with_index_journal(paths, command, |command| match recovery

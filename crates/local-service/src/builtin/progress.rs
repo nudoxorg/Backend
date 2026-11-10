@@ -45,6 +45,7 @@ struct ProgressTally {
     observed_projects: u64,
     unknown_projects: u64,
     excluded: BTreeMap<String, u64>,
+    extension_projects: BTreeMap<String, u64>,
 }
 
 /// One exact fault for a count that outgrew the report width.
@@ -73,6 +74,12 @@ impl ProgressTally {
                     }
                     bump(&mut self.observed_projects, 1)?;
                     for row in &observation.unsupported_extensions {
+                        bump(
+                            self.extension_projects
+                                .entry(row.extension.clone())
+                                .or_default(),
+                            1,
+                        )?;
                         bump(
                             self.excluded.entry(row.extension.clone()).or_default(),
                             row.files,
@@ -130,20 +137,48 @@ impl ProgressTally {
         if self.observed_projects == 0 && self.unknown_projects == 0 {
             return Ok(progress);
         }
+        let project_count = self
+            .observed_projects
+            .checked_add(self.unknown_projects)
+            .ok_or_else(count_overflow)?;
+        let scope = backend_library::SourceSelectionScopeCoverage {
+            project_count,
+            extensions: ["css", "sql", "vue"]
+                .into_iter()
+                .map(|extension| {
+                    let observed = self.extension_projects.get(extension).copied().unwrap_or(0);
+                    backend_library::SourceSelectionExtensionCoverage {
+                        extension: extension.into(),
+                        projects_observed: observed,
+                        projects_unknown: project_count - observed,
+                        excluded_files: self.excluded.get(extension).copied().unwrap_or(0),
+                    }
+                })
+                .collect(),
+        };
+        let progress = progress
+            .with_source_selection_scope(scope)
+            .map_err(BuiltinModelError)?;
+        // The legacy aggregate has one observation denominator for every row.
+        // Only publish rows witnessed in all observed projects.
+        let excluded = self
+            .excluded
+            .into_iter()
+            .filter(|(extension, _)| {
+                self.extension_projects.get(extension).copied() == Some(self.observed_projects)
+            })
+            .map(
+                |(extension, files)| backend_library::SourceExtensionExclusion { extension, files },
+            )
+            .collect::<Vec<_>>();
+        if self.observed_projects > 0 && excluded.is_empty() {
+            return Ok(progress);
+        }
         progress
             .with_source_selection(backend_library::SourceSelectionObservation {
                 observed_projects: self.observed_projects,
                 unknown_projects: self.unknown_projects,
-                unsupported_extensions: self
-                    .excluded
-                    .into_iter()
-                    .map(
-                        |(extension, files)| backend_library::SourceExtensionExclusion {
-                            extension,
-                            files,
-                        },
-                    )
-                    .collect(),
+                unsupported_extensions: excluded.into_boxed_slice(),
             })
             .map_err(BuiltinModelError)
     }
@@ -191,6 +226,35 @@ mod source_selection_tests {
     use super::*;
 
     #[test]
+    fn scope_counts_extension_presence_per_project() {
+        let mut tally = ProgressTally::default();
+        let old = ProductSourceRecord::project("old", [1; 32], vec![]).unwrap()
+            .with_source_selection(backend_library::SourceSelectionObservation::project_vue(0)).unwrap();
+        let new = ProductSourceRecord::project("new", [2; 32], vec![]).unwrap()
+            .with_source_selection(backend_library::SourceSelectionObservation::project_extensions(0, 2, 0)).unwrap();
+        let legacy = ProductSourceRecord::project("legacy", [3; 32], vec![]).unwrap();
+        for row in [&old, &new, &legacy] { tally.observe(row).unwrap(); }
+        let progress = tally.finish().unwrap();
+        let scope = progress.source_selection_scope().unwrap();
+        assert_eq!(scope.project_count, 3);
+        let rows = &scope.extensions;
+        assert_eq!((rows[0].projects_observed, rows[0].projects_unknown, rows[0].excluded_files), (1, 2, 0));
+        assert_eq!((rows[1].projects_observed, rows[1].projects_unknown, rows[1].excluded_files), (1, 2, 2));
+        assert_eq!((rows[2].projects_observed, rows[2].projects_unknown, rows[2].excluded_files), (2, 1, 0));
+        assert_eq!(progress.source_selection().unwrap().unsupported_extensions.len(), 1);
+        assert!(ProgressTally::default().finish().unwrap().source_selection_scope().is_none());
+        let mut complete = ProgressTally::default();
+        for (name, id) in [("one", 4), ("two", 5), ("three", 6)] {
+            let row = ProductSourceRecord::project(name, [id; 32], vec![]).unwrap()
+                .with_source_selection(backend_library::SourceSelectionObservation::project_extensions(0, 0, 0)).unwrap();
+            complete.observe(&row).unwrap();
+        }
+        let complete = complete.finish().unwrap();
+        let css = &complete.source_selection_scope().unwrap().extensions[0];
+        assert_eq!((css.projects_observed, css.projects_unknown, css.excluded_files), (3, 0, 0));
+    }
+
+    #[test]
     fn source_selection_tally_retains_known_exclusions_alongside_unknown_legacy_projects() {
         let mut tally = ProgressTally::default();
         let known = ProductSourceRecord::project("known", [1; 32], vec![])
@@ -199,11 +263,19 @@ mod source_selection_tests {
             .expect("known source-selection observation is valid");
         let historical = ProductSourceRecord::project("legacy", [2; 32], vec![])
             .expect("legacy project source record is valid");
-        tally.observe(&known).expect("known source record is tallyable");
-        tally.observe(&historical).expect("legacy source record is tallyable");
-        let progress = tally.finish().expect("test tally is within its count bounds");
+        tally
+            .observe(&known)
+            .expect("known source record is tallyable");
+        tally
+            .observe(&historical)
+            .expect("legacy source record is tallyable");
+        let progress = tally
+            .finish()
+            .expect("test tally is within its count bounds");
         assert_eq!(progress.files_discovered(), 0);
-        let observation = progress.source_selection().expect("known and legacy records produce an observation");
+        let observation = progress
+            .source_selection()
+            .expect("known and legacy records produce an observation");
         assert_eq!(observation.observed_projects, 1);
         assert_eq!(observation.unknown_projects, 1);
         assert_eq!(observation.unsupported_extensions[0].files, 12);
@@ -218,7 +290,9 @@ mod source_selection_tests {
                 u64::MAX,
             ))
             .expect("maximum source-selection count is valid");
-        overflow.observe(&maximum).expect("maximum count is accepted before overflow control");
+        overflow
+            .observe(&maximum)
+            .expect("maximum count is accepted before overflow control");
         assert!(
             overflow.observe(&known).is_err(),
             "counts never saturate or silently disappear"

@@ -272,6 +272,7 @@ fn names_documents_and_outlines_are_pinned_to_one_basis() {
                 symbol: SymbolAddress::canonical(symbol),
                 basis: revision.into(),
                 source: None,
+                source_range: None,
             })
             .expect("document")
             .text(),
@@ -294,6 +295,7 @@ fn names_documents_and_outlines_are_pinned_to_one_basis() {
                 symbol: SymbolAddress::canonical(symbol),
                 basis: view_state_root(&[("other".to_owned(), "root".to_owned())]).into(),
                 source: None,
+                source_range: None,
             })
             .is_err()
     );
@@ -440,6 +442,7 @@ fn document_projection_uses_the_complete_row_document() {
             symbol: SymbolAddress::canonical(symbol),
             basis: revision.into(),
             source: None,
+            source_range: None,
         })
         .expect("document projection");
     assert_eq!(

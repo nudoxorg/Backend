@@ -49,6 +49,11 @@ impl Library {
                         .to_owned(),
                 )))
             }
+            Command::Document(query) | Command::Source(query) if query.source_range().is_some() => {
+                Ok(CommandReply::Failed(crate::CommandFailure::InvalidQuery(
+                    "source ranges require the selected source owner".to_owned(),
+                )))
+            }
             Command::Document(query) | Command::Source(query) => {
                 self.document(query).map(CommandReply::Document)
             }
@@ -57,6 +62,7 @@ impl Library {
                     symbol: crate::SymbolAddress::canonical(symbol),
                     basis: basis.into(),
                     source: None,
+                    source_range: None,
                 })
                 .map(CommandReply::Document),
             Command::Outline(query) => self.outline(query).map(CommandReply::Outline),

@@ -524,6 +524,9 @@ struct Projector<'x, 'report, 'source, 'tsz> {
     /// its foreign keys are built from.
     import_modules: Vec<ImportModule>,
     import_module_len: usize,
+    /// Exact native external aliases already proven by an import occurrence.
+    /// None marks more than one distinct local binding to the same target.
+    native_tsz_import_aliases: HashMap<(u32, TszSymbolId), Option<(u32, NativeTszDeclarationCoordinate)>>,
     /// The span-bound checker report, when the authority ran.
     checker: Option<CheckerIndex<'report>>,
     /// Exact native TypeScript parser/binder witnesses for authored
@@ -605,6 +608,8 @@ struct FactRegistry<'a, 'source> {
     /// Exact TypeScript-symbol to same-file emitted-entity coordinate joins.
     /// This is present only while projecting one native checker observation.
     native_tsz_entities: Option<&'a HashMap<TszSymbolId, u32>>,
+    native_tsz_import_aliases: Option<&'a HashMap<(u32, TszSymbolId), Option<(u32, NativeTszDeclarationCoordinate)>>>,
+    native_tsz_alias_witnesses: Option<&'a HashMap<u32, (u32, NativeAliasPath)>>,
     fact_len: u32,
 }
 
@@ -4288,6 +4293,7 @@ pub(crate) fn collect_with_checker<'source, 'report>(
             fact_kinds: Vec::new(),
             import_modules: Vec::new(),
             import_module_len: 0,
+            native_tsz_import_aliases: HashMap::new(),
             checker: index,
             tsz_project: None,
             tsz_bound_file: None,
@@ -5517,6 +5523,7 @@ pub(crate) fn collect_with_tsz<'source, 'session>(
                     fact_kinds: Vec::new(),
                     import_modules: Vec::new(),
                     import_module_len: 0,
+                    native_tsz_import_aliases: HashMap::new(),
                     checker: None,
                     tsz_project: Some(project),
                     tsz_bound_file: Some($bound_file),
@@ -6940,6 +6947,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             name_ends: &self.name_ends,
             fact_kinds: &self.fact_kinds,
             native_tsz_entities: None,
+            native_tsz_import_aliases: None, native_tsz_alias_witnesses: None,
             fact_len,
         };
         for declaration in declarations {
@@ -7279,10 +7287,49 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             let Some(target) = native_tsz_import_declaration_coordinate(
                 target_binder, resolved.symbol_id, session,
             ) else { continue; };
+            // Keep only an authored import binding whose just-upgraded
+            // occurrence proves this exact external alias. Other references
+            // to the same target are not local declaration identities.
+            let alias_candidate = occurrence.kind == ReferenceKind::Import
+                && target.kind == EntityKind::Alias
+                && target.file_index != current_file_index
+                && usize::try_from(target.file_index).ok() == Some(resolved.owner_file_idx)
+                && self.fact_kinds.get(owner as usize) == Some(&EntityKind::Reexport)
+                && self.name_starts.get(owner as usize) == Some(&start)
+                && self.name_ends.get(owner as usize) == Some(&end);
             self.commit_native_tsz_occurrence(
-                owner, Span::new(start, end), occurrence.kind, target,
+                owner, Span::new(start, end), occurrence.kind, target.clone(),
                 current_file_index, program_identity,
             )?;
+            if alias_candidate {
+                let coordinate = self.facts.occurrence_source_coordinate_slot.get(index)
+                    .copied().flatten()
+                    .and_then(|slot| self.facts.foreign_source_coordinate_text.get(slot as usize))
+                    .and_then(|text| TypeScriptSourceCoordinate::decode(text));
+                let upgraded = self.facts.occurrences.get(index).is_some_and(|row|
+                    row.kind == ReferenceKind::Import && row.confidence == OccurrenceConfidence::Oracle)
+                    && self.facts.occurrence_owners.get(index) == Some(&owner)
+                    && coordinate.is_some_and(|coordinate|
+                        Some(coordinate.program) == program_identity
+                        && coordinate.source == target.source_identity
+                        && coordinate.path == target.path
+                        && coordinate.declaration_start == target.declaration_start
+                        && coordinate.declaration_end == target.declaration_end
+                        && coordinate.name_start == target.name_start);
+                if upgraded {
+                    let key = (target.file_index, resolved.symbol_id);
+                    match self.native_tsz_import_aliases.entry(key) {
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert(Some((owner, target)));
+                        }
+                        std::collections::hash_map::Entry::Occupied(mut entry) => {
+                            if entry.get().as_ref().is_some_and(|(other, _)| *other != owner) {
+                                entry.insert(None);
+                            }
+                        }
+                    }
+                }
+            }
         }
         let mut called_member_accesses = std::collections::HashSet::<u32>::new();
         for (raw_node, node) in arena.nodes.iter().enumerate() {
@@ -7657,6 +7704,10 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 std::collections::hash_map::Entry::Occupied(_) => {}
             }
         }
+        let alias_witnesses = native_tsz_alias_witnesses(
+            bound_file, checker, database, self.facts, &self.name_starts, &self.name_ends,
+            &self.decl_starts, &self.native_tsz_import_aliases,
+        )?;
         let registry = FactRegistry {
             source: self.source,
             tsz_project: Some(project),
@@ -7669,6 +7720,8 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             name_ends: &self.name_ends,
             fact_kinds: &self.fact_kinds,
             native_tsz_entities: Some(&native_tsz_entities),
+            native_tsz_import_aliases: Some(&self.native_tsz_import_aliases),
+            native_tsz_alias_witnesses: Some(&alias_witnesses),
             fact_len,
         };
 
@@ -7755,6 +7808,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             name_ends: &self.name_ends,
             fact_kinds: &self.fact_kinds,
             native_tsz_entities: None,
+            native_tsz_import_aliases: None, native_tsz_alias_witnesses: None,
             fact_len,
         };
         for narrowing in narrowings {
@@ -10873,6 +10927,15 @@ fn intern_native_tsz_type<'source>(
             },
         ));
     }
+    // An exact local import binding is itself a stable nominal in this
+    // fragment. Preserve that authored alias before expanding its external
+    // body; the independently proven import occurrence retains the foreign
+    // declaration coordinate. No external fragment ordinal is fabricated.
+    if depth == 0 && let Some(target) = native_tsz_imported_alias_target(registry, checker, database, type_id, owner, NativeAliasPath::Root) {
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
+        record.nominal = Some(NominalRef::Local(EntityId::new(target)));
+        return intern_native_tsz_row(registry, facts, record, owner, &[]);
+    }
     // A declaration's checker type can be a lazy definition handle even
     // when its body is a supported mapped/operator/structural type. Resolve
     // only that exact checker-owned handle through the active project
@@ -11280,10 +11343,7 @@ fn native_tsz_recursive_alias_target(
         return None;
     }
     let declaration = symbol_data.stable_declarations.first()?;
-    if declaration.file_idx != file_index
-        || !matches!(info.span, Some(span) if span == (declaration.pos, declaration.end)
-            || span == (declaration.pos, declaration.pos))
-    {
+    if declaration.file_idx != file_index {
         return None;
     }
     let target = *registry.native_tsz_entities?.get(&symbol)?;
@@ -11304,9 +11364,25 @@ fn native_tsz_recursive_alias_target(
             continue;
         };
         if alias.type_parameters.is_some()
+            || symbol_data.declarations.as_slice() != [node]
             || file.arena.pos_end_at(node) != Some((declaration.pos, declaration.end))
             || file.arena.pos_end_at(alias.name) != Some(name_span)
         {
+            continue;
+        }
+        // TSZ prepopulates DefinitionInfo from SemanticDefEntry, whose
+        // `span_start` is a NodeIndex payload, not a source-byte offset.
+        // Accept that representation only when the declaring BoundFile's
+        // remapped semantic definition proves the same symbol, file, alias
+        // node, and zero-width anchor.
+        let byte_anchor = info.span == Some((declaration.pos, declaration.end));
+        let binder_anchor = file.semantic_defs.get(&symbol)
+            .is_some_and(|entry| entry.file_id == file_index
+                && entry.name == expected_name
+                && entry.type_param_count == 0
+                && entry.span_start == node.0
+                && info.span == Some((node.0, node.0)));
+        if !byte_anchor && !binder_anchor {
             continue;
         }
         let identifier = file.arena.get_identifier_at(alias.name)?;
@@ -11315,6 +11391,204 @@ fn native_tsz_recursive_alias_target(
         }
     }
     None
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeAliasPath {
+    Root,
+    FunctionResult,
+}
+
+/// Authenticate a source type *use*, not merely an import resolving to the
+/// same foreign declaration. This deliberately handles the two direct
+/// destructured-property forms only. Everything else follows ordinary bounded
+/// lowering until a corresponding type-path proof is available.
+fn native_tsz_alias_witnesses(
+    file: &TszBoundFile,
+    checker: &TszCheckerState<'_>,
+    database: &dyn TszTypeDatabase,
+    facts: &FactSet<'_>,
+    name_starts: &[u32],
+    name_ends: &[u32],
+    decl_starts: &[u32],
+    aliases: &HashMap<(u32, TszSymbolId), Option<(u32, NativeTszDeclarationCoordinate)>>,
+) -> Result<HashMap<u32, (u32, NativeAliasPath)>, TypeScriptCollectError> {
+    if !aliases.values().any(Option::is_some) { return Ok(HashMap::new()); }
+    let arena = &file.arena;
+    let mut identifiers = HashMap::<(u32, u32), Option<TszNodeIndex>>::new();
+    for (raw, _) in arena.nodes.iter().enumerate() {
+        database.execution_checkpoint(1).map_err(|stop| TypeScriptCollectError::TszAuthority(TszAuthorityError::ExecutionStopped(stop)))?;
+        let Ok(raw) = u32::try_from(raw) else { continue; };
+        let node = TszNodeIndex(raw);
+        if arena.get_identifier_at(node).is_none() { continue; }
+        let Some(span) = arena.pos_end_at(node) else { continue; };
+        identifiers.entry(span).and_modify(|entry| *entry = None).or_insert(Some(node));
+    }
+    // Each coordinate must be the unique existing Oracle occurrence at the
+    // exact written token. Equal encoded coordinates include program and file
+    // identities, not merely a terminal spelling.
+    let mut references = HashMap::<(u32, u32), Option<&str>>::new();
+    let mut imports = HashMap::<u32, Option<&str>>::new();
+    for index in 0..facts.occurrence_len {
+        database.execution_checkpoint(1).map_err(|stop| TypeScriptCollectError::TszAuthority(TszAuthorityError::ExecutionStopped(stop)))?;
+        let row = facts.occurrences[index];
+        if row.confidence != OccurrenceConfidence::Oracle { continue; }
+        let Some(slot) = facts.occurrence_source_coordinate_slot[index] else { continue; };
+        let Some(encoded) = facts.foreign_source_coordinate_text.get(slot as usize).map(|text| text.as_ref()) else { continue; };
+        if TypeScriptSourceCoordinate::decode(encoded).is_none() { continue; }
+        let owner = facts.occurrence_owners[index];
+        if row.kind == ReferenceKind::Import {
+            imports.entry(owner).and_modify(|entry| *entry = None).or_insert(Some(encoded));
+        } else if row.kind == ReferenceKind::TypeReference {
+            let Some(base) = decl_starts.get(owner as usize).copied() else { continue; };
+            let (Some(start), Some(end)) = (base.checked_add(row.span.start), base.checked_add(row.span.end)) else { continue; };
+            references.entry((start, end)).and_modify(|entry| *entry = None).or_insert(Some(encoded));
+        }
+    }
+    let mut binding_nodes = HashMap::<(u32, u32), Option<TszNodeIndex>>::new();
+    for (raw, node) in arena.nodes.iter().enumerate() {
+        database.execution_checkpoint(1).map_err(|stop| TypeScriptCollectError::TszAuthority(TszAuthorityError::ExecutionStopped(stop)))?;
+        let Ok(raw) = u32::try_from(raw) else { continue; };
+        let index = TszNodeIndex(raw);
+        let Some(binding) = arena.get_binding_element(node) else { continue; };
+        // TSZ declares destructured parameter symbols at the identifier,
+        // not at its enclosing BindingElement (binder/declaration.rs).
+        if !file.node_symbols.contains_key(&binding.name.0) { continue; }
+        let Some(span) = arena.pos_end_at(binding.name) else { continue; };
+        binding_nodes.entry(span).and_modify(|entry| *entry = None).or_insert(Some(index));
+    }
+    let mut witnesses = HashMap::new();
+    for owner in 0..facts.len() {
+        database.execution_checkpoint(1).map_err(|stop| TypeScriptCollectError::TszAuthority(TszAuthorityError::ExecutionStopped(stop)))?;
+        let Some((&start, &end)) = name_starts.get(owner).zip(name_ends.get(owner)) else { continue; };
+        let Some(&Some(binding_node)) = binding_nodes.get(&(start, end)) else { continue; };
+        let Some(binding) = arena.get(binding_node).and_then(|node| arena.get_binding_element(node)) else { continue; };
+        if binding.dot_dot_dot_token { continue; }
+        let key_node = if binding.property_name.is_none() { binding.name } else { binding.property_name };
+        let Some(key) = arena.get_identifier_at(key_node).map(|id| &id.escaped_text) else { continue; };
+        let Some(pattern_node) = arena.parent_of(binding_node) else { continue; };
+        let Some(pattern) = arena.get(pattern_node) else { continue; };
+        if pattern.kind != TszSyntaxKind::OBJECT_BINDING_PATTERN { continue; }
+        let Some(pattern_data) = arena.get_binding_pattern(pattern) else { continue; };
+        if !pattern_data.elements.nodes.contains(&binding_node) { continue; }
+        let Some(parameter_node) = arena.parent_of(pattern_node) else { continue; };
+        let Some(parameter) = arena.get(parameter_node).and_then(|node| arena.get_parameter(node)) else { continue; };
+        if parameter.name != pattern_node { continue; }
+        let members = if let Some(literal) = arena.get_type_literal_at(parameter.type_annotation) {
+            &literal.members.nodes
+        } else {
+            // Named props are admitted only when the native binder resolves
+            // this exact annotation identifier to one current-file,
+            // non-generic interface declaration with no inherited members.
+            let Some(reference) = arena.get_type_ref_at(parameter.type_annotation) else { continue; };
+            if reference.type_arguments.is_some() || arena.get_identifier_at(reference.type_name).is_none() { continue; }
+            let Some(symbol) = checker.ctx.binder.resolve_identifier(arena, reference.type_name) else { continue; };
+            let Some(data) = checker.ctx.binder.get_symbol(symbol) else { continue; };
+            let ([declaration], [stable]) = (data.declarations.as_slice(), data.stable_declarations.as_slice()) else { continue; };
+            if usize::try_from(stable.file_idx).ok() != Some(checker.ctx.current_file_idx)
+                || file.node_symbols.get(&declaration.0) != Some(&symbol)
+                || arena.pos_end_at(*declaration) != Some((stable.pos, stable.end)) { continue; }
+            let Some(interface) = arena.get_interface_at(*declaration) else { continue; };
+            if interface.type_parameters.is_some() || interface.heritage_clauses.is_some()
+                || arena.get_identifier_at(interface.name).is_none_or(|id| id.escaped_text != data.escaped_name) { continue; }
+            &interface.members.nodes
+        };
+        let mut property = None;
+        let mut duplicate = false;
+        for &member in members {
+            database.execution_checkpoint(1).map_err(|stop| TypeScriptCollectError::TszAuthority(TszAuthorityError::ExecutionStopped(stop)))?;
+            let Some(node) = arena.get(member) else { continue; };
+            if node.kind != TszSyntaxKind::PROPERTY_SIGNATURE { continue; }
+            let Some(signature) = arena.get_signature(node) else { continue; };
+            let Some(name) = arena.get_identifier_at(signature.name) else { continue; };
+            if &name.escaped_text == key {
+                if property.replace(signature.type_annotation).is_some() { duplicate = true; }
+            }
+        }
+        if duplicate { continue; }
+        let Some(annotation) = property else { continue; };
+        let (type_ref, path) = if let Some(reference) = arena.get_type_ref_at(annotation) {
+            (reference, NativeAliasPath::Root)
+        } else if let Some(function) = arena.get_function_type_at(annotation) {
+            if function.type_parameters.is_some() { continue; }
+            let Some(reference) = arena.get_type_ref_at(function.type_annotation) else { continue; };
+            (reference, NativeAliasPath::FunctionResult)
+        } else { continue; };
+        if type_ref.type_arguments.is_some() || arena.get_identifier_at(type_ref.type_name).is_none() { continue; }
+        let Some(span) = arena.pos_end_at(type_ref.type_name) else { continue; };
+        let Some(&Some(reference_node)) = identifiers.get(&span) else { continue; };
+        if reference_node != type_ref.type_name { continue; }
+        let Some(local_symbol) = checker.ctx.binder.resolve_identifier(arena, reference_node) else { continue; };
+        let Some(terminal) = checker.resolve_project_identifier_with_owner(reference_node) else { continue; };
+        let Ok(file_index) = u32::try_from(terminal.owner_file_idx) else { continue; };
+        let Some(Some((target, coordinate))) = aliases.get(&(file_index, terminal.symbol_id)) else { continue; };
+        let Some((&import_start, &import_end)) = name_starts.get(*target as usize).zip(name_ends.get(*target as usize)) else { continue; };
+        let Some(&Some(import_node)) = identifiers.get(&(import_start, import_end)) else { continue; };
+        if file.node_symbols.get(&import_node.0) != Some(&local_symbol)
+            || checker.ctx.binder.resolve_identifier(arena, import_node) != Some(local_symbol) { continue; }
+        let (Some(Some(reference_coordinate)), Some(Some(import_coordinate))) = (references.get(&span), imports.get(target)) else { continue; };
+        if reference_coordinate != import_coordinate { continue; }
+        let Some(decoded) = TypeScriptSourceCoordinate::decode(reference_coordinate) else { continue; };
+        if decoded.source != coordinate.source_identity || decoded.path != coordinate.path
+            || decoded.declaration_start != coordinate.declaration_start || decoded.declaration_end != coordinate.declaration_end
+            || decoded.name_start != coordinate.name_start { continue; }
+        witnesses.insert(owner as u32, (*target, path));
+    }
+    Ok(witnesses)
+}
+
+/// Resolve a lazy foreign alias only through an already upgraded, exact
+/// local import-binding occurrence. The returned entity is the authored
+/// Reexport binding, not an invented foreign fragment/ordinal.
+fn native_tsz_imported_alias_target(
+    registry: &FactRegistry<'_, '_>,
+    checker: &TszCheckerState<'_>,
+    database: &dyn TszTypeDatabase,
+    type_id: TszTypeId,
+    owner: u32,
+    path: NativeAliasPath,
+) -> Option<u32> {
+    let TypeData::Lazy(def_id) = database.lookup(type_id)? else { return None; };
+    let info = checker.ctx.definition_store.get(def_id)?;
+    if !info.type_params.is_empty() { return None; }
+    let file_index = info.file_id.filter(|index| *index != u32::MAX)?;
+    let symbol = TszSymbolId(info.symbol_id?);
+    let (target, coordinate) = registry.native_tsz_import_aliases?.get(&(file_index, symbol))?.as_ref()?;
+    if registry.native_tsz_alias_witnesses?.get(&owner) != Some(&(*target, path))
+        || *target >= registry.fact_len
+        || registry.fact_kinds.get(usize::try_from(*target).ok()?) != Some(&EntityKind::Reexport)
+        || coordinate.file_index != file_index
+        || checker.ctx.definition_store.lookup_by_symbol(symbol.0, file_index) != Some(def_id)
+        || checker.ctx.get_existing_def_id(symbol) != Some(def_id)
+    { return None; }
+    let project = registry.tsz_project?;
+    let file = project.program().files.get(usize::try_from(file_index).ok()?)?;
+    if file.file_name != coordinate.path { return None; }
+    let symbol_data = project.program().symbols.get(symbol)?;
+    let ([node], [stable]) = (symbol_data.declarations.as_slice(), symbol_data.stable_declarations.as_slice()) else { return None; };
+    let name = database.resolve_atom(info.name);
+    if symbol_data.escaped_name != name
+        || stable.file_idx != file_index
+        || (stable.pos, stable.end) != (coordinate.declaration_start, coordinate.declaration_end)
+        || file.node_symbols.get(&node.0) != Some(&symbol)
+        || file.arena.pos_end_at(*node) != Some((stable.pos, stable.end))
+    { return None; }
+    let alias = file.arena.get(*node).and_then(|node| file.arena.get_type_alias(node))?;
+    let (name_start, name_end) = file.arena.pos_end_at(alias.name)?;
+    if alias.type_parameters.is_some()
+        || name_start != coordinate.name_start
+        || name_start >= name_end
+        || name_start < stable.pos || name_end > stable.end
+        || file.arena.get_identifier_at(alias.name)?.escaped_text != name
+    { return None; }
+    let source = file.arena.get_source_file_at(file.source_file)?;
+    if source.text.get(name_start as usize..name_end as usize) != Some(name.as_str()) { return None; }
+    let byte_anchor = info.span == Some((stable.pos, stable.end));
+    let bound_anchor = file.semantic_defs.get(&symbol).is_some_and(|entry|
+        entry.file_id == file_index && entry.name == name && entry.type_param_count == 0
+            && entry.span_start == node.0 && info.span == Some((node.0, node.0)));
+    if !byte_anchor && !bound_anchor { return None; }
+    Some(*target)
 }
 
 fn intern_native_tsz_type_inner<'source>(
@@ -11805,16 +12079,19 @@ fn intern_native_tsz_function<'source>(
             registry, facts, checker, database, *parameter, owner, depth, active,
         )?);
     }
-    let result = intern_native_tsz_type(
-        registry,
-        facts,
-        checker,
-        database,
-        function.return_type,
-        owner,
-        depth,
-        active,
-    )?;
+    let result = if depth == 1 {
+        if let Some(target) = native_tsz_imported_alias_target(
+            registry, checker, database, function.return_type, owner, NativeAliasPath::FunctionResult,
+        ) {
+            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
+            record.nominal = Some(NominalRef::Local(EntityId::new(target)));
+            intern_native_tsz_row(registry, facts, record, owner, &[])?
+        } else {
+            intern_native_tsz_type(registry, facts, checker, database, function.return_type, owner, depth, active)?
+        }
+    } else {
+        intern_native_tsz_type(registry, facts, checker, database, function.return_type, owner, depth, active)?
+    };
     children.push((result, None, 0));
     let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
     record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
@@ -12648,7 +12925,7 @@ mod projection_tests {
 #[cfg(test)]
 mod lane_tests {
     use backend_semantic::ir::{ForeignOrigin, OccurrenceConfidence};
-    use super::{TypeScriptCollectError, collect_with_checker, collect_with_tsz};
+    use super::{NominalRef, TypeScriptCollectError, collect_with_checker, collect_with_tsz};
     use crate::driver::lower::{AdmissionFault, FactSet, admit};
     use backend_frontend_typescript::legacy::{
         GetSpan, Reference, Report, SymbolFlags, source_digest, with_analysis,
@@ -13314,20 +13591,20 @@ mod lane_tests {
             .iter()
             .find(|entity| {
                 entity.kind == EntityKind::Field
-                    && entity.name.named_atom().and_then(|name| ir.atom(name)) == Some(b"http")
+                    && entity.name.named_atom().and_then(|name| ir.atom(name)) == Some(&b"http"[..])
             })
             .expect("exact constructor parameter-property field");
         let constructor = members
             .iter()
             .find(|entity| {
-                entity.name.named_atom().and_then(|name| ir.atom(name)) == Some(b"constructor")
+                entity.name.named_atom().and_then(|name| ir.atom(name)) == Some(&b"constructor"[..])
             })
             .expect("actual constructor");
         let parameters = ir
             .canonical_entities()
             .filter(|entity| {
                 entity.kind == EntityKind::Parameter
-                    && entity.name.named_atom().and_then(|name| ir.atom(name)) == Some(b"http")
+                    && entity.name.named_atom().and_then(|name| ir.atom(name)) == Some(&b"http"[..])
             })
             .collect::<Vec<_>>();
         assert_eq!(
@@ -13460,6 +13737,59 @@ mod lane_tests {
             ));
         }
         Ok(coordinates)
+    }
+
+    fn assert_exact_imported_alias(
+        facts: &FactSet<'_>, expected_path: &str, local_name: &[u8],
+    ) -> Result<(), LaneError> {
+        let coordinates = staged_tsz_coordinates(facts)?;
+        let matches = coordinates.iter().filter(|(kind, path, _, _, _, owner)|
+            *kind == ReferenceKind::Import && path == expected_path
+                && facts.names.get(*owner as usize).copied() == Some(local_name))
+            .collect::<Vec<_>>();
+        let [import] = matches.as_slice() else {
+            return Err(LaneError::Missing("unique exact native import occurrence"));
+        };
+        let owner = import.5;
+        if facts.kinds.get(owner as usize) != Some(&EntityKind::Reexport) {
+            return Err(LaneError::Missing("authored import binding fact"));
+        }
+        if facts.type_records[owner as usize].tag != super::SemanticTypeTag::Unknown
+            || facts.type_records[owner as usize].payload0 != u32::from(super::TypeReason::UnresolvedExternal)
+        {
+            return Err(LaneError::Missing("honest unresolved external import type"));
+        }
+        assert!(facts.computed_records[..facts.computed_rows].iter().any(|record|
+            record.nominal == Some(NominalRef::Local(EntityId::new(owner)))),
+            "the checker type must retain the exact local import binding");
+        for record in facts.type_records[..facts.len()].iter().chain(&facts.computed_records[..facts.computed_rows]) {
+            assert!(!matches!(record.nominal, Some(NominalRef::External(_) | NominalRef::Stable(_))),
+                "native fixture must not mint an unproved foreign nominal");
+        }
+        Ok(())
+    }
+
+    fn assert_published_import_alias(facts: &FactSet<'_>, source: &str) -> Result<(), LaneError> {
+        let profile = LanguageProfile::TypeScript(TypeScriptSource::Tsx);
+        let source_id = ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes());
+        let identity = backend_semantic::ir::SourceIdentity { identity: source_id, byte_len: u32::try_from(source.len())? };
+        let recipe = CompileRecipeFact::derive(profile, Stage::LowerIr, NativeTool::TypeScriptCompiler,
+            source_id, ContentId::<ToolchainDomain>::from_canonical_bytes(b"tsz-import-alias-fixture"));
+        let ir = facts.build_ir(profile, identity, recipe, crate::driver::types::DeclarationScope::fixture())?;
+        let import = ir.items().find(|item| item.name() == b"ReactNode" && item.kind() == EntityKind::Reexport)
+            .ok_or(LaneError::Missing("published ReactNode import binding"))?;
+        let mut has_binding_nominal = false;
+        for raw in 0..u32::MAX {
+            let Some(ty) = ir.ty(TypeId::new(raw)) else { break; };
+            match ty {
+                TypeExpr::Concrete(backend_semantic::ir::ConcreteType::Nominal(id)) if id == import.id() => has_binding_nominal = true,
+                TypeExpr::Concrete(backend_semantic::ir::ConcreteType::External(_)) =>
+                    return Err(LaneError::Missing("native image without unproved foreign nominal")),
+                _ => {}
+            }
+        }
+        assert!(has_binding_nominal, "published type must name the authored ReactNode import");
+        Ok(())
     }
 
     type AnonymousCallableRow = (
@@ -17675,6 +18005,97 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
     }
 
     #[test]
+    #[ignore = "requires isolated lock-verified React and TypeScript project fixture"]
+    fn native_tsz_configured_lock_verified_react_children() -> Result<(), LaneError> {
+        use std::{path::PathBuf, num::NonZeroUsize, sync::atomic::AtomicBool, time::{Duration, Instant}};
+        use crate::application::{PackageSource, ToolchainProbeLimits, TypeScriptProjectHost, build_native_inputs};
+        use backend_frontend_typescript::TszProjectExecutionBudget;
+
+        let root = std::env::var_os("TSZ_REACT_REPRO_ROOT").map(PathBuf::from)
+            .ok_or(LaneError::Missing("TSZ_REACT_REPRO_ROOT"))?;
+        use sha2::{Digest, Sha256};
+        // These files were extracted from the npm tarballs whose SHA-512
+        // integrity is pinned in the captured public app lockfile.
+        for (path, digest) in [
+            ("node_modules/@types/react/index.d.ts", "045c1b395851aa71ef76393398466330fe1eeebc113c8085eefc6d84abea3a88"),
+            ("node_modules/@types/react/global.d.ts", "7e29f41b158de217f94cb9676bf9cbd0cd9b5a46e1985141ed36e075c52bf6ad"),
+            ("node_modules/@types/react/jsx-runtime.d.ts", "b838d4c72740eb0afd284bf7575b74c624b105eff2e8c7b4aeead57e7ac320ff"),
+            ("node_modules/csstype/index.d.ts", "ac51dd7d31333793807a6abaa5ae168512b6131bd41d9c5b98477fc3b7800f9f"),
+            ("components/AuthCard.tsx", "a0203de6af1d7cddbab62fc17437689951593d37580bf0a64e8614dd5f864753"),
+            ("components/AppShell.tsx", "eebea631a0c49a170ad214f179f249fe72998d87f153c6eeac7a822a9bc335e1"),
+            ("tsconfig.json", "be18523b23b78b6e1a876ddd107d330f0168bddf09d751b57e0b5edce69c66f3"),
+        ] {
+            let bytes = std::fs::read(root.join(path)).map_err(|_| LaneError::Missing("locked React fixture bytes"))?;
+            assert_eq!(format!("{:x}", Sha256::digest(&bytes)), digest, "fixture identity: {path}");
+        }
+        let paths = ["components/AuthCard.tsx", "components/AppShell.tsx", "components/Button.tsx", "lib/api.ts"];
+        let sources = paths.iter().map(|path| std::fs::read_to_string(root.join(path)))
+            .collect::<Result<Vec<_>, _>>().map_err(|_| LaneError::Missing("captured React source"))?;
+        let package = paths.iter().zip(&sources).map(|(path, source)| PackageSource::new(path, source)
+            .map_err(|_| LaneError::Missing("React source path"))).collect::<Result<Vec<_>, _>>()?;
+        let limits = ToolchainProbeLimits::new(Duration::from_secs(600), NonZeroUsize::new(16 * 1024 * 1024)
+            .ok_or(LaneError::Missing("probe bound"))?).map_err(|_| LaneError::Missing("probe limits"))?;
+        let host = TypeScriptProjectHost::direct(None, limits);
+        let admitted = host.admit(&root).map_err(|error| LaneError::ConfiguredProject(format!("admit: {error:?}")))?
+            .ok_or(LaneError::Missing("TypeScript installation"))?;
+        let inputs = admitted.inputs();
+        let mut resolver = inputs.resolver();
+        let cancelled = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(900);
+        let native = build_native_inputs(&inputs, &mut resolver, &package, deadline, &cancelled)
+            .map_err(|error| LaneError::ConfiguredProject(format!("capture: {error:?}")))?;
+        native.closure_witness.validate_current(admitted.witness().as_ref())
+            .map_err(|error| LaneError::ConfiguredProject(format!("witness: {error:?}")))?;
+        eprintln!("react-capture sources={} libraries={} resolutions={}", native.sources.len(), native.libraries.len(), native.options.module_resolutions.len());
+        for r in &native.options.module_resolutions {
+            if r.specifier == "react" || r.specifier == "csstype" || r.specifier == "global.d.ts" {
+                eprintln!("react-resolution {r:?}");
+            }
+        }
+        let membership = native.package_membership;
+        let budget = TszProjectExecutionBudget::new(deadline, &cancelled, native.work_units);
+        let mut authority = TszProjectAuthority::new();
+        authority.update_with_execution_checkpoint(native.sources, native.options, &native.libraries, &budget)
+            .map_err(|error| LaneError::ConfiguredProject(format!("authority: {error:?}")))?;
+        let project = authority.project().ok_or(LaneError::Missing("React TSZ project"))?;
+        let session = project.checked_query_session(&budget)
+            .map_err(|error| LaneError::ConfiguredProject(format!("session: {error:?}")))?;
+        eprintln!("react-native-program={:?}", session.native_program_identity());
+        for (index, file) in project.program().files.iter().enumerate() {
+            let Some(source_file) = file.arena.get_source_file_at(file.source_file) else { continue; };
+            let identity = session.native_source_identity(index, source_file.text.as_bytes());
+            eprintln!("react-program-file index={index} path={:?} identity={identity:?}", file.file_name);
+            if file.file_name != "node_modules/@types/react/index.d.ts" { continue; }
+            for (&raw, &symbol) in file.node_symbols.iter() {
+                let node = super::TszNodeIndex(raw);
+                let Some(alias) = file.arena.get(node).and_then(|n| file.arena.get_type_alias(n)) else { continue; };
+                let Some(name) = file.arena.get_identifier_at(alias.name) else { continue; };
+                if name.escaped_text != "ReactNode" { continue; }
+                eprintln!("react-alias symbol={symbol:?} node={node:?} span={:?} name_span={:?} program_symbol={:?} file_definition={:?}",
+                    file.arena.pos_end_at(node), file.arena.pos_end_at(alias.name),
+                    project.program().symbols.get(symbol), file.semantic_defs.get(&symbol));
+            }
+        }
+        let mut failures = Vec::new();
+        for i in 0..2 {
+            let path = membership.get(paths[i]).and_then(|m| m.selected_program_path())
+                .ok_or(LaneError::Missing("captured TSX membership"))?;
+            let mut facts = FactSet::new();
+            match collect_with_tsz(TypeScriptSource::Tsx, sources[i].as_bytes(), project, path, &session, &mut facts) {
+                Ok(()) => {
+                    eprintln!("react-lowering {}: OK", paths[i]);
+                    assert_exact_imported_alias(&facts, "node_modules/@types/react/index.d.ts", b"ReactNode")?;
+                    assert_published_import_alias(&facts, &sources[i])?;
+                },
+                Err(error) => { eprintln!("react-lowering {}: {error:?}", paths[i]); failures.push(paths[i]); }
+            }
+            eprintln!("react-occurrences {}: {:?}", paths[i], staged_tsz_coordinates(&facts)?);
+        }
+        assert!(failures.is_empty(), "React TSX cycle in {failures:?}");
+        Ok(())
+    }
+
+    #[test]
     fn native_tsz_wide_non_associative_tuple_fails_with_exact_bounded_cause() {
         let elements = std::iter::repeat_n("unknown", super::MAX_TYPE_CHILDREN + 1)
             .collect::<Vec<_>>()
@@ -17705,6 +18126,221 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
     }
 
     #[test]
+    fn native_tsz_imported_recursive_children_keep_exact_local_alias() -> Result<(), LaneError> {
+        let react = r#"export type ReactNode = string | number | null | ReactElement | Iterable<ReactNode>;
+            export interface ReactElement { props: { children: ReactNode }; }
+            export interface Iterable<T> { next: () => T; }"#;
+        let cases = [
+            ("inline.tsx", "import { ReactNode } from './react'; export function AuthCard({ children }: { children: ReactNode }) { return children; }"),
+            ("render.tsx", "import { ReactNode } from './react'; interface User { id: string } export function AppShell({ children }: { children: (user: User) => ReactNode }) { return children; }"),
+            ("named.tsx", "import { ReactNode } from './react'; interface Props { children: ReactNode } export function Named({ children }: Props) { return children; }"),
+        ];
+        for (path, source) in cases {
+            let resolution = module_resolution(path, "./react", TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File { path: "react.ts".to_owned() });
+            let authority = native_tsz_project_with_resolutions(&[("react.ts", react), (path, source)], &[resolution])?;
+            let project = authority.project().ok_or(LaneError::Missing("ReactNode fixture project"))?;
+            let mut facts = FactSet::new();
+            super::collect_with_tsz_unmetered_for_test(
+                TypeScriptSource::Tsx, source.as_bytes(), project, path, &mut facts)?;
+            assert_exact_imported_alias(&facts, "react.ts", b"ReactNode")?;
+            assert!(facts.names[..facts.len()].iter().any(|name| *name == b"children"), "{path}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_imported_recursive_same_name_keeps_distinct_targets() -> Result<(), LaneError> {
+        let a = "export type ReactNode = string | { next: ReactNode };";
+        // Identical bytes under distinct admitted module paths must not
+        // collapse their separate declaration or import-binding identities.
+        let b = a;
+        let source = "import { ReactNode as Alpha } from './a'; import { ReactNode as Beta } from './b'; export function A({ children }: { children: Alpha }) { return children; } export function B({ children }: { children: Beta }) { return children; }";
+        let resolutions = [
+            module_resolution("main.tsx", "./a", TszProjectModuleRequestKind::EsmImport, TszProjectModuleResolutionTarget::File { path: "a.ts".to_owned() }),
+            module_resolution("main.tsx", "./b", TszProjectModuleRequestKind::EsmImport, TszProjectModuleResolutionTarget::File { path: "b.ts".to_owned() }),
+        ];
+        let authority = native_tsz_project_with_resolutions(&[("a.ts", a), ("b.ts", b), ("main.tsx", source)], &resolutions)?;
+        let project = authority.project().ok_or(LaneError::Missing("distinct alias project"))?;
+        let mut facts = FactSet::new();
+        super::collect_with_tsz_unmetered_for_test(TypeScriptSource::Tsx, source.as_bytes(), project, "main.tsx", &mut facts)?;
+        assert_exact_imported_alias(&facts, "a.ts", b"Alpha")?;
+        assert_exact_imported_alias(&facts, "b.ts", b"Beta")?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_imported_recursive_reexport_keeps_terminal_identity() -> Result<(), LaneError> {
+        let dependency = "export type ReactNode = string | { next: ReactNode };";
+        let barrel = "export { ReactNode as Renderable } from './react';";
+        let source = "import { Renderable as View } from './barrel'; export function A({ children }: { children: View }) { return children; }";
+        let resolutions = [
+            module_resolution("barrel.ts", "./react", TszProjectModuleRequestKind::EsmReExport, TszProjectModuleResolutionTarget::File { path: "react.ts".to_owned() }),
+            module_resolution("main.tsx", "./barrel", TszProjectModuleRequestKind::EsmImport, TszProjectModuleResolutionTarget::File { path: "barrel.ts".to_owned() }),
+        ];
+        let authority = native_tsz_project_with_resolutions(&[("react.ts", dependency), ("barrel.ts", barrel), ("main.tsx", source)], &resolutions)?;
+        let project = authority.project().ok_or(LaneError::Missing("reexport alias project"))?;
+        let mut facts = FactSet::new();
+        super::collect_with_tsz_unmetered_for_test(TypeScriptSource::Tsx, source.as_bytes(), project, "main.tsx", &mut facts)?;
+        assert_exact_imported_alias(&facts, "react.ts", b"View")?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_imported_recursive_duplicate_bindings_keep_qualified_gap() -> Result<(), LaneError> {
+        let dependency = "export type ReactNode = string | { next: ReactNode };";
+        let source = "import { ReactNode as Alpha, ReactNode as Beta } from './react'; export function A({ children }: { children: Alpha }) { return children; }";
+        let resolution = module_resolution("main.tsx", "./react", TszProjectModuleRequestKind::EsmImport, TszProjectModuleResolutionTarget::File { path: "react.ts".to_owned() });
+        let authority = native_tsz_project_with_resolutions(&[("react.ts", dependency), ("main.tsx", source)], &[resolution])?;
+        let project = authority.project().ok_or(LaneError::Missing("duplicate alias project"))?;
+        let mut facts = FactSet::new();
+        super::collect_with_tsz_unmetered_for_test(TypeScriptSource::Tsx, source.as_bytes(), project, "main.tsx", &mut facts)?;
+        let coordinates = staged_tsz_coordinates(&facts)?;
+        let imports = coordinates.iter().filter(|(kind, path, _, _, _, _)|
+            *kind == ReferenceKind::Import && path == "react.ts").collect::<Vec<_>>();
+        assert_eq!(imports.len(), 2, "both authored imports keep their exact foreign target");
+        assert_ne!(imports[0].5, imports[1].5);
+        let import_owners = [imports[0].5, imports[1].5];
+        assert!(!facts.computed_records[..facts.computed_rows].iter().any(|record|
+            matches!(record.nominal, Some(NominalRef::Local(id)) if import_owners.contains(&id.raw))),
+            "ambiguous imports must not choose either local binding");
+        assert!(facts.computed_records[..facts.computed_rows].iter().any(|record|
+            record.tag == super::SemanticTypeTag::Unknown && record.payload0 == u32::from(super::TypeReason::OracleGap)),
+            "unproved recursive content remains an explicit type gap");
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_imported_name_does_not_capture_local_recursive_shadow() -> Result<(), LaneError> {
+        let dependency = "export type ReactNode = string | { next: ReactNode };";
+        let source = "import { ReactNode } from './react'; export function Outer() { type ReactNode = { next: ReactNode }; let item: ReactNode; return item; }";
+        let resolution = module_resolution("main.tsx", "./react", TszProjectModuleRequestKind::EsmImport, TszProjectModuleResolutionTarget::File { path: "react.ts".to_owned() });
+        let authority = native_tsz_project_with_resolutions(&[("react.ts", dependency), ("main.tsx", source)], &[resolution])?;
+        let project = authority.project().ok_or(LaneError::Missing("shadow alias project"))?;
+        let mut facts = FactSet::new();
+        super::collect_with_tsz_unmetered_for_test(TypeScriptSource::Tsx, source.as_bytes(), project, "main.tsx", &mut facts)?;
+        let import = (0..facts.len()).find(|i| facts.kinds[*i] == EntityKind::Reexport && facts.names[*i] == b"ReactNode")
+            .ok_or(LaneError::Missing("shadowed import"))?;
+        let local = (0..facts.len()).find(|i| facts.kinds[*i] == EntityKind::Alias && facts.names[*i] == b"ReactNode")
+            .ok_or(LaneError::Missing("local shadow alias"))?;
+        assert_ne!(import, local);
+        assert!(facts.computed_records[..facts.computed_rows].iter().any(|record|
+            record.nominal == Some(NominalRef::Local(EntityId::new(local as u32)))), "local recursion must close on its own binder");
+        assert!(!facts.computed_records[..facts.computed_rows].iter().any(|record|
+            record.nominal == Some(NominalRef::Local(EntityId::new(import as u32)))), "shadow must not borrow import identity");
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_unused_import_does_not_capture_namespace_type_use() -> Result<(), LaneError> {
+        let dependency = "export type ReactNode = string | { next: ReactNode };";
+        let source = "import { ReactNode as Unused } from './react'; import * as React from './react'; export function A({ children }: { children: React.ReactNode }) { return children; }";
+        let resolution = module_resolution("main.tsx", "./react", TszProjectModuleRequestKind::EsmImport, TszProjectModuleResolutionTarget::File { path: "react.ts".to_owned() });
+        let authority = native_tsz_project_with_resolutions(&[("react.ts", dependency), ("main.tsx", source)], &[resolution])?;
+        let project = authority.project().ok_or(LaneError::Missing("unused import project"))?;
+        let mut facts = FactSet::new();
+        let result = super::collect_with_tsz_unmetered_for_test(TypeScriptSource::Tsx, source.as_bytes(), project, "main.tsx", &mut facts);
+        if let Err(error) = result {
+            assert!(matches!(error, TypeScriptCollectError::Rejected(
+                super::FactRejection { cause: super::FactFault::TypeProjectionCycle { .. }, .. }
+            )), "unsupported namespace recursion must retain its bounded cycle refusal: {error:?}");
+            return Ok(());
+        }
+        {
+            let unused = (0..facts.len()).find(|i| facts.kinds[*i] == EntityKind::Reexport && facts.names[*i] == b"Unused")
+                .ok_or(LaneError::Missing("unused named import"))?;
+            assert!(!facts.computed_records[..facts.computed_rows].iter().any(|record|
+                record.nominal == Some(NominalRef::Local(EntityId::new(unused as u32)))),
+                "namespace type use must not claim an unused named import binding");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_import_witness_does_not_leak_across_sibling_type_paths() -> Result<(), LaneError> {
+        let dependency = "export type ReactNode = string | { next: ReactNode };";
+        let cases = [
+            "import { ReactNode as Used } from './react'; import * as React from './react'; export function A({ children, other }: { children: React.ReactNode, other: Used }) { return children; }",
+            "import { ReactNode as Used } from './react'; import * as React from './react'; export function A({ children }: { children: (user: Used) => React.ReactNode }) { return children; }",
+            "import { ReactNode as Used } from './react'; import * as React from './react'; interface Props { children: React.ReactNode; other: Used } export function A({ children }: Props) { return children; }",
+            "import { ReactNode as Used } from './react'; interface Props { children: Used } interface Props { marker: string } export function A({ children }: Props) { return children; }",
+        ];
+        for source in cases {
+            let resolution = module_resolution("main.tsx", "./react", TszProjectModuleRequestKind::EsmImport, TszProjectModuleResolutionTarget::File { path: "react.ts".to_owned() });
+            let authority = native_tsz_project_with_resolutions(&[("react.ts", dependency), ("main.tsx", source)], &[resolution])?;
+            let project = authority.project().ok_or(LaneError::Missing("sibling alias project"))?;
+            let mut facts = FactSet::new();
+            match super::collect_with_tsz_unmetered_for_test(TypeScriptSource::Tsx, source.as_bytes(), project, "main.tsx", &mut facts) {
+                Err(TypeScriptCollectError::Rejected(super::FactRejection { cause: super::FactFault::TypeProjectionCycle { .. }, .. })) => continue,
+                Err(error) => panic!("unexpected refusal: {error:?}"),
+                Ok(()) => {}
+            }
+            let import = (0..facts.len()).find(|&i| facts.kinds[i] == EntityKind::Reexport && facts.names[i] == b"Used")
+                .ok_or(LaneError::Missing("named imported alias"))? as u32;
+            let child = (0..facts.len()).find(|&i| facts.kinds[i] == EntityKind::Parameter && facts.names[i] == b"children")
+                .ok_or(LaneError::Missing("children binding"))? as u32;
+            assert!((0..facts.computed_rows).all(|row| facts.computed_owners[row] != child || facts.computed_records[row].nominal != Some(NominalRef::Local(EntityId::new(import)))),
+                "a sibling or parameter type-use must not authorize the children type path");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_imported_props_do_not_borrow_an_unused_local_alias() -> Result<(), LaneError> {
+        let react = "export type ReactNode = string | { next: ReactNode };";
+        let props = "import { ReactNode } from './react'; export interface Props { children: ReactNode }";
+        let source = "import { ReactNode as Unused } from './react'; import { Props } from './props'; export function A({ children }: Props) { return children; }";
+        let resolutions = [
+            module_resolution("props.ts", "./react", TszProjectModuleRequestKind::EsmImport, TszProjectModuleResolutionTarget::File { path: "react.ts".to_owned() }),
+            module_resolution("main.tsx", "./react", TszProjectModuleRequestKind::EsmImport, TszProjectModuleResolutionTarget::File { path: "react.ts".to_owned() }),
+            module_resolution("main.tsx", "./props", TszProjectModuleRequestKind::EsmImport, TszProjectModuleResolutionTarget::File { path: "props.ts".to_owned() }),
+        ];
+        let authority = native_tsz_project_with_resolutions(&[("react.ts", react), ("props.ts", props), ("main.tsx", source)], &resolutions)?;
+        let project = authority.project().ok_or(LaneError::Missing("imported props project"))?;
+        let mut facts = FactSet::new();
+        match super::collect_with_tsz_unmetered_for_test(TypeScriptSource::Tsx, source.as_bytes(), project, "main.tsx", &mut facts) {
+            Err(TypeScriptCollectError::Rejected(super::FactRejection { cause: super::FactFault::TypeProjectionCycle { .. }, .. })) => return Ok(()),
+            Err(error) => panic!("unexpected imported props refusal: {error:?}"),
+            Ok(()) => {}
+        }
+        let unused = (0..facts.len()).find(|&i| facts.kinds[i] == EntityKind::Reexport && facts.names[i] == b"Unused")
+            .ok_or(LaneError::Missing("unused ReactNode import"))? as u32;
+        assert!(!facts.computed_records[..facts.computed_rows].iter().any(|record|
+            record.nominal == Some(NominalRef::Local(EntityId::new(unused)))),
+            "foreign Props must not borrow an unused local import");
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_imported_generic_recursive_alias_keeps_typed_gap() -> Result<(), LaneError> {
+        let dependency = "export type Node<T> = { value: T; next: Node<T> };";
+        let source = "import { Node } from './react'; export function A({ children }: { children: Node<string> }) { return children; }";
+        let resolution = module_resolution("main.tsx", "./react", TszProjectModuleRequestKind::EsmImport, TszProjectModuleResolutionTarget::File { path: "react.ts".to_owned() });
+        let authority = native_tsz_project_with_resolutions(&[("react.ts", dependency), ("main.tsx", source)], &[resolution])?;
+        let project = authority.project().ok_or(LaneError::Missing("generic alias project"))?;
+        let mut facts = FactSet::new();
+        super::collect_with_tsz_unmetered_for_test(TypeScriptSource::Tsx, source.as_bytes(), project, "main.tsx", &mut facts)?;
+        let coordinates = staged_tsz_coordinates(&facts)?;
+        let import = coordinates.iter().find(|(kind, path, _, _, _, _)| *kind == ReferenceKind::Import && path == "react.ts")
+            .ok_or(LaneError::Missing("generic alias import occurrence"))?;
+        assert!(!facts.computed_records[..facts.computed_rows].iter().any(|record|
+            record.nominal == Some(NominalRef::Local(EntityId::new(import.5)))),
+            "generic application must not collapse to the bare import binding");
+        let index = facts.computed_records[..facts.computed_rows].iter().position(|record| record.tag == super::SemanticTypeTag::Apply)
+            .ok_or(LaneError::Missing("generic application row"))?;
+        let row = crate::driver::lower::COMPUTED_ROW_BASE + u32::try_from(index)?;
+        assert_eq!(facts.staged_type_child_count(row), Some(2));
+        let (base, _, _) = facts.staged_type_child(row, 0).ok_or(LaneError::Missing("generic base"))?;
+        let (arg, _, _) = facts.staged_type_child(row, 1).ok_or(LaneError::Missing("generic argument"))?;
+        let base = facts.staged_type_record(base)?;
+        let arg = facts.staged_type_record(arg)?;
+        assert_eq!((base.tag, base.payload0), (super::SemanticTypeTag::Unknown, u32::from(super::TypeReason::OracleGap)));
+        assert_eq!((arg.tag, arg.payload0), (super::SemanticTypeTag::Primitive, u32::from(super::PrimitiveShape::Str)),
+            "the string argument survives alongside the explicit external type gap");
+        Ok(())
+    }
+
+    #[test]
     fn native_tsz_named_recursive_alias_closes_on_exact_local_entity() -> Result<(), LaneError> {
         let source = "export type Recursive = { next: Recursive };";
         let ir = owned_tsz_ir_at_path(source, "layout.tsx")?;
@@ -17721,6 +18357,26 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
             return Err(LaneError::Missing("recursive next property"));
         };
         assert_eq!(ir.ty(ty), Some(TypeExpr::Concrete(
+            backend_semantic::ir::ConcreteType::Nominal(alias.id()))));
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_recursive_alias_anchor_survives_unicode_source_prefix() -> Result<(), LaneError> {
+        let source = "// λ🚀\nexport type Recursive = { next: Recursive };";
+        let ir = owned_tsz_ir_at_path(source, "unicode.tsx")?;
+        let alias = ir.items().find(|item| item.name() == b"Recursive")
+            .ok_or(LaneError::Missing("Unicode recursive alias entity"))?;
+        let (_, observed) = native_observation(&ir, b"Recursive")
+            .ok_or(LaneError::Missing("Unicode recursive alias observation"))?;
+        let TypeExpr::Concrete(backend_semantic::ir::ConcreteType::Object(members)) = observed else {
+            return Err(LaneError::Missing("Unicode recursive alias root"));
+        };
+        let members = ir.object_members(members).ok_or(LaneError::Missing("Unicode recursive members"))?;
+        let [backend_semantic::ir::ObjectMember::Property { ty, .. }] = members else {
+            return Err(LaneError::Missing("Unicode recursive next property"));
+        };
+        assert_eq!(ir.ty(*ty), Some(TypeExpr::Concrete(
             backend_semantic::ir::ConcreteType::Nominal(alias.id()))));
         Ok(())
     }
@@ -17780,7 +18436,7 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
                 declaration_parts: &parts, name_starts: &names,
                 name_start_index: std::collections::HashMap::from([(names[0], 0)]),
                 name_ends: &ends, fact_kinds: &[EntityKind::Alias],
-                native_tsz_entities: Some(&entities), fact_len: 1,
+                native_tsz_entities: Some(&entities), native_tsz_import_aliases: None, native_tsz_alias_witnesses: None, fact_len: 1,
             };
             assert_eq!(super::native_tsz_recursive_alias_target(&registry, checker, database, lazy), Some(0));
             // Same bytes/name/offsets and a deliberately retained local symbol
@@ -17854,7 +18510,7 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
                 declaration_parts: &parts, name_starts: &names,
                 name_start_index: std::collections::HashMap::from([(names[0], 0)]),
                 name_ends: &ends, fact_kinds: &[EntityKind::Alias],
-                native_tsz_entities: None, fact_len: 1,
+                native_tsz_entities: None, native_tsz_import_aliases: None, native_tsz_alias_witnesses: None, fact_len: 1,
             };
             let mut facts = FactSet::new();
             let mut active = std::collections::HashSet::new();

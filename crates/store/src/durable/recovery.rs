@@ -122,6 +122,44 @@ pub(super) fn descriptor_matches_base(
 }
 
 impl FileStore {
+    /// Resolves a workspace publication in the authenticated history of the
+    /// exact currently selected head. The caller supplies a journal byte
+    /// budget; a longer journal is refused rather than scanned under the
+    /// publication lock without a bound.
+    ///
+    /// # Errors
+    /// Returns `Bounds` when the journal exceeds `max_journal_bytes`, and
+    /// `Corrupt` when the current head or requested ancestor is not selected
+    /// by the verified workspace history.
+    pub fn workspace_selected_ancestor(
+        &self,
+        current_root: Hash,
+        current_generation: u64,
+        ancestor_root: Hash,
+        ancestor_generation: u64,
+        max_journal_bytes: u64,
+    ) -> Result<SelectedHead, StoreError> {
+        let _process_lock = self.acquire_process_lock()?;
+        let journal_path = self.root.join("journal");
+        if journal_length(&journal_path)? > max_journal_bytes {
+            return Err(StoreError::Bounds);
+        }
+        let current = self.read_state()?.selected.ok_or(StoreError::Corrupt)?;
+        let descriptor = current.descriptor();
+        let binding = descriptor.workspace().ok_or(StoreError::Corrupt)?;
+        if binding.root() != &descriptor.target()
+            || binding.closure() != descriptor.closure()
+            || descriptor.target() != current_root
+            || descriptor.target_generation() != current_generation
+            || ancestor_generation == 0
+            || ancestor_generation > current_generation
+        {
+            return Err(StoreError::Corrupt);
+        }
+        find_workspace_publication(&journal_path, ancestor_root, ancestor_generation)?
+            .ok_or(StoreError::Corrupt)
+    }
+
     /// Reopens the exact publication selected immediately before the named
     /// current workspace head. The current publication's authenticated
     /// journal descriptor binds its base root and generation; this method

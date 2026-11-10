@@ -1,16 +1,30 @@
 using System.Collections.Immutable;
 using System.Globalization;
 using System.Reflection;
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
+using System.Security.Cryptography;
 using System.Text.RegularExpressions;
+using System.Text;
+using System.Text.Json;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
 
 namespace Nudox.Oracle;
 
 /// <summary>A bound compilation plus the facts the document header needs.</summary>
+internal sealed record CapturedReferenceWitness(string Name, long Length, string Sha256);
+
 internal sealed record LoadedCompilation
 {
+    /// <summary>Captured bytes, when supplied by the compiler owner.</summary>
+    public IReadOnlyDictionary<string, byte[]>? CapturedBytes { get; init; }
+    public string? CapturedConfigDigest { get; init; }
+    public IReadOnlyList<CapturedReferenceWitness>? CapturedReferences { get; init; }
+    public IReadOnlyList<string>? CapturedAcceptedUsings { get; init; }
+    public IReadOnlyList<string>? CapturedDefines { get; init; }
     public required CSharpCompilation Compilation { get; init; }
 
     public required string AssemblyName { get; init; }
@@ -77,6 +91,103 @@ internal sealed record LoadedCompilation
 /// </remarks>
 internal static class SourceLoader
 {
+    private sealed record CapturedSource(string Path, string Text);
+    private sealed record CapturedConfig(string Path, string? Text);
+
+    // The owner supplies the exact ordered project and in-package ancestor probes.
+    // Null Text is a captured absence, not permission to reread the path.
+    private static (IReadOnlyList<string> Documents, string Digest) ReadCapturedConfig(string root, string projectFile, string manifestPath)
+    {
+        string json;
+        try
+        {
+            using var reader = new StreamReader(manifestPath, new UTF8Encoding(false, true), detectEncodingFromByteOrderMarks: false);
+            var buffer = new char[8192];
+            var text = new StringBuilder();
+            int count;
+            while ((count = reader.Read(buffer, 0, buffer.Length)) != 0)
+            {
+                if (text.Length > 16 * 1024 * 1024 - count)
+                    throw new OracleFailure("captured config manifest exceeds limit");
+                text.Append(buffer, 0, count);
+            }
+            json = text.ToString();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
+        {
+            throw new OracleFailure("captured config manifest could not be read");
+        }
+        CapturedConfig[] entries;
+        try { entries = JsonSerializer.Deserialize<CapturedConfig[]>(json) ?? throw new OracleFailure("empty captured configuration"); }
+        catch (JsonException) { throw new OracleFailure("invalid captured configuration"); }
+        var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
+        var fullProject = Path.GetFullPath(projectFile);
+        var relativeProject = Path.GetRelativePath(fullRoot, fullProject).Replace('\\', '/');
+        if (Path.IsPathRooted(relativeProject) || relativeProject.Split('/').Any(part => part is "" or "." or "..")
+            || !relativeProject.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+            throw new OracleFailure("captured project is outside package root");
+        var expected = new List<string> { relativeProject };
+        var current = Path.GetDirectoryName(fullProject);
+        var reachedRoot = false;
+        for (var depth = 0; current is not null && depth < MaxAncestorDepth; depth++)
+        {
+            var relative = Path.GetRelativePath(fullRoot, current).Replace('\\', '/');
+            if (relative == ".." || relative.StartsWith("../", StringComparison.Ordinal)) break;
+            var prefix = relative == "." ? "" : relative + "/";
+            expected.Add(prefix + "Directory.Build.props");
+            expected.Add(prefix + "Directory.Build.targets");
+            if (relative == ".") { reachedRoot = true; break; }
+            current = Path.GetDirectoryName(current);
+        }
+        if (!reachedRoot) throw new OracleFailure("captured config project exceeds scope depth");
+        if (entries.Length != expected.Count || entries.Length > 17)
+            throw new OracleFailure("captured config probes do not match project scope");
+        var output = new List<string>();
+        for (var i = 0; i < entries.Length; i++)
+        {
+            if (entries[i] is null || entries[i].Path != expected[i] || (i == 0 && entries[i].Text is null))
+                throw new OracleFailure("captured config probes do not match project scope");
+            if (entries[i].Text is { } text) output.Add(text);
+        }
+        return (output, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant());
+    }
+
+    private static Dictionary<string, byte[]> ReadCapturedSources(string root, IReadOnlyList<string> roots, TextReader reader)
+    {
+        const int maxChars = 64 * 1024 * 1024;
+        var input = new StringBuilder();
+        var buffer = new char[8192];
+        int count;
+        while ((count = reader.Read(buffer, 0, buffer.Length)) != 0)
+        {
+            if (input.Length > maxChars - count) throw new OracleFailure("captured source manifest exceeds limit");
+            input.Append(buffer, 0, count);
+        }
+        CapturedSource[] entries;
+        try
+        {
+            entries = JsonSerializer.Deserialize<CapturedSource[]>(input.ToString())
+                ?? throw new OracleFailure("captured source manifest is empty");
+        }
+        catch (JsonException ex) { throw new OracleFailure($"invalid captured source manifest: {ex.Message}"); }
+        if (entries.Length > 8192) throw new OracleFailure("captured source set exceeds file limit");
+        var result = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        var fullRoot = Path.GetFullPath(root);
+        foreach (var entry in entries)
+        {
+            if (entry is null || string.IsNullOrEmpty(entry.Path) || Encoding.UTF8.GetByteCount(entry.Path) > 4096
+                || entry.Text is null || Path.IsPathRooted(entry.Path)
+                || entry.Path.Split('/').Any(segment => segment is "" or "." or "..")
+                || entry.Path.Contains('\\'))
+                throw new OracleFailure("captured source has invalid relative path");
+            var full = Path.GetFullPath(Path.Combine(fullRoot, entry.Path));
+            if (!roots.Any(r => full.StartsWith(Path.GetFullPath(r).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+                || !entry.Path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)
+                || !result.TryAdd(full, Encoding.UTF8.GetBytes(entry.Text)))
+                throw new OracleFailure("captured source is outside the selected project or duplicated");
+        }
+        return result;
+    }
     /// <summary>Directory names never searched for sources.</summary>
     /// <remarks>
     /// Build output only. Deliberately *not* a heuristic list like "tests" or
@@ -98,19 +209,40 @@ internal static class SourceLoader
         // evidence to do so unambiguously exists. See `ScopeToMatchingProject`
         // for why this exists and what it deliberately does not do.
         var identityRoot = Path.GetFullPath(options.Roots[0]);
+        (IReadOnlyList<string> Documents, string Digest)? config = options.CapturedConfigPath is { } configPath && options.ProjectFile is { } configProject
+            ? ReadCapturedConfig(identityRoot, configProject, configPath)
+            : null;
         var roots = options.ProjectFile is { } exactProject
-            ? ScopeToExactProject(options.Roots, exactProject)
+            ? ScopeToExactProject(options.Roots, exactProject, config is null)
             : ScopeToMatchingProject(options.Roots, options.AssemblyName);
 
-        var files = CollectSourceFiles(roots);
+        Dictionary<string, byte[]>? captured = null;
+        if (options.CapturedSourcesPath is { } manifestPath)
+        {
+            try
+            {
+                using var reader = File.OpenText(manifestPath);
+                captured = ReadCapturedSources(identityRoot, roots, reader);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new OracleFailure("captured source manifest could not be read");
+            }
+        }
+        else if (options.CapturedSources)
+        {
+            captured = ReadCapturedSources(identityRoot, roots, Console.In);
+        }
+        var files = captured is null ? CollectSourceFiles(roots) : captured.Keys.Order(StringComparer.Ordinal).ToList();
         if (files.Count == 0)
         {
             throw new OracleFailure(
                 $"no .cs files found under: {string.Join(", ", roots)}");
         }
 
-        var assemblyName = options.AssemblyName ?? InferAssemblyName(roots);
-        var targetFramework = TargetFrameworkMoniker();
+        var assemblyName = options.AssemblyName ?? (config is not null && options.ProjectFile is { } selectedProject
+            ? Path.GetFileNameWithoutExtension(selectedProject) : InferAssemblyName(roots));
+        var targetFramework = options.TargetFramework ?? TargetFrameworkMoniker();
 
         var parseOptions = new CSharpParseOptions(
             options.LanguageVersion,
@@ -119,36 +251,71 @@ internal static class SourceLoader
             // which would look exactly like "this package has no docs".
             DocumentationMode.Parse,
             SourceCodeKind.Regular,
-            PreprocessorSymbols(options.DefineSymbols));
+            PreprocessorSymbols(options.DefineSymbols, options.ExactDefineSymbols));
 
         var sourceTrees = new List<SyntaxTree>(files.Count);
         foreach (var file in files)
         {
-            var text = File.ReadAllText(file);
+            var text = captured is null ? File.ReadAllText(file) : Encoding.UTF8.GetString(captured[file]);
+            if (captured is not null && text.StartsWith('\uFEFF')) text = text[1..];
             sourceTrees.Add(CSharpSyntaxTree.ParseText(text, parseOptions, path: file));
         }
 
-        var references = ReferenceAssemblies(options.ReferenceDirectory);
+        // Without caller-selected reference directories the package's own project
+        // files decide whether the ASP.NET Core shared framework is part of the
+        // compilation. A Web SDK project that cannot see Microsoft.AspNetCore.* would
+        // otherwise report hundreds of unresolved-type errors for healthy code.
+        // A fully captured unit (exact configuration probes) receives its references
+        // from the host's SDK observation instead, and never reads project files here.
+        // Project files count as compiler configuration for freshness, so a change
+        // to one invalidates the published result that this choice shaped.
+        var detectedFrameworks = config is null && options.ReferenceDirectories.Count == 0
+            ? DetectSharedFrameworks(roots)
+            : DetectedFrameworks.None;
+        var (references, capturedReferences) = ReferenceAssemblies(
+            options.ReferenceDirectories, captured is not null, detectedFrameworks.ReferenceDirectories);
+        if (detectedFrameworks.ReferenceDirectories.Count > 0)
+        {
+            Console.Error.WriteLine(
+                $"oracle: project files select {string.Join(", ", detectedFrameworks.Names)}; "
+                    + $"added reference directories: {string.Join(", ", detectedFrameworks.ReferenceDirectories)}");
+        }
         if (references.Count == 0)
         {
             throw new OracleFailure(
                 "no reference assemblies found; pass --ref-dir");
         }
 
+        // Roslyn rejects top-level statements in a library (CS8805). Select
+        // an executable only when the admitted source actually contains them;
+        // ordinary libraries must not acquire a synthetic entry point.
+        var hasTopLevelStatements = sourceTrees.Any(tree =>
+            tree.GetRoot() is CompilationUnitSyntax unit
+            && unit.Members.Any(member => member is GlobalStatementSyntax));
         var compilationOptions = new CSharpCompilationOptions(
-            OutputKind.DynamicallyLinkedLibrary,
-            allowUnsafe: true,
+            options.ExactOutputType switch {
+                "Exe" => OutputKind.ConsoleApplication,
+                "Library" => OutputKind.DynamicallyLinkedLibrary,
+                "WinExe" => OutputKind.WindowsApplication,
+                _ => hasTopLevelStatements ? OutputKind.ConsoleApplication : OutputKind.DynamicallyLinkedLibrary,
+            },
+            allowUnsafe: options.ExactUnsafe ?? true,
             // The package's own `#nullable` directives win over this; `Enable`
             // only sets the default for files that say nothing, which is the
             // right default for a modern package and makes `notAnnotated`
             // meaningful rather than universally oblivious.
-            nullableContextOptions: NullableContextOptions.Enable,
+            nullableContextOptions: options.ExactNullable switch {
+                "disable" => NullableContextOptions.Disable,
+                "warnings" => NullableContextOptions.Warnings,
+                "annotations" => NullableContextOptions.Annotations,
+                _ => NullableContextOptions.Enable,
+            },
             // Binding errors are the expected steady state in source mode (a
             // package's NuGet dependencies are not restored). Reporting them as
             // suppressed keeps the diagnostic bag small and fast.
             generalDiagnosticOption: ReportDiagnostic.Suppress);
 
-        var globalUsings = GlobalUsings(options, roots);
+        var globalUsings = GlobalUsings(options, roots, config?.Documents, detectedFrameworks);
 
         var (compilation, accepted) = BuildWithGlobalUsings(
             assemblyName, sourceTrees, references, compilationOptions, parseOptions, globalUsings);
@@ -159,8 +326,12 @@ internal static class SourceLoader
                 $"oracle: {accepted.Count} global using(s): {string.Join(", ", accepted)}");
         }
 
-        var (generatedCompilation, generatorSupport, generatorDiagnostics) =
-            ApplyConfiguredGenerators(compilation, parseOptions, roots);
+        // Captured source text alone does not authenticate analyzer binaries,
+        // their inputs, or generated output. Never load or execute configured
+        // generators in this bounded capture mode; coverage remains unknown.
+        var (generatedCompilation, generatorSupport, generatorDiagnostics) = captured is null
+            ? ApplyConfiguredGenerators(compilation, parseOptions, roots)
+            : (compilation, "unknown", (IReadOnlyList<Diagnostic>)Array.Empty<Diagnostic>());
         compilation = generatedCompilation;
 
         var errors = compilation
@@ -181,6 +352,11 @@ internal static class SourceLoader
 
         return new LoadedCompilation
         {
+            CapturedBytes = captured,
+            CapturedConfigDigest = config?.Digest,
+            CapturedReferences = capturedReferences,
+            CapturedAcceptedUsings = captured is null ? null : accepted,
+            CapturedDefines = captured is null ? null : parseOptions.PreprocessorSymbolNames.ToArray(),
             Compilation = compilation,
             AssemblyName = assemblyName,
             TargetFramework = targetFramework,
@@ -195,7 +371,7 @@ internal static class SourceLoader
 
     /// <summary>Scopes source loading to one exact admitted project file.</summary>
     private static IReadOnlyList<string> ScopeToExactProject(
-        IReadOnlyList<string> packageRoots, string projectFile)
+        IReadOnlyList<string> packageRoots, string projectFile, bool requirePhysicalProject = true)
     {
         var fullProject = Path.GetFullPath(projectFile);
         var packageRoot = Path.GetFullPath(packageRoots[0]);
@@ -205,7 +381,7 @@ internal static class SourceLoader
             || relative == ".."
             || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
             || relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal)
-            || !File.Exists(fullProject)
+            || (requirePhysicalProject && !File.Exists(fullProject))
             || !string.Equals(Path.GetExtension(fullProject), ".csproj", StringComparison.OrdinalIgnoreCase))
         {
             throw new OracleFailure("--project-file must name one .csproj beneath the package root");
@@ -739,7 +915,7 @@ internal static class SourceLoader
     /// <c>System</c> types to nothing and the extraction quietly degrades into
     /// error types rather than failing.
     /// </remarks>
-    private static List<string> GlobalUsings(OracleOptions options, IReadOnlyList<string> roots)
+    private static List<string> GlobalUsings(OracleOptions options, IReadOnlyList<string> roots, IReadOnlyList<string>? capturedConfig, DetectedFrameworks frameworks)
     {
         var usings = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -760,7 +936,15 @@ internal static class SourceLoader
             }
         }
 
-        var (included, removed) = ProjectUsings(roots);
+        if (options.ImplicitUsings && frameworks.WebImplicitUsings)
+        {
+            foreach (var ns in WebSdkImplicitUsings)
+            {
+                Add(ns);
+            }
+        }
+
+        var (included, removed) = ProjectUsings(roots, capturedConfig);
 
         foreach (var ns in included)
         {
@@ -811,26 +995,35 @@ internal static class SourceLoader
     /// </para>
     /// </remarks>
     private static (IReadOnlyList<string> Included, IReadOnlySet<string> Removed) ProjectUsings(
-        IReadOnlyList<string> roots)
+        IReadOnlyList<string> roots, IReadOnlyList<string>? capturedConfig)
     {
         var included = new List<string>();
         var removed = new HashSet<string>(StringComparer.Ordinal);
         var visited = new HashSet<string>(StringComparer.Ordinal);
-
-        foreach (var candidate in CandidateProjectFiles(roots))
+        var documents = capturedConfig is not null
+            ? capturedConfig.Select(text => (Path: (string?)null, Text: (string?)text))
+            : CandidateProjectFiles(roots).Select(path => (Path: (string?)path, Text: (string?)null));
+        foreach (var candidate in documents)
         {
-            if (!visited.Add(candidate))
-            {
-                continue;
-            }
-
+            if (candidate.Path is { } path && !visited.Add(path)) continue;
             System.Xml.Linq.XDocument document;
             try
             {
-                document = System.Xml.Linq.XDocument.Load(candidate);
+                if (candidate.Text is { } text)
+                {
+                    using var input = new StringReader(text);
+                    using var reader = System.Xml.XmlReader.Create(input, new System.Xml.XmlReaderSettings
+                    {
+                        DtdProcessing = System.Xml.DtdProcessing.Prohibit,
+                        XmlResolver = null,
+                    });
+                    document = System.Xml.Linq.XDocument.Load(reader);
+                }
+                else document = System.Xml.Linq.XDocument.Load(candidate.Path!);
             }
             catch (Exception ex) when (ex is System.Xml.XmlException or IOException)
             {
+                if (capturedConfig is not null) throw new OracleFailure("captured config XML is invalid");
                 continue;
             }
 
@@ -940,8 +1133,9 @@ internal static class SourceLoader
     /// <c>#if NET8_0_OR_GREATER</c> would have that code parsed as disabled text
     /// and every symbol inside it would silently vanish from the extraction.
     /// </remarks>
-    private static IEnumerable<string> PreprocessorSymbols(IReadOnlyList<string> extra)
+    private static IEnumerable<string> PreprocessorSymbols(IReadOnlyList<string> extra, bool exact)
     {
+        if (exact) return extra;
         var major = Environment.Version.Major;
 
         var symbols = new List<string> { "NET", $"NET{major}_0", "NETCOREAPP", "RELEASE", "TRACE" };
@@ -964,6 +1158,95 @@ internal static class SourceLoader
 
     private static string TargetFrameworkMoniker() => $"net{Environment.Version.Major}.0";
 
+    /// <summary>Namespaces the Web SDK adds to every file when ImplicitUsings is enabled.</summary>
+    private static readonly string[] WebSdkImplicitUsings =
+    [
+        "System.Net.Http.Json",
+        "Microsoft.AspNetCore.Builder",
+        "Microsoft.AspNetCore.Hosting",
+        "Microsoft.AspNetCore.Http",
+        "Microsoft.AspNetCore.Routing",
+        "Microsoft.Extensions.Configuration",
+        "Microsoft.Extensions.DependencyInjection",
+        "Microsoft.Extensions.Hosting",
+        "Microsoft.Extensions.Logging",
+    ];
+
+    /// <summary>Shared frameworks that the project files under the roots ask for.</summary>
+    private sealed class DetectedFrameworks
+    {
+        public static readonly DetectedFrameworks None = new([], [], false);
+
+        public DetectedFrameworks(IReadOnlyList<string> names, IReadOnlyList<string> referenceDirectories, bool webImplicitUsings)
+        {
+            Names = names;
+            ReferenceDirectories = referenceDirectories;
+            WebImplicitUsings = webImplicitUsings;
+        }
+
+        public IReadOnlyList<string> Names { get; }
+        public IReadOnlyList<string> ReferenceDirectories { get; }
+        public bool WebImplicitUsings { get; }
+    }
+
+    /// <summary>
+    /// Finds out from the project files whether the ASP.NET Core shared framework is
+    /// in play, and locates its assemblies next to the runtime this oracle runs on.
+    /// </summary>
+    /// <remarks>
+    /// Read as plain XML, never evaluated: a project is a web project when its root
+    /// names the Web SDK or it declares a <c>FrameworkReference</c> to
+    /// <c>Microsoft.AspNetCore.App</c>. When the shared framework is not installed
+    /// beside the runtime nothing is added, and the compilation reports the unresolved
+    /// types as it always did; the framework is never guessed from another location.
+    /// </remarks>
+    private static DetectedFrameworks DetectSharedFrameworks(IReadOnlyList<string> roots)
+    {
+        var web = false;
+        var webImplicitUsings = false;
+        foreach (var root in roots)
+        {
+            if (!Directory.Exists(root)) continue;
+            var full = Path.GetFullPath(root);
+            foreach (var project in Directory.EnumerateFiles(full, "*.csproj", SearchOption.AllDirectories).OrderBy(p => p, StringComparer.Ordinal))
+            {
+                if (IsExcluded(full, project)) continue;
+                System.Xml.Linq.XDocument document;
+                try
+                {
+                    using var reader = System.Xml.XmlReader.Create(project, new System.Xml.XmlReaderSettings
+                    {
+                        DtdProcessing = System.Xml.DtdProcessing.Prohibit,
+                        XmlResolver = null,
+                    });
+                    document = System.Xml.Linq.XDocument.Load(reader);
+                }
+                catch (Exception ex) when (ex is System.Xml.XmlException or IOException or UnauthorizedAccessException)
+                {
+                    continue;
+                }
+
+                var sdk = document.Root?.Attribute("Sdk")?.Value ?? "";
+                var isWeb = sdk.StartsWith("Microsoft.NET.Sdk.Web", StringComparison.Ordinal)
+                    || document.Descendants("FrameworkReference").Any(item =>
+                        string.Equals(item.Attribute("Include")?.Value, "Microsoft.AspNetCore.App", StringComparison.Ordinal));
+                if (!isWeb) continue;
+                web = true;
+                webImplicitUsings |= document.Descendants("ImplicitUsings").Any(item =>
+                    item.Value.Trim() is "enable" or "true");
+            }
+        }
+
+        if (!web) return DetectedFrameworks.None;
+        var runtimeDirectory = Path.GetDirectoryName(typeof(object).Assembly.Location);
+        var sharedRoot = runtimeDirectory is null ? null : Path.GetDirectoryName(Path.GetDirectoryName(runtimeDirectory));
+        var version = runtimeDirectory is null ? null : Path.GetFileName(runtimeDirectory);
+        if (sharedRoot is null || string.IsNullOrEmpty(version)) return DetectedFrameworks.None;
+        var aspNet = Path.Combine(sharedRoot, "Microsoft.AspNetCore.App", version);
+        if (!Directory.Exists(aspNet)) return DetectedFrameworks.None;
+        return new DetectedFrameworks(["Microsoft.AspNetCore.App"], [aspNet], webImplicitUsings);
+    }
+
     /// <summary>
     /// Reference assemblies for binding.
     /// </summary>
@@ -974,47 +1257,101 @@ internal static class SourceLoader
     /// default depend on SDK layout would turn a missing pack into a confusing
     /// "everything is an error type" extraction.
     /// </remarks>
-    private static List<MetadataReference> ReferenceAssemblies(string? overrideDirectory)
+    private static (List<MetadataReference> References, IReadOnlyList<CapturedReferenceWitness>? Witness) ReferenceAssemblies(
+        IReadOnlyList<string> overrideDirectories, bool capturedSources, IReadOnlyList<string>? supplementalDirectories = null)
     {
-        var directory = overrideDirectory
-            ?? Path.GetDirectoryName(typeof(object).Assembly.Location);
-
-        if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
-        {
-            return [];
-        }
+        IReadOnlyList<string> directories = overrideDirectories.Count == 0
+            ? [Path.GetDirectoryName(typeof(object).Assembly.Location) ?? "", .. (supplementalDirectories ?? [])]
+            : overrideDirectories;
 
         var references = new List<MetadataReference>();
-        var files = Directory.GetFiles(directory, "*.dll");
-        Array.Sort(files, StringComparer.Ordinal);
-
-        foreach (var file in files)
+        var witness = capturedSources ? new List<CapturedReferenceWitness>() : null;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        long capturedReferenceBytes = 0;
+        const long maxReferenceBytes = 32L * 1024 * 1024;
+        const long maxReferenceSetBytes = 256L * 1024 * 1024;
+        foreach (var directory in directories)
         {
-            var name = Path.GetFileNameWithoutExtension(file);
+            if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
+                throw new OracleFailure("configured reference assembly directory is unavailable");
+            var files = capturedSources
+                ? Directory.EnumerateFiles(directory, "*.dll").Take(8193).ToArray()
+                : Directory.GetFiles(directory, "*.dll");
+            if (capturedSources && files.Length > 8192)
+                throw new OracleFailure("captured reference set exceeds file limit");
+            Array.Sort(files, StringComparer.Ordinal);
 
-            // The native host shims are not managed assemblies; handing them to
-            // Roslyn throws rather than returning an error.
-            if (name.StartsWith("api-ms-", StringComparison.OrdinalIgnoreCase)
-                || name.StartsWith("clr", StringComparison.OrdinalIgnoreCase)
-                || name.Equals("hostfxr", StringComparison.OrdinalIgnoreCase)
-                || name.Equals("hostpolicy", StringComparison.OrdinalIgnoreCase)
-                || name.Equals("Microsoft.DiaSymReader.Native.amd64", StringComparison.OrdinalIgnoreCase))
+            foreach (var file in files)
             {
-                continue;
-            }
+                var name = Path.GetFileNameWithoutExtension(file);
 
-            try
-            {
-                references.Add(MetadataReference.CreateFromFile(file));
-            }
-            catch (Exception ex) when (ex is BadImageFormatException or IOException)
-            {
-                // A native or corrupt file in the runtime directory is not a
-                // reason to fail the whole extraction; note it and move on.
-                Console.Error.WriteLine($"oracle: skipping reference {name}: {ex.Message}");
+                // Native host shims are not managed reference assemblies.
+                if (name.StartsWith("api-ms-", StringComparison.OrdinalIgnoreCase)
+                    || name.StartsWith("clr", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("hostfxr", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("hostpolicy", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("Microsoft.DiaSymReader.Native.amd64", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (!seen.Add(name))
+                    throw new OracleFailure($"duplicate reference assembly name: {name}");
+                if (capturedSources && seen.Count > 8192)
+                    throw new OracleFailure("captured reference set exceeds file limit");
+
+                try
+                {
+                    if (capturedSources)
+                    {
+                        // Roslyn must consume exactly the bytes validated here, not lazily
+                        // reopen a mutable path after the metadata check.
+                        using var input = File.OpenRead(file);
+                        using var buffer = new MemoryStream();
+                        var chunk = new byte[64 * 1024];
+                        int read;
+                        while ((read = input.Read(chunk, 0, chunk.Length)) != 0)
+                        {
+                            if (buffer.Length + read > maxReferenceBytes
+                                || capturedReferenceBytes + buffer.Length + read > maxReferenceSetBytes)
+                                throw new OracleFailure("captured reference set exceeds limit");
+                            buffer.Write(chunk, 0, read);
+                        }
+                        var bytes = buffer.ToArray();
+                        capturedReferenceBytes = checked(capturedReferenceBytes + bytes.LongLength);
+                        if (bytes.LongLength > maxReferenceBytes || capturedReferenceBytes > maxReferenceSetBytes)
+                            throw new OracleFailure("captured reference set exceeds limit");
+                        using var stream = new MemoryStream(bytes, writable: false);
+                        using var pe = new PEReader(stream);
+                        if (!pe.HasMetadata || !pe.GetMetadataReader().IsAssembly)
+                        {
+                            if (overrideDirectories.Count != 0)
+                                throw new BadImageFormatException("not a managed assembly");
+                            continue;
+                        }
+                        references.Add(MetadataReference.CreateFromImage(bytes));
+                        witness!.Add(new CapturedReferenceWitness(name, bytes.LongLength,
+                            Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()));
+                    }
+                    else
+                    {
+                        if (overrideDirectories.Count != 0)
+                        {
+                            using var stream = File.OpenRead(file);
+                            using var pe = new PEReader(stream);
+                            if (!pe.HasMetadata || !pe.GetMetadataReader().IsAssembly)
+                                throw new BadImageFormatException("not a managed assembly");
+                        }
+                        references.Add(MetadataReference.CreateFromFile(file));
+                    }
+                }
+                catch (Exception ex) when (ex is BadImageFormatException or IOException)
+                {
+                    if (overrideDirectories.Count != 0)
+                        throw new OracleFailure($"configured reference assembly could not be loaded: {name}");
+                    Console.Error.WriteLine($"oracle: skipping reference {name}: {ex.Message}");
+                }
             }
         }
 
-        return references;
+        return (references, witness);
     }
 }

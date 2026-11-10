@@ -21,6 +21,8 @@
 //!   next tool call an agent can paste back.
 
 use backend_client::{ClientError, RequestCancellationReason, RequestContext, Session};
+#[cfg(test)]
+use backend_present::record_list;
 use backend_library::protocol::mcp::{MCP_PROTOCOL_VERSION, negotiate_version};
 use backend_library::{
     AdmittedGraphQueryInput, CompileExecutionIntent, GraphQueryPage, GraphQueryRow, GraphValue,
@@ -36,7 +38,7 @@ use backend_present::{
     ESTIMATED_BYTES_PER_TOKEN, Engine, Fault, Invocation, McpExecutableCall, McpExposure,
     McpInvocation, Probe, Request, answer_paged, bounded_text, encode_answer_with_call,
     encode_serializable, estimate_tokens, fault_value, lower_with_opener, markdown,
-    oversized_fault, record_list,
+    oversized_fault,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{
@@ -82,6 +84,25 @@ const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// It is the shared driver's [`Engine`] plus the one capability that is not a
 /// registry row: the typed Trustfall lane behind `backend.query`.
 pub(super) trait Product: Engine {
+    /// Whether qualified source replies come from the authenticated local
+    /// session. Generic or test products default to the fail-closed path.
+    fn qualified_source_ranges_from_authenticated_session(&self) -> bool {
+        false
+    }
+
+    /// Reads a source range without changing a continuation's view revision.
+    /// Implementations must return an admitted reply; observed policy claims
+    /// require the authenticated local owner session.
+    fn declaration_source_range(
+        &mut self,
+        selector: &backend_library::DeclarationSelector,
+        expected_root: Option<&str>,
+        range: backend_library::SourceRangeRequest,
+    ) -> Result<ReplyDto, ClientError> {
+        let _ = (selector, expected_root, range);
+        Err(ClientError::Protocol("source range is unavailable".to_owned()))
+    }
+
     /// Whether this product has the explicit owner-side rehydration route for
     /// compact outline witnesses. Other products retain full-proof cursors.
     fn supports_outline_owner_witness_route(&self) -> bool {
@@ -183,11 +204,18 @@ pub(super) trait Product: Engine {
 /// this crate. Its bodies carry no judgement: every arm forwards one probe to
 /// the matching session method, and every decision about which probes an answer
 /// needs is made once, in the shared driver.
-pub(super) struct SessionProduct(Session, backend_runtime::WorkspacePaths);
+pub(super) struct SessionProduct(Session, backend_runtime::WorkspacePaths, bool);
 
 impl SessionProduct {
+    #[cfg(test)]
     pub(super) const fn new(session: Session, paths: backend_runtime::WorkspacePaths) -> Self {
-        Self(session, paths)
+        Self(session, paths, false)
+    }
+
+    /// Only the matched local-owner connection path may mark this product as
+    /// eligible to project a locally admitted observed-policy reply.
+    const fn from_matched_owner(session: Session, paths: backend_runtime::WorkspacePaths) -> Self {
+        Self(session, paths, true)
     }
 
     fn into_session(self) -> Session {
@@ -289,6 +317,12 @@ impl Engine for SessionProduct {
     }
 
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+        // Session has already admitted these read-only source-policy claims
+        // on its authenticated local channel. The generic journal transport
+        // cannot grant that authority and is unnecessary for these reads.
+        if matches!(command, SurfaceCommand::Read { .. } | SurfaceCommand::References { .. }) {
+            return self.0.surface(command);
+        }
         backend_client::surface_with_index_journal(&self.1, command, |command| {
             self.0.surface(command)
         })
@@ -296,6 +330,19 @@ impl Engine for SessionProduct {
 }
 
 impl Product for SessionProduct {
+    fn qualified_source_ranges_from_authenticated_session(&self) -> bool {
+        self.2
+    }
+
+    fn declaration_source_range(
+        &mut self,
+        selector: &backend_library::DeclarationSelector,
+        expected_root: Option<&str>,
+        range: backend_library::SourceRangeRequest,
+    ) -> Result<ReplyDto, ClientError> {
+        self.0.declaration_source_range(selector, expected_root, range)
+    }
+
     fn supports_outline_owner_witness_route(&self) -> bool {
         self.0.supports_outline_owner_witness_route()
     }
@@ -448,7 +495,10 @@ impl reconnect::Endpoint for SessionEndpoint {
         if let Some(state) = self.pending_continuation_state.take() {
             session.restore_continuation_state(state);
         }
-        Ok(SessionProduct::new(session, self.paths.clone()))
+        Ok(SessionProduct::from_matched_owner(
+            session,
+            self.paths.clone(),
+        ))
     }
 
     fn retire(&mut self, previous: Self::Product) {
@@ -1169,6 +1219,12 @@ impl<P: Product> Server<P> {
                 "Use backend.index_progress for bounded polling",
             )));
         }
+        if name == "backend.source" && arguments.contains_key("byte_range") {
+            if arguments.get("byte_range") != Some(&Value::Bool(true)) {
+                return Err(RpcError::invalid("byte_range must be true when supplied"));
+            }
+            return self.source_range_tool(arguments, detail, invocation);
+        }
         if name == "backend.outline" {
             return self.outline_tool(arguments, detail, invocation, response_id);
         }
@@ -1705,7 +1761,7 @@ impl<P: Product> Server<P> {
                     "graph page terminal disagrees with native snapshot",
                 ));
             }
-            let records = record_list(&coordinate, &page.snapshot);
+            let records = backend_present::graph_page_records(&coordinate, &page.snapshot);
             let basis = records
                 .page_basis()
                 .ok_or_else(|| RpcError::tool("graph page omits native scope"))?;
@@ -2135,6 +2191,7 @@ impl<P: Product> Server<P> {
                 None,
                 SurfaceBody {
                     fault: view.fault().map(backend_present::FaultDto::new),
+                    partial_publication_warning: view.partial_publication_warning(),
                     continuation_call: None,
                     index_poll,
                     surface: SurfaceProjection {
@@ -2306,6 +2363,205 @@ impl<P: Product> Server<P> {
             ContinuationCursor::SemanticVersions(cursor) => return Ok(cursor.as_str().to_owned()),
         };
         self.sign_cursor_token(&owner_token, context)
+    }
+
+    fn source_range_tool(
+        &mut self,
+        arguments: &Map<String, Value>,
+        detail: Detail,
+        invocation: McpInvocation<'_>,
+    ) -> Result<Value, RpcError> {
+        let context = continuation_context(&self.project, "backend.source", arguments, detail);
+        let mut inputs = arguments.clone();
+        let cursor = inputs.remove("cursor");
+        inputs.remove("detail");
+        inputs.remove("byte_range");
+        let grammar = backend_present::grammar_for_tool("backend.source")
+            .ok_or_else(|| RpcError::new(-32602, "Unknown tool"))?;
+        validate_registry_arguments(grammar, &inputs)
+            .map_err(|fault| RpcError::from_fault(&fault))?;
+        let opener = self.opener()?;
+        let request = Invocation::from_json(grammar, &inputs)
+            .and_then(|invocation| lower_with_opener(&invocation, &self.project, opener))
+            .map_err(|fault| RpcError::from_fault(&fault))?;
+        let (root, range) = match cursor {
+            None => (
+                None,
+                backend_library::SourceRangeRequest {
+                    start: 0,
+                    limit: 2048,
+                    source_identity: None,
+                },
+            ),
+            Some(value) => {
+                let token = value
+                    .as_str()
+                    .ok_or_else(|| RpcError::invalid("source cursor must be a string"))?;
+                let owner = self.verify_cursor_token(token, &context)?.ok_or_else(|| {
+                    RpcError::invalid("invalid or expired source cursor; restart the source read")
+                })?;
+                let encoded = owner
+                    .strip_prefix("sr1-")
+                    .ok_or_else(|| RpcError::invalid("invalid source cursor"))?;
+                let bytes = URL_SAFE_NO_PAD
+                    .decode(encoded)
+                    .map_err(|_| RpcError::invalid("invalid source cursor"))?;
+                if bytes.len() != 68 || URL_SAFE_NO_PAD.encode(&bytes) != encoded {
+                    return Err(RpcError::invalid("invalid source cursor"));
+                }
+                let root = hex_bytes(&bytes[..32]);
+                let mut source_identity = [0u8; 32];
+                source_identity.copy_from_slice(&bytes[32..64]);
+                let start = u32::from_be_bytes(
+                    bytes[64..68]
+                        .try_into()
+                        .map_err(|_| RpcError::invalid("invalid source cursor"))?,
+                );
+                if start == 0 {
+                    return Err(RpcError::invalid("invalid source cursor"));
+                }
+                (
+                    Some(root),
+                    backend_library::SourceRangeRequest {
+                        start,
+                        limit: 2048,
+                        source_identity: Some(source_identity),
+                    },
+                )
+            }
+        };
+        if let Some(expected) = root.as_deref() {
+            let current = self.product.revision().map_err(|error| {
+                RpcError::from_fault(&Fault::from_client_error(
+                    &error,
+                    backend_present::Operand::Text("source".to_owned()),
+                ))
+            })?;
+            if expected != hex_bytes(current.as_bytes()) {
+                return Err(RpcError::stale_cursor());
+            }
+        }
+        let original_request = request.clone();
+        let selector = match request {
+            Request::Source(text) => backend_library::DeclarationSelector::Coordinate(
+                backend_present::resolve_declaration(&mut self.product, &text, "source")
+                    .map_err(|fault| RpcError::from_fault(&fault))?,
+            ),
+            Request::Declaration {
+                selector,
+                read: backend_library::DeclarationRead::Source,
+            } => selector,
+            _ => return Err(RpcError::invalid("invalid source selector")),
+        };
+        let reply = match self
+            .product
+            .declaration_source_range(&selector, root.as_deref(), range)
+        {
+            Ok(reply) => reply,
+            Err(
+                ClientError::StaleCursor
+                | ClientError::CommandFailed(backend_library::CommandFailure::CursorMismatch),
+            ) => return Err(RpcError::stale_cursor()),
+            Err(error) => {
+                // Preserve an existing typed source-unavailable reason, but
+                // never return the retained excerpt as a successful range.
+                if root.is_none()
+                    && matches!(
+                        &error,
+                        ClientError::CommandFailed(backend_library::CommandFailure::InvalidQuery(
+                            _
+                        ))
+                    )
+                {
+                    if let Err(fault) =
+                        backend_present::answer(&mut self.product, &original_request)
+                    {
+                        if fault.slug() == backend_present::FaultSlug::SourceUnavailable {
+                            return Err(RpcError::from_fault(&fault));
+                        }
+                    }
+                }
+                return Err(RpcError::from_fault(&Fault::from_client_error(
+                    &error,
+                    backend_present::Operand::Text("source".to_owned()),
+                )));
+            }
+        };
+        let backend_library::CommandReply::Document(document) = reply.reply else {
+            return Err(RpcError::tool("source range reply changed shape"));
+        };
+        let page = document
+            .source_range
+            .as_ref()
+            .ok_or_else(|| RpcError::tool("source range missing"))?;
+        if document.source_policy != page.source_policy {
+            return Err(RpcError::tool(
+                "source policy differs between document and range",
+            ));
+        }
+        if !page.source_policy.is_unknown()
+            && !self
+                .product
+                .qualified_source_ranges_from_authenticated_session()
+        {
+            return Err(RpcError::tool(
+                "qualified source range requires an authenticated local session",
+            ));
+        }
+        // The product's authenticated session admitted the full reply above;
+        // this recheck establishes geometry only, never source authority.
+        if !page.matches_request_shape(range) {
+            return Err(RpcError::tool("source range failed admission"));
+        }
+        let basis = document.basis();
+        let root_bytes = basis.as_bytes();
+        let next = if page.end < page.total {
+            let mut payload = Vec::with_capacity(68);
+            payload.extend_from_slice(root_bytes);
+            payload.extend_from_slice(&page.source_identity);
+            payload.extend_from_slice(&page.end.to_be_bytes());
+            // Source continuations remain usable across restarts and idle periods.
+            // Revision and host identity are revalidated on every use.
+            Some(self.sign_cursor_token_at(
+                u64::MAX,
+                &format!("sr1-{}", URL_SAFE_NO_PAD.encode(payload)),
+                &context,
+            )?)
+        } else {
+            None
+        };
+        let continuation = next
+            .as_deref()
+            .map(|cursor| invocation.continuation_call(cursor));
+        let payload = encode_serializable(
+            "source_range",
+            detail,
+            next.as_deref(),
+            SourceRangeBody {
+                revision: hex_bytes(root_bytes),
+                selected_symbol: encode_id(document.symbol.as_bytes()),
+                coordinate: document
+                    .selection
+                    .as_ref()
+                    .map(|selection| selection.coordinate()),
+                freshness: "verified_at_read",
+                source: page,
+                continuation_call: continuation,
+            },
+            DEFAULT_RESPONSE_BUDGET_BYTES,
+        )
+        .map_err(|error| RpcError::from_fault(&oversized_fault(error)))?;
+        let structured: Value = serde_json::from_slice(&payload.bytes)
+            .map_err(|error| RpcError::tool(format!("source range decode failed: {error}")))?;
+        let mut text = page.text.clone();
+        text.push_str("\n\n");
+        text.push_str(page.scope.description());
+        text.push_str(if page.source_policy.is_unknown() {
+            "\n\nSource bytes match the indexed capture; effective ignore-policy stability is not established."
+        } else {
+            "\n\nSource bytes match the indexed capture; unverified policy claim; ignore-policy stability unknown."
+        });
+        Ok(tool_result(&text, structured, false))
     }
 
     fn sign_cursor_token(&self, owner_token: &str, context: &[u8]) -> Result<String, RpcError> {
@@ -2732,6 +2988,10 @@ fn decode_cursor_owner(encoded: &str) -> Option<String> {
 /// Encoding admission only: the owner still checks the retained proof,
 /// selected roots, query roles and index state after wrapper authentication.
 fn valid_direct_cursor_owner(owner: &str) -> bool {
+    if let Some(encoded) = owner.strip_prefix("sr1-") {
+        let Ok(decoded) = URL_SAFE_NO_PAD.decode(encoded) else { return false; };
+        return decoded.len() == 68 && URL_SAFE_NO_PAD.encode(decoded) == encoded;
+    }
     if owner.is_empty() || owner.len() > backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES {
         return false;
     }
@@ -3806,11 +4066,25 @@ pub(super) fn default_detail(tool: &str) -> Detail {
 }
 
 #[derive(Serialize)]
+struct SourceRangeBody<'a> {
+    revision: String,
+    selected_symbol: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    coordinate: Option<&'a str>,
+    freshness: &'static str,
+    source: &'a backend_library::SourceRangePage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    continuation_call: Option<McpExecutableCall<'a>>,
+}
+
+#[derive(Serialize)]
 struct SurfaceBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     continuation_call: Option<&'a backend_present::McpExecutableCall<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<backend_present::FaultDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    partial_publication_warning: Option<&'a backend_present::PartialPublicationWarning>,
     #[serde(skip_serializing_if = "Option::is_none")]
     index_poll: Option<backend_present::IndexPollDto>,
     surface: SurfaceProjection<'a>,

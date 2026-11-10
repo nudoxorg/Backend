@@ -434,7 +434,23 @@ impl CommandGrammar {
                 "With --wait, bound observation to 0–900 seconds after acceptance (default 900). Timeout retains the operation; resume with the returned index_progress command.",
             ),
         ];
-        if self.name == "add" { ADD } else { &[] }
+        const SOURCE: &[ArgumentSpec] = &[
+            ArgumentSpec::optional(
+                "byte-range",
+                ArgumentKind::Flag,
+                "Read exact revision-pinned UTF-8 source bytes in bounded pages.",
+            ),
+            ArgumentSpec::optional(
+                "cursor",
+                ArgumentKind::Cursor,
+                "Continue the preceding --byte-range source read with the same selector and project.",
+            ),
+        ];
+        match self.name {
+            "add" => ADD,
+            "source" => SOURCE,
+            _ => &[],
+        }
     }
 
     /// The continuation domain of the explicit operand or projection-only page.
@@ -525,6 +541,10 @@ impl CommandGrammar {
             | CommandId::PackageVersions
             | CommandId::SemanticVersions
             | CommandId::SemanticSource
+            | CommandId::StyloQuery
+            | CommandId::StyloReadSite
+            | CommandId::SqlQuery
+            | CommandId::SqlReadSource
             | CommandId::PackageSourceMembership
             | CommandId::SelectSemanticVersion
             | CommandId::PackageProfile
@@ -688,7 +708,7 @@ const CURSOR: ArgumentSpec = ArgumentSpec::optional(
 );
 
 /// The calling convention of every registry row, in registry order.
-pub const GRAMMARS: [CommandGrammar; 54] = [
+pub const GRAMMARS: [CommandGrammar; 58] = [
     CommandGrammar {
         name: "advisory",
         tool: "backend.advisory",
@@ -875,7 +895,7 @@ pub const GRAMMARS: [CommandGrammar; 54] = [
             "Text to find in names, signatures, and documentation.",
         )],
         options: &[LIMIT, CURSOR],
-        when: "Start here for a question like where error handling lives. Match names, signatures, and documentation, then open a coordinate. Reported score is a descending order key (u32::MAX - rank, zero-based), not a relevance probability; compare it only within the same query/revision.",
+        when: "Search indexed declarations by name, signature, and documentation, then open a coordinate. Start with a distinctive name or term. Natural-language similarity depends on semantic search being available; check the returned semantic_search status. When search_scope is published_names_only, only published names are searched while full search prepares. For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package. Reported score is a descending order key (u32::MAX - rank, zero-based), not a relevance probability; compare it only within the same query/revision.",
     },
     CommandGrammar {
         name: "graph",
@@ -1019,6 +1039,30 @@ pub const GRAMMARS: [CommandGrammar; 54] = [
         )],
         options: &[],
         when: "Read or resume the complete captured source through exact native byte ranges. Assemble only one source identity in order; only the complete digest-checked union is a source operand.",
+    },
+    CommandGrammar {
+        name: "stylo-query",
+        tool: "backend.stylo_query",
+        aliases: &[],
+        positional: &[ArgumentSpec::required("package", ArgumentKind::PackageReference, "Selected local project label.")],
+        options: &[
+            ArgumentSpec::optional("class", ArgumentKind::Text, "Exact decoded class name; no selector dot is removed."),
+            ArgumentSpec::optional_with_json_name("custom-property", "custom_property", ArgumentKind::Text, "Exact decoded custom-property name including --."),
+            LIMIT.with_page_limit(PageLimitDomain::new(128, 20)),
+            ArgumentSpec::optional("cursor", ArgumentKind::Cursor, "Continuation from the preceding page.").with_continuation_domain(ContinuationDomain::NativeOwnerToken),
+            ArgumentSpec::optional_with_json_name("output-bytes", "output_bytes", ArgumentKind::Text, "Maximum native reply bytes, at least 131072; MCP has separate envelope limits."),
+            ArgumentSpec::optional_with_json_name("scan-rows", "scan_rows", ArgumentKind::Text, "Maximum native row reads, at least 7."),
+            ArgumentSpec::optional_with_json_name("scan-bytes", "scan_bytes", ArgumentKind::Text, "Maximum native row bytes, at least 229376."),
+        ],
+        when: "Read bounded native CSS selectors, custom-property facts, and supported authored sites. Results retain explicit partial scope; provider and cascade are unknown.",
+    },
+    CommandGrammar {
+        name: "stylo-read-site",
+        tool: "backend.stylo_read_site",
+        aliases: &[],
+        positional: &[ArgumentSpec::required("reference", ArgumentKind::Text, "Opaque source-site reference from a CSS query.")],
+        options: &[],
+        when: "Reverify and read one exact authored CSS site from its selected source root.",
     },
     CommandGrammar {
         name: "package-source-membership",
@@ -1476,5 +1520,24 @@ pub const GRAMMARS: [CommandGrammar; 54] = [
             ),
         ],
         when: "Use for one immediate bounded observation of an exact ticket or durable operation key. Unknown and unresolved observations do not establish publication.",
+    },
+    CommandGrammar {
+        name: "sql-query", tool: "backend.sql_query", aliases: &[],
+        positional: &[ArgumentSpec::required("package", ArgumentKind::PackageReference, "Selected local project label.")],
+        options: &[
+            ArgumentSpec::optional("role", ArgumentKind::Text, "One of any, relation, output_lineage, diagnostic."),
+            ArgumentSpec::optional("name", ArgumentKind::Text, "Exact native model name for relation or output lineage."),
+            LIMIT.with_page_limit(PageLimitDomain::new(128, 20)),
+            ArgumentSpec::optional("cursor", ArgumentKind::Cursor, "Continuation from the preceding page.").with_continuation_domain(ContinuationDomain::NativeOwnerToken),
+            ArgumentSpec::optional_with_json_name("output-bytes", "output_bytes", ArgumentKind::Text, "Maximum native reply bytes, at least 131072."),
+            ArgumentSpec::optional_with_json_name("scan-rows", "scan_rows", ArgumentKind::Text, "Maximum SQL relation row reads, at least 7."),
+            ArgumentSpec::optional_with_json_name("scan-bytes", "scan_bytes", ArgumentKind::Text, "Maximum SQL relation row bytes, at least 229376."),
+        ],
+        when: "Read bounded native SQL facts under explicit dialect and project-proposed context. Enumeration does not prove complete SQL binding or a deployed schema.",
+    },
+    CommandGrammar {
+        name: "sql-read-source", tool: "backend.sql_read_source", aliases: &[],
+        positional: &[ArgumentSpec::required("reference", ArgumentKind::Text, "Opaque diagnostic source reference from a SQL query.")], options: &[],
+        when: "Reverify the selected SQL host and read one exact native diagnostic extent.",
     },
 ];

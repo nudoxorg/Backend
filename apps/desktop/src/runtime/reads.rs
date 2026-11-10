@@ -1237,7 +1237,7 @@ fn compose_source(
         (Some(package), Some(location)) => local_file(package, location.path()),
         _ => None,
     };
-    Ok(PageValue::Source(page_mapping::source_view(
+    let mut view = page_mapping::source_view(
         symbol,
         &document,
         local_file.as_ref().map(|file| file.text.as_str()),
@@ -1246,7 +1246,9 @@ fn compose_source(
             .and_then(|file| file.editor_path_hint.as_deref()),
         &references,
         outline_index.map(AsRef::as_ref),
-    )))
+    );
+    view.references_gap = page_mapping::references_gap(references_reply.as_ref().ok(), outline_index.map(AsRef::as_ref));
+    Ok(PageValue::Source(view))
 }
 
 /// Reads current bytes only through the owner's Cargo metadata receipt.
@@ -1928,25 +1930,25 @@ mod tests {
     #[test]
     fn owner_update_read_failure_keeps_the_observed_versions_and_manual_action() {
         let update = ClientError::OwnerUpdate {
-            found: 38,
-            supported: 39,
+            found: 39,
+            supported: 40,
             detail: "exact old owner still shutting down".into(),
         };
         let ReadFailure::Fault(error) = failure(&update) else { panic!("manual update is a visible read failure"); };
         assert_eq!(error.code(), FaultCode::OwnerUpdate);
-        assert!(error.message().contains("38 → 39"));
+        assert!(error.message().contains("39 → 40"));
         assert!(error.message().contains("Restart the previous NuDox owner, then retry."));
         assert!(error.message().contains("No command was submitted."));
         assert!(error.message().contains("exact old owner still shutting down"));
         let bounded = ClientError::OwnerUpdate {
-            found: 38,
-            supported: 39,
+            found: 39,
+            supported: 40,
             detail: "証明\n".repeat(200),
         };
         let ReadFailure::Fault(bounded) = failure(&bounded) else { panic!("manual update remains visible"); };
         assert_eq!(bounded.code(), FaultCode::OwnerUpdate);
         assert!(bounded.message().len() <= 512);
-        assert!(bounded.message().contains("38 → 39"));
+        assert!(bounded.message().contains("39 → 40"));
         assert!(bounded.message().contains("Restart the previous NuDox owner, then retry."));
         assert!(bounded.message().contains("No command was submitted."));
         assert!(!bounded.message().chars().any(char::is_control));
@@ -3361,6 +3363,7 @@ mod tests {
                     declaration: Known::Unknown(unknown()),
                     identifiers: Known::Unknown(unknown()),
                     uses: Known::Unknown(unknown()),
+                    references_gap: None,
                     uses_elsewhere: Arc::from([]),
                 });
                 context.publish(page.clone());

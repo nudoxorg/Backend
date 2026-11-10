@@ -97,6 +97,7 @@ pub fn page_from_document_with_graph_relations(
         .with_prose(Prose::from_fragments(&document.fragments))
         .with_members(member_groups(members, centre))
         .with_relations(relation_groups(relations, centre, graph_relations))
+        .with_source_policy(document.source_policy.clone())
         .with_notes(notes);
     match signature {
         Some(value) => page.with_signature(value),
@@ -121,6 +122,12 @@ fn source_from(
     availability: &SourceAvailability,
     excerpt: &SourceExcerpt,
 ) -> Source {
+    if matches!(availability, SourceAvailability::StaleFile { .. }) {
+        let operand = crate::fault::Operand::Coordinate(identity.coordinate().clone());
+        if let Some(fault) = Fault::source(availability, operand) {
+            return Source::Absent { fault };
+        }
+    }
     let site = site_from(identity, availability);
     match (site, excerpt) {
         (Some(site), SourceExcerpt::Captured { text, extent }) => Source::Captured {

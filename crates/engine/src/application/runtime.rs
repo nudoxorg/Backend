@@ -208,6 +208,74 @@ impl OwnedPackageSource {
     }
 }
 
+/// One owner-captured C# project/configuration probe for the compiler queue.
+#[derive(Clone, Debug)]
+pub struct OwnedCSharpConfigProbe {
+    path: Box<str>,
+    text: Option<Box<str>>,
+}
+impl OwnedCSharpConfigProbe {
+    /// Creates a portable path and captured UTF-8 contents, or a captured absence.
+    pub fn new(path: &str, text: Option<String>) -> Result<Self, PackageSourceSetError> {
+        PackageSource::validate_path(path)?;
+        Ok(Self { path: path.into(), text: text.map(Into::into) })
+    }
+}
+
+/// One captured global.json presence or absence, not an SDK selection.
+#[derive(Clone, Debug)]
+pub struct OwnedCSharpSdkProbe {
+    path: Box<str>,
+    text: Option<Box<str>>,
+}
+impl OwnedCSharpSdkProbe {
+    /// Creates a normalized relative path and exact captured UTF-8 bytes, or absence.
+    pub fn new(path: &str, text: Option<String>) -> Result<Self, PackageSourceSetError> {
+        PackageSource::validate_path(path)?;
+        Ok(Self { path: path.into(), text: text.map(Into::into) })
+    }
+}
+
+/// Claim-only observed source identities for one selected C# unit.
+#[derive(Clone, Debug)]
+pub struct OwnedCSharpSourceClaim {
+    path: Box<str>,
+    byte_length: u32,
+    input_content: [u8; 32],
+    source_fact: [u8; 32],
+}
+impl OwnedCSharpSourceClaim {
+    /// Admits one portable path and captured identity tuple; bytes are checked on attachment.
+    pub fn new(path: &str, byte_length: u32, input_content: [u8; 32], source_fact: [u8; 32]) -> Result<Self, PackageSourceSetError> {
+        PackageSource::validate_path(path)?;
+        if input_content == [0; 32] || source_fact == [0; 32] { return Err(PackageSourceSetError::NativeCSharpProfileMismatch); }
+        Ok(Self { path: path.into(), byte_length, input_content, source_fact })
+    }
+}
+
+/// Claim-only C# unit and source set. No project-membership authority is implied.
+#[derive(Clone, Debug)]
+pub struct OwnedCSharpUnitClaim {
+    project_path: Box<str>,
+    sources: Box<[OwnedCSharpSourceClaim]>,
+}
+impl OwnedCSharpUnitClaim {
+    /// Admits a bounded, strictly path-ordered source claim list.
+    pub fn new(project_path: &str, sources: Box<[OwnedCSharpSourceClaim]>) -> Result<Self, PackageSourceSetError> {
+        PackageSource::validate_path(project_path)?;
+        if !project_path.to_ascii_lowercase().ends_with(".csproj") || sources.is_empty()
+            || sources.len() > MAX_MANIFEST_ENTRIES || sources.windows(2).any(|pair| pair[0].path >= pair[1].path) {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        Ok(Self { project_path: project_path.into(), sources })
+    }
+    fn retained_bytes(&self) -> Option<usize> {
+        self.sources.iter().try_fold(size_of::<Self>().checked_add(self.project_path.len())?, |total, source| {
+            total.checked_add(size_of::<OwnedCSharpSourceClaim>())?.checked_add(source.path.len())
+        })
+    }
+}
+
 /// Complete owned package frontier transferred through the bounded runtime channel.
 #[derive(Clone, Debug)]
 pub struct OwnedPackageSourceSet {
@@ -220,6 +288,9 @@ pub struct OwnedPackageSourceSet {
     expected_rust_target_source_closure: Option<[u8; 32]>,
     package_root: Box<Path>,
     sources: Box<[OwnedPackageSource]>,
+    csharp_config: Option<Box<[OwnedCSharpConfigProbe]>>,
+    csharp_sdk_probes: Option<Box<[OwnedCSharpSdkProbe]>>,
+    csharp_unit_claim: Option<OwnedCSharpUnitClaim>,
     input_claim: Option<SemanticInputWitness>,
     python_environment: Option<backend_frontend_python::legacy::checker::PythonEnvironmentInput>,
     admission: OwnedPackageSourceAdmission,
@@ -286,6 +357,9 @@ impl OwnedPackageSourceSet {
             go_compile_deadline: None,
             go_witness_deadline_phase: None,
             sources,
+            csharp_config: None,
+            csharp_sdk_probes: None,
+            csharp_unit_claim: None,
             input_claim: None,
             python_environment: None,
             admission: OwnedPackageSourceAdmission::Parsed,
@@ -294,6 +368,71 @@ impl OwnedPackageSourceSet {
             native_clang_permits: Box::new([]),
             native_csharp_permits: Box::new([]),
         })
+    }
+
+    /// Checks a claim-only unit/source tuple against the actual queued bytes.
+    /// Does not prove MSBuild membership, a native permit, or selected authority.
+    pub fn with_csharp_unit_claim(mut self, claim: OwnedCSharpUnitClaim) -> Result<Self, PackageSourceSetError> {
+        let CompilationUnitKeyV2::CSharpProject { project_path } = self.package_target.unit_key() else {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        };
+        if !matches!(self.request.target.profile, LanguageProfile::CSharp(_))
+            || self.admission != OwnedPackageSourceAdmission::Parsed || claim.project_path != *project_path {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        let mut selected = self.sources.iter().filter(|source| super::compiler::unit_source_matches(self.package_target.unit_key(), &source.relative_path));
+        for claimed in claim.sources.iter() {
+            let source = selected.next().ok_or(PackageSourceSetError::NativeCSharpProfileMismatch)?;
+            let verified = backend_compile::VerifiedSourceText::capture(source.source_bytes()).map_err(|_| PackageSourceSetError::NativeCSharpProfileMismatch)?;
+            let identity = backend_semantic::ir::SourceIdentity::from_bytes(source.source_bytes()).ok_or(PackageSourceSetError::NativeCSharpProfileMismatch)?;
+            if source.relative_path != claimed.path || identity.byte_len != claimed.byte_length
+                || verified.content().to_bytes() != claimed.input_content || identity.identity.as_ref() != &claimed.source_fact {
+                return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+            }
+        }
+        if selected.next().is_some() { return Err(PackageSourceSetError::NativeCSharpProfileMismatch); }
+        self.csharp_unit_claim = Some(claim);
+        Ok(self)
+    }
+
+    /// Attaches bounded owner-captured configuration probes to an exact C# unit.
+    /// The caller must authenticate capture and absence observations separately.
+    pub fn with_csharp_config(mut self, probes: Box<[OwnedCSharpConfigProbe]>) -> Result<Self, PackageSourceSetError> {
+        let expected = super::compiler::csharp_config_probe_paths(self.package_target.unit_key())
+            .ok_or(PackageSourceSetError::NativeCSharpProfileMismatch)?;
+        if !matches!(self.request.target.profile, LanguageProfile::CSharp(_))
+            || probes.len() != expected.len() || probes.first().is_none_or(|probe| probe.text.is_none())
+            || probes.iter().zip(expected.iter()).any(|(probe, path)| probe.path.as_ref() != path) {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        let size = probes.iter().try_fold(0usize, |total, probe| {
+            total.checked_add(probe.path.len())?.checked_add(probe.text.as_ref().map_or(0, |text| text.len()))
+        }).ok_or(PackageSourceSetError::NativeCSharpProfileMismatch)?;
+        if size > 2 * 1024 * 1024 { return Err(PackageSourceSetError::NativeCSharpProfileMismatch); }
+        self.csharp_config = Some(probes);
+        Ok(self)
+    }
+
+    /// Retains exact confined global.json probes for a C# project unit.
+    /// This claim does not select an SDK or authenticate the captures.
+    pub fn with_csharp_sdk_probes(mut self, probes: Box<[OwnedCSharpSdkProbe]>) -> Result<Self, PackageSourceSetError> {
+        if !matches!(self.request.target.profile, LanguageProfile::CSharp(_)) {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        let config_paths = super::compiler::csharp_config_probe_paths(self.package_target.unit_key())
+            .ok_or(PackageSourceSetError::NativeCSharpProfileMismatch)?;
+        let expected = config_paths.iter().skip(1).step_by(2).map(|path| {
+            path.strip_suffix("Directory.Build.props").map(|prefix| format!("{prefix}global.json"))
+        }).collect::<Option<Vec<_>>>().ok_or(PackageSourceSetError::NativeCSharpProfileMismatch)?;
+        if probes.len() != expected.len() || probes.iter().zip(&expected).any(|(probe, path)| probe.path.as_ref() != path) {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        let total = probes.iter().try_fold(0usize, |total, probe| {
+            total.checked_add(probe.path.len())?.checked_add(probe.text.as_ref().map_or(0, |text| text.len()))
+        }).ok_or(PackageSourceSetError::NativeCSharpProfileMismatch)?;
+        if total > 1024 * 1024 { return Err(PackageSourceSetError::NativeCSharpProfileMismatch); }
+        self.csharp_sdk_probes = Some(probes);
+        Ok(self)
     }
 
     /// Selects a Rust Cargo target by its exact admitted Cargo name.
@@ -391,7 +530,7 @@ impl OwnedPackageSourceSet {
         sources: Box<[OwnedPackageSource]>,
         selected_frontier_project: [u8; 32],
         selected_frontier_root: [u8; 32],
-        permits: Box<[NativeCSharpCandidatePermit]>,
+        mut permits: Box<[NativeCSharpCandidatePermit]>,
     ) -> Result<Self, PackageSourceSetError> {
         if !matches!(request.target.profile, LanguageProfile::CSharp(_))
             || sources
@@ -400,26 +539,12 @@ impl OwnedPackageSourceSet {
         {
             return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
         }
-        if permits.is_empty()
-            || permits.iter().any(|permit| {
-                permit.profile() != request.target.profile
-                    || permit.package_target() != request.as_ref()
-                    || permit.selected_root() != selected_frontier_root
-                    || !sources.iter().any(|source| {
-                        permit.admits(
-                            selected_frontier_project,
-                            selected_frontier_root,
-                            request.as_ref(),
-                            &source.relative_path,
-                            request.target.profile,
-                            source.source_bytes(),
-                        )
-                    })
-            })
-        {
+        let mut admitted = Self::new(request, package_root, sources)?;
+        permits.sort_unstable_by(|left, right| left.path().cmp(right.path()));
+        if !csharp_candidate_permits_match(&admitted.sources, &permits, selected_frontier_project,
+            selected_frontier_root, admitted.request.as_ref(), admitted.request.target.profile) {
             return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
         }
-        let mut admitted = Self::new(request, package_root, sources)?;
         admitted.admission = OwnedPackageSourceAdmission::NativeCSharpCandidate;
         admitted.native_frontier_project = Some(selected_frontier_project);
         admitted.native_frontier_root = Some(selected_frontier_root);
@@ -511,6 +636,27 @@ fn borrow_raw_python_sources(
         .collect()
 }
 
+fn ordered_source_index(
+    sources: &[OwnedPackageSource], path: &str,
+    compare: &mut impl FnMut(&str, &str) -> std::cmp::Ordering,
+) -> Option<usize> {
+    sources.binary_search_by(|source| compare(&source.relative_path, path)).ok()
+}
+
+fn csharp_candidate_permits_match(
+    sources: &[OwnedPackageSource], permits: &[NativeCSharpCandidatePermit],
+    project: [u8; 32], root: [u8; 32], target: &backend_semantic::vocabulary::PackageUrl, profile: LanguageProfile,
+) -> bool {
+    if permits.is_empty() || permits.len() > sources.len() { return false; }
+    if permits.windows(2).any(|pair| pair[0].path() >= pair[1].path()) { return false; }
+    permits.iter().all(|permit| {
+        if permit.profile() != profile || permit.package_target() != target || permit.selected_root() != root { return false; }
+        let Some(index) = ordered_source_index(sources, permit.path(), &mut |left, right| left.cmp(right)) else { return false; };
+        let source = &sources[index];
+        permit.admits(project, root, target, &source.relative_path, profile, source.source_bytes())
+    })
+}
+
 /// Exact owned storage paths retained by the compiler worker.
 #[derive(Debug)]
 pub struct LocalCompilerRuntimePaths {
@@ -593,6 +739,9 @@ pub enum LocalCompilerCapabilityState {
 /// Bounded, non-sensitive cause retained when the Pyrefly version probe fails.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LocalRuntimePythonCheckerProbeFailure {
+    /// The configured checker path failed admission before any process was started.
+    /// The closed host selection retains the exact spelling and cause.
+    ConfiguredPath,
     /// The configured executable path was relative.
     RelativeExecutable,
     /// The selected executable could not be started.
@@ -1027,6 +1176,18 @@ impl LocalCompilerPlaneExecutionSeed {
         identity.update(b"compiler.python.project-plane-authority.v1\0");
         identity.update(&self.local_authority_fingerprint);
         identity.update(&fingerprint.as_bytes());
+        self.local_authority_fingerprint = *identity.finalize().as_bytes();
+        self
+    }
+
+    /// The SDK facts a captured C# project was compiled under change this
+    /// host-local recipe before sealing. They are observations of the installed
+    /// SDK, not a portable invocation claim, so only the local plane carries them.
+    pub(crate) fn with_csharp_sdk_observation(mut self, fingerprint: [u8; 32]) -> Self {
+        let mut identity = blake3::Hasher::new();
+        identity.update(b"compiler.csharp.sdk-plane-authority.v1\0");
+        identity.update(&self.local_authority_fingerprint);
+        identity.update(&fingerprint);
         self.local_authority_fingerprint = *identity.finalize().as_bytes();
         self
     }
@@ -1755,6 +1916,9 @@ fn package_authority_fingerprint(
         Language::CSharp => {
             let csharp = authority.csharp.as_ref()?;
             identity.update(
+                backend_frontend_csharp::legacy::CSHARP_CAPTURED_UNIT_POLICY_ID_V1.as_bytes(),
+            );
+            identity.update(
                 backend_frontend_csharp::legacy::CSHARP_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1
                     .as_bytes(),
             );
@@ -1763,6 +1927,10 @@ fn package_authority_fingerprint(
             identity.update(&(csharp.producer.image_limit as u64).to_be_bytes());
             update_optional_string_identity(&mut identity, csharp.assembly_name.as_deref());
             update_optional_path_identity(&mut identity, csharp.reference_directory.as_deref());
+            identity.update(&(csharp.additional_reference_directories.len() as u64).to_be_bytes());
+            for path in &csharp.additional_reference_directories {
+                update_path_identity(&mut identity, path);
+            }
             update_string_list_identity(&mut identity, &csharp.define_symbols);
             update_string_list_identity(&mut identity, &csharp.extra_usings);
             identity.update(&[
@@ -1918,6 +2086,17 @@ fn capability_setup_issue(
             failure: CompilerToolFailure::ProbeFailed,
         });
     }
+    if profile.language() == Language::Python
+        && matches!(
+            authority.admitted_python_checker(),
+            LocalRuntimePythonCheckerAdmission::ProbeFailed { .. }
+        )
+    {
+        return Some(CompilerToolIssue {
+            requirement: CompilerToolRequirement::PythonChecker,
+            failure: CompilerToolFailure::ProbeFailed,
+        });
+    }
     let native_tool = CompilerToolRequirement::Native(profile.language().native_tool());
     match runtime.map(|candidate| candidate.state) {
         Some(LocalRuntimeToolchainState::Unavailable) | None => {
@@ -1986,7 +2165,9 @@ fn portable_invocation_options_digest(
             let csharp = authority.csharp.as_ref()?;
             // The reference tree is a semantic input but has no portable content identity in the
             // current admission API. Do not collapse two different local paths into one recipe.
-            if csharp.reference_directory.is_some() {
+            if csharp.reference_directory.is_some()
+                || !csharp.additional_reference_directories.is_empty()
+            {
                 return None;
             }
             options.update(b"csharp-helper-options-v1\0");
@@ -3168,6 +3349,8 @@ pub struct LocalRuntimeCSharpAuthority {
     pub assembly_name: Option<Box<str>>,
     /// Optional reference-assembly directory forwarded to Roslyn.
     pub reference_directory: Option<Box<Path>>,
+    /// Additional explicitly selected reference-assembly directories.
+    pub additional_reference_directories: Box<[Box<Path>]>,
     /// Additional preprocessor symbols, in caller order.
     pub define_symbols: Box<[Box<str>]>,
     /// Additional global usings, in caller order.
@@ -3592,6 +3775,16 @@ impl Clone for LocalCompilerClient {
 }
 
 impl LocalCompilerClient {
+    /// Capture one bounded, native-authority empty configured TypeScript program.
+    /// This witness does not grant source retirement and must be revalidated at grant.
+    pub fn capture_empty_native_typescript_program(
+        &self, root: &Path, cancelled: Arc<AtomicBool>,
+    ) -> Result<super::typescript_empty::EmptyNativeTypeScriptProgram, String> {
+        if !self.is_ready() { return Err("compiler runtime is unavailable".into()); }
+        let host = self.shared.typescript_empty_host.as_ref().ok_or("native TypeScript host unavailable")?;
+        super::typescript_empty::EmptyNativeTypeScriptProgram::capture(host, root, cancelled)
+    }
+
     /// Clone the independent frozen policy; resolving it is confined to a
     /// selected installed environment request, never checker/owner startup.
     pub fn python_interpreter_admission(
@@ -3789,6 +3982,7 @@ impl LocalCompilerClient {
         let capabilities = Arc::new(RwLock::new(LocalCompilerCapabilities::from_configuration(
             &configuration,
         )));
+        let typescript_empty_host = configuration.typescript_project_host.clone();
         let go_authority = configuration.package_authority.go.clone();
         let deferred_go = configuration.package_authority.deferred_go.clone();
         let native_python = configuration
@@ -3840,6 +4034,7 @@ impl LocalCompilerClient {
                         python_snapshots: Mutex::new(PythonSnapshotCache::default()),
                         typescript_snapshot: Mutex::new(TypeScriptSnapshotCache::default()),
                         go_authority,
+                        typescript_empty_host,
                         deferred_go,
                         native_python,
                         python_interpreter,
@@ -4582,6 +4777,7 @@ struct RuntimeShared {
     python_snapshots: Mutex<PythonSnapshotCache>,
     typescript_snapshot: Mutex<TypeScriptSnapshotCache>,
     go_authority: Option<ConfiguredGoOracle>,
+    typescript_empty_host: Option<TypeScriptProjectHost>,
     deferred_go: Option<Arc<DeferredGoAuthority>>,
     native_python: Option<Arc<DeferredNativePython>>,
     python_interpreter: Option<Arc<super::host::PythonInterpreterHostAdmission>>,
@@ -4818,6 +5014,249 @@ mod rust_target_selector_admission_tests {
             .into_boxed_slice(),
         )
         .expect("valid Rust package source set")
+    }
+
+    /// Run explicitly with NUDOX_TEST_DOTNET and NUDOX_TEST_CSHARP_HELPER pointing
+    /// to a private .NET host and the helper built from the tested source.
+    #[test]
+    #[ignore = "requires explicitly configured private .NET and Roslyn helper"]
+    fn captured_csharp_queue_stages_same_attempt_evidence() {
+        use backend_semantic::vocabulary::{CSharpVersion, NativeTool};
+        use std::num::NonZeroUsize;
+        let dotnet =
+            PathBuf::from(std::env::var_os("NUDOX_TEST_DOTNET").expect("private dotnet path"));
+        let helper = PathBuf::from(
+            std::env::var_os("NUDOX_TEST_CSHARP_HELPER").expect("private helper path"),
+        );
+        let version = std::process::Command::new(&dotnet)
+            .arg("--version")
+            .output()
+            .expect("probe dotnet");
+        assert!(version.status.success());
+        let root = std::env::temp_dir().join(format!(
+            "nudox-csharp-queue-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let package = root.join("package");
+        std::fs::create_dir_all(package.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("native")).unwrap();
+        std::fs::write(package.join("src/App.csproj"), "<Project/>").unwrap();
+        let source = "public class App { public static int Answer() => 42; }\n";
+        std::fs::write(package.join("src/App.cs"), source).unwrap();
+        let configuration = LocalCompilerRuntimeConfiguration::new(
+            LocalCompilerRuntimePaths::new(
+                root.join("artifacts"),
+                root.join("journal"),
+                root.join("native"),
+            )
+            .unwrap(),
+            vec![
+                LocalRuntimeToolchain::resolved(
+                    NativeTool::CSharpCompiler,
+                    dotnet,
+                    &version.stdout,
+                )
+                .unwrap(),
+            ]
+            .into_boxed_slice(),
+            Box::new([]),
+            LocalRuntimePackageAuthority {
+                csharp: Some(LocalRuntimeCSharpAuthority {
+                    producer: CSharpOracle::new(helper),
+                    assembly_name: None,
+                    reference_directory: None,
+                    additional_reference_directories: Box::new([]),
+                    define_symbols: Box::new([]),
+                    extra_usings: Box::new([]),
+                    implicit_usings: false,
+                    include_non_public: true,
+                    maximum_source_bytes: 1024 * 1024,
+                }),
+                maximum_image_bytes: Some(NonZeroUsize::new(64 * 1024 * 1024).unwrap()),
+                ..Default::default()
+            },
+            LocalCompilerTimeout::new(Duration::from_secs(300)).unwrap(),
+            PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN).unwrap(),
+            LocalCompilerScratch::with_fragment_capacity(
+                NonZeroUsize::new(16 * 1024 * 1024).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let profile = LanguageProfile::CSharp(CSharpVersion::CSharp14);
+        let request = request(profile, "pkg:nuget/csharp-queue-fixture@1.0.0");
+        let target = CompilerPackageTargetV2::new(
+            request.as_ref().clone(),
+            CompilationUnitKeyV2::CSharpProject {
+                project_path: "src/App.csproj".into(),
+            },
+        )
+        .unwrap();
+        let bytes = source.as_bytes();
+        let input = backend_compile::VerifiedSourceText::capture(bytes)
+            .unwrap()
+            .content()
+            .to_bytes();
+        let fact = *backend_semantic::ir::SourceIdentity::from_bytes(bytes)
+            .unwrap()
+            .identity
+            .as_ref();
+        let claim = OwnedCSharpUnitClaim::new(
+            "src/App.csproj",
+            vec![
+                OwnedCSharpSourceClaim::new("src/App.cs", bytes.len() as u32, input, fact).unwrap(),
+            ]
+            .into_boxed_slice(),
+        )
+        .unwrap();
+        let probes = vec![
+            OwnedCSharpConfigProbe::new("src/App.csproj", Some("<Project/>".into())).unwrap(),
+            OwnedCSharpConfigProbe::new("src/Directory.Build.props", None).unwrap(),
+            OwnedCSharpConfigProbe::new("src/Directory.Build.targets", None).unwrap(),
+            OwnedCSharpConfigProbe::new("Directory.Build.props", None).unwrap(),
+            OwnedCSharpConfigProbe::new("Directory.Build.targets", None).unwrap(),
+        ]
+        .into_boxed_slice();
+        let request = OwnedPackageSourceSet::new_for_unit(
+            request,
+            target,
+            package.clone(),
+            vec![OwnedPackageSource::new("src/App.cs", source).unwrap()].into_boxed_slice(),
+        )
+        .unwrap()
+        .with_csharp_config(probes)
+        .unwrap()
+        .with_csharp_unit_claim(claim)
+        .unwrap();
+        let client = LocalCompilerClient::start(configuration).unwrap();
+        let staged = client
+            .compile_package_sources_staged(request)
+            .expect("stage captured C# fixture");
+        let input_root = *staged.input_witness().input_root();
+        let evidence = staged
+            .csharp_invocation_evidence_object(input_root)
+            .expect("same-attempt CSE1 evidence");
+        let decoded = crate::application::decode_csharp_evidence(&evidence).expect("decode CSE1");
+        assert_eq!(decoded.project_path, "src/App.csproj");
+        assert_eq!(decoded.input, input_root);
+        assert_eq!(decoded.sources.len(), 1);
+        assert_eq!(decoded.sources[0].path, "src/App.cs");
+        assert_eq!(decoded.sources[0].input_content, input);
+        assert_eq!(decoded.sources[0].source_fact, fact);
+        assert_eq!(decoded.config.len(), 5);
+        assert_eq!(staged.artifacts().len(), 1);
+        drop(decoded);
+        drop(evidence);
+        drop(staged);
+
+        // The second private fixture takes real SDK-selected Web references through
+        // the same worker. SDK closure is still unknown, so no CSE1 authority is minted.
+        let project_xml = r#"<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>"#;
+        let web_source = "#if RELEASE\nMissingReleaseDefine();\n#endif\n#if NET10_0 && DEBUG\nvar builder = WebApplication.CreateBuilder(args);\nvar app = builder.Build();\napp.Run();\n#else\nMissingSdkDefine();\n#endif\npublic partial class Program;\n";
+        std::fs::write(package.join("src/App.csproj"), project_xml).unwrap();
+        std::fs::write(package.join("src/App.cs"), web_source).unwrap();
+        let sdk_version = std::str::from_utf8(&version.stdout).unwrap().trim();
+        let sdk_json = format!(r#"{{"sdk":{{"version":"{sdk_version}","rollForward":"disable"}}}}"#);
+        std::fs::write(package.join("global.json"), &sdk_json).unwrap();
+        let web_request = self::request(profile, "pkg:nuget/csharp-web-fixture@1.0.0");
+        let web_target = CompilerPackageTargetV2::new(web_request.as_ref().clone(), CompilationUnitKeyV2::CSharpProject { project_path: "src/App.csproj".into() }).unwrap();
+        let web_bytes = web_source.as_bytes();
+        let web_input = backend_compile::VerifiedSourceText::capture(web_bytes).unwrap().content().to_bytes();
+        let web_fact = *backend_semantic::ir::SourceIdentity::from_bytes(web_bytes).unwrap().identity.as_ref();
+        let web_claim = OwnedCSharpUnitClaim::new("src/App.csproj", vec![OwnedCSharpSourceClaim::new("src/App.cs", web_bytes.len() as u32, web_input, web_fact).unwrap()].into_boxed_slice()).unwrap();
+        let web_config = vec![
+            OwnedCSharpConfigProbe::new("src/App.csproj", Some(project_xml.into())).unwrap(),
+            OwnedCSharpConfigProbe::new("src/Directory.Build.props", None).unwrap(),
+            OwnedCSharpConfigProbe::new("src/Directory.Build.targets", None).unwrap(),
+            OwnedCSharpConfigProbe::new("Directory.Build.props", None).unwrap(),
+            OwnedCSharpConfigProbe::new("Directory.Build.targets", None).unwrap(),
+        ].into_boxed_slice();
+        let sdk_probes = vec![OwnedCSharpSdkProbe::new("src/global.json", None).unwrap(), OwnedCSharpSdkProbe::new("global.json", Some(sdk_json)).unwrap()].into_boxed_slice();
+        let web_request = OwnedPackageSourceSet::new_for_unit(web_request, web_target, package.clone(), vec![OwnedPackageSource::new("src/App.cs", web_source).unwrap()].into_boxed_slice()).unwrap()
+            .with_csharp_config(web_config).unwrap().with_csharp_unit_claim(web_claim).unwrap().with_csharp_sdk_probes(sdk_probes).unwrap();
+        let web_staged = client.compile_package_sources_staged(web_request.clone()).expect("stage native SDK Web fixture");
+        assert_eq!(web_staged.artifacts().len(), 1);
+        assert!(web_staged.coverage_gaps().is_empty());
+        // SDK-observed projects never mint the caller-supplied-reference aggregate;
+        // their SDK facts are sealed into the host-local plane identity instead.
+        assert!(web_staged.csharp_invocation_evidence().is_empty());
+        assert!(web_staged.csharp_invocation_evidence_object(*web_staged.input_witness().input_root()).is_none());
+        assert!(web_staged.execution_identity().is_none());
+        assert!(web_staged.plane_execution_identity().is_some());
+        drop(web_staged);
+        client.compile_package_sources(web_request).expect("SDK-observed project publishes under its plane identity");
+    }
+
+    #[test]
+    fn csharp_sdk_probe_claim_requires_complete_ordered_unit_scope() {
+        let profile = LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp14);
+        let make = || {
+            let request = request(profile, "pkg:nuget/sdk-fixture@1.0.0");
+            let target = CompilerPackageTargetV2::new(request.as_ref().clone(), CompilationUnitKeyV2::CSharpProject { project_path: "src/App.csproj".into() }).unwrap();
+            OwnedPackageSourceSet::new_for_unit(request, target, std::env::temp_dir(), vec![OwnedPackageSource::new("src/App.cs", "class App {}").unwrap()].into_boxed_slice()).unwrap()
+        };
+        let valid = || vec![OwnedCSharpSdkProbe::new("src/global.json", Some("{}".into())).unwrap(), OwnedCSharpSdkProbe::new("global.json", None).unwrap()].into_boxed_slice();
+        assert!(make().with_csharp_sdk_probes(valid()).is_ok());
+        assert!(make().with_csharp_sdk_probes(vec![OwnedCSharpSdkProbe::new("global.json", None).unwrap()].into_boxed_slice()).is_err());
+        let mut wrong_order = valid(); wrong_order.swap(0, 1);
+        assert!(make().with_csharp_sdk_probes(wrong_order).is_err());
+        let too_large = vec![OwnedCSharpSdkProbe::new("src/global.json", Some("x".repeat(1024 * 1024))).unwrap(), OwnedCSharpSdkProbe::new("global.json", None).unwrap()].into_boxed_slice();
+        assert!(make().with_csharp_sdk_probes(too_large).is_err());
+        assert!(OwnedCSharpSdkProbe::new("../global.json", None).is_err());
+    }
+
+    #[test]
+    fn ordered_csharp_source_lookup_is_logarithmically_bounded() {
+        let sources = (0..8192).map(|index| {
+            OwnedPackageSource::from_string(&format!("src/{index:05}.cs"), "class C {}".into()).unwrap()
+        }).collect::<Vec<_>>();
+        let mut comparisons = 0usize;
+        let index = ordered_source_index(&sources, "src/08191.cs", &mut |left, right| {
+            comparisons += 1;
+            left.cmp(right)
+        });
+        assert_eq!(index, Some(8191));
+        assert!(comparisons <= 16, "{comparisons} comparisons");
+        assert!(ordered_source_index(&sources, "src/missing.cs", &mut |left, right| left.cmp(right)).is_none());
+    }
+
+    #[test]
+    fn captured_csharp_config_requires_an_exact_project_unit() {
+        let profile = LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp14);
+        let make_request = || request(profile, "pkg:nuget/config-fixture@1.0.0");
+        let make_sources = || vec![OwnedPackageSource::from_string("src/App.cs", "class App {}".into()).unwrap()].into_boxed_slice();
+        let probes = || vec![
+            OwnedCSharpConfigProbe::new("src/App.csproj", Some("<Project/>".into())).unwrap(),
+            OwnedCSharpConfigProbe::new("src/Directory.Build.props", None).unwrap(),
+            OwnedCSharpConfigProbe::new("src/Directory.Build.targets", None).unwrap(),
+            OwnedCSharpConfigProbe::new("Directory.Build.props", None).unwrap(),
+            OwnedCSharpConfigProbe::new("Directory.Build.targets", None).unwrap(),
+        ].into_boxed_slice();
+        let root = OwnedPackageSourceSet::new(make_request(), std::env::temp_dir(), make_sources()).unwrap();
+        assert!(root.with_csharp_config(probes()).is_err());
+        let request = make_request();
+        let target = CompilerPackageTargetV2::new(request.as_ref().clone(), CompilationUnitKeyV2::CSharpProject { project_path: "src/App.csproj".into() }).unwrap();
+        let selected = OwnedPackageSourceSet::new_for_unit(request, target, std::env::temp_dir(), make_sources()).unwrap();
+        assert!(selected.with_csharp_config(probes()).is_ok());
+        let request = make_request();
+        let target = CompilerPackageTargetV2::new(request.as_ref().clone(), CompilationUnitKeyV2::CSharpProject { project_path: "src/App.csproj".into() }).unwrap();
+        let bytes = b"class App {}";
+        let input = backend_compile::VerifiedSourceText::capture(bytes).unwrap().content().to_bytes();
+        let source_fact = *backend_semantic::ir::SourceIdentity::from_bytes(bytes).unwrap().identity.as_ref();
+        let source = OwnedCSharpSourceClaim::new("src/App.cs", bytes.len() as u32, input, source_fact).unwrap();
+        let claim = OwnedCSharpUnitClaim::new("src/App.csproj", vec![source].into_boxed_slice()).unwrap();
+        assert!(OwnedPackageSourceSet::new_for_unit(request, target, std::env::temp_dir(), make_sources()).unwrap().with_csharp_unit_claim(claim).is_ok());
+        assert!(OwnedCSharpConfigProbe::new("../outside.csproj", None).is_err());
+        let deep = CompilationUnitKeyV2::CSharpProject { project_path: format!("{}/Deep.csproj", vec!["nested"; 8].join("/")).into() };
+        assert!(crate::application::compiler::csharp_config_probe_paths(&deep).is_none());
     }
 
     #[test]
@@ -5227,6 +5666,14 @@ fn run_worker_generation(
             .map(AsRef::as_ref)
             .collect::<Vec<&Path>>()
     });
+    let csharp_reference_storage = configuration
+        .package_authority
+        .csharp
+        .as_ref()
+        .map(|csharp| {
+            csharp.additional_reference_directories.iter()
+                .map(AsRef::as_ref).collect::<Vec<&Path>>()
+        });
     let csharp_define_storage = configuration
         .package_authority
         .csharp
@@ -5276,7 +5723,15 @@ fn run_worker_generation(
             configuration: CSharpAuthorityConfiguration {
                 assembly_name: csharp.assembly_name.as_deref(),
                 reference_directory: csharp.reference_directory.as_deref(),
+                additional_reference_directories: csharp_reference_storage
+                    .as_deref()
+                    .unwrap_or_default(),
                 define_symbols: csharp_define_storage.as_deref().unwrap_or_default(),
+                exact_define_symbols: false,
+                target_framework: None,
+                exact_nullable: None,
+                exact_unsafe: None,
+                exact_output_type: None,
                 extra_usings: csharp_using_storage.as_deref().unwrap_or_default(),
                 implicit_usings: csharp.implicit_usings,
                 include_non_public: csharp.include_non_public,
@@ -5854,7 +6309,25 @@ fn queue_package_sources(
         } else {
             0
         };
-        bytes.checked_add(program_bytes)
+        let config_bytes = request.csharp_config.as_ref().map_or(Some(0usize), |probes| {
+            probes.iter().try_fold(0usize, |total, probe| {
+                total.checked_add(size_of::<OwnedCSharpConfigProbe>())?
+                    .checked_add(probe.path.len())?
+                    .checked_add(probe.text.as_ref().map_or(0, |text| text.len()))
+            })
+        })?;
+        // Retained evidence (32 MiB), bounded aggregate (64 MiB), and transient
+        // sidecar/parsing work (48 MiB).
+        let evidence_bytes = if request.csharp_config.is_some() { 144 * 1024 * 1024 } else { 0 };
+        let sdk_probe_bytes = request.csharp_sdk_probes.as_ref().map_or(Some(0usize), |probes| {
+            probes.iter().try_fold(0usize, |total, probe| {
+                total.checked_add(size_of::<OwnedCSharpSdkProbe>())?.checked_add(probe.path.len())?
+                    .checked_add(probe.text.as_ref().map_or(0, |text| text.len()))
+            })
+        })?;
+        let unit_claim_bytes = request.csharp_unit_claim.as_ref().map_or(Some(0usize), OwnedCSharpUnitClaim::retained_bytes)?;
+        let sdk_work = if request.csharp_sdk_probes.is_some() { 24 * 1024 * 1024 } else { 0 };
+        bytes.checked_add(program_bytes)?.checked_add(config_bytes.checked_mul(7)?)?.checked_add(evidence_bytes)?.checked_add(unit_claim_bytes)?.checked_add(sdk_probe_bytes.checked_mul(4)?)?.checked_add(sdk_work)
     });
     let Some(reservation_bytes) = reservation_bytes else {
         response.send_error(PackageSemanticRuntimeError::Runtime(
@@ -6303,6 +6776,10 @@ fn run_lane(
                 } else {
                     run_lane_attempt(
                         || {
+                            if request.csharp_sdk_probes.is_some()
+                                && (request.csharp_unit_claim.is_none() || request.csharp_config.is_none()) {
+                                return Err(PackageSourceSetError::CSharpSdkObservationUnavailable.into());
+                            }
                             let sources = borrow_package_sources(
                                 &request.sources,
                                 request.request.target.profile,
@@ -6368,28 +6845,12 @@ fn run_lane(
                                         request.native_frontier_root.ok_or(
                                             PackageSourceSetError::NativeCSharpProfileMismatch,
                                         )?;
-                                    if request.native_csharp_permits.is_empty()
-                                        || request.native_csharp_permits.iter().any(|permit| {
-                                            permit.profile() != request.request.target.profile
-                                                || permit.package_target()
-                                                    != request.request.as_ref()
-                                                || permit.selected_root() != selected_frontier_root
-                                                || !request.sources.iter().any(|source| {
-                                                    permit.admits(
-                                                        selected_frontier_project,
-                                                        selected_frontier_root,
-                                                        request.request.as_ref(),
-                                                        &source.relative_path,
-                                                        request.request.target.profile,
-                                                        source.source_bytes(),
-                                                    )
-                                                })
-                                        })
-                                    {
-                                        return Err(
-                                            PackageSourceSetError::NativeCSharpProfileMismatch
-                                                .into(),
-                                        );
+                                    if !csharp_candidate_permits_match(
+                                        &request.sources, &request.native_csharp_permits,
+                                        selected_frontier_project, selected_frontier_root,
+                                        request.request.as_ref(), request.request.target.profile,
+                                    ) {
+                                        return Err(PackageSourceSetError::NativeCSharpProfileMismatch.into());
                                     }
                                     // C# package compilation always enters the existing Roslyn
                                     // authority path; the permit gates exact source admission.
@@ -6400,6 +6861,20 @@ fn run_lane(
                                 Some(raw_sources) => {
                                     package.with_python_raw_sources(raw_sources)?
                                 }
+                                None => package,
+                            };
+                            let captured_csharp_config = request.csharp_config.as_ref().map(|probes| probes.iter().map(|probe| backend_frontend_csharp::legacy::CSharpCapturedConfig {
+                                path: &probe.path, text: probe.text.as_deref(),
+                            }).collect::<Vec<_>>());
+                            let package = match captured_csharp_config.as_deref() {
+                                Some(config) => package.with_csharp_config(config)?,
+                                None => package,
+                            };
+                            let captured_sdk_probes = request.csharp_sdk_probes.as_ref().map(|probes| probes.iter().map(|probe| backend_frontend_csharp::legacy::CSharpSdkProbe {
+                                path: &probe.path, text: probe.text.as_deref(),
+                            }).collect::<Vec<_>>());
+                            let package = match captured_sdk_probes.as_deref() {
+                                Some(probes) => package.with_csharp_sdk_probes(probes),
                                 None => package,
                             };
                             let package = package
@@ -7483,6 +7958,7 @@ mod request_lease_tests {
             python_snapshots: Mutex::new(PythonSnapshotCache::default()),
             typescript_snapshot: Mutex::new(TypeScriptSnapshotCache::default()),
             go_authority: None,
+            typescript_empty_host: None,
             deferred_go: None,
             native_python: None,
             python_interpreter: None,

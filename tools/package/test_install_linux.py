@@ -112,10 +112,20 @@ class InstallerFilesystemTests(unittest.TestCase):
         saved_umask = os.umask(0o077)
         try:
             with patch.object(installer, "_glibc_version", return_value=(99, 0)), \
-                 patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()):
+                 patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "backend 0.2.0\n", "stderr": ""})()):
                 installer.install(prefix, entry, manifest, archive)
         finally:
             os.umask(saved_umask)
+
+    def test_install_rejects_cli_version_mismatched_to_release(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entry, manifest, archive = self._fixture_release(root, "d" * 40, "20261010")
+            with patch.object(installer, "_glibc_version", return_value=(99, 0)), \
+                 patch.object(installer.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="backend 9.9.9\n", stderr="")):
+                with self.assertRaisesRegex(installer.InstallError, "CLI version.*release"):
+                    installer.install(root / "prefix", entry, manifest, archive)
 
     def test_install_restores_callers_umask_after_success_and_error(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -128,7 +138,7 @@ class InstallerFilesystemTests(unittest.TestCase):
                     try:
                         selected = {**entry, "tag": "../invalid"} if bad_entry else entry
                         with patch.object(installer, "_glibc_version", return_value=(99, 0)), \
-                             patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()):
+                             patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "backend 0.2.0\n", "stderr": ""})()):
                             if bad_entry:
                                 with self.assertRaises(installer.InstallError):
                                     installer.install(prefix, selected, manifest, archive)
@@ -147,7 +157,7 @@ class InstallerFilesystemTests(unittest.TestCase):
              patch.object(installer, "load_release", return_value=(entry, manifest, "https://example.invalid/archive")), \
              patch.object(installer, "download_archive", side_effect=download_archive) as download, \
              patch.object(installer, "_glibc_version", return_value=(99, 0)), \
-             patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()):
+             patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "backend 0.2.0\n", "stderr": ""})()):
             result = installer.main(["--prefix", str(prefix)])
         loader_target.assert_called_once_with()
         return result, download
@@ -577,7 +587,7 @@ class DesktopInstallerTests(unittest.TestCase):
 
     def install_fixture(self, prefix, entry, manifest, archive):
         with patch.object(installer, "_glibc_version", return_value=(99, 0)), \
-             patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()) as probes:
+             patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "backend 0.2.0\n", "stderr": ""})()) as probes:
             installer.install(prefix, entry, manifest, archive)
         return probes
 

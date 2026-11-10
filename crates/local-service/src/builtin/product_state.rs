@@ -6,6 +6,7 @@ use super::discovery_search::{
     ForgeSourcePinSearchDocument, ForgeSourcePinSearchKey, LineageKey, LineageSearchSource,
     LocalDeclarationSearchIndex, ReleaseMatchScope as DiscoveryReleaseMatchScope,
     SearchContinuation, SearchMatchEvidence, SearchPage, SearchResultCount,
+    advisory_query_provenance, observation_query_matches,
 };
 use super::forge_gateway::{
     ForgePackageDetail, ForgePackagePin as ForgePackageViewPin, find_package_versions,
@@ -267,9 +268,26 @@ pub(super) fn read_advisory(
     catalog: &[RegistryPackageRecord],
     catalog_index: &CatalogLookupIndex,
 ) -> Result<SurfaceReply, String> {
+    read_advisory_with_unacquired(package, override_evidence, catalog, catalog_index, None)
+}
+
+pub(super) fn read_advisory_with_unacquired(
+    package: &PackageReference,
+    override_evidence: Option<backend_library::OverrideEvidence>,
+    catalog: &[RegistryPackageRecord],
+    catalog_index: &CatalogLookupIndex,
+    unacquired: Option<backend_library::AdvisoryPackageDto>,
+) -> Result<SurfaceReply, String> {
     let advisory = catalog_index
         .first_coordinate(catalog, package)?
-        .map(|record| record.advisory.clone())
+        .map(|record| qualify_registry_advisory(
+            record.advisory.clone(), record.standing, record.authority.is_some(),
+            record.authority.is_some_and(|authority| {
+                authority.standing == backend_library::RegistryPackageFactCompleteness::Complete
+                    && matches!(authority.release_facts_freshness, backend_library::RegistryPackageFactFreshness::Current { valid_until_millis, .. } if valid_until_millis > current_epoch_millis())
+            }),
+        ))
+        .or_else(|| unacquired.map(backend_library::AdvisoryPackageDto::without_registry_standing))
         .unwrap_or_else(backend_engine::AdvisoryPackageDto::unknown);
     let advisory = override_evidence.map_or(advisory.clone(), |evidence| {
         advisory.with_override(evidence, unix_seconds())
@@ -277,6 +295,29 @@ pub(super) fn read_advisory(
     let reply = SurfaceReply::Advisory(advisory);
     reply.admit(reply.id()).map_err(|error| error.to_string())?;
     Ok(reply)
+}
+
+/// Revalidate the standing qualifier from the selected registry source, never
+/// from a persisted advisory marker or advisory feed completeness.
+pub(super) fn qualify_registry_advisory(
+    mut advisory: backend_library::AdvisoryPackageDto,
+    standing: backend_library::RegistryReleaseStanding,
+    source_observed: bool,
+    current_complete: bool,
+) -> backend_library::AdvisoryPackageDto {
+    advisory.registry_standing_observed = None;
+    if source_observed {
+        advisory.yanked |= standing == backend_library::RegistryReleaseStanding::Yanked;
+        advisory.unlisted |= standing == backend_library::RegistryReleaseStanding::Unlisted;
+    }
+    if source_observed && current_complete {
+        advisory.with_registry_standing(
+            standing == backend_library::RegistryReleaseStanding::Yanked,
+            standing == backend_library::RegistryReleaseStanding::Unlisted,
+        )
+    } else {
+        advisory.without_registry_standing()
+    }
 }
 
 pub(super) struct ProductState {
@@ -732,12 +773,23 @@ impl ProductState {
                         .to_owned(),
                 );
             }
-            SurfaceCommand::PackageVersions { package } => (
-                SurfaceReply::PackageVersions(
-                    package_versions(view, catalog, catalog_index, &package, workspace)?.rows,
-                ),
-                false,
-            ),
+            SurfaceCommand::StyloQuery { .. } | SurfaceCommand::StyloReadSite { .. } => {
+                return Err("native CSS reads require the durable owner snapshot adapter".to_owned());
+            }
+            SurfaceCommand::SqlQuery { .. } | SurfaceCommand::SqlReadSource { .. } => {
+                return Err("native SQL reads require the durable owner snapshot adapter".to_owned());
+            }
+            SurfaceCommand::PackageVersions { package } => {
+                let rows =
+                    package_versions(view, catalog, catalog_index, &package, workspace)?.rows;
+                if rows.is_empty() {
+                    return Err(format!(
+                        "no acquired or indexed versions are recorded for {}; use index-search (backend.index_search) to find discovered releases",
+                        package.as_str()
+                    ));
+                }
+                (SurfaceReply::PackageVersions(rows), false)
+            }
             SurfaceCommand::SemanticShapes { .. }
             | SurfaceCommand::SemanticVersions { .. }
             | SurfaceCommand::SemanticSource { .. }
@@ -1170,6 +1222,7 @@ fn read(view: &ViewRoot, locators: &[ProductText]) -> Result<Box<[DeclarationRec
         .map(|locator| {
             let row = view.row_by_label(locator.as_str());
             Ok(DeclarationRecord {
+                source_policy: backend_library::SourcePolicyQualification::Unknown,
                 extent: row
                     .and_then(|value| value.excerpt.extent())
                     .map(|extent| match extent {
@@ -1724,6 +1777,7 @@ fn index_search_page_with_discovery_measured_snapshot(
                 group,
                 discovery,
                 &forge_records_by_coordinate,
+                query.as_str(),
                 evaluated_at_millis,
             )?
             else {
@@ -2026,6 +2080,7 @@ fn product_discovery_group(
     group: &DiscoveryPackageSearchGroup,
     discovery: Option<&DiscoveryStore>,
     forge_records: &BTreeMap<backend_engine::ForgeCoordinate, &ForgeSearchRecord>,
+    query: &str,
     now: u64,
 ) -> Result<
     Option<(
@@ -2037,6 +2092,7 @@ fn product_discovery_group(
 > {
     let mut releases = Vec::with_capacity(group.matched_releases.len());
     let mut first_tie = None;
+    let mut mixed_observations = false;
     let kind = match &group.source {
         DiscoverySearchSource::Registry(source) => {
             let Some(store) = discovery else {
@@ -2046,7 +2102,34 @@ fn product_discovery_group(
                 let Some(fact) = store.fact(*source, key.coordinate.as_str()) else {
                     continue;
                 };
-                let candidate = registry_discovery_candidate(store, *source, fact, now)?;
+                let retained = store
+                    .retained_advisory(*source, key.coordinate.as_str())
+                    .and_then(|retained| {
+                        let (mentions_identifier, observation_matches) =
+                            advisory_query_provenance(&retained.metadata, &retained.coordinate, query);
+                        let current_matches =
+                            observation_query_matches(&fact.metadata, &fact.coordinate, query);
+                        mixed_observations |= !current_matches && !observation_matches;
+                        (group.evidence != SearchMatchEvidence::ExactCoordinate
+                            && (group.evidence == SearchMatchEvidence::AdvisoryTerms
+                                || mentions_identifier
+                                || (observation_matches && !current_matches)))
+                            .then_some((retained, observation_matches))
+                    });
+                let mut candidate = registry_discovery_candidate(
+                    store,
+                    *source,
+                    retained.map_or(fact, |(retained, _)| retained),
+                    now,
+                )?;
+                if let Some((retained, observation_matches)) = retained {
+                    mixed_observations |= !observation_matches;
+                    candidate.freshness = RegistryDiscoveryFreshness::Historical {
+                        observed_at_millis: retained.observed_at.as_unix_millis(),
+                    };
+                    candidate.completeness = RegistryDiscoveryCompleteness::Incomplete;
+                    candidate.caught_up = false;
+                }
                 if first_tie.is_none() {
                     first_tie = Some(SearchStableTie::discovered(
                         candidate.coordinate.as_str(),
@@ -2104,9 +2187,12 @@ fn product_discovery_group(
         ecosystem: group.ecosystem,
         lineage: ProductText::new(lineage).map_err(|error| error.to_string())?,
         releases: releases.into_boxed_slice(),
-        release_match_scope: match group.release_match_scope {
-            DiscoveryReleaseMatchScope::ReleaseMatches => RegistryReleaseMatchScope::ReleaseMatches,
-            DiscoveryReleaseMatchScope::LineageMetadataOnly => {
+        release_match_scope: match (mixed_observations, group.release_match_scope) {
+            (true, _) => RegistryReleaseMatchScope::LineageMetadataOnly,
+            (false, DiscoveryReleaseMatchScope::ReleaseMatches) => {
+                RegistryReleaseMatchScope::ReleaseMatches
+            }
+            (false, DiscoveryReleaseMatchScope::LineageMetadataOnly) => {
                 RegistryReleaseMatchScope::LineageMetadataOnly
             }
         },
@@ -2398,7 +2484,7 @@ fn index_search_with_discovery(
                         RegistryDiscoveryStanding::RecipeAvailable
                     }
                 };
-                let candidate = RegistryDiscoveryCandidate {
+                let mut candidate = RegistryDiscoveryCandidate {
                     source: source.id(),
                     coordinate: fact.coordinate.clone(),
                     standing,
@@ -2408,6 +2494,20 @@ fn index_search_with_discovery(
                     proof: fact.proof,
                     metadata: registry_discovery_metadata(&fact.metadata)?,
                 };
+                if search_hit.evidence != SearchMatchEvidence::ExactCoordinate
+                    && let Some(retained) = discovery.retained_advisory(*source, key.coordinate.as_str())
+                    && (search_hit.evidence == SearchMatchEvidence::AdvisoryTerms
+                        || advisory_query_provenance(&retained.metadata, &retained.coordinate, query.as_str()).0
+                        || (observation_query_matches(&retained.metadata, &retained.coordinate, query.as_str())
+                            && !observation_query_matches(&fact.metadata, &fact.coordinate, query.as_str())))
+                {
+                    candidate = registry_discovery_candidate(discovery, *source, retained, now)?;
+                    candidate.freshness = RegistryDiscoveryFreshness::Historical {
+                        observed_at_millis: retained.observed_at.as_unix_millis(),
+                    };
+                    candidate.completeness = RegistryDiscoveryCompleteness::Incomplete;
+                    candidate.caught_up = false;
+                }
                 ranked_hits.push(RankedRegistrySearchHit {
                     evidence: search_hit.evidence,
                     tie: SearchStableTie::discovered(
@@ -2580,6 +2680,15 @@ fn discovered_package(
             proof: fact.proof,
             metadata: registry_discovery_metadata(&fact.metadata)?,
         });
+        if let Some(retained) = discovery.retained_advisory(*source, coordinate.as_str()) {
+            let mut historical = registry_discovery_candidate(discovery, *source, retained, now)?;
+            historical.freshness = RegistryDiscoveryFreshness::Historical {
+                observed_at_millis: retained.observed_at.as_unix_millis(),
+            };
+            historical.completeness = RegistryDiscoveryCompleteness::Incomplete;
+            historical.caught_up = false;
+            candidates.push(historical);
+        }
     }
     Ok(
         (!candidates.is_empty()).then(|| SurfaceReply::PackageDiscovery {
@@ -2587,6 +2696,7 @@ fn discovered_package(
             observation: backend_library::RegistryPackageDiscoveryObservation::Observed {
                 candidates: candidates.into_boxed_slice(),
             },
+            advisory: None,
         }),
     )
 }
@@ -3539,7 +3649,7 @@ fn package_page(
         }
     }
     Err(format!(
-        "package {} does not match any indexed local manifest",
+        "package {} is not in the acquired registry catalog or an indexed local manifest; discovery alone does not acquire it. Use index-search (backend.index_search) to inspect discovered releases",
         package.as_str()
     ))
 }
@@ -3548,7 +3658,11 @@ fn versions(
     catalog_index: &CatalogLookupIndex,
     package: &PackageReference,
 ) -> Result<OrderedRegistryVersions, String> {
-    let mut rows = packages(catalog, catalog_index, package)?.into_vec();
+    let mut rows = catalog_index
+        .records_for(catalog, package, true)?
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
     let order = sort_registry_versions(&mut rows);
     Ok(OrderedRegistryVersions {
         rows: rows.into_boxed_slice(),
@@ -3865,7 +3979,7 @@ fn dependencies(
     }
     Ok(DependencyFacts::Unavailable(
         ProductText::new(format!(
-            "dependency facts are unavailable for {} because the package is not recorded",
+            "dependency facts are unavailable for {}; source discovery does not acquire dependency metadata. Index local source or acquire this exact release and retry",
             package.as_str()
         ))
         .map_err(|error| error.to_string())?,
@@ -4011,6 +4125,8 @@ fn subject_title(subject: &TreeSubject) -> ProductText {
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("product_state/discovery_journey_test.rs");
+    include!("product_state/advisory_matrix_tests.rs");
     use backend_engine::registry::{
         DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryFact, DiscoveryObservedAt,
         DiscoverySourceEvent, DiscoveryStanding, RegistryEndpoint, discovery_source_identity,
@@ -4034,6 +4150,124 @@ mod tests {
     };
 
     static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn package_and_advisory_return_the_same_typed_evidence() {
+        use backend_library::{AdvisoryCoverage as Coverage, FreshnessState as Freshness};
+        let root = fixture("advisory-consistency");
+        let mut state = ProductState::open(root.join("state.json")).expect("state");
+        for (coverage, freshness, has_finding) in [
+            (Coverage::Unknown, Freshness::Unknown, false),
+            (Coverage::Unavailable, Freshness::Unknown, false),
+            (Coverage::Partial, Freshness::Fresh, false),
+            (Coverage::Complete, Freshness::Stale, true),
+            (Coverage::Complete, Freshness::Fresh, false),
+            (Coverage::Complete, Freshness::Fresh, true),
+        ] {
+            let mut row = registry_row("pkg:cargo/demo@1.0.0", "demo");
+            row.advisory.coverage = coverage;
+            row.advisory.freshness = freshness;
+            if has_finding {
+                row.advisory.advisories = Box::new([backend_library::AdvisorySurfaceDto {
+                    schema: 1,
+                    canonical_id: "CVE-2099-0042".to_owned(),
+                    source_ids: Box::new([]),
+                    aliases: Box::new([]),
+                    statuses: Box::new([backend_library::AdvisoryStatus::Vulnerable]),
+                    categories: Box::new([backend_library::AdvisoryCategory::Vulnerability]),
+                    affected: Box::new([]),
+                    fixed_ranges: Box::new([]),
+                    severity: backend_library::SeverityLevel::High,
+                    malware: backend_engine::advisory::MalwareCoverage::NotCovered,
+                    coverage,
+                    freshness,
+                    withdrawn: None,
+                    yanked: false,
+                    unlisted: false,
+                    summary: None,
+                }]);
+            }
+            let package = row.coordinate.clone();
+            let catalog = [row];
+            let index = CatalogLookupIndex::from_catalog(&catalog);
+            let graph = indexed_graph(Vec::new());
+            let detail = state
+                .execute(
+                    SurfaceCommand::Package {
+                        package: package.clone(),
+                    },
+                    &view(),
+                    &catalog,
+                    &index,
+                    &graph,
+                    None,
+                )
+                .expect("package");
+            let security = state
+                .execute(
+                    SurfaceCommand::Advisory {
+                        package,
+                        override_evidence: None,
+                    },
+                    &view(),
+                    &catalog,
+                    &index,
+                    &graph,
+                    None,
+                )
+                .expect("advisory");
+            let SurfaceReply::Package(rows) = detail else {
+                panic!("package reply")
+            };
+            let SurfaceReply::Advisory(advisory) = security else {
+                panic!("advisory reply")
+            };
+            assert_eq!(rows[0].advisory, advisory);
+            assert_eq!(advisory.coverage, coverage);
+            assert_eq!(advisory.freshness, freshness);
+            assert_eq!(!advisory.advisories.is_empty(), has_finding);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unacquired_release_queries_explain_the_local_evidence_gap() {
+        let root = fixture("unacquired-release");
+        let mut state = ProductState::open(root.join("state.json")).expect("state");
+        let catalog = [];
+        let index = CatalogLookupIndex::from_catalog(&catalog);
+        let graph = indexed_graph(Vec::new());
+        for locator in ["pkg:npm/vue@3.5.44", "pkg:pypi/fastapi@0.162.0"] {
+            let package = PackageReference::parse(locator).expect("pinned package");
+            let execute = |state: &mut ProductState, command| {
+                state.execute(command, &view(), &catalog, &index, &graph, None)
+            };
+            let detail = execute(
+                &mut state,
+                SurfaceCommand::Package {
+                    package: package.clone(),
+                },
+            )
+            .expect_err("no acquired package");
+            assert!(detail.contains("discovery alone does not acquire"));
+            let versions = execute(
+                &mut state,
+                SurfaceCommand::PackageVersions {
+                    package: package.clone(),
+                },
+            )
+            .expect_err("no acquired versions");
+            assert!(versions.contains("index-search"));
+            let dependencies = execute(&mut state, SurfaceCommand::Dependencies { package })
+                .expect("typed unavailable facts");
+            let SurfaceReply::Dependencies(DependencyFacts::Unavailable(reason)) = dependencies
+            else {
+                panic!("dependency gap must be explicit");
+            };
+            assert!(reason.as_str().contains("source discovery does not acquire dependency metadata"));
+        }
+        let _ = fs::remove_dir_all(root);
+    }
 
     fn fixture(name: &str) -> PathBuf {
         let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -5203,6 +5437,23 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].ecosystem, RegistryEcosystem::Cargo);
         assert_eq!(rows[0].version.as_str(), "1.9.0");
+    }
+
+    #[test]
+    fn version_lookup_finds_recorded_lineage_from_a_pinned_release() {
+        let catalog = [
+            registry_row("pkg:npm/vue@3.4.0", "vue"),
+            registry_row("pkg:npm/vue@3.5.0", "vue"),
+            registry_row("pkg:pypi/vue@1.0", "vue"),
+        ];
+        let query = PackageReference::parse("pkg:npm/vue@3.4.0").expect("query");
+        let index = CatalogLookupIndex::from_catalog(&catalog);
+        let rows = versions(&catalog, &index, &query).expect("versions").rows;
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter()
+                .all(|row| row.ecosystem == RegistryEcosystem::Npm)
+        );
     }
 
     #[test]

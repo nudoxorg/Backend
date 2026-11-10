@@ -332,6 +332,11 @@ let
           lockFile = workspaceRoot + "/Cargo.lock";
           outputHashes = gpuiOutputHashes;
         };
+        # Keep the ephemeral Nix build and vendored Cargo paths out of the
+        # shipped runtime's Rust source locations, including panic messages.
+        preBuild = ''
+          export RUSTFLAGS="''${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix=$NIX_BUILD_TOP=/build/nudox --remap-path-prefix=$CARGO_HOME=/cargo"
+        '';
         doCheck = false;
         installPhase = ''
                     # Match the pinned cargoInstallHook's target subdirectory.

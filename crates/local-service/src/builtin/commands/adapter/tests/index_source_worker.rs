@@ -20,6 +20,7 @@ struct ReadHeadIdentity {
     sequence: u64,
     view: [u8; 32],
     cursor: backend_engine::Cursor,
+    native: Option<[u8; 32]>,
 }
 impl ReadHeadIdentity {
     fn capture(daemon: &ProductDaemon) -> Self {
@@ -31,6 +32,9 @@ impl ReadHeadIdentity {
             sequence: owner.head().sequence(),
             view: *library.view().root().as_bytes(),
             cursor: library.cursor(),
+            native: backend_engine::builtin::stylo_analysis_relation(&owner.snapshot())
+                .expect("native relation admission")
+                .map(|relation| *relation.root().as_bytes()),
         }
     }
 }
@@ -69,7 +73,7 @@ impl SourceWire {
         cluster: bool,
         refuse_start: bool,
     ) -> Self {
-        Self::start_kind(stage, panic_after_release, cluster, refuse_start, false)
+        Self::start_kind(stage, panic_after_release, cluster, refuse_start, false, None)
     }
 
     fn start_kind(
@@ -78,17 +82,67 @@ impl SourceWire {
         cluster: bool,
         refuse_start: bool,
         structural: bool,
+        stylo_worker: Option<Arc<crate::builtin::stylo_worker::StyloWorkerPermit>>,
+    ) -> Self {
+        Self::start_kind_with_mixed(
+            stage,
+            panic_after_release,
+            cluster,
+            refuse_start,
+            structural,
+            stylo_worker,
+            false,
+        )
+    }
+
+    fn start_kind_with_mixed(
+        stage: TestStage,
+        panic_after_release: bool,
+        cluster: bool,
+        refuse_start: bool,
+        structural: bool,
+        stylo_worker: Option<Arc<crate::builtin::stylo_worker::StyloWorkerPermit>>,
+        mixed: bool,
     ) -> Self {
         let mut fixture = AdapterFixture::new();
+        if mixed {
+            super::install_mixed_native_compiler(&mut fixture);
+        }
         let (package, label) = fixture.add_target();
         let source = Path::new(&label).join(if structural {
             "notes.txt"
         } else {
             "changed.ts"
         });
-        fs::write(&source, "export const original = 7;\n").expect("real source input");
+        fs::write(
+            &source,
+            if mixed {
+                "export function Greeting() { return 7; }\n"
+            } else {
+                "export const original = 7;\n"
+            },
+        )
+        .expect("real source input");
+        if mixed {
+            fs::write(
+                Path::new(&label).join("tsconfig.json"),
+                r#"{"compilerOptions":{"strict":true},"include":["*.ts"]}"#,
+            )
+            .expect("native TS config");
+        }
+        if stylo_worker.is_some() || mixed {
+            fs::write(Path::new(&label).join("site.css"), ".one { --ink: red; }")
+                .expect("real CSS input");
+        }
         // Two actual admitted package rows force a multipage reset at credit 1.
         let (adapter, daemon) = fixture.parts();
+        adapter.stylo_test_worker = stylo_worker;
+        let read_head = Arc::new(Mutex::new(None));
+        let deferred_head = Arc::clone(&read_head);
+        adapter.stylo_test_observer = Some(Box::new(move |daemon| {
+            *deferred_head.lock().expect("read-only deferred head observer") =
+                Some(ReadHeadIdentity::capture(daemon));
+        }));
         let add = BuiltinIntent::add(package, label.clone()).expect("target source scope");
         super::super::commit_builtin_intent(daemon, 0xc001, &add).expect("admit target");
         adapter
@@ -153,7 +207,6 @@ impl SourceWire {
         let cursor = owner_cursor(daemon);
         let commands = Arc::new(Mutex::new(fixture.adapter.take().expect("single adapter")));
         let command_owner = Arc::clone(&commands);
-        let read_head = Arc::new(Mutex::new(None));
         let observed_head = Arc::clone(&read_head);
         let owner = fixture
             .daemon
@@ -801,6 +854,163 @@ fn source_edit_after_durable_prepared_barrier_is_refused_before_final_grant() {
 }
 
 #[test]
+#[ignore = "requires NUDOX_TEST_STYLO_WORKER and completed native owner admission"]
+fn stylo_edit_after_durable_prepared_barrier_fails_the_real_owner_operation() {
+    let path = PathBuf::from(std::env::var_os("NUDOX_TEST_STYLO_WORKER").expect("worker fixture"));
+    let artifact = backend_compile::ToolchainArtifact::from_path(&path, Vec::new())
+        .expect("admitted fixture artifact");
+    let permit = Arc::new(crate::builtin::stylo_worker::StyloWorkerPermit::from_admitted(
+        path, artifact, backend_frontend_stylo::support_fingerprint(),
+    ).expect("fixture worker permit"));
+    let mut wire = SourceWire::start_kind(
+        TestStage::BeforeSourcePreparation, false, false, false, true, Some(permit),
+    );
+    wire.wait_at_source();
+    let (entered, observed) = sync_channel(1);
+    let (release, released) = sync_channel(1);
+    {
+        let mut commands = wire.commands.lock().expect("same adapter");
+        commands.publication_test_hook = Some(TestHook {
+            stage: TestStage::BeforeGrantValidation,
+            run: Box::new(move || {
+                entered.send(()).expect("observe durable barrier");
+                released.recv_timeout(Duration::from_secs(10)).expect("bounded release");
+            }),
+        });
+    }
+    wire.release();
+    observed.recv_timeout(Duration::from_secs(10)).expect("grant seam");
+    let journal = IndexOperationJournal::open(
+        wire.fixture.root.0.join("workspace/index-operations-v1.turso"),
+    ).expect("independent durable receipt read");
+    let Some(JournalEntry::Retained(entry)) = journal.entry(wire.operation).expect("receipt")
+    else { panic!("prepared operation missing"); };
+    assert!(matches!(entry.state, StoredOperationState::Prepared { .. }),
+        "native grant seam must follow durable preparation");
+    fs::write(wire.source.parent().expect("project").join("site.css"), ".two { --ink: red; }")
+        .expect("same-length CSS edit");
+    release.send(()).expect("allow final validation");
+    wire.wait_terminal();
+    let commands = wire.commands.lock().expect("original adapter");
+    let Some(JournalEntry::Retained(entry)) = commands.index_operations
+        .entry(wire.operation).expect("receipt") else { panic!("retained operation"); };
+    assert!(matches!(entry.state, StoredOperationState::Failed { .. }),
+        "stale native capture must not record Published");
+    assert!(matches!(commands.index_terminals.back().expect("terminal").outcome,
+        backend_library::IndexJobOutcome::Failed(_)));
+    let outcome = format!("{:?}", commands.index_terminals.back().expect("terminal").outcome);
+    eprintln!("native barrier terminal: {outcome}");
+    assert!(outcome.contains("Stylo capture proof: Stale"), "unexpected failure: {outcome}");
+    drop(commands);
+    drop(journal);
+    let expected_root = wire.old.root();
+    let operation = wire.operation;
+    let root = TempTree(std::mem::take(&mut wire.fixture.root.0));
+    drop(wire);
+    let workspace = root.0.join("workspace");
+    let owner = backend_engine::WorkspaceOwner::open_with_registry(
+        &workspace, crate::builtin::BuiltinModel, crate::builtin::genesis().expect("genesis"),
+        crate::builtin::product_relation_registry().expect("registry"),
+    ).expect("cold owner reopen");
+    let snapshot = owner.snapshot();
+    assert_eq!(snapshot.root(), expected_root, "stale CSS must not publish a source root");
+    assert!(backend_engine::builtin::stylo_analysis_relation(&snapshot)
+        .expect("native relation") .is_none(), "stale CSS must not publish a native root");
+    drop(snapshot);
+    drop(owner);
+    let journal = IndexOperationJournal::open(workspace.join("index-operations-v1.turso"))
+        .expect("cold journal reopen");
+    let Some(JournalEntry::Retained(entry)) = journal.entry(operation).expect("cold receipt")
+    else { panic!("terminal operation lost after reopen"); };
+    assert!(matches!(entry.state, StoredOperationState::Failed { .. }),
+        "cold receipt must stay failed, not Prepared or Published");
+}
+
+#[test]
+#[ignore = "requires NUDOX_TEST_STYLO_WORKER and completed native owner admission"]
+fn stylo_native_only_edit_after_barrier_keeps_prior_roots_and_failed_receipt() {
+    let worker = PathBuf::from(std::env::var_os("NUDOX_TEST_STYLO_WORKER").expect("worker fixture"));
+    let artifact = backend_compile::ToolchainArtifact::from_path(&worker, Vec::new()).expect("artifact");
+    let permit = Arc::new(crate::builtin::stylo_worker::StyloWorkerPermit::from_admitted(
+        worker, artifact, backend_frontend_stylo::support_fingerprint(),
+    ).expect("fixture permit"));
+    let mut wire = SourceWire::start_kind(
+        TestStage::BeforeSourcePreparation, false, false, false, true, Some(permit),
+    );
+    wire.wait_at_source();
+    wire.release();
+    wire.wait_terminal();
+    Session::connect(&wire.endpoint).expect("status session")
+        .surface(backend_library::SurfaceCommand::IndexOperationStatus { operation_key: wire.operation })
+        .expect("observe first publication");
+    {
+        let commands = wire.commands.lock().expect("first operation");
+        let Some(JournalEntry::Retained(entry)) = commands.index_operations
+            .entry(wire.operation).expect("first receipt") else { panic!("first receipt missing"); };
+        assert!(matches!(&entry.state, StoredOperationState::Published { .. }),
+            "first CSS index must publish: {:?}", entry.state);
+    }
+    let first = wire.read_head.lock().expect("first head").clone().expect("deferred owner head");
+    let first_workspace = first.workspace;
+    let first_native = first.native.expect("first CSS native selection");
+    let css = wire.source.parent().expect("project").join("site.css");
+    fs::write(&css, ".two { --ink: red; }").expect("first CSS edit");
+    let (entered, observed) = sync_channel(1);
+    let (release, released) = sync_channel(1);
+    wire.commands.lock().expect("adapter").publication_test_hook = Some(TestHook {
+        stage: TestStage::BeforeGrantValidation,
+        run: Box::new(move || {
+            entered.send(()).expect("grant seam");
+            released.recv_timeout(Duration::from_secs(10)).expect("bounded release");
+        }),
+    });
+    wire.operation = backend_library::IndexOperationKey::from_bytes([0xc3; 32]).expect("second key");
+    let package = backend_library::PackageReference::parse(
+        wire.source.parent().expect("project").to_str().expect("UTF-8").to_owned(),
+    ).expect("package reference");
+    Session::connect(&wire.endpoint).expect("second session")
+        .surface(backend_library::SurfaceCommand::IndexOperationStart {
+            cargo_target: None, operation_key: wire.operation, package,
+            execution_intent: CompileExecutionIntent::Interactive,
+        }).expect("start native-only scan");
+    observed.recv_timeout(Duration::from_secs(10)).expect("native grant seam");
+    let journal = IndexOperationJournal::open(wire.fixture.root.0.join("workspace/index-operations-v1.turso"))
+        .expect("journal");
+    let Some(JournalEntry::Retained(entry)) = journal.entry(wire.operation).expect("prepared receipt")
+    else { panic!("prepared receipt missing"); };
+    assert!(matches!(entry.state, StoredOperationState::Prepared { .. }));
+    fs::write(&css, ".six { --ink: red; }").expect("same-length edit at grant");
+    release.send(()).expect("release grant");
+    wire.wait_terminal();
+    let commands = wire.commands.lock().expect("adapter");
+    let outcome = format!("{:?}", commands.index_terminals.back().expect("terminal").outcome);
+    eprintln!("native-only barrier terminal: {outcome}");
+    assert!(outcome.contains("Stylo capture proof: Stale"), "unexpected failure: {outcome}");
+    drop(commands);
+    drop(journal);
+    let operation = wire.operation;
+    let root = TempTree(std::mem::take(&mut wire.fixture.root.0));
+    drop(wire);
+    let workspace = root.0.join("workspace");
+    let owner = backend_engine::WorkspaceOwner::open_with_registry(
+        &workspace, crate::builtin::BuiltinModel, crate::builtin::genesis().expect("genesis"),
+        crate::builtin::product_relation_registry().expect("registry"),
+    ).expect("cold owner reopen");
+    let snapshot = owner.snapshot();
+    assert_eq!(snapshot.root(), first_workspace, "native-only failure preserves manifest");
+    let native = backend_engine::builtin::stylo_analysis_relation(&snapshot).expect("native admission")
+        .expect("prior native relation");
+    assert_eq!(*native.root().as_bytes(), first_native, "native-only failure preserves native root");
+    drop(native);
+    drop(snapshot);
+    drop(owner);
+    let journal = IndexOperationJournal::open(workspace.join("index-operations-v1.turso")).expect("cold journal");
+    let Some(JournalEntry::Retained(entry)) = journal.entry(operation).expect("cold receipt")
+    else { panic!("terminal receipt missing"); };
+    assert!(matches!(entry.state, StoredOperationState::Failed { .. }));
+}
+
+#[test]
 fn no_op_missing_view_witness_refreshes_off_loop_without_workspace_commit() {
     no_op_refresh_control(false);
 }
@@ -817,6 +1027,7 @@ fn no_op_refresh_control(cancel_before_approval: bool) {
         false,
         false,
         true,
+        None,
     );
     wire.wait_at_source();
     wire.release();
@@ -1053,4 +1264,381 @@ fn no_op_refresh_control(cancel_before_approval: bool) {
         assert!(receipt.workspace_sequence() > first_head.sequence);
         assert_ne!(receipt.workspace_root(), first_head.workspace.as_bytes());
     }
+}
+
+fn mixed_css_site(
+    session: &mut Session,
+    project: &Path,
+    name: &str,
+) -> backend_library::stylo_query::StyloSourceRead {
+    use backend_library::stylo_query::{
+        StyloNameRole, StyloQueryHit, StyloQueryRequest, StyloQueryTerminal,
+    };
+    let mut request = StyloQueryRequest {
+        package: backend_library::PackageReference::parse(
+            project.to_str().expect("project path").to_owned(),
+        )
+        .expect("package"),
+        role: StyloNameRole::Class,
+        name: name.into(),
+        page_rows: 16,
+        output_bytes: 131_072,
+        scan_rows: 64,
+        scan_bytes: 4_194_304,
+        continuation: None,
+    };
+    loop {
+        let backend_library::SurfaceReply::StyloQuery(page) = session
+            .surface(backend_library::SurfaceCommand::StyloQuery {
+                request: request.clone(),
+            })
+            .expect("CSS query")
+        else {
+            panic!("CSS query reply")
+        };
+        if let Some(source) = page.hits.iter().find_map(|hit| match hit {
+            StyloQueryHit::SourceSite { source, .. } => Some(source.clone()),
+            _ => None,
+        }) {
+            let backend_library::SurfaceReply::StyloReadSite(read) = session
+                .surface(backend_library::SurfaceCommand::StyloReadSite { reference: source })
+                .expect("checked CSS read")
+            else {
+                panic!("CSS read reply")
+            };
+            return read;
+        }
+        match page.terminal {
+            StyloQueryTerminal::More { continuation, .. } => {
+                request.continuation = Some(continuation)
+            }
+            terminal => panic!("CSS site missing: {terminal:?}; basis={:?}", page.basis),
+        }
+    }
+}
+
+fn mixed_published(wire: &SourceWire) {
+    let commands = wire.commands.lock().expect("adapter");
+    let Some(JournalEntry::Retained(entry)) = commands
+        .index_operations
+        .entry(wire.operation)
+        .expect("receipt")
+    else {
+        panic!("missing receipt")
+    };
+    assert!(
+        matches!(entry.state, StoredOperationState::Published { .. }),
+        "mixed operation: {:?}",
+        entry.state
+    );
+}
+
+fn mixed_start_again(wire: &mut SourceWire, byte: u8) {
+    wire.operation =
+        backend_library::IndexOperationKey::from_bytes([byte; 32]).expect("operation key");
+    let package = backend_library::PackageReference::parse(
+        wire.source
+            .parent()
+            .expect("project")
+            .to_str()
+            .expect("path")
+            .to_owned(),
+    )
+    .expect("package");
+    Session::connect(&wire.endpoint)
+        .expect("listener")
+        .surface(backend_library::SurfaceCommand::IndexOperationStart {
+            cargo_target: None,
+            operation_key: wire.operation,
+            package,
+            execution_intent: CompileExecutionIntent::Interactive,
+        })
+        .expect("start repeat scan");
+}
+
+fn mixed_owner_journey(reject_frontends: bool) {
+    use backend_library::stylo_query::StyloSourceRead;
+    use std::sync::atomic::Ordering;
+    let _guard = crate::builtin::native_ts_owner_journey_tests::FrontendFailpoint;
+    crate::builtin::ingest::TEST_REJECT_STRUCTURAL_FRONTENDS
+        .store(reject_frontends, Ordering::Release);
+    let worker = PathBuf::from(
+        std::env::var_os("NUDOX_TEST_STYLO_WORKER").expect("admitted worker fixture"),
+    );
+    let artifact = backend_compile::ToolchainArtifact::from_path(&worker, Vec::new())
+        .expect("worker artifact");
+    let permit = Arc::new(
+        crate::builtin::stylo_worker::StyloWorkerPermit::from_admitted(
+            worker,
+            artifact,
+            backend_frontend_stylo::support_fingerprint(),
+        )
+        .expect("worker permit"),
+    );
+    let mut wire = SourceWire::start_kind_with_mixed(
+        TestStage::BeforeSourcePreparation,
+        false,
+        false,
+        false,
+        false,
+        Some(permit),
+        true,
+    );
+    wire.wait_at_source();
+    wire.release();
+    wire.wait_terminal();
+    mixed_published(&wire);
+    wire.commands.lock().expect("adapter").source_test_hook = None;
+    let project = wire.source.parent().expect("project").to_owned();
+    let mut session = Session::connect(&wire.endpoint).expect("listener");
+    let (_, document) = crate::builtin::native_ts_owner_journey_tests::select_native_document(
+        &mut session,
+        &[0x67; 32],
+        "Greeting",
+        "changed.ts",
+    )
+    .expect("authenticated TS source");
+    assert!(document.excerpt.text().is_some_and(|text| text.contains("return 7")));
+    assert!(
+        matches!(mixed_css_site(&mut session, &project, "one"), StyloSourceRead::Available { ref path, ref text, .. } if path == "site.css" && text == "one")
+    );
+    let first = wire
+        .read_head
+        .lock()
+        .expect("head")
+        .clone()
+        .expect("selected head");
+    assert!(first.native.is_some(), "CSS selected evidence root");
+    mixed_start_again(&mut wire, 0xd1);
+    wire.wait_terminal();
+    mixed_published(&wire);
+    Session::connect(&wire.endpoint)
+        .expect("status")
+        .surface(backend_library::SurfaceCommand::IndexOperationStatus {
+            operation_key: wire.operation,
+        })
+        .expect("status");
+    let repeated = wire
+        .read_head
+        .lock()
+        .expect("head")
+        .clone()
+        .expect("selected head");
+    assert_eq!(
+        first.native, repeated.native,
+        "same CSS bytes retain selected native root"
+    );
+    assert!(
+        matches!(mixed_css_site(&mut session, &project, "one"), StyloSourceRead::Available { ref text, .. } if text == "one")
+    );
+    crate::builtin::native_ts_owner_journey_tests::select_native_document(
+        &mut session,
+        &[0x67; 32],
+        "Greeting",
+        "changed.ts",
+    )
+    .expect("same-content TS source");
+    fs::write(&wire.source, "export function Greeting() { return 8; }\n").expect("TS edit");
+    mixed_start_again(&mut wire, 0xd3);
+    wire.wait_terminal();
+    mixed_published(&wire);
+    let (_, edited) = crate::builtin::native_ts_owner_journey_tests::select_native_document(
+        &mut session,
+        &[0x67; 32],
+        "Greeting",
+        "changed.ts",
+    )
+    .expect("edited TS source");
+    assert!(edited.excerpt.text().is_some_and(|text| text.contains("return 8")));
+    assert!(
+        matches!(mixed_css_site(&mut session, &project, "one"), StyloSourceRead::Available { ref text, .. } if text == "one")
+    );
+    // Change TS while CSS remains unchanged so the mixed candidate has a
+    // real grant and must revalidate the retained CSS proof there.
+    fs::write(&wire.source, "export function Greeting() { return 9; }\n")
+        .expect("TS edit for unchanged CSS proof");
+    // Exercise the unchanged-CSS no-op plan: its retained CSS capture must
+    // still be revalidated at the actual durable grant boundary.
+    let (entered, observed) = sync_channel(1);
+    let (release, released) = sync_channel(1);
+    wire.commands.lock().expect("adapter").publication_test_hook = Some(TestHook {
+        stage: TestStage::BeforeGrantValidation,
+        run: Box::new(move || {
+            entered.send(()).expect("unchanged CSS grant seam");
+            released.recv_timeout(Duration::from_secs(10)).expect("release unchanged grant");
+        }),
+    });
+    mixed_start_again(&mut wire, 0xd4);
+    observed.recv_timeout(Duration::from_secs(10)).expect("unchanged CSS grant seam");
+    let journal = IndexOperationJournal::open(wire.fixture.root.0.join("workspace/index-operations-v1.turso")).expect("journal");
+    let Some(JournalEntry::Retained(entry)) = journal.entry(wire.operation).expect("receipt") else { panic!("missing unchanged prepared receipt") };
+    assert!(matches!(entry.state, StoredOperationState::Prepared { .. }));
+    fs::write(project.join("site.css"), ".six { --ink: red; }").expect("edit unchanged CSS at grant");
+    release.send(()).expect("release unchanged grant");
+    wire.wait_terminal();
+    {
+        let commands = wire.commands.lock().expect("adapter");
+        let Some(JournalEntry::Retained(entry)) = commands.index_operations.entry(wire.operation).expect("receipt") else { panic!("missing unchanged terminal") };
+        assert!(matches!(entry.state, StoredOperationState::Failed { .. }), "stale unchanged CSS must fail: {:?}", entry.state);
+        let outcome = format!("{:?}", commands.index_terminals.back().expect("terminal").outcome);
+        assert!(outcome.contains("Stylo source or policy changed before grant") || outcome.contains("Stylo capture proof: Stale"),
+            "unexpected unchanged CSS failure: {outcome}");
+    }
+    drop(journal);
+    fs::write(&wire.source, "export function Greeting() { return 8; }\n")
+        .expect("restore selected TS");
+    fs::write(project.join("site.css"), ".one { --ink: red; }").expect("restore selected CSS");
+    assert!(matches!(mixed_css_site(&mut session, &project, "one"), StyloSourceRead::Available { ref text, .. } if text == "one"));
+    // A changed stylesheet must publish and remain readable when there is no
+    // intervening edit at the grant.
+    fs::write(project.join("site.css"), ".two { --ink: red; }").expect("positive CSS edit");
+    mixed_start_again(&mut wire, 0xd5);
+    wire.wait_terminal();
+    mixed_published(&wire);
+    assert!(matches!(mixed_css_site(&mut session, &project, "two"),
+        StyloSourceRead::Available { ref path, ref text, .. } if path == "site.css" && text == "two"));
+    crate::builtin::native_ts_owner_journey_tests::select_native_document(
+        &mut session, &[0x67; 32], "Greeting", "changed.ts",
+    ).expect("TS source after positive CSS change");
+    fs::write(project.join("site.css"), ".six { --ink: red; }").expect("first CSS edit for race");
+    let (entered, observed) = sync_channel(1);
+    let (release, released) = sync_channel(1);
+    wire.commands.lock().expect("adapter").publication_test_hook = Some(TestHook {
+        stage: TestStage::BeforeGrantValidation,
+        run: Box::new(move || {
+            entered.send(()).expect("grant seam");
+            released
+                .recv_timeout(Duration::from_secs(10))
+                .expect("release");
+        }),
+    });
+    mixed_start_again(&mut wire, 0xd2);
+    observed
+        .recv_timeout(Duration::from_secs(10))
+        .expect("grant seam");
+    let journal = IndexOperationJournal::open(
+        wire.fixture
+            .root
+            .0
+            .join("workspace/index-operations-v1.turso"),
+    )
+    .expect("journal");
+    let Some(JournalEntry::Retained(entry)) = journal.entry(wire.operation).expect("receipt")
+    else {
+        panic!("missing prepared receipt")
+    };
+    assert!(matches!(entry.state, StoredOperationState::Prepared { .. }));
+    fs::write(project.join("site.css"), ".ten { --ink: red; }")
+        .expect("same-length CSS edit at grant");
+    release.send(()).expect("release grant");
+    wire.wait_terminal();
+    let commands = wire.commands.lock().expect("adapter");
+    let Some(JournalEntry::Retained(entry)) = commands
+        .index_operations
+        .entry(wire.operation)
+        .expect("receipt")
+    else {
+        panic!("missing terminal")
+    };
+    assert!(
+        matches!(entry.state, StoredOperationState::Failed { .. }),
+        "stale CSS must fail: {:?}",
+        entry.state
+    );
+    let outcome = format!(
+        "{:?}",
+        commands.index_terminals.back().expect("terminal").outcome
+    );
+    assert!(
+        outcome.contains("Stylo capture proof: Stale")
+            || outcome.contains("Stylo source or policy changed before grant"),
+        "unexpected failure: {outcome}"
+    );
+    drop(commands);
+    drop(journal);
+    drop(session);
+    let root = TempTree(std::mem::take(&mut wire.fixture.root.0));
+    drop(wire);
+    crate::builtin::native_ts_owner_journey_tests::selected_evidence_root(
+        &root.0.join("workspace"), &project,
+        &[("changed.ts", backend_semantic::vocabulary::TypeScriptSource::TypeScript)],
+    ).expect("cold selected TS source and empty structural file inventory");
+}
+
+#[test]
+#[ignore = "requires admitted NUDOX_TEST_STYLO_WORKER; run alone with frontend failpoint"]
+fn mixed_native_ts_css_owner_without_structural_frontends() {
+    mixed_owner_journey(true);
+}
+
+#[test]
+#[ignore = "requires admitted NUDOX_TEST_STYLO_WORKER; run alone"]
+fn mixed_native_ts_css_owner_uninstrumented_control() {
+    mixed_owner_journey(false);
+}
+
+#[test]
+#[ignore = "mixed no-permit owner control; run alone with frontend failpoint"]
+fn mixed_native_ts_css_without_worker_reports_gap() {
+    use backend_library::stylo_query::{
+        StyloAttemptState, StyloNameRole, StyloQueryRequest, StyloQueryTerminal,
+        StyloWorkerCapability,
+    };
+    use std::sync::atomic::Ordering;
+    let _guard = crate::builtin::native_ts_owner_journey_tests::FrontendFailpoint;
+    crate::builtin::ingest::TEST_REJECT_STRUCTURAL_FRONTENDS.store(true, Ordering::Release);
+    let mut wire = SourceWire::start_kind_with_mixed(
+        TestStage::BeforeSourcePreparation,
+        false,
+        false,
+        false,
+        false,
+        None,
+        true,
+    );
+    wire.wait_at_source();
+    wire.release();
+    wire.wait_terminal();
+    mixed_published(&wire);
+    let project = wire.source.parent().expect("project");
+    let mut session = Session::connect(&wire.endpoint).expect("listener");
+    crate::builtin::native_ts_owner_journey_tests::select_native_document(
+        &mut session,
+        &[0x67; 32],
+        "Greeting",
+        "changed.ts",
+    )
+    .expect("authenticated TS source");
+    let request = StyloQueryRequest {
+        package: backend_library::PackageReference::parse(
+            project.to_str().expect("path").to_owned(),
+        )
+        .expect("package"),
+        role: StyloNameRole::Class,
+        name: "one".into(),
+        page_rows: 16,
+        output_bytes: 131_072,
+        scan_rows: 64,
+        scan_bytes: 4_194_304,
+        continuation: None,
+    };
+    let backend_library::SurfaceReply::StyloQuery(page) = session
+        .surface(backend_library::SurfaceCommand::StyloQuery { request })
+        .expect("CSS query")
+    else {
+        panic!("CSS query reply")
+    };
+    assert!(
+        page.hits.is_empty(),
+        "unadmitted worker cannot yield CSS facts"
+    );
+    assert!(matches!(page.terminal, StyloQueryTerminal::Unavailable));
+    assert!(matches!(
+        page.basis.worker_capability,
+        StyloWorkerCapability::NoPermit
+    ));
+    assert!(matches!(
+        page.basis.attempt,
+        StyloAttemptState::Unavailable { .. }
+    ));
 }

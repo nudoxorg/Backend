@@ -153,6 +153,10 @@ pub enum CommandId {
     SemanticVersions,
     /// Read one bounded range of an exact captured semantic source.
     SemanticSource,
+    /// Query selected native CSS evidence.
+    StyloQuery,
+    /// Read one verified authored CSS source site.
+    StyloReadSite,
     /// Read one snapshot-bound page of exact selected Project source members.
     PackageSourceMembership,
     /// Select an exact immutable compiler generation.
@@ -211,6 +215,10 @@ pub enum CommandId {
     Health,
     /// Read the constant-size current revision token.
     Revision,
+    /// Query selected native SQL evidence.
+    SqlQuery,
+    /// Read one verified native SQL diagnostic source extent.
+    SqlReadSource,
 }
 
 /// The caller's requested execution class for compiling an added package.
@@ -623,6 +631,8 @@ pub struct DocumentQuery {
     /// Complete source basis expected by the caller, when the request was
     /// produced by an authority that knows the source object and stream.
     pub(crate) source: Option<crate::Basis>,
+    /// Optional bounded source-range request.
+    pub(crate) source_range: Option<crate::SourceRangeRequest>,
 }
 
 impl DocumentQuery {
@@ -633,6 +643,7 @@ impl DocumentQuery {
             symbol: SymbolAddress::canonical(symbol),
             basis: ViewRevision(basis.to_bytes()),
             source: None,
+            source_range: None,
         }
     }
 
@@ -643,6 +654,7 @@ impl DocumentQuery {
             symbol: SymbolAddress::selected(symbol),
             basis: ViewRevision(basis.to_bytes()),
             source: None,
+            source_range: None,
         }
     }
 
@@ -653,6 +665,7 @@ impl DocumentQuery {
             symbol,
             basis: ViewRevision(basis.to_bytes()),
             source: None,
+            source_range: None,
         }
     }
 
@@ -686,6 +699,19 @@ impl DocumentQuery {
     #[must_use]
     pub const fn source_basis(&self) -> Option<crate::Basis> {
         self.source
+    }
+
+    /// Requests an exact source range from the selected owner.
+    #[must_use]
+    pub const fn with_source_range(mut self, range: crate::SourceRangeRequest) -> Self {
+        self.source_range = Some(range);
+        self
+    }
+
+    /// Returns the source range request, when present.
+    #[must_use]
+    pub const fn source_range(&self) -> Option<crate::SourceRangeRequest> {
+        self.source_range
     }
 }
 
@@ -1299,6 +1325,7 @@ impl Command {
                 symbol: SymbolAddress::canonical(*symbol),
                 basis: ViewRevision(basis.to_bytes()),
                 source: None,
+                source_range: None,
             }),
             _ => None,
         }
@@ -1526,6 +1553,7 @@ mod tests {
                 symbol: SymbolAddress::canonical(symbol),
                 basis: basis.into(),
                 source: None,
+                source_range: None,
             })
         );
         assert!(Command::Health.as_document_query(basis).is_none());

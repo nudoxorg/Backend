@@ -2205,7 +2205,7 @@ mod tests {
                 [0x44; 32],
                 path,
                 SourceLanguage::TypeScript,
-                [3; 32],
+                analysis.content().to_bytes(),
                 [4; 32],
                 identity,
                 &declarations,
@@ -2216,14 +2216,17 @@ mod tests {
                 padding == 0,
                 "exercise both storage layouts"
             );
-            let source_row = source_row(
+            let source_row = ProductSourceRecord::file_within_row_capacity(
                 [0x44; 32],
                 path,
-                [3; 32],
+                SourceLanguage::TypeScript,
+                analysis.content().to_bytes(),
                 [4; 32],
-                identity,
                 declarations.clone(),
-            );
+            )
+            .expect("TypeScript source row")
+            .with_source_identity(identity)
+            .expect("source identity");
             let rows = update
                 .into_rows()
                 .map(|(key, row)| {
@@ -2272,6 +2275,31 @@ mod tests {
             assert_eq!(
                 recovered, declarations,
                 "parent targets and binding identity survive actual codecs"
+            );
+            let verified = backend_compile::VerifiedSourceText::admit_stored(
+                source.as_bytes(),
+                source_row.file_fields().expect("file").content_version,
+                identity,
+            )
+            .expect("matching stored source identity");
+            for worker in recovered.iter().filter(|decl| decl.name() == "worker") {
+                let SourceBindingIdentity::Exact(binding) = worker.binding_identity() else {
+                    panic!("exact stored binding");
+                };
+                let extent = verified.binding(binding).expect("validated restored offsets");
+                assert_eq!(extent.name().text(), "worker");
+                assert!(extent.owner().text().contains("worker"));
+            }
+            let edited = source.replacen('λ', "γ", 1);
+            assert_eq!(edited.len(), source.len());
+            assert!(
+                backend_compile::VerifiedSourceText::admit_stored(
+                    edited.as_bytes(),
+                    source_row.file_fields().expect("file").content_version,
+                    identity,
+                )
+                .is_err(),
+                "same-length edit must not reuse stored offsets"
             );
         }
     }
@@ -2765,8 +2793,8 @@ mod tests {
             .difference(&original_keys)
             .copied()
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(rewritten_old, [original_first_page].into());
-        assert_eq!(rewritten_new, [comment_first_page].into());
+        assert_eq!(rewritten_old, std::collections::BTreeSet::from([original_first_page]));
+        assert_eq!(rewritten_new, std::collections::BTreeSet::from([comment_first_page]));
         let original_page_bytes = first
             .pages()
             .iter()

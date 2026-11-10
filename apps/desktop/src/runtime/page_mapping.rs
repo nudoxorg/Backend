@@ -974,10 +974,10 @@ impl<'a> Neighbourhood<'a> {
         self.rows.iter().find(|row| row.id == id)
     }
 
-    fn confidence(&self, edge: &GraphRelation) -> SemanticConfidence {
+    fn confidence(&self, edge: &GraphRelation) -> Option<SemanticConfidence> {
         let from = GraphNodeId::for_row(edge.from);
         let to = GraphNodeId::for_row(edge.to);
-        self.rich
+        match self.rich
             .and_then(|rich| {
                 rich.edges.iter().find(|candidate| {
                     candidate.from == from
@@ -987,10 +987,10 @@ impl<'a> Neighbourhood<'a> {
                                 relation: edge.relation,
                             }
                 })
-            })
-            .and_then(|candidate| candidate.provenance.confidence)
-            // The sidecar is emitted only by the compiler graph authority.
-            .unwrap_or(SemanticConfidence::Compiler)
+            }) {
+            Some(candidate) => candidate.provenance.confidence,
+            None => edge.confidence,
+        }
     }
 }
 
@@ -1028,6 +1028,7 @@ pub fn rose(
             )
         });
         return Rose {
+            relations_gap: None,
             up: Known::Unknown(gap.clone()),
             down: Known::Unknown(gap.clone()),
             left: Known::Unknown(gap.clone()),
@@ -1052,6 +1053,7 @@ pub fn rose(
             "the engine answered with containment only; typed relations need a compiler publication for this package",
         );
         return Rose {
+            relations_gap: None,
             up: Known::Unknown(gap.clone()),
             down: Known::Known(down.into()),
             left: Known::Unknown(gap.clone()),
@@ -1063,10 +1065,12 @@ pub fn rose(
     let mut left = Vec::new();
     let mut right = Vec::new();
     let mut implemented_by = Vec::new();
+    let mut unmapped_relation = false;
     for edge in edges {
-        let provenance = Provenance::Semantic(neighbourhood.confidence(edge));
+        let provenance = neighbourhood.confidence(edge).map_or(Provenance::Unspecified, Provenance::Semantic);
         if edge.from == centre && edge.to != centre {
             let Some(decl) = neighbourhood.row(edge.to).and_then(DeclRef::from_row) else {
+                unmapped_relation = true;
                 continue;
             };
             let item = relation(decl, RelationKind::Semantic(edge.relation), provenance);
@@ -1077,6 +1081,7 @@ pub fn rose(
             }
         } else if edge.to == centre && edge.from != centre {
             let Some(decl) = neighbourhood.row(edge.from).and_then(DeclRef::from_row) else {
+                unmapped_relation = true;
                 continue;
             };
             let item = relation(decl, RelationKind::Semantic(edge.relation), provenance);
@@ -1095,7 +1100,23 @@ pub fn rose(
         &mut up,
         &mut implemented_by,
     );
+    let mut relations_gap = neighbourhood.rich.map_or_else(
+        || Some(Gap::new(GapReason::NoSemanticPublication, "Graph relation coverage was not supplied")),
+        |rich| match &rich.availability {
+            backend_library::GraphAvailability::Ready => None,
+            backend_library::GraphAvailability::Unavailable(reason) | backend_library::GraphAvailability::Failed(reason) => Some(Gap::new(GapReason::NoSemanticPublication, reason.as_str())),
+            backend_library::GraphAvailability::Partial { .. } | backend_library::GraphAvailability::Loading => Some(Gap::new(GapReason::NoSemanticPublication, "Graph relation evidence is incomplete")),
+        },
+    );
+    if unmapped_relation {
+        const DETAIL: &str = "Some graph relations could not be mapped to declarations";
+        relations_gap = Some(match relations_gap {
+            Some(gap) => Gap::new(gap.reason, format!("{}; {DETAIL}", gap.detail)),
+            None => Gap::new(GapReason::ReadFailed, DETAIL),
+        });
+    }
     Rose {
+        relations_gap,
         up: Known::Known(up.into()),
         down: Known::Known(down.into()),
         left: Known::Known(left.into()),
@@ -1189,9 +1210,8 @@ fn derive_impl_blocks(
             let Some(decl) = DeclRef::from_row(target) else {
                 continue;
             };
-            let confidence = neighbourhood
-                .confidence(edge)
-                .min(neighbourhood.confidence(self_edge));
+            let confidence = neighbourhood.confidence(edge).zip(neighbourhood.confidence(self_edge))
+                .map(|(left, right)| left.min(right));
             up.push(Relation {
                 decl,
                 kind: RelationKind::Semantic(SemanticLinkKind::Implements),
@@ -1212,8 +1232,8 @@ pub fn references(
     reply: Result<&SurfaceReply, &ClientError>,
     outline: Option<&OutlineIndex>,
 ) -> Known<Arc<[ReferenceSite]>> {
-    let records = match reply {
-        Ok(SurfaceReply::References { references, .. }) => references,
+    let (records, coverage) = match reply {
+        Ok(SurfaceReply::References { references, coverage, .. }) => (references, coverage),
         Ok(other) => {
             return Known::unknown(
                 GapReason::ReadFailed,
@@ -1264,7 +1284,34 @@ pub fn references(
             })
         })
         .collect::<Vec<_>>();
+    if sites.is_empty() && !records.is_empty() {
+        return Known::unknown(GapReason::ReadFailed, "reference sites could not be read from their declaration coordinates");
+    }
+    if sites.is_empty() {
+        if let backend_library::ReferenceCoverage::Unknown { reason } | backend_library::ReferenceCoverage::Partial { reason } = coverage {
+            return Known::unknown(GapReason::Unknown, reason.as_str());
+        }
+    }
     Known::Known(sites.into())
+}
+
+pub(super) fn references_gap(reply: Option<&SurfaceReply>, outline: Option<&OutlineIndex>) -> Option<Gap> {
+    let Some(SurfaceReply::References { references, coverage, .. }) = reply else { return None };
+    let dropped = references.iter().any(|record| {
+        let label = record.site.as_str();
+        let row = outline.and_then(|outline| outline.row_by_label(label));
+        row.map_or_else(|| DeclRef::from_label(label, None, None, None), DeclRef::from_row).is_none()
+    });
+    let coverage_reason = match coverage {
+        backend_library::ReferenceCoverage::Unknown { reason } | backend_library::ReferenceCoverage::Partial { reason } => Some(reason.as_str()),
+        backend_library::ReferenceCoverage::Complete => None,
+    };
+    match (dropped, coverage_reason) {
+        (true, Some(reason)) => Some(Gap::new(GapReason::ReadFailed, format!("Some reference sites could not be read from their declaration coordinates; {reason}"))),
+        (true, None) => Some(Gap::new(GapReason::ReadFailed, "Some reference sites could not be read from their declaration coordinates")),
+        (false, Some(reason)) => Some(Gap::new(GapReason::Unknown, reason)),
+        (false, None) => None,
+    }
 }
 
 /// Lowers one client failure into a typed gap.
@@ -1474,6 +1521,7 @@ pub fn symbol_page(inputs: &SymbolInputs<'_>) -> SymbolPage {
         // may touch the disk; the mapping stays pure.
         workspace: Arc::from([]),
         references,
+        references_gap: references_gap(inputs.references.as_ref().ok().copied(), outline),
         outline: outline_position(centre, outline, inputs.outline.as_ref().err().cloned()),
         identity,
     }
@@ -1747,6 +1795,7 @@ pub fn source_view(
         declaration,
         identifiers,
         uses,
+        references_gap: None,
         uses_elsewhere: uses_elsewhere.into(),
     }
 }
@@ -2534,9 +2583,8 @@ pub fn health_model(report: &HealthReport) -> HealthModel {
         lanes: CoverageLine::new(report.coverage(), Some(report.row_count())),
         rows: report.row_count(),
         ingest: IngestModel {
-            source_selection: progress
-                .source_selection()
-                .map(|observation| observation.render()),
+            source_selection: progress.source_selection_scope().map(|scope| scope.render())
+                .or_else(|| progress.source_selection().map(|observation| observation.render())),
             files_discovered: progress.files_discovered(),
             files_indexed: progress.files_indexed(),
             files_unavailable: progress.files_unavailable(),
@@ -2584,6 +2632,89 @@ mod tests {
 
     const PRESENT: &str = "/work/crates/present";
     const RICH: &str = "/work/rich_project";
+
+    #[test]
+    fn missing_graph_provenance_must_not_be_compiler_evidence() {
+        let mut edge = GraphRelation::new(
+            RowId::Symbol(key("caller")),
+            RowId::Symbol(key("callee")),
+            SemanticLinkKind::Calls,
+        );
+        edge.confidence = None;
+        let hood = Neighbourhood { rows: &[], relations: Some(&[]), rich: None };
+        assert_eq!(hood.confidence(&edge), None);
+        edge.confidence = Some(SemanticConfidence::Syntactic);
+        assert_eq!(hood.confidence(&edge), Some(SemanticConfidence::Syntactic));
+        let revision = backend_library::RichGraphRevision::new([0; 32], backend_library::SemanticGenerationId::new([1; 32]), [2; 32]);
+        let from = GraphNodeId::for_row(edge.from);
+        let to = GraphNodeId::for_row(edge.to);
+        let rich_edge = backend_library::RichGraphEdge::new(from, to, GraphEdgeKind::Code { relation: edge.relation }, backend_library::GraphAvailability::Ready, backend_library::GraphProvenance::package(backend_library::GraphAuthority::RegistryMetadata, [0; 32]));
+        let rich = backend_library::RichGraphSnapshot {
+            schema: backend_library::RICH_GRAPH_SCHEMA_VERSION,
+            revision, center: from, nodes: Arc::from([]), edges: Arc::from([rich_edge]),
+            availability: backend_library::GraphAvailability::Ready,
+            layout: backend_library::GraphLayoutInput { revision, center: from, nodes: Box::new([]), edges: Box::new([]), seed: [0; 32] },
+        };
+        let hood = Neighbourhood { rows: &[], relations: Some(&[]), rich: Some(&rich) };
+        assert_eq!(hood.confidence(&edge), None, "an explicitly unobserved rich edge must not acquire sidecar confidence");
+        let unmapped = rose(edge.from, None, Some(Neighbourhood { rows: &[], relations: Some(&[edge]), rich: Some(&rich) }), None);
+        assert_eq!(unmapped.relations_gap.as_ref().map(|gap| gap.reason), Some(GapReason::ReadFailed));
+        let mut partial = rich;
+        partial.availability = backend_library::GraphAvailability::unavailable("TSX profile partial").unwrap();
+        let missing = rose(edge.from, None, Some(Neighbourhood { rows: &[], relations: Some(&[edge]), rich: Some(&partial) }), None);
+        assert!(missing.relations_gap.as_ref().is_some_and(|gap| gap.detail.contains("TSX profile partial") && gap.detail.contains("could not be mapped")));
+        let hood = Neighbourhood { rows: &[], relations: Some(&[]), rich: Some(&partial) };
+        let mapped = rose(edge.from, None, Some(hood), None);
+        assert!(mapped.relations_gap.as_ref().is_some_and(|gap| gap.detail.contains("TSX profile partial")));
+        assert!(mapped.right.known().is_some());
+        let (rows, relations) = rich_rows();
+        let boxed = self::rich("18207de4::Boxed");
+        let mapped = rose(
+            RowId::Symbol(key(&boxed)), Some(DeclarationKind::Struct),
+            Some(Neighbourhood { rows: &rows, relations: Some(&relations), rich: Some(&partial) }), None,
+        );
+        assert!(mapped.relations_gap.is_some());
+        assert_eq!(mapped.left.known().unwrap().len(), 1, "positive relations remain visible alongside the gap");
+    }
+
+    #[test]
+    fn reference_coverage_distinguishes_partial_unknown_and_complete_empty() {
+        use backend_library::{ProductText, ReferenceCoverage};
+        let target = ProductText::from_static("/work/rich_project::src/lib.rs:1::target");
+        let unknown = SurfaceReply::References { target: target.clone(), references: Box::new([]), coverage: ReferenceCoverage::Unknown { reason: ProductText::from_static("TSX unavailable") } };
+        assert!(references(Ok(&unknown), None).gap().is_some());
+        assert!(references_gap(Some(&unknown), None).is_some());
+        let partial = SurfaceReply::References {
+            target: target.clone(),
+            references: Box::new([ReferenceRecord {
+                site_symbol: None,
+                source_policy: Default::default(),
+                site: ProductText::from_static("/work/rich_project::src/lib.rs:2::caller"),
+                target: SemanticLinkTarget::Local { declaration: SemanticDeclarationIdentity { family: [1; 16], variant: [2; 16] } },
+                relation: SemanticLinkKind::Calls,
+                evidence: SemanticLinkEvidence { confidence: SemanticConfidence::Syntactic, source: None },
+            }]),
+            coverage: ReferenceCoverage::Partial { reason: ProductText::from_static("TSX partial") },
+        };
+        assert_eq!(references(Ok(&partial), None).known().map(|sites| sites.len()), Some(1));
+        assert!(references_gap(Some(&partial), None).is_some());
+        let complete = SurfaceReply::References { target, references: Box::new([]), coverage: ReferenceCoverage::Complete };
+        assert!(references(Ok(&complete), None).known().is_some_and(|sites| sites.is_empty()));
+        assert!(references_gap(Some(&complete), None).is_none());
+        let mut malformed = partial.clone();
+        if let SurfaceReply::References { references, coverage, .. } = &mut malformed {
+            references[0].site = ProductText::from_static("bad\ncoordinate");
+            *coverage = ReferenceCoverage::Complete;
+        }
+        assert!(references(Ok(&malformed), None).gap().is_some());
+        assert!(references_gap(Some(&malformed), None).is_some());
+        let mut mixed = partial.clone();
+        if let (SurfaceReply::References { references, .. }, SurfaceReply::References { references: invalid, .. }) = (&mut mixed, &malformed) {
+            *references = vec![references[0].clone(), invalid[0].clone()].into_boxed_slice();
+        }
+        assert_eq!(references(Ok(&mixed), None).known().map(|sites| sites.len()), Some(1));
+        assert!(references_gap(Some(&mixed), None).is_some());
+    }
 
     #[cfg(unix)]
     #[test]
@@ -3526,7 +3657,7 @@ mod tests {
             marker.provenance,
             Provenance::Derived {
                 via: Derivation::ImplBlock,
-                confidence: SemanticConfidence::Compiler,
+                confidence: Some(SemanticConfidence::Compiler),
             }
         );
         assert_eq!(marker.arrival, Arrival::NotReported);
@@ -3585,7 +3716,10 @@ mod tests {
 
         let reply = SurfaceReply::References {
             target: backend_library::ProductText::new(marker.clone()).expect("target"),
+            coverage: backend_library::ReferenceCoverage::Complete,
             references: Box::new([ReferenceRecord {
+                site_symbol: None,
+                source_policy: Default::default(),
                 site: backend_library::ProductText::new(rich("b578f79d::Boxed")).expect("site"),
                 target: SemanticLinkTarget::Local {
                     declaration: SemanticDeclarationIdentity {
@@ -4471,9 +4605,16 @@ mod tests {
                 )],
                 Vec::new(),
             )
-            .expect("progress"),
+            .expect("progress")
+            .with_source_selection_scope(backend_library::SourceSelectionScopeCoverage {
+                project_count: 3,
+                extensions: [("css", 1, 2, 0), ("sql", 1, 2, 2), ("vue", 2, 1, 0)]
+                    .into_iter().map(|(extension, projects_observed, projects_unknown, excluded_files)|
+                        backend_library::SourceSelectionExtensionCoverage { extension: extension.into(), projects_observed, projects_unknown, excluded_files }).collect(),
+            }).expect("scope"),
         );
         let health = health_model(&report);
+        assert!(health.ingest.source_selection.as_ref().unwrap().contains(".sql: 2 known exclusions; observed in 1/3 projects, 2 unknown"));
         assert_eq!(health.rows, 1_270);
         assert_eq!(health.ingest.files_discovered, 23);
         assert_eq!(health.ingest.files_indexed, 22);

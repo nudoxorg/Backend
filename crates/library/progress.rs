@@ -133,6 +133,21 @@ impl SourceSelectionObservation {
         }
     }
 
+    /// Fixed scope recorded by current discovery walks, including zero counts.
+    pub fn project_extensions(css: u64, sql: u64, vue: u64) -> Self {
+        Self {
+            observed_projects: 1,
+            unknown_projects: 0,
+            unsupported_extensions: [("css", css), ("sql", sql), ("vue", vue)]
+                .into_iter()
+                .map(|(extension, files)| SourceExtensionExclusion {
+                    extension: extension.into(),
+                    files,
+                })
+                .collect(),
+        }
+    }
+
     /// Shared wording for CLI, MCP, and desktop, independent of capability readiness.
     pub fn render(&self) -> String {
         let mut parts = self
@@ -156,6 +171,91 @@ impl SourceSelectionObservation {
             parts.join("; ")
         )
     }
+}
+
+/// Per-extension evidence across selected project rows. Missing rows are unknown.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceSelectionScopeCoverage {
+    /// Total selected project rows.
+    pub project_count: u64,
+    /// Canonical CSS, SQL, and Vue observation rows.
+    pub extensions: Box<[SourceSelectionExtensionCoverage]>,
+}
+
+/// Observed project count and known exclusions for one extension.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceSelectionExtensionCoverage {
+    /// Lowercase extension.
+    pub extension: String,
+    /// Projects carrying this extension row.
+    pub projects_observed: u64,
+    /// Projects lacking this extension row.
+    pub projects_unknown: u64,
+    /// Checked subtotal from observed projects.
+    pub excluded_files: u64,
+}
+
+impl SourceSelectionScopeCoverage {
+    /// Reject malformed and incomplete scope reports.
+    pub fn admit(&self) -> Result<(), String> {
+        if self.project_count == 0
+            || self.extensions.len() != 3
+            || self
+                .extensions
+                .iter()
+                .zip(["css", "sql", "vue"])
+                .any(|(r, name)| {
+                    r.extension != name
+                        || r.projects_observed.checked_add(r.projects_unknown)
+                            != Some(self.project_count)
+                        || (r.projects_observed == 0 && r.excluded_files != 0)
+                })
+        {
+            return Err("invalid source-selection scope coverage".into());
+        }
+        Ok(())
+    }
+
+    /// Human-readable known subtotals and observation scope.
+    pub fn render(&self) -> String {
+        let parts = self
+            .extensions
+            .iter()
+            .map(|r| {
+                format!(
+                    ".{}: {} known exclusions; observed in {}/{} projects, {} unknown",
+                    r.extension,
+                    r.excluded_files,
+                    r.projects_observed,
+                    self.project_count,
+                    r.projects_unknown
+                )
+            })
+            .collect::<Vec<_>>();
+        format!(
+            "source selection: {}; file/compiler totals cover supported extensions",
+            parts.join("; ")
+        )
+    }
+}
+
+fn check_selection_consistency(observation: &SourceSelectionObservation, scope: &SourceSelectionScopeCoverage) -> Result<(), String> {
+    if observation.observed_projects.checked_add(observation.unknown_projects) != Some(scope.project_count) {
+        return Err("source-selection project counts disagree".into());
+    }
+    for row in &scope.extensions {
+        if row.projects_observed > observation.observed_projects {
+            return Err("source-selection extension count exceeds observed projects".into());
+        }
+        if let Some(legacy) = observation.unsupported_extensions.iter().find(|legacy| legacy.extension == row.extension) {
+            if row.projects_observed != observation.observed_projects || row.excluded_files != legacy.files {
+                return Err("source-selection extension totals disagree".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Largest number of distinct languages one progress report may carry.
@@ -281,15 +381,37 @@ pub struct IngestProgress {
     languages: Box<[LanguageRows]>,
     faults: Box<[FaultRows]>,
     source_selection: Option<SourceSelectionObservation>,
+    source_selection_scope: Option<SourceSelectionScopeCoverage>,
 }
 
 impl IngestProgress {
+    /// Attaches checked per-extension project coverage.
+    pub fn with_source_selection_scope(
+        mut self,
+        scope: SourceSelectionScopeCoverage,
+    ) -> Result<Self, String> {
+        scope.admit()?;
+        if let Some(observation) = &self.source_selection {
+            check_selection_consistency(observation, &scope)?;
+        }
+        self.source_selection_scope = Some(scope);
+        Ok(self)
+    }
+
+    /// Recorded per-extension coverage, if available.
+    pub fn source_selection_scope(&self) -> Option<&SourceSelectionScopeCoverage> {
+        self.source_selection_scope.as_ref()
+    }
+
     /// Attaches discovery evidence without changing any supported-file total.
     pub fn with_source_selection(
         mut self,
         observation: SourceSelectionObservation,
     ) -> Result<Self, String> {
         observation.admit()?;
+        if let Some(scope) = &self.source_selection_scope {
+            check_selection_consistency(&observation, scope)?;
+        }
         self.source_selection = Some(observation);
         Ok(self)
     }
@@ -353,6 +475,7 @@ impl IngestProgress {
             languages: languages.into_boxed_slice(),
             faults: faults.into_boxed_slice(),
             source_selection: None,
+            source_selection_scope: None,
         })
     }
 

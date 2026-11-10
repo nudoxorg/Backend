@@ -179,6 +179,23 @@ impl Record {
     }
 }
 
+/// A raw source-policy claim attached to its exact graph result identity.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GraphSourcePolicy {
+    /// Claim carried by a node.
+    Node { id: backend_library::GraphNodeId, source_policy: backend_library::SourcePolicyQualification },
+}
+
+impl GraphSourcePolicy {
+    pub(crate) fn note(&self) -> Option<String> {
+        let (kind, id, policy) = match self {
+            Self::Node { id, source_policy } => ("node", backend_library::encode_id(id.as_bytes()), source_policy),
+        };
+        crate::product::source_policy_note(policy).map(|note| format!("graph {kind} {id}: {note}"))
+    }
+}
+
 /// One bounded page of result records with its honest lane coverage.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecordList {
@@ -191,6 +208,10 @@ pub struct RecordList {
     /// Why this page has no records, when the caller proved a reason other
     /// than a missed declaration. Search leaves this empty.
     empty_reason: Option<String>,
+    graph_gap: Option<String>,
+    graph_source_policies: Vec<GraphSourcePolicy>,
+    graph_center: Option<backend_library::GraphNodeId>,
+    graph_edges: Vec<backend_library::RichGraphEdge>,
 }
 
 impl RecordList {
@@ -209,7 +230,40 @@ impl RecordList {
             continuation: None,
             page_basis: None,
             empty_reason: None,
+            graph_gap: None,
+            graph_source_policies: Vec::new(),
+            graph_center: None,
+            graph_edges: Vec::new(),
         }
+    }
+
+    /// Retains qualified graph claims with their exact result identities.
+    #[must_use]
+    pub fn with_graph_source_policies(mut self, graph: Option<&backend_library::RichGraphSnapshot>) -> Self {
+        if let Some(graph) = graph {
+            self.graph_source_policies.extend(graph.nodes.iter().filter(|node| !node.source_policy.is_unknown()).map(|node| GraphSourcePolicy::Node { id: node.id, source_policy: node.source_policy.clone() }));
+            self.graph_center = Some(graph.center);
+            self.graph_edges.extend(graph.edges.iter().cloned());
+        }
+        self
+    }
+
+    /// Returns unverified result-specific graph claims.
+    #[must_use]
+    pub fn graph_source_policies(&self) -> &[GraphSourcePolicy] {
+        &self.graph_source_policies
+    }
+
+    /// Returns the query center as metadata, not as a page row.
+    #[must_use]
+    pub const fn graph_center(&self) -> Option<backend_library::GraphNodeId> {
+        self.graph_center
+    }
+
+    /// Returns the exact page-touching graph edges and their own evidence.
+    #[must_use]
+    pub fn graph_edges(&self) -> &[backend_library::RichGraphEdge] {
+        &self.graph_edges
     }
 
     /// Names why an empty page is empty. A graph or related probe with no
@@ -218,6 +272,20 @@ impl RecordList {
     pub fn with_empty_reason(mut self, reason: impl Into<String>) -> Self {
         self.empty_reason = Some(reason.into());
         self
+    }
+
+    /// Retains graph-specific uncertainty independently of pagination.
+    #[must_use]
+    pub fn with_graph_gap(mut self, reason: impl Into<String>) -> Self {
+        self.coverage = self.coverage.without_graph_completion();
+        self.graph_gap = Some(reason.into());
+        self
+    }
+
+    /// Explains why the returned graph relations may be incomplete.
+    #[must_use]
+    pub fn graph_gap(&self) -> Option<&str> {
+        self.graph_gap.as_deref()
     }
 
     /// Attaches the per-query semantic lane state without changing the
@@ -255,6 +323,28 @@ impl RecordList {
             return "no rows yet; indexing has not finished for this revision".to_owned();
         }
         format!("no declaration matches {:?} at this revision", self.query)
+    }
+
+    /// Narrows a name resolution to the declarations that could be meant.
+    ///
+    /// An import of a name and an external endpoint that shares it are not candidates for
+    /// "which declaration is this"; `search` still lists them. They are dropped only while a
+    /// real declaration remains, so a name that exists only as an import or an external is
+    /// still answered.
+    #[must_use]
+    pub fn resolution_view(mut self) -> Self {
+        let candidates = self
+            .records
+            .iter()
+            .filter(|record| {
+                record.kind() != Some(DeclarationKind::Import) && !record.is_external_reference()
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !candidates.is_empty() && candidates.len() < self.records.len() {
+            self.records = candidates.into_boxed_slice();
+        }
+        self
     }
 
     /// Marks that the owner holds another page after this one.
@@ -335,6 +425,55 @@ mod signature_preview_tests {
         Basis, Coverage, DeclarationKind, SourceExcerpt, SourceExcerptExtent, SourceLocation,
         package_key, symbol_key,
     };
+
+    #[test]
+    fn graph_gap_survives_json_and_text_without_claiming_empty_complete() {
+        let list = RecordList::new(
+            "caller",
+            CoverageLine::new(&[Coverage::Complete], None),
+            Vec::<Record>::new(),
+        )
+        .with_graph_gap("TSX profile partial")
+        .with_empty_reason("no graph edges were returned; relation coverage is unknown");
+        let dto = crate::dto::RecordListDto::new(&list);
+        assert_eq!(
+            list.coverage()
+                .lanes()
+                .iter()
+                .find(|lane| lane.lane() == backend_library::Lane::Graph)
+                .unwrap()
+                .state(),
+            crate::coverage::LaneState::Unobserved
+        );
+        assert_eq!(
+            list.coverage()
+                .lanes()
+                .iter()
+                .find(|lane| lane.lane() == backend_library::Lane::Semantic)
+                .unwrap()
+                .state(),
+            crate::coverage::LaneState::Complete
+        );
+        assert_eq!(dto.graph_gap.as_deref(), Some("TSX profile partial"));
+        assert!(crate::render::markdown::records(&list, None).contains("TSX profile partial"));
+        assert!(crate::render::markdown::records(&list, None).contains("coverage is unknown"));
+        let answer = crate::Answer::Records(Box::new(list));
+        for detail in [
+            crate::budget::Detail::Summary,
+            crate::budget::Detail::Standard,
+            crate::budget::Detail::Full,
+        ] {
+            let encoded = crate::budget::encode_answer(
+                &answer,
+                detail,
+                None,
+                crate::budget::DEFAULT_RESPONSE_BUDGET_BYTES,
+            )
+            .unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&encoded.bytes).unwrap();
+            assert_eq!(value["graph_gap"], "TSX profile partial");
+        }
+    }
 
     #[test]
     fn result_lists_share_bounded_previews_and_keep_the_captured_declaration() {

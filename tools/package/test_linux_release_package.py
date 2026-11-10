@@ -303,6 +303,11 @@ class CopiedAdmissionTests(unittest.TestCase):
 
 
 class NativeDefaultPackageTests(unittest.TestCase):
+    def stylo_build_environment(self):
+        paths = [str(self.source), *(str(self.base / item) for item in ("worker-cargo", "worker-target", "worker-build"))]
+        flags = "\x1f".join(f"--remap-path-prefix={value}=/nudox/{label}" for value, label in zip(paths, ("source", "cargo-home", "target", "build")))
+        return paths, {"CARGO_BUILD_TARGET": package.TARGET, "CARGO_NET_OFFLINE": "true", "CARGO_BUILD_JOBS": "2", "CARGO_INCREMENTAL": "0", "CARGO_CACHE_AUTO_CLEAN_FREQUENCY": "never", "CARGO_TERM_COLOR": "never", "RUSTC_WRAPPER": "", "RUSTC_WORKSPACE_WRAPPER": "", "RUSTC": "/fixture/rustc", "CARGO_HOME": paths[1], "CARGO_TARGET_DIR": paths[2], "CARGO_BUILD_BUILD_DIR": paths[3], "HOME": paths[3], "TMPDIR": paths[3], "RUSTFLAGS": "", "CARGO_ENCODED_RUSTFLAGS": flags}
+
     """Exercise main/receipts/copies/archive with synthetic ELF tool responses only."""
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -348,6 +353,8 @@ class NativeDefaultPackageTests(unittest.TestCase):
         for name, path in self.tools.items():
             self.arguments.extend(["--" + name, path])
         self.rpaths = {}
+        self.patchelf_invocations = []
+        self.stylo_bound = False
         self.node_probes = []
         self.node_versions = ("v24.18.0", "5.9.3")
         self.glibc_floors = {}
@@ -376,6 +383,7 @@ class NativeDefaultPackageTests(unittest.TestCase):
             if tool == self.tools["ldd"]:
                 return f"libfixture.so => {self.library} (0x1)\nlibc.so.6 => /synthetic/libc.so.6 (0x2)"
             if tool == self.tools["patchelf"]:
+                self.patchelf_invocations.append(list(args))
                 if args == ["--version"]:
                     return "patchelf synthetic"
                 if args[0] == "--print-rpath":
@@ -389,7 +397,9 @@ class NativeDefaultPackageTests(unittest.TestCase):
                 if args[0] == "-h":
                     return "Class: ELF64\nMachine: Advanced Micro Devices X86-64"
                 if args[0] == "-d":
-                    return '(NEEDED) [libc.so.6]' + ('' if Path(args[-1]).name == 'libfixture.so' else '\n(NEEDED) [libfixture.so]')
+                    name = Path(args[-1]).name
+                    dependency = '' if name in {'libfixture.so', 'libgcc_s.so.1'} else '\n(NEEDED) [libgcc_s.so.1]' if self.stylo_bound and name == 'backend-stylo-worker' else '\n(NEEDED) [libfixture.so]'
+                    return '(NEEDED) [libc.so.6]' + dependency
                 if args[0] == "-l":
                     return f"Requesting program interpreter: {package.INTERPRETER}]"
                 self.assertEqual(args[0], "--version-info")
@@ -521,6 +531,106 @@ class NativeDefaultPackageTests(unittest.TestCase):
         with patch.object(installer.subprocess, "run") as probe:
             installer.verify_typescript_sdk(root, manifest)
             probe.assert_not_called()
+
+    def test_optional_stylo_worker_keeps_receipt_and_installer_checks_final_bytes(self):
+        import install_linux as installer
+        worker = self.base / "backend-stylo-worker"
+        worker.write_bytes(b"\x7fELF synthetic worker, never executed")
+        source = {**self.build["source"], "cargo_lock_sha256": package.sha256(self.source / "Cargo.lock"),
+                  "clean_before": True, "clean_after": True}
+        paths, environment = self.stylo_build_environment()
+        receipt = {"schema": "nudox.stylo-worker-build-receipt.v2", "remap_schema": "nudox.stylo-worker-remap.v2", "source_path": paths[0], "source": source,
+                   "argv": ["cargo", "build", "--release", "--locked", "-p", "backend-frontend-stylo", "--bin", "backend-stylo-worker"],
+                   "exit": 0, "execution": {"exit": 0, "process_group_retired": True},
+                   "toolchain": {"unchanged": True, "rustc": {"path": "/fixture/rustc", "sha256": "e" * 64}, "cargo": {"path": "/fixture/cargo", "sha256": "e" * 64}},
+                   "build_helpers": {name: {"path": "/fixture/" + name, "sha256": "e" * 64} for name in ("cc", "make", "python3", "sh")},
+                   "environment": environment,
+                   "artifact": {"bytes": worker.stat().st_size, "sha256": package.sha256(worker), "architecture": "x86_64", "path": "/private/builder/worker"}}
+        receipt_path = self.base / "stylo-receipt.json"
+        receipt_path.write_text(json.dumps(receipt))
+        foreign = self.base / "foreign-repository"
+        foreign.mkdir()
+        subprocess.run(["git", "-C", str(foreign), "init", "-q"], check=True)
+        redirect = {"GIT_DIR": str(foreign / ".git"), "GIT_WORK_TREE": str(foreign), "GIT_CONFIG_GLOBAL": str(self.base / "missing-git-config")}
+        with patch.dict(os.environ, redirect):
+            self.assertEqual(self.invoke(["--stylo-worker", str(worker), "--stylo-worker-receipt", str(receipt_path)]), 0)
+            self.assertEqual(os.environ["GIT_DIR"], redirect["GIT_DIR"])
+            self.assertEqual(os.environ["GIT_WORK_TREE"], redirect["GIT_WORK_TREE"])
+        root = self.output / "nudox-linux-x86_64"
+        manifest = json.loads((root / "packaging-manifest.json").read_text())
+        self.assertEqual(manifest["stylo_worker"]["path"], "bin/backend-stylo-worker")
+        self.assertEqual(manifest["stylo_worker"]["source_sha256"], package.sha256(worker))
+        self.assertNotIn("/private/builder", (root / "share/nudox/stylo/build-receipt.json").read_text())
+        self.assertEqual({item["name"] for item in manifest["executables"]}, set(package.BINARIES))
+        installer.verify_stylo_worker(root, manifest)
+        (root / "bin/backend-stylo-worker").write_bytes(b"tampered")
+        with self.assertRaises(installer.InstallError): installer.verify_stylo_worker(root, manifest)
+
+    def test_stylo_worker_requires_its_receipt_before_staging(self):
+        with self.assertRaisesRegex(ValueError, "must be provided together"):
+            self.invoke(["--stylo-worker", str(self.base / "missing")])
+        self.assertFalse(self.output.exists())
+
+    def test_two_phase_worker_is_copied_without_second_relocation(self):
+        import record_stylo_owner_build as actor
+        worker = self.base / "raw-worker"
+        worker.write_bytes(b"\x7fELF raw worker")
+        final = self.base / "relocated-worker"
+        final.write_bytes(b"\x7fELF final relocated worker")
+        libgcc = self.base / "libgcc_s.so.1"
+        libgcc.write_bytes(b"\x7fELF raw libgcc")
+        final_libgcc = self.base / "relocated-libgcc"
+        final_libgcc.write_bytes(b"\x7fELF final libgcc")
+        owner = self.base / "bound-owner"
+        owner.write_bytes(b"\x7fELF bound locald")
+        source = {**self.build["source"], "cargo_lock_sha256": package.sha256(self.source / "Cargo.lock"),
+                  "clean_before": True, "clean_after": True}
+        paths, environment = self.stylo_build_environment()
+        worker_receipt = {"schema": "nudox.stylo-worker-build-receipt.v2", "remap_schema": "nudox.stylo-worker-remap.v2", "source_path": paths[0], "source": source,
+            "argv": ["cargo", "build", "--release", "--locked", "-p", "backend-frontend-stylo", "--bin", "backend-stylo-worker"],
+            "exit": 0, "execution": {"exit": 0, "process_group_retired": True}, "toolchain": {"unchanged": True, "rustc": {"path": "/fixture/rustc", "sha256": "e" * 64}, "cargo": {"path": "/fixture/cargo", "sha256": "e" * 64}},
+            "build_helpers": {name: {"path": "/fixture/" + name, "sha256": "e" * 64} for name in ("cc", "make", "python3", "sh")},
+            "environment": environment,
+            "artifact": {"bytes": worker.stat().st_size, "sha256": package.sha256(worker), "architecture": "x86_64"}}
+        worker_receipt_path = self.base / "stylo-worker-receipt.json"
+        worker_receipt_path.write_text(json.dumps(worker_receipt))
+        owner_receipt_path = self.base / "stylo-owner-receipt.json"
+        owner_receipt_path.write_text("{}")
+        elf = {"needed": ["libc.so.6", "libgcc_s.so.1"], "interpreter": package.INTERPRETER,
+               "required_glibc_versions": ["2.31"]}
+        lib_elf = {"needed": ["libc.so.6"], "interpreter": package.INTERPRETER,
+                   "required_glibc_versions": ["2.31"]}
+        loader = Path(self.tools["readelf"])
+        bound = {"schema": actor.SCHEMA, "remap_schema": actor.REMAP_SCHEMA, "c_remap_schema": actor.C_REMAP_SCHEMA,
+            "observer": {"path": str(loader), "bytes": loader.stat().st_size, "sha256": package.sha256(loader)},
+            "cli_build_manifest_sha256": package.sha256(self.manifest), "worker_anchor": "a" * 64,
+            "worker": {"path": str(final), "bytes": final.stat().st_size, "sha256": package.sha256(final)},
+            "owner": {"path": str(owner), "bytes": owner.stat().st_size, "sha256": package.sha256(owner)},
+            "dependency_source": {"path": str(libgcc), "bytes": libgcc.stat().st_size, "sha256": package.sha256(libgcc)},
+            "dependency": {"path": str(final_libgcc), "bytes": final_libgcc.stat().st_size, "sha256": package.sha256(final_libgcc)},
+            "dependency_transformation": {"before": lib_elf, "after": lib_elf, "soname": "libgcc_s.so.1"},
+            "source_loader": {"selected": str(loader), "path": str(loader), "bytes": loader.stat().st_size, "sha256": package.sha256(loader)},
+            "transformation": {"before": {**elf, "interpreter": str(loader)}, "after": elf,
+                               "tool_sha256": {"patchelf": "b" * 64, "readelf": "c" * 64}}}
+        packaged_worker = self.output / "nudox-linux-x86_64/bin/backend-stylo-worker"
+        packaged_libgcc = self.output / "nudox-linux-x86_64/lib/libgcc_s.so.1"
+        self.stylo_bound = True
+        self.rpaths[str(packaged_worker)] = "$ORIGIN/../lib"
+        self.rpaths[str(packaged_libgcc)] = "$ORIGIN"
+        with patch.object(package, "admit_stylo_bound_owner", return_value=(bound, package.sha256(owner_receipt_path))), \
+             patch.object(actor, "observe", return_value="a" * 64), \
+             patch.object(actor, "require_runpath"), \
+             patch.object(actor, "bounded_process", return_value=f"libgcc_s.so.1 => {libgcc} (0x1)\n".encode()):
+            self.assertEqual(self.invoke(["--stylo-worker", str(worker), "--stylo-worker-receipt", str(worker_receipt_path),
+                                          "--stylo-owner-receipt", str(owner_receipt_path)]), 0)
+        self.assertEqual(packaged_worker.read_bytes(), final.read_bytes())
+        self.assertEqual(packaged_libgcc.read_bytes(), final_libgcc.read_bytes())
+        self.assertFalse(any(args and args[0] == "--set-interpreter" and args[-1] == str(packaged_worker)
+                             for args in self.patchelf_invocations))
+        self.assertFalse(any(args and args[0] == "--set-rpath" and args[-1] == str(packaged_libgcc)
+                             for args in self.patchelf_invocations))
+        metadata = json.loads((self.output / "nudox-linux-x86_64/packaging-manifest.json").read_text())["stylo_worker"]
+        self.assertEqual(metadata["bound_owner"]["worker_anchor"], "a" * 64)
 
     def test_explicit_sdk_retains_inventory_relocation_and_both_version_probes(self):
         sdk, receipt = self.sdk()

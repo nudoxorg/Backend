@@ -330,6 +330,26 @@ impl Default for DiscoveryPolicy {
 }
 
 impl DiscoveryPolicy {
+    /// Canonical policy parameters for consumers that bind a selected walk.
+    /// This describes configured discovery rules, not current ignore-file bytes.
+    #[must_use]
+    pub fn source_scope_identity_bytes(&self) -> Vec<u8> {
+        let mut out = b"nudox.discovery-policy.v1\0".to_vec();
+        out.extend_from_slice(&[
+            u8::from(self.generated_defaults),
+            match self.source_scope { SourceSelectionScope::Generic => 0, SourceSelectionScope::PythonPackages => 1 },
+            u8::from(self.respect_gitignore), u8::from(self.case_insensitive),
+        ]);
+        for patterns in [&self.includes, &self.excludes] {
+            out.extend_from_slice(&(patterns.len() as u64).to_be_bytes());
+            for pattern in patterns {
+                out.extend_from_slice(&(pattern.len() as u64).to_be_bytes());
+                out.extend_from_slice(pattern.as_bytes());
+            }
+        }
+        out
+    }
+
     /// Creates the production policy for a local source tree.
     #[must_use]
     pub fn new() -> Self {
@@ -539,6 +559,17 @@ impl DiscoveryPolicy {
         if csharp_binary_output {
             return false;
         }
+        // A `bin` directory beside a .NET project file is build output. `dotnet watch`,
+        // `dotnet test` and IDEs rewrite it constantly, and walking it would let that
+        // churn invalidate the revision fence of an index that never reads from it.
+        if relative
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
+            && path.is_dir()
+            && path.parent().is_some_and(contains_dotnet_project_file)
+        {
+            return false;
+        }
         let directory = relative;
         let generated = self.generated_defaults
             && ignored_source_components(
@@ -557,6 +588,20 @@ impl DiscoveryPolicy {
         include_overrides.is_some_and(|overrides| overrides.matched(path, false).is_whitelist())
             || self.include_reopens_directory_contents(root, path)
     }
+}
+
+/// Whether `directory` directly holds a .NET project file, which makes its `bin` and
+/// `obj` siblings build output rather than source.
+fn contains_dotnet_project_file(directory: &Path) -> bool {
+    std::fs::read_dir(directory).is_ok_and(|entries| {
+        entries.filter_map(Result::ok).any(|entry| {
+            entry.path().extension().is_some_and(|extension| {
+                ["csproj", "fsproj", "vbproj"]
+                    .iter()
+                    .any(|project| extension.eq_ignore_ascii_case(project))
+            })
+        })
+    })
 }
 
 impl DiscoveryPolicy {
@@ -897,6 +942,20 @@ fn slash_path(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn source_scope_identity_changes_with_rule_order_and_options() {
+        use super::DiscoveryPolicy;
+        let first = DiscoveryPolicy::new().include("a").exclude("b");
+        let same = DiscoveryPolicy::new().include("a").exclude("b");
+        let changed = DiscoveryPolicy::new().include("b").exclude("a");
+        let ordered = DiscoveryPolicy::new().include("a").include("b");
+        let reversed = DiscoveryPolicy::new().include("b").include("a");
+        assert_eq!(first.source_scope_identity_bytes(), same.source_scope_identity_bytes());
+        assert_ne!(first.source_scope_identity_bytes(), changed.source_scope_identity_bytes());
+        assert_ne!(ordered.source_scope_identity_bytes(), reversed.source_scope_identity_bytes());
+        assert_ne!(first.source_scope_identity_bytes(), first.clone().respect_gitignore(false).source_scope_identity_bytes());
+    }
+
     use super::*;
     use std::{
         fs,
@@ -1269,6 +1328,36 @@ mod tests {
         assert!(
             !files(DiscoveryPolicy::default()).contains(&PathBuf::from("npm/bin/cli.js")),
             "repository ignore rules still govern bin sources"
+        );
+    }
+
+    #[test]
+    fn a_dotnet_projects_bin_directory_is_never_walked_but_other_bin_sources_are() {
+        let scratch = Scratch::new("dotnet-bin");
+        for path in [
+            "api/Api.csproj",
+            "api/Program.cs",
+            "api/bin/Debug/net10.0/Api.dll",
+            "api/bin/Debug/net10.0/deps/extra.json",
+            "api/obj/Debug/cache.txt",
+            "scripts/bin/run.py",
+        ] {
+            let path = scratch.0.join(path);
+            fs::create_dir_all(path.parent().expect("parent")).expect("directory");
+            fs::write(path, b"x").expect("file");
+        }
+        let seen = DiscoveryPolicy::default()
+            .walk(&scratch.0)
+            .map(|entry| slash_path(entry.expect("discovery").path().strip_prefix(&scratch.0).expect("relative")))
+            .collect::<Vec<_>>();
+        assert!(
+            !seen.iter().any(|path| path.starts_with("api/bin") || path.starts_with("api/obj")),
+            "build output beside a .NET project must not be walked, saw {seen:?}"
+        );
+        assert!(seen.contains(&"api/Program.cs".to_owned()), "{seen:?}");
+        assert!(
+            seen.contains(&"scripts/bin/run.py".to_owned()),
+            "a bin directory with no .NET project beside it stays source: {seen:?}"
         );
     }
 

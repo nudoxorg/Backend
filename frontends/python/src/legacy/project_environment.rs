@@ -4105,19 +4105,41 @@ mod tests {
         Ok(())
     }
 
+    /// Creates a FIFO. rustix does not expose `mknodat` on Apple targets, so
+    /// those targets create the same special file with the system `mkfifo`.
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    fn make_fifo(path: &Path) -> Result<(), CheckerError> {
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            path,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+            0,
+        )
+        .map_err(|error| io_error(error.into()))
+    }
+
+    #[cfg(target_vendor = "apple")]
+    fn make_fifo(path: &Path) -> Result<(), CheckerError> {
+        let status = std::process::Command::new("/usr/bin/mkfifo")
+            .arg("-m")
+            .arg("600")
+            .arg(path)
+            .status()
+            .map_err(io_error)?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(io_error(std::io::Error::other("mkfifo failed")))
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn special_dependency_entry_refuses_without_opening_a_fifo() -> Result<(), CheckerError> {
         let root = fixture()?;
         let cancelled = AtomicBool::new(false);
-        rustix::fs::mknodat(
-            rustix::fs::CWD,
-            root.path.join("blocked.py"),
-            rustix::fs::FileType::Fifo,
-            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
-            0,
-        )
-        .map_err(|error| io_error(error.into()))?;
+        make_fifo(&root.path.join("blocked.py"))?;
         assert!(
             capture_root(
                 &root.path,

@@ -19,7 +19,7 @@ use crate::drive::Answer;
 use crate::fault::{Affordance, Fault};
 use crate::identity::Identity;
 use crate::outline::{OutlineEntry, OutlineTree};
-use crate::page::{Page, Prose, Source};
+use crate::page::{Page, Prose, Source, Truncation};
 use crate::product::{IndexJobProjection, ProductView};
 use crate::record::{Record, RecordList};
 use crate::shelf::{Readiness, Shelf, ShelfEntry};
@@ -392,6 +392,12 @@ pub struct PageDto {
     /// Why there is no source, when there is none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_fault: Option<FaultDto>,
+    /// Owner-reported source-policy claim; not standalone authority.
+    #[serde(
+        default,
+        skip_serializing_if = "backend_library::SourcePolicyQualification::is_unknown"
+    )]
+    pub source_policy: backend_library::SourcePolicyQualification,
     /// Faults explaining any section this page could not fill.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<FaultDto>,
@@ -419,6 +425,12 @@ pub struct SummaryPageDto {
     /// Why captured source is unavailable, when the producer supplied a fault.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_fault: Option<FaultDto>,
+    /// Owner-reported source-policy claim; not standalone authority.
+    #[serde(
+        default,
+        skip_serializing_if = "backend_library::SourcePolicyQualification::is_unknown"
+    )]
+    pub source_policy: backend_library::SourcePolicyQualification,
     /// Retained failures explaining unavailable page sections.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<FaultDto>,
@@ -453,6 +465,10 @@ pub struct SourceDto {
     pub lines: Vec<String>,
     /// Whether the retained text is complete.
     pub extent: String,
+    /// How to read the rest when `extent` is `truncated`: the same declaration in byte-range
+    /// pages. Absent when the text is complete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continue_with: Option<String>,
 }
 
 impl PageDto {
@@ -529,14 +545,18 @@ impl PageDto {
                         .collect(),
                 })
                 .collect(),
-            source: page.source().included().and_then(source_dto),
+            source: page
+                .source()
+                .included()
+                .and_then(|source| source_dto(source, page.identity().coordinate().as_str())),
             source_fault: page.source_fault().map(FaultDto::new),
+            source_policy: page.source_policy().clone(),
             notes: page.notes().iter().map(FaultDto::new).collect(),
         }
     }
 }
 
-fn source_dto(source: &Source) -> Option<SourceDto> {
+fn source_dto(source: &Source, coordinate: &str) -> Option<SourceDto> {
     let Source::Captured {
         site,
         lines,
@@ -550,6 +570,11 @@ fn source_dto(source: &Source) -> Option<SourceDto> {
         line: site.line().get(),
         lines: lines.iter().map(|line| line.text().to_owned()).collect(),
         extent: truncation.name().to_owned(),
+        continue_with: (*truncation == Truncation::Truncated).then(|| {
+            format!(
+                "the declaration continues: `nudox source {coordinate} --byte-range` (MCP backend.source with byte_range true) reads the rest in pages"
+            )
+        }),
     })
 }
 
@@ -611,6 +636,18 @@ pub struct RecordListDto {
     /// Why an empty page is empty, when the caller proved a reason.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub empty_reason: Option<String>,
+    /// Missing graph relation evidence, independently of pagination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_gap: Option<String>,
+    /// The query center as metadata; it is not necessarily a page row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_center: Option<backend_library::GraphNodeId>,
+    /// Exact returned edges, including confidence, scope and each edge's policy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub graph_edges: Vec<backend_library::RichGraphEdge>,
+    /// Qualified node claims, each bound to its graph result ID.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub graph_source_policies: Vec<crate::GraphSourcePolicy>,
     /// Per-query outcome of the optional semantic ranking lane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_search: Option<backend_library::SemanticSearchStatus>,
@@ -636,6 +673,10 @@ impl RecordListDto {
             records: list.records().iter().map(RecordDto::new).collect(),
             more: list.has_more(),
             empty_reason: list.empty_reason().map(str::to_owned),
+            graph_gap: list.graph_gap().map(str::to_owned),
+            graph_center: list.graph_center(),
+            graph_edges: list.graph_edges().to_vec(),
+            graph_source_policies: list.graph_source_policies().to_vec(),
             semantic_search: list.coverage().semantic_search_status(),
             search_scope: list
                 .coverage()
@@ -893,6 +934,9 @@ pub struct StatusDto {
     /// Discovery exclusions separate from frontend readiness and compiler coverage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_selection: Option<backend_library::SourceSelectionObservation>,
+    /// Per-extension project observation coverage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_selection_scope: Option<backend_library::SourceSelectionScopeCoverage>,
     /// Owner availability proven by the admitted health reply.
     #[serde(default = "unknown_status_facet")]
     pub availability: String,
@@ -968,7 +1012,8 @@ impl StatusDto {
         let capabilities = status.capabilities();
         Self {
             compiler_refusal: status.compiler_refusal().map(FaultDto::new),
-            source_selection: status.source_selection().cloned(),
+            source_selection: if status.source_selection_scope().is_none() { status.source_selection().cloned() } else { None },
+            source_selection_scope: status.source_selection_scope().cloned(),
             availability: status.availability().to_owned(),
             publication: status.publication_state().name().to_owned(),
             readiness: status.readiness().to_owned(),
@@ -1159,6 +1204,12 @@ pub struct ProductDto {
     /// Why the configured feed does not publish this fact.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fault: Option<FaultDto>,
+    /// Publication succeeded with explicitly incomplete semantic coverage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_publication_warning: Option<crate::PartialPublicationWarning>,
+    /// Exact revision-pinned raw source page, when requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declaration_source_range: Option<crate::DeclarationSourceRange>,
     /// Stable index-search snapshot and continuation metadata, when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_search_page: Option<ProductIndexSearchPageDto>,
@@ -1293,6 +1344,18 @@ pub struct ProductIndexSearchPageDto {
 /// One product record.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProductRecordDto {
+    /// Owner-reported occurrence-site symbol, when supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_symbol: Option<[u8; 32]>,
+    /// Typed per-occurrence relation and source evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_details: Option<crate::product::ReferenceDetails>,
+    /// Owner-reported source-policy claim for this record.
+    #[serde(
+        default,
+        skip_serializing_if = "backend_library::SourcePolicyQualification::is_unknown"
+    )]
+    pub source_policy: backend_library::SourcePolicyQualification,
     /// Completeness of retained source text in a batch declaration read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extent: Option<backend_library::DeclarationReadExtent>,
@@ -1353,6 +1416,9 @@ impl ProductDto {
                 .records()
                 .iter()
                 .map(|record| ProductRecordDto {
+                    site_symbol: record.site_symbol(),
+                    reference_details: record.reference_details().cloned(),
+                    source_policy: record.source_policy().clone(),
                     extent: record.extent(),
                     title: record.title().to_owned(),
                     operand: record.operand().map(ToOwned::to_owned),
@@ -1370,6 +1436,8 @@ impl ProductDto {
                 .collect(),
             note: view.note().map(ToOwned::to_owned),
             fault: view.fault().map(FaultDto::new),
+            partial_publication_warning: view.partial_publication_warning().cloned(),
+            declaration_source_range: view.declaration_source_range().cloned(),
             index_search_page: view
                 .index_search_page()
                 .map(|page| ProductIndexSearchPageDto {
@@ -1390,11 +1458,34 @@ impl ProductDto {
             package_graph_page: view.package_graph_page().cloned(),
             semantic_data: match (detail, view.semantic_data()) {
                 (Some(Detail::Summary), Some(crate::ProductSemanticData::VersionsPage(_))) => None,
+                (Some(Detail::Summary), Some(crate::ProductSemanticData::StyloQuery(page))) => {
+                    let first_site = page.hits.iter().find_map(|hit| match hit {
+                        backend_library::stylo_query::StyloQueryHit::SourceSite {
+                            source, ..
+                        } => Some(source.clone()),
+                        _ => None,
+                    });
+                    Some(crate::ProductSemanticData::StyloQuerySummary(
+                        crate::product::StyloQuerySummary {
+                            basis: page.basis.clone(),
+                            terminal: page.terminal.clone(),
+                            first_site,
+                            returned: page.hits.len(),
+                        },
+                    ))
+                }
+                (Some(Detail::Summary), Some(crate::ProductSemanticData::SqlQuery(page))) => {
+                    let first_source = page.hits.iter().find_map(|hit| hit.source.clone());
+                    Some(crate::ProductSemanticData::SqlQuerySummary(crate::product::SqlQuerySummary {
+                        basis: page.basis.clone(), terminal: page.terminal.clone(), first_source, returned: page.hits.len(),
+                    }))
+                }
                 _ => view.semantic_data().cloned(),
             },
             semantic_versions_summary: match (detail, view.semantic_data()) {
-                (Some(Detail::Summary), Some(crate::ProductSemanticData::VersionsPage(page))) =>
-                    Some(SemanticVersionsSummaryDto::new(page, view.mcp_exposure)),
+                (Some(Detail::Summary), Some(crate::ProductSemanticData::VersionsPage(page))) => {
+                    Some(SemanticVersionsSummaryDto::new(page, view.mcp_exposure))
+                }
                 _ => None,
             },
             package_discovery: view.package_discovery().cloned(),

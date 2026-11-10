@@ -92,10 +92,13 @@ pub(super) fn body(
     let facts = facts::facts(&page, &package, &companions, &history);
     let view = facet::anatomy::symbol::compile(&facts);
     // What your packages do with it: the lines the page carries, read.
-    let workspace = facet::anatomy::symbol::derive::uses::read_all(
+    let mut workspace = facet::anatomy::symbol::derive::uses::read_all(
         &uses::sites(&page),
         &facet::anatomy::symbol::derive::uses::Reader::of(&view),
     );
+    if let Some(gap) = &page.references_gap {
+        workspace.elsewhere = Some(format!("Reference coverage incomplete: {}", gap.detail));
+    }
     let view = facet::anatomy::symbol::with_uses(view, &workspace);
 
     let disclosure = ctx.symbol_disclosure.clone();
@@ -144,6 +147,14 @@ pub(super) fn body(
         ctx.say(said);
     }
     let mut leaves = vec![Leaf::new(div().id("symbol-page").child(element))];
+    if let Some(gap) = &page.rose.relations_gap {
+        let warning = ctx.say(format!("Graph relation coverage incomplete: {}", gap.detail));
+        leaves.push(Leaf::new(text(facet::tokens::ty::SMALL, &ctx.measure, ctx.palette.ink2).child(warning)));
+    }
+    if let Some(gap) = &page.references_gap {
+        let warning = ctx.say(format!("Reference coverage incomplete: {}", gap.detail));
+        leaves.push(Leaf::new(text(facet::tokens::ty::SMALL, &ctx.measure, ctx.palette.ink2).child(warning)));
+    }
     if let Some(note) = history_note {
         let note = ctx.say(note.to_string());
         leaves.push(Leaf::new(

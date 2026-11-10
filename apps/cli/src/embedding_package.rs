@@ -176,8 +176,8 @@ fn discover_at(root: &Path, executable: &Path) -> Result<BundledHelper, String> 
     let setup = &package["embedding_setup"];
     if setup["path"].as_str() != Some("share/nudox/embedding/setup.json")
         || setup["sha256"].as_str() != Some(hex(&Sha256::digest(&raw)).as_str())
-        || package["source"]["commit"].as_str() != Some(&receipt.source.commit)
-        || package["source"]["tree"].as_str() != Some(&receipt.source.tree)
+        || package["source"]["commit"].as_str() != Some(receipt.source.commit.as_str())
+        || package["source"]["tree"].as_str() != Some(receipt.source.tree.as_str())
     {
         return Err(refuse(
             "local helper receipt is not bound to this product package/source",
