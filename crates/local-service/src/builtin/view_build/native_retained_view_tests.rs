@@ -103,16 +103,13 @@ fn complete_native_image_retains_stale_view_row_but_not_current_query()
     let id_a = ContentId::<SourceFactDomain>::from_canonical_bytes(original.as_bytes());
     let id_b = ContentId::<SourceFactDomain>::from_canonical_bytes(changed.as_bytes());
     let file_key = backend_engine::product_source_file_key(package.to_bytes(), "foo.ts");
-    let record = ProductSourceRecord::file_with_retention(
+    let record = ProductSourceRecord::file(
         package.to_bytes(),
         "foo.ts",
         backend_engine::SourceLanguage::TypeScript,
         [1; 32],
         [2; 32],
         Vec::<backend_compile::SourceDeclaration>::new(),
-        backend_engine::DeclarationRetention::Unavailable(
-            backend_library::SourceUnavailableReason::Unparsed,
-        ),
     )?
     .with_source_identity(id_b)?;
     let indexed_project = IndexedProject {
