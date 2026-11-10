@@ -7297,7 +7297,7 @@ fn validate_persisted_stylo(
             .into_iter()
             .flatten()
         {
-            if matches!(row, StyloAnalysisRecord::Host { project, .. } if *project == intent.package.to_bytes())
+            if matches!(row, StyloAnalysisRecord::Host { project, .. } | StyloAnalysisRecord::CodeHost { project, .. } if *project == intent.package.to_bytes())
             {
                 hosts.insert(change.key);
             }
@@ -7311,10 +7311,12 @@ fn validate_persisted_stylo(
             let owned = match row {
                 StyloAnalysisRecord::Selection { project, .. }
                 | StyloAnalysisRecord::Attempt { project, .. }
-                | StyloAnalysisRecord::Host { project, .. } => {
+                | StyloAnalysisRecord::Host { project, .. }
+                | StyloAnalysisRecord::CodeHost { project, .. } => {
                     *project == intent.package.to_bytes()
                 }
-                StyloAnalysisRecord::Fact { host, .. } => hosts.contains(host),
+                StyloAnalysisRecord::Fact { host, .. }
+                | StyloAnalysisRecord::CodeFact { host, .. } => hosts.contains(host),
             };
             if !owned {
                 return Err(BuiltinModelError(
