@@ -400,7 +400,14 @@ def startup_missing_checker(bin_dir, out):
         code2, obj2, text2 = r.cli("status", ["status"], proj, timeout=300)
         code3, obj3, text3 = r.cli("add", ["add", str(proj), "--wait", "--wait-timeout", "900"], proj)
         ok = code == 0 and code2 == 0 and code3 == 0
-        return {"STARTUP-02": {"pass": ok, "detail": f"health={code} status={code2} add={code3}; {text[-300:]!r}"}}
+        # A Python project meets the unusable interpreter on its own: its owner stays up and
+        # the outcome is reported, not a daemon that never started.
+        crm = _project(r, "crm")
+        code4, obj4, text4 = r.cli("add-python", ["add", str(crm), "--wait", "--wait-timeout", "900"], crm)
+        code5, obj5, text5 = r.cli("health-after", ["health"], proj, timeout=300)
+        return {"STARTUP-02": {"pass": ok and code5 == 0,
+                               "detail": f"health={code} status={code2} add={code3}; python project add={code4} "
+                                         f"health afterwards={code5}; {text[-200:]!r}; add-python tail={text4[-300:]!r}"}}
     finally:
         r.stop()
 
