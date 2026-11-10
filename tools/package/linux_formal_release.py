@@ -54,6 +54,7 @@ EXECUTABLES = ("backend-desktop", "backend-cli", "backend-mcp", "backend-locald"
 MINIMUM_OS = "Linux glibc"
 GUI_SONAMES = Path(__file__).with_name("linux-gui-sonames.txt")
 MAX_GUI_LIBRARIES = 192
+NIX_STORE = "/nix/store/"
 # Installed command names, as the v0.2.0 archive and installer ship them.
 LAUNCHERS = {"nudox": "backend-cli", "nudox-desktop": "backend-desktop", "nudox-mcp": "backend-mcp"}
 LAUNCHER = """#!/bin/sh
@@ -124,7 +125,14 @@ def bundle_gui_libraries(lib_dir: Path, search: list[Path], patchelf: Path, read
         return None
     queue = [line.strip() for line in GUI_SONAMES.read_text().splitlines() if line.strip() and not line.startswith("#")]
     missing, versions, added = [], [], 0
-    while queue:
+    while True:
+        if not queue:
+            # Listed transitive libraries live in another library's RPATH,
+            # which is only searched once that library is bundled.
+            queue = [name for name in missing if find(name)]
+            if not queue:
+                break
+            missing = [name for name in missing if name not in queue]
         soname = queue.pop()
         if soname in GLIBC_SONAMES or soname.startswith("ld-linux-") or (lib_dir / soname).exists():
             continue
@@ -136,7 +144,7 @@ def bundle_gui_libraries(lib_dir: Path, search: list[Path], patchelf: Path, read
         if added > MAX_GUI_LIBRARIES:
             fail("GUI library closure exceeds its member bound")
         # A library's own RPATH is where its dependencies live.
-        search.extend(Path(item) for item in run([str(patchelf), "--print-rpath", str(source)]).split(":") if item.startswith("/nix/store/"))
+        search.extend(Path(item) for item in run([str(patchelf), "--print-rpath", str(source)]).split(":") if item.startswith(NIX_STORE))
         library_bytes, digest = admit_file_digest(source, 96 * 1024 * 1024)
         packaged = lib_dir / soname
         copy_admitted_file(source, packaged, digest, library_bytes, 96 * 1024 * 1024)
