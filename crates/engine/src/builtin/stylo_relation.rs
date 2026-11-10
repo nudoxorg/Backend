@@ -4,7 +4,7 @@
 //! predecessor/target updates, closure membership and cross-row ownership is
 //! required before serving this relation.
 use super::{
-    CodeFactRow, CodeHostState, CodeSelection, StyloProjectedRow, StyloWorkerPolicy,
+    CodeFactRow, CodeHostState, CodeSelection, StyloFragment, StyloProjectedRow, StyloWorkerPolicy,
     stylo_projection::bounded_encode,
 };
 use crate::workspace::{WorkspaceRelationError, WorkspaceRelationHandle, WorkspaceSnapshot};
@@ -80,6 +80,9 @@ pub enum StyloUnavailable {
     WorkerFailure,
     /// Process-global preference values changed across the parse.
     PreferencesChanged,
+    /// An embedded stylesheet is written in a language the native parser does
+    /// not read (Sass, Less, an external `src`), so no facts were attempted.
+    UnsupportedSyntax,
 }
 
 /// Whether a trusted native worker capability was available to the attempt.
@@ -176,6 +179,9 @@ pub enum StyloAnalysisRecord {
         terminal: StyloTerminal,
         fact_count: u32,
         fact_digest: [u8; 32],
+        /// Present when this host is an embedded stylesheet inside `path`'s file.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fragment: Option<StyloFragment>,
     },
     /// One native rule, selector, retained declaration, dependency or diagnostic.
     Fact {
@@ -306,9 +312,17 @@ impl StyloAnalysisRecord {
                 source_observer_recipe,
                 terminal,
                 fact_count,
+                fragment,
                 ..
             } if *project == [0; 32]
                 || !canonical_path(path)
+                || fragment.as_ref().is_some_and(|fragment| {
+                    !canonical_path(&fragment.file)
+                        || fragment.host_path() != *path
+                        || fragment.start >= fragment.end
+                        || byte_length.is_some_and(|length| fragment.end > length)
+                        || content.is_none()
+                })
                 || content.is_some() != source.is_some()
                 || content.is_some() != byte_length.is_some()
                 || config.is_some() != configuration.is_some()
@@ -925,6 +939,7 @@ mod tests {
             terminal: StyloTerminal::Unavailable(StyloUnavailable::ReadUnavailable),
             fact_count: 0,
             fact_digest: [2; 32],
+            fragment: None,
         };
         let mut changed = row.clone();
         if let StyloAnalysisRecord::Host { path, .. } = &mut changed {
@@ -1133,6 +1148,7 @@ mod tests {
             terminal: StyloTerminal::Unavailable(StyloUnavailable::ReadUnavailable),
             fact_count: 0,
             fact_digest: [2; 32],
+            fragment: None,
         };
         let mut encoded = Vec::new();
         StyloAnalysisRelation::encode_value(&value, &mut encoded);
@@ -1181,13 +1197,18 @@ pub fn admit_stylo_selection(
     if hosts.len() > 65_536 || facts.len() > 262_144 {
         return Err("Stylo selection exceeds row work limit".into());
     }
+    let stylesheet_hosts = hosts
+        .iter()
+        .filter(|(_, host)| !matches!(host, StyloAnalysisRecord::Host { fragment: Some(_), .. }))
+        .count();
     if selection_key != stylo_selection_key(*project)
         || hosts.len() != *host_count as usize
-        || *inventory_count < u64::from(*host_count)
+        || *inventory_count < stylesheet_hosts as u64
         || stylo_rows_digest(hosts)? != *host_digest
     {
         return Err("Stylo selected host witness mismatch".into());
     }
+    let embedded_recipe = super::STYLO_EMBEDDED_RECIPE.to_owned();
     // Work is bounded before allocating lookup structures or cloning facts.
     stylo_rows_digest(facts)?;
     let mut host_paths = Vec::with_capacity(hosts.len());
@@ -1196,6 +1217,7 @@ pub fn admit_stylo_selection(
         let StyloAnalysisRecord::Host {
             project: owner,
             path,
+            fragment,
             ..
         } = record
         else {
@@ -1207,7 +1229,10 @@ pub fn admit_stylo_selection(
         {
             return Err("invalid Stylo host ownership".into());
         }
-        host_paths.push(path.as_str());
+        // Embedded stylesheets are not members of the stylesheet-file inventory.
+        if fragment.is_none() {
+            host_paths.push(path.as_str());
+        }
     }
     host_paths.sort_unstable();
     let mut inventory_witness = StyloInventoryWitness::default();
@@ -1248,11 +1273,13 @@ pub fn admit_stylo_selection(
             terminal,
             fact_count,
             fact_digest,
+            fragment,
             ..
         } = record
         else {
             return Err("Stylo host row required".into());
         };
+        let recipe: &String = if fragment.is_some() { &embedded_recipe } else { recipe };
         let selected = by_host
             .remove(host_key)
             .ok_or("Stylo host witness missing")?;

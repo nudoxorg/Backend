@@ -8453,6 +8453,7 @@ mod persisted_intent_tests {
             terminal: StyloTerminal::Unavailable(StyloUnavailable::ReadUnavailable),
             fact_count: 0,
             fact_digest: backend_engine::builtin::stylo_rows_digest(&[]).expect("empty digest"),
+            fragment: None,
         };
         let key = backend_engine::builtin::stylo_host_key(project, "site.css").expect("host key");
         let mut intent = BuiltinIntent::new_with_version(

@@ -859,6 +859,7 @@ fn failure_text(reason: backend_library::stylo_query::StyloFailure) -> &'static 
         F::Deadline => "the CSS worker ran out of time",
         F::WorkerFailure => "the CSS worker failed",
         F::PreferencesChanged => "parser preferences changed during analysis",
+        F::UnsupportedSyntax => "an embedded stylesheet is written in a language the CSS parser does not read",
     }
 }
 
@@ -874,6 +875,7 @@ fn unavailable_text(reason: backend_engine::builtin::StyloUnavailable) -> String
         U::Deadline => "worker deadline",
         U::WorkerFailure => "worker failed",
         U::PreferencesChanged => "preferences changed",
+        U::UnsupportedSyntax => "language not read by the CSS parser (Sass, Less or external src)",
     }
     .to_owned()
 }

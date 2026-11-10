@@ -58,6 +58,7 @@ fn failure(reason: backend_engine::builtin::StyloUnavailable) -> StyloFailure {
         U::Deadline => StyloFailure::Deadline,
         U::WorkerFailure => StyloFailure::WorkerFailure,
         U::PreferencesChanged => StyloFailure::PreferencesChanged,
+        U::UnsupportedSyntax => StyloFailure::UnsupportedSyntax,
     }
 }
 struct Work {
@@ -840,6 +841,7 @@ mod tests {
             terminal: StyloTerminal::Unavailable(StyloUnavailable::Limit),
             fact_count: 0,
             fact_digest: [0; 32],
+            fragment: None,
         };
         let first = native_key(&selection, &host([8; 32]), &[0], StyloRecordKind::Rule, 0).unwrap();
         let second =

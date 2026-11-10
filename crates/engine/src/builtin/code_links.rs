@@ -137,3 +137,37 @@ pub struct CodeSelection {
     /// Digest of those rows in key order.
     pub digest: [u8; 32],
 }
+
+/// Recipe of embedded Unicode fragments (a Vue `<style>` block's content).
+/// Mirrors the frontend constant; a test in the owner pins the two together.
+pub const STYLO_EMBEDDED_RECIPE: &str =
+    "stylo-native-embedded-v1;verbatim-unicode;no-bom-strip;host-offset-map=checked;runtime=not-attempted";
+
+/// Where an embedded stylesheet lives inside its host file. A host row with a
+/// fragment is a `<style>` block of a Vue single-file component: its path is
+/// the virtual `file#style/N`, its content and source identities are those of
+/// the whole file, and every authored site is a byte range of that file.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StyloFragment {
+    /// Canonical project-relative path of the enclosing file.
+    pub file: String,
+    /// Index of the style block among the file's blocks in host order.
+    pub block: u32,
+    /// Inclusive start byte of the block's content in the file.
+    pub start: u64,
+    /// Exclusive end byte of the block's content in the file.
+    pub end: u64,
+    /// The block carries `scoped`.
+    pub scoped: bool,
+    /// The block carries `module`.
+    pub module: bool,
+}
+
+impl StyloFragment {
+    /// The virtual host path of this fragment.
+    #[must_use]
+    pub fn host_path(&self) -> String {
+        format!("{}#style/{}", self.file, self.block)
+    }
+}

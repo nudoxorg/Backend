@@ -2044,6 +2044,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                     StyloFailure::Deadline => "; CSS worker deadline exceeded",
                     StyloFailure::WorkerFailure => "; CSS worker or its protocol failed",
                     StyloFailure::PreferencesChanged => "; parser preferences changed",
+                    StyloFailure::UnsupportedSyntax => "; an embedded stylesheet is in a language the CSS parser does not read",
                 },
                 _ => "",
             };
