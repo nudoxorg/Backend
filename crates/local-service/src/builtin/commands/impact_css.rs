@@ -45,6 +45,9 @@ pub(super) struct HostModel {
     pub source: Option<Key>,
     pub byte_length: Option<u64>,
     pub parsed: bool,
+    /// Parsed with `@import` rules recorded (hosts indexed before that existed
+    /// dropped them, so their silence about imports is not an answer).
+    pub imports_captured: bool,
     pub unavailable: Option<String>,
     pub diagnostics: bool,
     pub source_gaps: Vec<StyloSourceGap>,
@@ -367,6 +370,49 @@ fn line_of(rule: &StyloRule) -> Option<u32> {
     rule.location.map(|location| location.line + 1)
 }
 
+/// Project-relative stylesheet an `@import` specifier names. CSS resolves a
+/// specifier against the importing stylesheet, so a bare `base.css` is a
+/// sibling, unlike a JavaScript module name. Absolute URLs, scheme-less network
+/// paths, root-relative paths and bundler aliases (`~pkg/x.css`, `@scope/x.css`)
+/// are not files this project can name, so they resolve to nothing.
+pub(super) fn resolve_import(host_path: &str, specifier: &str) -> Option<String> {
+    let trimmed = specifier.trim();
+    if trimmed.is_empty()
+        || trimmed.contains("://")
+        || trimmed.starts_with(['/', '~', '@', '#'])
+        || trimmed.to_ascii_lowercase().starts_with("data:")
+    {
+        return None;
+    }
+    let path = trimmed.split(['?', '#']).next().unwrap_or("");
+    let mut parts: Vec<&str> = host_path.split('/').collect();
+    parts.pop();
+    for part in path.split('/') {
+        match part {
+            "." | "" => {}
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other),
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+/// An import with `supports()` or media applies only where that condition
+/// holds; a bare `layer` or `layer(name)` only orders it.
+fn import_is_conditional(qualifiers: Option<&str>) -> bool {
+    let Some(text) = qualifiers else { return false };
+    let mut rest = text.trim();
+    if let Some(after) = rest.strip_prefix("layer") {
+        rest = after.trim_start();
+        if let Some(inner) = rest.strip_prefix('(') {
+            rest = inner.split_once(')').map_or("", |(_, tail)| tail).trim_start();
+        }
+    }
+    !rest.is_empty()
+}
+
 fn rule_label(host: &HostModel, rule: &StyloRule) -> String {
     match rule.kind {
         StyloRuleKind::Style => {
@@ -400,6 +446,8 @@ pub(super) fn build_graph(model: &CssModel, issue: &dyn Fn(&Key, &Key) -> Option
     let mut known_paths: BTreeSet<String> = BTreeSet::new();
     let mut parsed_files = 0u32;
     let mut var_uses = 0u32;
+    let (mut import_links, mut import_external, mut import_legacy) = (0u32, 0u32, 0u32);
+    let mut import_targets: BTreeSet<String> = BTreeSet::new();
     for host in &model.hosts {
         known_paths.insert(host.path.clone());
         if !host.parsed {
@@ -468,6 +516,39 @@ pub(super) fn build_graph(model: &CssModel, issue: &dyn Fn(&Key, &Key) -> Option
                     );
                 }
             }
+        }
+        // `@import`: a changed stylesheet changes every stylesheet which imports it.
+        if !host.imports_captured {
+            import_legacy += 1;
+        }
+        for rule in &host.rules {
+            let Some(specifier) = rule.import_specifier() else { continue };
+            let Some(target) = resolve_import(&host.path, &specifier) else {
+                import_external += 1;
+                continue;
+            };
+            let qualifiers = rule.import_qualifiers();
+            let conditional = import_is_conditional(qualifiers.as_deref());
+            let tkey = file_key(&target);
+            b.ensure(tkey, || {
+                let mut node = Node::new(ImpactDomain::Css, "file", "", &target);
+                node.path = Some(target.clone());
+                node
+            });
+            import_targets.insert(target.clone());
+            import_links += 1;
+            b.edge(
+                tkey,
+                fkey,
+                if conditional { ImpactStrength::Candidate } else { ImpactStrength::Exact },
+                "css.imports-stylesheet",
+                format!(
+                    "{} imports {specifier}{} at line {}",
+                    host.path,
+                    qualifiers.as_deref().map(|text| format!(" ({text})")).unwrap_or_default(),
+                    line_of(rule).unwrap_or(1)
+                ),
+            );
         }
         // Selectors: classes, ids, element-level rules.
         let mut class_subject: BTreeMap<(Vec<u32>, String), bool> = BTreeMap::new();
@@ -689,12 +770,26 @@ pub(super) fn build_graph(model: &CssModel, issue: &dyn Fn(&Key, &Key) -> Option
             note: "exact byte sites exist for class names and custom-property declaration names of top-level rules; at-rules, ids, nested rules and var() uses carry the rule's native line only".to_owned(),
             count: None,
         },
-        ImpactGap {
-            facet: "css.imports".to_owned(),
-            note: "@import is not followed, so stylesheet-to-stylesheet impact is not traversed".to_owned(),
-            count: None,
-        },
     ];
+    {
+        let unindexed = import_targets.iter().filter(|target| !known_paths.contains(*target)).count();
+        let mut note = format!(
+            "@import is followed for literal specifiers: {import_links} resolved to a project file{}",
+            if unindexed > 0 { format!(" ({unindexed} of them not an indexed stylesheet)") } else { String::new() }
+        );
+        if import_external > 0 {
+            note.push_str(&format!("; {import_external} name a URL, a root path or a bundler alias and are not followed"));
+        }
+        if import_legacy > 0 {
+            note.push_str(&format!("; {import_legacy} stylesheets were indexed before @import was recorded, so their imports are unknown until a re-index"));
+        }
+        note.push_str("; layer order, supports() and media conditions on an import are not evaluated");
+        gaps.push(ImpactGap {
+            facet: "css.imports".to_owned(),
+            note,
+            count: (import_external + import_legacy > 0).then_some(import_external + import_legacy),
+        });
+    }
     if !unparsed.is_empty() {
         unparsed.sort();
         let shown: Vec<String> = unparsed.iter().take(4).cloned().collect();
@@ -855,9 +950,10 @@ pub(super) fn read_model(cx: &ImpactContext<'_>) -> Result<(CssModel, [u8; 32]),
                 break;
             }
             match row {
-                StyloAnalysisRecord::Host { project: owner, path, source, byte_length, terminal, source_gaps, .. } if *owner == project => {
+                StyloAnalysisRecord::Host { project: owner, path, source, byte_length, terminal, source_gaps, config, .. } if *owner == project => {
                     let host = hosts.entry(*key).or_default();
                     host.key = *key;
+                    host.imports_captured = config.as_ref().is_some_and(|config| config.allow_imports);
                     host.path = path.clone();
                     host.source = *source;
                     host.byte_length = *byte_length;
@@ -1236,5 +1332,95 @@ mod tests {
             &|spec, node| CssAdapter.seed_matches(spec, node), &request, &|| false,
         );
         assert!(refused.is_err());
+    }
+
+    #[test]
+    fn import_specifiers_resolve_like_css_not_like_javascript() {
+        assert_eq!(resolve_import("src/styles/app.css", "./base.css").as_deref(), Some("src/styles/base.css"));
+        assert_eq!(resolve_import("src/styles/app.css", "base.css").as_deref(), Some("src/styles/base.css"));
+        assert_eq!(resolve_import("src/styles/app.css", "../tokens/colors.css?v=2").as_deref(), Some("src/tokens/colors.css"));
+        for unresolved in ["https://cdn.example/x.css", "//cdn.example/x.css", "/abs.css", "~pkg/x.css", "@scope/x.css", "data:text/css,a{}", "", "../../../escape.css"] {
+            assert_eq!(resolve_import("src/styles/app.css", unresolved), None, "{unresolved}");
+        }
+        assert!(!import_is_conditional(None));
+        assert!(!import_is_conditional(Some("layer")));
+        assert!(!import_is_conditional(Some("layer(theme)")));
+        assert!(import_is_conditional(Some("screen")));
+        assert!(import_is_conditional(Some("layer(theme) supports(display: grid)")));
+    }
+
+    #[test]
+    fn a_changed_stylesheet_reaches_the_stylesheets_which_import_it() {
+        // base.css:  .base { }              app.css:  @import "./base.css"; .app { }
+        // wide.css:  @import "./base.css" screen;
+        let base = HostModel {
+            key: [1; 32],
+            path: "src/base.css".into(),
+            parsed: true,
+            imports_captured: true,
+            rules: vec![rule(&[0], StyloRuleKind::Style, "Style", None, 0)],
+            selectors: vec![selector(&[0], 0, ".base")],
+            ..HostModel::default()
+        };
+        let app = HostModel {
+            key: [2; 32],
+            path: "src/app.css".into(),
+            parsed: true,
+            imports_captured: true,
+            rules: vec![
+                rule(&[0], StyloRuleKind::Other, "Import", Some("url(\"./base.css\")"), 0),
+                rule(&[1], StyloRuleKind::Style, "Style", None, 1),
+            ],
+            selectors: vec![selector(&[1], 0, ".app")],
+            ..HostModel::default()
+        };
+        let wide = HostModel {
+            key: [3; 32],
+            path: "src/wide.css".into(),
+            parsed: true,
+            imports_captured: true,
+            rules: vec![
+                rule(&[0], StyloRuleKind::Other, "Import", Some("url(\"./base.css\") screen"), 0),
+                rule(&[1], StyloRuleKind::Other, "Import", Some("url(\"https://cdn.example/x.css\")"), 1),
+            ],
+            ..HostModel::default()
+        };
+        let model = CssModel {
+            state: ImpactDomainState::Analyzed,
+            source_root: None,
+            hosts: vec![base, app, wide],
+            inventory_incomplete: false,
+        };
+        let report = ask(&model, "file", "src/base.css", ImpactDirection::Dependents, 3);
+        assert!(matches!(report.seed_state, ImpactSeedState::Resolved), "{report:?}");
+        let app_row = report.rows.iter().find(|row| row.node.kind == "file" && row.node.name == "src/app.css").expect("app.css imports base.css");
+        assert_eq!((app_row.relation.as_str(), app_row.strength), ("css.imports-stylesheet", ImpactStrength::Exact));
+        let wide_row = report.rows.iter().find(|row| row.node.kind == "file" && row.node.name == "src/wide.css").expect("wide.css imports base.css");
+        assert_eq!(wide_row.strength, ImpactStrength::Candidate, "a media-qualified import applies only under that media");
+        assert!(report.rows.iter().any(|row| row.node.kind == "rule" && row.node.name == ".app"), "the importer's own rules are affected: {report:?}");
+        let gap = report.gaps.iter().find(|gap| gap.facet == "css.imports").expect("imports gap is stated");
+        assert!(gap.note.contains("2 resolved") && gap.note.contains("1 name a URL"), "{}", gap.note);
+        assert!(!report.proves_no_impact());
+        // Reading the other way: what app.css relies on.
+        let back = ask(&model, "file", "src/app.css", ImpactDirection::Dependencies, 2);
+        assert!(back.rows.iter().any(|row| row.node.kind == "file" && row.node.name == "src/base.css"), "{back:?}");
+    }
+
+    #[test]
+    fn stylesheets_indexed_before_imports_were_recorded_do_not_claim_there_are_none() {
+        let old = HostModel {
+            key: [1; 32],
+            path: "src/old.css".into(),
+            parsed: true,
+            imports_captured: false,
+            rules: vec![rule(&[0], StyloRuleKind::Style, "Style", None, 0)],
+            selectors: vec![selector(&[0], 0, ".old")],
+            ..HostModel::default()
+        };
+        let model = CssModel { state: ImpactDomainState::Analyzed, source_root: None, hosts: vec![old], inventory_incomplete: false };
+        let report = ask(&model, "class", "old", ImpactDirection::Dependents, 2);
+        let gap = report.gaps.iter().find(|gap| gap.facet == "css.imports").expect("imports gap");
+        assert!(gap.note.contains("indexed before @import was recorded"), "{}", gap.note);
+        assert_eq!(gap.count, Some(1));
     }
 }

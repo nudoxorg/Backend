@@ -23,12 +23,54 @@ impl Write for BoundedText {
 }
 use style::{
     context::QuirksMode,
+    media_queries::MediaList,
+    servo_arc::Arc as ServoArc,
+    shared_lock::Locked,
+    values::CssUrl,
     custom_properties::{References, SubstitutionFunctionKind},
     error_reporting::{ContextualParseError, ParseErrorReporter},
     properties::{CustomDeclarationValue, PropertyDeclaration},
     shared_lock::SharedRwLock,
-    stylesheets::{AllowImportRules, CssRule, Origin, StylesheetContents, UrlExtraData},
+    stylesheets::{
+        AllowImportRules, CssRule, ImportRule, Origin, StylesheetContents, StylesheetLoader,
+        UrlExtraData,
+        import_rule::{ImportLayer, ImportSheet, ImportSupportsCondition},
+    },
 };
+use cssparser::SourceLocation as ImportLocation;
+
+/// Records every `@import` the parser accepts and refuses to load any of
+/// them. The parser needs a loader to build an import rule at all; this one
+/// answers each request with a refused sheet, so the rule, its specifier,
+/// layer, supports condition and media survive as native facts while no file
+/// is ever opened or fetched.
+struct ImportRecorder {
+    media: RefCell<Vec<(u32, u32, String)>>,
+}
+impl StylesheetLoader for ImportRecorder {
+    fn request_stylesheet(
+        &self,
+        url: CssUrl,
+        location: ImportLocation,
+        lock: &SharedRwLock,
+        media: ServoArc<Locked<MediaList>>,
+        supports: Option<ImportSupportsCondition>,
+        layer: ImportLayer,
+    ) -> ServoArc<Locked<ImportRule>> {
+        let text = {
+            let guard = lock.read();
+            style_traits::ToCss::to_css_string(media.read_with(&guard))
+        };
+        self.media.borrow_mut().push((location.line, location.column, text));
+        ServoArc::new(lock.wrap(ImportRule {
+            url,
+            stylesheet: ImportSheet::new_refused(),
+            supports,
+            layer,
+            source_location: location,
+        }))
+    }
+}
 
 /// Fixed native parser package and output semantics for this projection.
 /// Build-bound fingerprint of the real adapter, neutral schema and native closure.
@@ -167,7 +209,7 @@ fn analyze_input(
     if bytes.len() as u64 > config.limits.input_bytes {
         return Err(StyloError::Limit);
     }
-    if !config.author_origin || !config.no_quirks || config.allow_imports {
+    if !config.author_origin || !config.no_quirks {
         return Err(StyloError::InvalidConfig);
     }
     let source = std::str::from_utf8(bytes).map_err(|_| StyloError::InvalidUtf8)?;
@@ -196,15 +238,16 @@ fn analyze_input(
     )
     .ok_or(StyloError::InvalidConfig)?;
     let lock = SharedRwLock::new();
+    let recorder = ImportRecorder { media: RefCell::new(Vec::new()) };
     let sheet = StylesheetContents::from_str(
         input,
         UrlExtraData::from(url),
         Origin::Author,
         &lock,
-        None,
+        config.allow_imports.then_some(&recorder as &dyn StylesheetLoader),
         Some(&reporter),
         QuirksMode::NoQuirks,
-        AllowImportRules::No,
+        if config.allow_imports { AllowImportRules::Yes } else { AllowImportRules::No },
         None,
     );
     if cancelled() {
@@ -517,6 +560,40 @@ fn analyze_input(
                 result.coverage = StyloCoverage::Partial;
                 let node = node.read_with(&guard);
                 let prelude = style_traits::ToCss::to_css_string(&node.name);
+                add_text(&mut text_used, &prelude, result.config.limits.text_bytes)?;
+                (
+                    StyloRuleKind::Other,
+                    Some(location(node.source_location, false)),
+                    Some(prelude),
+                )
+            }
+            // `@import` is recorded with its specifier, layer, supports condition and
+            // media, and never loaded. The prelude is `url("...")` followed by the
+            // qualifiers the parser serialized.
+            CssRule::Import(node) => {
+                result.coverage = StyloCoverage::Partial;
+                let node = node.read_with(&guard);
+                let mut prelude = style_traits::ToCss::to_css_string(&node.url);
+                if !matches!(node.layer, ImportLayer::None) {
+                    prelude.push(' ');
+                    prelude.push_str(&style_traits::ToCss::to_css_string(&node.layer));
+                }
+                if let Some(supports) = &node.supports {
+                    prelude.push_str(" supports(");
+                    prelude.push_str(&style_traits::ToCss::to_css_string(&supports.condition));
+                    prelude.push(')');
+                }
+                let at = (node.source_location.line, node.source_location.column);
+                if let Some((_, _, media)) = recorder
+                    .media
+                    .borrow()
+                    .iter()
+                    .find(|(line, column, _)| (*line, *column) == at)
+                    && !media.is_empty()
+                {
+                    prelude.push(' ');
+                    prelude.push_str(media);
+                }
                 add_text(&mut text_used, &prelude, result.config.limits.text_bytes)?;
                 (
                     StyloRuleKind::Other,
@@ -926,15 +1003,47 @@ mod tests {
             analyze_with_cancel(b".x {}", tiny, || false),
             Err(StyloError::Limit)
         );
-        let mut unsupported = config();
-        unsupported.allow_imports = true;
+        let mut quirky = config();
+        quirky.no_quirks = false;
         assert_eq!(
-            analyze_with_cancel(b"", unsupported, || false),
+            analyze_with_cancel(b"", quirky, || false),
             Err(StyloError::InvalidConfig)
         );
         assert_eq!(
             analyze_with_cancel(b"", config(), || true),
             Err(StyloError::Cancelled)
         );
+    }
+    #[test]
+    fn imports_are_recorded_with_their_qualifiers_and_never_loaded() {
+        let css = "@import \"./base.css\" layer(theme) supports(display: grid) screen;\n@import url(other.css);\n.a { color: red; }";
+        let mut allowed = config();
+        allowed.allow_imports = true;
+        let result = analyze_with_cancel(css.as_bytes(), allowed, || false).unwrap();
+        let imports: Vec<_> = result
+            .rules
+            .iter()
+            .filter(|rule| rule.native_kind == StyloRule::IMPORT_KIND)
+            .collect();
+        assert_eq!(imports.len(), 2, "{:?}", result.rules);
+        assert_eq!(imports[0].import_specifier().as_deref(), Some("./base.css"));
+        let qualifiers = imports[0].import_qualifiers().unwrap();
+        assert!(qualifiers.contains("layer(theme)") && qualifiers.contains("supports(") && qualifiers.contains("screen"), "{qualifiers}");
+        assert_eq!(imports[1].import_specifier().as_deref(), Some("other.css"));
+        assert_eq!(imports[1].import_qualifiers(), None);
+        assert_eq!(imports[0].location.unwrap().line, 0);
+        assert_eq!(imports[1].location.unwrap().line, 1);
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.rules.iter().any(|rule| rule.kind == StyloRuleKind::Style), "rules after imports still parse");
+        // The same bytes without permission keep the old behaviour: the rule is rejected.
+        let refused = analyze_with_cancel(css.as_bytes(), config(), || false).unwrap();
+        assert!(refused.rules.iter().all(|rule| rule.native_kind != StyloRule::IMPORT_KIND));
+        assert!(!refused.diagnostics.is_empty());
+        // An import after a style rule is invalid CSS, so it is a diagnostic, not a link.
+        let mut late = config();
+        late.allow_imports = true;
+        let late = analyze_with_cancel(b".a {}\n@import \"./late.css\";", late, || false).unwrap();
+        assert!(late.rules.iter().all(|rule| rule.native_kind != StyloRule::IMPORT_KIND));
+        assert!(!late.diagnostics.is_empty());
     }
 }

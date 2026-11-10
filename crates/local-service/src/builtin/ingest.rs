@@ -11957,7 +11957,9 @@ pub(super) fn capture_stylo_project(
                         base_url,
                         author_origin: true,
                         no_quirks: true,
-                        allow_imports: false,
+                        // Imports are recorded, never loaded: the worker answers
+                        // every request with a refused sheet.
+                        allow_imports: true,
                         limits: StyloLimits {
                             input_bytes: max_file as u64,
                             rules: u32::try_from(rule_quota)
