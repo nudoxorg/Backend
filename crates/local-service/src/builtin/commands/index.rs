@@ -8040,7 +8040,8 @@ pub(super) fn remove_project_intent(
         BuiltinIntent::remove_project(package, label, &files, &membership_pages, semantic_changes)?;
     let cancellation = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     intent
-        .with_stylo_retirement(&snapshot, cancellation)
+        .with_stylo_retirement(&snapshot, std::sync::Arc::clone(&cancellation))?
+        .with_sql_retirement(&snapshot, cancellation)
         .map(Some)
 }
 

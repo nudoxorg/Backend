@@ -17,6 +17,31 @@ pub(super) struct Reopened {
     pub(super) tables: Vec<String>,
     pub(super) balance_dropped: bool,
     pub(super) sql_root_level: u16,
+    /// Every row of the selected SQL relation, whichever project owns it.
+    pub(super) sql_rows: usize,
+    /// Hosts which are SQL embedded in application code.
+    pub(super) embedded_hosts: usize,
+}
+
+/// Count the rows (and embedded hosts) of the selected SQL relation.
+fn count_rows(snapshot: &backend_engine::WorkspaceSnapshot) -> Result<(usize, usize), Box<dyn Error>> {
+    use backend_engine::builtin::{SqlAnalysisRecord, sql_analysis_relation};
+    let Some(relation) = sql_analysis_relation(snapshot).map_err(|e| e.to_string())? else { return Ok((0, 0)) };
+    let (mut rows, mut embedded) = (0, 0);
+    let mut after = None;
+    loop {
+        let page = relation.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS).map_err(|e| e.to_string())?;
+        for (_, row) in page.entries() {
+            rows += 1;
+            if matches!(row, SqlAnalysisRecord::Host { path, .. } if path.ends_with(super::sql_embedded::VIRTUAL_SUFFIX)) {
+                embedded += 1;
+            }
+        }
+        match page.next().copied() {
+            Some(next) if after != Some(next) => after = Some(next),
+            _ => return Ok((rows, embedded)),
+        }
+    }
 }
 
 pub(super) fn reopen_and_query(workspace: &Path, project: &Path) -> Result<Reopened, Box<dyn Error>> {
@@ -40,6 +65,7 @@ pub(super) fn reopen_and_query(workspace: &Path, project: &Path) -> Result<Reope
         registry,
     )?;
     let snapshot = daemon.engine().daemon().owner().snapshot();
+    let (sql_rows, embedded_hosts) = count_rows(&snapshot)?;
     let package = backend_library::PackageReference::parse(project.to_str().ok_or("project path")?.to_owned())
         .map_err(|e| format!("package: {e:?}"))?;
     let page = |kind: SqlObjectKind| -> Result<Option<Vec<backend_library::sql_query::SqlQueryHit>>, Box<dyn Error>> {
@@ -68,7 +94,7 @@ pub(super) fn reopen_and_query(workspace: &Path, project: &Path) -> Result<Reope
         }
     };
     let Some(table_hits) = page(SqlObjectKind::Table)? else {
-        return Ok(Reopened { analysis: false, tables: Vec::new(), balance_dropped: false, sql_root_level: 0 });
+        return Ok(Reopened { analysis: false, tables: Vec::new(), balance_dropped: false, sql_root_level: 0, sql_rows, embedded_hosts });
     };
     // Exercise the actual selected catalog after a cold owner reopen. Tiny
     // credit and cancellation must not produce a partial catalog.
@@ -113,5 +139,5 @@ pub(super) fn reopen_and_query(workspace: &Path, project: &Path) -> Result<Reope
     });
     let sql_root_level = backend_engine::builtin::sql_analysis_relation(&snapshot)?
         .ok_or("cold SQL relation missing")?.root_node()?.level();
-    Ok(Reopened { analysis: true, tables, balance_dropped, sql_root_level })
+    Ok(Reopened { analysis: true, tables, balance_dropped, sql_root_level, sql_rows, embedded_hosts })
 }

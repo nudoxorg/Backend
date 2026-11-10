@@ -9,7 +9,47 @@ use backend_version::{Schema, SchemaIdentity};
 pub(super) struct PreparedSqlReceiptIndex {
     pub(super) pointer: TypedObject,
     pub(super) node_objects: Vec<TypedObject>,
-    pub(super) receipt: TypedObject,
+    /// The newly issued receipt; none when the update only retires a project.
+    pub(super) receipt: Option<TypedObject>,
+}
+
+/// Remove a deleted project from the receipt index. `None` when the index holds
+/// no row for it (nothing was ever selected for the project, or no index exists).
+pub(super) fn prepare_receipt_index_retirement(
+    base: &WorkspaceSnapshot,
+    project: [u8; 32],
+    cancellation: &std::sync::atomic::AtomicBool,
+) -> Result<Option<PreparedSqlReceiptIndex>, BuiltinModelError> {
+    use std::sync::atomic::Ordering;
+    let check = || if cancellation.load(Ordering::Acquire) { Err(BuiltinModelError("SQL receipt retirement cancelled".into())) } else { Ok(()) };
+    check()?;
+    super::sql_admission::sql_basis_for_snapshot(base).map_err(BuiltinModelError)?;
+    let Some(relation) = sql_receipt_index_relation(base).map_err(|e| BuiltinModelError(format!("open SQL receipt index: {e}")))? else {
+        return Ok(None);
+    };
+    if relation.lookup(&project).map_err(|e| BuiltinModelError(format!("read SQL receipt index: {e}")))?.is_none() {
+        return Ok(None);
+    }
+    let schema = SchemaIdentity::new(SqlReceiptIndexRootSchema::DOMAIN, SqlReceiptIndexRootSchema::TYPE, SqlReceiptIndexRootSchema::VERSION);
+    let key = sql_receipt_index_root_pointer_key();
+    let previous = base.closure().control_manifest().objects().iter()
+        .find(|object| object.schema() == schema && object.key() == &key)
+        .ok_or_else(|| BuiltinModelError("SQL receipt index pointer missing".into()))?;
+    let root = relation.root_object().map_err(|e| BuiltinModelError(format!("SQL receipt index root: {e}")))?;
+    if !base.closure().contains(previous.id()).map_err(|e| BuiltinModelError(format!("SQL receipt closure: {e:?}")))?
+        || !base.closure().contains(root.id()).map_err(|e| BuiltinModelError(format!("SQL receipt closure: {e:?}")))? {
+        return Err(BuiltinModelError("SQL receipt index outside predecessor closure".into()));
+    }
+    check()?;
+    let update = relation.prepare_update(&[TreeChange { key: project, after: None }])
+        .map_err(|e| BuiltinModelError(format!("retire SQL receipt index row: {e}")))?;
+    let nodes = update.changed_nodes().iter().map(|node| {
+        check()?;
+        TypedObject::from_state_root(node.commitment(), node)
+            .map_err(|e| BuiltinModelError(format!("retain SQL receipt index: {e:?}")))
+    }).collect::<Result<Vec<_>, _>>()?;
+    check()?;
+    Ok(Some(PreparedSqlReceiptIndex { pointer: sql_receipt_index_root_object(update.target().root()), node_objects: nodes, receipt: None }))
 }
 /// Update exactly one project using an issuer-only receipt. Every other index
 /// row is inherited by the canonical path-copy tree. The owner must revalidate
@@ -59,7 +99,7 @@ pub(super) fn prepare_receipt_index(
         (sql_receipt_index_root_object(state.root()), nodes)
     };
     receipt.check_cancelled()?;
-    Ok(PreparedSqlReceiptIndex { pointer, node_objects, receipt: object })
+    Ok(PreparedSqlReceiptIndex { pointer, node_objects, receipt: Some(object) })
 }
 
 /// Authenticate and collect every retained project receipt in one bounded

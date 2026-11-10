@@ -6152,6 +6152,9 @@ impl CommandAdapter {
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
         self.recover_orphaned_package_label(daemon, &label, request_id)?;
+        // A workspace which holds SQL analysis must carry its receipts through
+        // every transaction, so the deletion commits with the owner's custody.
+        let owner = self.receipt_context.clone();
         let committed = if let Some(intent) =
             remove_project_intent(daemon, package, &label, &mut self.semantic_authority)?
         {
@@ -6162,7 +6165,7 @@ impl CommandAdapter {
                 Vec::new(),
                 removals,
                 || {
-                    commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
+                    commit_builtin_intent_with_owner(daemon, request_id, &intent, owner.as_deref()).map_err(|error| {
                         BuiltinModelError(format!("commit product source intent: {error}"))
                     })
                 },
@@ -8207,6 +8210,28 @@ pub(in crate::builtin) fn commit_builtin_intent(
     commit_prepared_builtin_intent(daemon, request_id, prepared)
 }
 
+/// Commit on the owner with the receipt authority a workspace holding SQL
+/// analysis requires for every transaction. Only intents which read no source
+/// (a project deletion, with or without SQL retirement) may commit this way;
+/// an intent that needs the publication worker is refused.
+pub(in crate::builtin) fn commit_builtin_intent_with_owner(
+    daemon: &mut ProductDaemon,
+    request_id: u64,
+    intent: &BuiltinIntent,
+    owner: Option<&super::super::owner_receipt_context::OwnerReceiptContext>,
+) -> Result<(), BuiltinModelError> {
+    if intent.has_native_ts_evidence() || (intent.requires_v14_worker() && !intent.is_sql_retirement()) {
+        return Err(BuiltinModelError("this intent requires the publication worker".into()));
+    }
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    // Staging must be bound to the proof's own cancellation token.
+    let cancellation = intent
+        .sql_proof_cancellation()
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let prepared = prepare_builtin_intent_with_owner_at_snapshot(&snapshot, intent, None, cancellation, owner)?;
+    commit_prepared_builtin_intent_inner(daemon, request_id, prepared, intent.is_sql_retirement())
+}
+
 /// A canonical intent together with the selected base against which any
 /// capture basis was prepared. Its private fields prevent callers from
 /// changing the intent after deriving the request identity.
@@ -8239,10 +8264,19 @@ pub(in crate::builtin) fn commit_prepared_builtin_intent(
     request_id: u64,
     prepared: PreparedBuiltinIntent,
 ) -> Result<(), BuiltinModelError> {
+    commit_prepared_builtin_intent_inner(daemon, request_id, prepared, false)
+}
+
+fn commit_prepared_builtin_intent_inner(
+    daemon: &mut ProductDaemon,
+    request_id: u64,
+    prepared: PreparedBuiltinIntent,
+    sql_retirement: bool,
+) -> Result<(), BuiltinModelError> {
     if prepared.intent.has_native_ts_evidence() {
         return Err(BuiltinModelError("native TypeScript evidence requires the publication worker".into()));
     }
-    if prepared.intent.requires_v14_worker() {
+    if prepared.intent.requires_v14_worker() && !sql_retirement {
         return Err(BuiltinModelError("v14 native sections require the publication worker".into()));
     }
     let owner = daemon.engine().daemon().owner();

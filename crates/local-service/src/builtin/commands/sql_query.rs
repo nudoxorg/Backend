@@ -122,6 +122,25 @@ fn resolve_uses(
             None => break,
         }
     }
+    // `kind:name` narrows the match to one kind of object (view:, index:, ...).
+    let (wanted, spec) = match spec.split_once(':') {
+        Some((kind, rest)) => {
+            let kind = match kind.to_ascii_lowercase().as_str() {
+                "schema" => SqlObjectKind::Schema,
+                "table" => SqlObjectKind::Table,
+                "view" => SqlObjectKind::View,
+                "column" => SqlObjectKind::Column,
+                "index" => SqlObjectKind::Index,
+                "trigger" => SqlObjectKind::Trigger,
+                "function" => SqlObjectKind::Function,
+                "type" => SqlObjectKind::Type,
+                "sequence" => SqlObjectKind::Sequence,
+                _ => return Err(error("uses expects name, table.column or kind:name with a known kind")),
+            };
+            (Some(kind), rest)
+        }
+        None => (None, spec),
+    };
     let parts: Vec<String> = spec.split('.').map(|part| part.to_ascii_lowercase()).collect();
     let lower = |value: &Option<String>| value.as_deref().map(str::to_ascii_lowercase);
     let creates = |definition: &SqlDefinition| {
@@ -138,6 +157,9 @@ fn resolve_uses(
         let schema = lower(&definition.schema);
         let parent_schema = lower(&definition.parent_schema);
         let is_column = definition.kind == SqlObjectKind::Column;
+        if wanted.is_some_and(|kind| kind != definition.kind) {
+            continue;
+        }
         let hit = match (is_column, parts.len()) {
             (false, 1) => name.as_deref() == Some(parts[0].as_str()),
             (false, 2) => schema.as_deref() == Some(parts[0].as_str()) && name.as_deref() == Some(parts[1].as_str()),
