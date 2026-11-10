@@ -422,6 +422,15 @@ class Route:
                 identity["unproved"] = True
         self.spawned_processes[proc.pid] = identity
 
+    def restart_owner(self, cwd):
+        """Retire the owner with proof, then start a new one on the same workspace and credential."""
+        if self.auto_start or self.owner is None:
+            raise RuntimeError("restart_owner needs an owner started by start_owner")
+        self.retire_for_reopen()
+        if self.endpoint.exists():
+            self.endpoint.unlink()
+        self.start_owner(cwd)
+
     def save_records(self):
         (self.out / "records.json").write_text(json.dumps(self.records, indent=1))
 
