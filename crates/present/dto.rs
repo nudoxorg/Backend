@@ -964,9 +964,10 @@ pub struct StatusDto {
     pub revision: String,
     /// The readable eight-digit abbreviation of `revision`.
     pub revision_tag: String,
-    /// The exact source object the view is based on.
+    /// The store layout object the view is based on. It is constant across projects and
+    /// edits; the content-sensitive value is `revision`.
     pub source: String,
-    /// The readable eight-digit abbreviation of `source`.
+    /// The readable eight-digit abbreviation of `source`, printed as `store layout`.
     pub source_tag: String,
     /// The owner's subscription sequence position.
     pub sequence: u64,

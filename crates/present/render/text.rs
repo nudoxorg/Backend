@@ -589,7 +589,7 @@ pub fn status(status: &Status, theme: Theme) -> String {
         theme.paint(
             Style::Dim,
             &format!(
-                "· {} row(s) · revision {} · source {} · sequence {}",
+                "· {} row(s) · revision {} · store layout {} · sequence {}",
                 status.rows(),
                 status.revision(),
                 status.source(),

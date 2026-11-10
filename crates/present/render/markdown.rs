@@ -881,7 +881,7 @@ fn push_outline_entry(
 pub fn status(status: &Status) -> String {
     let mut lines = Lines::new();
     lines.push(format!(
-        "owner {} · publication {} · lanes {} · {} row(s) · revision {} · source {} · sequence {}",
+        "owner {} · publication {} · lanes {} · {} row(s) · revision {} · store layout {} · sequence {}",
         status.availability(),
         status.publication_state().name(),
         status.readiness(),
