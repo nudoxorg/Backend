@@ -418,6 +418,10 @@ fn available_health_distinguishes_empty_publication_from_native_semantic_readine
         assert_eq!(status.rows().get(), rows);
         assert_eq!(status.capabilities().oracles().ready().get(), 0);
         let rendered = markdown::status(&status);
+        // The tag after the revision is the store's layout version, constant across projects
+        // and edits; calling it `source` made it look like a content fingerprint.
+        assert!(rendered.contains("store layout"), "{rendered}");
+        assert!(!rendered.contains("· source "), "{rendered}");
         assert!(rendered.contains(&format!(
             "owner available · publication {} · lanes {}",
             expected.name(),
