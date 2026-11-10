@@ -10789,3 +10789,51 @@ fn related_first_page_caps_delivery_without_reducing_issued_credit() {
     assert_eq!(second["structuredContent"]["edges"].as_array().expect("edges").len(), 8);
     assert_eq!(server.product.page_limits, vec![100, 100]);
 }
+
+#[test]
+fn large_page_cursors_are_parked_under_a_short_signed_bounded_handle() {
+    // nextCursor was 2470 of 3575 bytes at limit 1 because it carried the owner's
+    // whole portable proof.
+    let mut server = ready(Fake::default());
+    let context = b"backend.search|project|args";
+    let owner = format!("pc2-{}", "ab".repeat(1200));
+    let inline = server.sign_cursor_token(&owner, context).expect("inline cursor");
+    let token = server.issue_page_cursor(&owner, context).expect("handle cursor");
+    assert!(token.starts_with("mcp3-"), "{token}");
+    assert!(token.len() < 100 && token.len() * 20 < inline.len(), "{} vs {}", token.len(), inline.len());
+    assert_eq!(
+        server.verify_cursor_token(&token, context).expect("verify").as_deref(),
+        Some(owner.as_str())
+    );
+    // Bound to the exact call: another tool, project or argument set cannot resume it.
+    assert_eq!(server.verify_cursor_token(&token, b"backend.search|project|other").expect("verify"), None);
+    // Any edit to the token is refused.
+    let mut forged = token.clone();
+    forged.replace_range(forged.len() - 1.., if token.ends_with('0') { "1" } else { "0" });
+    assert_eq!(server.verify_cursor_token(&forged, context).expect("verify"), None);
+    // A small owner cursor stays inline and stateless.
+    assert!(server.issue_page_cursor("pc2-abcd", context).expect("small").starts_with("mcp2-"));
+
+    // Bounded: only the newest handles are kept, and an evicted one says so.
+    for index in 0..CURSOR_HANDLE_CAPACITY {
+        let other = format!("pc2-{}", format!("{index:02x}").repeat(200));
+        server.issue_page_cursor(&other, context).expect("another handle");
+    }
+    assert_eq!(server.verify_cursor_token(&token, context).expect("verify"), None, "evicted");
+    let arguments = json!({"cursor": token}).as_object().expect("arguments").clone();
+    let error = server.continuation(&arguments, context).expect_err("evicted handle is refused");
+    let detail = error.detail.clone().unwrap_or_default();
+    assert!(detail.contains("short-lived") && detail.contains("without a cursor"), "{detail}");
+
+    // Expiring: a handle past its expiry no longer resolves, even if it is still stored.
+    let fresh = server.issue_page_cursor(&owner, context).expect("fresh handle");
+    assert!(server.verify_cursor_token(&fresh, context).expect("verify").is_some());
+    server
+        .cursor_handles
+        .lock()
+        .expect("handles")
+        .entries
+        .iter_mut()
+        .for_each(|entry| entry.1 = 1);
+    assert_eq!(server.verify_cursor_token(&fresh, context).expect("verify"), None, "expired");
+}
