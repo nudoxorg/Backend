@@ -67,6 +67,7 @@ mod native_ts_admission;
 mod native_ts_headers;
 mod owner_receipt_context;
 mod sql_capture;
+mod sql_embedded;
 mod sql_admission;
 mod sql_intent;
 mod csharp_intent;

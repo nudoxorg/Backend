@@ -751,7 +751,7 @@ pub(super) fn read_source(
         ) => return Ok(SqlSourceRead::SourceChanged),
         Err(error) => return Err(self::error(error)),
     };
-    let line_1 = u32::try_from(
+    let mut line_1 = u32::try_from(
         bytes[..extent.start as usize]
             .iter()
             .filter(|b| **b == b'\n')
@@ -759,6 +759,18 @@ pub(super) fn read_source(
             + 1,
     )
     .map_err(error)?;
+    // SQL written in application code: the line is the one of the call in its
+    // own file, plus the lines the statement text itself spans before the extent.
+    if let Some(real) = super::super::sql_embedded::real_path(&path) {
+        let call = read_stylo_selected_source(Path::new(&source_root), real, super::super::sql_embedded::MAX_SCAN_BYTES)
+            .ok()
+            .and_then(|file| super::super::sql_embedded::scan(real, &file))
+            .and_then(|scan| scan.fragment_at(extent.start as usize).map(|fragment| (fragment.line, fragment.text_start)));
+        if let Some((call_line, text_start)) = call {
+            let within = bytes[text_start.min(extent.start as usize)..extent.start as usize].iter().filter(|b| **b == b'\n').count();
+            line_1 = call_line.saturating_add(u32::try_from(within).map_err(error)?);
+        }
+    }
     let text = verified
         .extent(extent.start as usize..extent.end as usize)
         .map_err(error)?

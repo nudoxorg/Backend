@@ -1165,7 +1165,7 @@ pub(super) fn project_sql_project(
         gaps,
         // An implicit selection is the complete bounded walk; an explicit one
         // only lists what the settings file named.
-        inventory: if capture.implicit() && walk_inventory_complete { SqlInventory::Complete } else { SqlInventory::Incomplete },
+        inventory: if capture.implicit() && walk_inventory_complete && capture.embedded_complete() { SqlInventory::Complete } else { SqlInventory::Incomplete },
         inventory_digest: sql_inventory_digest(&inventory)
             .map_err(|_| SqlUnavailable::SelectionUnavailable)?,
         host_count: u32::try_from(inventory.len()).map_err(|_| SqlUnavailable::Limit)?,
