@@ -842,6 +842,7 @@ pub(super) fn prepare_scan_source(
         stylo_selection_failure,
         sql_workers,
         sql_prior,
+        capture_sql,
         ..
     } = work;
 
@@ -1077,14 +1078,14 @@ pub(super) fn prepare_scan_source(
         // Claimed by native Stylo; parse and inventory coverage remain separate.
         css.files = 0;
     }
-    let sql_projection = crate::builtin::sql_index::sql_projection(
+    let sql_projection = if !capture_sql { None } else { crate::builtin::sql_index::sql_projection(
         &scan.sql_walk,
         revision_fence,
         source_root,
         sql_prior,
         &sql_workers,
         &cancellation,
-    )?;
+    )? };
     if let Some(projection) = &sql_projection {
         if let Some(sql) = source_selection
             .unsupported_extensions

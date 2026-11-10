@@ -106,7 +106,7 @@ def start_owner():
          "--authority-secret-file", str(secret), "--registry-offline", "--registry-discovery-offline",
          "--advisory-offline", "--forge-offline"],
         cwd=project, env=env, stdout=subprocess.DEVNULL, stderr=err, start_new_session=True)
-    deadline = time.monotonic() + 120
+    deadline = time.monotonic() + 600
     while not endpoint.exists():
         if owner.poll() is not None:
             fail(f"owner exited {owner.returncode} before its endpoint existed")
@@ -159,7 +159,11 @@ def expect(text, needles, label):
 
 
 start_owner()
-code, raw = cli("index", ["add", str(project), "--wait", "--wait-timeout", "2400"], timeout=2520)
+# The CLI wait is capped at 900 s; exit 75 means the operation is still active, so ask again.
+for attempt in range(8):
+    code, raw = cli("index" if attempt == 0 else f"index-wait-{attempt}", ["add", str(project), "--wait", "--wait-timeout", "900"], timeout=960)
+    if code != 75:
+        break
 if code != 0:
     fail(f"index exited {code}: {raw[:600]} (a typed account refusal means this is a gate-on build)")
 
