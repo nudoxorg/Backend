@@ -329,9 +329,9 @@
       "category": "managed-native-prerequisites",
       "reason": "Already ignored in canonical9ae0eca9d. #[ignore = \"requires managed genuine CPython; exercises real native-default closed owner and ordinary venv\"]; review/enroll in an explicit managed native run with these pinned prerequisites, not ordinary tool-independent tests.",
       "owner": "NuDox Backend maintainers",
-      "review": "docs/testing/quarantine.md#managed-native-intake-2026-10-16",
-      "reviewed": "2026-10-16",
-      "expires": "2026-10-30"
+      "review": "docs/testing/quarantine.md#managed-native-renewal-2026-11-10",
+      "reviewed": "2026-11-10",
+      "expires": "2026-11-24"
     },
     {
       "filter": "source:crates/engine/src/application/host/capture.rs::tests::actual_project_sdk_precedes_the_frozen_installed_global_sdk",
@@ -362,9 +362,9 @@
       "category": "managed-native-prerequisites",
       "reason": "Already ignored in canonical9ae0eca9d. #[ignore = \"requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API\"]; review/enroll in an explicit managed native run with these pinned prerequisites, not ordinary tool-independent tests.",
       "owner": "NuDox Backend maintainers",
-      "review": "docs/testing/quarantine.md#managed-native-intake-2026-10-16",
-      "reviewed": "2026-10-16",
-      "expires": "2026-10-30"
+      "review": "docs/testing/quarantine.md#managed-native-renewal-2026-11-10",
+      "reviewed": "2026-11-10",
+      "expires": "2026-11-24"
     },
     {
       "filter": "source:crates/engine/src/application/typescript_program.rs::tests::selected_typescript_matcher_negative_probes_stay_inside_captured_next_closure",
@@ -384,9 +384,9 @@
       "category": "managed-native-prerequisites",
       "reason": "Already ignored in canonical aa2cb7730 (2026-10-16). #[ignore = \"requires exact retained PocketBase corpus, fresh fleet guard and held native permit\"]; review/enroll in an explicit managed native run with these pinned prerequisites, not ordinary tool-independent tests.",
       "owner": "NuDox Backend maintainers",
-      "review": "docs/testing/quarantine.md#managed-native-intake-2026-10-16",
-      "reviewed": "2026-10-17",
-      "expires": "2026-10-31"
+      "review": "docs/testing/quarantine.md#managed-native-renewal-2026-11-10",
+      "reviewed": "2026-11-10",
+      "expires": "2026-11-24"
     },
     {
       "filter": "source:crates/replication/src/local_peer/owner_upgrade.rs::tests::qualified_same_dto_default_image_converges_once_and_preserves_pins",
@@ -395,9 +395,9 @@
       "category": "managed-native-prerequisites",
       "reason": "Already ignored in canonical 7259cb41b (2026-10-18). #[ignore = \"requires Root-qualified matched CLI/locald in NUDOX_TEST_QUALIFIED_CLI and NUDOX_TEST_QUALIFIED_LOCALD; run explicitly after ordinary qualification\"]; review/enroll in an explicit qualified CLI/locald run, not ordinary tool-independent tests.",
       "owner": "NuDox Backend maintainers",
-      "review": "docs/testing/quarantine.md#managed-native-intake-2026-10-16",
-      "reviewed": "2026-10-19",
-      "expires": "2026-11-02"
+      "review": "docs/testing/quarantine.md#managed-native-renewal-2026-11-10",
+      "reviewed": "2026-11-10",
+      "expires": "2026-11-24"
     },
     {
       "filter": "source:crates/replication/src/local_peer/owner_upgrade.rs::tests::qualified_deleted_default_image_requires_zero_links_and_refuses_candidate_races",
@@ -406,9 +406,9 @@
       "category": "managed-native-prerequisites",
       "reason": "Already ignored in canonical 7259cb41b (2026-10-18). #[ignore = \"requires Root-qualified matched CLI/locald in NUDOX_TEST_QUALIFIED_CLI and NUDOX_TEST_QUALIFIED_LOCALD; run explicitly after ordinary qualification\"]; review/enroll in an explicit qualified CLI/locald run, not ordinary tool-independent tests.",
       "owner": "NuDox Backend maintainers",
-      "review": "docs/testing/quarantine.md#managed-native-intake-2026-10-16",
-      "reviewed": "2026-10-19",
-      "expires": "2026-11-02"
+      "review": "docs/testing/quarantine.md#managed-native-renewal-2026-11-10",
+      "reviewed": "2026-11-10",
+      "expires": "2026-11-24"
     },
     {
       "filter": "source:crates/engine/src/application/typescript_program/membership_tests.rs::actual_compiler_node_formats_follow_package_type_with_identical_source_membership",
@@ -527,9 +527,9 @@
       "category": "managed-native-prerequisites",
       "reason": "Already ignored in canonical9ae0eca9d. #[ignore = \"requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API\"]; review/enroll in an explicit managed native run with these pinned prerequisites, not ordinary tool-independent tests.",
       "owner": "NuDox Backend maintainers",
-      "review": "docs/testing/quarantine.md#managed-native-intake-2026-10-16",
-      "reviewed": "2026-10-16",
-      "expires": "2026-10-30"
+      "review": "docs/testing/quarantine.md#managed-native-renewal-2026-11-10",
+      "reviewed": "2026-11-10",
+      "expires": "2026-11-24"
     },
     {
       "filter": "source:crates/engine/src/application/typescript_program/membership_tests.rs::same_sources_with_different_program_options_refuse_ambiguous_package_ownership",
@@ -780,9 +780,9 @@
       "category": "managed-native-prerequisites",
       "reason": "Already ignored in canonical9ae0eca9d. #[ignore = \"requires managed genuine CPython 3.12 and 3.14; ordinary venv admission then real native checker\"]; review/enroll in an explicit managed native run with these pinned prerequisites, not ordinary tool-independent tests.",
       "owner": "NuDox Backend maintainers",
-      "review": "docs/testing/quarantine.md#managed-native-intake-2026-10-16",
-      "reviewed": "2026-10-16",
-      "expires": "2026-10-30"
+      "review": "docs/testing/quarantine.md#managed-native-renewal-2026-11-10",
+      "reviewed": "2026-11-10",
+      "expires": "2026-11-24"
     },
     {
       "filter": "source:crates/local-service/src/builtin/product_state.rs::tests::manual_catalog_search_measurement_10k_rows",
@@ -989,9 +989,9 @@
       "category": "managed-native-prerequisites",
       "reason": "Already ignored in canonical9ae0eca9d. #[ignore = \"requires managed genuine CPython 3.14 and uv; creates a private ordinary venv\"]; review/enroll in an explicit managed native run with these pinned prerequisites, not ordinary tool-independent tests.",
       "owner": "NuDox Backend maintainers",
-      "review": "docs/testing/quarantine.md#managed-native-intake-2026-10-16",
-      "reviewed": "2026-10-16",
-      "expires": "2026-10-30"
+      "review": "docs/testing/quarantine.md#managed-native-renewal-2026-11-10",
+      "reviewed": "2026-11-10",
+      "expires": "2026-11-24"
     },
     {
       "filter": "source:frontends/python/tests/python_httpie_capture_replay.rs::real_httpie_133_sources_beside_normal_venv_keep_exact_native_frontier",
