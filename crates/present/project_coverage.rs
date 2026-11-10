@@ -681,7 +681,8 @@ mod tests {
             crate::budget::Detail::Summary,
             None,
             crate::budget::DEFAULT_RESPONSE_BUDGET_BYTES,
-        )?;
+        )
+        .expect("summary shelf");
         let json: serde_json::Value = serde_json::from_slice(&summary.bytes)?;
         let listed = &json["projects"][0]["source_profiles"];
         assert_eq!(listed[0]["files"].as_u64().map(|_| ()), Some(()), "{json}");
