@@ -36,6 +36,10 @@ GLIBC_SONAMES = frozenset(LINUX_SYSTEM_SONAMES_BYTES.decode("ascii").splitlines(
 
 NEEDED = re.compile(r"^\s*(\S+) => (\S+) \(", re.MULTILINE)
 GLIBC_VERSION = re.compile(r"GLIBC_([0-9]+\.[0-9]+)")
+# Newer glibc names some ABIs instead of numbering them; each maps to the release
+# that added it. nixpkgs builds use TLS descriptors, which glibc 2.39 cannot load.
+GLIBC_ABI = re.compile(r"GLIBC_ABI_[A-Z0-9_]+")
+GLIBC_ABI_SINCE = {"GLIBC_ABI_DT_RELR": "2.36", "GLIBC_ABI_GNU2_TLS": "2.42"}
 
 
 def fail(message: str) -> None:
@@ -217,7 +221,13 @@ def elf_info(readelf: Path, path: Path) -> dict:
         fail(f"ELF image has a path-qualified DT_NEEDED entry: {path}")
     interpreter = run([str(readelf), "-l", str(path)])
     interpreter_match = re.search(r"Requesting program interpreter: ([^]]+)", interpreter)
-    versions = sorted(set(GLIBC_VERSION.findall(run([str(readelf), "--version-info", str(path)]))), key=version_tuple)
+    version_info = run([str(readelf), "--version-info", str(path)])
+    versions = set(GLIBC_VERSION.findall(version_info))
+    for marker in set(GLIBC_ABI.findall(version_info)):
+        if marker not in GLIBC_ABI_SINCE:
+            fail(f"{path} needs {marker}, a glibc ABI marker without a known release")
+        versions.add(GLIBC_ABI_SINCE[marker])
+    versions = sorted(versions, key=version_tuple)
     return {"needed": needed, "interpreter": interpreter_match.group(1) if interpreter_match else None, "required_glibc_versions": versions}
 
 
