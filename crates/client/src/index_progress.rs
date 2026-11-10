@@ -462,7 +462,13 @@ fn wait_operation_with_profiles(
         // Install no new deadline: the caller must retain one absolute wait
         // scope, including all conditional probes and replacement connections.
         let result = if include_profiles {
-            compiler_progress::read_operation_with_clock(&query, context, &mut observe, clock)
+            compiler_progress::read_operation_from_with_clock(
+                &query,
+                context,
+                &mut observe,
+                clock,
+                profile_progress.clone(),
+            )
         } else {
             read_with_clock(&query, context, &mut observe, clock).and_then(|update| match update {
                 IndexProgressUpdate::Changed(SurfaceReply::IndexOperationStatus(observation)) => {
