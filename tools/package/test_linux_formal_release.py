@@ -372,10 +372,10 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
             for path in (gui, glib, lib_dir):
                 path.mkdir()
             (gui / "libgio-2.0.so.0").write_bytes(b"\x7fELF gio")
-            (glib / "libmount.so.1").write_bytes(b"\x7fELF mount")
+            (glib / "libpcre2-8.so.0").write_bytes(b"\x7fELF pcre2")
             sonames = root / "gui-sonames.txt"
             # Popped first, before libgio's RPATH is on the search path.
-            sonames.write_text("libgio-2.0.so.0\nlibmount.so.1\n")
+            sonames.write_text("libgio-2.0.so.0\nlibpcre2-8.so.0\n")
 
             def tools(command):
                 if Path(command[0]).name == "fake-patchelf" and command[1] == "--print-rpath":
@@ -388,8 +388,49 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
                 patch.object(release, "GUI_SONAMES", sonames),
                 patch.object(release, "NIX_STORE", str(root)),
             ):
-                release.bundle_gui_libraries(lib_dir, [gui], Path("fake-patchelf"), Path("fake-readelf"))
-            self.assertEqual(sorted(path.name for path in lib_dir.iterdir()), ["libgio-2.0.so.0", "libmount.so.1"])
+                release.bundle_gui_libraries(lib_dir, [gui], Path("fake-patchelf"), Path("fake-readelf"), "2.39")
+            self.assertEqual(sorted(path.name for path in lib_dir.iterdir()), ["libgio-2.0.so.0", "libpcre2-8.so.0"])
+
+    def test_gui_libraries_may_not_raise_the_glibc_floor_and_host_libraries_stay_out(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gui, lib_dir = root / "gui", root / "lib"
+            gui.mkdir()
+            lib_dir.mkdir()
+            for soname in ("libxkbcommon.so.0", "libfontconfig.so.1", "libtls-new.so.1"):
+                (gui / soname).write_bytes(b"\x7fELF " + soname.encode())
+            sonames = root / "gui-sonames.txt"
+            # libasound is on the host's list, so it is neither bundled nor missing.
+            sonames.write_text("libxkbcommon.so.0\nlibasound.so.2\nlibfontconfig.so.1\nlibtls-new.so.1\n")
+
+            def tools(command):
+                if Path(command[0]).name == "fake-readelf" and command[1] == "--version-info" and "tls-new" in command[-1]:
+                    return "GLIBC_2.17 GLIBC_ABI_GNU2_TLS"
+                return fake_run(command)
+
+            with (
+                patch.object(release, "run", side_effect=tools),
+                patch.dict(release.elf_info.__globals__, {"run": tools}),
+                patch.object(release, "GUI_SONAMES", sonames),
+            ):
+                with self.assertRaisesRegex(ValueError, r"newer glibc than the executables' 2\.39.*\['libtls-new\.so\.1'\]"):
+                    release.bundle_gui_libraries(lib_dir, [gui], Path("fake-patchelf"), Path("fake-readelf"), "2.39")
+            self.assertFalse((lib_dir / "libasound.so.2").exists())
+
+    def test_glibc_abi_markers_count_as_the_release_that_added_them(self):
+        def tools(command):
+            if command[1] == "--version-info":
+                return "GLIBC_2.17 GLIBC_2.34 GLIBC_ABI_GNU2_TLS"
+            return fake_run(command)
+
+        with patch.dict(release.elf_info.__globals__, {"run": tools}):
+            self.assertEqual(release.elf_info(Path("fake-readelf"), Path("lib.so"))["required_glibc_versions"], ["2.17", "2.34", "2.42"])
+
+        def unknown(command):
+            return "GLIBC_2.17 GLIBC_ABI_SOMETHING_NEW" if command[1] == "--version-info" else fake_run(command)
+
+        with patch.dict(release.elf_info.__globals__, {"run": unknown}), self.assertRaisesRegex(ValueError, "GLIBC_ABI_SOMETHING_NEW"):
+            release.elf_info(Path("fake-readelf"), Path("lib.so"))
 
     def test_portable_linux_publication_uploads_a_pinned_shell_installer(self):
         manifest = {"asset": release.ASSET, "sha256": "d" * 64, "minimum_os": "Linux glibc 2.39"}

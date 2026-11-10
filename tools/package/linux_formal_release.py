@@ -55,6 +55,9 @@ MINIMUM_OS = "Linux glibc"
 GUI_SONAMES = Path(__file__).with_name("linux-gui-sonames.txt")
 MAX_GUI_LIBRARIES = 192
 NIX_STORE = "/nix/store/"
+# Every glibc desktop already has these, and the nixpkgs builds need a newer
+# glibc than our executables (GLIBC_ABI_GNU2_TLS), so the host's copy is used.
+HOST_SONAMES = frozenset({"libasound.so.2", "libblkid.so.1", "libmount.so.1", "libselinux.so.1"})
 # Installed command names, as the v0.2.0 archive and installer ship them.
 LAUNCHERS = {"nudox": "backend-cli", "nudox-desktop": "backend-desktop", "nudox-mcp": "backend-mcp"}
 LAUNCHER = """#!/bin/sh
@@ -110,12 +113,14 @@ def stage_release_build(release_dir: Path, stage: Path, strip: Path) -> dict[str
     return expected
 
 
-def bundle_gui_libraries(lib_dir: Path, search: list[Path], patchelf: Path, readelf: Path) -> list[str]:
-    """Bundle the desktop's GUI libraries and their closure; return their glibc versions.
+def bundle_gui_libraries(lib_dir: Path, search: list[Path], patchelf: Path, readelf: Path, glibc_floor: str) -> None:
+    """Bundle the desktop's GUI libraries and their closure.
 
     The dev shell hands these to the desktop through LD_LIBRARY_PATH, not its
     RPATH, and several are dlopen()ed, so ldd never sees them. The list is the
-    set the tested early-access and v0.2.0 desktops carried.
+    set the tested early-access and v0.2.0 desktops carried. None may need a
+    newer glibc than the executables (glibc_floor): that would silently raise
+    the release's minimum OS.
     """
     search = list(search)
     def find(soname: str) -> Path | None:
@@ -124,7 +129,7 @@ def bundle_gui_libraries(lib_dir: Path, search: list[Path], patchelf: Path, read
                 return (directory / soname).resolve(strict=True)
         return None
     queue = [line.strip() for line in GUI_SONAMES.read_text().splitlines() if line.strip() and not line.startswith("#")]
-    missing, versions, added = [], [], 0
+    missing, too_new, added = [], [], 0
     while True:
         if not queue:
             # Listed transitive libraries live in another library's RPATH,
@@ -134,7 +139,7 @@ def bundle_gui_libraries(lib_dir: Path, search: list[Path], patchelf: Path, read
                 break
             missing = [name for name in missing if name not in queue]
         soname = queue.pop()
-        if soname in GLIBC_SONAMES or soname.startswith("ld-linux-") or (lib_dir / soname).exists():
+        if soname in GLIBC_SONAMES or soname in HOST_SONAMES or soname.startswith("ld-linux-") or (lib_dir / soname).exists():
             continue
         source = find(soname)
         if source is None:
@@ -151,11 +156,13 @@ def bundle_gui_libraries(lib_dir: Path, search: list[Path], patchelf: Path, read
         packaged.chmod(0o755)
         run([str(patchelf), "--set-rpath", "$ORIGIN", str(packaged)])
         info = elf_info(readelf, packaged)
-        versions.extend(info["required_glibc_versions"])
+        if any(version_tuple(version) > version_tuple(glibc_floor) for version in info["required_glibc_versions"]):
+            too_new.append(soname)
         queue.extend(info["needed"])
     if missing:
         fail(f"GUI libraries not found on the GUI library path: {sorted(set(missing))}")
-    return versions
+    if too_new:
+        fail(f"GUI libraries need a newer glibc than the executables' {glibc_floor}; take them from the host (HOST_SONAMES): {sorted(too_new)}")
 
 
 def write_launchers(root: Path) -> None:
@@ -339,8 +346,7 @@ def main() -> int:
         shutil.rmtree(bin_dir)
     if args.gui_library_path is not None:
         search = [Path(item) for item in args.gui_library_path.split(":") if item]
-        gui_versions = bundle_gui_libraries(output / "Nudox" / "lib", search, patchelf, readelf)
-        minimum_glibc = max([minimum_glibc, *gui_versions], key=version_tuple)
+        bundle_gui_libraries(output / "Nudox" / "lib", search, patchelf, readelf, minimum_glibc)
         write_launchers(output / "Nudox")
     build_manifest_path = write_build_manifest(output, revision, tree, cargo_lock, executables, profile)
     normalize_modes(output / "Nudox")
