@@ -450,8 +450,10 @@ fn coalesced_find_and_status_failures_cannot_inherit_held_retry_keys(cx: &mut Te
                 assert_eq!(rig.graph.store.read(cx).notice().cloned(), notice);
                 // Keyboard activation follows the persistent focus handle and
                 // focus epoch. The ordinary pressed motion may change bounds.
-                let tree: serde_json::Value = serde_json::from_str(&window.debug_a11y_tree_json().expect("replacement recovery AX")).expect("native tree");
-                let native_focus = gpui::accesskit::NodeId(tree["accesskit_focus"].as_str().expect("replacement focus node").parse().expect("native focus ID"));
+                // The debug JSON names nodes with ephemeral letters (`debug.rs`
+                // `ephemeral_id`, from the vendor import c70907909), so the
+                // tree update itself carries the focused node's real id.
+                let native_focus = window.a11y_tree().expect("replacement recovery AX").focus;
                 assert_eq!(native_focus, fresh_native, "the replacement recovery receiver still owns native focus");
                 assert!(window.a11y_frame_number() > armed, "the new receipt's control really committed while the key was held");
                 window.a11y_frame_number()

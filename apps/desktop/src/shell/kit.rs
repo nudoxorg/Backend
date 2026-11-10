@@ -33,6 +33,7 @@ pub(crate) fn text(role: TypeRole, measure: &Measure, color: impl Into<Hsla>) ->
         key: None,
         accessibility_role: None,
         accessibility_label: None,
+        accessibility_level: None,
     }
 }
 
@@ -44,6 +45,7 @@ pub(crate) struct Said {
     key: Option<gpui::ElementId>,
     accessibility_role: Option<gpui::Role>,
     accessibility_label: Option<SharedString>,
+    accessibility_level: Option<usize>,
 }
 
 /// A child a [`Said`] can hold, and the words it contributes.
@@ -95,6 +97,12 @@ impl Said {
         self
     }
 
+    /// Sets a heading level on the text's native accessibility node.
+    pub(crate) fn aria_level(mut self, level: usize) -> Self {
+        self.accessibility_level = Some(level);
+        self
+    }
+
     /// Publishes the words under `key` instead of `text:{words}`.
     pub(crate) fn keyed(mut self, key: impl Into<gpui::ElementId>) -> Self {
         self.key = Some(key.into());
@@ -142,6 +150,9 @@ impl IntoElement for Said {
             let mut div = self.div.id(key.clone()).role(role);
             if let Some(label) = self.accessibility_label {
                 div = div.aria_label(label);
+            }
+            if let Some(level) = self.accessibility_level {
+                div = div.aria_level(level);
             }
             div.into_any_element()
         } else {

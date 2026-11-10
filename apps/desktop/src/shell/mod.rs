@@ -73,6 +73,8 @@ mod lifecycle_capture_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod native_owner_window_tests;
 #[cfg(test)]
+mod root_read_tests;
+#[cfg(test)]
 mod motion_tests;
 #[cfg(test)]
 mod orbit_tests;

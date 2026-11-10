@@ -340,6 +340,14 @@ pub(super) fn body(
     let overshoot = (measure.width() - ctx.measure.width()).max(px(0.0));
     let mut leaves = vec![Leaf::new(div().ml(-(overshoot * 0.5)).child(folio))];
     if let Some(offer) = cargo_offer { leaves.push(offer); }
+    // A registry release in the library can leave it again (GUI-05): its
+    // membership heads the page, as an offer to add one does.
+    if let Some(removal) =
+        crate::shell::acquire::page_removal(&dossier, ctx.links, cx.entity_id(), &ctx.measure,
+            ctx.native_dependency_guard((package_key.clone(), package_stamp), cx), cx)
+    {
+        leaves.insert(0, Leaf::new(removal));
+    }
     // A registry release the owner has not indexed offers to be added (W-Acquire).
     if let Some(offer) =
         crate::shell::acquire::page_offer(&dossier, ctx.links, cx.entity_id(), &ctx.measure,

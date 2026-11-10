@@ -367,6 +367,39 @@ fn header_native_tab_opens_add_packages_ask_and_breadcrumbs(cx: &mut TestAppCont
     assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().shelf_open), !shelf, "native shelf control retains its actual toggle semantics");
 }
 
+/// The plate reads as a search field: a click on its bare body asks, and
+/// typing then lands in Ask. Its own doors keep their one action each.
+#[gpui::test]
+fn a_click_on_the_plate_body_asks_and_its_doors_do_not(cx: &mut TestAppContext) {
+    use crate::navigation::{BrowseRoute, Overlay};
+    use gpui_component::WindowExt as _;
+    let overlay = |rig: &mut Rig| rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay());
+    let mut rig = open(cx, "RelationLabel");
+    for route in [page_route("RelationLabel"), Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))] {
+        rig.go(Intent::Navigate(route.clone()));
+        let ledger = painted(&mut rig);
+        let bounds = |key: &str| ledger.targets.iter().find(|target| target.key == key)
+            .unwrap_or_else(|| panic!("no {key} on {route:?}")).bounds.clone();
+        let here = bounds("here");
+        let lead = ledger.targets.iter().filter(|target| target.key.starts_with("jump-seg-"))
+            .map(|target| target.bounds.x + target.bounds.width).fold(here.x - 120.0, f32::max);
+        assert!(here.x - lead > 8.0, "the plate has a bare body before its magnifier on {route:?}");
+        rig.cx.simulate_click(point(px((lead + here.x) / 2.0), px(here.y + here.height / 2.0)), Modifiers::default());
+        rig.settle();
+        assert_eq!(overlay(&mut rig), Some(Overlay::CommandPalette), "the plate body asks on {route:?}");
+        assert!(rig.cx.update(|window, cx| window.has_focused_input(cx)), "typing goes to Ask's query on {route:?}");
+        rig.keys("escape");
+        assert_eq!(overlay(&mut rig), None);
+        click(&mut rig, "here", MouseButton::Left);
+        assert_eq!(overlay(&mut rig), Some(Overlay::CommandPalette), "the magnifier asks once, not twice, on {route:?}");
+        rig.keys("escape");
+    }
+    rig.go(Intent::Navigate(page_route("RelationLabel")));
+    click(&mut rig, "jump-seg-1", MouseButton::Left);
+    assert!(is_open(&mut rig, "jump-siblings-1"), "a segment still lists its siblings");
+    assert_eq!(overlay(&mut rig), None, "a segment click does not also ask");
+}
+
 #[gpui::test]
 fn a_module_segment_opens_its_siblings_from_the_outline(cx: &mut TestAppContext) {
     let mut rig = open(cx, "RelationLabel");

@@ -7,7 +7,7 @@
 //! the window, so a test drives them against a real owner exactly as the
 //! worker does.
 
-use super::{OwnerRequest, Stage};
+use super::{OwnerRequest, Removal, Stage};
 use super::super::actor::{CancellationToken, CancellationWake};
 use backend_client::{RequestContext, RequestCancellationReason};
 use crate::core::LocalProjectId;
@@ -111,6 +111,9 @@ pub(crate) enum Job {
     Release(Release),
     /// The registry packages `project` builds with.
     Dependencies(LocalProjectId),
+    /// A release a person asked to remove, at the exact indexed root its page
+    /// reads.
+    Remove(Release, PackageRef),
 }
 
 /// Where one of a project's packages comes from.
@@ -139,6 +142,8 @@ pub(crate) enum Landed {
     Stage(Release, Stage),
     /// A project's packages were read (in the order they are added), or why not.
     Dependencies(LocalProjectId, Result<Arc<[Dependency]>, Arc<str>>),
+    /// Removing a release reached a step.
+    Removal(Release, Removal),
 }
 
 /// The jobs waiting, and whether a worker is draining them.
@@ -207,7 +212,7 @@ impl Queue {
             if pending.jobs.iter().any(|queued| queued.job == job && queued.composition.generation == composition.generation && queued.owner.owner.same_owner(&owner) && queued.owner.current()) {
                 return false;
             }
-            let release = matches!(&job, Job::Release(_));
+            let release = matches!(&job, Job::Release(_) | Job::Remove(..));
             let queued = Queued { job, owner: WorkOwner::new(owner, composition.generation, #[cfg(test)] producer.clone()), composition, post, #[cfg(test)] producer };
             if release {
                 pending.jobs.push_front(queued);
@@ -252,6 +257,7 @@ impl Queue {
                 match job {
                     Job::Release(release) => post(Landed::Stage(release, Stage::Failed(words))),
                     Job::Dependencies(project) => post(Landed::Dependencies(project, Err(words))),
+                    Job::Remove(release, _) => post(Landed::Removal(release, Removal::Failed(words))),
                 }
             }
         }
@@ -585,6 +591,9 @@ fn run_in(job: &Job, composition: &Composition, owner: Option<&WorkOwner>, post:
         Job::Release(release) => {
             index_release_in(composition, release, owner, Listed::Ready, &|stage| post(Landed::Stage(release.clone(), stage)));
         }
+        Job::Remove(release, page) => {
+            remove_release_in(composition, release, page, owner, &|removal| post(Landed::Removal(release.clone(), removal)));
+        }
         Job::Dependencies(project) => {
             let root = project.path();
             let read = if root.join("Cargo.toml").is_file() {
@@ -621,6 +630,44 @@ fn run_in(job: &Job, composition: &Composition, owner: Option<&WorkOwner>, post:
                 Err(words) => post(Landed::Dependencies(project.clone(), Err(Arc::from(words)))),
             }
         }
+    }
+}
+
+/// [`remove_release_in`] without a window's captured owner, for tests that
+/// drive a real owner as the worker does.
+#[cfg(test)]
+pub(crate) fn remove_release(composition: &Composition, release: &Release, page: &PackageRef, post: &dyn Fn(Removal)) {
+    remove_release_in(composition, release, page, None, post);
+}
+
+/// Removes `release` from the library through the owner's `remove` command:
+/// only the exact root `page` reads, only when this machine's registry
+/// source owns that tree as `release`, and only while the owner lists it.
+/// Its source tree stays on this machine, so it can be added again.
+fn remove_release_in(composition: &Composition, release: &Release, page: &PackageRef, owner: Option<&WorkOwner>, post: &dyn Fn(Removal)) {
+    let failed = |words: String| post(Removal::Failed(Arc::from(words)));
+    if let Err(error) = check(owner) { return failed(error.to_string()); }
+    let coordinate = page.as_str();
+    if !page.is_local() || composition.source.release_of(Path::new(coordinate)).as_ref() != Some(release) {
+        return failed(format!("{coordinate} is not the registry source of {release}; nothing was removed"));
+    }
+    let removed = connect(composition, owner).and_then(|mut session| {
+        if !is_listed(&mut session, coordinate, Listed::Any) {
+            return Err(backend_client::ClientError::Protocol(format!("{release} is not in the library; nothing was removed")));
+        }
+        before_send(owner, &mut session)?;
+        post(Removal::Removing);
+        session.remove(coordinate).map(|_| ())
+    });
+    if let Err(error) = check(owner) { return failed(error.to_string()); }
+    match removed {
+        Ok(()) => {
+            if let Some(refusals) = composition.refusals.as_deref().map(Refusals::at) {
+                refusals.forget(coordinate);
+            }
+            post(Removal::Removed(page.clone()));
+        }
+        Err(error) => failed(format!("the index did not remove {release}: {error}")),
     }
 }
 

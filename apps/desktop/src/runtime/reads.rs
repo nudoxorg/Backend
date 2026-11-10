@@ -37,8 +37,8 @@ use crate::host::registry::{RegistryPackageIdentity, RegistrySource};
 use crate::model::browse::{BrowseValue, CargoSourceInventoryKey, CargoSourceInventoryModel};
 use crate::model::local_package::LocalPackageLoader;
 use crate::model::pages::{
-    CargoSourceKey, CargoSourcePage, Gap, GapReason, Generation, PackageRef, PageKey, PageValue,
-    ReadFailure, SearchContinuation, SearchQuery, SymbolRef, VerifiedRegistryRelease,
+    CargoSourceKey, CargoSourcePage, Gap, GapReason, Generation, Known, PackageRef, PageKey,
+    PageValue, ReadFailure, SearchContinuation, SearchQuery, SymbolRef, VerifiedRegistryRelease,
 };
 use backend_client::{ClientError, Session};
 use backend_library::{
@@ -1687,6 +1687,13 @@ fn compose_package(
         // supply this project's name, version, and license.
         .and_then(|project| loader.load_with_cancel(&project, context.cancel.flag()));
     check(context.cancel)?;
+    // A tree the registry source unpacked is a publication, not a project
+    // of yours: only that source can say so for this exact path.
+    let published = package
+        .is_local()
+        .then(|| crate::host::registry::composed()
+            .and_then(|composition| composition.source.release_of(Path::new(package.as_str()))))
+        .flatten();
     // Every part failing the same way means the package itself is unknown.
     if let (Err(error), None) = (&records, &local)
         && matches!(
@@ -1705,6 +1712,7 @@ fn compose_package(
             dependents: dependents.as_ref(),
             outline: Err(Gap::new(GapReason::Stale, "Reading the package outline")),
             local: local.as_ref(),
+            published: published.as_ref(),
         },
     )));
     let outline = outline(engine, package, context);
@@ -1718,6 +1726,7 @@ fn compose_package(
             dependents: dependents.as_ref(),
             outline: outline.as_deref().map_err(Clone::clone),
             local: local.as_ref(),
+            published: published.as_ref(),
         },
     )))
 }
@@ -1802,14 +1811,11 @@ fn compose_find(
         catalog_rows.unwrap_or_default(),
         registry.as_ref().map(|composed| composed.source.as_ref()),
     );
-    let package_coverage = if indexed_rows.is_some() && catalog_rows.is_some() {
-        Known::Known(())
-    } else {
-        Known::Unknown(Gap::new(
-            GapReason::Unavailable,
-            "Some package sources could not answer; these are the matches available locally.",
-        ))
-    };
+    let package_coverage = find_package_coverage(
+        indexed_rows.is_some() && catalog_rows.is_some(),
+        registry.is_some(),
+        query.is_some(),
+    );
     let prepared = Arc::new(super::browse_views::prepare_find(
         query.map_or("", |query| query.text.as_ref()),
         &answers,
@@ -1822,6 +1828,25 @@ fn compose_find(
         package_coverage,
         prepared,
     })
+}
+
+/// What Find may claim about package sources. Without a local Cargo
+/// registry a query never reaches registry releases, so "no match" must not
+/// read as "no such package".
+fn find_package_coverage(sources_answered: bool, registry: bool, queried: bool) -> Known<()> {
+    if !sources_answered {
+        Known::Unknown(Gap::new(
+            GapReason::Unavailable,
+            "Some package sources could not answer; these are the matches available locally.",
+        ))
+    } else if queried && !registry {
+        Known::Unknown(Gap::new(
+            GapReason::Unconfigured,
+            "registry releases were not searched because no local Cargo registry was found",
+        ))
+    } else {
+        Known::Known(())
+    }
 }
 
 fn compose_orbit(
@@ -2138,6 +2163,22 @@ mod tests {
                 && line.contains("Semantic ranking is pending")
         }));
         assert_eq!(engine.requests, [None, Some(continuation.cursor), None]);
+    }
+
+    #[test]
+    fn find_without_a_cargo_registry_says_registry_releases_were_not_searched() {
+        assert_eq!(find_package_coverage(true, true, true), Known::Known(()));
+        assert_eq!(find_package_coverage(true, false, false), Known::Known(()), "no query: nothing was searched yet");
+        let unsearched = find_package_coverage(true, false, true);
+        assert_eq!(unsearched.gap().map(|gap| gap.reason), Some(GapReason::Unconfigured));
+        let failed = find_package_coverage(false, false, true);
+        assert_eq!(failed.gap().map(|gap| gap.reason), Some(GapReason::Unavailable), "a failed source stays a failure");
+
+        let answers = Known::unknown(GapReason::NotRecorded, "no indexed answers");
+        let prepared = super::super::browse_views::prepare_find("itoa", &answers, &[], &unsearched);
+        assert!(prepared.candidates.is_empty());
+        assert!(prepared.coverage.iter().any(|line| line.contains("registry releases were not searched")
+            && line.contains("no local Cargo registry was found")), "{:?}", prepared.coverage);
     }
 
     struct ExactRegistryTree {

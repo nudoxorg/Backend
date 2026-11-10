@@ -1821,3 +1821,49 @@ fn probe_registry_roots_on_a_real_owner() {
     }
     drop(session);
 }
+
+/// GUI-05: a release in the library leaves it through the owner's own
+/// `remove`, only at the exact root its page reads; its source stays on this
+/// machine and it can be added again.
+#[test]
+fn a_release_in_the_library_is_removed_by_the_owner_and_can_be_added_again() {
+    use crate::runtime::acquire::{Listed, Removal, Stage, index_release, remove_release};
+    let owner = Owner::start("remove");
+    let source = CargoCache::from_env(owner.root.join("unpacked")).expect("a cargo home");
+    let composition = Composition {
+        endpoint: owner.host.endpoint().to_path_buf(),
+        source: Arc::new(source),
+        authority: Arc::from("test-authority"),
+        generation: crate::host::registry::CompositionGeneration::default(),
+        refusals: None,
+    };
+    let release = anyhow();
+    let page = match index_release(&composition, &release, Listed::Any, &|_| {}) {
+        Stage::Added(page) | Stage::Partial { page, .. } => page,
+        other => panic!("{release} is in the library first: {other:?}"),
+    };
+    let listed = |coordinate: &str| {
+        let mut session = Session::connect(owner.host.endpoint()).expect("session");
+        let CommandReply::Packages(snapshot) = session.packages().expect("packages").reply else { panic!("a packages reply") };
+        snapshot.root.rows().iter().any(|row| row.label == coordinate)
+    };
+    assert!(listed(page.as_str()), "the owner lists {page:?}");
+    let steps = std::sync::Mutex::new(Vec::new());
+    let remove = |at: &PackageRef| {
+        steps.lock().expect("steps").clear();
+        remove_release(&composition, &release, at, &|step| steps.lock().expect("steps").push(step));
+        steps.lock().expect("steps").clone()
+    };
+    let anchor = PackageRef::parse(owner.root.join("anchor").to_str().expect("UTF-8")).expect("anchor root");
+    assert!(matches!(remove(&anchor).as_slice(), [Removal::Failed(words)] if words.contains("is not the registry source")),
+        "a root the registry source does not own is never removed");
+    assert!(listed(page.as_str()), "and nothing was removed");
+    assert_eq!(remove(&page), [Removal::Removing, Removal::Removed(page.clone())], "the page's own root is removed");
+    assert!(!listed(page.as_str()), "the owner no longer lists it");
+    assert!(Path::new(page.as_str()).is_dir(), "its source stays on this machine");
+    assert!(matches!(remove(&page).as_slice(), [Removal::Failed(words)] if words.contains("is not in the library")),
+        "removing again says there is nothing to remove");
+    assert!(matches!(index_release(&composition, &release, Listed::Any, &|_| {}),
+        Stage::Added(again) | Stage::Partial { page: again, .. } if again == page), "it can be added again");
+    assert!(listed(page.as_str()));
+}

@@ -23,6 +23,7 @@ use crate::model::pages::{
     TreeSubject, VersionEntry,
 };
 use crate::model::pages::VerifiedRegistryRelease;
+use crate::model::release::Release;
 use backend_client::ClientError;
 use backend_library::{
     DeclarationKind, Document, Fragment, GraphEdgeKind, GraphNodeId, GraphRelation, HealthReport,
@@ -1886,16 +1887,30 @@ fn local_manifest_facts(local: &LocalPackage) -> bool {
     )
 }
 
+/// Why a registry fact is absent from a local tree's page: a project of
+/// yours has none, while a registry release's unpacked source has one that
+/// this page did not read.
+fn local_fact_gap(what: &str, published: Option<&Release>) -> Gap {
+    match published {
+        None => local_gap(what),
+        Some(release) => Gap::new(
+            GapReason::NotRecorded,
+            format!("{what} for {release} was not read; this page reads its unpacked source"),
+        ),
+    }
+}
+
 fn local_manifest_record(
     package: &PackageRef,
     local: Option<&LocalPackage>,
     is_local: bool,
+    published: Option<&Release>,
 ) -> Known<PackageRecord> {
     if let Some(manifest) = local.filter(|manifest| is_local && local_manifest_facts(manifest)) {
-        return Known::Known(local_record(package, manifest));
+        return Known::Known(local_record(package, manifest, published));
     }
     Known::Unknown(if is_local {
-        local_gap("a registry record")
+        local_fact_gap("a registry record", published)
     } else {
         Gap::new(
             GapReason::NotRecorded,
@@ -1904,20 +1919,28 @@ fn local_manifest_record(
     })
 }
 
-fn local_record(package: &PackageRef, local: &LocalPackage) -> PackageRecord {
+fn local_record(package: &PackageRef, local: &LocalPackage, published: Option<&Release>) -> PackageRecord {
     PackageRecord {
         package: package.clone(),
-        source: RecordSource::LocalManifest,
+        source: if published.is_some() { RecordSource::PublishedSource } else { RecordSource::LocalManifest },
         name: Arc::clone(&local.name),
         version: local.version.clone().map_or_else(
             || Known::unknown(GapReason::NotRecorded, "the manifest states no version"),
             Known::Known,
         ),
         ecosystem: Known::Known(RegistryEcosystem::Cargo),
-        standing: Known::Unknown(local_gap("release standing")),
-        downloads: Known::Unknown(local_gap("download count")),
-        bytes: Known::Unknown(local_gap("archive size")),
-        advisory: Known::Unknown(local_gap("advisory coverage")),
+        standing: Known::Unknown(local_fact_gap("release standing", published)),
+        downloads: Known::Unknown(local_fact_gap("download count", published)),
+        bytes: Known::Unknown(local_fact_gap("archive size", published)),
+        // A publication is not a project of yours: its advisories are
+        // unknown here, never skipped as if no feed could name it.
+        advisory: Known::Unknown(published.map_or_else(
+            || local_gap("advisory coverage"),
+            |release| Gap::new(
+                GapReason::Unconfigured,
+                format!("advisory feeds were not read for {release}; this page reads its unpacked source"),
+            ),
+        )),
         description: local.description.clone().map_or_else(
             || Known::unknown(GapReason::NotRecorded, "the manifest states no description"),
             Known::Known,
@@ -1985,6 +2008,9 @@ pub struct PackageInputs<'a> {
     pub outline: Result<&'a OutlineIndex, Gap>,
     /// Local manifest facts, for a local project.
     pub local: Option<&'a LocalPackage>,
+    /// The registry release a local tree is the unpacked source of, when the
+    /// registry source itself owns that tree.
+    pub published: Option<&'a Release>,
 }
 
 fn surface_gap(reply: Result<&SurfaceReply, &ClientError>, what: &str) -> Gap {
@@ -2020,14 +2046,14 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
     let record = match &registry_records {
         Ok(records) => package_record_for(records, package)
             .map_or_else(
-                || local_manifest_record(package, inputs.local, local),
+                || local_manifest_record(package, inputs.local, local, inputs.published),
                 |record| Known::Known(registry_record(record)),
             ),
         Err(gap) => inputs.local.filter(|_| local).map_or_else(
             || Known::Unknown(gap.clone()),
             |manifest| {
                 if local_manifest_facts(manifest) {
-                    Known::Known(local_record(package, manifest))
+                    Known::Known(local_record(package, manifest, inputs.published))
                 } else {
                     Known::Unknown(gap.clone())
                 }
@@ -2037,7 +2063,7 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
     let versions = match inputs.versions {
         // A local source can share a manifest name and version with a
         // publication without acquiring that publication's release history.
-        _ if local => Known::Unknown(local_gap("release history")),
+        _ if local => Known::Unknown(local_fact_gap("release history", inputs.published)),
         Ok(SurfaceReply::PackageVersions(records))
             if !records.iter().all(|record| version_record_for(record, package)) =>
         {
@@ -2131,7 +2157,7 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
         ),
         Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(text))) => (
             if local {
-                Known::Unknown(local_gap("reverse dependencies"))
+                Known::Unknown(local_fact_gap("reverse dependencies", inputs.published))
             } else {
                 Known::unknown(GapReason::NotRecorded, text.as_str())
             },
@@ -3105,6 +3131,7 @@ mod tests {
             dependents: Err(&failure),
             outline: Ok(&complete),
             local: Some(&local),
+            published: None,
         });
         assert_eq!(
             live.readme_exact_targets
@@ -3128,6 +3155,7 @@ mod tests {
             dependents: Err(&failure),
             outline: Ok(&partial),
             local: Some(&local),
+            published: None,
         });
         assert!(
             live.readme_exact_targets.known().is_none(),
@@ -3799,6 +3827,7 @@ mod tests {
             dependents: Ok(&dependents),
             outline: Err(Gap::new(GapReason::ReadFailed, "outline refused")),
             local: None,
+            published: None,
         });
         let head = dossier.record.known().expect("record");
         assert_eq!(head.name.as_ref(), "beta");
@@ -3899,6 +3928,7 @@ mod tests {
             dependents: Err(&unavailable),
             outline: Err(Gap::new(GapReason::ReadFailed, "not needed")),
             local: None,
+            published: None,
         });
         assert_eq!(dossier.record.gap().map(|gap| gap.reason), Some(GapReason::NotRecorded));
         assert!(dossier.record.known().is_none());
@@ -3927,6 +3957,7 @@ mod tests {
             dependents: Err(&unavailable),
             outline: Err(Gap::new(GapReason::ReadFailed, "not needed")),
             local: None,
+            published: None,
         });
         assert_eq!(dossier.record.known().map(|record| record.source), Some(RecordSource::Registry));
         assert_eq!(dossier.versions.gap().map(|gap| gap.reason), Some(GapReason::ReadFailed));
@@ -3963,6 +3994,7 @@ mod tests {
             dependents: Ok(&dependents),
             outline: Err(Gap::new(GapReason::ReadFailed, "not needed")),
             local: None,
+            published: None,
         });
 
         assert!(dossier.dependents.known().is_none());
@@ -4023,6 +4055,7 @@ mod tests {
             dependents: Ok(&dependents),
             outline: Err(Gap::new(GapReason::ReadFailed, "outline refused")),
             local: Some(&local),
+            published: None,
         });
         let head = dossier.record.known().expect("record");
         assert_eq!(head.source, RecordSource::Registry);
@@ -4064,7 +4097,7 @@ mod tests {
         let registry = crate::runtime::tests::registry_record("backend-present", "0.3.0");
         let records = SurfaceReply::Package(Box::new([registry.clone()]));
         let other = PackageRef::parse("pkg:nuget/Widget@1.0.0").expect("registry route");
-        assert!(local_manifest_record(&other, Some(&local), false).known().is_none(),
+        assert!(local_manifest_record(&other, Some(&local), false, None).known().is_none(),
             "a registry route cannot borrow this local Cargo manifest");
         let versions = SurfaceReply::PackageVersions(Box::new([registry]));
         let dependencies =
@@ -4086,6 +4119,7 @@ mod tests {
             dependents: Ok(&dependents),
             outline: Ok(&outline),
             local: Some(&local),
+            published: None,
         });
         let head = dossier.record.known().expect("manifest record");
         assert_eq!(head.source, RecordSource::LocalManifest);
@@ -4154,6 +4188,7 @@ mod tests {
             dependents: Err(&unavailable),
             outline: Err(Gap::new(GapReason::ReadFailed, "not needed")),
             local: None,
+            published: None,
         });
         assert_eq!(registry_dossier.record.known().map(|record| record.source), Some(RecordSource::Registry));
         assert_eq!(registry_dossier.versions.known().map(|rows| rows[0].current), Some(true));
@@ -4183,6 +4218,71 @@ mod tests {
             label.as_ref() == "Advisory coverage" && value.contains("No advisory feed coverage")));
         assert!(!comparison.candidates[1].facts.iter().any(|(label, value)|
             label.as_ref() == "Advisories in the configured authority" && value.starts_with('0')));
+    }
+
+    /// GUI-12: a registry release's unpacked tree is a publication. Its page
+    /// must not call it a project of yours, which skips advisories.
+    #[test]
+    fn an_unpacked_registry_release_is_not_a_project_of_yours() {
+        let package = PackageRef::parse(PRESENT).expect("local package");
+        let local = LocalPackage {
+            project: crate::core::LocalProjectId::new(PRESENT).expect("project"),
+            source: LocalPackageSource::Cargo,
+            name: Arc::from("itoa"),
+            version: Some(Arc::from("1.0.18")),
+            description: None,
+            license: Known::Known(crate::model::pages::LicenseDeclaration::Expression(Arc::from("MIT OR Apache-2.0"))),
+            rust_version: None,
+            repository: None,
+            homepage: None,
+            documentation: None,
+            keywords: Arc::from([]),
+            categories: Arc::from([]),
+            readme: Arc::from([]),
+            readme_markdown: None,
+            readme_links: Arc::from([]),
+            readme_headings: Arc::from([]),
+            dependencies: Arc::from([]),
+            features: Arc::from([]),
+            members: 1,
+        };
+        let records = SurfaceReply::Package(Box::new([]));
+        let versions = SurfaceReply::PackageVersions(Box::new([]));
+        let dependencies = SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
+            backend_library::ProductText::new("not recorded").expect("reason"),
+        ));
+        let dependents = SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(
+            backend_library::ProductText::new("not recorded").expect("reason"),
+        ));
+        let release = Release::new("itoa", "1.0.18").expect("release");
+        let read = |published: Option<&Release>| package_dossier(&PackageInputs {
+            package: &package,
+            records: Ok(&records),
+            versions: Ok(&versions),
+            dependencies: Ok(&dependencies),
+            dependents: Ok(&dependents),
+            outline: Err(Gap::new(GapReason::ReadFailed, "outline refused")),
+            local: Some(&local),
+            published,
+        });
+        let yours = read(None);
+        let head = yours.record.known().expect("manifest record");
+        assert_eq!(head.source, RecordSource::LocalManifest, "an unowned tree stays a project of yours");
+        assert_eq!(head.advisory.gap().map(|gap| gap.reason), Some(GapReason::LocalProject));
+
+        let unpacked = read(Some(&release));
+        let head = unpacked.record.known().expect("manifest record");
+        assert_eq!(head.source, RecordSource::PublishedSource);
+        assert_eq!(head.name.as_ref(), "itoa");
+        let advisory = head.advisory.gap().expect("advisories are not known here");
+        assert_eq!(advisory.reason, GapReason::Unconfigured, "unknown, not skipped as yours");
+        assert!(advisory.detail.contains("itoa 1.0.18"), "{advisory:?}");
+        for (what, gap) in [("standing", head.standing.gap()), ("downloads", head.downloads.gap()), ("bytes", head.bytes.gap()),
+            ("versions", unpacked.versions.gap()), ("dependents", unpacked.dependents.gap())] {
+            let gap = gap.unwrap_or_else(|| panic!("{what} stays unknown"));
+            assert_eq!(gap.reason, GapReason::NotRecorded, "{what}: {gap:?}");
+            assert!(!gap.detail.contains("local project"), "{what}: {gap:?}");
+        }
     }
 
     #[test]
@@ -4248,6 +4348,7 @@ mod tests {
             dependents: Ok(&dependents),
             outline: Err(Gap::new(GapReason::ReadFailed, "outline refused")),
             local: Some(&local),
+            published: None,
         });
         let head = dossier.record.known().expect("local manifest");
         assert_eq!(head.source, RecordSource::LocalManifest);
@@ -4304,6 +4405,7 @@ mod tests {
             dependents: Ok(&dependents),
             outline: Err(Gap::new(GapReason::ReadFailed, "outline refused")),
             local: Some(&local),
+            published: None,
         });
         assert_eq!(
             dossier.record.gap().map(|gap| gap.reason),

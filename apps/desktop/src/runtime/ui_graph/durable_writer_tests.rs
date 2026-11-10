@@ -820,7 +820,6 @@ fn native_pending_stop_retires_at_first_send_and_does_not_cancel_or_retry_owner_
     let (_window, shell, visual) = mount_pending_index_controls(&rig, cx);
     let (target, bounds) = shell.read_with(visual, |shell, cx| shell.reader_targets(cx)).placed()
         .into_iter().find(|(target, _)| target.label == "Stop pending request").expect("mounted native pending control");
-    let frame = visual.update(|window, _| window.a11y_frame_number());
     visual.update(|window, cx| window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
         position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false,
     }), cx));
@@ -831,6 +830,10 @@ fn native_pending_stop_retires_at_first_send_and_does_not_cancel_or_retry_owner_
     assert!(submitted.operation.is_some() && submitted.request.is_some());
     assert!(rig.root.read_with(visual, |root, _| root.unsent_index_revision(&submitted)).is_none());
     let reduced = rig.root.read_with(visual, |root, _| root.reduced());
+    // The first send and its settle legitimately repaint (the Stop control goes
+    // away); the property is that the stale press itself adds no repaint.
+    visual.update(|window, cx| { window.draw(cx).clear(cx); });
+    let frame = visual.update(|window, _| window.a11y_frame_number());
     visual.update(|window, cx| {
         assert!(!target.action.admits(cx));
         target.action.run(window, cx);
