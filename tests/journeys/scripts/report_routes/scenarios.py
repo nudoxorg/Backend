@@ -605,5 +605,76 @@ def gate_on_signed_out(bin_dir, out):
         r.stop()
 
 
-SCENARIOS = {"gate_on_signed_out": gate_on_signed_out, "verify_budget": verify_budget, "probe_budget_no_csharp": probe_budget_no_csharp, "probe_budget_no_appshell": probe_budget_no_appshell, "probe_budget_no_next": probe_budget_no_next, "probe_refusals": probe_refusals, "probe_refs_mixed": probe_refs_mixed, "startup_missing_checker": startup_missing_checker, "probe_crm": probe_crm, "probe_budget_diag": probe_budget_diag, "probe_reindex_refusal": probe_reindex_refusal, "probe_refs_nested": probe_refs_nested, "probe_refs_gap": probe_refs_gap, "probe_react_variants": probe_react_variants, "probe_budget": probe_budget, "startup_path": startup_path, "probe_refs": probe_refs,
+def _long_ts_project(root, files, tag):
+    """A TypeScript project big enough that its index outlasts many status reads."""
+    root = pathlib.Path(root)
+    fixtures.write(root, "package.json", '{"name":"long-%s","version":"1.0.0","private":true}\n' % tag)
+    fixtures.write(root, "tsconfig.json", '{"compilerOptions":{"strict":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","noEmit":true},"include":["src"]}\n')
+    for index in range(files):
+        previous = f'import {{ step{index - 1} }} from "./m{index - 1}";\n' if index else ""
+        chain = f"step{index - 1}(n) + " if index else ""
+        body = "".join(f"export function helper{index}_{k}(a: number, b: string): string {{ return b + String(a * {k + 1}); }}\n" for k in range(12))
+        fixtures.write(root, f"src/m{index}.ts",
+                       f"{previous}export function step{index}(n: number): number {{ return {chain}n + {index}; }}\n{body}"
+                       f"export interface Shape{index} {{ id: number; label: string; next?: Shape{max(index - 1, 0)}; }}\n")
+    return root
+
+
+FRAME_BAD = ("disconnect", "broken pipe", "connection reset", "endpoint closed", "mutation outcome", "unknown outcome")
+
+
+def long_index_frame_budget(bin_dir, out):
+    """Does a long index make the real CLI and MCP clients fail on the owner's frame budget?
+
+    The owner is started with BACKEND_LOCALD_MAX_FRAMES_PER_CONNECTION lowered (only the owner sees it, so
+    the clients still believe in the default 256 and must recover from the retirement after the fact).
+    Set FRAME_BUDGET to 256 to leave the owner untouched and rely on the index outlasting 256 frames.
+    """
+    budget = os.environ.get("FRAME_BUDGET", "8")
+    files = int(os.environ.get("LONG_FILES", "300"))
+    owner_env = {} if budget == "256" else {"BACKEND_LOCALD_MAX_FRAMES_PER_CONNECTION": budget}
+    r = Route(bin_dir, out, owner_env=owner_env)
+    detail = {"frame_budget": budget, "files": files}
+    ok = True
+    try:
+        cli_proj = _long_ts_project(r.root / "cli_proj", files, "cli")
+        mcp_proj = _long_ts_project(r.root / "mcp_proj", files, "mcp")
+        r.start_owner(cli_proj)
+        started = time.monotonic()
+        code, obj, text = r.cli("add", ["add", str(cli_proj), "--wait", "--wait-timeout", "900"], cli_proj)
+        detail["cli_seconds"] = round(time.monotonic() - started, 1)
+        detail["cli_exit"] = code
+        detail["cli_bad_words"] = [w for w in FRAME_BAD if w in text.lower()]
+        detail["cli_state"] = json.dumps(obj)[:300] if obj is not None else text[:300]
+        ok &= code == 0 and not detail["cli_bad_words"]
+        r.start_mcp(mcp_proj)
+        started = time.monotonic()
+        result = r.tool("backend.index", {"path": str(mcp_proj)})
+        polls, errors = 1, int(bool(result.get("isError")))
+        deadline = time.monotonic() + 900
+        while True:
+            call = (result.get("structuredContent") or {}).get("index_poll", {}).get("call")
+            if not call:
+                break
+            if time.monotonic() > deadline:
+                raise RuntimeError("MCP index timed out")
+            time.sleep(0.02)
+            result = r.rpc("tools/call", call)
+            polls += 1
+            errors += int(bool(result.get("isError")))
+        detail.update({"mcp_seconds": round(time.monotonic() - started, 1), "mcp_polls": polls, "mcp_error_results": errors,
+                       "mcp_final_isError": bool(result.get("isError"))})
+        text = json.dumps(result).lower()
+        detail["mcp_bad_words"] = [w for w in FRAME_BAD if w in text]
+        ok &= errors == 0 and not result.get("isError") and not detail["mcp_bad_words"]
+        found = r.tool("backend.search", {"query": "step7", "limit": 3})
+        detail["mcp_search_isError"] = bool(found.get("isError"))
+        ok &= not found.get("isError")
+        (out / "summary.json").write_text(json.dumps(detail, indent=1))
+        return {"long_index_frame_budget": {"pass": bool(ok), "detail": json.dumps(detail)}}
+    finally:
+        r.stop()
+
+
+SCENARIOS = {"long_index_frame_budget": long_index_frame_budget, "gate_on_signed_out": gate_on_signed_out, "verify_budget": verify_budget, "probe_budget_no_csharp": probe_budget_no_csharp, "probe_budget_no_appshell": probe_budget_no_appshell, "probe_budget_no_next": probe_budget_no_next, "probe_refusals": probe_refusals, "probe_refs_mixed": probe_refs_mixed, "startup_missing_checker": startup_missing_checker, "probe_crm": probe_crm, "probe_budget_diag": probe_budget_diag, "probe_reindex_refusal": probe_reindex_refusal, "probe_refs_nested": probe_refs_nested, "probe_refs_gap": probe_refs_gap, "probe_react_variants": probe_react_variants, "probe_budget": probe_budget, "startup_path": startup_path, "probe_refs": probe_refs,
              "probe_edits": probe_edits, "probe_churn": probe_churn, "probe_mcp": probe_mcp}
