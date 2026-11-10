@@ -280,13 +280,7 @@ pub(super) fn read_advisory_with_unacquired(
 ) -> Result<SurfaceReply, String> {
     let advisory = catalog_index
         .first_coordinate(catalog, package)?
-        .map(|record| qualify_registry_advisory(
-            record.advisory.clone(), record.standing, record.authority.is_some(),
-            record.authority.is_some_and(|authority| {
-                authority.standing == backend_library::RegistryPackageFactCompleteness::Complete
-                    && matches!(authority.release_facts_freshness, backend_library::RegistryPackageFactFreshness::Current { valid_until_millis, .. } if valid_until_millis > current_epoch_millis())
-            }),
-        ))
+        .map(read_time_advisory)
         .or_else(|| unacquired.map(backend_library::AdvisoryPackageDto::without_registry_standing))
         .unwrap_or_else(backend_engine::AdvisoryPackageDto::unknown);
     let advisory = override_evidence.map_or(advisory.clone(), |evidence| {
@@ -295,6 +289,35 @@ pub(super) fn read_advisory_with_unacquired(
     let reply = SurfaceReply::Advisory(advisory);
     reply.admit(reply.id()).map_err(|error| error.to_string())?;
     Ok(reply)
+}
+
+/// The advisory a record presents at read time: its standing qualifier is
+/// revalidated against the record's own source proof and the current clock.
+/// Every surface that shows a package's decision goes through this one reading,
+/// so the same package gets the same decision whichever command asks.
+pub(super) fn read_time_advisory(
+    record: &RegistryPackageRecord,
+) -> backend_library::AdvisoryPackageDto {
+    qualify_registry_advisory(
+        record.advisory.clone(),
+        record.standing,
+        record.authority.is_some(),
+        record.authority.is_some_and(|authority| {
+            authority.standing == backend_library::RegistryPackageFactCompleteness::Complete
+                && matches!(authority.release_facts_freshness, backend_library::RegistryPackageFactFreshness::Current { valid_until_millis, .. } if valid_until_millis > current_epoch_millis())
+        }),
+    )
+}
+
+fn with_read_time_advisory(records: Box<[RegistryPackageRecord]>) -> Box<[RegistryPackageRecord]> {
+    records
+        .into_vec()
+        .into_iter()
+        .map(|mut record| {
+            record.advisory = read_time_advisory(&record);
+            record
+        })
+        .collect()
 }
 
 /// Revalidate the standing qualifier from the selected registry source, never
@@ -759,12 +782,13 @@ impl ProductState {
                     (SurfaceReply::PackageInstalled(installed.remove(0)), false)
                 } else if forge_details.is_empty() {
                     let reply = match package_page(view, catalog, catalog_index, &package) {
-                        Ok(rows) => SurfaceReply::Package(rows),
+                        Ok(rows) => SurfaceReply::Package(with_read_time_advisory(rows)),
                         Err(error) => discovered_package(discovery, &package)?.ok_or(error)?,
                     };
                     (reply, false)
                 } else {
-                    let registry = packages(catalog, catalog_index, &package)?;
+                    let registry =
+                        with_read_time_advisory(packages(catalog, catalog_index, &package)?);
                     (
                         SurfaceReply::PackageDetails {
                             registry,
