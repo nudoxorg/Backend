@@ -2270,6 +2270,7 @@ impl<P: Product> Server<P> {
             context,
             exposure,
             compact_receipt,
+            false,
         )
     }
 
@@ -2283,6 +2284,7 @@ impl<P: Product> Server<P> {
         context: &[u8],
         exposure: McpExposure,
         compact_receipt: bool,
+        conditional_poll: bool,
     ) -> Result<Value, RpcError> {
         let mut reply = std::borrow::Cow::Borrowed(reply);
         let mut profile_progress = profile_progress;
@@ -2332,6 +2334,14 @@ impl<P: Product> Server<P> {
             let next_cursor = view.index_search_page().and_then(|page| page.next_cursor());
             let mut index_poll = backend_present::IndexPollDto::for_detail(&view, detail);
             preserve_compact_receipt_in_poll(index_poll.as_mut(), command, compact_receipt);
+            // A summary-detail poll of a durable operation repeats a call the caller already made:
+            // `index_poll.call` is the whole next step, so the CLI line is left to the first reply.
+            let compact_events = conditional_poll
+                && detail == Detail::Summary
+                && matches!(command, SurfaceCommand::IndexOperationStatus { .. });
+            if compact_events && let Some(poll) = index_poll.as_mut() {
+                poll.shell = None;
+            }
             let payload = match encode_serializable(
                 "surface",
                 detail,
@@ -2346,6 +2356,7 @@ impl<P: Product> Server<P> {
                         next_cursor,
                         index_job: view.index_job(),
                         compact_receipt,
+                        compact_events,
                     },
                 },
                 DEFAULT_RESPONSE_BUDGET_BYTES,
@@ -4246,6 +4257,8 @@ struct SurfaceProjection<'a> {
     next_cursor: Option<&'a str>,
     index_job: Option<&'a backend_present::IndexJobProjection>,
     compact_receipt: bool,
+    /// Summary-detail operation poll: progress events leave out the ticket their job already names.
+    compact_events: bool,
 }
 
 fn preserve_compact_receipt_in_poll(
@@ -4340,8 +4353,35 @@ impl SurfaceProjection<'_> {
         } else {
             map.serialize_entry("data", data)?;
         }
-        map.serialize_entry("index_job", index_job)?;
+        if self.compact_events {
+            let mut value = serde_json::to_value(index_job).map_err(serde::ser::Error::custom)?;
+            dedupe_event_tickets(&mut value);
+            map.serialize_entry("index_job", &value)?;
+        } else {
+            map.serialize_entry("index_job", index_job)?;
+        }
         map.end()
+    }
+}
+
+/// Every progress event repeats the full job ticket (an owner epoch array and the package
+/// path). When it equals the page's own ticket, the page names it once and the event omits it.
+fn dedupe_event_tickets(job: &mut Value) {
+    let Some(detail) = job.pointer_mut("/value/detail") else {
+        return;
+    };
+    let Some(ticket) = detail.get("ticket").cloned() else {
+        return;
+    };
+    let Some(events) = detail.get_mut("events").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for event in events {
+        if let Some(object) = event.as_object_mut()
+            && object.get("ticket") == Some(&ticket)
+        {
+            object.remove("ticket");
+        }
     }
 }
 

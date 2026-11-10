@@ -730,7 +730,7 @@ fn index_progress_output_schema() -> Value {
             "operation_key":{"type":"string", "pattern":"^[0-9a-f]{64}$"},
             "ticket":ticket_schema()["oneOf"][0],
             "after_observation":{"type":"string", "pattern":"^[0-9a-f]{64}$"}
-        }, "required":["identity", "operation_key", "ticket", "after_observation"], "additionalProperties":false},
+        }, "required":["identity", "operation_key", "after_observation"], "additionalProperties":false},
         {"type":"object", "properties": {
             "identity":{"const":"ticket"},
             "ticket":ticket_schema()["oneOf"][0],
