@@ -174,7 +174,7 @@ pub use render::{
     text,
 };
 pub use sections::{LineRole, SectionKind, SectionReader};
-pub use shelf::{LanguageCount, Readiness, RowCount, Shelf, ShelfEntry};
+pub use shelf::{LanguageCount, ProfileFiles, ProfileSemantic, Readiness, RowCount, Shelf, ShelfEntry};
 pub use signature::{Resolved, Signature, Target, Token, TokenKind};
 pub use source_membership::PackageSourceMembershipSelection;
 pub use status::{

@@ -721,9 +721,34 @@ pub struct ShelfEntryDto {
     pub partial_lanes: Vec<String>,
     /// Per-language declaration counts.
     pub languages: Vec<LanguageCountDto>,
+    /// Source files per language profile with each profile's semantic state, from the
+    /// owner's source receipt. Absent when the receipt was not readable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_profiles: Vec<SourceProfileDto>,
     /// Why the project is not readable, when it failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fault: Option<FaultDto>,
+}
+
+/// One language profile's source files in a project.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SourceProfileDto {
+    /// The closed profile spelling.
+    pub profile: String,
+    /// Source files in the profile's frontier.
+    pub files: u64,
+    /// `complete`, `partial`, `pending`, `unavailable` or `failed`.
+    pub semantic: String,
+}
+
+impl SourceProfileDto {
+    pub(crate) fn new(profile: crate::shelf::ProfileFiles) -> Self {
+        Self {
+            profile: profile.profile().to_owned(),
+            files: profile.files(),
+            semantic: profile.semantic().name().to_owned(),
+        }
+    }
 }
 
 /// One language's contribution to a project.
@@ -759,6 +784,12 @@ impl ShelfEntryDto {
                     language: count.language().name().to_owned(),
                     declarations: count.declarations().get(),
                 })
+                .collect(),
+            source_profiles: entry
+                .profiles()
+                .iter()
+                .copied()
+                .map(SourceProfileDto::new)
                 .collect(),
             fault: entry.readiness().fault().map(FaultDto::new),
         }

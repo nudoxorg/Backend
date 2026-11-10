@@ -33,7 +33,7 @@ use crate::identity::{Coordinate, Identity, KeyTag};
 use crate::outline::OutlineTree;
 use crate::page::Page;
 use crate::product::{ProductRecord, ProductView};
-use crate::project_coverage::read_current_project_coverage;
+use crate::project_coverage::{read_current_project_coverage, read_current_project_profiles};
 use crate::record::RecordList;
 use crate::shelf::Shelf;
 use crate::status::Status;
@@ -693,7 +693,9 @@ fn shelf(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     let shelf = match health.as_ref() {
         Some(health) => {
             let project_coverage = read_current_project_coverage(engine, &snapshot, health);
+            let profiles = read_current_project_profiles(engine, &snapshot, health);
             shelf_from_snapshot_with_project_coverage(&snapshot, tag, health, &project_coverage)
+                .with_profiles(&profiles)
         }
         None => shelf_from_snapshot(&snapshot, tag),
     };

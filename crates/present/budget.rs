@@ -276,6 +276,8 @@ pub fn encode_answer_with_call(
                             rows: project.rows,
                             declarations: project.declarations,
                             partial_lanes: project.partial_lanes,
+                            languages: project.languages,
+                            source_profiles: project.source_profiles,
                             fault: project.fault,
                         }
                     })
@@ -793,6 +795,10 @@ struct SummaryShelfEntryDto {
     declarations: Option<u64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     partial_lanes: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    languages: Vec<crate::dto::LanguageCountDto>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    source_profiles: Vec<crate::dto::SourceProfileDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<FaultDto>,
 }

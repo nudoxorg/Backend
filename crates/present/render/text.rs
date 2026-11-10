@@ -507,6 +507,7 @@ fn push_shelf_entry(lines: &mut Lines, entry: &ShelfEntry, theme: Theme) {
             language.declarations().get()
         ));
     }
+    tags.extend(entry.profiles().iter().map(|profile| profile.phrase()));
     let _ = write!(head, "  {}", theme.paint(Style::Dim, &tags.join(" · ")));
     lines.push(head);
     lines.push(format!(

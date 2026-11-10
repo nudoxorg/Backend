@@ -807,6 +807,9 @@ pub fn shelf(shelf: &Shelf) -> String {
                 language.declarations().get()
             );
         }
+        for profile in entry.profiles() {
+            let _ = write!(head, " · {}", profile.phrase());
+        }
         lines.push(head);
         lines.push(format!("`{}`", entry.identity().coordinate()));
         if let Some(reason) = entry.readiness().fault() {
