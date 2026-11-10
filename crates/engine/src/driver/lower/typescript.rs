@@ -18211,6 +18211,70 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
         Ok(())
     }
 
+    /// The component shapes a real React project writes besides the function
+    /// declaration. Each takes `children` from a recursive imported `ReactNode`;
+    /// each must project (no whole-file refusal) and keep the exact local import.
+    #[test]
+    fn native_tsz_react_component_shapes_keep_exact_local_alias() -> Result<(), LaneError> {
+        let react = r#"export type ReactNode = string | number | null | ReactElement | Iterable<ReactNode>;
+            export interface ReactElement { props: { children: ReactNode }; }
+            export interface Iterable<T> { next: () => T; }
+            export type FC<P = {}> = (props: P) => ReactNode;"#;
+        let cases = [
+            ("arrow.tsx", "import { ReactNode } from './react'; export const Arrow = ({ children }: { children: ReactNode }) => children;"),
+            ("expression.tsx", "import { ReactNode } from './react'; export const Expression = function ({ children }: { children: ReactNode }) { return children; };"),
+            ("fc.tsx", "import { FC, ReactNode } from './react'; interface P { children: ReactNode } export const Fc: FC<P> = ({ children }) => children;"),
+            ("namespace.tsx", "import * as React from './react'; export function Namespaced({ children }: { children: React.ReactNode }) { return children; }"),
+        ];
+        let mut refused = Vec::new();
+        for (path, source) in cases {
+            let resolution = module_resolution(path, "./react", TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File { path: "react.ts".to_owned() });
+            let authority = native_tsz_project_with_resolutions(&[("react.ts", react), (path, source)], &[resolution])?;
+            let project = authority.project().ok_or(LaneError::Missing("React shape project"))?;
+            let mut facts = FactSet::new();
+            if let Err(error) = super::collect_with_tsz_unmetered_for_test(
+                TypeScriptSource::Tsx, source.as_bytes(), project, path, &mut facts) {
+                refused.push(format!("{path}: {error:?}"));
+            }
+        }
+        assert!(refused.is_empty(), "React component shapes refused: {refused:#?}");
+        Ok(())
+    }
+
+    /// TSX-01: `import type` through a barrel resolves to the terminal declaration exactly like a
+    /// value import does, so the declaration's consumers include the importer.
+    #[test]
+    fn native_tsz_type_only_import_through_a_barrel_keeps_the_terminal_declaration() -> Result<(), LaneError> {
+        let util = "export type SharedShape = { id: string };\nexport function barrelTarget(n: number): number { return n + 3; }\n";
+        let barrel = "export { barrelTarget } from './util';\nexport type { SharedShape } from './util';\n";
+        let caller = "import { barrelTarget } from './lib';\nimport type { SharedShape } from './lib';\nexport const viaBarrel = barrelTarget(1);\nexport const shape: SharedShape = { id: 'a' };\n";
+        let resolutions = [
+            module_resolution("lib.ts", "./util", TszProjectModuleRequestKind::EsmReExport,
+                TszProjectModuleResolutionTarget::File { path: "util.ts".to_owned() }),
+            module_resolution("caller.ts", "./lib", TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File { path: "lib.ts".to_owned() }),
+        ];
+        let authority = native_tsz_project_with_resolutions(
+            &[("util.ts", util), ("lib.ts", barrel), ("caller.ts", caller)], &resolutions)?;
+        let project = authority.project().ok_or(LaneError::Missing("barrel project"))?;
+        let facts = collect_native_tsz_file(project, "caller.ts", caller)?;
+        let coordinates = staged_tsz_coordinates(&facts)?;
+        let mut missing = Vec::new();
+        for name in ["barrelTarget", "SharedShape"] {
+            let imported = coordinates.iter().any(|(kind, path, _, _, _, owner)|
+                *kind == ReferenceKind::Import && path == "util.ts"
+                    && facts.names.get(*owner as usize).copied() == Some(name.as_bytes()));
+            if !imported { missing.push(format!("import edge {name} -> util.ts")); }
+            let used = coordinates.iter().any(|(kind, path, _, _, _, _)|
+                path == "util.ts" && *kind != ReferenceKind::Import
+                    && match name { "barrelTarget" => *kind == ReferenceKind::Call, _ => *kind == ReferenceKind::TypeReference });
+            if !used { missing.push(format!("use of {name} -> util.ts")); }
+        }
+        assert!(missing.is_empty(), "barrel targets lost: {missing:?}; all coordinates: {coordinates:?}");
+        Ok(())
+    }
+
     #[test]
     fn native_tsz_imported_recursive_same_name_keeps_distinct_targets() -> Result<(), LaneError> {
         let a = "export type ReactNode = string | { next: ReactNode };";
