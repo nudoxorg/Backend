@@ -943,11 +943,14 @@ pub(super) fn read_site(
         source: Some(source_identity),
         byte_length: Some(length),
         terminal: backend_engine::builtin::StyloTerminal::Parsed(_),
+        fragment,
         ..
     }) = host
     else {
         return Ok(StyloSourceRead::Expired);
     };
+    // An embedded stylesheet's sites are byte ranges of its enclosing file.
+    let path = fragment.map_or(path, |fragment| fragment.file);
     if project != claims.project {
         return Err(error("source host has another project owner"));
     }

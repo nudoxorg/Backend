@@ -45,6 +45,8 @@ pub(super) struct HostModel {
     pub source: Option<Key>,
     pub byte_length: Option<u64>,
     pub parsed: bool,
+    /// Set for a Vue `<style>` block: where it lives in its `.vue` file.
+    pub fragment: Option<backend_engine::builtin::StyloFragment>,
     /// Parsed with `@import` rules recorded (hosts indexed before that existed
     /// dropped them, so their silence about imports is not an answer).
     pub imports_captured: bool,
@@ -297,8 +299,28 @@ pub(super) fn var_references(value: &str) -> Vec<String> {
 fn is_module(path: &str) -> bool {
     path.ends_with(".module.css")
 }
-fn class_key(host_path: &str, name: &str) -> Key {
-    node_key(ImpactDomain::Css, "class", if is_module(host_path) { host_path } else { "" }, name)
+/// Namespace of the classes a stylesheet defines: a CSS module and a scoped or
+/// module `<style>` block of a Vue component each own their class names; every
+/// other stylesheet shares the global namespace.
+fn class_key(scope: &str, name: &str) -> Key {
+    node_key(ImpactDomain::Css, "class", scope, name)
+}
+fn host_scope(host: &HostModel) -> String {
+    match &host.fragment {
+        Some(fragment) if fragment.scoped || fragment.module => fragment.file.clone(),
+        Some(_) => String::new(),
+        None if is_module(&host.path) => host.path.clone(),
+        None => String::new(),
+    }
+}
+/// Line of a rule in the file that holds it. An embedded block counts from the
+/// line its content starts on.
+fn host_line(host: &HostModel, rule: &StyloRule) -> Option<u32> {
+    let line = rule.location?.line;
+    Some(match &host.fragment {
+        Some(fragment) => fragment.line.saturating_add(line),
+        None => line + 1,
+    })
 }
 fn id_key(name: &str) -> Key {
     node_key(ImpactDomain::Css, "id", "", name)
@@ -366,9 +388,6 @@ impl Builder<'_> {
     }
 }
 
-fn line_of(rule: &StyloRule) -> Option<u32> {
-    rule.location.map(|location| location.line + 1)
-}
 
 /// Project-relative stylesheet an `@import` specifier names. CSS resolves a
 /// specifier against the importing stylesheet, so a bare `base.css` is a
@@ -449,7 +468,7 @@ pub(super) fn build_graph(model: &CssModel, issue: &dyn Fn(&Key, &Key) -> Option
     let (mut import_links, mut import_external, mut import_legacy) = (0u32, 0u32, 0u32);
     let mut import_targets: BTreeSet<String> = BTreeSet::new();
     for host in &model.hosts {
-        known_paths.insert(host.path.clone());
+        known_paths.insert(host.fragment.as_ref().map_or_else(|| host.path.clone(), |f| f.file.clone()));
         if !host.parsed {
             unparsed.push(match &host.unavailable {
                 Some(why) => format!("{} ({why})", host.path),
@@ -458,6 +477,9 @@ pub(super) fn build_graph(model: &CssModel, issue: &dyn Fn(&Key, &Key) -> Option
             continue;
         }
         parsed_files += 1;
+        // The file a host's bytes live in: itself, or the `.vue` file around a block.
+        let file_path: String = host.fragment.as_ref().map_or_else(|| host.path.clone(), |f| f.file.clone());
+        let scope = host_scope(host);
         if host.diagnostics {
             diagnostics += 1;
         }
@@ -465,12 +487,12 @@ pub(super) fn build_graph(model: &CssModel, issue: &dyn Fn(&Key, &Key) -> Option
             observer_skipped += 1;
         }
         if let (Some(source), Some(length), Some(root)) = (host.source, host.byte_length, model.source_root.as_ref()) {
-            files.push(FileWitness { root: root.clone(), path: host.path.clone(), length, source });
+            files.push(FileWitness { root: root.clone(), path: file_path.clone(), length, source });
         }
-        let fkey = file_key(&host.path);
+        let fkey = file_key(&file_path);
         b.ensure(fkey, || {
-            let mut node = Node::new(ImpactDomain::Css, "file", "", &host.path);
-            node.path = Some(host.path.clone());
+            let mut node = Node::new(ImpactDomain::Css, "file", "", &file_path);
+            node.path = Some(file_path.clone());
             node
         });
         // Nodes for rules.
@@ -498,8 +520,8 @@ pub(super) fn build_graph(model: &CssModel, issue: &dyn Fn(&Key, &Key) -> Option
             let read = first_site(&rule.path, StyloSourceRole::ClassName, None)
                 .or_else(|| first_site(&rule.path, StyloSourceRole::CustomPropertyDeclarationName, None));
             let mut node = Node::new(ImpactDomain::Css, kind, &scope, &label);
-            node.path = Some(host.path.clone());
-            node.line = line_of(rule);
+            node.path = Some(file_path.clone());
+            node.line = host_line(host, rule);
             node.read = read;
             b.nodes.insert(rkey, node);
             // Structure: a parent at-rule or style rule governs its children.
@@ -523,7 +545,7 @@ pub(super) fn build_graph(model: &CssModel, issue: &dyn Fn(&Key, &Key) -> Option
         }
         for rule in &host.rules {
             let Some(specifier) = rule.import_specifier() else { continue };
-            let Some(target) = resolve_import(&host.path, &specifier) else {
+            let Some(target) = resolve_import(&file_path, &specifier) else {
                 import_external += 1;
                 continue;
             };
@@ -544,9 +566,9 @@ pub(super) fn build_graph(model: &CssModel, issue: &dyn Fn(&Key, &Key) -> Option
                 "css.imports-stylesheet",
                 format!(
                     "{} imports {specifier}{} at line {}",
-                    host.path,
+                    file_path,
                     qualifiers.as_deref().map(|text| format!(" ({text})")).unwrap_or_default(),
-                    line_of(rule).unwrap_or(1)
+                    host_line(host, rule).unwrap_or(1)
                 ),
             );
         }
@@ -558,24 +580,28 @@ pub(super) fn build_graph(model: &CssModel, issue: &dyn Fn(&Key, &Key) -> Option
             let shape = read_selector(&selector.canonical);
             let rkey = rule_key(&host.path, &selector.rule_path);
             for name in &shape.mentions_classes {
-                let ckey = class_key(&host.path, name);
+                let ckey = class_key(&scope, name);
                 b.class_mentions.entry(ckey).or_default().insert(rkey);
-                let line = by_path.get(selector.rule_path.as_slice()).and_then(|rule| line_of(rule));
+                let line = by_path.get(selector.rule_path.as_slice()).and_then(|rule| host_line(host, rule));
                 let read = host
                     .occurrences
                     .iter()
                     .find(|(site, _)| site.role == StyloSourceRole::ClassName && site.decoded == *name)
                     .and_then(|(_, site_key)| issue(&host.key, site_key))
                     .map(|reference| format!("stylo-read-site {reference}"));
-                let host_path = host.path.clone();
-                let module = is_module(&host_path);
+                let host_path = file_path.clone();
+                let owned = !scope.is_empty();
                 let class_node = b.ensure(ckey, || {
-                    let mut node = Node::new(ImpactDomain::Css, "class", if module { &host_path } else { "" }, name);
+                    let mut node = Node::new(ImpactDomain::Css, "class", &scope, name);
                     node.path = Some(host_path.clone());
                     node.line = line;
                     node.read = read.clone();
-                    if module {
-                        node.within = Some(format!("CSS module {host_path}"));
+                    if owned {
+                        node.within = Some(match &host.fragment {
+                            Some(fragment) if fragment.module => format!("Vue module <style> in {host_path}"),
+                            Some(_) => format!("Vue scoped <style> in {host_path}"),
+                            None => format!("CSS module {host_path}"),
+                        });
                     }
                     node
                 });
@@ -586,8 +612,8 @@ pub(super) fn build_graph(model: &CssModel, issue: &dyn Fn(&Key, &Key) -> Option
             for name in &shape.mentions_ids {
                 let ikey = id_key(name);
                 b.class_mentions.entry(ikey).or_default().insert(rkey);
-                let host_path = host.path.clone();
-                let line = by_path.get(selector.rule_path.as_slice()).and_then(|rule| line_of(rule));
+                let host_path = file_path.clone();
+                let line = by_path.get(selector.rule_path.as_slice()).and_then(|rule| host_line(host, rule));
                 b.ensure(ikey, || {
                     let mut node = Node::new(ImpactDomain::Css, "id", "", name);
                     node.path = Some(host_path);
@@ -615,7 +641,7 @@ pub(super) fn build_graph(model: &CssModel, issue: &dyn Fn(&Key, &Key) -> Option
             } else {
                 format!(".{name} is the styled element only where the rest of the selector also matches")
             };
-            b.edge(rkey, class_key(&host.path, &name), strength, "css.styles-class", why);
+            b.edge(rkey, class_key(&scope, &name), strength, "css.styles-class", why);
         }
         for ((rule_path, name), simple) in id_subject {
             let rkey = rule_key(&host.path, &rule_path);
@@ -642,7 +668,7 @@ pub(super) fn build_graph(model: &CssModel, issue: &dyn Fn(&Key, &Key) -> Option
             .collect();
         for declaration in &host.declarations {
             let rkey = rule_key(&host.path, &declaration.rule_path);
-            let line = by_path.get(declaration.rule_path.as_slice()).and_then(|rule| line_of(rule));
+            let line = by_path.get(declaration.rule_path.as_slice()).and_then(|rule| host_line(host, rule));
             let mut used: BTreeSet<String> = host
                 .dependencies
                 .iter()
@@ -663,7 +689,7 @@ pub(super) fn build_graph(model: &CssModel, issue: &dyn Fn(&Key, &Key) -> Option
             var_uses += used.len() as u32;
             if declaration.kind == StyloDeclarationKind::Custom {
                 let pkey = property_key(&declaration.property);
-                let host_path = host.path.clone();
+                let host_path = file_path.clone();
                 let read = first_site(&declaration.rule_path, StyloSourceRole::CustomPropertyDeclarationName, Some(&declaration.property));
                 let node = b.ensure(pkey, || {
                     let mut node = Node::new(ImpactDomain::Css, "custom-property", "", &declaration.property);
@@ -672,7 +698,7 @@ pub(super) fn build_graph(model: &CssModel, issue: &dyn Fn(&Key, &Key) -> Option
                     node
                 });
                 if node.path.is_none() {
-                    node.path = Some(host.path.clone());
+                    node.path = Some(file_path.clone());
                     node.line = line;
                 }
                 if node.read.is_none() {
@@ -727,6 +753,8 @@ pub(super) fn build_graph(model: &CssModel, issue: &dyn Fn(&Key, &Key) -> Option
             );
         }
     }
+    files.sort_by(|a: &FileWitness, b: &FileWitness| a.path.cmp(&b.path));
+    files.dedup_by(|a, b| a.path == b.path);
     // Companions: a seed on a class also changes every rule mentioning it; a
     // seed on a stylesheet changes every rule in it.
     let mut nodes = b.nodes;
@@ -952,9 +980,10 @@ pub(super) fn read_model(cx: &ImpactContext<'_>) -> Result<(CssModel, [u8; 32]),
                 break;
             }
             match row {
-                StyloAnalysisRecord::Host { project: owner, path, source, byte_length, terminal, source_gaps, config, .. } if *owner == project => {
+                StyloAnalysisRecord::Host { project: owner, path, source, byte_length, terminal, source_gaps, config, fragment, .. } if *owner == project => {
                     let host = hosts.entry(*key).or_default();
                     host.key = *key;
+                    host.fragment = fragment.clone();
                     host.imports_captured = config.as_ref().is_some_and(|config| config.allow_imports);
                     host.path = path.clone();
                     host.source = *source;

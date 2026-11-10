@@ -158,6 +158,8 @@ pub struct StyloFragment {
     pub start: u64,
     /// Exclusive end byte of the block's content in the file.
     pub end: u64,
+    /// One-based line of the file on which the block's content starts.
+    pub line: u32,
     /// The block carries `scoped`.
     pub scoped: bool,
     /// The block carries `module`.

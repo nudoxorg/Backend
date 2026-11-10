@@ -11861,6 +11861,8 @@ fn capture_vue_style_hosts(
                 block: u32::try_from(index).map_err(|_| StyloProjectCaptureFailure::Unavailable)?,
                 start: content.start as u64,
                 end: content.end as u64,
+                line: u32::try_from(bytes[..content.start].iter().filter(|byte| **byte == b'\n').count() + 1)
+                    .unwrap_or(u32::MAX),
                 scoped,
                 module,
             };
@@ -12052,8 +12054,11 @@ pub(super) fn capture_stylo_project(
     let (inventory_count, inventory_digest) = walk
         .inventory
         .ok_or(StyloProjectCaptureFailure::Unavailable)?;
+    // The fence covers stylesheets and Vue hosts alike: a changed `<style>` block
+    // must make the capture stale exactly as a changed `.css` file does.
     let fence = walk
         .bind_fence(&scan.revision_fence)
+        .and_then(|fence| scan.vue_walk.bind_fence(&fence))
         .map_err(StyloProjectCaptureFailure::Invalid)?;
     if !compiler_revision_is_current_with_cancellation(&fence, Some(cancellation))
         .map_err(StyloProjectCaptureFailure::Invalid)?
