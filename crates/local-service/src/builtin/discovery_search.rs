@@ -10269,14 +10269,17 @@ mod tests {
             first.posting_candidates < 16,
             "project path cannot expand posting work"
         );
-        let second = local
-            .page_after("httpie", 1, first.next_cursor.as_ref())
-            .expect("second name page");
-        assert!(second.next_cursor.is_none());
+        assert!(first.next_cursor.is_none(), "one local declaration matches");
+        let external = local
+            .page_external_after("httpie", 1, None)
+            .expect("external name page");
+        assert!(external.next_cursor.is_none());
+        assert!(external.posting_candidates < 16,
+            "external coordinates cannot fan out inherited project terms");
         let selected = first
             .hits
             .into_iter()
-            .chain(second.hits)
+            .chain(external.hits)
             .map(|hit| hit.key)
             .collect::<BTreeSet<_>>();
         assert_eq!(
@@ -10300,8 +10303,13 @@ mod tests {
             [RowId::Symbol(backend_engine::symbol_key(&parse_args))]
         );
         for coordinate in &labels {
+            let page = if coordinate.contains("::external::symbol:") {
+                local.page_external_after(coordinate, 8, None)
+            } else {
+                local.page(coordinate, 8)
+            }.expect("exact coordinate in its authority lane");
             assert_eq!(
-                hit_keys(local.page(coordinate, 8).expect("exact coordinate").hits).first(),
+                hit_keys(page.hits).first(),
                 Some(&RowId::Symbol(backend_engine::symbol_key(coordinate)))
             );
         }
