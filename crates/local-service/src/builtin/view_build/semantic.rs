@@ -147,6 +147,7 @@ pub(crate) fn rows_for_indexed_sources(
     let mut ledger = semantics.ledger;
     ledger.extend(projection.take_ledger());
     let mut rows = projection.finish(semantics.rows)?;
+    super::sql::append(snapshot, initial, sources, &mut rows)?;
     super::super::coverage::qualify_package_rows(snapshot, &mut rows, generations)?;
     Ok(ProjectedRows {
         rows,

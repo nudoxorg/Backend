@@ -45,6 +45,7 @@ mod semantic;
 mod semantic_content_admission;
 mod source_availability;
 mod structural;
+mod sql;
 #[cfg(test)]
 mod typescript_import_native;
 

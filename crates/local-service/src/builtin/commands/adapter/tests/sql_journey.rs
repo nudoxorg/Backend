@@ -318,6 +318,7 @@ fn sqlite_project_indexes_publishes_queries_reindexes_and_survives_cold_reopen()
         // The view's own consumers follow, as candidates (the view column is unnamed in the project).
         assert!(names.iter().any(|(kind, _, strength)| *kind == "query" && *strength == ImpactStrength::Candidate)
             || names.iter().filter(|(kind, ..)| *kind == "query").count() >= 1);
+        assert!(!names.iter().any(|(kind, _, _)| *kind == "table"), "a column does not change its owning table: {names:?}");
         assert!(report.gaps.iter().any(|gap| gap.facet == "sql.embedded-sql"), "named blind spot");
         assert!(!report.proves_no_impact());
     }
