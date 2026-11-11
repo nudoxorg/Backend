@@ -75,6 +75,18 @@ fn python_and_csharp_structural_source_survive_public_wire_and_cold_reopen() {
     fs::write(root.join("main.py"), python).expect("real Python source");
     fs::write(root.join("BankAccount.cs"), csharp).expect("real C# source");
     index_fixture(&mut fixture);
+    {
+        let (adapter, daemon) = fixture.parts();
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let row = daemon.engine().daemon().library().view().row_refs()
+            .find(|row| row.label.rsplit("::").next() == Some("health"))
+            .expect("health view row");
+        let sources = crate::builtin::read_package_sources(&snapshot, row.package.expect("health package"))
+            .expect("selected project sources");
+        assert!(super::super::structural_source::admit(&sources, row)
+            .expect("complete selected structural facts").is_some(), "health structural row must join exact facts");
+        let _ = adapter;
+    }
     for cold in [false, true] {
         if cold {
             fixture = fixture.reopen();
