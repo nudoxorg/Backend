@@ -192,6 +192,13 @@ _, text = query("columns", "--role", "definition", "--kind", "column", "--parent
 expect(text, ["column accounts.balance", "column accounts.tier", "column accounts.email"], "columns")
 _, text = query("views", "--role", "definition", "--kind", "view")
 expect(text, ["view account_spend"], "views")
+# Ordinary discovery must expose native SQL declarations.
+code, raw = cli("search-sql", ["search", "account_spend"])
+if code != 0 or "account_spend" not in raw or "SQL view" not in raw:
+    fail("normal search did not discover the SQL view: " + raw[:1200])
+code, raw = cli("outline-sql", ["outline", str(project)])
+if code != 0 or "account_spend" not in raw:
+    fail("normal outline did not discover the SQL view: " + raw[:1200])
 # 2. Honest coverage: nothing partial, files all selected.
 _, text = query("gaps", "--role", "gap")
 expect(text, ["no known gaps in the SQL files"], "gaps")
