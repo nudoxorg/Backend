@@ -1248,3 +1248,7 @@ mod budget_tests {
         assert_eq!(budget.bytes, single);
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "sql_capture_installed_tests.rs"]
+mod installed_companion_tests;
