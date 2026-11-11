@@ -689,6 +689,12 @@ impl<R: CanonicalRelation> WorkspaceRelationHandle<R> {
             .map_err(|error| map_tree_error::<R>(error, None))
     }
 
+    /// Looks up a row while bounding traversal depth and validating child summaries.
+    pub fn lookup_with_depth_limit(&self, key: &R::Key, max_depth: usize) -> Result<Option<R::Value>, WorkspaceRelationError> {
+        self.tree().lookup_with_depth_limit(key, max_depth)
+            .map_err(|error| map_tree_error::<R>(error, Some(RelationKeyPrefix::of::<R>(key))))
+    }
+
     /// Reads one row with a caller-supplied traversal depth limit.
     /// The caller must reserve scratch and retained allocations before calling.
     pub fn page_one_with_depth_limit(

@@ -432,7 +432,7 @@ pub fn native_source_evidence_lookup_budgeted(
     relation: &WorkspaceRelationHandle<NativeSourceEvidenceRelation>, key: &[u8; 32], budget: &mut usize,
 ) -> Result<Option<NativeSourceEvidence>, WorkspaceRelationError> {
     native_read_reserve(budget)?;
-    let row = relation.lookup(key)?;
+    let row = relation.lookup_with_depth_limit(key, NATIVE_EVIDENCE_READ_DEPTH)?;
     let retained = row.as_ref().map(native_row_resident).transpose()?.unwrap_or(0);
     native_read_refund(budget, retained)?;
     Ok(row)
