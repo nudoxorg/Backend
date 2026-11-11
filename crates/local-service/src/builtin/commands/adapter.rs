@@ -855,39 +855,6 @@ impl ResidentCatalog {
 }
 
 impl CommandAdapter {
-    /// Resolve a native-only source-site coordinate through the authenticated
-    /// source path used by document/source. Structural aliases are absent in
-    /// native-only views, so accept a match only when exactly one same-package
-    /// declaration's live, digest-verified source reports the requested line.
-    fn resolve_native_source_coordinate(
-        &mut self,
-        daemon: &ProductDaemon,
-        coordinate: &str,
-    ) -> Result<Option<backend_library::Row>, backend_library::CommandFailure> {
-        let Some((package_label, rest)) = coordinate.split_once("::") else { return Ok(None) };
-        let Some((path_line, name)) = rest.rsplit_once("::") else { return Ok(None) };
-        let Some((path, line_text)) = path_line.rsplit_once(':') else { return Ok(None) };
-        if path.is_empty() || name.is_empty() || !line_text.bytes().all(|byte| byte.is_ascii_digit()) { return Ok(None); }
-        let Ok(line) = line_text.parse::<u32>() else { return Ok(None) };
-        if line == 0 { return Ok(None); }
-        let package = backend_engine::PackageKey::from_value(package_label);
-        let view = daemon.engine().daemon().library().view();
-        let candidates = view.row_refs().filter(|row| {
-            row.package == Some(package) && row.label.ends_with(&format!("::{name}"))
-        }).cloned().collect::<Vec<_>>();
-        if candidates.len() > 32 { return Ok(None); }
-        let mut matched = Vec::new();
-        for row in candidates {
-            let Some(selection) = backend_library::DocumentSelection::from_row(&row, row.basis) else { continue; };
-            let mut budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
-            let Some((_, _, _, location)) = self.selected_native_document_source(
-                daemon, &row, &selection, None, true, &mut budget,
-            )? else { continue; };
-            let Some(location) = location else { continue; };
-            if location.path() == path && location.start_line() == line { matched.push(row); }
-        }
-        Ok((matched.len() == 1).then(|| matched.remove(0)))
-    }
     /// Retain comparison material from the currently selected owner snapshot.
     /// This internal hook is deliberately not a public historical read route.
     fn capture_css_impact<F: FnMut() -> bool>(
@@ -5658,14 +5625,11 @@ impl CommandAdapter {
             let Some(label) = label else {
                 return Ok(None);
             };
-            if let Some(row) = backend_library::resolve_selected_document_row(library.view(), label)? {
-                row
-            } else {
-                let Some(row) = self.resolve_native_source_coordinate(daemon, label)? else {
-                    return Ok(None);
-                };
-                row
-            }
+            let Some(row) = backend_library::resolve_selected_document_row(library.view(), label)?
+            else {
+                return Ok(None);
+            };
+            row
         };
         let requested_coordinate = label;
         let label = row.label.as_str();
