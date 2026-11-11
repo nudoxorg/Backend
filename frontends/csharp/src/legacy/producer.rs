@@ -622,6 +622,7 @@ pub struct CSharpOracle {
 pub struct CSharpAuthorityImage {
     bytes: Box<[u8]>,
     evidence: Option<Box<[u8]>>,
+    execution_digest: [u8; 32],
 }
 
 impl CSharpAuthorityImage {
@@ -630,6 +631,13 @@ impl CSharpAuthorityImage {
     #[must_use]
     pub fn captured_evidence(&self) -> Option<&[u8]> {
         self.evidence.as_deref()
+    }
+
+    /// Digest of the complete private helper/runtime snapshot used for this
+    /// image. Owners must carry this into their selected-attempt receipt.
+    #[must_use]
+    pub const fn execution_digest(&self) -> [u8; 32] {
+        self.execution_digest
     }
 
     /// Borrows the exact validated image bytes for the next compiler boundary.
@@ -720,13 +728,13 @@ impl CSharpOracle {
         request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
     ) -> Result<Vec<u8>, CSharpAuthorityError> {
         self.authority_image_with_evidence(request)
-            .map(|(image, _)| image)
+            .map(|(image, _, _)| image)
     }
 
     fn authority_image_with_evidence<'request, 'config, 'cancel>(
         &self,
         request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
-    ) -> Result<(Vec<u8>, Option<Box<[u8]>>), CSharpAuthorityError> {
+    ) -> Result<(Vec<u8>, Option<Box<[u8]>>, [u8; 32]), CSharpAuthorityError> {
         checkpoint(request.control, CSharpAuthorityPhase::Admission)?;
         if request.configuration.exact_nullable.is_some()
             != request.configuration.exact_unsafe.is_some()
@@ -913,6 +921,7 @@ impl CSharpOracle {
             .transpose()?;
         checkpoint(request.control, CSharpAuthorityPhase::Spawn)?;
         let execution = snapshot_execution(request.toolchain, &self.oracle, request.control)?;
+        let execution_digest = execution.digest;
         let mut command = Command::new(&execution.toolchain);
         isolate_authority_environment(&mut command);
         command
@@ -1093,7 +1102,7 @@ impl CSharpOracle {
         };
         drop(manifest_directory);
         checkpoint(request.control, CSharpAuthorityPhase::Return)?;
-        Ok((stdout, evidence))
+        Ok((stdout, evidence, execution_digest))
     }
 
     /// Runs [`Self::authority_image`] and retains its bytes in an owned image.
@@ -1105,9 +1114,10 @@ impl CSharpOracle {
         request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
     ) -> Result<CSharpAuthorityImage, CSharpAuthorityError> {
         self.authority_image_with_evidence(request)
-            .map(|(bytes, evidence)| CSharpAuthorityImage {
+            .map(|(bytes, evidence, execution_digest)| CSharpAuthorityImage {
                 bytes: bytes.into_boxed_slice(),
                 evidence,
+                execution_digest,
             })
     }
 }
