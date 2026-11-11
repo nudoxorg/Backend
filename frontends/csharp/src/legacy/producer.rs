@@ -71,6 +71,60 @@ impl CSharpExecutionLease {
 type SnapshotManifest = Vec<(PathBuf, [u8; 32], usize)>;
 
 #[cfg(target_os = "linux")]
+#[derive(Debug, Eq, PartialEq)]
+struct ElfRuntimeRequirements {
+    needed: Box<[Box<str>]>,
+    runpaths: Box<[Box<str>]>,
+}
+
+#[cfg(target_os = "linux")]
+fn elf_runtime_requirements(bytes: &[u8]) -> Result<ElfRuntimeRequirements, CSharpAuthorityError> {
+    if bytes.len() > 64 * 1024 * 1024 {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    let parsed = object::File::parse(bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
+    let object::File::Elf64(file) = parsed else {
+        return Err(CSharpAuthorityError::Configuration);
+    };
+    let dynamic = file
+        .elf_dynamic_table()
+        .map_err(|_| CSharpAuthorityError::Configuration)?;
+    let mut needed = Vec::new();
+    let mut runpaths = Vec::new();
+    for entry in dynamic.iter() {
+        let is_needed = entry.tag == object::elf::DT_NEEDED;
+        let is_runpath = entry.tag == object::elf::DT_RUNPATH || entry.tag == object::elf::DT_RPATH;
+        if !is_needed && !is_runpath {
+            continue;
+        }
+        let value = dynamic
+            .string(entry)
+            .map_err(|_| CSharpAuthorityError::Configuration)?;
+        let value = std::str::from_utf8(value).map_err(|_| CSharpAuthorityError::Configuration)?;
+        if value.is_empty() || value.len() > 4096 || value.as_bytes().contains(&0) {
+            return Err(CSharpAuthorityError::Configuration);
+        }
+        if is_needed {
+            needed.push(value.into());
+        } else {
+            for path in value.split(':') {
+                if path.is_empty() || path.len() > 4096 {
+                    return Err(CSharpAuthorityError::Configuration);
+                }
+                runpaths.push(path.into());
+            }
+        }
+        if needed.len() + runpaths.len() > 8192 {
+            return Err(CSharpAuthorityError::Configuration);
+        }
+    }
+    Ok(ElfRuntimeRequirements {
+        needed: needed.into_boxed_slice(),
+        runpaths: runpaths.into_boxed_slice(),
+    })
+}
+
+#[cfg(target_os = "linux")]
 fn require_relocatable_elf_host(bytes: &[u8]) -> Result<(), CSharpAuthorityError> {
     // The private snapshot cannot make an ELF interpreter at an absolute
     // `/nix/store` (or system) path immutable. Refuse such hosts until their
@@ -83,7 +137,10 @@ fn require_relocatable_elf_host(bytes: &[u8]) -> Result<(), CSharpAuthorityError
     }
     // Let the native object reader validate the complete ELF container before
     // inspecting bounded program-header fields below.
-    object::File::parse(bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
+    let requirements = elf_runtime_requirements(bytes)?;
+    if requirements.needed.len() > 8192 || requirements.runpaths.len() > 8192 {
+        return Err(CSharpAuthorityError::Configuration);
+    }
     let read_u16 = |at: usize| {
         bytes
             .get(at..at + 2)
@@ -1769,6 +1826,16 @@ mod tests {
         assert!(closure.validate());
         std::fs::write(&helper, b"changed-helper").expect("mutate helper");
         assert!(!closure.validate());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn elf_runtime_requirements_reject_truncated_and_non_elf_inputs() {
+        assert!(elf_runtime_requirements(b"\x7fELF").is_err());
+        assert!(elf_runtime_requirements(&[0u8; 64]).is_err());
+        let mut oversized = vec![0u8; 64 * 1024 * 1024 + 1];
+        oversized[..4].copy_from_slice(b"\x7fELF");
+        assert!(elf_runtime_requirements(&oversized).is_err());
     }
 
     #[test]
