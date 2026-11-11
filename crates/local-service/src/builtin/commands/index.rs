@@ -3147,10 +3147,6 @@ pub(super) fn finish_deferred_profile_for_snapshot(
         )
         .into());
     }
-    if profile.csharp_unit_claim_only {
-        semantic_authority.retire_candidate_attempt(&profile.attempt, backend_extension_turso::CandidateAttemptRetirementReason::Refused)?;
-        return Err(BuiltinModelError("selected C# project output awaits unit-scoped admission".to_owned()).into());
-    }
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
@@ -3169,6 +3165,18 @@ pub(super) fn finish_deferred_profile_for_snapshot(
                 });
             }
         };
+    if profile.csharp_unit_claim_only {
+        let matches_selected = job.csharp_selected_source.as_ref().is_some_and(|witness| {
+            witness.key() == &profile.key
+                && witness.matches_staged_invocation(&staged, *profile.attempt.input_digest())
+        });
+        semantic_authority.retire_candidate_attempt(&profile.attempt, backend_extension_turso::CandidateAttemptRetirementReason::Refused)?;
+        return Err(BuiltinModelError(if matches_selected {
+            "selected C# project output awaits SDK and execution closure admission"
+        } else {
+            "C# compiler invocation differs from selected source custody"
+        }.to_owned()).into());
+    }
     let cargo_alias_evidence = match staged_cargo_alias_evidence(
         profile.profile(),
         *profile.attempt.input_digest(),
@@ -3730,6 +3738,28 @@ impl CapturedCSharpUnitAdmission {
             .checked_add(self.target.package().as_str().len())?
             .checked_add(self.project.project_path.as_str().len())?
             .checked_add(1024)
+    }
+
+    /// Joins a compiler's claim-only CSE1 aggregate to this exact selected
+    /// source and configuration custody. This is necessary but does not prove
+    /// SDK, helper, runtime or reference execution custody.
+    fn matches_staged_invocation(&self, staged: &StagedSemanticPackage, input: [u8; 32]) -> bool {
+        use sha2::Digest;
+        let Some(bytes) = staged.csharp_invocation_evidence_object(input) else { return false; };
+        let Some(claim) = backend_engine::application::decode_csharp_evidence(&bytes) else { return false; };
+        if claim.target != *self.target.target().as_ref() || claim.input != input
+            || claim.profile != self.key.profile() || claim.project_path != self.project.project_path
+            || claim.sources.len() != self.sources.len() { return false; }
+        let probes = self.project.config.probes().collect::<Vec<_>>();
+        if claim.config.len() != probes.len() || claim.config.iter().zip(probes).any(|(actual, (path, text))| {
+            actual.path != path || actual.text.map(str::as_bytes) != text
+        }) { return false; }
+        claim.sources.iter().zip(&self.sources).all(|(actual, source)| {
+            actual.path == source.relative_path && actual.byte_length as usize == source.source.len()
+                && actual.source_fact == *source.source_fact_identity.as_ref()
+                && actual.input_content == source.content
+                && actual.source_sha256 == <[u8; 32]>::from(sha2::Sha256::digest(&source.source))
+        })
     }
 
     /// Worker-only: checks the exact still-selected snapshot and original
