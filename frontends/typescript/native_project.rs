@@ -580,10 +580,14 @@ pub fn build_with_root_selection_observer(
 pub struct NativeFunctionHeader {
     /// Complete declaration extent used to join an emitted compiler entity.
     pub declaration: (u32, u32),
-    /// Candidate compiler extent, to be checked against the selected image.
-    pub compiler_extent: (u32, u32),
-    /// Authored header extent, including TSZ-owned modifiers.
-    pub header: (u32, u32),
+    /// Exact TSZ-owned name extent in these source bytes.
+    pub name: (u32, u32),
+    /// Start of a singular parser-owned export wrapper, when present.
+    pub export_start: Option<u32>,
+    /// Start of the TSZ-owned function body.
+    pub body_start: u32,
+    /// Whether TSZ observed an async function.
+    pub is_async: bool,
 }
 
 /// Extracts bounded function-header spans from TSZ syntax without inferring
@@ -608,8 +612,10 @@ pub fn function_headers(
         let Some(export) = arena.get_export_decl(node) else { continue };
         let Some(index) = u32::try_from(index).ok().map(NodeIndex) else { return Err("native TSZ node index overflow".into()) };
         let Some((start, _)) = arena.pos_end_at(index) else { continue };
+        // Default exports require their own declaration/identity proof.
+        let value = (!export.is_default_export).then_some(start);
         export_starts.entry(export.export_clause.0)
-            .and_modify(|value| *value = None).or_insert(Some(start));
+            .and_modify(|value| *value = None).or_insert(value);
     }
     let mut headers = Vec::new();
     for (index, node) in arena.nodes.iter().enumerate() {
@@ -621,40 +627,47 @@ pub fn function_headers(
         let Some((body_start, _)) = arena.pos_end_at(function.body) else { continue };
         let Some((name_start, name_end)) = arena.pos_end_at(function.name) else { continue };
         if !(start <= name_start && name_start < name_end && name_end <= body_start && body_start < end) { continue; }
-        let header_start = match export_starts.get(&index.0) {
-            Some(Some(start)) => *start,
+        let export_start = match export_starts.get(&index.0) {
+            Some(Some(start)) => Some(*start),
             Some(None) => continue,
-            None if function.is_async => continue,
-            None => start,
+            None => None,
         };
-        let compiler_start = if function.is_async {
-            // Only scan the TSZ-owned wrapper prefix, never a context-free
-            // whole file: regex, JSX and templates require parser rescans.
-            let Some(prefix) = text.get(header_start as usize..start as usize) else { continue };
-            let mut scanner = tsz::ScannerState::new(prefix.to_owned(), true);
-            let mut last = None;
-            loop {
-                poll(checkpoint, 1)?;
-                let kind = scanner.scan();
-                if kind == SyntaxKind::EndOfFileToken { break; }
-                last = Some((kind, scanner.get_token_start(), scanner.get_token_end()));
-            }
-            let Some((SyntaxKind::AsyncKeyword, offset, end)) = last else { continue };
-            let Some(gap) = prefix.get(end..) else { continue };
-            if gap.contains(['\n', '\r', '\u{2028}', '\u{2029}']) { continue; }
-            let Some(offset) = u32::try_from(offset).ok().and_then(|offset| header_start.checked_add(offset)) else { continue };
-            offset
-        } else { start };
-        if header_start > start || text.get(header_start as usize..body_start as usize).is_none()
-            || text.get(start as usize..end as usize).is_none() { continue; }
+        if export_start.is_some_and(|offset| offset > start)
+            || text.get(start as usize..end as usize).is_none()
+            || text.get(name_start as usize..name_end as usize).is_none() { continue; }
         if headers.len() == MAX_HEADERS { return Ok(Vec::new()); }
-        headers.push(NativeFunctionHeader { declaration: (start, end), compiler_extent: (compiler_start, end), header: (header_start, body_start) });
+        headers.push(NativeFunctionHeader {
+            declaration: (start, end), name: (name_start, name_end), export_start,
+            body_start, is_async: function.is_async,
+        });
     }
     headers.sort_unstable_by_key(|header| header.declaration);
     if headers.windows(2).any(|pair| pair[0].declaration == pair[1].declaration) {
         return Ok(Vec::new());
     }
     Ok(headers)
+}
+
+/// Joins parser captures to an independently selected compiler-owned function.
+/// A same-name collision or an ambiguous extent yields no header. The caller
+/// must first authenticate the source bytes, image, entity and source policy.
+pub fn selected_function_header<'a>(
+    rows: &[NativeFunctionHeader], text: &'a str, compiler_extent: (u32, u32), name: &str,
+) -> Option<&'a str> {
+    let mut matches = rows.iter().filter(|row| {
+        let (start, end) = row.declaration;
+        let (compiler_start, compiler_end) = compiler_extent;
+        let header_start = row.export_start.unwrap_or(compiler_start);
+        compiler_end == end && header_start <= compiler_start && compiler_start <= start
+            && (if row.is_async { compiler_start < start } else { compiler_start == start })
+            && row.name.0 >= start && row.name.1 <= row.body_start
+            && text.get(row.name.0 as usize..row.name.1 as usize) == Some(name)
+    });
+    let row = matches.next()?;
+    if matches.next().is_some() { return None; }
+    let start = row.export_start.unwrap_or(compiler_extent.0);
+    let header = text.get(start as usize..row.body_start as usize)?.trim();
+    (!header.is_empty()).then_some(header)
 }
 
 trait NativeCheckpoint {
@@ -1185,9 +1198,6 @@ mod tests {
         let source = "// λ\nexport async function run(x: { a: number }): Promise<string> { return ''; }\nfunction other() {}\n";
         let headers = function_headers(Path::new("src/main.ts"), source, &Unlimited)?;
         assert_eq!(headers.len(), 2);
-        let header = headers[0];
-        assert_eq!(source[header.header.0 as usize..header.header.1 as usize].trim(),
-            "export async function run(x: { a: number }): Promise<string>");
         let compiler_extent = crate::legacy::with_analysis(
             backend_semantic::vocabulary::TypeScriptSource::TypeScript, source, |module| {
                 module.semantic.nodes().iter_enumerated().find_map(|(_, node)| {
@@ -1196,32 +1206,31 @@ mod tests {
                 })
             },
         )?.ok_or("compiler function missing")?;
-        assert_eq!(header.compiler_extent, compiler_extent, "TSZ token candidate and emitted function extent must agree");
-        for (source, expected) in [
-            ("const async = 1; async\nfunction plain() {}", None),
-            ("const async = 1; async; function plain() {}", Some("function plain()")),
-            ("export /* comment */ default async function* plain(): Promise<number> { yield 1; }", Some("export /* comment */ default async function* plain(): Promise<number>")),
-            ("export async /* comment */ function plain(): Promise<number> { return 1; }", Some("export async /* comment */ function plain(): Promise<number>")),
-            ("const pattern = /`/; export async function plain() {}", Some("export async function plain()")),
-            ("const text = `before ${1}`; export async function plain() {}", Some("export async function plain()")),
+        assert_eq!(selected_function_header(&headers, source, compiler_extent, "run"),
+            Some("export async function run(x: { a: number }): Promise<string>"));
+        assert_eq!(selected_function_header(&headers, source, (compiler_extent.0, compiler_extent.1 - 1), "run"), None);
+        assert_eq!(selected_function_header(&headers, source, compiler_extent, "other"), None);
+        let duplicate = [headers[0], headers[0]];
+        assert_eq!(selected_function_header(&duplicate, source, compiler_extent, "run"), None);
+        for (path, source, expected) in [
+            ("src/main.ts", "const async = 1; async\nfunction plain() {}", None),
+            ("src/main.ts", "const async = 1; async; function plain() {}", Some("function plain()")),
+            ("src/main.ts", "export default async function* plain(): Promise<number> { yield 1; }", None),
+            ("src/main.ts", "export async /* comment */ function plain(): Promise<number> { return 1; }", Some("export async /* comment */ function plain(): Promise<number>")),
+            ("src/main.ts", "const pattern = /`/; export async function plain() {}", Some("export async function plain()")),
+            ("src/main.ts", "const text = `before ${1}`; export async function plain() {}", Some("export async function plain()")),
+            ("src/main.tsx", "const view = <div>{1}</div>; export async function plain() {}", Some("export async function plain()")),
         ] {
-            let rows = function_headers(Path::new("src/main.ts"), source, &Unlimited)?;
-            let Some(expected) = expected else {
-                assert!(rows.is_empty(), "ambiguous async newline must not supply a header: {source}");
-                continue;
-            };
-            assert_eq!(rows.len(), 1, "{source}");
-            let row = rows[0];
-            assert_eq!(source[row.header.0 as usize..row.header.1 as usize].trim(), expected);
+            let rows = function_headers(Path::new(path), source, &Unlimited)?;
             let compiler_extent = crate::legacy::with_analysis(
-                backend_semantic::vocabulary::TypeScriptSource::TypeScript, source, |module| {
+                if path.ends_with(".tsx") { backend_semantic::vocabulary::TypeScriptSource::Tsx } else { backend_semantic::vocabulary::TypeScriptSource::TypeScript }, source, |module| {
                     module.semantic.nodes().iter_enumerated().find_map(|(_, node)| {
                         let function = node.kind().as_function()?;
                         (function.id.as_ref()?.name.as_str() == "plain").then_some((function.span.start, function.span.end))
                     })
                 },
             )?.ok_or("compiler function missing")?;
-            assert_eq!(row.compiler_extent, compiler_extent, "{source}");
+            assert_eq!(selected_function_header(&rows, source, compiler_extent, "plain"), expected, "{source}");
         }
         Ok(())
     }
