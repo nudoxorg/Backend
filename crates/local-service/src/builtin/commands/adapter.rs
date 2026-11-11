@@ -6882,8 +6882,14 @@ impl CommandAdapter {
                 let source_basis = backend_library::Basis { root: view.root(), ..view.basis() };
                 let mut source_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
                 for (locator, record) in locators.iter().zip(records.iter_mut()) {
-                    let Some(row) = view.row_by_label(locator.as_str()) else { continue };
-                    let selection = backend_library::DocumentSelection::from_row(row, source_basis);
+                    let row = match backend_library::resolve_selected_document_row(view, locator.as_str()) {
+                        Ok(Some(row)) => row,
+                        Ok(None) => continue,
+                        Err(error) => return Ok((CommandReply::Failed(error), None)),
+                    };
+                    let selection = backend_library::DocumentSelection::from_selected_view(
+                        view, source_basis, locator.as_str(),
+                    );
                     if let Some(selection) = selection {
                         match self.selected_native_document_source(
                             daemon, row, &selection, None, true, &mut source_budget,
