@@ -194,3 +194,29 @@ fn owner_captured_config_overrides_changed_live_project() -> Result<(), Box<dyn 
     assert!(producer.authority_image(request).is_err());
     Ok(())
 }
+
+#[test]
+fn private_calls_and_full_source_spans_survive_real_roslyn_capture() -> Result<(), Box<dyn Error>> {
+    let dotnet = probe_dotnet().map_err(|error| format!("dotnet unavailable: {error:?}"))?;
+    let helper = oracle::for_test(&dotnet, "private-source")?;
+    let producer = CSharpOracle::new(helper.path_for_use()?.to_path_buf());
+    let root = tempfile::tempdir()?;
+    let binding = root.path().join("Accounts.cs");
+    let source = "// λ before byte coordinates\npublic static class Accounts {\n    public static void MapAccounts() { MissingFields(); MissingFields(); }\n    private static bool MissingFields() { return false; }\n}\n";
+    fs::write(&binding, source)?;
+    let members = [CSharpCapturedSource { path: "Accounts.cs", text: source }];
+    let cancelled = AtomicBool::new(false);
+    let bytes = producer.authority_image(request(root.path(), &binding, &dotnet, source, &members, &cancelled))?;
+    let image = backend_frontend_csharp::legacy::CSharpImage::open(&bytes)?;
+    assert_eq!(image.compilation_errors(), 0);
+    let declarations = image.declarations().collect::<Result<Vec<_>, _>>()?;
+    let (target, declaration) = declarations.iter().enumerate()
+        .find(|(_, row)| row.name.bytes == b"MissingFields")
+        .ok_or("private method missing")?;
+    assert_eq!(&source.as_bytes()[declaration.decl_start as usize..declaration.decl_end as usize],
+        b"private static bool MissingFields() { return false; }");
+    let calls = image.references().collect::<Result<Vec<_>, _>>()?.into_iter()
+        .filter(|row| row.target == Some(target as u32)).collect::<Vec<_>>();
+    assert_eq!(calls.len(), 2, "both same-file private calls must remain queryable");
+    Ok(())
+}
