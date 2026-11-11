@@ -330,7 +330,7 @@ fn reference(kind: SqlRefKind, role: SqlRefRole, name: &str, statement: SqlState
 }
 
 fn sql_page_of(basis: SqlQueryBasis, hits: Vec<SqlQueryHit>) -> SqlQueryPage {
-    SqlQueryPage { basis, hits, terminal: SqlQueryTerminal::Complete }
+    SqlQueryPage { basis, hits, host_gaps: vec![], terminal: SqlQueryTerminal::Complete }
 }
 
 struct Library {

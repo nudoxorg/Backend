@@ -2120,7 +2120,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                 SqlObjectKind::Sequence => "sequence",
             };
             let mut first_source = true;
-            let rows = page.hits.iter().map(|hit| {
+            let mut rows: Vec<_> = page.hits.iter().map(|hit| {
                 let label = match &hit.fact {
                     SqlFact::SqliteRelation { name, .. } => format!("relation {name}"),
                     SqlFact::SqliteOutputLineage { output_name, .. } => format!("output {output_name}"),
@@ -2177,6 +2177,13 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                 }
                 ProductRecord::new(label, None, tags)
             }).collect();
+            rows.extend(page.host_gaps.iter().map(|gap| {
+                let reason = match &gap.reason {
+                    backend_library::sql_query::SqlHostGapReason::NativeError => "parser rejected the file".to_owned(),
+                    backend_library::sql_query::SqlHostGapReason::Unavailable { reason } => format!("analysis unavailable: {reason:?}"),
+                };
+                ProductRecord::new(format!("SQL gap: {reason}"), None, vec![gap.path.clone(), format!("{:?}", gap.dialect)])
+            }));
             let mut view = ProductView::rows("sql-query", rows);
             let terminal = match &page.terminal {
                 SqlQueryTerminal::Complete => "enumeration complete".to_owned(),
@@ -2193,7 +2200,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                 if parts.is_empty() { "no known gaps in the SQL files".to_owned() } else { parts.join(", ") }
             };
             let exhaustive = page.basis.inventory_complete && gaps == Default::default();
-            let empty_hint = if page.hits.is_empty() && matches!(page.terminal, SqlQueryTerminal::Complete) {
+            let empty_hint = if page.hits.is_empty() && page.host_gaps.is_empty() && matches!(page.terminal, SqlQueryTerminal::Complete) {
                 if exhaustive {
                     "; no match in this project's SQL files (SQL inside application code is not analysed)"
                 } else {
