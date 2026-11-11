@@ -113,6 +113,9 @@ pub fn resolve_references_with_sdk(
     let mut captured_candidates = Vec::with_capacity(candidates.len());
     let mut captured_bytes = 0usize;
     for (index, source) in candidates.iter().enumerate() {
+        if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+            return Err("SDK snapshot cancelled");
+        }
         if !source.is_absolute() || !source.is_file() {
             return Err("SDK candidate unavailable");
         }
@@ -256,6 +259,9 @@ pub fn resolve_references_with_sdk(
     fs::create_dir(&selected_dir).map_err(|_| "SDK snapshot unavailable")?;
     let mut owned = Vec::with_capacity(selected.len());
     for source in selected {
+        if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+            return Err("SDK snapshot cancelled");
+        }
         let name = source.file_name().ok_or("SDK snapshot filename")?;
         let destination = selected_dir.join(name);
         let bytes =
@@ -263,6 +269,13 @@ pub fn resolve_references_with_sdk(
                 .map_err(|_| "SDK snapshot unavailable")?;
         fs::write(&destination, bytes).map_err(|_| "SDK snapshot unavailable")?;
         owned.push(destination);
+    }
+    owned.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    if owned.windows(2).any(|pair| {
+        pair[0].file_name().map(|v| v.to_ascii_lowercase())
+            == pair[1].file_name().map(|v| v.to_ascii_lowercase())
+    }) {
+        return Err("SDK snapshot duplicate assembly");
     }
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
