@@ -723,7 +723,7 @@ fn records_with_cursor(
     }
     for edge in list.graph_edges() {
         lines.push(format!(
-            "graph edge: {} -> {}; relation {:?}; confidence {:?}; availability {:?}",
+            "graph edge {} -> {}; relation {:?}; confidence {:?}; availability {:?}",
             list.graph_label(edge.from),
             list.graph_label(edge.to),
             edge.kind,
