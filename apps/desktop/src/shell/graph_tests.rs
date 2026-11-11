@@ -68,9 +68,9 @@ fn settings_keys_list_the_graphs_own_keys(cx: &mut TestAppContext) {
     let from = said.iter().position(|line| line == "In the graph").unwrap_or_else(|| panic!("no graph keys: {said:#?}"));
     let find = said[from..].iter().position(|line| line == "find a symbol, a shape or a road").expect("Find's words");
     let find_cap = if cfg!(target_os = "macos") { "/  ⌘K" } else { "/  Ctrl+K" };
-    assert_eq!(said[from + find - 1], find_cap, "the graph's Find cap matches its native secondary modifier");
+    assert_eq!(said[from + find + 1], find_cap, "the graph's Find cap matches its native secondary modifier");
     let tour = said[from..].iter().position(|line| line == "tour the package here; again to stop").expect("T's words");
-    assert_eq!(said[from + tour - 1], "T", "its cap beside it: {:#?}", &said[from..]);
+    assert_eq!(said[from + tour + 1], "T", "its cap beside it: {:#?}", &said[from..]);
     assert!(said[from..].iter().any(|line| line == "the tour's next stop (← the one before)"), "{:#?}", &said[from..]);
 }
 
@@ -149,8 +149,8 @@ fn the_graph_comes_back_as_you_left_it(cx: &mut TestAppContext) {
     assert_eq!(report(&mut rig), before, "Forward, then Back: still the same");
 }
 
-/// The hand stays in the foot while the graph speaks: its marks at the
-/// reader's edge, the graph's line to their right on the same row.
+/// The hand stays in the foot while the graph speaks: its marks keep their
+/// row at the reader's edge, the graph's line has the row beneath them.
 #[gpui::test]
 fn the_hand_stays_in_the_foot_while_the_graph_speaks(cx: &mut TestAppContext) {
     let mut rig = world_rig(cx, page_route("RelationLabel"));
@@ -167,8 +167,9 @@ fn the_hand_stays_in_the_foot_while_the_graph_speaks(cx: &mut TestAppContext) {
     let open = ledger.texts.iter().find(|text| text.key == "hand-open").expect("the hand's chevron");
     let line = ledger.texts.iter().find(|text| text.key.starts_with("address:0:")).expect("the graph's line");
     assert_eq!(line.content, "Graph fixture · present::glyph::relation_label");
-    assert!(line.bounds.x > open.bounds.x + open.bounds.width, "to the marks' right: {} vs {}", line.bounds.x, open.bounds.x);
-    assert!((line.bounds.y + line.bounds.height / 2.0 - (open.bounds.y + open.bounds.height / 2.0)).abs() < 6.0, "on their row");
+    // 3d21e848f: held marks keep one line of the foot and the graph's line
+    // (with its recovery controls) gets its own full-width line beneath them.
+    assert!(line.bounds.y >= open.bounds.y + open.bounds.height - 1.0, "the graph's line sits beneath the marks' row: {} vs {}", line.bounds.y, open.bounds.y);
 }
 
 /// ⌘D on the graph holds its focus, not the route's declaration, and the
