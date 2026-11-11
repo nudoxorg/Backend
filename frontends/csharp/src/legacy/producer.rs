@@ -49,13 +49,17 @@ struct CSharpExecutionSnapshot {
     _directory: tempfile::TempDir,
     toolchain: PathBuf,
     oracle: PathBuf,
+    digest: [u8; 32],
 }
+
+type SnapshotManifest = Vec<(PathBuf, [u8; 32], usize)>;
 
 fn copy_tree_bounded(
     source: &Path,
     target: &Path,
     files: &mut usize,
     bytes: &mut usize,
+    manifest: &mut SnapshotManifest,
     control: CSharpAuthorityControl<'_>,
 ) -> Result<(), CSharpAuthorityError> {
     checkpoint(control, CSharpAuthorityPhase::Spawn)?;
@@ -72,6 +76,7 @@ fn copy_tree_bounded(
                 &target.join(entry.file_name()),
                 files,
                 bytes,
+                manifest,
                 control,
             )?;
         }
@@ -83,6 +88,8 @@ fn copy_tree_bounded(
         let content =
             backend_platform::durable::read_regular_bounded_stable(source, 256 * 1024 * 1024)
                 .map_err(|_| CSharpAuthorityError::Configuration)?;
+        let digest: [u8; 32] = Sha256::digest(&content).into();
+        manifest.push((source.to_path_buf(), digest, content.len()));
         *bytes = bytes
             .checked_add(content.len())
             .filter(|size| *size <= 512 * 1024 * 1024)
@@ -109,6 +116,7 @@ fn snapshot_execution(
     let copied_root = directory.path().join("dotnet");
     let mut files = 0;
     let mut bytes = 0;
+    let mut manifest = SnapshotManifest::new();
     // `dotnet exec` only needs the hostfxr and shared runtime trees. SDK packs,
     // templates, and workload caches are excluded from this execution closure.
     let tool_name = toolchain
@@ -118,6 +126,11 @@ fn snapshot_execution(
     let tool_bytes =
         backend_platform::durable::read_regular_bounded_stable(toolchain, 64 * 1024 * 1024)
             .map_err(|_| CSharpAuthorityError::Configuration)?;
+    manifest.push((
+        toolchain.to_path_buf(),
+        Sha256::digest(&tool_bytes).into(),
+        tool_bytes.len(),
+    ));
     bytes = bytes
         .checked_add(tool_bytes.len())
         .filter(|size| *size <= 512 * 1024 * 1024)
@@ -145,6 +158,7 @@ fn snapshot_execution(
             &copied_root.join(directory_name),
             &mut files,
             &mut bytes,
+            &mut manifest,
             control,
         )?;
     }
@@ -153,6 +167,11 @@ fn snapshot_execution(
     let oracle_bytes =
         backend_platform::durable::read_regular_bounded_stable(oracle, 64 * 1024 * 1024)
             .map_err(|_| CSharpAuthorityError::Configuration)?;
+    manifest.push((
+        oracle.to_path_buf(),
+        Sha256::digest(&oracle_bytes).into(),
+        oracle_bytes.len(),
+    ));
     checkpoint(control, CSharpAuthorityPhase::Spawn)?;
     bytes = bytes
         .checked_add(oracle_bytes.len())
@@ -169,6 +188,11 @@ fn snapshot_execution(
         let companion_bytes =
             backend_platform::durable::read_regular_bounded_stable(&companion, 16 * 1024 * 1024)
                 .map_err(|_| CSharpAuthorityError::Configuration)?;
+        manifest.push((
+            companion.clone(),
+            Sha256::digest(&companion_bytes).into(),
+            companion_bytes.len(),
+        ));
         bytes = bytes
             .checked_add(companion_bytes.len())
             .filter(|size| *size <= 512 * 1024 * 1024)
@@ -185,6 +209,11 @@ fn snapshot_execution(
     let deps_bytes =
         backend_platform::durable::read_regular_bounded_stable(&deps_path, 16 * 1024 * 1024)
             .map_err(|_| CSharpAuthorityError::Configuration)?;
+    manifest.push((
+        deps_path.clone(),
+        Sha256::digest(&deps_bytes).into(),
+        deps_bytes.len(),
+    ));
     let deps: serde_json::Value =
         serde_json::from_slice(&deps_bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
     let targets = deps
@@ -257,6 +286,11 @@ fn snapshot_execution(
         let content =
             backend_platform::durable::read_regular_bounded_stable(&source, 64 * 1024 * 1024)
                 .map_err(|_| CSharpAuthorityError::Configuration)?;
+        manifest.push((
+            source.clone(),
+            Sha256::digest(&content).into(),
+            content.len(),
+        ));
         bytes = bytes
             .checked_add(content.len())
             .filter(|size| *size <= 512 * 1024 * 1024)
@@ -267,6 +301,29 @@ fn snapshot_execution(
         }
         fs::write(destination, content).map_err(|_| CSharpAuthorityError::Configuration)?;
     }
+    // A stable read protects each file, but not a coherent multi-file
+    // runtime/helper closure. Re-read every source member after the complete
+    // copy and refuse if any member changed during capture.
+    checkpoint(control, CSharpAuthorityPhase::Spawn)?;
+    for (source, expected, length) in &manifest {
+        let current =
+            backend_platform::durable::read_regular_bounded_stable(source, 256 * 1024 * 1024)
+                .map_err(|_| CSharpAuthorityError::Configuration)?;
+        if current.len() != *length || Sha256::digest(&current).as_slice() != expected {
+            return Err(CSharpAuthorityError::Configuration);
+        }
+        checkpoint(control, CSharpAuthorityPhase::Spawn)?;
+    }
+    manifest.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut digest = Sha256::new();
+    digest.update(b"nudox.csharp.execution-snapshot.v1\0");
+    for (source, expected, length) in &manifest {
+        let path = source.as_os_str().as_encoded_bytes();
+        digest.update((path.len() as u64).to_le_bytes());
+        digest.update(path);
+        digest.update((*length as u64).to_le_bytes());
+        digest.update(expected);
+    }
     if !copied_tool.is_file() {
         return Err(CSharpAuthorityError::Configuration);
     }
@@ -274,6 +331,7 @@ fn snapshot_execution(
         _directory: directory,
         toolchain: copied_tool,
         oracle: copied_oracle,
+        digest: digest.finalize().into(),
     })
 }
 
