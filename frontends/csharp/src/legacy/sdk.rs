@@ -266,8 +266,12 @@ pub fn resolve_references_with_sdk(
     }
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
+    hash.update(b"csharp.sdk-reference-snapshot.v2\0");
+    hash.update((owned.len() as u64).to_le_bytes());
     for path in &owned {
-        hash.update(path.file_name().unwrap_or_default().as_encoded_bytes());
+        let name = path.file_name().unwrap_or_default().as_encoded_bytes();
+        hash.update((name.len() as u64).to_le_bytes());
+        hash.update(name);
         let bytes = fs::read(path).map_err(|_| "SDK snapshot unavailable")?;
         hash.update((bytes.len() as u64).to_le_bytes());
         hash.update(&bytes);
