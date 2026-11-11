@@ -2839,6 +2839,8 @@ fn read_native_evidence_host(
     if bytes.len() != evidence.byte_length as usize {
         return Err(SourceRangeError::Stale);
     }
+    evidence.verify_host(&bytes, image_source.identity)
+        .map_err(|_| SourceRangeError::Stale)?;
     Ok(bytes.to_vec())
 }
 
