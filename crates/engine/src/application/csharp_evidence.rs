@@ -152,11 +152,11 @@ mod graph_evidence_tests {
             root_project: "Tests/Tests.csproj".into(),
             config_digest: [1; 32], source_digest: [2; 32], reference_digest: [3; 32],
             nodes: vec![CSharpGraphEvidenceNode {
-                project_path: "Tests/Tests.csproj".into(), project_references: vec!["Api/Api.csproj".into()],
-                config_digest: [4; 32], source_digest: [5; 32],
-            }, CSharpGraphEvidenceNode {
                 project_path: "Api/Api.csproj".into(), project_references: Vec::new(),
                 config_digest: [6; 32], source_digest: [7; 32],
+            }, CSharpGraphEvidenceNode {
+                project_path: "Tests/Tests.csproj".into(), project_references: vec!["Api/Api.csproj".into()],
+                config_digest: [4; 32], source_digest: [5; 32],
             }],
         };
         let encoded = encode_csharp_graph_evidence(&graph).expect("bounded CSE2");

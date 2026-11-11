@@ -408,12 +408,14 @@ impl OwnedCSharpProjectGraph {
             let mut node_source = blake3::Hasher::new();
             for option in [&node.assembly_name, &node.target_framework, &node.language_version, &node.nullable, &node.output_type] { node_config.update(&(option.len() as u64).to_be_bytes()); node_config.update(option.as_bytes()); }
             node_config.update(&[u8::from(node.allow_unsafe)]);
+            node_config.update(b"defines\0"); node_config.update(&(node.define_symbols.len() as u64).to_be_bytes());
             for symbol in &node.define_symbols { node_config.update(&(symbol.len() as u64).to_be_bytes()); node_config.update(symbol.as_bytes()); }
+            node_config.update(b"usings\0"); node_config.update(&(node.usings.len() as u64).to_be_bytes());
             for using in &node.usings { node_config.update(&(using.len() as u64).to_be_bytes()); node_config.update(using.as_bytes()); }
             for probe in &node.config {
                 node_config.update(&(probe.path.len() as u64).to_be_bytes());
                 node_config.update(probe.path.as_bytes());
-                match &probe.text { Some(text) => { node_config.update(&[1]); node_config.update(&(text.len() as u64).to_be_bytes()); node_config.update(text.as_bytes()); }, None => node_config.update(&[0]), }
+                match &probe.text { Some(text) => { node_config.update(&[1]); node_config.update(&(text.len() as u64).to_be_bytes()); node_config.update(text.as_bytes()); }, None => { node_config.update(&[0]); }, }
             }
             for claim in &node.sources {
                 node_source.update(&(claim.path.len() as u64).to_be_bytes()); node_source.update(claim.path.as_bytes());
