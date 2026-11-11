@@ -2294,6 +2294,26 @@ impl Shell {
         self.links.dispatch(Intent::Tour(package), cx);
     }
 
+    /// I: ask what changes if you change what you are reading: a SQL table or
+    /// CSS class's page, or a declaration of one of your projects. Where there
+    /// is nothing to ask about it says so instead of doing nothing.
+    pub(crate) fn impact(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let route = self.links.snapshot(cx).route().clone();
+        match crate::navigation::NativeSubject::for_route(&route) {
+            Some(subject) => {
+                let route = Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Impact(crate::navigation::ImpactRoute::new(subject))));
+                self.links.dispatch(Intent::Navigate(route), cx);
+            }
+            None => {
+                facet::overlay::toast::show(
+                    facet::overlay::toast::Toast::new("There is no SQL table, CSS class or component here to ask about. Find one and press I on its page."),
+                    window,
+                    cx,
+                );
+            }
+        }
+    }
+
     /// H: open or close the hand (the keyboard starts on its first card).
     pub(crate) fn toggle_hand(&mut self, cx: &mut Context<Self>) {
         self.hand_open = !self.hand_open && !self.links.snapshot(cx).session().hand.is_empty();
@@ -2827,6 +2847,7 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::HandCard5, _, cx| { if shell.page_input_allowed(cx) { shell.hand_card(4, cx); } }))
             .on_action(cx.listener(|shell, _: &keys::CopyAddress, _, cx| shell.with_background_input(|shell| shell.copy_address(cx))))
             .on_action(cx.listener(|shell, _: &keys::Tour, _, cx| { if shell.page_input_allowed(cx) { shell.tour(cx); } }))
+            .on_action(cx.listener(|shell, _: &keys::Impact, window, cx| { if shell.page_input_allowed(cx) { shell.impact(window, cx); } }))
             .on_action(cx.listener(|shell, _: &keys::OpenSettings, _, cx| shell.with_background_input(|shell| {
                 shell.links.dispatch(Intent::OpenSettings(SettingsPage::Appearance), cx);
             })))

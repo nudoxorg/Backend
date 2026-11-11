@@ -477,7 +477,11 @@ pub fn compose(engine: &mut dyn Engine, key: &BrowseKey) -> Result<PageValue, Re
         | BrowseKey::CargoReadme(_)
         | BrowseKey::FindHome
         | BrowseKey::Find(_)
-        | BrowseKey::Compare(_) => Err(ReadFailure::Fault(crate::core::ErrorValue::new(
+        | BrowseKey::Compare(_)
+        | BrowseKey::FindNative(_)
+        | BrowseKey::Sql(_)
+        | BrowseKey::Css(_)
+        | BrowseKey::Impact(_) => Err(ReadFailure::Fault(crate::core::ErrorValue::new(
             crate::core::FaultCode::Protocol,
             "find and compare require the page reader's cancellable read context",
         ))),

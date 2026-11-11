@@ -18,6 +18,7 @@ pub(crate) mod hand;
 pub(crate) mod indexed_world;
 pub(crate) mod graph_focus;
 pub(crate) mod liveness;
+pub(crate) mod native_reads;
 pub mod mailbox;
 pub mod mapping;
 pub(crate) mod offload;

@@ -606,6 +606,11 @@ pub(crate) const fn read_only(command: &SurfaceCommand) -> bool {
             | SurfaceCommand::CargoPackageSourceInventory { .. }
             | SurfaceCommand::CargoPackageReadme { .. }
             | SurfaceCommand::CargoPackageReadmeLink { .. }
+            | SurfaceCommand::SqlQuery { .. }
+            | SurfaceCommand::SqlReadSource { .. }
+            | SurfaceCommand::StyloQuery { .. }
+            | SurfaceCommand::StyloReadSite { .. }
+            | SurfaceCommand::Impact { .. }
     )
 }
 
@@ -761,6 +766,12 @@ impl<E: ReadEngine> PageReader for SessionReader<E> {
                 }
                 crate::model::browse::BrowseKey::CargoReadme(key) => {
                     super::cargo_readme_reads::compose(&mut self.engine, key, context)
+                }
+                crate::model::browse::BrowseKey::Sql(_)
+                | crate::model::browse::BrowseKey::Css(_)
+                | crate::model::browse::BrowseKey::Impact(_)
+                | crate::model::browse::BrowseKey::FindNative(_) => {
+                    super::native_reads::compose(&mut self.engine, key, context.cancel)
                 }
                 crate::model::browse::BrowseKey::FindHome => {
                     compose_find(&mut self.engine, None, context).map(|page| {

@@ -77,6 +77,8 @@ mod root_read_tests;
 #[cfg(test)]
 mod motion_tests;
 #[cfg(test)]
+mod native_tests;
+#[cfg(test)]
 mod orbit_tests;
 #[cfg(test)]
 mod shelf_tests;
