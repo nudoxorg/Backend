@@ -50,7 +50,7 @@ mod source_excerpt_tests {
 
     #[test]
     fn structural_python_source_retains_function_body_and_class_field() -> Result<(), String> {
-        let source = "# λ before the declaration\napp = make_app()\nclass App:\n    field = 1\n\n@app.get(\"/api/health\")\ndef health() -> dict[str, str]:\n    return {\"status\": \"ok\"}\n";
+        let source = "# λ before the declaration\napp = make_app()\nclass App:\n    field = 1\n\n@app.get(\"/api/health\")\ndef health() -> dict[str, str]:\n    return {\"status\": \"ok\"}\n\ndef local_only():\n    scratch = 1\n";
         let analysis = super::syntax_frontend().map_err(|error| error.to_string())?
             .analyze(Path::new("backend/main.py"), source.as_bytes())
             .map_err(|error| error.to_string())?;
@@ -64,6 +64,7 @@ mod source_excerpt_tests {
             assert_eq!(declaration.source_excerpt().text(), Some(expected));
             assert_eq!(declaration.source_excerpt().extent(), Some(backend_compile::SourceExcerptExtent::Complete));
         }
+        assert!(!analysis.declarations().iter().any(|row| row.name() == "scratch"));
         Ok(())
     }
 }
