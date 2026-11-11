@@ -408,8 +408,16 @@ def bookshop_claims(label):
             fail(f"{label}: {path} missing from price impact: {nodes}")
     if not any(n.get("kind") == "trigger" and n.get("name") == "reprice_book" for n in nodes):
         fail(f"{label}: price trigger missing from impact: {nodes}")
-    if any(n.get("path") in (sql_path("db/queries/unrelated_title.sql"), sql_path("db/queries/bookshop.sql")) or n.get("kind") in ("table", "index") or n.get("name") in ("book_sales", "books_by_title", "order_items", "order_lines", "price_audit") for n in nodes):
-        fail(f"{label}: column impact spread to unrelated objects: {nodes}")
+    expected_nodes = {
+        ("query", sql_path("db/queries/book_by_isbn.sql")),
+        ("query", sql_path("db/queries/reprice_book.sql")),
+        ("query", sql_path("db/queries/place_order_line.sql")),
+        ("trigger", sql_path("db/migrations/0011_bookshop_rename.sql")),
+        ("migration", sql_path("db/migrations/0011_bookshop_rename.sql")),
+    }
+    actual_nodes = [(n.get("kind"), n.get("path")) for n in nodes]
+    if len(actual_nodes) != len(expected_nodes) or set(actual_nodes) != expected_nodes or any(r.get("strength") != "exact" for r in column["rows"]):
+        fail(f"{label}: price impact differs from the complete expected set: {column['rows']}")
     table = impact_page(label + "-table-impact", "--sql-table", "order_lines")
     if len(table["seeds"]) != 1 or table["seeds"][0].get("name") != "order_lines":
         fail(f"{label}: renamed table did not resolve to exactly one canonical seed: {table['seeds']}")
