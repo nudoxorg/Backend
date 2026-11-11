@@ -20,7 +20,8 @@ use crate::driver::{
 use backend_frontend_clang::ClangAuthorityEnvironment;
 use backend_frontend_csharp::legacy::{
     CSharpAuthorityConfiguration, CSharpAuthorityControl, CSharpAuthorityError,
-    CSharpAuthorityRequest, CSharpCapturedConfig, CSharpCapturedSource, CSharpOracle,
+    CSharpAuthorityRequest, CSharpCapturedConfig, CSharpCapturedSource, CSharpExecutionLease,
+    CSharpOracle,
 };
 use backend_frontend_go::legacy::oracle::{
     GoPackageAuthorityWitness, GoPackageAuthorityWitnessError,
@@ -254,6 +255,8 @@ pub enum PackageAuthorityOwner<'workspace> {
         image: Box<[u8]>,
         /// Same-invocation evidence claim; not selected authority.
         evidence: Option<Box<[u8]>>,
+        /// Immutable private dotnet/helper/runtime custody for this attempt.
+        execution: CSharpExecutionLease,
     },
     /// Java authority image and its doclet session retained until lowering.
     Java {
@@ -1086,6 +1089,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         configuration: configuration.configuration,
                     })
                     .map_err(PackageAuthorityError::CSharp)?;
+                let execution = image.execution_lease();
                 let (image, evidence) = image.into_parts();
                 let image = retain_image(
                     image.into_vec(),
@@ -1102,6 +1106,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                     profile: request.profile,
                     image,
                     evidence,
+                    execution,
                 }
             }
         };
