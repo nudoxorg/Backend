@@ -931,6 +931,9 @@ pub struct OutlinePageDto {
 /// The engine's whole state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StatusDto {
+    /// Selected SQL analysis outcomes, not current installation readiness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sql_analysis: Option<backend_library::SqlAnalysisProgress>,
     /// Discovery exclusions separate from frontend readiness and compiler coverage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_selection: Option<backend_library::SourceSelectionObservation>,
@@ -1012,6 +1015,7 @@ impl StatusDto {
         let capabilities = status.capabilities();
         Self {
             compiler_refusal: status.compiler_refusal().map(FaultDto::new),
+            sql_analysis: status.sql_analysis().cloned(),
             source_selection: if status.source_selection_scope().is_none() { status.source_selection().cloned() } else { None },
             source_selection_scope: status.source_selection_scope().cloned(),
             availability: status.availability().to_owned(),

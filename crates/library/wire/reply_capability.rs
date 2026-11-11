@@ -41,6 +41,8 @@ pub(crate) struct HealthWire {
 #[serde(deny_unknown_fields)]
 pub(crate) struct IngestProgressWire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sql_analysis: Option<crate::SqlAnalysisProgress>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) source_selection: Option<crate::SourceSelectionObservation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) source_selection_scope: Option<crate::SourceSelectionScopeCoverage>,
@@ -151,6 +153,7 @@ impl From<SourceFaultWire> for SourceUnavailableReason {
 /// Projects the owner's ingest counts onto the wire.
 pub(crate) fn progress_to_wire(progress: &IngestProgress) -> IngestProgressWire {
     IngestProgressWire {
+        sql_analysis: progress.sql_analysis().cloned(),
         source_selection: progress.source_selection().cloned(),
         source_selection_scope: progress.source_selection_scope().cloned(),
         files_discovered: progress.files_discovered(),
@@ -205,8 +208,12 @@ pub(crate) fn progress_from_wire(wire: IngestProgressWire) -> Result<IngestProgr
         Some(observation) => progress.with_source_selection(observation)?,
         None => progress,
     };
-    match wire.source_selection_scope {
-        Some(scope) => progress.with_source_selection_scope(scope),
+    let progress = match wire.source_selection_scope {
+        Some(scope) => progress.with_source_selection_scope(scope)?,
+        None => progress,
+    };
+    match wire.sql_analysis {
+        Some(summary) => progress.with_sql_analysis(summary),
         None => Ok(progress),
     }
 }
@@ -787,6 +794,21 @@ mod source_selection_tests {
         let mut forged = progress_to_wire(&progress);
         forged.source_selection = Some(crate::SourceSelectionObservation::project_vue(1));
         assert!(progress_from_wire(forged).is_err());
+    }
+
+    #[test]
+    fn sql_analysis_progress_round_trips_and_rejects_empty_or_overflow() {
+        let summary = crate::SqlAnalysisProgress { analysed_files: 2, no_worker_files: 1, unsupported_dialect_files: 0, rejected_files: 1, other_unavailable_files: 0 };
+        let progress = IngestProgress::default().with_sql_analysis(summary.clone()).expect("summary");
+        let encoded = serde_json::to_vec(&progress_to_wire(&progress)).expect("wire");
+        let decoded = progress_from_wire(serde_json::from_slice(&encoded).expect("decode")).expect("admit");
+        assert_eq!(decoded.sql_analysis(), Some(&summary));
+        let mut empty = summary.clone(); empty.analysed_files = 0; empty.no_worker_files = 0; empty.rejected_files = 0;
+        assert!(IngestProgress::default().with_sql_analysis(empty).is_err());
+        let mut overflow = summary; overflow.analysed_files = u64::MAX;
+        let mut forged = progress_to_wire(&progress); forged.sql_analysis = Some(overflow);
+        assert!(progress_from_wire(forged).is_err());
+        assert!(progress_from_wire(serde_json::from_str("{}").expect("legacy")).expect("legacy progress").sql_analysis().is_none());
     }
 
     #[test]

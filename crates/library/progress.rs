@@ -367,6 +367,39 @@ impl core::fmt::Display for ProgressError {
 
 impl core::error::Error for ProgressError {}
 
+/// Terminal outcomes for SQL files in the selected analysis snapshot.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SqlAnalysisProgress {
+    /// Files with admitted analysis.
+    pub analysed_files: u64,
+    /// Files whose selected attempt had no admitted worker.
+    pub no_worker_files: u64,
+    /// Files whose selected attempt had no supported dialect.
+    pub unsupported_dialect_files: u64,
+    /// Files rejected by the native parser.
+    pub rejected_files: u64,
+    /// Files unavailable for other recorded reasons.
+    pub other_unavailable_files: u64,
+}
+
+impl SqlAnalysisProgress {
+    /// Validates that the selected snapshot has a nonempty representable total.
+    pub fn admit(&self) -> Result<(), String> {
+        let total = [self.analysed_files, self.no_worker_files, self.unsupported_dialect_files, self.rejected_files, self.other_unavailable_files]
+            .into_iter().try_fold(0_u64, |sum, value| sum.checked_add(value))
+            .ok_or_else(|| "SQL analysis count overflow".to_owned())?;
+        if total == 0 { return Err("SQL analysis has no selected files".to_owned()); }
+        Ok(())
+    }
+
+    /// Describes selected outcomes without claiming current worker installation.
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!("SQL selected analysis: {} analysed, {} without an admitted worker, {} unsupported dialect, {} rejected, {} otherwise unavailable; use sql-query --role gap for details", self.analysed_files, self.no_worker_files, self.unsupported_dialect_files, self.rejected_files, self.other_unavailable_files)
+    }
+}
+
 /// Typed counts describing how far one revision's ingest got.
 ///
 /// An empty report is the honest description of a workspace that has indexed
@@ -382,9 +415,21 @@ pub struct IngestProgress {
     faults: Box<[FaultRows]>,
     source_selection: Option<SourceSelectionObservation>,
     source_selection_scope: Option<SourceSelectionScopeCoverage>,
+    sql_analysis: Option<SqlAnalysisProgress>,
 }
 
 impl IngestProgress {
+    /// Attaches validated selected SQL analysis outcomes.
+    pub fn with_sql_analysis(mut self, summary: SqlAnalysisProgress) -> Result<Self, String> {
+        summary.admit()?;
+        self.sql_analysis = Some(summary);
+        Ok(self)
+    }
+
+    /// Returns selected SQL analysis outcomes when supplied by the owner.
+    #[must_use]
+    pub fn sql_analysis(&self) -> Option<&SqlAnalysisProgress> { self.sql_analysis.as_ref() }
+
     /// Attaches checked per-extension project coverage.
     pub fn with_source_selection_scope(
         mut self,
@@ -476,6 +521,7 @@ impl IngestProgress {
             faults: faults.into_boxed_slice(),
             source_selection: None,
             source_selection_scope: None,
+            sql_analysis: None,
         })
     }
 
