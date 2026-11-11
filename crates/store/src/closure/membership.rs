@@ -9,6 +9,20 @@ use std::sync::Arc;
 
 const MEMBER_PAGE_SIZE: usize = 128;
 
+// Keep repeated publication retries from flooding diagnostic logs. The trace
+// records only the failing admission stage and error category, never paths or
+// closure identifiers; it does not change the returned store error.
+fn trace_admission_error(stage: &str, error: &StoreError) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static REPORTED: AtomicUsize = AtomicUsize::new(0);
+    if matches!(error, StoreError::Bounds)
+        && std::env::var_os("NUDOX_TRACE").is_some()
+        && REPORTED.fetch_add(1, Ordering::Relaxed) < 32
+    {
+        eprintln!("closure membership admission: {stage}: Bounds");
+    }
+}
+
 /// An exact durable closure index and the pins protecting its member objects.
 ///
 /// Cloning this handle shares authenticated index evidence and its lifetime
@@ -47,13 +61,24 @@ impl DurableClosureManifest {
         receipt: PinnedStoredClosureReceipt,
         budget: ClosureCompositionBudget,
     ) -> Result<Self, StoreError> {
-        let reader_pin = store.pin_garbage_collection()?;
+        let reader_pin = store.pin_garbage_collection().map_err(|error| {
+            trace_admission_error("pin garbage collection", &error);
+            error
+        })?;
         let admitted = receipt.receipt();
-        let index = store.open_closure(admitted.closure())?;
+        let index = store.open_closure(admitted.closure()).map_err(|error| {
+            trace_admission_error("open closure", &error);
+            error
+        })?;
         if index.id() != admitted.closure() || index.object_count() != admitted.object_count() {
             return Err(StoreError::Corrupt);
         }
-        let lease = store.lease_closure_membership(index.id())?;
+        let lease = store
+            .lease_closure_membership(index.id())
+            .map_err(|error| {
+                trace_admission_error("register reader lease", &error);
+                error
+            })?;
         // Registration is complete while both global admission barriers are
         // held. Every clone now retains an exact per-closure reachability
         // lease, allowing GC of unrelated interrupted admissions.
