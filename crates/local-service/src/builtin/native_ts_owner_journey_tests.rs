@@ -1011,7 +1011,7 @@ fn native_ts_retirement_journey(exclude: bool, check_search: bool) -> Result<(),
         // configuration omits them from the fresh same-profile Program.
         fs::write(
             project.join("tsconfig.json"),
-            "{\"compilerOptions\":{\"strict\":true},\"include\":[\"*.ts\"],\"exclude\":[\"view.ts\"]}",
+            "{\"compilerOptions\":{\"strict\":true},\"include\":[\"*.ts\",\"*.tsx\"],\"exclude\":[\"view.ts\"]}",
         )?;
     } else {
         fs::remove_file(project.join("view.ts"))?;

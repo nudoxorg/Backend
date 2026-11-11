@@ -992,7 +992,9 @@ pub(super) fn selected_nse_program_files(
         if recipe.profile != profile {
             return Ok(None);
         }
-        if let Some(row) = lookup_native_evidence(evidence, package, profile, path, source)? {
+        if let Some(row) = lookup_native_evidence(evidence, package, profile, path, source)?
+            && row.admits_image()
+        {
             // Image-level projection must not make legacy Unavailable entities
             // current merely because one file claim matches. Entity-specific
             // source lookup can independently accept a PrimaryOwned entity.

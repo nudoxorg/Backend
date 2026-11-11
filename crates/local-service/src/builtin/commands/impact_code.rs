@@ -828,7 +828,7 @@ fn indexed_files(cx: &ImpactContext<'_>) -> Result<Vec<IndexedFile>, String> {
             }
             for (key, row) in entries {
                 after = Some(*key);
-                if row.project == cx.project && profile_for(&row.path).is_some() {
+                if row.project == cx.project && row.admits_image() && profile_for(&row.path).is_some() {
                     out.push(IndexedFile { path: row.path.clone(), length: Some(u64::from(row.byte_length)), source: row.source_digest });
                 }
             }

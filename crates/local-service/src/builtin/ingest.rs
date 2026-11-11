@@ -559,7 +559,6 @@ impl NativeTsCapture {
             }
         }
         let mut witnessed = BTreeSet::new();
-        let mut evidence = Vec::new();
         for image in activated.images() {
             let view = image.reopen().map_err(|error| format!("reopen native image: {error}"))?;
             let backend_semantic::ir::ImageProvenance::Captured { source, recipe, scope, .. } =
@@ -576,8 +575,20 @@ impl NativeTsCapture {
             {
                 return Err("native image is not an exact program member".into());
             }
-            evidence.push(captured_source.evidence.clone());
         }
+        // A mapped program input is source evidence even when this profile
+        // did not emit an image for it. Keep that weaker fact distinct from
+        // an admitted image; consumers must not infer declarations from it.
+        let mut evidence = members.keys().map(|path| {
+            let mut row = captured.get(path)
+                .ok_or("native program member lost its captured source")?.evidence.clone();
+            row.kind = if witnessed.contains(*path) {
+                backend_engine::builtin::NativeSourceEvidenceKind::Image
+            } else {
+                backend_engine::builtin::NativeSourceEvidenceKind::ProgramMember
+            };
+            Ok(row)
+        }).collect::<Result<Vec<_>, &str>>()?;
         evidence.sort_unstable_by(|left, right| left.path.cmp(&right.path));
         Ok(evidence)
     }
@@ -2816,7 +2827,8 @@ fn read_native_evidence_host(
     evidence
         .validate()
         .map_err(|_| SourceRangeError::Unavailable)?;
-    if image_source.byte_len != evidence.byte_length
+    if !evidence.admits_image()
+        || image_source.byte_len != evidence.byte_length
         || image_source.identity.as_ref() != evidence.source_digest.as_slice()
     {
         return Err(SourceRangeError::Unavailable);

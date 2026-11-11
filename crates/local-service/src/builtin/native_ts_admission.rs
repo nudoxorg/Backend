@@ -345,8 +345,51 @@ impl NativeTsEvidencePlan {
     }
 }
 
-/// The selected Program's package path membership, kept separately from the
-/// image-positive set so an absent image never masquerades as an omitted file.
+/// Merges the same source observed in multiple programs without promoting a
+/// source whose identity or captured line map differs.
+fn merge_program_source_claim(
+    prior: &mut backend_engine::builtin::NativeSourceEvidence,
+    row: &backend_engine::builtin::NativeSourceEvidence,
+) -> Result<(), BuiltinModelError> {
+    let mut comparable = row.clone();
+    comparable.kind = prior.kind;
+    if *prior != comparable {
+        return Err(BuiltinModelError(
+            "native TypeScript candidates disagree on a source".into(),
+        ));
+    }
+    if row.admits_image() { prior.kind = row.kind; }
+    Ok(())
+}
+
+#[cfg(test)]
+mod program_source_claim_tests {
+    use super::merge_program_source_claim;
+    use backend_engine::builtin::{NativeSourceEvidence, NativeSourceEvidenceKind};
+    use backend_semantic::vocabulary::{LanguageProfile, TypeScriptSource};
+
+    #[test]
+    fn image_claim_wins_only_for_the_same_captured_member() {
+        let member = NativeSourceEvidence {
+            project: [1; 32], profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            path: "a.ts".into(), input_digest: [2; 32], source_digest: [3; 32],
+            byte_length: 5, kind: NativeSourceEvidenceKind::ProgramMember,
+            line_starts: Some(vec![0, 3]),
+        };
+        let mut image = member.clone();
+        image.kind = NativeSourceEvidenceKind::Image;
+        let mut merged = member.clone();
+        merge_program_source_claim(&mut merged, &image).expect("same source");
+        assert!(merged.admits_image());
+        merge_program_source_claim(&mut merged, &member).expect("same source in reverse order");
+        assert!(merged.admits_image());
+        let mut different = member;
+        different.source_digest[0] ^= 1;
+        assert!(merge_program_source_claim(&mut merged, &different).is_err());
+    }
+}
+
+/// The selected Program's mapped paths are separate from its image inventory.
 fn program_package_paths(
     program: &backend_semantic::ir::NativeProgramSources,
 ) -> Result<Vec<String>, BuiltinModelError> {
@@ -388,7 +431,7 @@ pub(super) fn plan_native_ts_evidence(
     let admitted_base = NativeTsBase::from_snapshot(base)?;
     let owner = first.revalidated.project();
     let mut profiles = BTreeSet::new();
-    let mut positive = BTreeMap::new();
+    let mut positive = BTreeMap::<[u8; 32], backend_engine::builtin::NativeSourceEvidence>::new();
     let mut changes = BTreeMap::<[u8; 32], NativeTsEvidenceChange>::new();
     let mut positive_work = 0usize;
     let mut change_work = 0usize;
@@ -414,12 +457,8 @@ pub(super) fn plan_native_ts_evidence(
                 ));
             }
             let key = row.key().map_err(|error| BuiltinModelError(error.into()))?;
-            if let Some(prior) = positive.get(&key) {
-                if prior != row {
-                    return Err(BuiltinModelError(
-                        "native TypeScript candidates disagree on a source".into(),
-                    ));
-                }
+            if let Some(prior) = positive.get_mut(&key) {
+                merge_program_source_claim(prior, row)?;
                 continue;
             }
             let mut bytes = Vec::new();
@@ -446,7 +485,7 @@ pub(super) fn plan_native_ts_evidence(
                 ));
             }
             if let Some(prior) = changes.get(&change.key) {
-                if prior.expected != change.expected || prior.after != change.after {
+                if prior.expected != change.expected {
                     return Err(BuiltinModelError(
                         "native TypeScript candidates disagree on an evidence delta".into(),
                     ));
@@ -472,6 +511,15 @@ pub(super) fn plan_native_ts_evidence(
             changes.insert(change.key, change.clone());
         }
     }
+    // Different profile programs can name the same input while only one
+    // emits its image. Publish the strongest matching claim once, comparing
+    // against the same selected before-row used by each candidate.
+    for (key, change) in &mut changes {
+        change.after = positive.get(key).ok_or_else(|| BuiltinModelError(
+            "native evidence delta has no positive program member".into(),
+        ))?.clone();
+    }
+    changes.retain(|_, change| change.expected.as_ref() != Some(&change.after));
     let relation = backend_engine::builtin::native_source_evidence_relation(base)
         .map_err(|error| BuiltinModelError(format!("open selected native evidence: {error}")))?;
     let mut scan_work = 0usize;
