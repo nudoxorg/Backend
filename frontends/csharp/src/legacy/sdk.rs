@@ -81,6 +81,33 @@ pub struct CSharpTargetingReference {
     pub sha256: [u8; 32],
 }
 
+/// Joins restored package references with the SDK targeting set without
+/// inventing a precedence rule. A package may repeat an SDK assembly only
+/// when its bytes are exactly the same; otherwise compilation must refuse
+/// until an SDK-owned resolution is available.
+pub fn resolve_sdk_owned_references(
+    sdk: &[CSharpTargetingReference],
+    restored: &[CSharpTargetingReference],
+) -> Result<Vec<CSharpTargetingReference>, &'static str> {
+    use std::collections::BTreeMap;
+    let mut merged = BTreeMap::<String, CSharpTargetingReference>::new();
+    for reference in sdk.iter().chain(restored) {
+        let key = reference.name.to_ascii_lowercase();
+        if let Some(existing) = merged.get(&key) {
+            if existing.length != reference.length || existing.sha256 != reference.sha256 {
+                return Err("SDK/package assembly conflict requires SDK-owned resolution");
+            }
+            continue;
+        }
+        merged.insert(key, CSharpTargetingReference {
+            name: reference.name.clone(),
+            length: reference.length,
+            sha256: reference.sha256,
+        });
+    }
+    Ok(merged.into_values().collect())
+}
+
 impl CSharpTargetingSnapshot {
     /// Capture bounded assembly bytes once, so every source invocation consumes
     /// the same selected targeting set even if the installed pack changes.
@@ -623,6 +650,17 @@ mod tests {
         fs::write(first.path().join("Core.dll"), b"first").unwrap();
         fs::write(second.path().join("core.dll"), b"second").unwrap();
         assert!(CSharpTargetingSnapshot::capture(&[first.path().to_path_buf(), second.path().to_path_buf()]).is_err());
+    }
+
+    #[test]
+    fn sdk_owned_reference_join_rejects_different_package_overlap() {
+        let sdk = CSharpTargetingReference { name: "System.Runtime".into(), length: 3, sha256: [1; 32] };
+        let identical = CSharpTargetingReference { name: "system.runtime".into(), length: 3, sha256: [1; 32] };
+        let different = CSharpTargetingReference { name: "System.Runtime".into(), length: 4, sha256: [2; 32] };
+        let joined = resolve_sdk_owned_references(&[sdk], &[identical]).unwrap();
+        assert_eq!(joined.len(), 1);
+        assert_eq!(joined[0].name, "System.Runtime");
+        assert!(resolve_sdk_owned_references(&joined, &[different]).is_err());
     }
 
     #[test]
