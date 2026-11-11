@@ -145,6 +145,7 @@ pub(super) fn progress(
     };
     let mut after = None;
     let mut rows = 0usize;
+    let mut has_hosts = false;
     loop {
         let page = relation
             .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
@@ -157,6 +158,7 @@ pub(super) fn progress(
             let SqlAnalysisRecord::Host { terminal, .. } = row else {
                 continue;
             };
+            has_hosts = true;
             let count = match terminal {
                 SqlHostTerminal::Parsed { .. } => &mut summary.analysed_files,
                 SqlHostTerminal::NativeError => &mut summary.rejected_files,
@@ -178,5 +180,5 @@ pub(super) fn progress(
             None => break,
         }
     }
-    Ok((summary != Default::default()).then_some(summary))
+    Ok(has_hosts.then_some(summary))
 }
