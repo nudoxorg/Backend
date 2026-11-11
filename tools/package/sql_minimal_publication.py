@@ -22,7 +22,7 @@ p.add_argument('--wait-seconds', type=int, default=120)
 a = p.parse_args()
 a.output.mkdir(parents=True, exist_ok=False)
 a.output = a.output.resolve()
-private = Path(tempfile.mkdtemp(prefix='sql-minimal-', dir=a.output))
+private = Path(tempfile.mkdtemp(prefix='min-', dir=a.output.parent))
 bundle = private / 'bundle'
 bundle.mkdir()
 identities = {}
