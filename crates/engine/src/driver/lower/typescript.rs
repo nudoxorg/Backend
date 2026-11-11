@@ -10978,6 +10978,15 @@ fn intern_native_tsz_type<'source>(
             record.nominal = Some(NominalRef::Local(EntityId::new(target)));
             return intern_native_tsz_row(registry, facts, record, owner, &[]);
         }
+        // The recursion closes on an alias declared in another file (React's
+        // `ReactNode` reached through an arrow component, a function expression
+        // or a `React.ReactNode` namespace use). No authored local binding names
+        // that body here, so no nominal is minted for it; the foreign content is
+        // an explicit external type gap, exactly like an unresolved import. A
+        // recursion inside the current file still refuses the whole file.
+        if native_tsz_foreign_lazy_alias(checker, database, type_id) {
+            return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
+        }
         return Err(computed_fault(
             registry,
             owner,
@@ -11000,6 +11009,20 @@ fn intern_native_tsz_type<'source>(
     );
     active.remove(&resolved_type_id);
     result
+}
+
+/// Whether `type_id` is a lazy handle to a definition declared in a file other
+/// than the one being projected (a definition-store file id that is real and
+/// differs from the checker's current file).
+fn native_tsz_foreign_lazy_alias(
+    checker: &TszCheckerState<'_>,
+    database: &dyn TszTypeDatabase,
+    type_id: TszTypeId,
+) -> bool {
+    let Some(TypeData::Lazy(def_id)) = database.lookup(type_id) else { return false; };
+    let Some(info) = checker.ctx.definition_store.get(def_id) else { return false; };
+    info.file_id
+        .is_some_and(|file| file != u32::MAX && Some(file as usize) != Some(checker.ctx.current_file_idx))
 }
 
 /// Emits a bounded, opt-in view of the exact TSZ row that closed a projection
@@ -18236,7 +18259,14 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
             if let Err(error) = super::collect_with_tsz_unmetered_for_test(
                 TypeScriptSource::Tsx, source.as_bytes(), project, path, &mut facts) {
                 refused.push(format!("{path}: {error:?}"));
+                continue;
             }
+            // The foreign recursive body is either bound to the exact local import or an
+            // explicit gap; never an unproved foreign nominal.
+            for record in facts.type_records[..facts.len()].iter().chain(&facts.computed_records[..facts.computed_rows]) {
+                assert!(!matches!(record.nominal, Some(NominalRef::External(_) | NominalRef::Stable(_))), "{path}");
+            }
+            assert!(facts.names[..facts.len()].iter().any(|name| *name == b"children"), "{path}: children binding kept");
         }
         assert!(refused.is_empty(), "React component shapes refused: {refused:#?}");
         Ok(())
