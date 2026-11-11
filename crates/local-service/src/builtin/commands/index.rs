@@ -3764,7 +3764,7 @@ impl CapturedCSharpUnitAdmission {
                 && actual.source_fact == *source.source_fact_identity.as_ref()
                 && actual.input_content == source.content
                 && actual.source_sha256 == <[u8; 32]>::from(sha2::Sha256::digest(&source.source))
-        })
+        }) && !self.cancellation.load(Ordering::Acquire)
     }
 
     /// Worker-only: checks the exact still-selected snapshot and original
