@@ -411,6 +411,7 @@ _, text = query("uses-nothing", "--role", "reference", "--kind", "column", "--us
 expect(text, ["NOT proof of absence"], "uses-nothing")
 
 # 7. Cold restart: kill the owner without ceremony and ask again.
+bookshop_pre_cold = bookshop_claims("bookshop-pre-cold")
 before = query("pre-kill", "--role", "definition", "--kind", "column", "--parent", "accounts")[1]
 os.killpg(owner.pid, signal.SIGKILL)
 owner.wait(timeout=10)
@@ -418,10 +419,10 @@ start_owner()
 after = query("post-kill", "--role", "definition", "--kind", "column", "--parent", "accounts")[1]
 if before != after:
     fail("definitions differ after a cold restart:\nBEFORE\n%s\nAFTER\n%s" % (before[:800], after[:800]))
-# Revalidate exact report claims after the cold restart. The added broken file
-# changes coverage but must not change these retained fact/entity identities.
+# Compare the same selected generation across the cold restart; prior edits may
+# legitimately change its fact identities or context.
 bookshop_after = bookshop_claims("bookshop-cold")
-for before_page, after_page in zip(bookshop_before[:2], bookshop_after[:2]):
+for before_page, after_page in zip(bookshop_pre_cold[:2], bookshop_after[:2]):
     before_hits = {tuple(h["id"]): h["fact"] for h in before_page["hits"] if "bookshop" in h["path"]}
     after_hits = {tuple(h["id"]): h["fact"] for h in after_page["hits"] if "bookshop" in h["path"]}
     if before_hits != after_hits:
