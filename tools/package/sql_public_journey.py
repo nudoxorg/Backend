@@ -13,7 +13,7 @@ at the typed account refusal and is not a pass.
 
 No real accounts, no network, a private temporary state and project directory.
 """
-import argparse, json, os, pathlib, re, shutil, signal, subprocess, sys, tempfile, time
+import argparse, json, os, pathlib, re, select, shutil, signal, subprocess, sys, tempfile, time
 
 p = argparse.ArgumentParser()
 p.add_argument("--bundle", required=True)
@@ -69,6 +69,7 @@ if a.flat:
 
 records = []
 owner = None
+mcp = None
 
 
 def fail(message):
@@ -81,15 +82,17 @@ def fail(message):
 
 def cleanup():
     global owner
-    if owner and owner.poll() is None:
-        try:
-            os.killpg(owner.pid, signal.SIGTERM)
-            owner.wait(timeout=10)
-        except Exception:
+    for process in (owner, mcp):
+        if process and process.poll() is None:
             try:
-                os.killpg(owner.pid, signal.SIGKILL)
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=10)
             except Exception:
-                pass
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=10)
+                except Exception:
+                    pass
 
 
 root = pathlib.Path(tempfile.mkdtemp(prefix="ndx-sql-public-"))  # under TMPDIR
@@ -245,6 +248,8 @@ mcp = subprocess.Popen([str(bundle / "backend-mcp"), "--project", str(project), 
 def rpc(seq, method, params):
     mcp.stdin.write((json.dumps({"jsonrpc": "2.0", "id": seq, "method": method, "params": params}) + "\n").encode())
     mcp.stdin.flush()
+    if not select.select([mcp.stdout], [], [], 120)[0]:
+        fail(f"MCP {method} response exceeded the harness deadline")
     line = mcp.stdout.readline()
     reply = json.loads(line)
     records.append({"label": "mcp:" + method, "reply": reply})
