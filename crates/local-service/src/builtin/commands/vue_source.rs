@@ -1,5 +1,5 @@
 //! Exact native Vue syntax extents joined to selected source facts.
-use super::super::{BuiltinModelError, IndexedSources, view_build};
+use super::super::{BuiltinModelError, IndexedSources};
 use backend_library::Row;
 
 pub(super) fn extent(
@@ -34,6 +34,13 @@ pub(super) fn extent(
     }) else {
         return Ok(None);
     };
+    let Some(project) = sources.projects.get(&package.to_bytes()) else {
+        return Ok(None);
+    };
+    let key = backend_engine::product_source_file_key(package.to_bytes(), location.path());
+    if project.package != package || project.files.binary_search(&key).is_err() {
+        return Ok(None);
+    }
     let file = record
         .file_fields()
         .ok_or_else(|| BuiltinModelError("Vue source is not a file".to_owned()))?;
@@ -73,23 +80,6 @@ pub(super) fn extent(
             (0, bytes.len() as u32),
         )));
     }
-    let mut found = None;
-    for declaration in view_build::admitted_complete_declarations_for_file(sources, record)? {
-        if declaration.line() != location.start_line()
-            || row.kind != Some(declaration.kind())
-            || row.signature.as_deref() != Some(declaration.signature())
-            || row.label.rsplit("::").next() != Some(declaration.name())
-        {
-            continue;
-        }
-        let backend_compile::SourceBindingIdentity::Exact(binding) = declaration.binding_identity()
-        else {
-            return Ok(None);
-        };
-        if found.is_some() {
-            return Ok(None);
-        }
-        found = Some((location.path().to_owned(), identity, binding.owner()));
-    }
-    Ok(found)
+    Ok(super::structural_source::admit(sources, row)?
+        .map(|source| (source.path, source.identity, source.binding.owner())))
 }
