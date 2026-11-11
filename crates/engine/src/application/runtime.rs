@@ -276,6 +276,39 @@ impl OwnedCSharpUnitClaim {
     }
 }
 
+/// Owned identity for a captured C# project graph. The graph remains a claim
+/// until its per-node SDK/reference/source witnesses are available; retaining
+/// the exact root and node paths prevents a later continuation from silently
+/// substituting a different topology.
+#[derive(Clone, Debug)]
+pub struct OwnedCSharpProjectGraph {
+    root_project: Box<str>,
+    project_paths: Box<[Box<str>]>,
+}
+
+impl OwnedCSharpProjectGraph {
+    pub fn new(root_project: &str, mut project_paths: Vec<Box<str>>) -> Result<Self, PackageSourceSetError> {
+        PackageSource::validate_path(root_project)?;
+        if !root_project.to_ascii_lowercase().ends_with(".csproj")
+            || project_paths.is_empty()
+            || project_paths.len() > 64
+            || !project_paths.iter().all(|path| {
+                PackageSource::validate_path(path).is_ok()
+                    && path.to_ascii_lowercase().ends_with(".csproj")
+            })
+            || !project_paths.iter().any(|path| path.as_ref() == root_project)
+        {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        project_paths.sort();
+        project_paths.dedup();
+        Ok(Self { root_project: root_project.into(), project_paths: project_paths.into_boxed_slice() })
+    }
+
+    pub fn root_project(&self) -> &str { &self.root_project }
+    pub fn project_paths(&self) -> &[Box<str>] { &self.project_paths }
+}
+
 /// Complete owned package frontier transferred through the bounded runtime channel.
 #[derive(Clone, Debug)]
 pub struct OwnedPackageSourceSet {
@@ -289,6 +322,7 @@ pub struct OwnedPackageSourceSet {
     package_root: Box<Path>,
     sources: Box<[OwnedPackageSource]>,
     csharp_config: Option<Box<[OwnedCSharpConfigProbe]>>,
+    csharp_project_graph: Option<OwnedCSharpProjectGraph>,
     csharp_sdk_probes: Option<Box<[OwnedCSharpSdkProbe]>>,
     csharp_unit_claim: Option<OwnedCSharpUnitClaim>,
     input_claim: Option<SemanticInputWitness>,
@@ -358,6 +392,7 @@ impl OwnedPackageSourceSet {
             go_witness_deadline_phase: None,
             sources,
             csharp_config: None,
+            csharp_project_graph: None,
             csharp_sdk_probes: None,
             csharp_unit_claim: None,
             input_claim: None,
@@ -410,6 +445,22 @@ impl OwnedPackageSourceSet {
         }).ok_or(PackageSourceSetError::NativeCSharpProfileMismatch)?;
         if size > 2 * 1024 * 1024 { return Err(PackageSourceSetError::NativeCSharpProfileMismatch); }
         self.csharp_config = Some(probes);
+        Ok(self)
+    }
+
+    /// Retains the exact project topology selected for this C# unit. A graph
+    /// without per-node compiler witnesses is intentionally still claim-only;
+    /// publication continues to reject it until those witnesses are joined.
+    pub fn with_csharp_project_graph(mut self, graph: OwnedCSharpProjectGraph) -> Result<Self, PackageSourceSetError> {
+        let CompilationUnitKeyV2::CSharpProject { project_path } = self.package_target.unit_key() else {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        };
+        if !matches!(self.request.target.profile, LanguageProfile::CSharp(_))
+            || graph.root_project() != project_path.as_ref()
+        {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        self.csharp_project_graph = Some(graph);
         Ok(self)
     }
 
