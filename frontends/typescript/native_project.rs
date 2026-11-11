@@ -615,8 +615,8 @@ pub fn function_headers(
         let start = u32::try_from(scanner.get_token_start()).map_err(|_| "native token offset overflow")?;
         if kind == SyntaxKind::FunctionKeyword {
             if let Some((SyntaxKind::AsyncKeyword, async_start, async_end)) = previous {
-                let between = text.get(async_end as usize..start as usize).unwrap_or("");
-                if !between.contains(['\n', '\r', '\u{2028}', '\u{2029}']) {
+                if let Some(between) = text.get(async_end as usize..start as usize)
+                    && !between.contains(['\n', '\r', '\u{2028}', '\u{2029}']) {
                     preceding_async.insert(start, async_start);
                 }
             }
