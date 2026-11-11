@@ -4264,6 +4264,7 @@ fn the_session_tool_list_leads_with_packages_and_index() {
         .collect();
     assert_eq!(names.first().copied(), Some("backend.packages"));
     assert_eq!(names.get(1).copied(), Some("backend.index"));
+    assert!(names.contains(&"backend.sql_query"), "SQL must be discoverable in the default list");
     assert!(
         names
             .iter()
