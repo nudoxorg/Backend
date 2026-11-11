@@ -99,6 +99,8 @@ impl CSharpResolvedReferenceSnapshot {
 pub fn resolve_references_with_sdk(
     dotnet: &Path,
     target_framework: &str,
+    observed_sdk_directory: &Path,
+    captured_global_json: Option<&str>,
     candidates: &[PathBuf],
     assets_file: Option<&Path>,
     assets_digest: Option<[u8; 32]>,
@@ -114,6 +116,18 @@ pub fn resolve_references_with_sdk(
             .all(|byte| byte.is_ascii_digit() || byte == b'.')
     {
         return Err("invalid SDK reference candidates");
+    }
+    let observed_sdk_directory = fs::canonicalize(observed_sdk_directory)
+        .map_err(|_| "observed SDK directory unavailable")?;
+    if !observed_sdk_directory.is_dir() {
+        return Err("observed SDK directory unavailable");
+    }
+    if let Some(global_json) = captured_global_json {
+        if global_json.len() > 64 * 1024 {
+            return Err("captured global.json exceeds bound");
+        }
+        let _: GlobalJson =
+            serde_json::from_str(global_json).map_err(|_| "captured global.json is invalid")?;
     }
     let scratch = tempfile::tempdir().map_err(|_| "SDK scratch unavailable")?;
     let candidate_root = scratch.path().join("candidates");
@@ -175,6 +189,10 @@ pub fn resolve_references_with_sdk(
         }
         fs::write(obj.join("project.assets.json"), bytes).map_err(|_| "SDK scratch unavailable")?;
     }
+    if let Some(global_json) = captured_global_json {
+        fs::write(scratch.path().join("global.json"), global_json.as_bytes())
+            .map_err(|_| "SDK global.json unavailable")?;
+    }
     let project = scratch.path().join("resolve.csproj");
     let mut xml = format!(
         "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>{target_framework}</TargetFramework><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets></PropertyGroup><ItemGroup>"
@@ -213,6 +231,7 @@ pub fn resolve_references_with_sdk(
         OsString::from("-nodeReuse:false"),
         OsString::from("-target:ResolveReferences"),
         OsString::from("-getItem:ReferencePath"),
+        OsString::from("-getProperty:MSBuildSDKsPath"),
         OsString::from("-p:RestoreSources="),
         OsString::from("-p:MSBuildEnableWorkloadResolver=false"),
         OsString::from("-p:ImportDirectoryBuildProps=false"),
@@ -266,6 +285,17 @@ pub fn resolve_references_with_sdk(
     }
     let value: Value =
         serde_json::from_slice(&output.stdout).map_err(|_| "SDK resolution malformed")?;
+    let invoked_sdk_directory = value
+        .get("Properties")
+        .and_then(Value::as_object)
+        .and_then(|properties| properties.get("MSBuildSDKsPath"))
+        .and_then(Value::as_str)
+        .ok_or("SDK invocation path missing")?;
+    let invoked_sdk_directory =
+        fs::canonicalize(invoked_sdk_directory).map_err(|_| "SDK invocation path unavailable")?;
+    if invoked_sdk_directory != observed_sdk_directory {
+        return Err("SDK invocation differs from captured selection");
+    }
     let items = value
         .get("Items")
         .and_then(Value::as_object)
