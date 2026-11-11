@@ -535,7 +535,7 @@ fn index_start_tool() -> Value {
                 },
                 "operation_key": {
                     "type": "string", "pattern": "^[0-9a-f]{64}$",
-                    "description": "Optional caller-persisted durable key for exact replay and status reconciliation across owner restarts."
+                    "description": "Optional caller-persisted durable key: exactly 64 lowercase hexadecimal characters (for example, a random 32-byte value encoded as hex). The all-zero key is reserved. Omit it to let Nudox save a key automatically."
                 },
                 "detail": detail_property(INDEX_START_TOOL)
             },

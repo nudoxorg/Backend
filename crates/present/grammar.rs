@@ -1514,7 +1514,7 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
                 "operation-key",
                 "operation_key",
                 ArgumentKind::Text,
-                "Optional caller-persisted durable operation key; replay the exact same request and key after interrupted delivery.",
+                "Optional caller-persisted durable operation key: 64 lowercase hexadecimal characters; the all-zero key is reserved. Omit it to save a key automatically. Replay the exact same request and key after interrupted delivery.",
             ),
         ],
         when: "Use to start owner-managed indexing without holding this client open; keep the exact returned ticket for progress or cancellation.",
