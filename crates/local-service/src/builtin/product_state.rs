@@ -752,8 +752,10 @@ impl ProductState {
                     }
                     PackageReference::Local(_) => Vec::new(),
                 };
-                let mut installed = super::installed_packages::find(view, &package, false)?;
-                if !installed.is_empty() && packages(catalog, catalog_index, &package)?.is_empty() {
+                let mut installed = if forge_details.is_empty() && packages(catalog, catalog_index, &package)?.is_empty() {
+                    super::installed_packages::find(view, &package, false)?
+                } else { Vec::new() };
+                if !installed.is_empty() {
                     (SurfaceReply::PackageInstalled(installed.remove(0)), false)
                 } else if forge_details.is_empty() {
                     let reply = match package_page(view, catalog, catalog_index, &package) {
@@ -778,8 +780,9 @@ impl ProductState {
                 );
             }
             SurfaceCommand::Dependencies { package } => {
-                let mut installed = super::installed_packages::find(view, &package, false)?;
                 let selected = dependencies(dependency_graph, &package)?;
+                let mut installed = if matches!(selected, DependencyFacts::Known(_)) { Vec::new() }
+                    else { super::installed_packages::find(view, &package, false)? };
                 if installed.is_empty() || matches!(selected, DependencyFacts::Known(_)) {
                     (SurfaceReply::Dependencies(selected), false)
                 } else {
@@ -808,8 +811,10 @@ impl ProductState {
                 return Err("native SQL reads require the durable owner snapshot adapter".to_owned());
             }
             SurfaceCommand::PackageVersions { package } => {
-                let installed = super::installed_packages::find(view, &package, true)?;
-                if !installed.is_empty() && catalog_index.records_for(catalog, &package, true)?.is_empty() {
+                let installed = if catalog_index.records_for(catalog, &package, true)?.is_empty() {
+                    super::installed_packages::find(view, &package, true)?
+                } else { Vec::new() };
+                if !installed.is_empty() {
                     return Ok((SurfaceReply::PackageVersionsInstalled(installed.into_boxed_slice()), false));
                 }
                 let rows =

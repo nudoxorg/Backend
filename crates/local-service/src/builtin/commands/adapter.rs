@@ -1325,7 +1325,7 @@ impl CommandAdapter {
                     BuiltinModelError(format!("select forge metadata authority: {error:?}"))
                 })?
                 .is_empty();
-            let installed = !super::super::installed_packages::find(
+            let installed = !acquired && !forged && !super::super::installed_packages::find(
                 daemon.engine().daemon().library().view(),
                 &backend_library::PackageReference::Purl(package.clone()), false,
             ).map_err(BuiltinModelError)?.is_empty();

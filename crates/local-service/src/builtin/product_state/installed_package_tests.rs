@@ -146,6 +146,33 @@ fn installed_npm_and_virtualenv_packages_answer_public_package_routes() {
         panic!("new installed metadata")
     };
     assert_eq!(facts.engines[0].as_str(), "node >=22");
+    // An unusable local installation cannot replace independently acquired facts.
+    let dependencies = (0..129)
+        .map(|n| (format!("dep-{n}"), serde_json::json!("*")))
+        .collect::<serde_json::Map<_, _>>();
+    fs::write(
+        npm.join("package.json"),
+        serde_json::to_vec(
+            &serde_json::json!({"name":"vue","version":"3.5.45","dependencies":dependencies}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let acquired = [registry_row("pkg:npm/vue@3.5.45", "vue")];
+    let acquired_index = CatalogLookupIndex::from_catalog(&acquired);
+    let reply = state
+        .execute(
+            SurfaceCommand::Package {
+                package: PackageReference::parse("pkg:npm/vue@3.5.45").unwrap(),
+            },
+            &selected,
+            &acquired,
+            &acquired_index,
+            &graph,
+            None,
+        )
+        .unwrap();
+    assert!(matches!(reply, SurfaceReply::Package(_)));
     fs::remove_dir_all(root).unwrap();
 }
 
