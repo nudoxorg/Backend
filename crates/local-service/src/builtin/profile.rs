@@ -2088,7 +2088,12 @@ impl BuiltinIntent {
         if self.encoding_version != Self::CSHARP_VERSION { return Ok(()); }
         let custody = &self.csharp_custody.as_ref().ok_or_else(|| BuiltinModelError("C# staging requires live selected source custody".into()))?.0;
         custody.revalidate(base, cancellation).map_err(BuiltinModelError)?;
-        if self.csharp_extension.as_ref() != Some(&custody.extension()) {
+        let hydrated;
+        let claims = if let Some(staged) = self.staged() {
+            hydrated = staged.hydrate(Some(base))?;
+            hydrated.csharp_extension.as_ref()
+        } else { self.csharp_extension.as_ref() };
+        if claims != Some(&custody.extension()) {
             return Err(BuiltinModelError("C# staged claims differ from selected source plan".into()));
         }
         Ok(())
