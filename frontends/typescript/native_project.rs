@@ -1168,7 +1168,15 @@ mod tests {
         let header = headers[0];
         assert_eq!(source[header.header.0 as usize..header.header.1 as usize].trim(),
             "export async function run(x: { a: number }): Promise<string>");
-        assert!(source[header.declaration.0 as usize..header.declaration.1 as usize].contains("function run"));
+        let compiler_extent = crate::legacy::with_analysis(
+            backend_semantic::vocabulary::TypeScriptSource::TypeScript, source, |module| {
+                module.semantic.nodes().iter_enumerated().find_map(|(_, node)| {
+                    let function = node.kind().as_function()?;
+                    (function.id.as_ref()?.name.as_str() == "run").then_some((function.span.start, function.span.end))
+                })
+            },
+        )?.ok_or("compiler function missing")?;
+        assert_eq!(header.declaration, compiler_extent, "TSZ and emitted function extent must agree");
         Ok(())
     }
 
