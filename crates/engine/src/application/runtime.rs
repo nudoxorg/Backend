@@ -302,7 +302,7 @@ pub struct OwnedCSharpProjectNode {
     usings: Box<[Box<str>]>,
     config: Box<[OwnedCSharpConfigProbe]>,
     sources: Box<[OwnedCSharpSourceClaim]>,
-    reference_directories: Box<[Box<Path>]>,
+    targeting_snapshot: Arc<backend_frontend_csharp::legacy::CSharpTargetingSnapshot>,
     project_references: Box<[Box<str>]>,
 }
 
@@ -329,7 +329,7 @@ impl OwnedCSharpProjectNode {
         usings: Box<[Box<str>]>,
         config: Box<[OwnedCSharpConfigProbe]>,
         sources: Box<[OwnedCSharpSourceClaim]>,
-        reference_directories: Box<[Box<Path>]>,
+        targeting_snapshot: Arc<backend_frontend_csharp::legacy::CSharpTargetingSnapshot>,
         project_references: Box<[Box<str>]>,
     ) -> Result<Self, PackageSourceSetError> {
         PackageSource::validate_path(project_path)?;
@@ -337,9 +337,8 @@ impl OwnedCSharpProjectNode {
             || assembly_name.is_empty() || assembly_name.len() > 256
             || target_framework.len() < 4 || !target_framework.starts_with("net")
             || language_version.is_empty() || nullable.is_empty() || output_type.is_empty()
-            || config.is_empty() || sources.is_empty() || reference_directories.is_empty()
+            || config.is_empty() || sources.is_empty()
             || project_references.len() > 64
-            || reference_directories.iter().any(|path| !path.is_absolute())
             || project_references.iter().any(|path| PackageSource::validate_path(path).is_err())
         {
             return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
@@ -348,7 +347,7 @@ impl OwnedCSharpProjectNode {
             project_path: project_path.into(), assembly_name: assembly_name.into(),
             target_framework: target_framework.into(), language_version: language_version.into(),
             define_symbols, nullable: nullable.into(), allow_unsafe, output_type: output_type.into(),
-            usings, config, sources, reference_directories, project_references,
+            usings, config, sources, targeting_snapshot, project_references,
         })
     }
 
@@ -363,7 +362,8 @@ impl OwnedCSharpProjectNode {
         for using in &self.usings { total = total.checked_add(using.len())?; }
         for probe in &self.config { total = total.checked_add(probe.path.len())?.checked_add(probe.text.as_ref().map_or(0, |text| text.len()))?; }
         for source in &self.sources { total = total.checked_add(source.path.len())?.checked_add(size_of::<OwnedCSharpSourceClaim>())?; }
-        for path in &self.reference_directories { total = total.checked_add(path.as_os_str().len())?; }
+        total = total.checked_add(self.targeting_snapshot.directories().len() * size_of::<PathBuf>())?
+            .checked_add(self.targeting_snapshot.digest().len())?;
         for path in &self.project_references { total = total.checked_add(path.len())?; }
         Some(total)
     }
@@ -478,11 +478,14 @@ impl OwnedCSharpProjectGraph {
             arena.push(BorrowedCSharpProjectNode {
                 source_rows,
                 config: node.config.iter().map(|probe| backend_frontend_csharp::legacy::CSharpCapturedConfig { path: &probe.path, text: probe.text.as_deref() }).collect(),
-                refs: node.reference_directories.iter().map(|path| path.as_ref()).collect(),
+                refs: node.targeting_snapshot.directories().iter().map(PathBuf::as_path).collect(),
                 symbols: node.define_symbols.iter().map(|symbol| symbol.as_ref()).collect(),
                 usings: node.usings.iter().map(|using| using.as_ref()).collect(),
                 project_references: node.project_references.iter().map(|path| path.as_ref()).collect(),
             });
+        }
+        if claimed_paths.len() != package_sources.len() {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
         }
         let nodes = self.nodes.iter().zip(arena.iter()).map(|(node, view)| backend_frontend_csharp::legacy::CSharpCapturedProjectNode {
             project_path: &node.project_path, assembly_name: &node.assembly_name,
@@ -6567,8 +6570,9 @@ fn queue_package_sources(
             })
         })?;
         let unit_claim_bytes = request.csharp_unit_claim.as_ref().map_or(Some(0usize), OwnedCSharpUnitClaim::retained_bytes)?;
+        let graph_bytes = request.csharp_project_graph.as_ref().map_or(Some(0usize), OwnedCSharpProjectGraph::retained_bytes)?;
         let sdk_work = if request.csharp_sdk_probes.is_some() { 24 * 1024 * 1024 } else { 0 };
-        bytes.checked_add(program_bytes)?.checked_add(config_bytes.checked_mul(7)?)?.checked_add(evidence_bytes)?.checked_add(unit_claim_bytes)?.checked_add(sdk_probe_bytes.checked_mul(4)?)?.checked_add(sdk_work)
+        bytes.checked_add(program_bytes)?.checked_add(config_bytes.checked_mul(7)?)?.checked_add(evidence_bytes)?.checked_add(unit_claim_bytes)?.checked_add(graph_bytes)?.checked_add(sdk_probe_bytes.checked_mul(4)?)?.checked_add(sdk_work)
     });
     let Some(reservation_bytes) = reservation_bytes else {
         response.send_error(PackageSemanticRuntimeError::Runtime(
