@@ -3586,6 +3586,38 @@ impl SemanticAuthority {
                 None
             };
 
+        // Persist the same-attempt native TSZ claims in the selected compiler
+        // closure. The envelope binds this member to the exact attempt/input.
+        let native_header_member = if !staged.native_typescript_headers().is_empty() {
+            if staged.profile().language() != backend_semantic::vocabulary::Language::TypeScript
+                || typescript_snapshot_member.is_none() {
+                return Err(BuiltinModelError("native headers require a TypeScript snapshot witness".into()));
+            }
+            let rows = staged.native_typescript_headers();
+            let retained = rows.iter().try_fold(0usize, |total, row| total.checked_add(row.checked_retained_bytes()?))
+                .ok_or_else(|| BuiltinModelError("native header staging size overflow".into()))?;
+            let mut budget = (128usize * 1024 * 1024).checked_sub(retained)
+                .ok_or_else(|| BuiltinModelError("native header staging budget exceeded".into()))?;
+            let mut files = rows.to_vec();
+            files.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+            let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate { files };
+            let bytes = aggregate.encode_checked_budgeted(&mut budget)
+                .map_err(|error| BuiltinModelError(format!("encode native headers: {error}")))?;
+            if !payload_ids.len().checked_add(2).is_some_and(|count| count <= backend_extension_turso::MAX_COMPILER_PUBLICATION_MEMBER_IDS)
+                || !u64::try_from(bytes.len()).is_ok_and(|len| streamed_payload_bytes.checked_add(len).is_some_and(|total| total <= MAX_PAYLOAD_BYTES)) {
+                return Err(BuiltinModelError("native headers exceed compiler closure budget".into()));
+            }
+            let object = backend_extension_turso::compiler_native_headers_object(&bytes, &mut budget)
+                .map_err(|error| BuiltinModelError(format!("construct native header object: {error}")))?;
+            let object_id = stream_typed_object(&mut builder, &object)?;
+            account_streamed_payload(&mut streamed_payload_bytes, &bytes);
+            payload_ids.insert(object_id);
+            let verified = self.store.verify_object_claim(UntrustedObjectId::from_bytes(*object_id.as_bytes()))
+                .map_err(|error| BuiltinModelError(format!("verify native header object: {error:?}")))?;
+            Some(backend_extension_turso::CompilerNativeHeadersMember::from_verified_object(verified, &bytes, &mut budget)
+                .map_err(|error| BuiltinModelError(format!("admit native header member: {error}")))?)
+        } else { None };
+
         // A C# captured-input attempt must retain its complete checked
         // invocation aggregate in the same compiler closure. Missing or
         // over-budget evidence is a refusal, never a silent completeness claim.
@@ -3664,6 +3696,10 @@ impl SemanticAuthority {
                 .map_err(|error| {
                     BuiltinModelError(format!("bind TypeScript snapshot witness: {error}"))
                 })?;
+        }
+        if let Some(member) = native_header_member {
+            metadata = metadata.with_native_headers(member)
+                .map_err(|error| BuiltinModelError(format!("bind native header metadata: {error}")))?;
         }
         if let Some(member) = csharp_evidence_member {
             metadata = metadata.with_csharp_evidence(member)
