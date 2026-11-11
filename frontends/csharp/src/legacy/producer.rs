@@ -22,6 +22,9 @@ use std::{
     time::Instant,
 };
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 #[cfg(test)]
 use std::{thread, time::Duration};
 
@@ -121,6 +124,21 @@ fn snapshot_execution(
         .ok_or(CSharpAuthorityError::Configuration)?;
     fs::create_dir_all(&copied_root).map_err(|_| CSharpAuthorityError::Configuration)?;
     fs::write(&copied_tool, tool_bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
+    // `fs::write` creates a non-executable file regardless of the source
+    // mode. Preserve only the source executable bits; a copied dotnet host
+    // must remain spawnable while no writable source permissions are needed.
+    #[cfg(unix)]
+    {
+        let mode = fs::metadata(toolchain)
+            .map_err(|_| CSharpAuthorityError::Configuration)?
+            .permissions()
+            .mode();
+        if mode & 0o111 == 0 {
+            return Err(CSharpAuthorityError::Configuration);
+        }
+        fs::set_permissions(&copied_tool, fs::Permissions::from_mode(mode & 0o7777))
+            .map_err(|_| CSharpAuthorityError::Configuration)?;
+    }
     for directory_name in ["host", "shared"] {
         copy_tree_bounded(
             &root.join(directory_name),
