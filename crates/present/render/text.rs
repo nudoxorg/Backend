@@ -534,6 +534,7 @@ pub fn outline(tree: &OutlineTree, theme: Theme) -> String {
         tree.count(),
         tree.truncation().name()
     );
+    summary.push_str(" (outline pagination only; analysis coverage is not certified)");
     if tree.unresolved() > 0 {
         let _ = write!(summary, " · {} unnamed", tree.unresolved());
     }
