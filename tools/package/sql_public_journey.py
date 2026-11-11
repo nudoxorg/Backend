@@ -360,7 +360,7 @@ def bookshop_claims(label):
     dropped = [h["fact"] for h in refs if h["fact"].get("name") == "legacy_code"]
     if not any(isinstance(f.get("resolution"), dict) and f["resolution"].get("Resolved", {}).get("live") is False for f in dropped):
         fail(f"{label}: dropped legacy_code was not reported with a dead entity: {dropped}")
-    for name in ("price_cents", "order_items", "legacy_code"):
+    for name, line in (("price_cents", 1), ("order_items", 2), ("legacy_code", 3)):
         hit = next((h for h in refs if h["fact"].get("name") == name and h.get("source")), None)
         if hit is None:
             fail(f"{label}: {name} diagnostic lacks an exact source reference")
@@ -368,7 +368,7 @@ def bookshop_claims(label):
         if code != 0:
             fail(f"{label}: source read failed for {name}: {raw[:800]}")
         source = typed(json.loads(raw), "sql-read-source", label)
-        if source.get("state") != "available" or source.get("path") != sql_path("db/queries/bookshop.sql") or source.get("text") != name or not isinstance(source.get("line_1"), int) or source["line_1"] < 1:
+        if source.get("state") != "available" or source.get("path") != sql_path("db/queries/bookshop.sql") or source.get("text") != name or source.get("line_1") != line:
             fail(f"{label}: wrong diagnostic source extent for {name}: {source}")
     column = impact_page(label + "-column-impact", "--sql-column", "books.list_price_cents")
     nodes = [r["node"] for r in column["rows"]]
