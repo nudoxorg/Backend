@@ -279,6 +279,7 @@ def portabilize(bin_dir: Path, names: tuple[str, ...], output: Path, patchelf: P
             "t1_artifact_sha256": digest,
             "t1_artifact_bytes": digest_bytes,
             "required_glibc_versions": patched["required_glibc_versions"],
+            "companion_input": companion is not None and name in {"backend-locald", "backend-desktop", "backend-stylo-worker", "backend-sqlite-worker"},
         })
 
     for soname, record in libraries.items():
@@ -323,8 +324,9 @@ def write_build_manifest(output: Path, revision: str, tree: str, cargo_lock: str
         "target": TARGET,
         "executables": {e["name"]: {
             "path": e["packaged_path"], "sha256": e["sha256"], "bytes": e["bytes"],
-            "t1_artifact_sha256": e["t1_artifact_sha256"],
-            "t1_artifact_bytes": e["t1_artifact_bytes"],
+            **({"companion_artifact_sha256": e["t1_artifact_sha256"], "companion_artifact_bytes": e["t1_artifact_bytes"]}
+               if e.get("companion_input") else
+               {"t1_artifact_sha256": e["t1_artifact_sha256"], "t1_artifact_bytes": e["t1_artifact_bytes"]}),
         } for e in executables},
     }
     if companion_evidence is not None:
