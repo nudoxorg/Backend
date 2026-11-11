@@ -75,7 +75,7 @@ pub(super) enum Preparation {
         route: Option<super::super::index::SourceRoute>,
     },
     Cluster(super::super::index::SourceCompilePlan),
-    CSharpResume(super::super::index::SourceCompilePlan, super::SelectedCSharpSourceCommit),
+    CSharpResume(super::super::index::SourceCompilePlan, WorkspaceSnapshot),
     Finalize(DeferredIndex),
     Cleanup {
         plan: super::super::index::CaptureFailurePlan,
@@ -400,7 +400,10 @@ impl PublicationWork {
                     self.preparation = Preparation::SourcePrepared(prepared);
                     return Ok(());
                 }
-                Preparation::CSharpResume(plan, receipt) => {
+                Preparation::CSharpResume(plan, candidate) => {
+                    let receipt = super::SelectedCSharpSourceCommit::from_selected_candidate(
+                        &self.base, &candidate, self.operation_key,
+                    )?;
                     let (plan, witness) = plan.capture_csharp_admission(&self.base, receipt)?;
                     let continuation = plan.finish_with_csharp_admission(
                         witness, &self.base, &self.compiler,

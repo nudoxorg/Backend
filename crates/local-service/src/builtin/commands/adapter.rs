@@ -60,7 +60,7 @@ pub(in crate::builtin) struct SelectedCSharpSourceCommit {
 }
 
 impl SelectedCSharpSourceCommit {
-    fn from_selected_candidate(
+    pub(super) fn from_selected_candidate(
         selected: &backend_engine::WorkspaceSnapshot,
         candidate: &backend_engine::WorkspaceSnapshot,
         operation_key: Option<backend_library::IndexOperationKey>,
@@ -597,7 +597,7 @@ enum OwnedIndexPhase {
         route: Option<SourceRoute>,
     },
     Cluster(SourceCompilePlan),
-    CSharpResume(SourceCompilePlan, SelectedCSharpSourceCommit),
+    CSharpResume(SourceCompilePlan, backend_engine::WorkspaceSnapshot),
     Finalize(DeferredIndex),
     Cleanup {
         plan: CaptureFailurePlan,
@@ -4063,16 +4063,10 @@ impl CommandAdapter {
                                 }
                             }
                             PreparedIndex::CSharpParked(plan, candidate) => {
-                                let selected = daemon.engine().daemon().owner().snapshot();
-                                match SelectedCSharpSourceCommit::from_selected_candidate(&selected, &candidate, indexing.operation_key) {
-                                    Ok(receipt) => {
-                                        if let Err(error) = self.start_owned_index_phase(
-                                            daemon, &mut indexing, OwnedIndexPhase::CSharpResume(plan, receipt),
-                                        ) {
-                                            terminal = Some(backend_library::IndexJobOutcome::Failed(bounded_index_detail(error)));
-                                        }
-                                    }
-                                    Err(error) => terminal = Some(backend_library::IndexJobOutcome::Failed(bounded_index_detail(error))),
+                                if let Err(error) = self.start_owned_index_phase(
+                                    daemon, &mut indexing, OwnedIndexPhase::CSharpResume(plan, candidate),
+                                ) {
+                                    terminal = Some(backend_library::IndexJobOutcome::Failed(bounded_index_detail(error)));
                                 }
                             }
                             PreparedIndex::Cluster(plan) => {
