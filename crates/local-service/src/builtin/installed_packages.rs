@@ -118,11 +118,13 @@ fn retain(
     wanted: &backend_library::PackageCoordinate,
     all_versions: bool,
 ) {
+    let found_identity = found.package.as_str().replace("%40", "@");
+    let requested_identity = wanted.as_str().replace("%40", "@");
     let same = if all_versions {
-        found.package.as_str().rsplit_once('@').map(|s| s.0)
-            == wanted.as_str().rsplit_once('@').map(|s| s.0)
+        found_identity.rsplit_once('@').map(|s| s.0)
+            == requested_identity.rsplit_once('@').map(|s| s.0)
     } else {
-        &found.package == wanted
+        found_identity == requested_identity
     };
     if same && !facts.iter().any(|f| f == &found) {
         facts.push(found);
@@ -152,10 +154,11 @@ fn read(root: &Path, relative: &Path) -> Result<Option<(Vec<u8>, InstalledPackag
     let parts = relative
         .components()
         .map(|part| match part {
-            Component::Normal(s) => Ok(s),
-            _ => Err("installed source path must be relative"),
+            Component::Normal(s) => Some(s),
+            _ => None,
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Option<Vec<_>>>();
+    let Some(parts) = parts else { return Ok(None) };
     if parts.is_empty() {
         return Ok(None);
     }
