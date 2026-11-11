@@ -1070,7 +1070,7 @@ fn sql_in_application_code_is_analysed_linked_into_impact_and_follows_edits() {
         .map(|hit| hit.path.as_str())
         .filter(|path| path.ends_with("#embedded.sql"))
         .collect();
-    assert_eq!(embedded_paths, ["src/db.ts#embedded.sql", "src/report.py#embedded.sql"].into_iter().collect());
+    assert_eq!(embedded_paths, ["src/db.ts#embedded.sql", "src/report.py#embedded.sql"].into_iter().collect::<std::collections::BTreeSet<_>>());
     assert!(page.basis.inventory_complete, "every application source was scanned");
 
     // accounts.balance is mentioned by the migrations' queries and by the TypeScript calls.
@@ -1215,7 +1215,7 @@ fn the_synchronous_add_route_analyses_sql_like_the_owned_index_operation() {
     let (adapter, daemon) = fixture.parts();
     adapter.sql_test_workers = Some(workers);
     let add = BuiltinIntent::add(package, label.clone()).expect("target source scope");
-    super::super::commit_builtin_intent(daemon, 0xc001, &add).expect("admit target");
+    crate::builtin::commands::commit_builtin_intent(daemon, 0xc001, &add).expect("admit target");
     adapter.publish_view(daemon, Some(&add)).expect("publish target");
 
     adapter
