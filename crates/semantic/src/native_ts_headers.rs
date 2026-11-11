@@ -111,3 +111,39 @@ impl NativeTsHeaderAggregate {
         Self::decode_canonical(&bytes)?; Ok(bytes)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn sample(count: usize) -> NativeTsHeaderAggregate {
+        NativeTsHeaderAggregate { files: vec![NativeTsHeaderFile {
+            path: "src/main.ts".into(), source: SourceIdentity::from_bytes(&vec![b'x'; 20_000]).unwrap(),
+            image_identity: [7;32], image_byte_len: 123, producer_recipe: [8;32],
+            entries: (0..count).map(|i| NativeTsHeaderEntry {
+                entity_id:i as u32, identity:DeclarationIdentity{family:DeclarationFamilyId::from_raw([1;16]),variant:VariantFingerprint::from_raw([2;16])},
+                compiler_extent:(i as u32, i as u32 + 2), header_extent:(i as u32, i as u32 + 1),
+            }).collect(),
+        }] }
+    }
+    #[test]
+    fn aggregate_supports_five_thousand_headers_and_rejects_bad_wire() {
+        let aggregate=sample(5000); let bytes=aggregate.encode_checked().unwrap();
+        assert!(bytes.len()>64*1024);
+        assert_eq!(NativeTsHeaderAggregate::decode_canonical(&bytes).unwrap(), aggregate);
+        let mut short = 1;
+        assert!(NativeTsHeaderAggregate::decode_canonical_budgeted(&bytes, &mut short).is_err());
+        assert_eq!(short, 1);
+        let mut budget = 1024 * 1024;
+        assert_eq!(NativeTsHeaderAggregate::decode_canonical_budgeted(&bytes, &mut budget).unwrap(), aggregate);
+        assert!(budget < 1024 * 1024);
+        assert!(NativeTsHeaderAggregate::decode_canonical(&bytes[..bytes.len()-1]).is_err());
+        let mut bad=bytes.clone(); bad[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(NativeTsHeaderAggregate::decode_canonical(&bad).is_err());
+        let mut bad=aggregate.clone(); bad.files[0].entries[1].entity_id=0;
+        assert!(bad.encode_checked().is_err());
+        let mut bad=aggregate.clone(); bad.files[0].entries[0].header_extent=(1,2);
+        assert!(bad.encode_checked().is_err());
+        let mut bad=sample(MAX_NATIVE_TS_HEADERS_PER_FILE+1); bad.files[0].source.byte_len=40_000;
+        assert!(bad.encode_checked().is_err());
+    }
+}
