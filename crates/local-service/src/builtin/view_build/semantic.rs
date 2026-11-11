@@ -2472,8 +2472,9 @@ fn semantic_rows(
                         path: &path,
                         site_declarations: &site_declarations,
                         native_source: native_source.as_ref(),
-                        native_ts_evidence: nse_positive.as_ref().and_then(|proof| proof.positive.get(&path))
-                            .map(|(claim, _)| claim).filter(|claim| claim.admits_image()),
+                        native_ts_evidence: nse_current.then(|| nse_positive.as_ref()
+                            .and_then(|proof| proof.positive.get(&path))
+                            .map(|(claim, _)| claim).filter(|claim| claim.admits_image())).flatten(),
                     };
                     match image {
                         super::image_rows::CompiledImage::Opened { view, .. } => {
