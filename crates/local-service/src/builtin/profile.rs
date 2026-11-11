@@ -473,6 +473,7 @@ pub struct BuiltinIntent {
     // Transient source capability; serialized SQL rows remain untrusted claims.
     sql_proof: Option<SqlLiveProofRef>,
     sql_extension: Option<super::sql_intent::SqlIntentExtension>,
+    graph_changes: Box<[CSharpGraphChange]>,
     semantic_selection: Option<BuiltinSemanticSelectionIntent>,
     operation_key: Option<[u8; 32]>,
     capture_basis: Option<BuiltinCaptureBasis>,
@@ -655,6 +656,14 @@ pub(super) struct BuiltinNativeFrontierChange {
     pub(super) after: Option<ProductNativeFrontierRecord>,
 }
 
+/// Untrusted graph claim changes; the key is checked against both values.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct CSharpGraphChange {
+    pub(super) key: [u8; 32],
+    pub(super) expected: Option<backend_engine::builtin::CSharpGraphRecord>,
+    pub(super) after: Option<backend_engine::builtin::CSharpGraphRecord>,
+}
+
 /// Exact before/after evidence for changing the selected compiler generation.
 ///
 /// The immutable history key proves which compiler publication was requested;
@@ -694,6 +703,7 @@ impl BuiltinIntent {
     const STYLO_ANALYSIS_VERSION: u8 = 12;
     const NATIVE_EVIDENCE_VERSION: u8 = 13;
     const SQL_VERSION: u8 = super::sql_intent::SQL_INTENT_VERSION;
+    const CSHARP_GRAPH_VERSION: u8 = 15;
     const MAX_NATIVE_EVIDENCE_CHANGES: usize = 2 * backend_engine::builtin::MAX_NATIVE_EVIDENCE_ROWS;
     const MAX_NATIVE_EVIDENCE_DELTA_BYTES: usize = 2 * backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES + Self::MAX_NATIVE_EVIDENCE_CHANGES * 42;
     // New v13 policy ceiling for inherited sections, not a claim that all
@@ -1062,6 +1072,7 @@ impl BuiltinIntent {
                 | Self::STYLO_ANALYSIS_VERSION
                 | Self::NATIVE_EVIDENCE_VERSION
                 | Self::SQL_VERSION
+                | Self::CSHARP_GRAPH_VERSION
         ) || (encoding_version < Self::VERSION
             && (matches!(operation, BuiltinIntentOperation::SelectSemanticGeneration)
                 || semantic_selection.is_some()))
@@ -1077,6 +1088,7 @@ impl BuiltinIntent {
                 && encoding_version != Self::STYLO_ANALYSIS_VERSION
                 && encoding_version != Self::NATIVE_EVIDENCE_VERSION
                 && encoding_version != Self::SQL_VERSION
+                && encoding_version != Self::CSHARP_GRAPH_VERSION
                 && operation_key.is_some())
             || (encoding_version == Self::CAPTURE_BASIS_VERSION
                 && (capture_changes.is_empty() || capture_basis.is_none()))
@@ -1290,6 +1302,7 @@ impl BuiltinIntent {
             native_evidence_proof: None,
             sql_proof: None,
             sql_extension: None,
+            graph_changes: Box::new([]),
             semantic_selection,
             operation_key,
             capture_basis,
@@ -1402,6 +1415,53 @@ impl BuiltinIntent {
         )
     }
 
+    /// Attach claim-only graph rows to the same source/Pending transition.
+    /// Publication remains refused until a private selected-owner proof is provided.
+    pub(super) fn with_csharp_graph_changes(mut self, changes: Vec<CSharpGraphChange>) -> Result<Self, BuiltinModelError> {
+        if self.encoding_version >= Self::STYLO_ANALYSIS_VERSION || self.staged.is_some() {
+            return Err(BuiltinModelError("C# graph changes require an unstaged source intent".into()));
+        }
+        self.encoding_version = Self::CSHARP_GRAPH_VERSION;
+        self.set_graph_changes(changes)?;
+        Ok(self)
+    }
+
+    fn set_graph_changes(&mut self, changes: Vec<CSharpGraphChange>) -> Result<(), BuiltinModelError> {
+        if self.encoding_version != Self::CSHARP_GRAPH_VERSION {
+            if changes.is_empty() { return Ok(()); }
+            return Err(BuiltinModelError("graph changes require BPI15".into()));
+        }
+        if changes.is_empty() || changes.len() > 64 || self.capture_basis.is_none()
+            || self.operation != BuiltinIntentOperation::Index
+            || self.capture_changes.is_empty()
+            || self.operation_key.is_none()
+            || self.stylo_basis.is_some() || self.native_evidence_basis.is_some() || self.sql_extension.is_some()
+            || self.capture_changes.iter().any(|change| !matches!(change.outcome, ProductSemanticCaptureOutcome::Pending { .. })
+                || !matches!(change.key.profile(), backend_semantic::vocabulary::LanguageProfile::CSharp(_)))
+            || changes.windows(2).any(|pair| pair[0].key >= pair[1].key)
+        { return Err(BuiltinModelError("invalid C# graph intent shape".into())); }
+        let mut bytes = 4usize;
+        for change in &changes {
+            if change.expected == change.after || change.after.is_none() {
+                return Err(BuiltinModelError("invalid C# graph change".into()));
+            }
+            if change.after.as_ref().is_some_and(|row| Some(row.claim.operation) != self.operation_key) {
+                return Err(BuiltinModelError("C# graph operation mismatch".into()));
+            }
+            for row in [&change.expected, &change.after].into_iter().flatten() {
+                backend_engine::builtin::admit_csharp_graph_row(&change.key, row).map_err(|e| BuiltinModelError(e.into()))?;
+                if row.project != self.package.to_bytes() { return Err(BuiltinModelError("C# graph package mismatch".into())); }
+                let mut encoded = Vec::new();
+                backend_engine::builtin::CSharpGraphRelation::encode_value(row, &mut encoded);
+                bytes = bytes.checked_add(encoded.len() + 5).ok_or_else(|| BuiltinModelError("C# graph size overflow".into()))?;
+            }
+            bytes = bytes.checked_add(34).ok_or_else(|| BuiltinModelError("C# graph size overflow".into()))?;
+        }
+        if bytes > 4 * 1024 * 1024 { return Err(BuiltinModelError("C# graph delta exceeds budget".into())); }
+        self.graph_changes = changes.into_boxed_slice();
+        Ok(())
+    }
+
     pub(super) fn capture_basis(&self) -> Option<BuiltinCaptureBasis> {
         self.capture_basis
     }
@@ -1437,6 +1497,7 @@ impl BuiltinIntent {
             Self::STYLO_ANALYSIS_VERSION => b"BPIC",
             Self::NATIVE_EVIDENCE_VERSION => b"BPID",
             Self::SQL_VERSION => super::sql_intent::SQL_INTENT_MAGIC,
+            Self::CSHARP_GRAPH_VERSION => b"BPIF",
             _ => b"BPI9",
         });
         bytes.push(self.encoding_version);
@@ -1584,7 +1645,7 @@ impl BuiltinIntent {
             if self.encoding_version == Self::STYLO_ANALYSIS_VERSION
                 || (self.encoding_version >= Self::NATIVE_EVIDENCE_VERSION && self.stylo_basis.is_some())
             {
-                let length_position = if self.encoding_version == Self::SQL_VERSION {
+                let length_position = if self.encoding_version >= Self::SQL_VERSION {
                     let position = bytes.len(); bytes.extend_from_slice(&[0; 4]); Some(position)
                 } else { None };
                 let basis = self
@@ -1611,12 +1672,12 @@ impl BuiltinIntent {
                     bytes[position..position+4].copy_from_slice(&length.to_be_bytes());
                 }
             }
-            if self.encoding_version == Self::SQL_VERSION {
+            if self.encoding_version >= Self::SQL_VERSION {
                 bytes.push(u8::from(self.native_evidence_basis.is_some()));
             }
             if self.encoding_version == Self::NATIVE_EVIDENCE_VERSION
-                || (self.encoding_version == Self::SQL_VERSION && self.native_evidence_basis.is_some()) {
-                let length_position = if self.encoding_version == Self::SQL_VERSION {
+                || (self.encoding_version >= Self::SQL_VERSION && self.native_evidence_basis.is_some()) {
+                let length_position = if self.encoding_version >= Self::SQL_VERSION {
                     let position = bytes.len(); bytes.extend_from_slice(&[0; 4]); Some(position)
                 } else { None };
                 let basis = self.native_evidence_basis.expect("native evidence basis validated");
@@ -1638,7 +1699,7 @@ impl BuiltinIntent {
                     bytes[position..position+4].copy_from_slice(&length.to_be_bytes());
                 }
             }
-            if self.encoding_version == Self::SQL_VERSION {
+            if self.encoding_version >= Self::SQL_VERSION {
                 match &self.sql_extension {
                     None => bytes.push(0),
                     Some(extension) => {
@@ -1646,6 +1707,24 @@ impl BuiltinIntent {
                         let encoded = extension.encode().expect("SQL extension is admitted at attachment");
                         bytes.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
                         bytes.extend_from_slice(&encoded);
+                    }
+                }
+            }
+            if self.encoding_version == Self::CSHARP_GRAPH_VERSION {
+                bytes.extend_from_slice(&(self.graph_changes.len() as u32).to_be_bytes());
+                for change in &self.graph_changes {
+                    bytes.extend_from_slice(&change.key);
+                    for value in [&change.expected, &change.after] {
+                        match value {
+                            None => bytes.push(0),
+                            Some(row) => {
+                                bytes.push(1);
+                                let mut encoded = Vec::new();
+                                backend_engine::builtin::CSharpGraphRelation::encode_value(row, &mut encoded);
+                                bytes.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+                                bytes.extend_from_slice(&encoded);
+                            }
+                        }
                     }
                 }
             }
@@ -1670,6 +1749,7 @@ impl BuiltinIntent {
             self.stylo_changes = Box::new([]);
             self.native_evidence_changes = Box::new([]);
             self.sql_extension = None;
+            self.graph_changes = Box::new([]);
         }
     }
 
@@ -1687,6 +1767,7 @@ impl BuiltinIntent {
             self.stylo_changes = Box::new([]);
             self.native_evidence_changes = Box::new([]);
             self.sql_extension = None;
+            self.graph_changes = Box::new([]);
             self.semantic_selection = None;
         }
         self
@@ -2054,7 +2135,7 @@ impl BuiltinIntent {
     /// A staged v14 carrier can shed its sections and private proof. Refuse
     /// synchronous hydration based on its durable version, not in-memory data.
     pub(super) fn requires_v14_worker(&self) -> bool {
-        self.encoding_version == Self::SQL_VERSION
+        self.encoding_version >= Self::SQL_VERSION
     }
 
     pub(super) fn validate_native_stage_cancellation(
@@ -2151,6 +2232,7 @@ impl BuiltinIntent {
         let (stylo_basis, stylo_changes) = decoder.stylo_changes()?;
         let (native_evidence_basis, native_evidence_changes) = decoder.native_evidence_changes()?;
         let sql_extension = decoder.sql_extension()?;
+        let graph_changes = decoder.graph_changes()?;
         if encoding_version == Self::SQL_VERSION && stylo_basis.is_none()
             && native_evidence_basis.is_none() && sql_extension.is_none() {
             return Err(BuiltinModelError("empty v14 native section set".into()));
@@ -2177,6 +2259,7 @@ impl BuiltinIntent {
             intent.set_native_evidence_changes(basis, native_evidence_changes)?;
         }
         intent.sql_extension = sql_extension;
+        intent.set_graph_changes(graph_changes)?;
         if encoding_version < Self::CAPTURE_VERSION && !intent.capture_changes.is_empty() {
             return Err(BuiltinModelError(
                 "capture markers require the v6 intent encoding".to_owned(),
@@ -2627,7 +2710,7 @@ impl<'a> IntentDecoder<'a> {
             || (version == BuiltinIntent::NATIVE_EVIDENCE_VERSION
                 && bytes.len() > BuiltinIntent::MAX_NATIVE_EVIDENCE_DELTA_BYTES
                     + BuiltinIntent::MAX_NATIVE_EVIDENCE_FIRST_METADATA)
-            || (version == BuiltinIntent::SQL_VERSION
+            || (version >= BuiltinIntent::SQL_VERSION
                 && bytes.len() > BuiltinIntent::MAX_NATIVE_EVIDENCE_INTENT_BYTES + 64 * 1024 * 1024)
             || !matches!(
                 (bytes.get(..4), version),
@@ -2643,6 +2726,7 @@ impl<'a> IntentDecoder<'a> {
                     | (Some(b"BPIC"), 12)
                     | (Some(b"BPID"), 13)
                     | (Some(b"BPIE"), 14)
+                    | (Some(b"BPIF"), 15)
             )
         {
             return Err(BuiltinModelError(
@@ -3015,7 +3099,7 @@ impl<'a> IntentDecoder<'a> {
         if self.version < BuiltinIntent::NATIVE_EVIDENCE_VERSION {
             return Ok((None, Vec::new()));
         }
-        if self.version == BuiltinIntent::SQL_VERSION {
+        if self.version >= BuiltinIntent::SQL_VERSION {
             match self.take(1)?[0] {
                 0 => return Ok((None, Vec::new())),
                 1 => {
@@ -3474,6 +3558,36 @@ impl<'a> IntentDecoder<'a> {
                     .map(Some).map_err(BuiltinModelError)
             }
             _ => Err(BuiltinModelError("invalid SQL extension tag".into())),
+        }
+    }
+
+    fn graph_changes(&mut self) -> Result<Vec<CSharpGraphChange>, BuiltinModelError> {
+        if self.version < BuiltinIntent::CSHARP_GRAPH_VERSION { return Ok(Vec::new()); }
+        let start = self.at;
+        let count = self.read_u32()? as usize;
+        if count == 0 || count > 64 || count > self.bytes.len().saturating_sub(self.at) / 34 {
+            return Err(BuiltinModelError("invalid C# graph change count".into()));
+        }
+        let mut changes = Vec::with_capacity(count);
+        for _ in 0..count {
+            let key = self.take(32)?.try_into().map_err(|_| BuiltinModelError("invalid graph key".into()))?;
+            let expected = self.optional_graph_row()?;
+            let after = self.optional_graph_row()?;
+            changes.push(CSharpGraphChange { key, expected, after });
+            if self.at.saturating_sub(start) > 4 * 1024 * 1024 { return Err(BuiltinModelError("C# graph delta exceeds budget".into())); }
+        }
+        Ok(changes)
+    }
+
+    fn optional_graph_row(&mut self) -> Result<Option<backend_engine::builtin::CSharpGraphRecord>, BuiltinModelError> {
+        match self.take(1)?[0] {
+            0 => Ok(None),
+            1 => {
+                let length = self.read_u32()? as usize;
+                if length > 2 * 1024 * 1024 + 36 { return Err(BuiltinModelError("C# graph row exceeds budget".into())); }
+                backend_engine::builtin::CSharpGraphRelation::decode_value(self.take(length)?).map(Some).map_err(|_| BuiltinModelError("malformed C# graph row".into()))
+            },
+            _ => Err(BuiltinModelError("invalid C# graph row tag".into())),
         }
     }
 
@@ -4154,6 +4268,9 @@ fn prepare_transition_with_owner_context(
     update: LazyPreparedUpdate<BuiltinWorkspaceRelation>,
     owner_context: Option<&super::owner_receipt_context::OwnerReceiptContext>,
 ) -> Result<PreparedTransition, BuiltinModelError> {
+    if intent.encoding_version == BuiltinIntent::CSHARP_GRAPH_VERSION {
+        return Err(BuiltinModelError("C# graph claim has no selected owner proof".into()));
+    }
     if intent.encoding_version == BuiltinIntent::SQL_VERSION && intent.staged().is_none() && intent.sql_proof.is_none() {
         // A SQL intent is only meaningful with its live proof, or as the hydrated
         // form of a staged carrier. Bare bytes carry no authority to publish.
@@ -4174,6 +4291,7 @@ fn prepare_transition_with_owner_context(
     let semantic_update = prepare_semantic_update(&semantic, intent.semantic_changes())?;
     let source_facts_update = prepare_source_facts_relation_update(base, intent)?;
     let native_frontier_update = prepare_native_frontier_relation_update(base, intent)?;
+    let graph_update = prepare_csharp_graph_relation_update(base, intent)?;
     let stylo_update = prepare_stylo_relation_update(base, intent)?;
     let native_evidence_update = prepare_native_evidence_relation_update(base, intent)?;
     super::sql_index::trace(format_args!(
@@ -4284,6 +4402,8 @@ fn prepare_transition_with_owner_context(
             source_facts_pointer: source_facts_update.pointer.as_ref(),
             native_frontier_objects: &native_frontier_update.node_objects,
             native_frontier_pointer: native_frontier_update.pointer.as_ref(),
+            graph_objects: &graph_update.node_objects,
+            graph_pointer: graph_update.pointer.as_ref(),
             stylo_objects: &stylo_update.node_objects,
             stylo_pointer: stylo_update.pointer.as_ref(),
             native_evidence_objects: &native_evidence_update.node_objects,
@@ -4411,6 +4531,13 @@ fn prepare_transition_with_owner_context(
     } else {
         transition
     };
+    let transition = if let Some(pointer) = graph_update.pointer {
+        let root = graph_update.node_objects.iter().find(|object| pointer.bytes() == object.version()).cloned();
+        let transition = transition.replace_object_family([pointer], &registry)
+            .map_err(|error| BuiltinModelError(format!("select C# graph root: {error}")))?;
+        if let Some(root) = root { transition.replace_object_family([root], &registry)
+            .map_err(|error| BuiltinModelError(format!("replace C# graph root: {error}")))? } else { transition }
+    } else { transition };
     let transition = if let Some(pointer) = stylo_update.pointer {
         let root = stylo_update
             .node_objects
@@ -4826,6 +4953,7 @@ fn checked_product_change_count(
         semantic_changes,
         intent.source_facts_changes().len(),
         intent.native_frontier_changes().len(),
+        intent.graph_changes.len(),
         intent.capture_changes().len(),
         intent.stylo_changes.len(),
         intent.native_evidence_changes.len(),
@@ -5013,6 +5141,100 @@ fn prepare_native_frontier_relation_update(
         Ok(PreparedNativeFrontierRelationUpdate {
             node_objects,
             pointer: Some(product_native_frontier_root_object(state.root())),
+        })
+    }
+}
+
+struct PreparedCSharpGraphRelationUpdate {
+    node_objects: Vec<TypedObject>,
+    pointer: Option<TypedObject>,
+}
+
+fn prepare_csharp_graph_relation_update(
+    base: &WorkspaceSnapshot,
+    intent: &BuiltinIntent,
+) -> Result<PreparedCSharpGraphRelationUpdate, BuiltinModelError> {
+    if intent.graph_changes.as_ref().is_empty() {
+        return Ok(PreparedCSharpGraphRelationUpdate {
+            node_objects: Vec::new(),
+            pointer: None,
+        });
+    }
+    let selected = backend_engine::builtin::csharp_graph_relation(base).map_err(|error| {
+        BuiltinModelError(format!("open selected C# graph relation: {error}"))
+    })?;
+    let changes = intent
+        .graph_changes.as_ref()
+        .iter()
+        .map(|change| TreeChange {
+            key: change.key,
+            after: change.after.clone(),
+        })
+        .collect::<Vec<_>>();
+    if let Some(relation) = selected {
+        for change in intent.graph_changes.as_ref() {
+            let current = relation.lookup(&change.key).map_err(|error| {
+                BuiltinModelError(format!("read current C# graph row: {error}"))
+            })?;
+            if current != change.expected {
+                return Err(BuiltinModelError(
+                    "C# graph base does not match its persisted before value".to_owned(),
+                ));
+            }
+        }
+        let update = relation.prepare_update(&changes).map_err(|error| {
+            BuiltinModelError(format!("prepare C# graph delta: {error}"))
+        })?;
+        let node_objects = update
+            .changed_nodes()
+            .iter()
+            .map(|node| {
+                TypedObject::from_state_root(node.commitment(), node).map_err(|error| {
+                    BuiltinModelError(format!("retain C# graph node: {error:?}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(PreparedCSharpGraphRelationUpdate {
+            node_objects,
+            pointer: Some(backend_engine::builtin::csharp_graph_root_object(update.target().root())),
+        })
+    } else {
+        if intent
+            .graph_changes.as_ref()
+            .iter()
+            .any(|change| change.expected.is_some() || change.after.is_none())
+        {
+            return Err(BuiltinModelError(
+                "C# graph relation disappeared before its expected row".to_owned(),
+            ));
+        }
+        let entries = intent
+            .graph_changes.as_ref()
+            .iter()
+            .filter_map(|change| change.after.clone().map(|record| (change.key, record)))
+            .collect::<Vec<_>>();
+        let state = backend_engine::RelationState::<backend_engine::builtin::CSharpGraphRelation>::from_entries(
+            entries,
+            super::admitted_coverage()?,
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!("build initial C# graph relation: {error}"))
+        })?;
+        let mut closure = state.node_closure();
+        let mut node_objects = Vec::new();
+        while let Some(node) = closure
+            .try_next()
+            .map_err(|error| BuiltinModelError(format!("traverse C# graph: {error:?}")))?
+        {
+            node_objects.push(
+                TypedObject::from_state_root(node.state_root(), node.canonical()).map_err(
+                    |error| BuiltinModelError(format!("retain C# graph root: {error:?}")),
+                )?,
+            );
+        }
+        Ok(PreparedCSharpGraphRelationUpdate {
+            node_objects,
+            pointer: Some(backend_engine::builtin::csharp_graph_root_object(state.root())),
         })
     }
 }
@@ -5841,6 +6063,11 @@ fn admit_persisted_relations(
                     ProductNativeFrontierRootSchema::TYPE,
                     ProductNativeFrontierRootSchema::VERSION,
                 );
+                let graph_schema = backend_version::SchemaIdentity::new(
+                    backend_engine::builtin::CSharpGraphRootSchema::DOMAIN,
+                    backend_engine::builtin::CSharpGraphRootSchema::TYPE,
+                    backend_engine::builtin::CSharpGraphRootSchema::VERSION,
+                );
                 let stylo_schema = backend_version::SchemaIdentity::new(
                     backend_engine::builtin::StyloAnalysisRootSchema::DOMAIN,
                     backend_engine::builtin::StyloAnalysisRootSchema::TYPE,
@@ -5864,6 +6091,7 @@ fn admit_persisted_relations(
                 if pointer.schema() != capture_schema
                     && pointer.schema() != facts_schema
                     && pointer.schema() != native_frontier_schema
+                    && pointer.schema() != graph_schema
                     && pointer.schema() != stylo_schema
                     && pointer.schema() != evidence_schema
                     && pointer.schema() != sql_schema
@@ -5885,6 +6113,9 @@ fn admit_persisted_relations(
                 } else if pointer.schema() == native_frontier_schema {
                     persisted
                         .relation::<ProductNativeFrontierRelation>(store, root)
+                        .and_then(|tree| tree.root_object())
+                } else if pointer.schema() == graph_schema {
+                    persisted.relation::<backend_engine::builtin::CSharpGraphRelation>(store, root)
                         .and_then(|tree| tree.root_object())
                 } else if pointer.schema() == stylo_schema {
                     persisted
@@ -5964,6 +6195,7 @@ fn admit_persisted_relations(
         &target_tree,
         persisted_objects.objects(),
     )?;
+    validate_persisted_csharp_graph(persisted, store, &persisted_intent, persisted_objects.objects())?;
     validate_persisted_stylo(
         persisted,
         store,
@@ -6164,6 +6396,33 @@ fn validate_persisted_source_facts(
         }
     }
     Ok(())
+}
+
+fn validate_persisted_csharp_graph(
+    persisted: &backend_engine::PersistedTransition,
+    store: &backend_engine::FileStore,
+    intent: &BuiltinIntent,
+    objects: &[TypedObject],
+) -> Result<(), BuiltinModelError> {
+    if intent.graph_changes.is_empty() { return Ok(()); }
+    let schema = backend_version::SchemaIdentity::new(
+        backend_engine::builtin::CSharpGraphRootSchema::DOMAIN,
+        backend_engine::builtin::CSharpGraphRootSchema::TYPE,
+        backend_engine::builtin::CSharpGraphRootSchema::VERSION,
+    );
+    let key = backend_engine::builtin::csharp_graph_root_pointer_key();
+    let pointer = objects.iter().find(|object| object.schema() == schema && object.key() == &key)
+        .ok_or_else(|| BuiltinModelError("C# graph root pointer missing".into()))?;
+    let root = pointer.bytes().try_into().map_err(|_| BuiltinModelError("invalid C# graph root".into()))?;
+    let target = persisted.relation::<backend_engine::builtin::CSharpGraphRelation>(store, root)
+        .map_err(|error| BuiltinModelError(format!("open persisted C# graph: {error}")))?;
+    for change in &intent.graph_changes {
+        if target.lookup(&change.key).map_err(|error| BuiltinModelError(format!("read persisted C# graph: {error}")))? != change.after {
+            return Err(BuiltinModelError("persisted C# graph differs from intent".into()));
+        }
+    }
+    // A canonical row cannot authenticate a selected Pending attempt.
+    Err(BuiltinModelError("C# graph cold replay requires selected owner proof".into()))
 }
 
 fn validate_persisted_native_frontier(
@@ -8419,6 +8678,57 @@ mod persisted_intent_tests {
         let mut trailing = bytes;
         trailing.push(0);
         assert!(BuiltinIntent::decode(&trailing).is_err());
+    }
+
+    #[test]
+    fn csharp_graph_intent_round_trip_and_malformed_sections() {
+        use backend_engine::application::{CSharpGraphEvidence, CSharpGraphEvidenceNode, DurableCSharpGraphRelation};
+        use backend_engine::builtin::{csharp_graph_record_key, CSharpGraphRecord};
+        use backend_semantic::vocabulary::{CSharpVersion, LanguageProfile, PackageUrl};
+        let label = "pkg:nuget/graph@1.0.0";
+        let package = backend_engine::package_key(label);
+        let operation = [8; 32];
+        let key = ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::parse(label.to_owned()).unwrap(),
+            PackageUrl::parse(label.to_owned()).unwrap(), LanguageProfile::CSharp(CSharpVersion::CSharp14),
+        ).unwrap();
+        let capture = SemanticSourceCapture::new(Some(operation), [5; 32], [6; 32], 1, 1).unwrap();
+        let legacy = BuiltinIntent::new_with_version(
+            BuiltinIntent::CAPTURE_BASIS_VERSION, BuiltinIntentOperation::Index, package, label,
+            vec![], vec![], None, Some(operation),
+            Some(BuiltinCaptureBasis::new([1; 32], 1, [2; 32], None).unwrap()),
+            vec![BuiltinCaptureChange { cargo_target: None, key, expected: None, capture,
+                outcome: ProductSemanticCaptureOutcome::Pending { prior: None }, compiler_failure: None }],
+            vec![], vec![],
+        ).unwrap();
+        assert_eq!(BuiltinIntent::decode(&legacy.canonical_bytes()).unwrap(), legacy);
+        let row = CSharpGraphRecord { project: package.to_bytes(), claim: DurableCSharpGraphRelation {
+            format: 1, operation, attempt: [9; 32], owner_epoch: 1, snapshot: [1; 32],
+            graph: CSharpGraphEvidence { root_project: "App/App.csproj".into(), config_digest: [1; 32],
+                source_digest: [2; 32], reference_digest: [3; 32], nodes: vec![CSharpGraphEvidenceNode {
+                    project_path: "App/App.csproj".into(), project_references: vec![], config_digest: [4; 32], source_digest: [5; 32] }] },
+        }};
+        let key = csharp_graph_record_key(&row).unwrap();
+        let change = CSharpGraphChange { key, expected: None, after: Some(row) };
+        let intent = legacy.with_csharp_graph_changes(vec![change]).unwrap();
+        let bytes = intent.canonical_bytes();
+        assert_eq!(&bytes[..5], b"BPIF\x0f");
+        assert_eq!(BuiltinIntent::decode(&bytes).unwrap(), intent);
+        let mut trailing = bytes.clone(); trailing.push(0);
+        assert!(BuiltinIntent::decode(&trailing).is_err());
+        assert!(BuiltinIntent::decode(&bytes[..bytes.len()-1]).is_err());
+        let mut bad_magic = bytes.clone(); bad_magic[3] = b'E';
+        assert!(BuiltinIntent::decode(&bad_magic).is_err());
+        let row_length = {
+            let mut encoded = Vec::new();
+            backend_engine::builtin::CSharpGraphRelation::encode_value(intent.graph_changes[0].after.as_ref().unwrap(), &mut encoded);
+            encoded.len()
+        };
+        let count_offset = bytes.len() - row_length - 4 - 1 - 1 - 32 - 4;
+        let mut bad_count = bytes.clone(); bad_count[count_offset..count_offset+4].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(BuiltinIntent::decode(&bad_count).is_err());
+        let mut bad_tag = bytes; bad_tag[count_offset + 4 + 32] = 2;
+        assert!(BuiltinIntent::decode(&bad_tag).is_err());
     }
 
     fn intent_object(intent: &BuiltinIntent) -> TypedObject {

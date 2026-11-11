@@ -467,6 +467,8 @@ pub(super) struct LazyClosureUpdate<'a> {
     pub(super) source_facts_pointer: Option<&'a TypedObject>,
     pub(super) native_frontier_objects: &'a [TypedObject],
     pub(super) native_frontier_pointer: Option<&'a TypedObject>,
+    pub(super) graph_objects: &'a [TypedObject],
+    pub(super) graph_pointer: Option<&'a TypedObject>,
     pub(super) stylo_objects: &'a [TypedObject],
     pub(super) stylo_pointer: Option<&'a TypedObject>,
     pub(super) native_evidence_objects: &'a [TypedObject],
@@ -538,6 +540,10 @@ fn transition_closure_lazy(
     if let Some(pointer) = update.native_frontier_pointer {
         objects.push(pointer.clone());
     }
+    objects.extend(update.graph_objects.iter().filter(|object| {
+        update.graph_pointer.is_some_and(|pointer| pointer.bytes() == object.version())
+    }).cloned());
+    if let Some(pointer) = update.graph_pointer { objects.push(pointer.clone()); }
     objects.extend(
         update
             .stylo_objects
@@ -581,6 +587,7 @@ fn transition_closure_lazy(
         .iter()
         .chain(update.source_facts_objects)
         .chain(update.native_frontier_objects)
+        .chain(update.graph_objects)
         .chain(update.stylo_objects)
         .chain(update.native_evidence_objects)
         .chain(update.sql_objects)
