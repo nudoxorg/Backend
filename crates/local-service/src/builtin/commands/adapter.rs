@@ -5776,8 +5776,7 @@ impl CommandAdapter {
                 .map_err(|_| unavailable())?;
             if file.producer_recipe != super::super::native_ts_headers::producer_recipe() {
                 None
-            } else {
-                let entry = file.entry(evidence.entity_id().raw).ok_or_else(unavailable)?;
+            } else if let Some(entry) = file.entry(evidence.entity_id().raw) {
                 if entry.identity != evidence.declaration_identity() || Some(entry.compiler_extent) != evidence.primary_extent() {
                     return Err(unavailable());
                 }
@@ -5786,7 +5785,7 @@ impl CommandAdapter {
                 Some(super::super::ingest::read_indexed_native_evidence_header(
                     &root, evidence.claim(), evidence.image_source(), entry.header_extent,
                 ).map_err(|_| unavailable())?)
-            }
+            } else { None }
         } else { None };
         let explicit_range = request.is_some();
         let implicit_range = recover_excerpt && !explicit_range && evidence.primary_extent().is_some();

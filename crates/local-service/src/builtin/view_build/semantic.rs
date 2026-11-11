@@ -368,7 +368,6 @@ pub(in crate::builtin) struct AdmittedNativeEvidence<'a> {
     claim: backend_engine::builtin::NativeSourceEvidence,
     image_source: backend_semantic::ir::SourceIdentity,
     primary_extent: Option<(u32, u32)>,
-    header_extent: Option<(u32, u32)>,
     selected_row: RowId,
     entity_id: backend_semantic::ir::EntityId,
     declaration_identity: DeclarationIdentity,
@@ -421,9 +420,6 @@ impl AdmittedNativeEvidence<'_> {
     }
     pub(in crate::builtin) fn primary_extent(&self) -> Option<(u32, u32)> {
         self.primary_extent
-    }
-    pub(in crate::builtin) fn header_extent(&self) -> Option<(u32, u32)> {
-        self.header_extent
     }
 }
 
@@ -594,15 +590,11 @@ pub(in crate::builtin) fn admitted_native_evidence<'a>(
                         return Err(BuiltinModelError("native header reference differs from selected image".into()));
                     }
                 }
-                // A row reference alone is not a compiler receipt. Header
-                // resolution opens the selected closure witness separately.
-                let header_extent = None;
                 if found
                     .replace(AdmittedNativeEvidence {
                         claim: row.clone(),
                         image_source: source,
                         primary_extent: owned.extent,
-                        header_extent,
                         selected_row: selected,
                         entity_id: owned.entity_id,
                         declaration_identity: owned.declaration_identity,
