@@ -87,6 +87,13 @@ pub fn decode_csharp_graph_evidence(bytes: &[u8]) -> Option<CSharpGraphEvidence>
     Some(graph)
 }
 
+/// Replays graph evidence only when every same-attempt digest and canonical
+/// node/edge set matches the owner-captured graph. This does not promote the
+/// claim to authority; the caller still checks SDK/helper/runtime custody.
+pub fn replay_csharp_graph_evidence(expected: &CSharpGraphEvidence, actual: &CSharpGraphEvidence) -> bool {
+    expected == actual
+}
+
 #[cfg(test)]
 mod graph_evidence_tests {
     use super::*;
@@ -107,6 +114,9 @@ mod graph_evidence_tests {
         let encoded = encode_csharp_graph_evidence(&graph).expect("bounded CSE2");
         assert_eq!(decode_csharp_graph_evidence(&encoded), Some(graph));
         assert!(decode_csharp_graph_evidence(&encoded[..encoded.len() - 1]).is_none());
+        let mut changed = graph.clone();
+        changed.nodes[0].project_references.clear();
+        assert!(!replay_csharp_graph_evidence(&graph, &changed));
     }
 }
 
