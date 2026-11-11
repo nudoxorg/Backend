@@ -5,7 +5,11 @@
 //! explicit compile asset selected by the restore graph.
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Component, Path, PathBuf},
+};
 
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_FILES: usize = 4096;
@@ -29,10 +33,19 @@ pub enum RestoreError {
 /// Exact compile assemblies selected by one restore graph. The digest covers
 /// each relative path and its bytes in sorted order and is safe to include in
 /// an attempt-local compiler identity.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RestoreClosure {
     pub files: Vec<PathBuf>,
     pub digest: [u8; 32],
+    directory: tempfile::TempDir,
+}
+
+impl RestoreClosure {
+    /// Private flattened directory containing exactly the admitted assemblies.
+    /// Keeping this closure alive keeps the snapshot alive through compilation.
+    pub fn reference_directory(&self) -> &Path {
+        self.directory.path()
+    }
 }
 
 pub fn resolve_project_assets(
@@ -53,64 +66,169 @@ pub fn resolve_project_assets_checked(
     expected_packages: &[(&str, &str)],
     expected_projects: &[&str],
 ) -> Result<RestoreClosure, RestoreError> {
-    let metadata = fs::metadata(assets_path).map_err(|e| RestoreError::Unavailable(format!("{} ({e})", assets_path.display())))?;
-    if !metadata.is_file() || metadata.len() > MAX_BYTES { return Err(RestoreError::Limit); }
-    let bytes = fs::read(assets_path).map_err(|e| RestoreError::Unavailable(e.to_string()))?;
-    let root = fs::canonicalize(project_root).map_err(|e| RestoreError::Unavailable(format!("{} ({e})", project_root.display())))?;
+    let metadata = fs::metadata(assets_path)
+        .map_err(|e| RestoreError::Unavailable(format!("{} ({e})", assets_path.display())))?;
+    if !metadata.is_file() || metadata.len() > MAX_BYTES {
+        return Err(RestoreError::Limit);
+    }
+    let bytes = read_bounded(assets_path, MAX_BYTES)?;
+    let root = fs::canonicalize(project_root)
+        .map_err(|e| RestoreError::Unavailable(format!("{} ({e})", project_root.display())))?;
     let value: Value = serde_json::from_slice(&bytes)?;
-    let folders = value.get("packageFolders").and_then(Value::as_object).ok_or(RestoreError::Missing("packageFolders"))?;
-    let targets = value.get("targets").and_then(Value::as_object).ok_or(RestoreError::Missing("targets"))?;
-    let target_name = targets.keys().find(|name| name.split('/').next() == Some(target_framework)).ok_or(RestoreError::Missing("targets for target framework"))?;
-    let target = targets.get(target_name).and_then(Value::as_object).ok_or(RestoreError::Missing("target graph"))?;
-    let libraries = value.get("libraries").and_then(Value::as_object).ok_or(RestoreError::Missing("libraries"))?;
+    let folders = value
+        .get("packageFolders")
+        .and_then(Value::as_object)
+        .ok_or(RestoreError::Missing("packageFolders"))?;
+    let targets = value
+        .get("targets")
+        .and_then(Value::as_object)
+        .ok_or(RestoreError::Missing("targets"))?;
+    let target_name = targets
+        .keys()
+        .find(|name| name.split('/').next() == Some(target_framework))
+        .ok_or(RestoreError::Missing("targets for target framework"))?;
+    let target = targets
+        .get(target_name)
+        .and_then(Value::as_object)
+        .ok_or(RestoreError::Missing("target graph"))?;
+    let libraries = value
+        .get("libraries")
+        .and_then(Value::as_object)
+        .ok_or(RestoreError::Missing("libraries"))?;
     let mut files = Vec::new();
     for (name, version) in expected_packages {
-        let found = target.keys().any(|identity| identity.split_once('/').is_some_and(|(n, v)| n.eq_ignore_ascii_case(name) && v == *version));
-        if !found { return Err(RestoreError::Unavailable(format!("package reference {name}@{version} is absent from restore graph"))); }
+        let found = target.keys().any(|identity| {
+            identity
+                .split_once('/')
+                .is_some_and(|(n, v)| n.eq_ignore_ascii_case(name) && v == *version)
+        });
+        if !found {
+            return Err(RestoreError::Unavailable(format!(
+                "package reference {name}@{version} is absent from restore graph"
+            )));
+        }
     }
     for project in expected_projects {
         let found = target.iter().any(|(identity, item)| {
-            item.get("compile").is_some() && libraries.get(identity).and_then(Value::as_object).and_then(|lib| lib.get("type")).and_then(Value::as_str) == Some("project") && libraries.get(identity).and_then(Value::as_object).and_then(|lib| lib.get("path")).and_then(Value::as_str).is_some_and(|path| path == *project || path.ends_with(project))
+            item.get("compile").is_some()
+                && libraries
+                    .get(identity)
+                    .and_then(Value::as_object)
+                    .and_then(|lib| lib.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("project")
+                && libraries
+                    .get(identity)
+                    .and_then(Value::as_object)
+                    .and_then(|lib| lib.get("path"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|path| project_ref_matches(path, project))
         });
-        if !found { return Err(RestoreError::Unavailable(format!("project reference {project} is absent from restore graph"))); }
+        if !found {
+            return Err(RestoreError::Unavailable(format!(
+                "project reference {project} is absent from restore graph"
+            )));
+        }
     }
     for (identity, item) in target {
         let compile = item.get("compile").and_then(Value::as_object);
         let Some(compile) = compile else { continue };
-        let library = libraries.get(identity).and_then(Value::as_object).ok_or_else(|| RestoreError::Unavailable(format!("library {identity}")))?;
-        let kind = library.get("type").and_then(Value::as_str).unwrap_or("package");
-        let relative_base = library.get("path").and_then(Value::as_str).ok_or_else(|| RestoreError::Unavailable(format!("path for {identity}")))?;
+        let library = libraries
+            .get(identity)
+            .and_then(Value::as_object)
+            .ok_or_else(|| RestoreError::Unavailable(format!("library {identity}")))?;
+        let kind = library
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("package");
+        let relative_base = library
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RestoreError::Unavailable(format!("path for {identity}")))?;
         for (relative, present) in compile {
-            if present.is_null() { continue; }
-            if files.len() >= MAX_FILES { return Err(RestoreError::Limit); }
+            if present.is_null() || relative == "_._" {
+                continue;
+            }
+            if files.len() >= MAX_FILES {
+                return Err(RestoreError::Limit);
+            }
+            checked_relative(relative)?;
+            checked_relative(relative_base)?;
             let path = if kind == "project" {
                 // Project libraries are rooted at the restore root. Their
                 // compile asset is generally bin/<config>/<tfm>/<name>.dll.
-                root.join(relative_base).join(relative)
+                let project_base = if relative_base.ends_with(".csproj") {
+                    Path::new(relative_base).parent().unwrap_or(Path::new(""))
+                } else {
+                    Path::new(relative_base)
+                };
+                root.join(project_base).join(relative)
             } else {
-                let folder = folders.keys().next().ok_or(RestoreError::Missing("package folder"))?;
-                let folder = checked_path(folder)?;
-                PathBuf::from(folder).join(relative_base).join(relative)
+                let mut found = None;
+                for folder in folders.keys() {
+                    let folder = checked_path(folder)?;
+                    let candidate = PathBuf::from(folder).join(relative_base).join(relative);
+                    if candidate.is_file() {
+                        found = Some(candidate);
+                        break;
+                    }
+                }
+                found.ok_or_else(|| {
+                    RestoreError::Unavailable(format!("package asset {identity}/{relative}"))
+                })?
             };
-            let canonical = fs::canonicalize(&path).map_err(|e| RestoreError::Unavailable(format!("{} ({e})", path.display())))?;
-            if !canonical.starts_with(&root) && kind == "project" { return Err(RestoreError::OutsideRoot(path.display().to_string())); }
-            if !canonical.is_file() { return Err(RestoreError::Unavailable(canonical.display().to_string())); }
+            let canonical = fs::canonicalize(&path)
+                .map_err(|e| RestoreError::Unavailable(format!("{} ({e})", path.display())))?;
+            if !canonical.starts_with(&root) && kind == "project" {
+                return Err(RestoreError::OutsideRoot(path.display().to_string()));
+            }
+            if !canonical.is_file() {
+                return Err(RestoreError::Unavailable(canonical.display().to_string()));
+            }
             files.push(canonical);
         }
     }
     files.sort();
     files.dedup();
+    let directory = tempfile::tempdir().map_err(|e| RestoreError::Unavailable(e.to_string()))?;
+    let mut names = HashSet::new();
+    let mut snapshot = Vec::with_capacity(files.len());
+    for source in &files {
+        let name = source
+            .file_name()
+            .ok_or_else(|| RestoreError::Unavailable(source.display().to_string()))?
+            .to_owned();
+        if !names.insert(name.clone()) {
+            return Err(RestoreError::Unavailable(format!(
+                "duplicate assembly filename {}",
+                name.to_string_lossy()
+            )));
+        }
+        let destination = directory.path().join(&name);
+        let content = read_bounded(source, MAX_BYTES)?;
+        fs::write(&destination, &content).map_err(|e| RestoreError::Unavailable(e.to_string()))?;
+        snapshot.push(destination);
+    }
+    files = snapshot;
     let mut digest = Sha256::new();
+    digest.update((bytes.len() as u64).to_le_bytes());
+    digest.update(&bytes);
     for file in &files {
         let rel = file.strip_prefix(&root).unwrap_or(file);
         digest.update(rel.to_string_lossy().as_bytes());
         digest.update([0]);
-        let content = fs::read(file).map_err(|e| RestoreError::Unavailable(e.to_string()))?;
-        if content.len() as u64 > MAX_BYTES { return Err(RestoreError::Limit); }
+        let content = read_bounded(file, MAX_BYTES)?;
+        if content.len() as u64 > MAX_BYTES {
+            return Err(RestoreError::Limit);
+        }
         digest.update((content.len() as u64).to_le_bytes());
         digest.update(content);
     }
-    Ok(RestoreClosure { files, digest: digest.finalize().into() })
+    Ok(RestoreClosure {
+        files,
+        digest: digest.finalize().into(),
+        directory,
+    })
 }
 
 fn checked_path(path: &str) -> Result<&Path, RestoreError> {
@@ -119,6 +237,51 @@ fn checked_path(path: &str) -> Result<&Path, RestoreError> {
         return Err(RestoreError::ForeignPath(path.to_owned()));
     }
     Ok(p)
+}
+
+fn checked_relative(path: &str) -> Result<(), RestoreError> {
+    let p = Path::new(path);
+    if p.is_absolute()
+        || p.components().any(|c| {
+            matches!(
+                c,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(RestoreError::OutsideRoot(path.to_owned()));
+    }
+    Ok(())
+}
+
+fn project_ref_matches(path: &str, expected: &str) -> bool {
+    let normalize = |value: &str| {
+        value
+            .replace('\\', "/")
+            .trim_end_matches(".csproj")
+            .trim_matches('/')
+            .to_owned()
+    };
+    let actual = normalize(path);
+    let expected = normalize(expected);
+    actual == expected || actual.ends_with(&format!("/{expected}"))
+}
+
+fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, RestoreError> {
+    let before = fs::metadata(path)
+        .map_err(|e| RestoreError::Unavailable(format!("{} ({e})", path.display())))?;
+    if !before.is_file() || before.len() > limit {
+        return Err(RestoreError::Limit);
+    }
+    let content = fs::read(path).map_err(|e| RestoreError::Unavailable(e.to_string()))?;
+    let after = fs::metadata(path).map_err(|e| RestoreError::Unavailable(e.to_string()))?;
+    if before.len() != content.len() as u64 || after.len() != before.len() {
+        return Err(RestoreError::Unavailable(format!(
+            "{} changed during read",
+            path.display()
+        )));
+    }
+    Ok(content)
 }
 
 #[cfg(test)]
@@ -130,6 +293,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let assets = dir.path().join("project.assets.json");
         fs::write(&assets, r#"{"packageFolders":{"C:\\Users\\me\\.nuget\\packages\\":""},"targets":{"net10.0":{"P/1.0":{"compile":{"x.dll":{}}}}},"libraries":{"P/1.0":{"type":"package","path":"p/1.0"}}}"#).unwrap();
-        assert!(matches!(resolve_project_assets(&assets, dir.path(), "net10.0"), Err(RestoreError::ForeignPath(_))));
+        assert!(matches!(
+            resolve_project_assets(&assets, dir.path(), "net10.0"),
+            Err(RestoreError::ForeignPath(_))
+        ));
     }
 }
