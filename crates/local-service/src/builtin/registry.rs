@@ -6191,7 +6191,7 @@ mod tests {
             repaired,
             backend_library::CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
                 format!(
-                    "package {} does not match any indexed local manifest",
+                    "package {} is not in the acquired registry catalog or an indexed local manifest; discovery alone does not acquire it. Use index-search (backend.index_search) to inspect discovered releases",
                     package.as_str()
                 )
             )),
