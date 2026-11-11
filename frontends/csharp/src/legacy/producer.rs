@@ -177,22 +177,23 @@ fn snapshot_execution(
         .ok_or(CSharpAuthorityError::Configuration)?;
     let mut declared = std::collections::BTreeSet::new();
     for library in target.values() {
-        let Some(runtime) = library
-            .get("runtime")
-            .and_then(serde_json::Value::as_object)
-        else {
-            continue;
-        };
-        for relative in runtime.keys() {
-            let relative_path = Path::new(relative);
-            if relative_path.is_absolute()
-                || relative_path
-                    .components()
-                    .any(|component| !matches!(component, std::path::Component::Normal(_)))
-            {
-                return Err(CSharpAuthorityError::Configuration);
+        // `runtimeTargets` carries RID-specific managed/native assets which
+        // are omitted from `runtime`; both are part of the loader closure.
+        for field in ["runtime", "runtimeTargets"] {
+            let Some(runtime) = library.get(field).and_then(serde_json::Value::as_object) else {
+                continue;
+            };
+            for relative in runtime.keys() {
+                let relative_path = Path::new(relative);
+                if relative_path.is_absolute()
+                    || relative_path
+                        .components()
+                        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+                {
+                    return Err(CSharpAuthorityError::Configuration);
+                }
+                declared.insert(relative_path.to_owned());
             }
-            declared.insert(relative_path.to_owned());
         }
     }
     declared.insert(PathBuf::from(format!("{oracle_stem}.dll")));
