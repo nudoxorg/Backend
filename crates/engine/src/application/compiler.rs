@@ -4453,8 +4453,13 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             csharp.configuration.exact_nullable = sdk_observation.as_ref().map(|observation| observation.nullable.as_str());
             csharp.configuration.exact_unsafe = sdk_observation.as_ref().map(|observation| observation.allow_unsafe);
             csharp.configuration.exact_output_type = sdk_observation.as_ref().map(|observation| observation.output_type.as_str());
-            csharp.configuration.reference_directory = Some(paths[0]);
-            csharp.configuration.additional_reference_directories = &paths[1..];
+            if resolver_owner.is_none() {
+                csharp.configuration.reference_directory = Some(paths[0]);
+                csharp.configuration.additional_reference_directories = &paths[1..];
+            } else {
+                csharp.configuration.reference_directory = None;
+                csharp.configuration.additional_reference_directories = &[];
+            }
             csharp.configuration.extra_usings = names;
             csharp.configuration.implicit_usings = false;
         }
