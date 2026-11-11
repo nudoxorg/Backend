@@ -5703,8 +5703,8 @@ impl CommandAdapter {
             }
         }
         if recover_excerpt && query.source_range().is_none() {
-            // A retained syntax excerpt is not native source authority. Only
-            // a current compiler-selected owner may supply the default body.
+            // The read revalidates indexed host bytes. Native and structural
+            // captures retain their distinct source scopes.
             if let Ok((page, Some(location), head)) = self.read_exact_source_range(
                 daemon,
                 row,
@@ -5728,6 +5728,9 @@ impl CommandAdapter {
                 document.excerpt = backend_library::SourceExcerpt::captured(&format!("{head}{}", page.text), extent)
                     .unwrap_or(backend_library::SourceExcerpt::NotCaptured);
                 document.location = backend_library::SourceAvailability::Captured(location);
+                if page.scope == backend_library::SourceRangeScope::StructuralDeclaration {
+                    document.source_range = Some(page);
+                }
             }
         }
         document.signature.clone_from(&row.signature);
@@ -5949,7 +5952,7 @@ impl CommandAdapter {
             .ok_or_else(unavailable)?;
         // The current publication and selected compiler identity supply the
         // primary owner path and extent, independent of row.source projection.
-        let (native_path, source_identity, extent) = view_build::admitted_native_source_extent(
+        let native = view_build::admitted_native_source_extent(
             &sources,
             &snapshot,
             &self.compiler,
@@ -5957,9 +5960,18 @@ impl CommandAdapter {
             row.id,
             &mut self.generations,
         )
-        .map_err(|_| unavailable())?
-        .or(super::vue_source::extent(&sources, row).map_err(|_| unavailable())?)
-        .ok_or_else(unavailable)?;
+        .map_err(|_| unavailable())?;
+        let native = native.or(if row.kind == Some(backend_library::DeclarationKind::Module) {
+            super::vue_source::extent(&sources, row).map_err(|_| unavailable())?
+        } else { None });
+        let structural = if native.is_none() {
+            super::structural_source::admit(&sources, row).map_err(|_| unavailable())?
+        } else { None };
+        let (native_path, source_identity, extent, scope) = match (native, structural.as_ref()) {
+            (Some((path, identity, extent)), _) => (path, identity, extent, backend_library::SourceRangeScope::NativePrimaryDeclaration),
+            (None, Some(source)) => (source.path.clone(), source.identity, source.binding.owner(), backend_library::SourceRangeScope::StructuralDeclaration),
+            _ => return Err(unavailable()),
+        };
         let record = sources
             .files
             .iter()
@@ -5985,7 +5997,13 @@ impl CommandAdapter {
             super::super::source_range::SourceRangeError::Stale => CommandFailure::CursorMismatch,
             _ => unavailable(),
         };
-        let (head, head_lines, page) = if with_context && request.start == 0 {
+        let (head, head_lines, page) = if let Some(source) = structural.as_ref() {
+            let page = super::super::ingest::read_indexed_source_range(
+                &source_root, fields.path, source_identity, fields.content_version,
+                source.binding, &source.name, request.start, u32::from(request.limit),
+            ).map_err(read_error)?;
+            (String::new(), 0, page)
+        } else if with_context && request.start == 0 {
             // The default excerpt also carries the modifiers and leading comment that the
             // compiler keeps outside its extent; they count against the byte bound.
             let (head, page, lines) = super::super::ingest::read_indexed_native_excerpt(
@@ -6020,7 +6038,7 @@ impl CommandAdapter {
             start: page.start,
             end: page.end,
             total: page.total,
-            scope: backend_library::SourceRangeScope::NativePrimaryDeclaration,
+            scope,
             source_identity: page.source_identity,
             owner_start,
             owner_end,
@@ -8919,6 +8937,8 @@ mod tests {
 
     #[path = "selected_read.rs"]
     mod selected_read_tests;
+    #[path = "structural_source.rs"]
+    mod structural_source_tests;
 
     #[path = "index_profile_worker.rs"]
     mod index_profile_worker_tests;

@@ -32,6 +32,9 @@ pub enum SourceRangeScope {
     Unknown,
     /// The native producer's captured primary declaration span only.
     NativePrimaryDeclaration,
+    /// A unique exact structural declaration capture, checked against current
+    /// indexed host bytes; this grants no compiler semantic authority.
+    StructuralDeclaration,
 }
 
 impl SourceRangeScope {
@@ -44,6 +47,9 @@ impl SourceRangeScope {
             }
             Self::NativePrimaryDeclaration => {
                 "Scope: native primary declaration span; modifiers or merged parts may be outside this span."
+            }
+            Self::StructuralDeclaration => {
+                "Scope: structural declaration source; compiler semantic authority is not established."
             }
         }
     }
@@ -94,7 +100,7 @@ impl SourceRangePage {
             && self.start <= self.end
             && self.end <= self.total
             && self.owner_end.checked_sub(self.owner_start) == Some(self.total)
-            && (self.scope != SourceRangeScope::NativePrimaryDeclaration || self.total != 0)
+            && (self.scope == SourceRangeScope::Unknown || self.total != 0)
             && usize::try_from(self.end - self.start).ok() == Some(self.text.len())
             && self.text.len() <= usize::from(request.limit)
             && (self.end == self.total || self.end > self.start)
