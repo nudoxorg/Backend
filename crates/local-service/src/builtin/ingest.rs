@@ -597,7 +597,11 @@ impl NativeTsCapture {
                 row.headers = Some(header.headers.clone());
                 row.validate().map_err(str::to_owned)?;
                 super::native_ts_headers::admit_image(&row, &view, image.as_ref())?;
-                admitted_headers.insert(path.to_owned(), header.headers.clone());
+                // Keep the source/line evidence when optional headers cannot
+                // fit the canonical relation row; never publish a partial list.
+                if row.checked_encoded_len().is_some_and(|len| len <= backend_engine::builtin::MAX_NATIVE_EVIDENCE_STORED_VALUE) {
+                    admitted_headers.insert(path.to_owned(), header.headers.clone());
+                }
             }
         }
         if !header_claims.is_empty() { return Err("native headers lack their selected image".into()); }
