@@ -25,7 +25,7 @@ pub const MAX_NATIVE_EVIDENCE_ROWS: usize = 262_144;
 pub const MAX_NATIVE_EVIDENCE_PROJECT_ROWS: usize = 100_000;
 /// Maximum canonical row value; framing and key are charged separately.
 pub const MAX_NATIVE_EVIDENCE_VALUE: usize =
-    4 + 32 + 2 + 2 + MAX_NATIVE_EVIDENCE_PATH + 32 + 32 + 4 + 1 + 1 + 4 + MAX_NATIVE_EVIDENCE_LINES * 4;
+    4 + 32 + 2 + 2 + MAX_NATIVE_EVIDENCE_PATH + 32 + 32 + 4 + 1 + 1 + 4 + MAX_NATIVE_EVIDENCE_LINES * 5;
 
 /// Independently selected native-source claim relation.
 #[derive(Debug)]
@@ -190,7 +190,16 @@ impl Relation for NativeSourceEvidenceRelation {
         output.push(match value.kind { NativeSourceEvidenceKind::ProgramMember => 0, NativeSourceEvidenceKind::Image => 1 });
         let lines = value.line_starts.as_deref().unwrap_or(&[]);
         output.extend_from_slice(&(lines.len() as u32).to_be_bytes());
-        for line in lines { output.extend_from_slice(&line.to_be_bytes()); }
+        let mut previous = 0_u32;
+        for line in lines {
+            let mut delta = line.wrapping_sub(previous);
+            previous = *line;
+            while delta >= 128 {
+                output.push((delta as u8 & 0x7f) | 0x80);
+                delta >>= 7;
+            }
+            output.push(delta as u8);
+        }
     }
 }
 impl CanonicalRelation for NativeSourceEvidenceRelation {
@@ -216,9 +225,29 @@ impl CanonicalRelation for NativeSourceEvidenceRelation {
             } else {
                 let kind = match *rest.get(69)? { 0 => NativeSourceEvidenceKind::ProgramMember, 1 => NativeSourceEvidenceKind::Image, _ => return None };
                 let count = u32::from_be_bytes(rest.get(70..74)?.try_into().ok()?) as usize;
-                if count > MAX_NATIVE_EVIDENCE_LINES || rest.len() != 74usize.checked_add(count.checked_mul(4)?)? { return None; }
+                if count > MAX_NATIVE_EVIDENCE_LINES { return None; }
                 let mut lines = Vec::with_capacity(count);
-                for chunk in rest.get(74..)?.chunks_exact(4) { lines.push(u32::from_be_bytes(chunk.try_into().ok()?)); }
+                let mut at = 74;
+                let mut previous = 0_u32;
+                for _ in 0..count {
+                    let mut delta = 0_u32;
+                    let mut finished = false;
+                    for shift in (0..=28).step_by(7) {
+                        let byte = *rest.get(at)?;
+                        at += 1;
+                        if shift == 28 && byte > 15 { return None; }
+                        delta |= u32::from(byte & 0x7f) << shift;
+                        if byte & 0x80 == 0 {
+                            if shift > 0 && byte == 0 { return None; }
+                            finished = true;
+                            break;
+                        }
+                    }
+                    if !finished { return None; }
+                    previous = previous.checked_add(delta)?;
+                    lines.push(previous);
+                }
+                if at != rest.len() { return None; }
                 if kind == NativeSourceEvidenceKind::Image && count == 0 { return None; }
                 (kind, if count == 0 { None } else { Some(lines) })
             };
