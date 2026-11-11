@@ -403,6 +403,8 @@ impl CSharpOracle {
             }
         }
         validate_absolute_paths(&self.oracle, request)?;
+        let helper_digest = executable_digest(&self.oracle, "helper")?;
+        let toolchain_digest = executable_digest(request.toolchain, "dotnet")?;
         let maximum_source_bytes = request.configuration.maximum_source_bytes;
         if request.source.len() > maximum_source_bytes {
             return Err(CSharpAuthorityError::SourceLimit {
@@ -703,6 +705,8 @@ impl CSharpOracle {
             request.control.cancelled,
         )
         .map_err(|cause| capture_error(cause, request.toolchain, &self.oracle))?;
+        ensure_executable_unchanged(&self.oracle, "helper", helper_digest)?;
+        ensure_executable_unchanged(request.toolchain, "dotnet", toolchain_digest)?;
         if !result.status.success() {
             return Err(CSharpAuthorityError::Exit {
                 status: result.status.to_string(),
@@ -1178,6 +1182,14 @@ pub enum CSharpAuthorityError {
         /// Digest retained in the image envelope.
         observed: [u8; 32],
     },
+    /// The selected helper or dotnet host changed while the child was running.
+    #[error("C# authority {kind} executable changed during invocation: {path:?}")]
+    ExecutableChanged {
+        kind: &'static str,
+        path: Box<Path>,
+        expected: [u8; 32],
+        observed: [u8; 32],
+    },
 }
 
 fn capture_error(
@@ -1256,6 +1268,33 @@ fn validate_absolute_paths(
                 path: path.to_path_buf(),
             });
         }
+    }
+    Ok(())
+}
+
+fn executable_digest(path: &Path, _kind: &'static str) -> Result<[u8; 32], CSharpAuthorityError> {
+    let bytes = backend_platform::durable::read_regular_bounded_stable(path, 64 * 1024 * 1024)
+        .map_err(|source| CSharpAuthorityError::Path {
+            phase: CSharpAuthorityPhase::Spawn,
+            path: path.to_path_buf(),
+            source,
+        })?;
+    Ok(Sha256::digest(bytes).into())
+}
+
+fn ensure_executable_unchanged(
+    path: &Path,
+    kind: &'static str,
+    expected: [u8; 32],
+) -> Result<(), CSharpAuthorityError> {
+    let observed = executable_digest(path, kind)?;
+    if observed != expected {
+        return Err(CSharpAuthorityError::ExecutableChanged {
+            kind,
+            path: path.to_path_buf().into_boxed_path(),
+            expected,
+            observed,
+        });
     }
     Ok(())
 }
