@@ -19,6 +19,7 @@ p.add_argument('--bundle', required=True, type=Path)
 p.add_argument('--output', required=True, type=Path)
 p.add_argument('--without-worker', action='store_true')
 p.add_argument('--wait-seconds', type=int, default=120)
+p.add_argument('--startup-seconds', type=int, default=600)
 a = p.parse_args()
 a.output.mkdir(parents=True, exist_ok=False)
 a.output = a.output.resolve()
@@ -72,7 +73,7 @@ try:
         if endpoint.exists():
             endpoint.unlink()
         owner = subprocess.Popen([str(bundle / 'backend-locald'), '--endpoint', str(endpoint), '--workspace', str(state), '--authority-secret-file', str(secret), '--registry-offline', '--registry-discovery-offline', '--advisory-offline', '--forge-offline'], cwd=project, env=env, stdout=subprocess.DEVNULL, stderr=(a.output / f'owner-{turn}.stderr').open('wb'), start_new_session=True)
-        deadline = time.monotonic() + 120
+        deadline = time.monotonic() + a.startup_seconds
         while not endpoint.exists():
             if owner.poll() is not None or time.monotonic() > deadline:
                 raise RuntimeError('owner failed to start')
