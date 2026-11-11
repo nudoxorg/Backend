@@ -5721,7 +5721,9 @@ impl CommandAdapter {
                     .unwrap_or(backend_library::SourceExcerpt::NotCaptured);
                 document.location = backend_library::SourceAvailability::Captured(location);
                 if page.scope == backend_library::SourceRangeScope::StructuralDeclaration {
-                    document.source_range = Some(page);
+                    let mut fragments = document.fragments.into_vec();
+                    fragments.push(backend_library::Fragment::Text(page.scope.description().to_owned()));
+                    document.fragments = fragments.into_boxed_slice();
                 }
             }
         }

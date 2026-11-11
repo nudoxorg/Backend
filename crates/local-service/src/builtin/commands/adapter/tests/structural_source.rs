@@ -95,15 +95,15 @@ fn python_and_csharp_structural_source_survive_public_wire_and_cold_reopen() {
                 panic!("source must return {name}")
             };
             assert_eq!(document.excerpt.text(), Some(text));
-            let page = document
-                .source_range
-                .expect("explicit structural source qualification");
-            assert_eq!(page.scope, SourceRangeScope::StructuralDeclaration);
             assert!(
-                page.source_policy.is_unknown(),
+                document.source_range.is_none(),
+                "default source does not invent a range request"
+            );
+            assert!(
+                document.source_policy.is_unknown(),
                 "syntax capture is not a selected compiler-policy claim"
             );
-            assert_eq!(page.text, text);
+            assert!(document.fragments.iter().any(|fragment| matches!(fragment, backend_library::Fragment::Text(note) if note == SourceRangeScope::StructuralDeclaration.description())), "default source explicitly qualifies structural capture");
         }
         let mut start = 0;
         let mut identity = None;
