@@ -1514,9 +1514,9 @@ fn supervisor_enforces_unix_process_count_limit() -> Result<(), Box<dyn Error>> 
         python,
         &[
             "-c",
-            "import os; os.write(1, b'authority-reached'); os.fork(); os._exit(0)",
+            "import os\nos.write(1, b'authority-reached')\ntry:\n os.fork()\nexcept OSError:\n os._exit(1)\nos._exit(0)",
         ],
-        limits(128, 1024, Duration::from_secs(2), 1152)?.with_process_count_limit(1)?,
+        limits(128, 128, Duration::from_secs(2), 256)?.with_process_count_limit(1)?,
     )?;
     let receipt = process.run()?;
     assert_eq!(receipt.terminal(), ProcessTerminal::Exit);
