@@ -186,7 +186,11 @@ fn copy_pack_layout(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<PathBuf, &'static str> {
-    let mut roots = snapshots.iter().filter_map(|snapshot| {
+    let pack_snapshots = snapshots
+        .iter()
+        .filter(|snapshot| snapshot.canonical.components().any(|component| component.as_os_str() == "packs"))
+        .collect::<Vec<_>>();
+    let mut roots = pack_snapshots.iter().filter_map(|snapshot| {
         snapshot
             .canonical
             .ancestors()
@@ -197,7 +201,7 @@ fn copy_pack_layout(
     if roots.any(|root| root != source) {
         return Err("SDK pack roots differ");
     }
-    if snapshots.iter().any(|snapshot| !snapshot.canonical.starts_with(&source)) {
+    if pack_snapshots.iter().any(|snapshot| !snapshot.canonical.starts_with(&source)) {
         return Err("SDK candidate outside pack layout");
     }
     let target = destination.join("packs");
