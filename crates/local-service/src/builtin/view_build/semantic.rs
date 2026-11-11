@@ -634,23 +634,28 @@ pub(in crate::builtin) fn admitted_native_evidence<'a>(
 pub(in crate::builtin) fn selected_nse_typescript_owners(
     relation: &backend_engine::workspace::WorkspaceRelationHandle<backend_engine::builtin::NativeSourceEvidenceRelation>,
 ) -> Result<BTreeSet<[u8; 32]>, BuiltinModelError> {
-    use backend_engine::Relation as _;
     let mut rows = Vec::new();
     let mut bytes = 0usize;
+    let mut resident = 0usize;
     let mut after = None;
     loop {
-        let page = relation.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+        let page = relation.page(after.as_ref(), 1)
             .map_err(|error| BuiltinModelError(format!("scan native evidence: {error}")))?;
         for (key, row) in page.entries() {
             if rows.len() >= backend_engine::builtin::MAX_NATIVE_EVIDENCE_ROWS {
                 return Err(BuiltinModelError("native evidence row budget exceeded".into()));
             }
-            let mut encoded = Vec::new();
-            backend_engine::builtin::NativeSourceEvidenceRelation::encode_value(row, &mut encoded);
-            bytes = bytes.checked_add(40).and_then(|work| work.checked_add(encoded.len()))
+            bytes = bytes.checked_add(40).and_then(|work| work.checked_add(row.checked_encoded_len()?))
                 .ok_or_else(|| BuiltinModelError("native evidence scan overflow".into()))?;
             if bytes > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES {
                 return Err(BuiltinModelError("native evidence byte budget exceeded".into()));
+            }
+            resident = resident.checked_add(std::mem::size_of::<([u8; 32], backend_engine::builtin::NativeSourceEvidence)>())
+                .and_then(|work| work.checked_add(row.checked_heap_bytes()?))
+                .and_then(|work| work.checked_add(6 * std::mem::size_of::<usize>()))
+                .ok_or_else(|| BuiltinModelError("native evidence resident overflow".into()))?;
+            if resident > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES {
+                return Err(BuiltinModelError("native evidence resident budget exceeded".into()));
             }
             rows.push((*key, row.clone()));
         }
@@ -1285,10 +1290,7 @@ fn lookup_native_evidence(
     // Relation lookup decodes a bounded line map. Charge every decoded
     // allocation, including repeated lookups across profiles, against the
     // same request-wide budget as the retained images.
-    let map_bytes = row.line_starts.as_ref().map_or(Some(0), |lines| {
-        lines.capacity().checked_mul(std::mem::size_of::<u32>())
-    }).and_then(|bytes| bytes.checked_add(row.path.capacity()))
-      .and_then(|bytes| bytes.checked_add(row.headers.as_ref().map_or(Some(0), |headers| headers.entries.capacity().checked_mul(std::mem::size_of::<backend_engine::builtin::NativeHeaderEntry>()))?))
+    let map_bytes = row.checked_heap_bytes()
       .ok_or_else(|| BuiltinModelError("native evidence allocation overflow".into()))?;
     *budget = budget.checked_sub(map_bytes)
         .ok_or_else(|| BuiltinModelError("native evidence budget exceeded".into()))?;

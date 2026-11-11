@@ -92,6 +92,25 @@ impl NativeSourceEvidence {
     /// Whether this claim names a separately admitted program image.
     pub fn admits_image(&self) -> bool { self.kind == NativeSourceEvidenceKind::Image }
 
+    /// Exact canonical value length, without allocating an encoded copy.
+    pub fn checked_encoded_len(&self) -> Option<usize> {
+        let base = 4usize.checked_add(32 + 2 + 2)?.checked_add(self.path.len())?.checked_add(32 + 32 + 4 + 1)?;
+        if self.headers.is_none() && self.kind == NativeSourceEvidenceKind::Image && self.line_starts.is_none() { return Some(base); }
+        let lines = self.line_starts.as_ref().map_or(0, Vec::len);
+        let mut size = base.checked_add(1 + 4)?.checked_add(lines.checked_mul(4)?)?;
+        if let Some(headers) = &self.headers {
+            size = size.checked_add(76)?.checked_add(headers.entries.len().checked_mul(HEADER_ENTRY_BYTES)?)?;
+        }
+        Some(size)
+    }
+
+    /// Heap owned by this row, excluding the row itself and allocator metadata.
+    pub fn checked_heap_bytes(&self) -> Option<usize> {
+        let lines = self.line_starts.as_ref().map_or(Some(0), |v| v.capacity().checked_mul(std::mem::size_of::<u32>()))?;
+        let headers = self.headers.as_ref().map_or(Some(0), |h| h.entries.capacity().checked_mul(std::mem::size_of::<NativeHeaderEntry>()))?;
+        self.path.capacity().checked_add(lines)?.checked_add(headers)
+    }
+
     /// Captures a bounded complete line map when line endings are representable.
     pub fn capture_line_starts(bytes: &[u8]) -> Option<Vec<u32>> {
         let text = std::str::from_utf8(bytes).ok()?;
@@ -260,8 +279,6 @@ impl CanonicalRelation for NativeSourceEvidenceRelation {
                 let line_end = 74usize.checked_add(count.checked_mul(4)?)?;
                 if count > MAX_NATIVE_EVIDENCE_LINES || line_end > rest.len() { return None; }
                 if bytes.get(..4)? == MAGIC_V2 && line_end != rest.len() { return None; }
-                let mut lines = Vec::with_capacity(count);
-                for chunk in rest.get(74..line_end)?.chunks_exact(4) { lines.push(u32::from_be_bytes(chunk.try_into().ok()?)); }
                 if bytes.get(..4)? == MAGIC_V2 && kind == NativeSourceEvidenceKind::Image && count == 0 { return None; }
                 let headers = if bytes.get(..4)? == MAGIC_V3 {
                     let tail = rest.get(line_end..)?;
@@ -278,6 +295,8 @@ impl CanonicalRelation for NativeSourceEvidenceRelation {
                     }
                     Some(NativeHeaderEvidence { image_identity: tail.get(..32)?.try_into().ok()?, image_byte_len: u64::from_be_bytes(tail.get(32..40)?.try_into().ok()?), producer_recipe: tail.get(40..72)?.try_into().ok()?, entries })
                 } else { None };
+                let mut lines = Vec::with_capacity(count);
+                for chunk in rest.get(74..line_end)?.chunks_exact(4) { lines.push(u32::from_be_bytes(chunk.try_into().ok()?)); }
                 (kind, if count == 0 { None } else { Some(lines) }, headers)
             };
             let record = NativeSourceEvidence {
@@ -319,12 +338,10 @@ pub fn validate_native_source_evidence_rows(
         if *count > MAX_NATIVE_EVIDENCE_PROJECT_ROWS {
             return Err("native source evidence project limit");
         }
-        let mut encoded = Vec::new();
-        NativeSourceEvidenceRelation::encode_value(row, &mut encoded);
         // One 32-byte key plus two u32 lengths frames each exact record.
         bytes = bytes
             .checked_add(32 + 8)
-            .and_then(|n| n.checked_add(encoded.len()))
+            .and_then(|n| n.checked_add(row.checked_encoded_len()?))
             .ok_or("native source evidence byte overflow")?;
         if bytes > MAX_NATIVE_EVIDENCE_BYTES {
             return Err("native source evidence byte limit");
@@ -382,6 +399,7 @@ mod tests {
         let row = row();
         let mut bytes = Vec::new();
         NativeSourceEvidenceRelation::encode_value(&row, &mut bytes);
+        assert_eq!(row.checked_encoded_len(), Some(bytes.len()));
         assert_eq!(
             NativeSourceEvidenceRelation::decode_value(&bytes).unwrap(),
             row
@@ -417,6 +435,7 @@ mod tests {
         let mut encoded = Vec::new();
         NativeSourceEvidenceRelation::encode_value(&claim, &mut encoded);
         assert_eq!(&encoded[..4], MAGIC_V2);
+        assert_eq!(claim.checked_encoded_len(), Some(encoded.len()));
         assert_eq!(NativeSourceEvidenceRelation::decode_value(&encoded).unwrap(), claim);
         assert!(claim.verify_host(bytes, image).is_ok());
         claim.line_starts.as_mut().unwrap()[1] += 1;
@@ -450,6 +469,8 @@ mod tests {
         let mut bytes = Vec::new();
         NativeSourceEvidenceRelation::encode_value(&claim, &mut bytes);
         assert_eq!(&bytes[..4], MAGIC_V3);
+        assert_eq!(claim.checked_encoded_len(), Some(bytes.len()));
+        assert!(claim.checked_heap_bytes().unwrap() >= claim.path.len() + std::mem::size_of::<NativeHeaderEntry>());
         assert_eq!(NativeSourceEvidenceRelation::decode_value(&bytes).unwrap(), claim);
         for end in 0..bytes.len() { assert!(NativeSourceEvidenceRelation::decode_value(&bytes[..end]).is_err()); }
         let mut invalid = claim.clone();
