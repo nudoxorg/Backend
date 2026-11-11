@@ -73,125 +73,196 @@ type SnapshotManifest = Vec<(PathBuf, [u8; 32], usize)>;
 #[cfg(target_os = "linux")]
 #[derive(Debug, Eq, PartialEq)]
 struct ElfRuntimeRequirements {
+    machine: u16,
+    interpreter: Option<Box<str>>,
     needed: Box<[Box<str>]>,
-    runpaths: Box<[Box<str>]>,
+    rpath: Option<Box<str>>,
+    runpath: Option<Box<str>>,
 }
 
+// Read the program headers and PT_DYNAMIC used by the kernel and dynamic
+// loader, rather than SHT_DYNAMIC: section headers may be absent or disagree
+// with the loadable image. This is discovery only, not loader containment.
 #[cfg(target_os = "linux")]
 fn elf_runtime_requirements(bytes: &[u8]) -> Result<ElfRuntimeRequirements, CSharpAuthorityError> {
-    if bytes.len() > 64 * 1024 * 1024 {
-        return Err(CSharpAuthorityError::Configuration);
+    let invalid = || CSharpAuthorityError::Configuration;
+    if bytes.len() > 64 * 1024 * 1024 || bytes.get(..6) != Some(b"\x7fELF\x02\x01") {
+        return Err(invalid());
     }
-    let parsed = object::File::parse(bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
-    let object::File::Elf64(file) = parsed else {
-        return Err(CSharpAuthorityError::Configuration);
+    let object::File::Elf64(_) = object::File::parse(bytes).map_err(|_| invalid())? else {
+        return Err(invalid());
     };
-    let dynamic = file
-        .elf_dynamic_table()
-        .map_err(|_| CSharpAuthorityError::Configuration)?;
-    let mut needed = Vec::new();
-    let mut runpaths = Vec::new();
-    for entry in dynamic.iter() {
-        let is_needed = entry.tag == object::elf::DT_NEEDED;
-        let is_runpath = entry.tag == object::elf::DT_RUNPATH || entry.tag == object::elf::DT_RPATH;
-        if !is_needed && !is_runpath {
-            continue;
+    let u16_at = |at: usize| -> Option<u16> {
+        Some(u16::from_le_bytes(
+            bytes.get(at..at.checked_add(2)?)?.try_into().ok()?,
+        ))
+    };
+    let u32_at = |at: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(
+            bytes.get(at..at.checked_add(4)?)?.try_into().ok()?,
+        ))
+    };
+    let u64_at = |at: usize| -> Option<u64> {
+        Some(u64::from_le_bytes(
+            bytes.get(at..at.checked_add(8)?)?.try_into().ok()?,
+        ))
+    };
+    let machine = u16_at(18).ok_or_else(invalid)?;
+    let phoff = usize::try_from(u64_at(32).ok_or_else(invalid)?).map_err(|_| invalid())?;
+    let phentsize = usize::from(u16_at(54).ok_or_else(invalid)?);
+    let phnum = usize::from(u16_at(56).ok_or_else(invalid)?);
+    if phentsize < 56 || phnum == 0 || phnum > 128 {
+        return Err(invalid());
+    }
+    let table_end = phoff
+        .checked_add(phentsize.checked_mul(phnum).ok_or_else(invalid)?)
+        .ok_or_else(invalid)?;
+    if table_end > bytes.len() {
+        return Err(invalid());
+    }
+    let mut loads = Vec::new();
+    let mut dynamic = None;
+    let mut interpreter = None;
+    for ordinal in 0..phnum {
+        let base = phoff + ordinal * phentsize;
+        let kind = u32_at(base).ok_or_else(invalid)?;
+        let offset =
+            usize::try_from(u64_at(base + 8).ok_or_else(invalid)?).map_err(|_| invalid())?;
+        let vaddr = u64_at(base + 16).ok_or_else(invalid)?;
+        let length =
+            usize::try_from(u64_at(base + 32).ok_or_else(invalid)?).map_err(|_| invalid())?;
+        let end = offset.checked_add(length).ok_or_else(invalid)?;
+        if end > bytes.len() {
+            return Err(invalid());
         }
-        let value = dynamic
-            .string(entry)
-            .map_err(|_| CSharpAuthorityError::Configuration)?;
-        let value = std::str::from_utf8(value).map_err(|_| CSharpAuthorityError::Configuration)?;
-        if value.is_empty() || value.len() > 4096 || value.as_bytes().contains(&0) {
-            return Err(CSharpAuthorityError::Configuration);
-        }
-        if is_needed {
-            needed.push(value.into());
-        } else {
-            for path in value.split(':') {
-                if path.is_empty() || path.len() > 4096 {
-                    return Err(CSharpAuthorityError::Configuration);
+        match kind {
+            1 => loads.push((vaddr, offset, length)),
+            2 => {
+                if dynamic.replace((offset, length)).is_some() {
+                    return Err(invalid());
                 }
-                runpaths.push(path.into());
+            }
+            3 => {
+                if interpreter.is_some() || length < 2 || length > 4096 {
+                    return Err(invalid());
+                }
+                let raw = &bytes[offset..end];
+                if raw.last() != Some(&0) || raw[..length - 1].contains(&0) {
+                    return Err(invalid());
+                }
+                let value = std::str::from_utf8(&raw[..length - 1]).map_err(|_| invalid())?;
+                interpreter = Some(Box::<str>::from(value));
+            }
+            _ => {}
+        }
+    }
+    let mut needed_offsets = Vec::new();
+    let mut rpath_offset = None;
+    let mut runpath_offset = None;
+    let mut strtab = None;
+    let mut strsz = None;
+    if let Some((offset, length)) = dynamic {
+        if length % 16 != 0 || length / 16 > 8192 {
+            return Err(invalid());
+        }
+        let mut terminated = false;
+        for entry in (offset..offset + length).step_by(16) {
+            let tag = u64_at(entry).ok_or_else(invalid)?;
+            let value = u64_at(entry + 8).ok_or_else(invalid)?;
+            match tag {
+                0 => {
+                    terminated = true;
+                    break;
+                }
+                1 => needed_offsets.push(value),
+                5 => {
+                    if strtab.replace(value).is_some() {
+                        return Err(invalid());
+                    }
+                }
+                10 => {
+                    if strsz.replace(value).is_some() {
+                        return Err(invalid());
+                    }
+                }
+                15 => {
+                    if rpath_offset.replace(value).is_some() {
+                        return Err(invalid());
+                    }
+                }
+                29 => {
+                    if runpath_offset.replace(value).is_some() {
+                        return Err(invalid());
+                    }
+                }
+                _ => {}
             }
         }
-        if needed.len() + runpaths.len() > 8192 {
-            return Err(CSharpAuthorityError::Configuration);
+        if !terminated {
+            return Err(invalid());
         }
     }
+    let has_strings =
+        !needed_offsets.is_empty() || rpath_offset.is_some() || runpath_offset.is_some();
+    let strings = if has_strings {
+        let address = strtab.ok_or_else(invalid)?;
+        let size = usize::try_from(strsz.ok_or_else(invalid)?).map_err(|_| invalid())?;
+        if size == 0 || size > 16 * 1024 * 1024 {
+            return Err(invalid());
+        }
+        let mut candidate = None;
+        for (vaddr, offset, length) in loads {
+            let Some(relative) = address
+                .checked_sub(vaddr)
+                .and_then(|x| usize::try_from(x).ok())
+            else {
+                continue;
+            };
+            let Some(end) = relative.checked_add(size) else {
+                continue;
+            };
+            if end <= length {
+                let start = offset.checked_add(relative).ok_or_else(invalid)?;
+                if candidate.replace(&bytes[start..start + size]).is_some() {
+                    return Err(invalid());
+                }
+            }
+        }
+        candidate.ok_or_else(invalid)?
+    } else {
+        &[]
+    };
+    let get_string = |value: u64| -> Result<Box<str>, CSharpAuthorityError> {
+        let offset = usize::try_from(value).map_err(|_| invalid())?;
+        let tail = strings.get(offset..).ok_or_else(invalid)?;
+        let end = tail.iter().position(|b| *b == 0).ok_or_else(invalid)?;
+        if end == 0 || end > 4096 {
+            return Err(invalid());
+        }
+        Ok(std::str::from_utf8(&tail[..end])
+            .map_err(|_| invalid())?
+            .into())
+    };
+    let needed = needed_offsets
+        .into_iter()
+        .map(get_string)
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(ElfRuntimeRequirements {
+        machine,
+        interpreter,
         needed: needed.into_boxed_slice(),
-        runpaths: runpaths.into_boxed_slice(),
+        rpath: rpath_offset.map(get_string).transpose()?,
+        runpath: runpath_offset.map(get_string).transpose()?,
     })
 }
 
 #[cfg(target_os = "linux")]
 fn require_relocatable_elf_host(bytes: &[u8]) -> Result<(), CSharpAuthorityError> {
-    // The private snapshot cannot make an ELF interpreter at an absolute
-    // `/nix/store` (or system) path immutable. Refuse such hosts until their
-    // interpreter and DT_NEEDED native closure are copied and verified too.
-    if bytes.get(..4) != Some(b"\x7fELF") || bytes.get(4) != Some(&2) {
-        return Err(CSharpAuthorityError::Configuration);
-    }
-    if bytes.get(5) != Some(&1) {
-        return Err(CSharpAuthorityError::Configuration);
-    }
-    // Let the native object reader validate the complete ELF container before
-    // inspecting bounded program-header fields below.
-    let requirements = elf_runtime_requirements(bytes)?;
-    if requirements.needed.len() > 8192 || requirements.runpaths.len() > 8192 {
-        return Err(CSharpAuthorityError::Configuration);
-    }
-    let read_u16 = |at: usize| {
-        bytes
-            .get(at..at + 2)
-            .map(|part| u16::from_le_bytes([part[0], part[1]]))
-    };
-    let read_u64 = |at: usize| {
-        bytes
-            .get(at..at + 8)
-            .map(|part| u64::from_le_bytes(part.try_into().expect("slice length")))
-    };
-    let phoff = read_u64(32).ok_or(CSharpAuthorityError::Configuration)? as usize;
-    let phentsize = usize::from(read_u16(54).ok_or(CSharpAuthorityError::Configuration)?);
-    let phnum = usize::from(read_u16(56).ok_or(CSharpAuthorityError::Configuration)?);
-    if phentsize < 56 || phnum > 128 {
-        return Err(CSharpAuthorityError::Configuration);
-    }
-    for ordinal in 0..phnum {
-        let base = phoff
-            .checked_add(
-                ordinal
-                    .checked_mul(phentsize)
-                    .ok_or(CSharpAuthorityError::Configuration)?,
-            )
-            .ok_or(CSharpAuthorityError::Configuration)?;
-        let kind = read_u32(bytes, base).ok_or(CSharpAuthorityError::Configuration)?;
-        if kind != 3 {
-            continue;
-        }
-        let offset = read_u64(base + 8).ok_or(CSharpAuthorityError::Configuration)? as usize;
-        let length = read_u64(base + 32).ok_or(CSharpAuthorityError::Configuration)? as usize;
-        let end = offset
-            .checked_add(length)
-            .ok_or(CSharpAuthorityError::Configuration)?;
-        let interpreter = bytes
-            .get(offset..end)
-            .ok_or(CSharpAuthorityError::Configuration)?;
-        if interpreter.first() == Some(&b'/')
-            || interpreter.iter().position(|byte| *byte == 0).is_none()
-        {
-            return Err(CSharpAuthorityError::Configuration);
-        }
-        return Ok(());
-    }
+    // Neither absolute nor relative PT_INTERP paths are in the private
+    // snapshot. A relative path is resolved against the child's working
+    // directory and is no more custodial than an absolute path.
+    let _requirements = elf_runtime_requirements(bytes)?;
     Err(CSharpAuthorityError::Configuration)
-}
-
-#[cfg(target_os = "linux")]
-fn read_u32(bytes: &[u8], at: usize) -> Option<u32> {
-    bytes
-        .get(at..at + 4)
-        .map(|part| u32::from_le_bytes(part.try_into().expect("slice length")))
 }
 
 fn copy_tree_bounded(
@@ -1836,6 +1907,70 @@ mod tests {
         let mut oversized = vec![0u8; 64 * 1024 * 1024 + 1];
         oversized[..4].copy_from_slice(b"\x7fELF");
         assert!(elf_runtime_requirements(&oversized).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    fn sectionless_elf_fixture() -> Vec<u8> {
+        let mut bytes = vec![0u8; 384];
+        bytes[..6].copy_from_slice(b"\x7fELF\x02\x01");
+        bytes[6] = 1;
+        bytes[16..18].copy_from_slice(&3u16.to_le_bytes());
+        bytes[18..20].copy_from_slice(&62u16.to_le_bytes());
+        bytes[20..24].copy_from_slice(&1u32.to_le_bytes());
+        bytes[32..40].copy_from_slice(&64u64.to_le_bytes());
+        bytes[52..54].copy_from_slice(&64u16.to_le_bytes());
+        bytes[54..56].copy_from_slice(&56u16.to_le_bytes());
+        bytes[56..58].copy_from_slice(&3u16.to_le_bytes());
+        // One PT_LOAD maps the whole file; PT_DYNAMIC and PT_INTERP are
+        // independent program headers. No section table is present.
+        bytes[64..68].copy_from_slice(&1u32.to_le_bytes());
+        bytes[80..88].copy_from_slice(&0x1000u64.to_le_bytes());
+        bytes[96..104].copy_from_slice(&384u64.to_le_bytes());
+        bytes[104..112].copy_from_slice(&384u64.to_le_bytes());
+        bytes[120..124].copy_from_slice(&2u32.to_le_bytes());
+        bytes[128..136].copy_from_slice(&256u64.to_le_bytes());
+        bytes[152..160].copy_from_slice(&80u64.to_le_bytes());
+        bytes[176..180].copy_from_slice(&3u32.to_le_bytes());
+        bytes[184..192].copy_from_slice(&240u64.to_le_bytes());
+        bytes[208..216].copy_from_slice(&8u64.to_le_bytes());
+        bytes[240..248].copy_from_slice(b"/ld.so\0\0");
+        // Exact PT_INTERP length includes a single NUL terminator.
+        bytes[208..216].copy_from_slice(&7u64.to_le_bytes());
+        let entries = [(5u64, 0x1000 + 336), (10, 21), (1, 1), (29, 11), (0, 0)];
+        for (index, (tag, value)) in entries.into_iter().enumerate() {
+            let offset = 256 + index * 16;
+            bytes[offset..offset + 8].copy_from_slice(&tag.to_le_bytes());
+            bytes[offset + 8..offset + 16].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[336..357].copy_from_slice(b"\0libfoo.so\0$ORIGIN/x\0");
+        bytes
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn program_headers_find_dependencies_without_sections() {
+        let bytes = sectionless_elf_fixture();
+        let requirements = elf_runtime_requirements(&bytes).expect("sectionless dynamic ELF");
+        assert_eq!(requirements.machine, 62);
+        assert_eq!(requirements.interpreter.as_deref(), Some("/ld.so"));
+        assert_eq!(&*requirements.needed, &[Box::<str>::from("libfoo.so")]);
+        assert_eq!(requirements.runpath.as_deref(), Some("$ORIGIN/x"));
+        assert!(require_relocatable_elf_host(&bytes).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn program_header_discovery_rejects_malformed_or_ambient_interpreters() {
+        let mut bytes = sectionless_elf_fixture();
+        bytes[240..246].copy_from_slice(b"ld.so\0");
+        bytes[208..216].copy_from_slice(&6u64.to_le_bytes());
+        assert!(elf_runtime_requirements(&bytes).is_ok());
+        assert!(require_relocatable_elf_host(&bytes).is_err());
+        bytes[256 + 4 * 16..256 + 4 * 16 + 8].copy_from_slice(&1u64.to_le_bytes());
+        assert!(elf_runtime_requirements(&bytes).is_err()); // no DT_NULL
+        let mut bytes = sectionless_elf_fixture();
+        bytes[264..272].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(elf_runtime_requirements(&bytes).is_err()); // unmapped DT_STRTAB
     }
 
     #[test]
