@@ -70,6 +70,9 @@ fn charge_row_path(
     if let Some(lines) = &row.line_starts {
         charge_allocation(total, lines.capacity().checked_mul(std::mem::size_of::<u32>())?)?;
     }
+    if let Some(headers) = &row.headers {
+        charge_allocation(total, headers.entries.capacity().checked_mul(std::mem::size_of::<backend_engine::builtin::NativeHeaderEntry>())?)?;
+    }
     Some(())
 }
 
@@ -379,6 +382,7 @@ mod program_source_claim_tests {
             path: "a.ts".into(), input_digest: [2; 32], source_digest: [3; 32],
             byte_length: 5, kind: NativeSourceEvidenceKind::ProgramMember,
             line_starts: Some(vec![0, 3]),
+            headers: None,
         };
         let mut image = member.clone();
         image.kind = NativeSourceEvidenceKind::Image;

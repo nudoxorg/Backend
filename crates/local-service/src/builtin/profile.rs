@@ -8269,6 +8269,7 @@ mod persisted_intent_tests {
             ), path: "main.ts".into(), input_digest: [4; 32], source_digest: [5; 32], byte_length: 1,
             kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
             line_starts: None,
+            headers: None,
         };
         let evidence_key = evidence.key().expect("evidence key");
         assert!(mixed.set_native_evidence_changes(
@@ -8302,6 +8303,7 @@ mod persisted_intent_tests {
             byte_length: 9,
             kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
             line_starts: None,
+            headers: None,
         };
         let key = row.key().expect("evidence key");
         let basis = NativeEvidenceBasis {

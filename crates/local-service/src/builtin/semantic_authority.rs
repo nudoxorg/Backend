@@ -5555,6 +5555,7 @@ mod tests {
             byte_length: source.byte_len,
             kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
             line_starts: None,
+            headers: None,
         };
         let spare_source = backend_semantic::ir::SourceIdentity::from_bytes(SPARE.as_bytes())
             .expect("spare source identity");

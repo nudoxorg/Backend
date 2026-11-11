@@ -1272,6 +1272,7 @@ fn lookup_native_evidence(
     let map_bytes = row.line_starts.as_ref().map_or(Some(0), |lines| {
         lines.capacity().checked_mul(std::mem::size_of::<u32>())
     }).and_then(|bytes| bytes.checked_add(row.path.capacity()))
+      .and_then(|bytes| bytes.checked_add(row.headers.as_ref().map_or(Some(0), |headers| headers.entries.capacity().checked_mul(std::mem::size_of::<backend_engine::builtin::NativeHeaderEntry>()))?))
       .ok_or_else(|| BuiltinModelError("native evidence allocation overflow".into()))?;
     *budget = budget.checked_sub(map_bytes)
         .ok_or_else(|| BuiltinModelError("native evidence budget exceeded".into()))?;

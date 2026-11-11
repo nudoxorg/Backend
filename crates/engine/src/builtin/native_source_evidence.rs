@@ -5,6 +5,7 @@
 //! host bytes in both content domains. Missing rows mean unknown inventory.
 use crate::workspace::{WorkspaceRelationError, WorkspaceRelationHandle, WorkspaceSnapshot};
 use backend_semantic::vocabulary::LanguageProfile;
+use backend_semantic::ir::{DeclarationFamilyId, DeclarationIdentity, VariantFingerprint};
 use backend_store::TypedObject;
 use backend_version::{
     CanonicalRelation, ObjectKey, Relation, RelationDecodeError, Schema, SchemaIdentity, StateRoot,
@@ -13,6 +14,9 @@ use std::collections::BTreeMap;
 
 const MAGIC: &[u8; 4] = b"NSE1";
 const MAGIC_V2: &[u8; 4] = b"NSE2";
+const MAGIC_V3: &[u8; 4] = b"NSE3";
+pub const MAX_NATIVE_HEADER_ENTRIES: usize = 4096;
+const HEADER_ENTRY_BYTES: usize = 52;
 /// Maximum retained line starts per file.
 pub const MAX_NATIVE_EVIDENCE_LINES: usize = 1_000_000;
 const ROOT_KEY: [u8; 32] = [0x45; 32];
@@ -25,7 +29,7 @@ pub const MAX_NATIVE_EVIDENCE_ROWS: usize = 262_144;
 pub const MAX_NATIVE_EVIDENCE_PROJECT_ROWS: usize = 100_000;
 /// Maximum canonical row value; framing and key are charged separately.
 pub const MAX_NATIVE_EVIDENCE_VALUE: usize =
-    4 + 32 + 2 + 2 + MAX_NATIVE_EVIDENCE_PATH + 32 + 32 + 4 + 1 + 1 + 4 + MAX_NATIVE_EVIDENCE_LINES * 4;
+    4 + 32 + 2 + 2 + MAX_NATIVE_EVIDENCE_PATH + 32 + 32 + 4 + 1 + 1 + 4 + MAX_NATIVE_EVIDENCE_LINES * 4 + 32 + 8 + 32 + 4 + MAX_NATIVE_HEADER_ENTRIES * HEADER_ENTRY_BYTES;
 
 /// Independently selected native-source claim relation.
 #[derive(Debug)]
@@ -51,6 +55,22 @@ pub enum NativeSourceEvidenceKind {
     Image,
 }
 
+/// Untrusted header claims; consumption requires an independent compiler/image join.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeHeaderEvidence {
+    pub image_identity: [u8; 32],
+    pub image_byte_len: u64,
+    pub producer_recipe: [u8; 32],
+    pub entries: Vec<NativeHeaderEntry>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeHeaderEntry {
+    pub entity_id: u32,
+    pub identity: DeclarationIdentity,
+    pub compiler_extent: (u32, u32),
+    pub header_extent: (u32, u32),
+}
+
 /// Untrusted persisted claims, not a verified source capability.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeSourceEvidence {
@@ -66,6 +86,7 @@ pub struct NativeSourceEvidence {
     pub kind: NativeSourceEvidenceKind,
     /// Complete line-start offsets captured from these exact bytes, if representable.
     pub line_starts: Option<Vec<u32>>,
+    pub headers: Option<NativeHeaderEvidence>,
 }
 impl NativeSourceEvidence {
     /// Whether this claim names a separately admitted program image.
@@ -102,6 +123,16 @@ impl NativeSourceEvidence {
                 || lines.windows(2).any(|pair| pair[0] >= pair[1])
                 || lines.last().is_some_and(|last| *last > self.byte_length)
             { return Err("invalid native source line map"); }
+        }
+        if let Some(headers) = &self.headers {
+            if !self.admits_image() || headers.entries.len() > MAX_NATIVE_HEADER_ENTRIES
+                || headers.entries.windows(2).any(|p| p[0].entity_id >= p[1].entity_id)
+                || headers.entries.iter().any(|entry| {
+                    let (start, end) = entry.compiler_extent;
+                    let (head_start, head_end) = entry.header_extent;
+                    start >= end || end > self.byte_length || head_start < start
+                        || head_start >= head_end || head_end > end
+                }) { return Err("invalid native header evidence"); }
         }
         native_source_evidence_key(self.project, self.profile, &self.path).map(|_| ())
     }
@@ -171,8 +202,8 @@ impl Relation for NativeSourceEvidenceRelation {
         output.extend_from_slice(value);
     }
     fn encode_value(value: &Self::Value, output: &mut Vec<u8>) {
-        let legacy = value.kind == NativeSourceEvidenceKind::Image && value.line_starts.is_none();
-        output.extend_from_slice(if legacy { MAGIC } else { MAGIC_V2 });
+        let legacy = value.headers.is_none() && value.kind == NativeSourceEvidenceKind::Image && value.line_starts.is_none();
+        output.extend_from_slice(if value.headers.is_some() { MAGIC_V3 } else if legacy { MAGIC } else { MAGIC_V2 });
         output.extend_from_slice(&value.project);
         output.extend_from_slice(&<[u8; 2]>::from(value.profile));
         output.extend_from_slice(&(value.path.len() as u16).to_be_bytes());
@@ -186,6 +217,20 @@ impl Relation for NativeSourceEvidenceRelation {
         let lines = value.line_starts.as_deref().unwrap_or(&[]);
         output.extend_from_slice(&(lines.len() as u32).to_be_bytes());
         for line in lines { output.extend_from_slice(&line.to_be_bytes()); }
+        if let Some(headers) = &value.headers {
+            output.extend_from_slice(&headers.image_identity);
+            output.extend_from_slice(&headers.image_byte_len.to_be_bytes());
+            output.extend_from_slice(&headers.producer_recipe);
+            output.extend_from_slice(&(headers.entries.len() as u32).to_be_bytes());
+            for entry in &headers.entries {
+                output.extend_from_slice(&entry.entity_id.to_be_bytes());
+                output.extend_from_slice(entry.identity.family.as_bytes());
+                output.extend_from_slice(entry.identity.variant.as_bytes());
+                for extent in [entry.compiler_extent.0, entry.compiler_extent.1, entry.header_extent.0, entry.header_extent.1] {
+                    output.extend_from_slice(&extent.to_be_bytes());
+                }
+            }
+        }
     }
 }
 impl CanonicalRelation for NativeSourceEvidenceRelation {
@@ -194,28 +239,46 @@ impl CanonicalRelation for NativeSourceEvidenceRelation {
     }
     fn decode_value(bytes: &[u8]) -> Result<Self::Value, RelationDecodeError> {
         fn parse(bytes: &[u8]) -> Option<NativeSourceEvidence> {
-            if bytes.len() > MAX_NATIVE_EVIDENCE_VALUE || (bytes.get(..4)? != MAGIC && bytes.get(..4)? != MAGIC_V2) {
+            if bytes.len() > MAX_NATIVE_EVIDENCE_VALUE || (bytes.get(..4)? != MAGIC && bytes.get(..4)? != MAGIC_V2 && bytes.get(..4)? != MAGIC_V3) {
                 return None;
             }
             let project = bytes.get(4..36)?.try_into().ok()?;
             let profile =
                 LanguageProfile::try_from(<[u8; 2]>::try_from(bytes.get(36..38)?).ok()?).ok()?;
             let len = u16::from_be_bytes(bytes.get(38..40)?.try_into().ok()?) as usize;
+            if len == 0 || len > MAX_NATIVE_EVIDENCE_PATH { return None; }
             let end = 40usize.checked_add(len)?;
             let path = std::str::from_utf8(bytes.get(40..end)?).ok()?.to_owned();
             let rest = bytes.get(end..)?;
             if rest.len() < 69 || rest[68] != 0 { return None; }
-            let (kind, line_starts) = if bytes.get(..4)? == MAGIC {
+            let (kind, line_starts, headers) = if bytes.get(..4)? == MAGIC {
                 if rest.len() != 69 { return None; }
-                (NativeSourceEvidenceKind::Image, None)
+                (NativeSourceEvidenceKind::Image, None, None)
             } else {
                 let kind = match *rest.get(69)? { 0 => NativeSourceEvidenceKind::ProgramMember, 1 => NativeSourceEvidenceKind::Image, _ => return None };
                 let count = u32::from_be_bytes(rest.get(70..74)?.try_into().ok()?) as usize;
-                if count > MAX_NATIVE_EVIDENCE_LINES || rest.len() != 74usize.checked_add(count.checked_mul(4)?)? { return None; }
+                let line_end = 74usize.checked_add(count.checked_mul(4)?)?;
+                if count > MAX_NATIVE_EVIDENCE_LINES || line_end > rest.len() { return None; }
+                if bytes.get(..4)? == MAGIC_V2 && line_end != rest.len() { return None; }
                 let mut lines = Vec::with_capacity(count);
-                for chunk in rest.get(74..)?.chunks_exact(4) { lines.push(u32::from_be_bytes(chunk.try_into().ok()?)); }
-                if kind == NativeSourceEvidenceKind::Image && count == 0 { return None; }
-                (kind, if count == 0 { None } else { Some(lines) })
+                for chunk in rest.get(74..line_end)?.chunks_exact(4) { lines.push(u32::from_be_bytes(chunk.try_into().ok()?)); }
+                if bytes.get(..4)? == MAGIC_V2 && kind == NativeSourceEvidenceKind::Image && count == 0 { return None; }
+                let headers = if bytes.get(..4)? == MAGIC_V3 {
+                    let tail = rest.get(line_end..)?;
+                    let header_count = u32::from_be_bytes(tail.get(72..76)?.try_into().ok()?) as usize;
+                    if header_count > MAX_NATIVE_HEADER_ENTRIES || tail.len() != 76usize.checked_add(header_count.checked_mul(HEADER_ENTRY_BYTES)?)? { return None; }
+                    let mut entries = Vec::with_capacity(header_count);
+                    for chunk in tail.get(76..)?.chunks_exact(HEADER_ENTRY_BYTES) {
+                        let number = |offset| Some(u32::from_be_bytes(chunk.get(offset..offset+4)?.try_into().ok()?));
+                        entries.push(NativeHeaderEntry {
+                            entity_id: number(0)?,
+                            identity: DeclarationIdentity { family: DeclarationFamilyId::from_raw(chunk.get(4..20)?.try_into().ok()?), variant: VariantFingerprint::from_raw(chunk.get(20..36)?.try_into().ok()?) },
+                            compiler_extent: (number(36)?, number(40)?), header_extent: (number(44)?, number(48)?),
+                        });
+                    }
+                    Some(NativeHeaderEvidence { image_identity: tail.get(..32)?.try_into().ok()?, image_byte_len: u64::from_be_bytes(tail.get(32..40)?.try_into().ok()?), producer_recipe: tail.get(40..72)?.try_into().ok()?, entries })
+                } else { None };
+                (kind, if count == 0 { None } else { Some(lines) }, headers)
             };
             let record = NativeSourceEvidence {
                 project,
@@ -226,6 +289,7 @@ impl CanonicalRelation for NativeSourceEvidenceRelation {
                 byte_length: u32::from_be_bytes(rest.get(64..68)?.try_into().ok()?),
                 kind,
                 line_starts,
+                headers,
             };
             record.validate().ok()?;
             Some(record)
@@ -309,6 +373,7 @@ mod tests {
             byte_length: 42,
             kind: NativeSourceEvidenceKind::Image,
             line_starts: None,
+            headers: None,
         }
     }
 
@@ -371,6 +436,34 @@ mod tests {
         claim.kind = NativeSourceEvidenceKind::ProgramMember;
         assert!(!claim.admits_image());
         assert!(claim.verify_host(bytes, image).is_err());
+    }
+
+    #[test]
+    fn nse3_headers_are_bounded_untrusted_claims() {
+        let mut claim = row();
+        claim.headers = Some(NativeHeaderEvidence {
+            image_identity: [3; 32], image_byte_len: 100, producer_recipe: [4; 32],
+            entries: vec![NativeHeaderEntry { entity_id: 7,
+                identity: DeclarationIdentity { family: DeclarationFamilyId::from_raw([5; 16]), variant: VariantFingerprint::from_raw([6; 16]) },
+                compiler_extent: (1, 40), header_extent: (1, 12) }],
+        });
+        let mut bytes = Vec::new();
+        NativeSourceEvidenceRelation::encode_value(&claim, &mut bytes);
+        assert_eq!(&bytes[..4], MAGIC_V3);
+        assert_eq!(NativeSourceEvidenceRelation::decode_value(&bytes).unwrap(), claim);
+        for end in 0..bytes.len() { assert!(NativeSourceEvidenceRelation::decode_value(&bytes[..end]).is_err()); }
+        let mut invalid = claim.clone();
+        let duplicate = invalid.headers.as_ref().unwrap().entries[0].clone();
+        invalid.headers.as_mut().unwrap().entries.push(duplicate);
+        assert!(invalid.validate().is_err());
+        let mut invalid = claim.clone();
+        invalid.headers.as_mut().unwrap().entries[0].header_extent = (0, 12);
+        assert!(invalid.validate().is_err());
+        invalid.kind = NativeSourceEvidenceKind::ProgramMember;
+        assert!(invalid.validate().is_err());
+        let count_offset = bytes.len() - HEADER_ENTRY_BYTES - 4;
+        bytes[count_offset..count_offset + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(NativeSourceEvidenceRelation::decode_value(&bytes).is_err());
     }
 
     #[test]

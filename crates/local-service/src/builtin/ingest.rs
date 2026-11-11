@@ -476,6 +476,9 @@ impl RevalidatedNativeTsCapture {
             if let Some(lines) = &source.evidence.line_starts {
                 allocation(&mut total, lines.capacity().checked_mul(std::mem::size_of::<u32>())?)?;
             }
+            if let Some(headers) = &source.evidence.headers {
+                allocation(&mut total, headers.entries.capacity().checked_mul(std::mem::size_of::<backend_engine::builtin::NativeHeaderEntry>())?)?;
+            }
         }
         allocation(&mut total, fence.directories.capacity().checked_mul(std::mem::size_of::<(PathBuf, Option<FileSystemRevision>)>())?)?;
         for (path, _) in &fence.directories { allocation(&mut total, path.capacity())?; }
@@ -725,6 +728,7 @@ fn capture_native_typescript_sources(
             byte_length,
             kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
             line_starts: backend_engine::builtin::NativeSourceEvidence::capture_line_starts(&bytes),
+            headers: None,
         };
         evidence.validate().map_err(str::to_owned)?;
         let mut encoded = Vec::new();
@@ -5967,6 +5971,7 @@ mod tests {
             byte_length: source.len() as u32,
             kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
             line_starts: None,
+            headers: None,
         };
         assert_eq!(
             indexed_native_evidence_matches(root.path(), &evidence, image),
