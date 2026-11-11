@@ -19,6 +19,8 @@ p = argparse.ArgumentParser()
 p.add_argument("--bundle", required=True)
 p.add_argument("--output", required=True)
 p.add_argument("--sql-only", action="store_true", help="leave out the TypeScript files")
+p.add_argument("--python", action="store_true", help="index Python beside SQL instead of TypeScript")
+p.add_argument("--flat", action="store_true", help="place migrations and queries in one directory")
 a = p.parse_args()
 bundle = pathlib.Path(a.bundle).resolve(strict=True)
 out = pathlib.Path(a.output).resolve()
@@ -47,6 +49,22 @@ FILES = {
     "package.json": '{"name":"sql-public-fixture","version":"1.0.0","private":true}\n',
     "tsconfig.json": '{"compilerOptions":{"target":"ES2020","module":"ESNext","strict":true,"noEmit":true},"include":["app"]}\n',
 }
+
+if a.python:
+    FILES = {path: text for path, text in FILES.items() if path.startswith("db/")}
+    FILES["app/repository.py"] = "def load_query():\n    return 1\n"
+# This valid SQLite construct previously lost an entire file in a source build.
+FILES["db/migrations/0001_init.sql"] += "CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT, country TEXT);\n"
+FILES["db/queries/upsert.sql"] = (
+    "INSERT INTO authors (id, name, country) VALUES (?1, ?2, ?3)\n"
+    "ON CONFLICT (id) DO UPDATE SET name = excluded.name, country = excluded.country;\n"
+)
+
+def sql_path(path):
+    return "db/" + pathlib.PurePosixPath(path).name if a.flat else path
+
+if a.flat:
+    FILES = {sql_path(path) if path.startswith("db/") else path: text for path, text in FILES.items()}
 
 records = []
 owner = None
@@ -177,9 +195,12 @@ expect(text, ["view account_spend"], "views")
 # 2. Honest coverage: nothing partial, files all selected.
 _, text = query("gaps", "--role", "gap")
 expect(text, ["no known gaps in the SQL files"], "gaps")
+# The worker and owner both accepted the excluded upsert and bound its reads.
+_, text = query("upsert", "--role", "reference", "--uses", "authors.name")
+expect(text, [sql_path("db/queries/upsert.sql"), "excluded.name"], "upsert")
 # 3. Who uses accounts.balance: three mentions in another file, bound exactly.
 body, text = query("uses-balance", "--role", "reference", "--kind", "column", "--uses", "accounts.balance")
-expect(text, ["db/queries/accounts.sql"], "uses")
+expect(text, [sql_path("db/queries/accounts.sql")], "uses")
 mentions = re.findall(r"Column (?:\w+\.)?balance in", text)
 if len(mentions) != 3:
     fail("expected exactly three mentions of accounts.balance:\n" + text[:1500])
@@ -219,7 +240,7 @@ mcp.stdin.close()
 mcp.wait(timeout=10)
 
 # 5. Edit: drop the column in a new migration, reindex, the old queries point at a dropped column.
-(project / "db/migrations/0004_drop_balance.sql").write_text("ALTER TABLE accounts DROP COLUMN balance;\n")
+(project / sql_path("db/migrations/0004_drop_balance.sql")).write_text("ALTER TABLE accounts DROP COLUMN balance;\n")
 code, raw = cli("reindex-1", ["add", str(project), "--wait", "--wait-timeout", "600"], timeout=720)
 if code != 0:
     fail("reindex after edit failed: " + raw[:400])
@@ -233,7 +254,7 @@ code, raw = cli("reindex-2", ["add", str(project), "--wait", "--wait-timeout", "
 if code != 0:
     fail("reindex with a broken file failed: " + raw[:400])
 _, text = query("gap-after", "--role", "gap")
-expect(text, ["rejected by the parser"], "gap-after")
+expect(text, ["rejected by the parser", "db/broken.sql"], "gap-after")
 _, text = query("uses-nothing", "--role", "reference", "--kind", "column", "--uses", "accounts.tier")
 expect(text, ["NOT proof of absence"], "uses-nothing")
 
