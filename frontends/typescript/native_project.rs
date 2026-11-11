@@ -574,6 +574,53 @@ pub fn build_with_root_selection_observer(
     })
 }
 
+/// A TSZ-parsed function declaration and the authored header before its body.
+/// Offsets address the exact UTF-8 source supplied to the parser.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeFunctionHeader {
+    /// Complete declaration extent used to join an emitted compiler entity.
+    pub declaration: (u32, u32),
+    /// Authored header extent, including TSZ-owned modifiers.
+    pub header: (u32, u32),
+}
+
+/// Extracts bounded function-header spans from TSZ syntax without inferring
+/// declarations from their names. A stopped parse contributes no partial spans.
+pub fn function_headers(
+    path: &Path,
+    text: &str,
+    checkpoint: &dyn ExecutionCheckpoint,
+) -> Result<Vec<NativeFunctionHeader>, String> {
+    const MAX_SOURCE: usize = 256 * 1024;
+    const MAX_HEADERS: usize = 4096;
+    if text.len() > MAX_SOURCE { return Ok(Vec::new()); }
+    poll(checkpoint, 0)?;
+    let mut parser = MeteredParserState::new(path.to_string_lossy().into_owned(), text.to_owned());
+    parser.parse_source_file_with_execution_checkpoint(checkpoint)
+        .map_err(|error| format!("native TSZ header parse stopped: {error:?}"))?;
+    let arena = &parser.arena;
+    let mut headers = Vec::new();
+    for (index, node) in arena.nodes.iter().enumerate() {
+        poll(checkpoint, 1)?;
+        if node.kind != syntax_kind_ext::FUNCTION_DECLARATION { continue; }
+        let Some(function) = arena.get_function(node) else { continue };
+        let Some(index) = u32::try_from(index).ok().map(NodeIndex) else { return Err("native TSZ node index overflow".into()) };
+        let Some((start, end)) = arena.pos_end_at(index) else { continue };
+        let Some((body_start, _)) = arena.pos_end_at(function.body) else { continue };
+        let Some((name_start, name_end)) = arena.pos_end_at(function.name) else { continue };
+        if !(start <= name_start && name_start < name_end && name_end <= body_start && body_start < end) { continue; }
+        if text.get(start as usize..body_start as usize).is_none()
+            || text.get(start as usize..end as usize).is_none() { continue; }
+        if headers.len() == MAX_HEADERS { return Ok(Vec::new()); }
+        headers.push(NativeFunctionHeader { declaration: (start, end), header: (start, body_start) });
+    }
+    headers.sort_unstable_by_key(|header| header.declaration);
+    if headers.windows(2).any(|pair| pair[0].declaration == pair[1].declaration) {
+        return Ok(Vec::new());
+    }
+    Ok(headers)
+}
+
 trait NativeCheckpoint {
     fn poll(&self, work: u64) -> Result<(), String>;
 }
@@ -1097,6 +1144,19 @@ mod tests {
             Ok(())
         }
     }
+    #[test]
+    fn function_headers_use_native_body_and_modifier_spans() -> Result<(), Box<dyn Error>> {
+        let source = "// λ\nexport async function run(x: { a: number }): Promise<string> { return ''; }\nfunction other() {}\n";
+        let headers = function_headers(Path::new("src/main.ts"), source, &Unlimited)?;
+        assert_eq!(headers.len(), 2);
+        let header = headers[0];
+        assert_eq!(source[header.header.0 as usize..header.header.1 as usize].trim(),
+            "export async function run(x: { a: number }): Promise<string>");
+        assert_eq!(&source[header.declaration.0 as usize..header.declaration.1 as usize],
+            "export async function run(x: { a: number }): Promise<string> { return ''; }");
+        Ok(())
+    }
+
     #[test]
     fn include_selectors_follow_last_component_implicit_glob_contract() -> Result<(), Box<dyn Error>>
     {
