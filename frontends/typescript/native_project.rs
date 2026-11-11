@@ -1218,6 +1218,13 @@ mod tests {
         assert_eq!(selected_function_header(&headers, source, compiler_extent, "other", &Unlimited)?, None);
         let duplicate = [headers[0], headers[0]];
         assert_eq!(selected_function_header(&duplicate, source, compiler_extent, "run", &Unlimited)?, None);
+        struct Stopped;
+        impl ExecutionCheckpoint for Stopped {
+            fn checkpoint(&self, _: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+                Err(tsz_common::ProjectExecutionStop::WorkBudgetExhausted)
+            }
+        }
+        assert!(selected_function_header(&headers, source, compiler_extent, "run", &Stopped).is_err());
         for (path, source, expected) in [
             ("src/main.ts", "const async = 1; async\nfunction plain() {}", None),
             ("src/main.ts", "const async = 1; async; function plain() {}", Some("function plain()")),
