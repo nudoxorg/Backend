@@ -75,7 +75,7 @@ pub struct CSharpResolvedReferenceSnapshot {
 }
 
 /// Canonical identity of one SDK reference-resolution observation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CSharpResolverReceipt {
     pub sdk_directory: PathBuf,
     pub target_framework: String,
@@ -83,6 +83,51 @@ pub struct CSharpResolverReceipt {
     pub candidate_digest: [u8; 32],
     pub selected_digest: [u8; 32],
     pub selected_names: Box<[Box<str>]>,
+}
+
+impl CSharpResolverReceipt {
+    /// Bounded persisted representation for an attempt sidecar.
+    pub fn encode(&self) -> Result<Box<[u8]>, &'static str> {
+        let bytes = serde_json::to_vec(self).map_err(|_| "SDK receipt encoding failed")?;
+        if bytes.len() > 1024 * 1024 {
+            return Err("SDK receipt exceeds bound");
+        }
+        Ok(bytes.into_boxed_slice())
+    }
+
+    /// Decodes a bounded persisted attempt receipt without granting authority.
+    pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
+        if bytes.is_empty() || bytes.len() > 1024 * 1024 {
+            return Err("SDK receipt exceeds bound");
+        }
+        serde_json::from_slice(bytes).map_err(|_| "SDK receipt malformed")
+    }
+
+    /// Stable digest used by compiler-plane identity and persisted replay.
+    pub fn digest(&self) -> [u8; 32] {
+        let mut hash = sha2::Sha256::new();
+        hash.update(b"csharp.sdk-resolver-receipt.v1\0");
+        let sdk = self.sdk_directory.as_os_str().as_encoded_bytes();
+        hash.update((sdk.len() as u64).to_le_bytes());
+        hash.update(sdk);
+        hash.update((self.target_framework.len() as u64).to_le_bytes());
+        hash.update(self.target_framework.as_bytes());
+        match self.global_json_digest {
+            Some(digest) => {
+                hash.update([1]);
+                hash.update(digest);
+            }
+            None => hash.update([0]),
+        }
+        hash.update(self.candidate_digest);
+        hash.update(self.selected_digest);
+        hash.update((self.selected_names.len() as u64).to_le_bytes());
+        for name in &self.selected_names {
+            hash.update((name.len() as u64).to_le_bytes());
+            hash.update(name.as_bytes());
+        }
+        hash.finalize().into()
+    }
 }
 
 struct CandidateSnapshot {
@@ -170,6 +215,25 @@ impl CSharpResolvedReferenceSnapshot {
             hash.update(&bytes);
         }
         hash.finalize().as_slice() == self.digest
+    }
+
+    /// Validates a receipt against the SDK/configuration identity captured by
+    /// the compiler attempt before allowing replay or helper invocation.
+    pub fn receipt_matches(
+        &self,
+        sdk_directory: &Path,
+        target_framework: &str,
+        global_json_digest: Option<[u8; 32]>,
+        candidate_digest: [u8; 32],
+    ) -> bool {
+        let Ok(sdk_directory) = fs::canonicalize(sdk_directory) else {
+            return false;
+        };
+        self.receipt_is_consistent()
+            && self.receipt.sdk_directory == sdk_directory
+            && self.receipt.target_framework == target_framework
+            && self.receipt.global_json_digest == global_json_digest
+            && self.receipt.candidate_digest == candidate_digest
     }
 }
 
@@ -1179,6 +1243,13 @@ mod tests {
             },
         };
         assert!(snapshot.receipt_is_consistent());
+        assert!(snapshot.receipt_matches(&std::env::temp_dir(), "net10.0", None, [7; 32],));
+        let encoded = snapshot.receipt().encode().unwrap();
+        assert_eq!(
+            CSharpResolverReceipt::decode(&encoded).unwrap(),
+            snapshot.receipt().clone()
+        );
+        assert!(!snapshot.receipt_matches(&std::env::temp_dir(), "net9.0", None, [7; 32],));
         fs::write(&snapshot.references[0], b"changed").unwrap();
         assert!(!snapshot.receipt_is_consistent());
     }
