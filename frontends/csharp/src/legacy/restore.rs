@@ -653,6 +653,32 @@ mod closure_regressions {
     }
 
     #[test]
+    fn restored_frameworks_are_closed_and_retained() {
+        let root = tempfile::tempdir().unwrap();
+        let assets = package_fixture(root.path());
+        let mut graph: Value = serde_json::from_slice(&fs::read(&assets).unwrap()).unwrap();
+        graph["targets"]["net10.0"]["P/1.0"]["frameworkReferences"] =
+            json!(["Microsoft.AspNetCore.App"]);
+        fs::write(&assets, serde_json::to_vec(&graph).unwrap()).unwrap();
+        let closure =
+            resolve_project_assets_checked(&assets, root.path(), "net10.0", &[("P", "1.0")], &[])
+                .unwrap();
+        assert_eq!(closure.framework_references, ["Microsoft.AspNetCore.App"]);
+        graph["targets"]["net10.0"]["P/1.0"]["frameworkReferences"] = json!(["Unknown.Framework"]);
+        fs::write(&assets, serde_json::to_vec(&graph).unwrap()).unwrap();
+        assert!(
+            resolve_project_assets_checked(&assets, root.path(), "net10.0", &[("P", "1.0")], &[])
+                .is_err()
+        );
+        graph["targets"]["net10.0"]["P/1.0"]["frameworkReferences"] = json!([17]);
+        fs::write(&assets, serde_json::to_vec(&graph).unwrap()).unwrap();
+        assert!(
+            resolve_project_assets_checked(&assets, root.path(), "net10.0", &[("P", "1.0")], &[])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn project_restore_placeholder_requires_real_reference_output() {
         let root = tempfile::tempdir().unwrap();
         let assets = root.path().join("Tests/obj/project.assets.json");
