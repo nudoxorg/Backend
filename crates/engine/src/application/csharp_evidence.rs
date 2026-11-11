@@ -117,6 +117,15 @@ mod graph_evidence_tests {
         let mut changed = graph.clone();
         changed.nodes[0].project_references.clear();
         assert!(!replay_csharp_graph_evidence(&graph, &changed));
+        for mutate in [
+            |g: &mut CSharpGraphEvidence| g.config_digest[0] ^= 1,
+            |g: &mut CSharpGraphEvidence| g.nodes[0].source_digest[0] ^= 1,
+            |g: &mut CSharpGraphEvidence| g.reference_digest[0] ^= 1,
+        ] {
+            let mut changed = graph.clone();
+            mutate(&mut changed);
+            assert!(!replay_csharp_graph_evidence(&graph, &changed));
+        }
     }
 }
 

@@ -1799,6 +1799,14 @@ impl StagedSemanticPackage {
         self.staged.csharp_graph_evidence.as_ref().and_then(crate::application::encode_csharp_graph_evidence)
     }
 
+    /// Owner-side replay gate for a selected same-attempt graph witness. Legacy
+    /// CSE1 records intentionally return false because they carry no graph.
+    pub fn replay_csharp_graph_evidence(&self, frame: &[u8]) -> bool {
+        let Some(expected) = self.staged.csharp_graph_evidence.as_ref() else { return false; };
+        let Some(actual) = crate::application::decode_csharp_graph_evidence(frame) else { return false; };
+        crate::application::replay_csharp_graph_evidence(expected, &actual)
+    }
+
     /// Builds a bounded claim-only C# evidence aggregate tied to these staged
     /// image bytes and this exact input. Publication selection is still required.
     pub fn csharp_invocation_evidence_object(&self, input: [u8; 32]) -> Option<Vec<u8>> {
