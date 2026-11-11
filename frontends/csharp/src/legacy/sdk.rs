@@ -111,6 +111,7 @@ pub fn resolve_references_with_sdk(
     let candidate_root = scratch.path().join("candidates");
     fs::create_dir(&candidate_root).map_err(|_| "SDK snapshot unavailable")?;
     let mut captured_candidates = Vec::with_capacity(candidates.len());
+    let mut captured_bytes = 0usize;
     for (index, source) in candidates.iter().enumerate() {
         if !source.is_absolute() || !source.is_file() {
             return Err("SDK candidate unavailable");
@@ -118,8 +119,16 @@ pub fn resolve_references_with_sdk(
         let bytes =
             backend_platform::durable::read_regular_bounded_stable(source, 32 * 1024 * 1024)
                 .map_err(|_| "SDK candidate unavailable")?;
+        captured_bytes = captured_bytes
+            .checked_add(bytes.len())
+            .ok_or("SDK snapshot limit")?;
+        if captured_bytes > 256 * 1024 * 1024 {
+            return Err("SDK snapshot limit");
+        }
         let name = source.file_name().ok_or("SDK candidate filename")?;
-        let destination = candidate_root.join(format!("{index}-{}", name.to_string_lossy()));
+        let slot = candidate_root.join(index.to_string());
+        fs::create_dir(&slot).map_err(|_| "SDK snapshot unavailable")?;
+        let destination = slot.join(name);
         fs::write(&destination, bytes).map_err(|_| "SDK snapshot unavailable")?;
         captured_candidates.push(destination);
     }
