@@ -161,6 +161,76 @@ fn snapshot_execution(
         )
         .map_err(|_| CSharpAuthorityError::Configuration)?;
     }
+    // Copy exactly the helper runtime files declared by deps.json. Sibling
+    // DLLs outside this declared closure are not silently admitted.
+    let deps_path = oracle_parent.join(format!("{oracle_stem}.deps.json"));
+    let deps_bytes =
+        backend_platform::durable::read_regular_bounded_stable(&deps_path, 16 * 1024 * 1024)
+            .map_err(|_| CSharpAuthorityError::Configuration)?;
+    let deps: serde_json::Value =
+        serde_json::from_slice(&deps_bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
+    let target = deps
+        .get("targets")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|targets| targets.values().next())
+        .and_then(serde_json::Value::as_object)
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    let mut declared = std::collections::BTreeSet::new();
+    for library in target.values() {
+        let Some(runtime) = library
+            .get("runtime")
+            .and_then(serde_json::Value::as_object)
+        else {
+            continue;
+        };
+        for relative in runtime.keys() {
+            let relative_path = Path::new(relative);
+            if relative_path.is_absolute()
+                || relative_path
+                    .components()
+                    .any(|component| !matches!(component, std::path::Component::Normal(_)))
+            {
+                return Err(CSharpAuthorityError::Configuration);
+            }
+            declared.insert(relative_path.to_owned());
+        }
+    }
+    declared.insert(PathBuf::from(format!("{oracle_stem}.dll")));
+    for relative in declared {
+        // A published helper's deps file records the package-relative asset
+        // (`lib/net8.0/Foo.dll`), while `dotnet publish` may flatten that
+        // asset beside the apphost.  Prefer the recorded path; only accept a
+        // flattened basename when it is an unambiguous regular file in the
+        // same confined publish directory.  Never search outside that root or
+        // choose among multiple candidates.
+        let source = {
+            let recorded = oracle_parent.join(&relative);
+            if recorded.is_file() {
+                recorded
+            } else {
+                let name = relative
+                    .file_name()
+                    .ok_or(CSharpAuthorityError::Configuration)?;
+                let flattened = oracle_parent.join(name);
+                if !flattened.is_file() {
+                    return Err(CSharpAuthorityError::Configuration);
+                }
+                flattened
+            }
+        };
+        let content =
+            backend_platform::durable::read_regular_bounded_stable(&source, 64 * 1024 * 1024)
+                .map_err(|_| CSharpAuthorityError::Configuration)?;
+        bytes = bytes
+            .checked_add(content.len())
+            .filter(|size| *size <= 512 * 1024 * 1024)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        let destination = directory.path().join(&relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|_| CSharpAuthorityError::Configuration)?;
+        }
+        fs::write(destination, content).map_err(|_| CSharpAuthorityError::Configuration)?;
+    }
     if !copied_tool.is_file() {
         return Err(CSharpAuthorityError::Configuration);
     }
