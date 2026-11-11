@@ -18268,7 +18268,7 @@ class Named { run({ active }: { active: { id: number } }) { return active.id; } 
             if !imported { missing.push(format!("import edge {name} -> util.ts")); }
             let used = coordinates.iter().any(|(kind, path, _, _, _, _)|
                 path == "util.ts" && *kind != ReferenceKind::Import
-                    && match name { "barrelTarget" => *kind == ReferenceKind::Call, _ => *kind == ReferenceKind::TypeReference });
+                    && match name { "barrelTarget" => *kind == ReferenceKind::FunctionCall, _ => *kind == ReferenceKind::TypeReference });
             if !used { missing.push(format!("use of {name} -> util.ts")); }
         }
         assert!(missing.is_empty(), "barrel targets lost: {missing:?}; all coordinates: {coordinates:?}");
