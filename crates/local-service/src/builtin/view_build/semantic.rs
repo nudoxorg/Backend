@@ -368,6 +368,7 @@ pub(in crate::builtin) struct AdmittedNativeEvidence<'a> {
     claim: backend_engine::builtin::NativeSourceEvidence,
     image_source: backend_semantic::ir::SourceIdentity,
     primary_extent: Option<(u32, u32)>,
+    header_extent: Option<(u32, u32)>,
     selected_row: RowId,
     entity_id: backend_semantic::ir::EntityId,
     declaration_identity: DeclarationIdentity,
@@ -420,6 +421,9 @@ impl AdmittedNativeEvidence<'_> {
     }
     pub(in crate::builtin) fn primary_extent(&self) -> Option<(u32, u32)> {
         self.primary_extent
+    }
+    pub(in crate::builtin) fn header_extent(&self) -> Option<(u32, u32)> {
+        self.header_extent
     }
 }
 
@@ -584,11 +588,23 @@ pub(in crate::builtin) fn admitted_native_evidence<'a>(
                 else {
                     continue;
                 };
+                let image_identity = *backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref()).as_ref();
+                let header_extent = row.headers.as_ref().and_then(|headers| {
+                    if headers.image_identity != image_identity
+                        || headers.image_byte_len != image.as_ref().len() as u64
+                        || headers.producer_recipe != super::super::native_ts_headers::producer_recipe()
+                    { return None; }
+                    let entry = headers.entries.binary_search_by_key(&owned.entity_id.raw, |entry| entry.entity_id)
+                        .ok().and_then(|index| headers.entries.get(index))?;
+                    (entry.identity == owned.declaration_identity && Some(entry.compiler_extent) == owned.extent)
+                        .then_some(entry.header_extent)
+                });
                 if found
                     .replace(AdmittedNativeEvidence {
                         claim: row.clone(),
                         image_source: source,
                         primary_extent: owned.extent,
+                        header_extent,
                         selected_row: selected,
                         entity_id: owned.entity_id,
                         declaration_identity: owned.declaration_identity,

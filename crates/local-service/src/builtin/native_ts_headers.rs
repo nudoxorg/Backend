@@ -14,6 +14,14 @@ use backend_semantic::vocabulary::NativeTool;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// Names the native parser and selected-entity join recipe.
+pub(super) fn producer_recipe() -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nudox.native-ts-header-spans.v1\0");
+    hash.update(backend_frontend_typescript::TSZ_NATIVE_AUTHORITY_IDENTITY);
+    *hash.finalize().as_bytes()
+}
+
 /// One uniquely joined compiler entity and exact source byte ranges.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct NativeTsHeader {
