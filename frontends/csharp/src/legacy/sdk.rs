@@ -240,33 +240,59 @@ fn copy_pack_layout(
         source: &Path,
         target: &Path,
         total: &mut usize,
+        entries: &mut usize,
+        depth: usize,
         deadline: Instant,
         cancelled: &AtomicBool,
     ) -> Result<(), &'static str> {
+        if depth > 32 {
+            return Err("SDK pack snapshot depth");
+        }
         if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
             return Err("SDK pack snapshot cancelled");
         }
         fs::create_dir_all(target).map_err(|_| "SDK pack snapshot unavailable")?;
         for entry in fs::read_dir(source).map_err(|_| "SDK pack snapshot unavailable")? {
+            *entries = entries.checked_add(1).ok_or("SDK pack snapshot limit")?;
+            if *entries > 32768 {
+                return Err("SDK pack snapshot limit");
+            }
             let entry = entry.map_err(|_| "SDK pack snapshot unavailable")?;
             let from = entry.path();
             let to = target.join(entry.file_name());
-            if from.is_dir() {
-                copy_dir(&from, &to, total, deadline, cancelled)?;
+            let file_type = entry
+                .file_type()
+                .map_err(|_| "SDK pack snapshot unavailable")?;
+            if file_type.is_symlink() {
+                return Err("SDK pack snapshot symlink");
+            }
+            if file_type.is_dir() {
+                copy_dir(&from, &to, total, entries, depth + 1, deadline, cancelled)?;
             } else {
-                let metadata = fs::metadata(&from).map_err(|_| "SDK pack snapshot unavailable")?;
+                let bytes =
+                    backend_platform::durable::read_regular_bounded_stable(&from, 32 * 1024 * 1024)
+                        .map_err(|_| "SDK pack snapshot unavailable")?;
                 *total = total
-                    .checked_add(metadata.len() as usize)
+                    .checked_add(bytes.len())
                     .ok_or("SDK pack snapshot limit")?;
                 if *total > 256 * 1024 * 1024 {
                     return Err("SDK pack snapshot limit");
                 }
-                fs::copy(&from, &to).map_err(|_| "SDK pack snapshot unavailable")?;
+                fs::write(&to, bytes).map_err(|_| "SDK pack snapshot unavailable")?;
             }
         }
         Ok(())
     }
-    copy_dir(&source, &target, &mut total, deadline, cancelled)?;
+    let mut entries = 0;
+    copy_dir(
+        &source,
+        &target,
+        &mut total,
+        &mut entries,
+        0,
+        deadline,
+        cancelled,
+    )?;
     Ok(target)
 }
 

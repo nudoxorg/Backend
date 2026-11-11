@@ -4321,8 +4321,10 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         // observed paths/options remain attempt-local and never inherit a
         // startup fingerprint or establish input-closure authority.
         let mut sdk_fingerprint: Option<[u8; 32]> = None;
+        let mut captured_global_json: Option<&str> = None;
         let mut restored_csharp_references = None;
         let sdk_observation = if let Some(probes) = package.csharp_sdk_probes {
+            captured_global_json = probes.iter().find(|probe| probe.path.ends_with("global.json")).and_then(|probe| probe.text);
             let config = package.csharp_config.ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "captured C# project configuration" })?;
             let options = super::csharp_sdk_options::simple_csharp_sdk_options(
                 config.first().and_then(|entry| entry.text).ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "captured C# project configuration" })?,
@@ -4418,7 +4420,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             if candidates.is_empty() { return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK resolver candidates unavailable" }); }
             let project = package.package_root.join(csharp_project_path.ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK project path unavailable" })?.as_ref());
             let assets = project.parent().map(|directory| directory.join("obj/project.assets.json"));
-            let global_json = package.csharp_config.and_then(|probes| probes.iter().find(|probe| probe.path.ends_with("global.json")).and_then(|probe| probe.text));
+            let global_json = captured_global_json;
             let snapshot = backend_frontend_csharp::legacy::resolve_references_with_sdk(
                 self.toolchain(first_application_request).map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" })?.external().map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" })?.executable(),
                 &observed.target_framework,
