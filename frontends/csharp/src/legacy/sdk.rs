@@ -283,16 +283,27 @@ fn copy_pack_layout(
         }
         Ok(())
     }
+    // Copy only pack versions represented by admitted candidates. Copying the
+    // entire installed packs directory admits unrelated SDK versions and can
+    // exceed the bound on a normally provisioned machine.
+    let mut versions = std::collections::BTreeSet::new();
+    for snapshot in &pack_snapshots {
+        let relative = snapshot.canonical.strip_prefix(&source)
+            .map_err(|_| "SDK candidate outside pack layout")?;
+        let mut components = relative.components();
+        let pack = components.next().ok_or("SDK pack layout unavailable")?;
+        let version = components.next().ok_or("SDK pack layout unavailable")?;
+        if !matches!(pack, std::path::Component::Normal(_))
+            || !matches!(version, std::path::Component::Normal(_)) {
+            return Err("SDK pack layout unavailable");
+        }
+        versions.insert(PathBuf::from(pack.as_os_str()).join(version.as_os_str()));
+    }
     let mut entries = 0;
-    copy_dir(
-        &source,
-        &target,
-        &mut total,
-        &mut entries,
-        0,
-        deadline,
-        cancelled,
-    )?;
+    for version in versions {
+        copy_dir(&source.join(&version), &target.join(&version), &mut total,
+            &mut entries, 0, deadline, cancelled)?;
+    }
     Ok(target)
 }
 
