@@ -21,6 +21,7 @@ p.add_argument("--output", required=True)
 p.add_argument("--sql-only", action="store_true", help="leave out the TypeScript files")
 p.add_argument("--python", action="store_true", help="index Python beside SQL instead of TypeScript")
 p.add_argument("--flat", action="store_true", help="place migrations and queries in one directory")
+p.add_argument("--expect-no-worker", action="store_true", help="require named unavailable-host gaps and successful cold publication")
 a = p.parse_args()
 bundle = pathlib.Path(a.bundle).resolve(strict=True)
 out = pathlib.Path(a.output).resolve()
@@ -184,6 +185,20 @@ for attempt in range(8):
         break
 if code != 0:
     fail(f"index exited {code}: {raw[:600]} (a typed account refusal means this is a gate-on build)")
+
+if a.expect_no_worker:
+    before = query("no-worker-gaps", "--role", "gap")[1]
+    expect(before, [sql_path("db/queries/upsert.sql"), sql_path("db/migrations/0001_init.sql")], "no-worker-gaps")
+    os.killpg(owner.pid, signal.SIGKILL)
+    owner.wait(timeout=10)
+    start_owner()
+    after = query("no-worker-cold-gaps", "--role", "gap")[1]
+    if before != after:
+        fail("unavailable SQL host gaps changed after cold reopen")
+    cleanup()
+    (out / "journey.json").write_text(json.dumps(records, indent=1))
+    print("PASS: SQL without worker publishes with named gaps and survives cold restart")
+    sys.exit(0)
 
 # 1. Definitions across files, through the CLI.
 _, text = query("tables", "--role", "definition", "--kind", "table")
