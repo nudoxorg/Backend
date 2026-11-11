@@ -270,6 +270,9 @@ _, text = query("columns-after", "--role", "definition", "--kind", "column", "--
 expect(text, ["no longer exists at the end of the migrations"], "columns-after")
 _, text = query("uses-after", "--role", "reference", "--kind", "column", "--uses", "accounts.balance")
 expect(text, ["(DROPPED)"], "uses-after")
+code, raw = cli("outline-after-drop", ["outline", str(project)])
+if code != 0 or "SQL column accounts.balance" in raw:
+    fail("ordinary outline retained the dropped SQL column: " + raw[:1200])
 # 6. An unparseable file is a gap, never an empty answer.
 (project / "db/broken.sql").write_text("SELECT FROM WHERE;\n")
 code, raw = cli("reindex-2", ["add", str(project), "--wait", "--wait-timeout", "600"], timeout=720)
@@ -288,6 +291,9 @@ start_owner()
 after = query("post-kill", "--role", "definition", "--kind", "column", "--parent", "accounts")[1]
 if before != after:
     fail("definitions differ after a cold restart:\nBEFORE\n%s\nAFTER\n%s" % (before[:800], after[:800]))
+code, raw = cli("outline-cold", ["outline", str(project)])
+if code != 0 or "account_spend" not in raw or "SQL column accounts.balance" in raw:
+    fail("cold ordinary outline lost SQL or retained a dropped column: " + raw[:1200])
 cleanup()
 (out / "journey.json").write_text(json.dumps(records, indent=1))
 print("PASS: sql public journey (CLI + MCP + cold restart)")
