@@ -351,6 +351,22 @@ impl OwnedCSharpProjectNode {
             usings, config, sources, reference_directories, project_references,
         })
     }
+
+    fn retained_bytes(&self) -> Option<usize> {
+        let mut total = size_of::<Self>().checked_add(self.project_path.len())?
+            .and_then(|n| n.checked_add(self.assembly_name.len()))?
+            .and_then(|n| n.checked_add(self.target_framework.len()))?
+            .and_then(|n| n.checked_add(self.language_version.len()))?
+            .and_then(|n| n.checked_add(self.nullable.len()))?
+            .and_then(|n| n.checked_add(self.output_type.len()))?;
+        for symbol in &self.define_symbols { total = total.checked_add(symbol.len())?; }
+        for using in &self.usings { total = total.checked_add(using.len())?; }
+        for probe in &self.config { total = total.checked_add(probe.path.len())?.checked_add(probe.text.as_ref().map_or(0, |text| text.len()))?; }
+        for source in &self.sources { total = total.checked_add(source.path.len())?.checked_add(size_of::<OwnedCSharpSourceClaim>())?; }
+        for path in &self.reference_directories { total = total.checked_add(path.as_os_str().len())?; }
+        for path in &self.project_references { total = total.checked_add(path.len())?; }
+        Some(total)
+    }
 }
 
 impl OwnedCSharpProjectGraph {
@@ -379,6 +395,10 @@ impl OwnedCSharpProjectGraph {
     pub fn root_project(&self) -> &str { &self.root_project }
     pub fn project_paths(&self) -> &[Box<str>] { &self.project_paths }
 
+    fn retained_bytes(&self) -> Option<usize> {
+        self.nodes.iter().try_fold(size_of::<Self>().checked_add(self.root_project.len())?.checked_add(self.project_paths.len() * size_of::<Box<str>>())?, |total, node| total.checked_add(node.retained_bytes()?))
+    }
+
     pub fn with_nodes(mut self, nodes: Box<[OwnedCSharpProjectNode]>) -> Result<Self, PackageSourceSetError> {
         if nodes.len() != self.project_paths.len()
             || nodes.iter().any(|node| !self.project_paths.iter().any(|path| path == &node.project_path))
@@ -403,7 +423,15 @@ impl OwnedCSharpProjectGraph {
             active.remove(path);
             valid
         }
-        if !visit(&self.root_project, &nodes, &mut std::collections::HashSet::new(), &mut std::collections::HashSet::new()) {
+        let mut active = std::collections::HashSet::new();
+        let mut done = std::collections::HashSet::new();
+        if !visit(&self.root_project, &nodes, &mut active, &mut done) || done.len() != nodes.len() {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        if nodes.iter().map(|node| node.sources.len()).sum::<usize>() > 8192
+            || nodes.iter().map(|node| node.project_references.len()).sum::<usize>() > 256
+            || nodes.iter().filter_map(OwnedCSharpProjectNode::retained_bytes).sum::<usize>() > 64 * 1024 * 1024
+        {
             return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
         }
         self.nodes = nodes;
