@@ -18,6 +18,8 @@ anchor=$(cargo run --locked --offline -q -p backend-compile --example sql_worker
 test ${#anchor} -eq 64
 export NUDOX_BUILD_SQLITE_WORKER_ID=$anchor
 export NUDOX_TEST_SQLITE_WORKER="$output/bundle/backend-sqlite-worker"
+cargo test -p backend-library --locked --offline sql_analysis_progress_round_trips_and_rejects_empty_or_overflow -- --nocapture
+cargo test -p backend-present --locked --offline status_exposes_selected_sql_analysis_at_every_detail -- --nocapture
 cargo test --manifest-path frontends/sqlite/Cargo.toml --locked --offline excluded_upsert_without_update_where_has_valid_native_outline -- --nocapture
 for test in shared_upsert_syntax_does_not_select_postgres_or_poison_project_consensus sqlite_project_indexes_publishes_queries_reindexes_and_survives_cold_reopen unsupported_statement_and_unparseable_file_are_reported_as_gaps_never_as_empty flat_sql_upsert_and_renamed_objects_keep_precise_owner_edges; do
     cargo test -p backend-local-service --lib --locked --offline "$test" -- --nocapture --test-threads=1
