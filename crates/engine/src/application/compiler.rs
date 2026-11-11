@@ -69,9 +69,10 @@ use backend_version::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
+    fs,
     io,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{Arc, atomic::{AtomicBool, Ordering}},
     time::Instant,
 };
 use thiserror::Error;
@@ -3191,7 +3192,7 @@ mod source_degradation_tests {
             });
             assert_eq!(
                 typescript_source_gap_cause(&terminal, source()),
-                None,
+                restored_csharp_references.as_ref().map(|references| references.digest),
                 "{failure:?}"
             );
         }
@@ -4383,6 +4384,10 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         // Use one private copy of the observed targeting assemblies throughout
         // this compile. The snapshot is a byte custody improvement, not proof of
         // the SDK observation or of the helper/runtime execution closure.
+        let csharp_project_path = match package.package_target.unit_key() {
+            CompilationUnitKeyV2::CSharpProject { project_path } => Some(project_path),
+            _ => None,
+        };
         let targeting_snapshot = sdk_observation.as_ref().map(|observation| {
             let mut directories = observation.targeting_directories.clone();
             if let Some(references) = restored_csharp_references.as_ref() {
@@ -4399,9 +4404,39 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             *fingerprint = *hasher.finalize().as_bytes();
         }
         let sdk_reference_paths = targeting_snapshot.as_ref().map(|snapshot| snapshot.directories().iter().map(PathBuf::as_path).collect::<Vec<_>>());
+        let mut resolver_owner = None;
+        if let (Some(observed), Some(snapshot)) = (sdk_observation.as_ref(), targeting_snapshot.as_ref()) {
+            let mut candidates = Vec::new();
+            for directory in snapshot.directories() {
+                for entry in fs::read_dir(directory).map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK candidate directory unavailable" })? {
+                    let path = entry.map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK candidate unavailable" })?.path();
+                    if path.extension().is_some_and(|extension| extension == "dll") { candidates.push(path); }
+                }
+            }
+            if let Some(restored) = restored_csharp_references.as_ref() { candidates.extend(restored.files.iter().cloned()); }
+            if candidates.is_empty() { return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK resolver candidates unavailable" }); }
+            let project = package.package_root.join(csharp_project_path.ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK project path unavailable" })?.as_ref());
+            let assets = project.parent().map(|directory| directory.join("obj/project.assets.json"));
+            let global_json = package.csharp_config.and_then(|probes| probes.iter().find(|probe| probe.path.ends_with("global.json")).and_then(|probe| probe.text));
+            let snapshot = backend_frontend_csharp::legacy::resolve_references_with_sdk(
+                self.toolchain(first_application_request).map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" })?.external().map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" })?.executable(),
+                &observed.target_framework,
+                &observed.sdk_directory,
+                global_json,
+                &candidates,
+                assets.as_deref(),
+                restored_csharp_references.as_ref().map(|references| references.digest),
+                control.deadline,
+                cancelled,
+            ).map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK reference resolution unavailable" })?;
+            resolver_owner = Some(Arc::new(snapshot));
+        }
         let mut sdk_using_names = sdk_observation.as_ref().map(|observation| observation.usings.iter().map(String::as_str).collect::<Vec<_>>());
         let mut sdk_define_names = sdk_observation.as_ref().map(|observation| observation.defines.iter().map(String::as_str).collect::<Vec<_>>());
         let mut package_authority_configuration = self.package_authority;
+        if let Some(csharp) = package_authority_configuration.csharp.as_mut() {
+            csharp.resolved_reference_snapshot = resolver_owner.as_deref();
+        }
         if let Some(paths) = sdk_reference_paths.as_deref() {
             let csharp = package_authority_configuration.csharp.as_mut().ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# helper unavailable" })?;
             if csharp.configuration.reference_directory.is_some() || !csharp.configuration.additional_reference_directories.is_empty() || paths.is_empty() {
