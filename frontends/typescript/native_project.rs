@@ -598,6 +598,7 @@ pub fn function_headers(
     let mut parser = MeteredParserState::new(path.to_string_lossy().into_owned(), text.to_owned());
     parser.parse_source_file_with_execution_checkpoint(checkpoint)
         .map_err(|error| format!("native TSZ header parse stopped: {error:?}"))?;
+    if !parser.parse_diagnostics.is_empty() { return Ok(Vec::new()); }
     let arena = &parser.arena;
     let mut headers = Vec::new();
     for (index, node) in arena.nodes.iter().enumerate() {
