@@ -119,6 +119,9 @@ pub struct CSharpAuthorityControl<'cancel> {
 /// [`CSharpOracle`] and must be an absolute path to the published helper DLL.
 #[derive(Clone, Copy, Debug)]
 pub struct CSharpAuthorityRequest<'request, 'config, 'cancel> {
+    /// Immutable SDK-selected reference custody for this attempt.
+    pub resolved_reference_snapshot:
+        Option<&'config crate::legacy::sdk::CSharpResolvedReferenceSnapshot>,
     /// Package tree that supplies source and package-local C# files.
     pub package_root: &'request Path,
     /// Exact source file whose bytes and spans the image must bind.
@@ -598,6 +601,11 @@ impl CSharpOracle {
         }
 
         let configuration = request.configuration;
+        if let Some(snapshot) = request.resolved_reference_snapshot {
+            command
+                .arg("--ref-dir")
+                .arg(snapshot.root().join("selected"));
+        }
         if request.captured_project_graph.is_none() {
             if let Some(name) = configuration.assembly_name {
                 command.args(["--assembly-name", name]);
@@ -1352,6 +1360,7 @@ mod tests {
         let cancelled = AtomicBool::new(true);
         let oracle = CSharpOracle::new(PathBuf::from("/oracle.dll"));
         let result = oracle.authority_image(CSharpAuthorityRequest {
+            resolved_reference_snapshot: None,
             package_root: Path::new("/missing"),
             source_path: Path::new("/missing/source.cs"),
             project_file: None,
@@ -1384,6 +1393,7 @@ mod tests {
         let cancelled = AtomicBool::new(false);
         let oracle = CSharpOracle::new(PathBuf::from("/oracle.dll"));
         let result = oracle.authority_image(CSharpAuthorityRequest {
+            resolved_reference_snapshot: None,
             package_root,
             source_path: &source_path,
             project_file: None,
@@ -1421,6 +1431,7 @@ mod tests {
         let cancelled = AtomicBool::new(false);
         let start = Instant::now();
         let result = oracle.authority_image(CSharpAuthorityRequest {
+            resolved_reference_snapshot: None,
             package_root: directory.path(),
             source_path: &source_path,
             project_file: None,
