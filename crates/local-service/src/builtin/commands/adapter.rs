@@ -7607,15 +7607,17 @@ impl CommandAdapter {
         certificate: Option<WireCertificate>,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match command {
-            Command::Document(query) | Command::Source(query) => match self
+            Command::Document(_) | Command::Source(_) | Command::Show { .. } => match self
                 .canonical_claim_document(
                     daemon,
-                    query,
+                    &command.as_document_query(daemon.engine().daemon().library().revision_root())
+                        .expect("document command"),
                     certificate.as_ref(),
                     matches!(command, Command::Source(_)),
                 ) {
                 Ok(Some(document)) => CommandReply::Document(document),
-                Ok(None) if query.source_range().is_some() => {
+                Ok(None) if command.as_document_query(daemon.engine().daemon().library().revision_root())
+                    .is_some_and(|query| query.source_range().is_some()) => {
                     CommandReply::Failed(backend_library::CommandFailure::CursorMismatch)
                 }
                 Ok(None) => match daemon
