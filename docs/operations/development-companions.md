@@ -50,7 +50,7 @@ its executable identity, compiles that identity into the owner, and stages the
 worker beside the owner under the fixed `backend-sqlite-worker` name. This
 journey builds the CLI, MCP server and owner. For desktop development, the desktop
 must also be compiled with the same `NUDOX_BUILD_SQLITE_WORKER_ID` and
-`NUDOX_BUILD_SQLITE_WORKER_BASIS` and use the same worker sibling. The platform companion phases `sqlite_linux_development.py` and
+`NUDOX_BUILD_SQLITE_BASIS_JSON` and use the same worker sibling. The platform companion phases `sqlite_linux_development.py` and
 `sqlite_macos_development.py` retain the runtime closure and recheck identity
 after relocation/signing. For the Linux source-bound release flow, pass `--sqlite`
 to `record_stylo_owner_build.py` and supply its resulting owner receipt to
