@@ -74,7 +74,14 @@ pub fn resolve_references_with_sdk(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<Vec<PathBuf>, &'static str> {
-    if candidates.is_empty() || candidates.len() > 8192 || !target_framework.starts_with("net") {
+    if candidates.is_empty()
+        || candidates.len() > 8192
+        || !target_framework.starts_with("net")
+        || target_framework.len() > 32
+        || !target_framework[3..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
         return Err("invalid SDK reference candidates");
     }
     let scratch = tempfile::tempdir().map_err(|_| "SDK scratch unavailable")?;
@@ -82,16 +89,29 @@ pub fn resolve_references_with_sdk(
     let mut xml = format!(
         "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>{target_framework}</TargetFramework><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets></PropertyGroup><ItemGroup>"
     );
-    for (index, path) in candidates.iter().enumerate() {
+    for path in candidates {
         if !path.is_absolute() || !path.is_file() {
             return Err("SDK candidate unavailable");
         }
-        let path = path
-            .to_str()
-            .ok_or("SDK candidate path encoding")?
+        let path = path.to_str().ok_or("SDK candidate path encoding")?;
+        let name = path
+            .rsplit('/')
+            .next()
+            .and_then(|name| name.strip_suffix(".dll"))
+            .ok_or("SDK candidate filename")?;
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b".-_".contains(&byte))
+        {
+            return Err("SDK candidate filename");
+        }
+        let escaped_path = path
             .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
             .replace('"', "&quot;");
-        xml.push_str(&format!("<Reference Include=\"Candidate{index}\"><HintPath>{path}</HintPath><Private>false</Private></Reference>"));
+        xml.push_str(&format!("<Reference Include=\"{name}\"><HintPath>{escaped_path}</HintPath><Private>false</Private></Reference>"));
     }
     xml.push_str("</ItemGroup></Project>");
     fs::write(&project, xml).map_err(|_| "SDK scratch unavailable")?;
