@@ -42,6 +42,50 @@ def main() -> int:
     def identity(row):
         return row.get("identity", {})
 
+    def require_json(label, body):
+        check(label + ":json-object", isinstance(body, dict), body)
+        return body if isinstance(body, dict) else {}
+
+    def selected_rows(label, body, name, coordinate=None):
+        rows = [row for row in records(body)
+                if isinstance(row, dict) and identity(row).get("name") == name]
+        if coordinate is not None:
+            rows = [row for row in rows if identity(row).get("coordinate") == coordinate]
+        check(label, bool(rows), {"name": name, "coordinate": coordinate,
+                                  "rows": rows[:4], "available": names(body)})
+        return rows
+
+    def strings(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from strings(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from strings(item)
+
+    def row_fingerprint(body):
+        return sorted(tuple(str(value) for value in (
+                           identity(row).get("name"), identity(row).get("coordinate"),
+                           row.get("kind"), row.get("language")))
+                      for row in records(body) if isinstance(row, dict))
+
+    def query_rows(body):
+        return body.get("rows", []) if isinstance(body, dict) else []
+
+    def query_names(body):
+        return [row.get("name") for row in query_rows(body) if isinstance(row, dict)]
+
+    def query_fingerprint(body):
+        return sorted(tuple(str(value) for value in (row.get("name"), row.get("coordinate")))
+                      for row in query_rows(body) if isinstance(row, dict))
+
+    def reference_fingerprint(body):
+        return sorted((str(row.get("title")), str(identity(row).get("name")),
+                       tuple(sorted(str(tag) for tag in row.get("tags", []))))
+                      for row in records(body) if isinstance(row, dict))
+
     def names(body):
         return [identity(row).get("name") for row in records(body)]
 
@@ -51,6 +95,7 @@ def main() -> int:
         return reply.get("structuredContent", {})
 
     try:
+        cli_references = {}
         project = route.root / "pure-typescript"
         (project / "src").mkdir(parents=True)
         (project / "package.json").write_text(
@@ -81,7 +126,8 @@ def main() -> int:
             'export function NavBar(): string { return "navigation"; }\n'
         )
         route.start_owner(project)
-        cli("add", "add", str(project), "--wait", "--wait-timeout", "900")
+        add, _ = cli("add", "add", str(project), "--wait", "--wait-timeout", "900")
+        require_json("add", add)
         coordinates = {}
         for name in ("generateSchedule", "loadSectionsCsv", "POST", "NavBar"):
             body, _ = cli("search-" + name, "search", name, "--limit", "20")
@@ -89,37 +135,103 @@ def main() -> int:
             check("search:" + name, bool(found), names(body))
             if found:
                 coordinates[name] = identity(found[0]).get("coordinate")
-        cli("status", "status")
+                check("search-coordinate:" + name,
+                      isinstance(coordinates[name], str) and bool(coordinates[name]), found[0])
+        status, _ = cli("status", "status")
+        require_json("status", status)
+        check("status:has-project-coverage", bool(status) and any(
+            key in status for key in ("coverage", "lanes", "row_count", "rows", "publication", "answer")), status)
         outline, _ = cli("outline", "outline", "--limit", "50")
-        check("outline:tsx", "NavBar" in json.dumps(outline), outline)
+        require_json("outline", outline)
+        selected_rows("outline:tsx", outline, "NavBar")
         query = "{ Declaration { name } }"
-        body, text = cli("declarations", "query", query)
-        check("query:declaration", "generateSchedule" in text, body)
+        body, _ = cli("declarations", "query", query)
+        require_json("query", body)
+        check("query:declaration", "generateSchedule" in query_names(body), query_names(body))
+        check("query:tsx", "NavBar" in query_names(body), query_names(body))
         for name, caller in (("generateSchedule", "POST"), ("loadSectionsCsv", "generateSchedule")):
             coordinate = coordinates.get(name)
             if not coordinate:
                 check("reads:" + name, False, "search did not emit an actionable coordinate")
                 continue
-            _, source = cli("source-" + name, "source", coordinate)
-            check("source:" + name, "function " + name in source, source[-1200:])
-            body, text = cli("references-" + name, "references", coordinate)
-            check("references:" + name, caller in text, body)
+            source_body, _ = cli("source-" + name, "source", coordinate)
+            require_json("source:" + name, source_body)
+            check("source-content:" + name,
+                  any("function " + name in part for part in strings(source_body)), source_body)
+            refs, _ = cli("references-" + name, "references", coordinate)
+            require_json("references:" + name, refs)
+            ref_rows = records(refs)
+            check("references-caller:" + name,
+                  any(caller in json.dumps(row) for row in ref_rows), ref_rows)
+            cli_references[name] = refs
         # The historical path coordinate must remain usable on unchanged source.
         coordinate = coordinates.get("generateSchedule")
         if coordinate:
             project_prefix = coordinate.split("::", 1)[0]
             path_coordinate = project_prefix + "::src/scheduler.ts:2::generateSchedule"
             for verb in ("show", "source", "document", "graph", "related", "references"):
-                cli("path-" + verb, verb, path_coordinate)
-            _, shown = cli("signature", "show", coordinate)
-            check("signature:modifiers", "export async" in shown, shown[-2000:])
-            check("signature:return", "Promise<string>" in shown, shown[-2000:])
+                result, raw = cli("path-" + verb, verb, path_coordinate)
+                require_json("path-json:" + verb, result)
+                check("path-identity:" + verb,
+                      any(identity(row).get("name") == "generateSchedule" for row in records(result))
+                      or any("generateSchedule" in part for part in strings(result)),
+                      {"result": result, "tail": raw[-500:]})
+            shown_body, _ = cli("signature", "show", coordinate)
+            require_json("signature", shown_body)
+            check("signature:modifiers", any("export async" in part for part in strings(shown_body)), shown_body)
+            check("signature:return", any("Promise<string>" in part for part in strings(shown_body)), shown_body)
+            check("signature:kind", any(row.get("kind") == "function" for row in records(shown_body)), shown_body)
+            path_source, _ = cli("path-source", "source", path_coordinate)
+            check("path-source:expected-line",
+                  any('return loadSectionsCsv() + req;' in part for part in strings(path_source)), path_source)
+            path_refs, _ = cli("path-references", "references", path_coordinate)
+            check("path-references:POST",
+                  any("POST" in json.dumps(row) for row in records(path_refs)), path_refs)
         route.start_mcp(project)
         body = tool("search", "backend.search", {"query": "generateSchedule", "limit": 20})
-        check("mcp:search:declaration", "generateSchedule" in names(body), body)
+        selected_rows("mcp:search:declaration", body, "generateSchedule")
+        cli_search, _ = cli("parity-search", "search", "generateSchedule", "--limit", "20")
+        check("mcp:cli-search-parity", row_fingerprint(body) == row_fingerprint(cli_search),
+              {"mcp": row_fingerprint(body), "cli": row_fingerprint(cli_search)})
+        mcp_query = tool("query", "backend.query", {"query": query})
+        check("mcp:query:declaration", "generateSchedule" in query_names(mcp_query), query_names(mcp_query))
+        check("mcp:query:tsx", "NavBar" in query_names(mcp_query), query_names(mcp_query))
+        cli_query, _ = cli("parity-query", "query", query)
+        check("mcp:cli-query-parity", query_fingerprint(mcp_query) == query_fingerprint(cli_query),
+              {"mcp": query_fingerprint(mcp_query), "cli": query_fingerprint(cli_query)})
         if coordinate:
             body = tool("source", "backend.source", {"coordinate": coordinate})
-            check("mcp:source:body", "loadSectionsCsv" in json.dumps(body), body)
+            check("mcp:source:body", any("function generateSchedule" in part for part in strings(body)), body)
+            expected_signature = "export async function generateSchedule(req: string): Promise<string> {"
+            check("mcp:cli-source-parity", any(expected_signature in part for part in strings(body)), body)
+            mcp_refs = tool("references", "backend.references", {"coordinate": coordinate})
+            check("mcp:references:POST",
+                  any("POST" in json.dumps(row) for row in records(mcp_refs)), mcp_refs)
+            check("mcp:cli-reference-parity",
+                  reference_fingerprint(mcp_refs) == reference_fingerprint(
+                      cli_references.get("generateSchedule", {})),
+                  {"mcp": reference_fingerprint(mcp_refs),
+                   "cli": reference_fingerprint(cli_references.get("generateSchedule", {}))})
+            mcp_path_source = tool("path-source", "backend.source", {"coordinate": path_coordinate})
+            check("mcp:path-source", any('return loadSectionsCsv() + req;' in part
+                                           for part in strings(mcp_path_source)), mcp_path_source)
+            for label, tool_name, arguments in (
+                ("document", "backend.document", {"coordinate": path_coordinate}),
+                ("graph", "backend.graph", {"coordinate": path_coordinate}),
+                ("related", "backend.related", {"coordinate": path_coordinate}),
+            ):
+                result = tool("path-" + label, tool_name, arguments)
+                check("mcp:path-identity:" + label,
+                      any("generateSchedule" in part for part in strings(result)), result)
+        mcp_status = tool("status", "backend.status", {})
+        check("mcp:status:json", isinstance(mcp_status, dict) and bool(mcp_status), mcp_status)
+        mcp_status_body = mcp_status.get("structuredContent", {})
+        check("mcp:status:typed", isinstance(mcp_status_body, dict), mcp_status)
+        comparable = {key for key in ("coverage", "rows")
+                      if key in status and key in mcp_status_body}
+        check("mcp:cli-status-parity", bool(comparable) and
+              all(status[key] == mcp_status_body[key] for key in comparable),
+              {"keys": sorted(comparable), "cli": status, "mcp": mcp_status_body})
         # Stop only this fixture's processes and reopen the same durable state.
         for process in (route.mcp, route.owner):
             if process is not None and process.poll() is None:
@@ -132,7 +244,12 @@ def main() -> int:
             time.sleep(0.05)
         route.start_owner(project)
         body, _ = cli("reopen-search", "search", "generateSchedule", "--limit", "20")
-        check("reopen:search", "generateSchedule" in names(body), body)
+        reopened = selected_rows("reopen:search", body, "generateSchedule")
+        check("reopen:identity-parity", row_fingerprint(body) == row_fingerprint(
+            route.cli("reopen-parity-search", "search", "generateSchedule", "--limit", "20")[0]),
+            row_fingerprint(body))
+        reopened_status, _ = cli("reopen-status", "status")
+        check("reopen:status", isinstance(reopened_status, dict) and bool(reopened_status), reopened_status)
     except Exception as error:
         check("runner", False, str(error))
     finally:
