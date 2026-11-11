@@ -1460,7 +1460,8 @@ fn admit_surface_reply_internal(
             return Err(ReplyAdmissionError::Protocol("SQL query reply kind changed".into()));
         };
         if page.basis.project != crate::package_key(request.package.as_str()).to_bytes()
-            || page.hits.len() > usize::from(request.page_rows)
+            || (!page.host_gaps.is_empty() && !matches!(request.role, SqlQueryRole::Gap | SqlQueryRole::Diagnostic))
+            || page.hits.len() + page.host_gaps.len() > usize::from(request.page_rows)
             || crate::surface::serialized_json_size(reply) > request.output_bytes as usize
             || page.hits.iter().any(|hit| !match (request.role, &hit.fact) {
                 (SqlQueryRole::Any, _) => true,

@@ -539,10 +539,27 @@ pub enum SqlQueryTerminal {
     },
     Unavailable,
 }
+/// A file whose selected native analysis could not produce facts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SqlHostGap {
+    pub path: String,
+    pub dialect: SqlDialect,
+    pub reason: SqlHostGapReason,
+}
+/// Source-backed terminal reason; no source or fact handle is fabricated.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SqlHostGapReason {
+    NativeError,
+    Unavailable { reason: SqlFailure },
+}
 /// A bounded page over one selected SQL relation root.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SqlQueryPage {
+    #[serde(default)]
+    pub host_gaps: Vec<SqlHostGap>,
     pub basis: SqlQueryBasis,
     pub hits: Vec<SqlQueryHit>,
     pub terminal: SqlQueryTerminal,
@@ -639,6 +656,7 @@ mod tests {
             continuation: None,
         };
         let mut page = SqlQueryPage {
+            host_gaps: Vec::new(),
             basis: SqlQueryBasis {
                 manifest_root: [1; 32],
                 sql_root: Some([2; 32]),
