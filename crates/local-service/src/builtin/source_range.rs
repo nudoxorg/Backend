@@ -239,7 +239,7 @@ pub(super) fn page<'a>(
         start: offset,
         end: u32::try_from(end).map_err(|_| SourceRangeError::InvalidExtent)?,
         total: u32::try_from(owner.len()).map_err(|_| SourceRangeError::InvalidExtent)?,
-        owner_start_line: None,
+        owner_start_line: observed_start_line(host, binding.owner().0 as usize, owner),
     })
 }
 
