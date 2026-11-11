@@ -40,7 +40,8 @@ pub(super) fn capture(
     let charge = bytes.len().checked_mul(128)
         .and_then(|value| value.checked_add(MAX_HEADERS * 512))
         .ok_or("native header capture byte charge overflow")?;
-    *remaining_bytes = remaining_bytes.checked_sub(charge).ok_or("native header capture byte budget exceeded")?;
+    let Some(after) = remaining_bytes.checked_sub(charge) else { return Ok(Vec::new()) };
+    *remaining_bytes = after;
     checkpoint.checkpoint(0).map_err(|e| format!("native header capture stopped: {e:?}"))?;
     let ImageProvenance::Captured { source, recipe, scope, .. } = image.image_facts().provenance else {
         return Ok(Vec::new());
