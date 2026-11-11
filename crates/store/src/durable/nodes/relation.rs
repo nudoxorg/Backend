@@ -992,7 +992,7 @@ mod tests {
         let size = super::super::super::relation_object_limit().expect("relation limit") + 1;
         assert!(size < store.object_envelope_limit().expect("object limit"));
         file.set_len(size as u64).expect("set oversized length");
-        assert_eq!(store.read_relation_node(state.root()), Err(StoreError::Bounds));
+        assert!(matches!(store.read_relation_node(state.root()), Err(StoreError::Bounds)));
         let _ = remove_store_fixture(root);
     }
 
