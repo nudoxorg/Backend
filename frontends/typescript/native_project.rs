@@ -598,8 +598,8 @@ pub fn function_headers(
     checkpoint: &dyn ExecutionCheckpoint,
 ) -> Result<Vec<NativeFunctionHeader>, String> {
     const MAX_SOURCE: usize = 256 * 1024;
-    if text.len() > MAX_SOURCE { return Ok(Vec::new()); }
     poll(checkpoint, 0)?;
+    if text.len() > MAX_SOURCE { return Ok(Vec::new()); }
     let mut parser = MeteredParserState::new(path.to_string_lossy().into_owned(), text.to_owned());
     parser.parse_source_file_with_execution_checkpoint(checkpoint)
         .map_err(|error| format!("native TSZ header parse stopped: {error:?}"))?;
@@ -626,6 +626,10 @@ pub fn function_headers_from_arena(
         let Some((start, _)) = arena.pos_end_at(index) else { continue };
         // Default exports require their own declaration/identity proof.
         let value = (!export.is_default_export).then_some(start);
+        if !export_starts.contains_key(&export.export_clause.0) && export_starts.len() == MAX_HEADERS {
+            poll(checkpoint, 0)?;
+            return Ok(Vec::new());
+        }
         export_starts.entry(export.export_clause.0)
             .and_modify(|value| *value = None).or_insert(value);
     }
@@ -647,7 +651,10 @@ pub fn function_headers_from_arena(
         if export_start.is_some_and(|offset| offset > start)
             || text.get(start as usize..end as usize).is_none()
             || text.get(name_start as usize..name_end as usize).is_none() { continue; }
-        if headers.len() == MAX_HEADERS { return Ok(Vec::new()); }
+        if headers.len() == MAX_HEADERS {
+            poll(checkpoint, 0)?;
+            return Ok(Vec::new());
+        }
         headers.push(NativeFunctionHeader {
             declaration: (start, end), name: (name_start, name_end), export_start,
             body_start, is_async: function.is_async,
@@ -655,8 +662,10 @@ pub fn function_headers_from_arena(
     }
     headers.sort_unstable_by_key(|header| header.declaration);
     if headers.windows(2).any(|pair| pair[0].declaration == pair[1].declaration) {
+        poll(checkpoint, 0)?;
         return Ok(Vec::new());
     }
+    poll(checkpoint, 0)?;
     Ok(headers)
 }
 
