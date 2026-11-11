@@ -109,8 +109,8 @@ mod source_excerpt_tests {
             ("MissingFields", "private static bool MissingFields(string value) {\n        return value.Length == 0;\n    }".to_owned()),
             ("Name", "public string Name { get; set; }".to_owned()),
         ] {
-            let declaration = analysis.declarations().iter().find(|row| row.name() == name)
-                .ok_or_else(|| format!("missing {name}"))?;
+            let declaration = analysis.declarations().iter().find(|row| row.name() == name && row.kind() != backend_compile::DeclarationKind::Module)
+                .ok_or_else(|| format!("missing authored declaration {name}"))?;
             assert_eq!(declaration.source_excerpt().text(), Some(expected.as_str()));
             assert_eq!(declaration.source_excerpt().extent(), Some(backend_compile::SourceExcerptExtent::Complete));
         }
