@@ -136,7 +136,13 @@ pub(super) fn progress(
     let Some(relation) = sql_analysis_relation(snapshot).map_err(|e| e.to_string())? else {
         return Ok(None);
     };
-    let mut summary = backend_library::SqlAnalysisProgress::default();
+    let mut summary = backend_library::SqlAnalysisProgress {
+        analysed_files: 0,
+        no_worker_files: 0,
+        unsupported_dialect_files: 0,
+        rejected_files: 0,
+        other_unavailable_files: 0,
+    };
     let mut after = None;
     let mut rows = 0usize;
     loop {
