@@ -414,7 +414,7 @@ pub fn resolve_references_with_sdk(
     }
     let project = scratch.path().join("resolve.csproj");
     let mut xml = format!(
-        "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>{target_framework}</TargetFramework><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets></PropertyGroup><ItemGroup>"
+        "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>{target_framework}</TargetFramework><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets><DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences></PropertyGroup><ItemGroup>"
     );
     for path in candidates {
         if !path.is_absolute() || !path.is_file() {
