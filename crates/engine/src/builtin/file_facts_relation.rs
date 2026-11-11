@@ -2624,14 +2624,12 @@ mod tests {
             first.manifest().source_identity(),
             second.manifest().source_identity()
         );
-        let old_by_name = original
-            .iter()
-            .map(|declaration| (declaration.name(), declaration))
-            .collect::<BTreeMap<_, _>>();
-        for declaration in &changed {
-            let Some(old) = old_by_name.get(declaration.name()) else {
-                continue;
-            };
+        // Repeated parameter and JSX names belong to different declarations.
+        // A map keyed by name would compare each occurrence with the last one.
+        assert_eq!(original.len(), changed.len());
+        for (old, declaration) in original.iter().zip(&changed) {
+            assert_eq!(old.name(), declaration.name());
+            assert_eq!(old.kind(), declaration.kind());
             if declaration.kind() == DeclarationKind::Module {
                 assert_eq!(
                     declaration.line(),
