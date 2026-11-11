@@ -433,6 +433,11 @@ fn native_ts_listener_journey(
     let owner = start_owner(&paths)?;
     let mut session = Session::connect(owner.endpoint())?;
     fs::write(project.join("view.ts"), after)?;
+    let stale_coordinate = format!("{}::view.ts:3::Greeting", project.display());
+    assert!(session.source(&stale_coordinate).is_err());
+    assert!(session.document(&stale_coordinate).is_err());
+    let stale_locator = ProductText::new(stale_coordinate).map_err(|e| io::Error::other(e.to_string()))?;
+    assert!(session.surface(SurfaceCommand::Read { locators: vec![stale_locator].into_boxed_slice() }).is_err());
     index(&mut session, &project, 0x42)?;
     let edited = query(
         &mut session,
