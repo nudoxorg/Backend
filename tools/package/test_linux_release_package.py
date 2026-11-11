@@ -398,7 +398,7 @@ class NativeDefaultPackageTests(unittest.TestCase):
                     return "Class: ELF64\nMachine: Advanced Micro Devices X86-64"
                 if args[0] == "-d":
                     name = Path(args[-1]).name
-                    dependency = '' if name in {'libfixture.so', 'libgcc_s.so.1'} else '\n(NEEDED) [libgcc_s.so.1]' if self.stylo_bound and name == 'backend-stylo-worker' else '\n(NEEDED) [libfixture.so]'
+                    dependency = '' if name in {'libfixture.so', 'libgcc_s.so.1'} else '\n(NEEDED) [libgcc_s.so.1]' if self.stylo_bound and name in {'backend-stylo-worker', 'backend-sqlite-worker'} else '\n(NEEDED) [libfixture.so]'
                     return '(NEEDED) [libc.so.6]' + dependency
                 if args[0] == "-l":
                     return f"Requesting program interpreter: {package.INTERPRETER}]"
@@ -572,6 +572,16 @@ class NativeDefaultPackageTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_two_phase_worker_is_copied_without_second_relocation(self):
+        self.check_two_phase_worker(False)
+
+    def test_sqlite_worker_is_copied_and_observed_with_exact_shared_library(self):
+        self.check_two_phase_worker(True)
+
+    def test_sqlite_package_rejects_observation_mismatch(self):
+        self.check_two_phase_worker(True, mismatch=True)
+
+    def check_two_phase_worker(self, with_sqlite, mismatch=False):
+        import install_linux as installer
         import record_stylo_owner_build as actor
         worker = self.base / "raw-worker"
         worker.write_bytes(b"\x7fELF raw worker")
@@ -612,6 +622,16 @@ class NativeDefaultPackageTests(unittest.TestCase):
             "source_loader": {"selected": str(loader), "path": str(loader), "bytes": loader.stat().st_size, "sha256": package.sha256(loader)},
             "transformation": {"before": {**elf, "interpreter": str(loader)}, "after": elf,
                                "tool_sha256": {"patchelf": "b" * 64, "readelf": "c" * 64}}}
+        if with_sqlite:
+            sqlite_image = self.base / "relocated-sqlite"
+            sqlite_image.write_bytes(b"\x7fELF sqlite")
+            bound["observer_environment"] = {}
+            bound["sqlite"] = {"worker": {"path": str(sqlite_image), "bytes": sqlite_image.stat().st_size, "sha256": package.sha256(sqlite_image)},
+                "dependency": bound["dependency"], "dependency_source": bound["dependency_source"],
+                "worker_raw": {"path": str(worker)}, "tools": {"loader": {"path": str(loader)}},
+                "worker_transformation": {"after": elf}, "observer": bound["observer"],
+                "sqlite_lock_sha256": "d" * 64, "artifact_identity": "e" * 64, "basis_json": "basis"}
+            self.rpaths[str(self.output / "nudox-linux-x86_64/bin/backend-sqlite-worker")] = "$ORIGIN/../lib"
         packaged_worker = self.output / "nudox-linux-x86_64/bin/backend-stylo-worker"
         packaged_libgcc = self.output / "nudox-linux-x86_64/lib/libgcc_s.so.1"
         self.stylo_bound = True
@@ -620,9 +640,15 @@ class NativeDefaultPackageTests(unittest.TestCase):
         with patch.object(package, "admit_stylo_bound_owner", return_value=(bound, package.sha256(owner_receipt_path))), \
              patch.object(actor, "observe", return_value="a" * 64), \
              patch.object(actor, "require_runpath"), \
-             patch.object(actor, "bounded_process", return_value=f"libgcc_s.so.1 => {libgcc} (0x1)\n".encode()):
-            self.assertEqual(self.invoke(["--stylo-worker", str(worker), "--stylo-worker-receipt", str(worker_receipt_path),
-                                          "--stylo-owner-receipt", str(owner_receipt_path)]), 0)
+             patch.object(actor, "bounded_process", side_effect=lambda command, *args: b"{}" if with_sqlite and len(command) == 3 and command[0] == str(loader) and command[1].endswith("backend-sqlite-worker") else f"libgcc_s.so.1 => {libgcc} (0x1)\n".encode()), \
+             patch("sqlite_macos_development.validate_observation", return_value=(("f" if mismatch else "e") * 64, "basis")):
+            arguments = ["--stylo-worker", str(worker), "--stylo-worker-receipt", str(worker_receipt_path),
+                         "--stylo-owner-receipt", str(owner_receipt_path)]
+            if mismatch:
+                with self.assertRaisesRegex(ValueError, "compiled owner basis"):
+                    self.invoke(arguments)
+                return
+            self.assertEqual(self.invoke(arguments), 0)
         self.assertEqual(packaged_worker.read_bytes(), final.read_bytes())
         self.assertEqual(packaged_libgcc.read_bytes(), final_libgcc.read_bytes())
         self.assertFalse(any(args and args[0] == "--set-interpreter" and args[-1] == str(packaged_worker)
@@ -631,6 +657,12 @@ class NativeDefaultPackageTests(unittest.TestCase):
                              for args in self.patchelf_invocations))
         metadata = json.loads((self.output / "nudox-linux-x86_64/packaging-manifest.json").read_text())["stylo_worker"]
         self.assertEqual(metadata["bound_owner"]["worker_anchor"], "a" * 64)
+        if with_sqlite:
+            root = self.output / "nudox-linux-x86_64"
+            self.assertEqual((root / "bin/backend-sqlite-worker").read_bytes(), sqlite_image.read_bytes())
+            manifest = json.loads((root / "packaging-manifest.json").read_text())
+            installer.verify_sqlite_worker(root, manifest)
+            self.assertFalse(any(args and args[0] == "--set-interpreter" and args[-1] == str(root / "bin/backend-sqlite-worker") for args in self.patchelf_invocations))
 
     def test_explicit_sdk_retains_inventory_relocation_and_both_version_probes(self):
         sdk, receipt = self.sdk()
