@@ -619,6 +619,14 @@ impl NativeTsCapture {
                 backend_engine::builtin::NativeSourceEvidenceKind::ProgramMember
             };
             row.headers = admitted_headers.remove(*path);
+            if row.checked_encoded_len().is_none_or(|len| len > backend_engine::builtin::MAX_NATIVE_EVIDENCE_STORED_VALUE) {
+                // The compiler aggregate retains all headers; avoid dropping
+                // them just because the optional inline line map is large.
+                row.line_starts = None;
+            }
+            if row.checked_encoded_len().is_none_or(|len| len > backend_engine::builtin::MAX_NATIVE_EVIDENCE_STORED_VALUE) {
+                return Err("native source evidence exceeds durable row capacity");
+            }
             Ok(row)
         }).collect::<Result<Vec<_>, &str>>()?;
         evidence.sort_unstable_by(|left, right| left.path.cmp(&right.path));
