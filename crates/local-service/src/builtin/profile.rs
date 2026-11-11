@@ -6586,12 +6586,20 @@ fn validate_persisted_native_evidence(
             }
         }
     }
+    let mut read_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
+    let scratch = backend_engine::builtin::NATIVE_EVIDENCE_READ_SCRATCH;
+    if base_root.is_some() {
+        read_budget = read_budget.checked_sub(scratch).ok_or_else(|| BuiltinModelError("native predecessor open budget exceeded".into()))?;
+    }
     let base = base_root
         .map(|root| persisted.relation::<NativeSourceEvidenceRelation>(store, root))
         .transpose()
         .map_err(|error| BuiltinModelError(format!("open native evidence predecessor: {error}")))?;
+    if base.is_some() {
+        read_budget = read_budget.checked_add(scratch - (2 * 64 * 1024 + 1024)).ok_or_else(|| BuiltinModelError("native predecessor budget overflow".into()))?;
+    }
     if let Some(relation) = &base {
-        let object = relation.root_object().map_err(|error| {
+        let object = backend_engine::builtin::native_source_evidence_root_object_budgeted(relation, &mut read_budget).map_err(|error| {
             BuiltinModelError(format!("read native evidence predecessor root: {error}"))
         })?;
         if !base_membership
@@ -6617,11 +6625,12 @@ fn validate_persisted_native_evidence(
     }
     let root = target_root
         .ok_or_else(|| BuiltinModelError("native evidence target pointer missing".into()))?;
+    read_budget = read_budget.checked_sub(scratch).ok_or_else(|| BuiltinModelError("native target open budget exceeded".into()))?;
     let target = persisted
         .relation::<NativeSourceEvidenceRelation>(store, root)
         .map_err(|error| BuiltinModelError(format!("open native evidence target: {error}")))?;
-    let object = target
-        .root_object()
+    read_budget = read_budget.checked_add(scratch - (2 * 64 * 1024 + 1024)).ok_or_else(|| BuiltinModelError("native target budget overflow".into()))?;
+    let object = backend_engine::builtin::native_source_evidence_root_object_budgeted(&target, &mut read_budget)
         .map_err(|error| BuiltinModelError(format!("read native evidence target root: {error}")))?;
     if !target_membership
         .contains_object_id(object.id())
@@ -6633,7 +6642,6 @@ fn validate_persisted_native_evidence(
             "native evidence target root outside closure".into(),
         ));
     }
-    let mut read_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
     let bounded_target = precharge_native_evidence_delta(
         base.as_ref(), intent.package.to_bytes(), &intent.native_evidence_changes, &mut read_budget,
     )?;
