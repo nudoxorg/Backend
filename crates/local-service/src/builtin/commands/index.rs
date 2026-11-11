@@ -1042,6 +1042,7 @@ pub(super) fn finish_index_scan(
                     operation_key,
                     semantic_authority,
                     None,
+                    None,
                 )?;
                 deferred.csharp_capture = csharp_project.map(Arc::new);
                 return Ok(PreparedIndex::Compile(deferred));
@@ -2865,6 +2866,7 @@ fn prepare_deferred_compile(
     reused_profiles: BTreeSet<LanguageProfile>,
     operation_key: Option<backend_library::IndexOperationKey>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
+    csharp_witness: Option<&CapturedCSharpUnitAdmission>,
     mut retained_attempts: Option<&mut Vec<backend_extension_turso::CandidateAttempt>>,
 ) -> Result<DeferredIndex, BuiltinModelError> {
     let mut by_profile = BTreeMap::<LanguageProfile, Vec<OwnedPackageSource>>::new();
@@ -2936,7 +2938,11 @@ fn prepare_deferred_compile(
                 BuiltinModelError("semantic compilation observation has no input digest".to_owned())
             })?;
             if context.csharp_project.is_some() && matches!(profile, LanguageProfile::CSharp(_)) {
-                return Err(BuiltinModelError("selected C# project awaits unit-scoped authority".to_owned()));
+                let witness = csharp_witness.ok_or_else(|| BuiltinModelError("selected C# source custody is missing".to_owned()))?;
+                if witness.key() != &key || !std::ptr::eq(context.cancellation, witness.cancellation.as_ref())
+                    || !witness.revalidate(snapshot, &witness.cancellation)? {
+                    return Err(BuiltinModelError("selected C# source custody differs from candidate".to_owned()));
+                }
             }
             let local_observation = semantic_authority.observe(
                 &key,

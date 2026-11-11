@@ -2348,14 +2348,7 @@ impl SourceCompilePlan {
             }) {
             return Err(BuiltinModelError("C# compilation inputs differ from selected custody".to_owned()));
         }
-        let prepared = self.finish(snapshot, compiler, semantic, retained_attempts)?;
-        match prepared {
-            PreparedIndex::Compile(mut deferred) => {
-                deferred.csharp_selected_source = Some(Arc::new(witness));
-                Ok(PreparedIndex::Compile(deferred))
-            }
-            _ => Err(BuiltinModelError("C# selected custody requires a local deferred compile".to_owned())),
-        }
+        self.finish_inner(snapshot, compiler, semantic, retained_attempts, Some(Arc::new(witness)))
     }
 
     pub(in crate::builtin::commands) fn finish(
@@ -2364,6 +2357,17 @@ impl SourceCompilePlan {
         compiler: &LocalCompilerClient,
         semantic: &mut crate::builtin::semantic_authority::SemanticAuthority,
         retained_attempts: &mut Vec<backend_extension_turso::CandidateAttempt>,
+    ) -> Result<PreparedIndex, BuiltinModelError> {
+        self.finish_inner(snapshot, compiler, semantic, retained_attempts, None)
+    }
+
+    fn finish_inner(
+        self,
+        snapshot: &WorkspaceSnapshot,
+        compiler: &LocalCompilerClient,
+        semantic: &mut crate::builtin::semantic_authority::SemanticAuthority,
+        retained_attempts: &mut Vec<backend_extension_turso::CandidateAttempt>,
+        witness: Option<Arc<CapturedCSharpUnitAdmission>>,
     ) -> Result<PreparedIndex, BuiltinModelError> {
         if self.reuse_only {
             return Ok(PreparedIndex::Ready(self.reused_selection(snapshot)?));
@@ -2416,11 +2420,13 @@ impl SourceCompilePlan {
             self.reused_profiles,
             self.operation_key,
             semantic,
+            witness.as_deref(),
             Some(retained_attempts),
         )?;
         deferred.native_typescript = native_typescript;
         deferred.mixed_stylo_proof = mixed_stylo_proof;
         deferred.csharp_capture = self.csharp_project;
+        deferred.csharp_selected_source = witness;
         Ok(PreparedIndex::Compile(deferred))
     }
 
