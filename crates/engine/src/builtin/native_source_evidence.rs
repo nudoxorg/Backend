@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 const MAGIC: &[u8; 4] = b"NSE1";
 const MAGIC_V2: &[u8; 4] = b"NSE2";
 /// Maximum retained line starts per file.
-pub const MAX_NATIVE_EVIDENCE_LINES: usize = 1_000_000;
+pub const MAX_NATIVE_EVIDENCE_LINES: usize = 16_384;
 const ROOT_KEY: [u8; 32] = [0x45; 32];
 /// Maximum path and captured input sizes, matching native source admission.
 pub const MAX_NATIVE_EVIDENCE_PATH: usize = 4096;
@@ -356,6 +356,10 @@ mod tests {
         claim.line_starts.as_mut().unwrap()[1] += 1;
         assert!(claim.verify_host(bytes, image).is_err());
         assert!(NativeSourceEvidence::capture_line_starts(b"a\rb").is_none());
+        assert!(NativeSourceEvidence::capture_line_starts(&vec![b'\n'; MAX_NATIVE_EVIDENCE_LINES]).is_none());
+        let mut invalid = claim.clone();
+        invalid.line_starts = Some(vec![0, 0]);
+        assert!(invalid.validate().is_err());
         assert!(NativeSourceEvidence::capture_line_starts("a\u{2028}b".as_bytes()).is_none());
         claim.kind = NativeSourceEvidenceKind::ProgramMember;
         assert!(!claim.admits_image());
