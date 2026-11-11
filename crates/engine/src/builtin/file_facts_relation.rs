@@ -2216,17 +2216,16 @@ mod tests {
                 padding == 0,
                 "exercise both storage layouts"
             );
-            let source_row = ProductSourceRecord::file_within_row_capacity(
+            let source_row = ProductSourceRecord::identified_file_within_row_capacity(
                 [0x44; 32],
                 path,
                 SourceLanguage::TypeScript,
                 analysis.content().to_bytes(),
                 [4; 32],
                 declarations.clone(),
+                identity,
             )
-            .expect("TypeScript source row")
-            .with_source_identity(identity)
-            .expect("source identity");
+            .expect("TypeScript source row");
             let rows = update
                 .into_rows()
                 .map(|(key, row)| {
@@ -2437,22 +2436,22 @@ mod tests {
     fn source_row(
         project: [u8; 32],
         path: &str,
+        language: SourceLanguage,
         content_version: [u8; 32],
         analysis_version: [u8; 32],
         source_identity: ContentId<SourceFactDomain>,
         declarations: Vec<SourceDeclaration>,
     ) -> ProductSourceRecord {
-        ProductSourceRecord::file_within_row_capacity(
+        ProductSourceRecord::identified_file_within_row_capacity(
             project,
             path,
-            SourceLanguage::Rust,
+            language,
             content_version,
             analysis_version,
             declarations,
+            source_identity,
         )
         .expect("compact source row")
-        .with_source_identity(source_identity)
-        .expect("source identity")
     }
 
     #[test]
@@ -2532,6 +2531,7 @@ mod tests {
         let source = source_row(
             project,
             path,
+            SourceLanguage::Rust,
             [3; 32],
             [4; 32],
             identity,
@@ -2560,7 +2560,7 @@ mod tests {
             }
             ProductSourceFileFactsAdmission::PagedVerified(_) => panic!("small set is inline"),
         }
-        let wrong_file = source_row(project, path, [9; 32], [4; 32], identity, declarations);
+        let wrong_file = source_row(project, path, SourceLanguage::Rust, [9; 32], [4; 32], identity, declarations);
         let error = match admit_product_source_file_facts(
             wrong_file.file_fields().expect("file fields"),
             update.manifest_key(),
@@ -2673,6 +2673,7 @@ mod tests {
         let compact = source_row(
             project,
             "src/Panels.tsx",
+            SourceLanguage::TypeScript,
             [8; 32],
             [2; 32],
             ContentId::<SourceFactDomain>::from_canonical_bytes(prefixed_source.as_bytes()),
@@ -2957,6 +2958,7 @@ mod tests {
         let compact = source_row(
             project,
             path,
+            SourceLanguage::TypeScript,
             [0x21; 32],
             [0x22; 32],
             identity,
@@ -3024,7 +3026,7 @@ mod tests {
         )
         .expect("paged facts");
         let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(b"source");
-        let source = source_row(project, path, [2; 32], [3; 32], identity, declarations);
+        let source = source_row(project, path, SourceLanguage::Rust, [2; 32], [3; 32], identity, declarations);
         let mut rows = update.pages().iter().cloned().collect::<BTreeMap<_, _>>();
         let stale = source.file_fields().expect("file fields");
         let mut corrupt_key = None;
