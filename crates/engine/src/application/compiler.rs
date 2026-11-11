@@ -1762,6 +1762,14 @@ impl StagedSemanticPackage {
         &self.staged.csharp_evidence
     }
 
+    /// Actual immutable helper/runtime custody retained with this staged C# attempt.
+    #[must_use]
+    pub fn csharp_execution_lease(
+        &self,
+    ) -> Option<&backend_frontend_csharp::legacy::CSharpExecutionLease> {
+        self.staged.csharp_execution.as_ref()
+    }
+
     /// Builds a bounded claim-only C# evidence aggregate tied to these staged
     /// image bytes and this exact input. Publication selection is still required.
     pub fn csharp_invocation_evidence_object(&self, input: [u8; 32]) -> Option<Vec<u8>> {
@@ -3524,6 +3532,7 @@ pub(crate) struct StagedPackageCompilation {
     image_plan: Box<[crate::publication::manifest::SemanticImageRegion]>,
     semantic_images: Box<[u8]>,
     csharp_evidence: Box<[StagedCSharpInvocationEvidence]>,
+    csharp_execution: Option<backend_frontend_csharp::legacy::CSharpExecutionLease>,
     csharp_config: Box<[StagedCSharpConfigProbe]>,
     csharp_unit: Option<Box<str>>,
     package_identity: [u8; 32],
@@ -6369,6 +6378,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             None
         };
 
+        let csharp_execution = match transient_authority.as_ref() {
+            Some(super::package_authority::PackageAuthorityOwner::CSharp { execution, .. }) => {
+                Some(execution.clone())
+            }
+            _ => None,
+        };
         let staged = StagedPackageCompilation {
             compilation_attempt_id,
             artifacts,
@@ -6376,6 +6391,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             image_plan: image_plan.into_boxed_slice(),
             semantic_images: semantic_images.into_boxed_slice(),
             csharp_evidence: csharp_evidence.into_boxed_slice(),
+            csharp_execution,
             csharp_config: csharp_config.into_boxed_slice(),
             csharp_unit: match package.package_target.unit_key() {
                 CompilationUnitKeyV2::CSharpProject { project_path } if package.csharp_config.is_some() => Some(project_path.clone()),
