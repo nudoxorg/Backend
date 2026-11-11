@@ -703,7 +703,7 @@ impl BuiltinIntent {
     const STYLO_ANALYSIS_VERSION: u8 = 12;
     const NATIVE_EVIDENCE_VERSION: u8 = 13;
     const SQL_VERSION: u8 = super::sql_intent::SQL_INTENT_VERSION;
-    const CSHARP_GRAPH_VERSION: u8 = 15;
+    const CSHARP_GRAPH_VERSION: u8 = 17;
     const MAX_NATIVE_EVIDENCE_CHANGES: usize = 2 * backend_engine::builtin::MAX_NATIVE_EVIDENCE_ROWS;
     const MAX_NATIVE_EVIDENCE_DELTA_BYTES: usize = 2 * backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES + Self::MAX_NATIVE_EVIDENCE_CHANGES * 42;
     // New v13 policy ceiling for inherited sections, not a claim that all
@@ -1429,7 +1429,7 @@ impl BuiltinIntent {
     fn set_graph_changes(&mut self, changes: Vec<CSharpGraphChange>) -> Result<(), BuiltinModelError> {
         if self.encoding_version != Self::CSHARP_GRAPH_VERSION {
             if changes.is_empty() { return Ok(()); }
-            return Err(BuiltinModelError("graph changes require BPI15".into()));
+            return Err(BuiltinModelError("graph changes require BPI17".into()));
         }
         if changes.is_empty() || changes.len() > 64 || self.capture_basis.is_none()
             || self.operation != BuiltinIntentOperation::Index
@@ -1497,7 +1497,7 @@ impl BuiltinIntent {
             Self::STYLO_ANALYSIS_VERSION => b"BPIC",
             Self::NATIVE_EVIDENCE_VERSION => b"BPID",
             Self::SQL_VERSION => super::sql_intent::SQL_INTENT_MAGIC,
-            Self::CSHARP_GRAPH_VERSION => b"BPIF",
+            Self::CSHARP_GRAPH_VERSION => b"BPIH",
             _ => b"BPI9",
         });
         bytes.push(self.encoding_version);
@@ -1645,7 +1645,7 @@ impl BuiltinIntent {
             if self.encoding_version == Self::STYLO_ANALYSIS_VERSION
                 || (self.encoding_version >= Self::NATIVE_EVIDENCE_VERSION && self.stylo_basis.is_some())
             {
-                let length_position = if self.encoding_version >= Self::SQL_VERSION {
+                let length_position = if matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_GRAPH_VERSION) {
                     let position = bytes.len(); bytes.extend_from_slice(&[0; 4]); Some(position)
                 } else { None };
                 let basis = self
@@ -1672,12 +1672,12 @@ impl BuiltinIntent {
                     bytes[position..position+4].copy_from_slice(&length.to_be_bytes());
                 }
             }
-            if self.encoding_version >= Self::SQL_VERSION {
+            if matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_GRAPH_VERSION) {
                 bytes.push(u8::from(self.native_evidence_basis.is_some()));
             }
             if self.encoding_version == Self::NATIVE_EVIDENCE_VERSION
-                || (self.encoding_version >= Self::SQL_VERSION && self.native_evidence_basis.is_some()) {
-                let length_position = if self.encoding_version >= Self::SQL_VERSION {
+                || (matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_GRAPH_VERSION) && self.native_evidence_basis.is_some()) {
+                let length_position = if matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_GRAPH_VERSION) {
                     let position = bytes.len(); bytes.extend_from_slice(&[0; 4]); Some(position)
                 } else { None };
                 let basis = self.native_evidence_basis.expect("native evidence basis validated");
@@ -1699,7 +1699,7 @@ impl BuiltinIntent {
                     bytes[position..position+4].copy_from_slice(&length.to_be_bytes());
                 }
             }
-            if self.encoding_version >= Self::SQL_VERSION {
+            if matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_GRAPH_VERSION) {
                 match &self.sql_extension {
                     None => bytes.push(0),
                     Some(extension) => {
@@ -2135,7 +2135,7 @@ impl BuiltinIntent {
     /// A staged v14 carrier can shed its sections and private proof. Refuse
     /// synchronous hydration based on its durable version, not in-memory data.
     pub(super) fn requires_v14_worker(&self) -> bool {
-        self.encoding_version >= Self::SQL_VERSION
+        matches!(self.encoding_version, Self::SQL_VERSION | Self::CSHARP_GRAPH_VERSION)
     }
 
     pub(super) fn validate_native_stage_cancellation(
@@ -2710,7 +2710,7 @@ impl<'a> IntentDecoder<'a> {
             || (version == BuiltinIntent::NATIVE_EVIDENCE_VERSION
                 && bytes.len() > BuiltinIntent::MAX_NATIVE_EVIDENCE_DELTA_BYTES
                     + BuiltinIntent::MAX_NATIVE_EVIDENCE_FIRST_METADATA)
-            || (version >= BuiltinIntent::SQL_VERSION
+            || (matches!(version, BuiltinIntent::SQL_VERSION | BuiltinIntent::CSHARP_GRAPH_VERSION)
                 && bytes.len() > BuiltinIntent::MAX_NATIVE_EVIDENCE_INTENT_BYTES + 64 * 1024 * 1024)
             || !matches!(
                 (bytes.get(..4), version),
@@ -2726,7 +2726,7 @@ impl<'a> IntentDecoder<'a> {
                     | (Some(b"BPIC"), 12)
                     | (Some(b"BPID"), 13)
                     | (Some(b"BPIE"), 14)
-                    | (Some(b"BPIF"), 15)
+                    | (Some(b"BPIH"), 17)
             )
         {
             return Err(BuiltinModelError(
@@ -3099,7 +3099,7 @@ impl<'a> IntentDecoder<'a> {
         if self.version < BuiltinIntent::NATIVE_EVIDENCE_VERSION {
             return Ok((None, Vec::new()));
         }
-        if self.version >= BuiltinIntent::SQL_VERSION {
+        if matches!(self.version, BuiltinIntent::SQL_VERSION | BuiltinIntent::CSHARP_GRAPH_VERSION) {
             match self.take(1)?[0] {
                 0 => return Ok((None, Vec::new())),
                 1 => {
@@ -3562,7 +3562,7 @@ impl<'a> IntentDecoder<'a> {
     }
 
     fn graph_changes(&mut self) -> Result<Vec<CSharpGraphChange>, BuiltinModelError> {
-        if self.version < BuiltinIntent::CSHARP_GRAPH_VERSION { return Ok(Vec::new()); }
+        if self.version != BuiltinIntent::CSHARP_GRAPH_VERSION { return Ok(Vec::new()); }
         let start = self.at;
         let count = self.read_u32()? as usize;
         if count == 0 || count > 64 || count > self.bytes.len().saturating_sub(self.at) / 34 {
@@ -8712,7 +8712,7 @@ mod persisted_intent_tests {
         let change = CSharpGraphChange { key, expected: None, after: Some(row) };
         let intent = legacy.with_csharp_graph_changes(vec![change]).unwrap();
         let bytes = intent.canonical_bytes();
-        assert_eq!(&bytes[..5], b"BPIF\x0f");
+        assert_eq!(&bytes[..5], b"BPIH\x11");
         assert_eq!(BuiltinIntent::decode(&bytes).unwrap(), intent);
         let mut trailing = bytes.clone(); trailing.push(0);
         assert!(BuiltinIntent::decode(&trailing).is_err());
