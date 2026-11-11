@@ -124,13 +124,13 @@ impl PreparedPackageMetadata {
                 .as_ref()
                 .and_then(|cached| cached.etag.as_deref());
             let fetch_started = Instant::now();
-            let response = fetch_object(
-                &self.key.endpoint,
-                self.maximum,
-                || cancelled() || self.cancelled.load(Ordering::Acquire),
-                &remaining_budget,
-                etag,
-            );
+            let response = if self.ecosystem == RegistryEcosystem::Nuget {
+                fetch_nuget_registration(&self.key.endpoint, &self.name, self.maximum,
+                    || cancelled() || self.cancelled.load(Ordering::Acquire), &remaining_budget)
+            } else {
+                fetch_object(&self.key.endpoint, self.maximum,
+                    || cancelled() || self.cancelled.load(Ordering::Acquire), &remaining_budget, etag)
+            };
             trace_metadata(
                 self.request_id,
                 "fetch",
@@ -270,11 +270,7 @@ impl DiscoveryGateway {
                     1024 * 1024,
                 )
             }
-            RegistryEcosystem::Nuget => {
-                let root = endpoint.as_str().trim_end_matches('/');
-                let root = root.strip_suffix("/catalog0/index.json").unwrap_or(root);
-                (format!("{root}/registration5-semver1/{}/index.json", percent_encode_component(name).to_ascii_lowercase()), MAX_SOURCE_BODY_BYTES)
-            }
+            RegistryEcosystem::Nuget => (endpoint.as_str().to_owned(), MAX_SOURCE_BODY_BYTES),
             _ => {
                 return Err(unavailable(
                     None,
@@ -793,6 +789,31 @@ fn exact_version_document(
 fn request_timeout(remaining_budget: Duration) -> Option<Duration> {
     let timeout = REQUEST_TIMEOUT.min(remaining_budget);
     (!timeout.is_zero()).then_some(timeout)
+}
+
+fn fetch_nuget_registration(
+    service_url: &str,
+    name: &str,
+    maximum: usize,
+    cancelled: impl Fn() -> bool + Copy,
+    remaining_budget: impl Fn() -> Duration + Copy,
+) -> Result<ObjectResponse, DiscoveryStoreError> {
+    let service_url = service_url
+        .strip_suffix("/catalog0/index.json")
+        .map(|root| format!("{root}/v3/index.json"))
+        .unwrap_or_else(|| service_url.to_owned());
+    let service = fetch_object(&service_url, maximum, cancelled, remaining_budget, None)?;
+    let ObjectResponse::Modified { bytes, .. } = service else { return Ok(service); };
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| DiscoveryStoreError::Decode)?;
+    let base = value.get("resources").and_then(serde_json::Value::as_array)
+        .and_then(|rows| rows.iter().find_map(|row| {
+            let ty = row.get("@type")?.as_str()?;
+            ty.starts_with("RegistrationsBaseUrl")
+                .then(|| row.get("@id")?.as_str().map(str::to_owned))?
+        }))
+        .ok_or(DiscoveryStoreError::Decode)?;
+    let registration = format!("{}{}/index.json", base.trim_end_matches('/'), format!("/{}/", percent_encode_component(name).to_ascii_lowercase()));
+    fetch_object(&registration, maximum, cancelled, remaining_budget, None)
 }
 
 fn fetch_object(
