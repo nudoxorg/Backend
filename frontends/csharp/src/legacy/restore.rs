@@ -33,9 +33,11 @@ pub enum RestoreError {
     Limit,
 }
 
-/// Exact compile assemblies selected by one restore graph. The digest covers
-/// each relative path and its bytes in sorted order and is safe to include in
-/// an attempt-local compiler identity.
+/// Owned compile-reference snapshot for one restore observation.
+///
+/// The digest covers restore bytes, assembly filenames and copied bytes. This
+/// binds an attempt's inputs; it does not authenticate the restore operation,
+/// referenced-project build freshness, generators or complete MSBuild closure.
 #[derive(Debug)]
 pub struct RestoreClosure {
     pub files: Vec<PathBuf>,
@@ -125,6 +127,13 @@ pub fn resolve_project_assets_with_metadata(
         .get("libraries")
         .and_then(Value::as_object)
         .ok_or(RestoreError::Missing("libraries"))?;
+    if folders.len() > 16
+        || targets.len() > 128
+        || target.len() > MAX_FILES
+        || libraries.len() > MAX_FILES
+    {
+        return Err(RestoreError::Limit);
+    }
     let mut framework_references = BTreeSet::new();
     if let Some(frameworks) = value
         .get("project")
@@ -304,7 +313,12 @@ pub fn resolve_project_assets_with_metadata(
         let kind = library
             .get("type")
             .and_then(Value::as_str)
-            .unwrap_or("package");
+            .ok_or(RestoreError::Missing("library type"))?;
+        if !matches!(kind, "package" | "project") {
+            return Err(RestoreError::Unavailable(format!(
+                "unsupported restored library type {kind}"
+            )));
+        }
         let relative_base = library
             .get("path")
             .and_then(Value::as_str)
