@@ -110,7 +110,7 @@ pub(super) fn scan(
     }
     if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
         declarations.insert(0, backend_compile::SourceDeclaration::at_path(&relative, name,
-            DeclarationKind::Module, 1, "Vue single-file component", 
+            DeclarationKind::Module, 1, "Vue single-file component",
             "Partial native script inventory; template, style and framework module semantics are unavailable.")?
             .with_source_excerpt(SourceExcerpt::capture_bounded(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)));
     }

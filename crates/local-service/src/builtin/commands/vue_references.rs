@@ -76,9 +76,18 @@ pub(super) fn references(
         return Ok(None);
     };
     let mut references = Vec::new();
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let budget = backend_frontend_vue::ProjectExecutionBudget::new(
+        std::time::Instant::now() + std::time::Duration::from_secs(10),
+        &cancelled,
+        5_000_000,
+    );
     for block in 0..container.blocks().len() {
-        let parsed = match container.parse_script(block) {
+        let parsed = match container.parse_script_with_checkpoint(block, &budget) {
             Ok(parsed) => parsed,
+            Err(backend_frontend_vue::ScriptParseError::Stopped) => {
+                return Err(BuiltinModelError("Vue reference analysis stopped".into()));
+            }
             Err(_) => continue,
         };
         for call in parsed.calls {
