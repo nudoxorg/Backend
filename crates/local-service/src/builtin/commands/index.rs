@@ -382,10 +382,12 @@ pub(super) fn capture_index_scan(
     // Capture only the authenticated lazy relation handle. The potentially
     // large project-membership scan happens on the bounded worker, not owner.
     super::super::profile::native_evidence_basis_for_snapshot(&snapshot)?;
-    let native_evidence = backend_engine::builtin::native_source_evidence_relation(&snapshot)
+    let mut native_evidence_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
+    let native_evidence = backend_engine::builtin::native_source_evidence_relation_budgeted(&snapshot, &mut native_evidence_budget)
         .map_err(|error| BuiltinModelError(format!("open selected native evidence: {error}")))?;
     Ok(IndexScanWork {
         native_evidence,
+        native_evidence_budget,
         cargo_target: None,
         package,
         label: label.to_owned(),
@@ -419,8 +421,9 @@ fn selected_native_ts_evidence_exists(
     relation: Option<&backend_engine::WorkspaceRelationHandle<backend_engine::builtin::NativeSourceEvidenceRelation>>,
     project: [u8; 32],
     cancelled: &AtomicBool,
+    budget: &mut usize,
 ) -> Result<bool, BuiltinModelError> {
-    use backend_engine::builtin::{NativeSourceEvidenceRelation, MAX_NATIVE_EVIDENCE_BYTES, MAX_NATIVE_EVIDENCE_ROWS};
+    use backend_engine::builtin::{MAX_NATIVE_EVIDENCE_BYTES, MAX_NATIVE_EVIDENCE_ROWS};
     let Some(relation) = relation else { return Ok(false) };
     let mut after = None;
     let mut count = 0usize;
@@ -429,16 +432,14 @@ fn selected_native_ts_evidence_exists(
         if cancelled.load(Ordering::Acquire) {
             return Err(BuiltinModelError("native evidence scan cancelled".into()));
         }
-        let page = relation.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+        let page = backend_engine::builtin::native_source_evidence_page_budgeted(relation, after.as_ref(), budget)
             .map_err(|error| BuiltinModelError(format!("page native evidence: {error}")))?;
         for (key, row) in page.entries() {
             if cancelled.load(Ordering::Acquire) {
                 return Err(BuiltinModelError("native evidence scan cancelled".into()));
             }
             count = count.checked_add(1).ok_or_else(|| BuiltinModelError("native evidence count overflow".into()))?;
-            let mut encoded = Vec::new();
-            NativeSourceEvidenceRelation::encode_value(row, &mut encoded);
-            bytes = bytes.checked_add(40).and_then(|n| n.checked_add(encoded.len()))
+            bytes = bytes.checked_add(40).and_then(|n| n.checked_add(row.checked_encoded_len()?))
                 .ok_or_else(|| BuiltinModelError("native evidence work overflow".into()))?;
             if count > MAX_NATIVE_EVIDENCE_ROWS || bytes > MAX_NATIVE_EVIDENCE_BYTES
                 || row.key().ok().as_ref() != Some(key)
@@ -467,7 +468,7 @@ pub(super) fn run_index_scan(mut work: IndexScanWork) -> Result<IndexScanResult,
     // requires the original path spelling itself to be exact UTF-8.
     let source_coordinate = work.source_root.to_string_lossy();
     let force_native = selected_native_ts_evidence_exists(
-        work.native_evidence.as_ref(), work.project_key, &work.cancellation,
+        work.native_evidence.as_ref(), work.project_key, &work.cancellation, &mut work.native_evidence_budget,
     ).map_err(|error| {
         if work.cancellation.load(Ordering::Acquire) { IndexScanFailure::Cancelled }
         else { IndexScanFailure::Refused(error) }
@@ -2253,6 +2254,7 @@ fn staged_cargo_alias_evidence(
 /// Owner-captured immutable inputs for one filesystem scan.
 pub(super) struct IndexScanWork {
     native_evidence: Option<backend_engine::WorkspaceRelationHandle<backend_engine::builtin::NativeSourceEvidenceRelation>>,
+    native_evidence_budget: usize,
     pub(super) cargo_target: Option<backend_library::CargoTargetSelector>,
     package: backend_engine::PackageKey,
     label: String,

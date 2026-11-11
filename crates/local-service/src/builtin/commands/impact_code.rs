@@ -813,14 +813,14 @@ fn profile_for(path: &str) -> Option<TypeScriptSource> {
 }
 
 fn indexed_files(cx: &ImpactContext<'_>) -> Result<Vec<IndexedFile>, String> {
-    use backend_engine::builtin::native_source_evidence_relation;
+    use backend_engine::builtin::{native_source_evidence_relation_budgeted, native_source_evidence_page_budgeted};
+    let mut budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
     let mut out: Vec<IndexedFile> = Vec::new();
     // Native TypeScript evidence.
-    if let Some(relation) = native_source_evidence_relation(cx.snapshot).map_err(|e| format!("native evidence: {e}"))? {
+    if let Some(relation) = native_source_evidence_relation_budgeted(cx.snapshot, &mut budget).map_err(|e| format!("native evidence: {e}"))? {
         let mut after = None;
         loop {
-            let page = relation
-                .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+            let page = native_source_evidence_page_budgeted(&relation, after.as_ref(), &mut budget)
                 .map_err(|e| format!("native evidence page: {e}"))?;
             let entries = page.entries();
             if entries.is_empty() {

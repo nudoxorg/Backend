@@ -8228,7 +8228,7 @@ fn issue_observed_native_source_policy(
     let claim = evidence.claim();
     let identity = evidence.declaration_identity();
     let image = evidence.image_authority();
-    let evidence_root = backend_engine::builtin::native_source_evidence_relation(snapshot)
+    let evidence_root = backend_engine::builtin::native_source_evidence_relation_budgeted(snapshot, source_budget)
         .map_err(|_| unavailable())?
         .ok_or_else(unavailable)?;
     let observation = backend_library::SourcePolicyObservation {
