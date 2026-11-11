@@ -106,7 +106,30 @@ fn snapshot_execution(
     let copied_root = directory.path().join("dotnet");
     let mut files = 0;
     let mut bytes = 0;
-    copy_tree_bounded(root, &copied_root, &mut files, &mut bytes, control)?;
+    // `dotnet exec` only needs the hostfxr and shared runtime trees. SDK packs,
+    // templates, and workload caches are excluded from this execution closure.
+    let tool_name = toolchain
+        .file_name()
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    let copied_tool = copied_root.join(tool_name);
+    let tool_bytes =
+        backend_platform::durable::read_regular_bounded_stable(toolchain, 64 * 1024 * 1024)
+            .map_err(|_| CSharpAuthorityError::Configuration)?;
+    bytes = bytes
+        .checked_add(tool_bytes.len())
+        .filter(|size| *size <= 512 * 1024 * 1024)
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    fs::create_dir_all(&copied_root).map_err(|_| CSharpAuthorityError::Configuration)?;
+    fs::write(&copied_tool, tool_bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
+    for directory_name in ["host", "shared"] {
+        copy_tree_bounded(
+            &root.join(directory_name),
+            &copied_root.join(directory_name),
+            &mut files,
+            &mut bytes,
+            control,
+        )?;
+    }
     checkpoint(control, CSharpAuthorityPhase::Spawn)?;
     let copied_oracle = directory.path().join("oracle.dll");
     let oracle_bytes =
@@ -118,10 +141,26 @@ fn snapshot_execution(
         .filter(|size| *size <= 512 * 1024 * 1024)
         .ok_or(CSharpAuthorityError::Configuration)?;
     fs::write(&copied_oracle, oracle_bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
-    let tool_name = toolchain
-        .file_name()
+    let oracle_stem = oracle
+        .file_stem()
+        .and_then(|stem| stem.to_str())
         .ok_or(CSharpAuthorityError::Configuration)?;
-    let copied_tool = copied_root.join(tool_name);
+    let oracle_parent = oracle.parent().ok_or(CSharpAuthorityError::Configuration)?;
+    for suffix in [".deps.json", ".runtimeconfig.json"] {
+        let companion = oracle_parent.join(format!("{oracle_stem}{suffix}"));
+        let companion_bytes =
+            backend_platform::durable::read_regular_bounded_stable(&companion, 16 * 1024 * 1024)
+                .map_err(|_| CSharpAuthorityError::Configuration)?;
+        bytes = bytes
+            .checked_add(companion_bytes.len())
+            .filter(|size| *size <= 512 * 1024 * 1024)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        fs::write(
+            directory.path().join(format!("{oracle_stem}{suffix}")),
+            companion_bytes,
+        )
+        .map_err(|_| CSharpAuthorityError::Configuration)?;
+    }
     if !copied_tool.is_file() {
         return Err(CSharpAuthorityError::Configuration);
     }
