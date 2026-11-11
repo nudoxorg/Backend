@@ -187,10 +187,19 @@ fn snapshot_execution(
             .map_err(|_| CSharpAuthorityError::Configuration)?;
     let deps: serde_json::Value =
         serde_json::from_slice(&deps_bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
-    let target = deps
+    let targets = deps
         .get("targets")
         .and_then(serde_json::Value::as_object)
-        .and_then(|targets| targets.values().next())
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    // A helper publish must have one selected target. Choosing the first JSON
+    // object would make resolver authority depend on map order when a stale
+    // or multi-framework deps file is supplied.
+    if targets.len() != 1 {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    let target = targets
+        .values()
+        .next()
         .and_then(serde_json::Value::as_object)
         .ok_or(CSharpAuthorityError::Configuration)?;
     let mut declared = std::collections::BTreeSet::new();
