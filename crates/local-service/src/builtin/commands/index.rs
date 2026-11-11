@@ -3748,7 +3748,9 @@ impl CapturedCSharpUnitAdmission {
     /// SDK, helper, runtime or reference execution custody.
     fn matches_staged_invocation(&self, staged: &StagedSemanticPackage, input: [u8; 32]) -> bool {
         use sha2::Digest;
+        if self.cancellation.load(Ordering::Acquire) { return false; }
         let Some(bytes) = staged.csharp_invocation_evidence_object(input) else { return false; };
+        if self.cancellation.load(Ordering::Acquire) { return false; }
         let Some(claim) = backend_engine::application::decode_csharp_evidence(&bytes) else { return false; };
         if claim.target != *self.target.target().as_ref() || claim.input != input
             || claim.profile != self.key.profile() || claim.project_path != self.project.project_path
@@ -3758,7 +3760,7 @@ impl CapturedCSharpUnitAdmission {
             actual.path != path || actual.text.map(str::as_bytes) != text
         }) { return false; }
         claim.sources.iter().zip(&self.sources).all(|(actual, source)| {
-            actual.path == source.relative_path && actual.byte_length as usize == source.source.len()
+            !self.cancellation.load(Ordering::Acquire) && actual.path == source.relative_path && actual.byte_length as usize == source.source.len()
                 && actual.source_fact == *source.source_fact_identity.as_ref()
                 && actual.input_content == source.content
                 && actual.source_sha256 == <[u8; 32]>::from(sha2::Sha256::digest(&source.source))
