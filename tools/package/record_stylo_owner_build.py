@@ -21,6 +21,7 @@ import time
 
 import linux_release_package as package
 import record_embedding_helper_build as common
+import sqlite_linux_development as sqlite_phase
 
 
 ARGV = ["cargo", "build", "--release", "--locked", "-p", "backend-locald", "--bin", "backend-locald"]
@@ -235,9 +236,23 @@ def capture(args: argparse.Namespace) -> Path:
         require(common.artifact_identity(dependency) == dependency_identity, "dependency changed during privacy scan")
         anchor = observe(observer, staged, dependency, deadline, env)
         require(common.artifact_identity(staged) == relocated and common.artifact_identity(dependency) == dependency_identity, "worker closure changed during identity observation")
+        sqlite_record = None
+        if args.sqlite:
+            sqlite_record = sqlite_phase.prepare(
+                source=source["path"], target=args.target_dir, env=dict(env),
+                output=output / "sqlite", readelf=readelf, patchelf=patchelf,
+                loader=admitted_loader, loader_sha256=args.source_loader_sha256,
+                deadline=deadline, private_paths=private_paths + [Path(path) for path in worker_private_paths])
+            require((sqlite_record["dependency"]["bytes"], sqlite_record["dependency"]["sha256"]) ==
+                    (dependency_identity["bytes"], dependency_identity["sha256"]),
+                    "SQLite and Stylo require different relocated libgcc bytes")
+            env.update(sqlite_record["owner_environment"])
         env["NUDOX_BUILD_STYLO_WORKER_ID"] = anchor
         execution = common.execute(ARGV, source["path"], env, output, deadline, args.max_log_bytes)
         require(execution["exit"] == 0 and execution["process_group_retired"], "anchored owner build failed")
+        if sqlite_record is not None:
+            sqlite_phase.verify_after_owner(sqlite_record, source=source["path"],
+                env=observer_environment, deadline=deadline)
         owner = args.target_dir / common.TARGET / "release/backend-locald"
         owner_identity = common.artifact_identity(owner)
         require_no_builder_paths(owner, private_paths + [Path(path) for path in worker_private_paths])
@@ -275,7 +290,8 @@ def capture(args: argparse.Namespace) -> Path:
                    "argv": ARGV, "environment": env, "linker": linker, "build_helpers": helpers,
                    "remap_schema": REMAP_SCHEMA, "c_remap_schema": C_REMAP_SCHEMA, "source_path": str(source["path"]),
                    "exit": execution["exit"], "execution": execution,
-                   "toolchain": {**tools, "unchanged": True}, "owner": owner_identity}
+                   "toolchain": {**tools, "unchanged": True}, "owner": owner_identity,
+                   "sqlite": sqlite_record}
         candidate = output / "candidate.json"
         require(len(common.shared.canonical_json(receipt)) + 1 <= 65536, "owner receipt exceeds its bound")
         common.runtime.write_new_json(candidate, receipt)
@@ -303,6 +319,7 @@ def main() -> int:
         parser.add_argument("--" + name, required=True, type=Path)
     for name in ("cargo", "rustc", "patchelf", "readelf", "source-loader"):
         parser.add_argument("--" + name + "-sha256", required=True)
+    parser.add_argument("--sqlite", action="store_true", help="build and bind the SQLite companion to this owner")
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--timeout-seconds", type=float, default=1800)
     parser.add_argument("--max-log-bytes", type=int, default=64 * 1024 * 1024)

@@ -52,9 +52,14 @@ journey builds the CLI, MCP server and owner. For desktop development, the deskt
 must also be compiled with the same `NUDOX_BUILD_SQLITE_WORKER_ID` and use the same
 worker sibling. The platform companion phases `sqlite_linux_development.py` and
 `sqlite_macos_development.py` retain the runtime closure and recheck identity
-after relocation/signing. Linux product packaging still needs explicit
-integration of its companion phase. A development journey is not release
-evidence.
+after relocation/signing. For the Linux source-bound release flow, pass `--sqlite`
+to `record_stylo_owner_build.py` and supply its resulting owner receipt to
+`linux_release_package.py` with the corresponding Stylo worker and receipt. The
+actor compiles both companion identities into the owner, and packaging requires
+the two workers to share the same relocated private libgcc. Packaging reobserves
+the staged SQLite closure; installation checks its receipt and bytes. These
+steps do not substitute for an installed product journey or native release QA.
+A development journey is not release evidence.
 
 ## CSS / Stylo and PostgreSQL
 
