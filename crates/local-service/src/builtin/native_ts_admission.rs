@@ -66,7 +66,11 @@ fn charge_row_path(
     total: &mut usize,
     row: &backend_engine::builtin::NativeSourceEvidence,
 ) -> Option<()> {
-    charge_allocation(total, row.path.capacity())
+    charge_allocation(total, row.path.capacity())?;
+    if let Some(lines) = &row.line_starts {
+        charge_allocation(total, lines.capacity().checked_mul(std::mem::size_of::<u32>())?)?;
+    }
+    Some(())
 }
 
 fn charge_change_paths(total: &mut usize, change: &NativeTsEvidenceChange) -> Option<()> {
