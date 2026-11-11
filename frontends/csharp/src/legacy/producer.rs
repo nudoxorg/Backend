@@ -18,7 +18,10 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Instant,
 };
 
@@ -248,11 +251,12 @@ pub struct CSharpOracle {
 /// [`CSharpImage`] can be opened from [`Self::as_bytes`] for exactly as long
 /// as this value remains alive, without introducing a self-referential Rust
 /// object.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct CSharpAuthorityImage {
     bytes: Box<[u8]>,
     evidence: Option<Box<[u8]>>,
     resolver_receipt: Option<crate::legacy::sdk::CSharpResolverReceipt>,
+    resolved_reference_snapshot: Option<Arc<crate::legacy::sdk::CSharpResolvedReferenceSnapshot>>,
 }
 
 impl CSharpAuthorityImage {
@@ -268,6 +272,14 @@ impl CSharpAuthorityImage {
     #[must_use]
     pub fn resolver_receipt(&self) -> Option<&crate::legacy::sdk::CSharpResolverReceipt> {
         self.resolver_receipt.as_ref()
+    }
+
+    /// Independently owned selected-reference custody retained for replay.
+    #[must_use]
+    pub fn resolved_reference_snapshot(
+        &self,
+    ) -> Option<&Arc<crate::legacy::sdk::CSharpResolvedReferenceSnapshot>> {
+        self.resolved_reference_snapshot.as_ref()
     }
 
     /// Borrows the exact validated image bytes for the next compiler boundary.
@@ -779,7 +791,21 @@ impl CSharpOracle {
                 bytes: bytes.into_boxed_slice(),
                 evidence,
                 resolver_receipt,
+                resolved_reference_snapshot: None,
             })
+    }
+
+    /// Produces an image while retaining the independently owned selected
+    /// reference snapshot for publication-time replay custody.
+    pub fn produce_with_owned_reference_snapshot<'request, 'config, 'cancel>(
+        &self,
+        mut request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
+        snapshot: Arc<crate::legacy::sdk::CSharpResolvedReferenceSnapshot>,
+    ) -> Result<CSharpAuthorityImage, CSharpAuthorityError> {
+        request.resolved_reference_snapshot = Some(snapshot.as_ref());
+        let mut image = self.produce(request)?;
+        image.resolved_reference_snapshot = Some(snapshot);
+        Ok(image)
     }
 }
 

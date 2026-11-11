@@ -8,7 +8,7 @@
 
 use std::{
     path::{Component, Path},
-    sync::atomic::Ordering,
+    sync::{atomic::Ordering, Arc},
     time::Instant,
 };
 
@@ -256,6 +256,9 @@ pub enum PackageAuthorityOwner<'workspace> {
         evidence: Option<Box<[u8]>>,
         /// SDK resolver receipt retained with this exact invocation image.
         resolver_receipt: Option<backend_frontend_csharp::legacy::CSharpResolverReceipt>,
+        /// Independently owned selected references for cold replay custody.
+        resolver_snapshot:
+            Option<Arc<backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>>,
     },
     /// Java authority image and its doclet session retained until lowering.
     Java {
@@ -348,6 +351,19 @@ impl PackageAuthorityOwner<'_> {
             Self::CSharp {
                 resolver_receipt, ..
             } => resolver_receipt.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Returns independently owned selected-reference custody for C# replay.
+    #[must_use]
+    pub fn csharp_resolver_snapshot(
+        &self,
+    ) -> Option<&Arc<backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>> {
+        match self {
+            Self::CSharp {
+                resolver_snapshot, ..
+            } => resolver_snapshot.as_ref(),
             _ => None,
         }
     }
@@ -1094,6 +1110,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         configuration: configuration.configuration,
                     })
                     .map_err(PackageAuthorityError::CSharp)?;
+                let resolver_snapshot = image.resolved_reference_snapshot().cloned();
                 let (image, evidence, resolver_receipt) = image.into_parts_with_resolver_receipt();
                 let image = retain_image(
                     image.into_vec(),
@@ -1111,6 +1128,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                     image,
                     evidence,
                     resolver_receipt,
+                    resolver_snapshot,
                 }
             }
         };

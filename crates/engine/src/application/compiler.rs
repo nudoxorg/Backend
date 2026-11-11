@@ -1778,6 +1778,14 @@ impl StagedSemanticPackage {
         self.csharp_resolver_receipt()?.encode().ok()
     }
 
+    /// Independently owned selected-reference custody retained for replay.
+    #[must_use]
+    pub fn csharp_resolver_snapshot(
+        &self,
+    ) -> Option<&std::sync::Arc<backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>> {
+        self.staged.csharp_resolver_snapshot.as_ref()
+    }
+
     /// Builds a bounded claim-only C# evidence aggregate tied to these staged
     /// image bytes and this exact input. Publication selection is still required.
     pub fn csharp_invocation_evidence_object(&self, input: [u8; 32]) -> Option<Vec<u8>> {
@@ -3542,6 +3550,8 @@ pub(crate) struct StagedPackageCompilation {
     csharp_evidence: Box<[StagedCSharpInvocationEvidence]>,
     csharp_resolver_receipt:
         Option<backend_frontend_csharp::legacy::CSharpResolverReceipt>,
+    csharp_resolver_snapshot:
+        Option<std::sync::Arc<backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>>,
     csharp_config: Box<[StagedCSharpConfigProbe]>,
     csharp_unit: Option<Box<str>>,
     package_identity: [u8; 32],
@@ -5020,6 +5030,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut semantic_images = Vec::new();
         let mut csharp_evidence = Vec::new();
         let mut csharp_resolver_receipt = None;
+        let mut csharp_resolver_snapshot = None;
         let csharp_config = package.csharp_config.map_or_else(Vec::new, |probes| {
             probes.iter().map(|probe| StagedCSharpConfigProbe {
                 path: probe.path.into(), text: probe.text.map(Into::into),
@@ -5901,6 +5912,23 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     _ => None,
                 };
                 if let Some(receipt) = receipt {
+                    let owner_snapshot = match transient_authority.as_ref() {
+                        Some(super::package_authority::PackageAuthorityOwner::CSharp {
+                            resolver_snapshot: Some(snapshot), ..
+                        }) => snapshot,
+                        _ => return Err(PackageSemanticError::CSharpSdkUnavailable {
+                            reason: "C# selected reference custody unavailable",
+                        }),
+                    };
+                    csharp_resolver_snapshot = match csharp_resolver_snapshot {
+                        Some(previous) if !std::sync::Arc::ptr_eq(&previous, owner_snapshot) => {
+                            return Err(PackageSemanticError::CSharpSdkUnavailable {
+                                reason: "C# selected reference custody changed within attempt",
+                            });
+                        }
+                        Some(previous) => Some(previous),
+                        None => Some(std::sync::Arc::clone(owner_snapshot)),
+                    };
                     if !snapshot.references().iter().all(|path| path.is_absolute()) {
                         return Err(PackageSemanticError::CSharpSdkUnavailable {
                             reason: "C# selected reference path is not absolute",
@@ -6418,6 +6446,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             semantic_images: semantic_images.into_boxed_slice(),
             csharp_evidence: csharp_evidence.into_boxed_slice(),
             csharp_resolver_receipt,
+            csharp_resolver_snapshot,
             csharp_config: csharp_config.into_boxed_slice(),
             csharp_unit: match package.package_target.unit_key() {
                 CompilationUnitKeyV2::CSharpProject { project_path } if package.csharp_config.is_some() => Some(project_path.clone()),
