@@ -1063,6 +1063,7 @@ pub(super) fn admit_replayed_native_evidence(
         .map_err(|error| BuiltinModelError(format!("open bounded native replay metadata CAS: {error:?}")))?;
     let store = FileStore::open(cas_path, 128 * 1024 * 1024)
         .map_err(|error| BuiltinModelError(format!("open native replay compiler CAS: {error:?}")))?;
+    let mut header_budget = super::MAX_REBUILD_BYTES;
     for capture in captures {
         let matching = rows.iter().copied().filter(|row| {
             row.project == capture.key.package_key().to_bytes() && row.profile == capture.key.profile()
@@ -1120,6 +1121,16 @@ pub(super) fn admit_replayed_native_evidence(
                 return Err(BuiltinModelError("native replay Program source differs from evidence".into()));
             }
         }
+        let witness = backend_extension_turso::reopen_selected_native_headers(&store, &selected, header_budget)
+            .map_err(|error| BuiltinModelError(format!("open replay native headers: {error}")))?;
+        let header_aggregate = if let Some(witness) = witness {
+            header_budget = header_budget.checked_sub(witness.as_bytes().len().saturating_add(2 * std::mem::size_of::<usize>()))
+                .ok_or_else(|| BuiltinModelError("replay native header budget exceeded".into()))?;
+            let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(witness.as_bytes(), &mut header_budget)
+                .map_err(|error| BuiltinModelError(format!("decode replay native headers: {error}")))?;
+            Some((aggregate, *witness.object_id()))
+        } else { None };
+        let mut header_paths = std::collections::BTreeSet::new();
         let mut witnessed = std::collections::BTreeSet::new();
         for image in &loaded.images {
             let view = image.reopen().map_err(|error| BuiltinModelError(format!("open native replay image: {error}")))?;
@@ -1141,9 +1152,18 @@ pub(super) fn admit_replayed_native_evidence(
                 return Err(BuiltinModelError("native replay image differs from Program or evidence".into()));
             }
             if let Some(headers) = &row.headers {
-                super::native_ts_headers::admit_image(row, headers, &view, image.as_ref())
+                let (aggregate, digest) = header_aggregate.as_ref().ok_or_else(|| BuiltinModelError("native replay header witness absent".into()))?;
+                let file = super::native_ts_headers::witnessed_file(row, aggregate, *digest)
                     .map_err(|error| BuiltinModelError(format!("native replay header: {error}")))?;
+                super::native_ts_headers::admit_image(row, headers, file, &view, image.as_ref())
+                    .map_err(|error| BuiltinModelError(format!("native replay header: {error}")))?;
+                header_paths.insert(path.to_owned());
+            } else if header_aggregate.as_ref().is_some_and(|(aggregate, _)| aggregate.file(path).is_some()) {
+                return Err(BuiltinModelError("native replay lost compiler header reference".into()));
             }
+        }
+        if header_aggregate.as_ref().is_some_and(|(aggregate, _)| aggregate.files.iter().any(|file| !header_paths.contains(&file.path))) {
+            return Err(BuiltinModelError("native replay did not consume compiler header files".into()));
         }
         for (path, row) in remaining {
             // Non-emitted inputs still bind the exact Program, but cannot
