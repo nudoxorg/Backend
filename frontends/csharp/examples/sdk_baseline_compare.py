@@ -47,7 +47,9 @@ with tempfile.TemporaryDirectory(prefix='csharp-baseline-') as scratch:
     sdk = 'Microsoft.NET.Sdk.Web' if a.sdk_kind == 'Web' else 'Microsoft.NET.Sdk'
     esc = lambda value: html.escape(value, quote=True)
     refs = []
-    for path in pack + packages:
+    # The SDK supplies framework assemblies through implicit FrameworkReference
+    # resolution. Only restored package compile references are explicit here.
+    for path in packages:
         name = Path(path).stem
         if not name or not all(c.isascii() and (c.isalnum() or c in '.-_') for c in name):
             raise SystemExit('invalid candidate name')
