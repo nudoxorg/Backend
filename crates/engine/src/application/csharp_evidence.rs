@@ -34,6 +34,82 @@ pub struct CSharpEvidenceClaim<'a> {
     pub sources: Vec<CSharpEvidenceSource<'a>>,
 }
 
+/// Versioned graph evidence carried separately from legacy CSE1 records.
+/// CSE2 is claim-only until the owner revalidates every digest against its
+/// same-attempt captured graph and targeting snapshot.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CSharpGraphEvidence {
+    pub root_project: String,
+    pub config_digest: [u8; 32],
+    pub source_digest: [u8; 32],
+    pub reference_digest: [u8; 32],
+    pub nodes: Vec<CSharpGraphEvidenceNode>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CSharpGraphEvidenceNode {
+    pub project_path: String,
+    pub project_references: Vec<String>,
+    pub config_digest: [u8; 32],
+    pub source_digest: [u8; 32],
+}
+
+pub fn encode_csharp_graph_evidence(graph: &CSharpGraphEvidence) -> Option<Vec<u8>> {
+    if graph.nodes.is_empty() || graph.nodes.len() > 64 || graph.root_project.len() > 4096
+        || graph.nodes.iter().any(|node| node.project_path.len() > 4096 || node.project_references.len() > 64)
+    { return None; }
+    let payload = serde_json::to_vec(graph).ok()?;
+    if payload.len() > 2 * 1024 * 1024 { return None; }
+    let mut framed = b"CSE2".to_vec();
+    framed.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    framed.extend_from_slice(&payload);
+    Some(framed)
+}
+
+pub fn decode_csharp_graph_evidence(bytes: &[u8]) -> Option<CSharpGraphEvidence> {
+    if bytes.len() < 8 || &bytes[..4] != b"CSE2" { return None; }
+    let length = u32::from_be_bytes(bytes[4..8].try_into().ok()?) as usize;
+    if length > 2 * 1024 * 1024 || bytes.len() != length.checked_add(8)? { return None; }
+    let graph = serde_json::from_slice::<CSharpGraphEvidence>(&bytes[8..]).ok()?;
+    if graph.nodes.is_empty() || graph.nodes.len() > 64 || graph.root_project.len() > 4096
+        || graph.nodes.iter().any(|node| node.project_path.len() > 4096 || node.project_references.len() > 64)
+        || !graph.nodes.iter().any(|node| node.project_path == graph.root_project)
+    { return None; }
+    let mut paths = std::collections::BTreeSet::new();
+    for node in &graph.nodes {
+        if !paths.insert(node.project_path.as_str())
+            || node.project_references.windows(2).any(|pair| pair[0] >= pair[1])
+            || node.project_references.iter().any(|path| !graph.nodes.iter().any(|candidate| candidate.project_path == *path))
+        { return None; }
+    }
+    Some(graph)
+}
+
+#[cfg(test)]
+mod graph_evidence_tests {
+    use super::*;
+
+    #[test]
+    fn cse2_round_trip_and_truncation_refusal() {
+        let graph = CSharpGraphEvidence {
+            root_project: "Tests/Tests.csproj".into(),
+            config_digest: [1; 32], source_digest: [2; 32], reference_digest: [3; 32],
+            nodes: vec![CSharpGraphEvidenceNode {
+                project_path: "Tests/Tests.csproj".into(), project_references: vec!["Api/Api.csproj".into()],
+                config_digest: [4; 32], source_digest: [5; 32],
+            }, CSharpGraphEvidenceNode {
+                project_path: "Api/Api.csproj".into(), project_references: Vec::new(),
+                config_digest: [6; 32], source_digest: [7; 32],
+            }],
+        };
+        let encoded = encode_csharp_graph_evidence(&graph).expect("bounded CSE2");
+        assert_eq!(decode_csharp_graph_evidence(&encoded), Some(graph));
+        assert!(decode_csharp_graph_evidence(&encoded[..encoded.len() - 1]).is_none());
+    }
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Sidecar {
