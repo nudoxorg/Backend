@@ -109,6 +109,7 @@ fn build(loaded: ProjectSql) -> DomainLoad {
     #[derive(Clone)]
     struct Entity {
         key: Key,
+        parent: Option<SqlEntityRef>,
     }
     let mut entities: BTreeMap<SqlEntityRef, Entity> = BTreeMap::new();
     let mut nodes: BTreeMap<Key, Node> = BTreeMap::new();
@@ -136,7 +137,7 @@ fn build(loaded: ProjectSql) -> DomainLoad {
         node.path = Some(path);
         node.line = line_of(*host, definition.name_extent.start);
         nodes.entry(key).or_insert(node);
-        entities.insert(entity_ref.clone(), Entity { key });
+        entities.insert(entity_ref.clone(), Entity { key, parent: definition.parent_entity.clone() });
         if let Some(parent) = &definition.parent_entity {
             entity_parent.insert(entity_ref, parent.clone());
         }
@@ -159,7 +160,17 @@ fn build(loaded: ProjectSql) -> DomainLoad {
     let mut statement_nodes: BTreeMap<(usize, u32), Key> = BTreeMap::new();
     let mut statement_kind: BTreeMap<(usize, u32), SqlStatementKind> = BTreeMap::new();
     let mut statement_extent: BTreeMap<(usize, u32), u32> = BTreeMap::new();
+    let mut object_owners = BTreeMap::new();
     for (host, ordinal, fact) in &loaded.facts {
+        if let SqlFact::Definition(definition) = fact {
+            if definition.kind != SqlObjectKind::Column {
+                // The creating statement keeps its entity across later renames.
+                // Object mentions still carry the spelling written at that time.
+                if let Some(entity) = entities.get(&SqlEntityRef { path: loaded.hosts[*host].path.clone(), ordinal: *ordinal }) {
+                    object_owners.insert((*host, definition.statement), entity.key);
+                }
+            }
+        }
         if let SqlFact::Statement { class, extent, .. } = fact {
             statement_kind.insert((*host, *ordinal), *class);
             statement_extent.insert((*host, *ordinal), extent.start);
@@ -221,7 +232,9 @@ fn build(loaded: ProjectSql) -> DomainLoad {
                     (kind, format!("{path}:{line}"), path.clone(), relation_name)
                 }
             };
-        let owner_key = node_key(DOMAIN, owner_kind, &owner_scope, &owner_name);
+        let owner_key = reference.in_object.as_ref()
+            .and_then(|_| object_owners.get(&(*host, reference.statement)).copied())
+            .unwrap_or_else(|| node_key(DOMAIN, owner_kind, &owner_scope, &owner_name));
         nodes.entry(owner_key).or_insert_with(|| {
             let mut node = Node::new(DOMAIN, owner_kind, &owner_scope, &owner_name);
             if reference.in_object.is_none() {
@@ -244,7 +257,13 @@ fn build(loaded: ProjectSql) -> DomainLoad {
         );
         for (target, strength) in targets {
             let Some(entity) = entities.get(target) else { continue };
-            if entity.key == owner_key {
+            // A table's own column list/primary key is containment, not a
+            // dependency from the column to every other column and table use.
+            // Foreign-key references to other tables remain causal edges.
+            let own_column = owner_kind == "table" && entity.parent.as_ref()
+                .and_then(|parent| entities.get(parent))
+                .is_some_and(|parent| parent.key == owner_key);
+            if entity.key == owner_key || own_column {
                 continue;
             }
             if seen_edges.insert((entity.key, owner_key, relation)) {

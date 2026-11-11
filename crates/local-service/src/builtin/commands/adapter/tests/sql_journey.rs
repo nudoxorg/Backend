@@ -168,17 +168,19 @@ fn request(project: &Path, role: SqlQueryRole) -> SqlQueryRequest {
 /// Every page of a query, through the listener, until the terminal is Complete.
 fn all_hits(session: &mut Session, mut request: SqlQueryRequest) -> (SqlQueryPage, Vec<backend_library::sql_query::SqlQueryHit>) {
     let mut hits = Vec::new();
+    let mut host_gaps = Vec::new();
     loop {
-        let backend_library::SurfaceReply::SqlQuery(page) = session
+        let backend_library::SurfaceReply::SqlQuery(mut page) = session
             .surface(backend_library::SurfaceCommand::SqlQuery { request: request.clone() })
             .expect("sql-query through the public route")
         else {
             panic!("SQL query reply kind");
         };
         hits.extend(page.hits.clone());
+        host_gaps.extend(page.host_gaps.clone());
         match &page.terminal {
             SqlQueryTerminal::More { continuation, .. } => request.continuation = Some(continuation.clone()),
-            SqlQueryTerminal::Complete => return (page, hits),
+            SqlQueryTerminal::Complete => { page.host_gaps = host_gaps; return (page, hits); },
             SqlQueryTerminal::Unavailable => panic!("SQL analysis unavailable: {:?}", page.basis.attempt),
         }
     }
@@ -364,7 +366,12 @@ fn unsupported_statement_and_unparseable_file_are_reported_as_gaps_never_as_empt
     mixed_published(&wire);
     let project = wire.source.parent().expect("project").to_owned();
     let mut session = Session::connect(&wire.endpoint).expect("listener");
-    let (page, gaps) = all_hits(&mut session, request(&project, SqlQueryRole::Gap));
+    let mut gap_request = request(&project, SqlQueryRole::Gap);
+    gap_request.page_rows = 1;
+    let (page, gaps) = all_hits(&mut session, gap_request);
+    assert_eq!(page.host_gaps.len(), 1);
+    assert_eq!(page.host_gaps[0].path, "db/0002_broken.sql");
+    assert!(matches!(page.host_gaps[0].reason, backend_library::sql_query::SqlHostGapReason::NativeError));
     assert!(!gaps.is_empty(), "the virtual table statement is not fully modeled");
     assert_eq!(page.basis.gaps.native_error_hosts, 1, "the unparseable file is counted");
     assert!(page.basis.gaps.partial_statements + page.basis.gaps.unsupported_statements >= 1);
