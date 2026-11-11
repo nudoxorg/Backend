@@ -517,7 +517,8 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
         project.join("tsconfig.json"),
         "{\"compilerOptions\":{\"strict\":true},\"include\":[\"*.ts\"]}",
     )?;
-    let before = "export function Greeting() { return 'before'; }\n";
+    let before = "export async function Greeting(): Promise<string> { return 'before'; }\n";
+    let expected_signature = "export async function Greeting(): Promise<string>";
     let consumer = "import { Greeting } from './view';\nGreeting();\n";
     fs::write(project.join("view.ts"), before)?;
     fs::write(project.join("consumer.ts"), consumer)?;
@@ -533,6 +534,11 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
     index(&mut session, &project, 0x51)?;
     let (coordinate, document) =
         select_native_document(&mut session, &authority, "Greeting", "view.ts")?;
+    assert_eq!(document.signature.as_deref(), Some(expected_signature));
+    let CommandReply::Document(shown) = session.document(&coordinate)?.reply else {
+        return Err("document reply".into());
+    };
+    assert_eq!(shown.signature.as_deref(), Some(expected_signature));
     let original = document
         .selection
         .clone()
@@ -558,6 +564,7 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
     else {
         return Err("range page document".into());
     };
+    assert_eq!(ranged.signature.as_deref(), Some(expected_signature));
     let page = ranged.source_range.as_ref().ok_or("range primary page")?;
     assert_eq!(page.scope, SourceRangeScope::NativePrimaryDeclaration);
     assert_eq!(page.start, 0);
@@ -584,6 +591,7 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
     else {
         return Err("range continuation document".into());
     };
+    assert_eq!(next.signature.as_deref(), Some(expected_signature));
     let next_page = next
         .source_range
         .as_ref()
@@ -622,6 +630,7 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
     else {
         return Err("cold retained selection reply".into());
     };
+    assert_eq!(cold.signature.as_deref(), Some(expected_signature));
     assert_eq!(cold.selection.as_ref(), Some(&original));
     cold.source_policy
         .verify_owner(&authority, &original)
@@ -632,6 +641,7 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
     else {
         return Err("cold continuation reply".into());
     };
+    assert_eq!(cold_range.signature.as_deref(), Some(expected_signature));
     assert_eq!(
         cold_range
             .source_range
@@ -642,12 +652,13 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
     );
     fs::write(
         project.join("view.ts"),
-        "export function Greeting() { return 'after'; }\n",
+        "export async function Greeting(): Promise<string> { return 'afters'; }\n",
     )?;
     if let Ok(reply) = session.declaration_source_range(&selector, None, continuation) {
         let CommandReply::Document(stale) = reply.reply else {
             return Err("stale range reply".into());
         };
+        assert_ne!(stale.signature.as_deref(), Some(expected_signature));
         assert!(
             stale.source_range.is_none(),
             "changed host bytes must not yield a source page"
