@@ -7143,21 +7143,21 @@ fn run_lane(
                                 Some(cause) => package.with_embedding_provisioning_failure(cause),
                                 None => package,
                             };
-                            execution
-                                .stage_package_sources(
-                                    package,
-                                    PackageExecutionAuthority::RuntimeStartup {
-                                        execution: execution_identity,
-                                        plane: plane_execution_seed,
-                                    },
-                                    embedding_runtime.as_deref(),
-                                    embedding_cache_session,
-                                    embedding_requirement,
-                                    &mut scratch,
-                                    &cancelled,
-                                    &mut |_| {},
-                                )
-                                .map_err(PackageSemanticRuntimeError::from)
+                            let authority = PackageExecutionAuthority::RuntimeStartup {
+                                execution: execution_identity,
+                                plane: plane_execution_seed,
+                            };
+                            if let Some(graph) = request.csharp_project_graph.as_ref() {
+                                graph.with_borrowed_graph(&request.sources, |captured| {
+                                    let package = package.clone().with_csharp_project_graph(captured)
+                                        .map_err(PackageSemanticRuntimeError::from)?;
+                                    execution.stage_package_sources(package, authority, embedding_runtime.as_deref(), embedding_cache_session, embedding_requirement, &mut scratch, &cancelled, &mut |_| {})
+                                        .map_err(PackageSemanticRuntimeError::from)
+                                })?
+                            } else {
+                                execution.stage_package_sources(package, authority, embedding_runtime.as_deref(), embedding_cache_session, embedding_requirement, &mut scratch, &cancelled, &mut |_| {})
+                                    .map_err(PackageSemanticRuntimeError::from)
+                            }
                         },
                         |cause| {
                             PackageSemanticRuntimeError::Runtime(
