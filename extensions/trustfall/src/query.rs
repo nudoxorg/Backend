@@ -397,7 +397,7 @@ impl SemanticQueryEvidence {
         }
     }
 
-    fn state(&self) -> &'static str {
+    pub(crate) fn state(&self) -> &'static str {
         match self {
             Self::Package(_) => "package_scope",
             Self::Compiler(value) => match value.authority() {
