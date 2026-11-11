@@ -22,6 +22,8 @@ mod semantic_relation;
 mod stylo_identity;
 mod stylo_projection;
 mod stylo_relation;
+mod csharp_graph_relation;
+pub use csharp_graph_relation::{admit_csharp_graph_row, csharp_graph_record_key, csharp_graph_relation, csharp_graph_root_object, csharp_graph_root_pointer_key, CSharpGraphRecord, CSharpGraphRelation, CSharpGraphRootSchema};
 mod csharp_receipt;
 pub use csharp_receipt::{admit_csharp_receipt_members, admit_csharp_receipt_relation, admit_csharp_receipt_relation_cancellable, admit_csharp_receipt_row, csharp_receipt_key, csharp_receipt_matches_source, csharp_receipt_members_digest, csharp_receipt_publication, csharp_receipt_relation, csharp_receipt_root_object, csharp_receipt_root_pointer_key, CSharpInputCoverage, CSharpInputObservation, CSharpMemberOutcome, CSharpReceiptImage, CSharpReceiptRecord, CSharpReceiptRelation, CSharpReceiptRootSchema, CSharpReceiptUnit, MAX_CSHARP_RECEIPT_MEMBERS, MAX_CSHARP_RECEIPT_ROW_BYTES};
 

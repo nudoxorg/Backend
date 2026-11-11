@@ -126,6 +126,8 @@ pub(super) fn product_relation_registry() -> Result<RelationAdmissionRegistry, B
         .map_err(|error| BuiltinModelError(format!("register native source evidence relation: {error:?}")))?
         .with_relation::<backend_engine::builtin::SqlAnalysisRelation>()
         .map_err(|error| BuiltinModelError(format!("register native SQL relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::CSharpGraphRelation>()
+        .map_err(|error| BuiltinModelError(format!("register C# graph relation: {error:?}")))?
         .with_relation::<backend_engine::builtin::SqlReceiptIndexRelation>()
         .map_err(|error| BuiltinModelError(format!("register SQL receipt index: {error:?}")))?
         .with_relation::<backend_frontend_vue::VueInventoryRelation>()
