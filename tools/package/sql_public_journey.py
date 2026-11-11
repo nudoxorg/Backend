@@ -67,18 +67,21 @@ FILES.update({
         "CREATE TABLE books (id INTEGER PRIMARY KEY, price_cents INTEGER, title TEXT);\n"
         "CREATE TABLE order_items (book_id INTEGER REFERENCES books(id));\n"
         "CREATE TABLE price_audit (book_id INTEGER REFERENCES books(id));\n"
+        "CREATE TABLE customers (id INTEGER PRIMARY KEY, legacy_code TEXT);\n"
         "CREATE INDEX books_by_title ON books(title);\n"
         "CREATE VIEW book_sales AS SELECT title FROM books;\n"
     ),
     "db/migrations/0011_bookshop_rename.sql": (
         "ALTER TABLE books RENAME COLUMN price_cents TO list_price_cents;\n"
         "ALTER TABLE order_items RENAME TO order_lines;\n"
+        "ALTER TABLE customers DROP COLUMN legacy_code;\n"
         "CREATE TRIGGER reprice_book AFTER UPDATE OF list_price_cents ON books "
         "BEGIN SELECT new.list_price_cents; END;\n"
     ),
     "db/queries/bookshop.sql": (
         "SELECT price_cents FROM books;\n"
         "SELECT * FROM order_items;\n"
+        "SELECT legacy_code FROM customers;\n"
     ),
     "db/queries/book_by_isbn.sql": "SELECT list_price_cents FROM books WHERE id = ?1;\n",
     "db/queries/reprice_book.sql": "UPDATE books SET list_price_cents = ?1 WHERE id = ?2;\n",
@@ -324,6 +327,9 @@ def bookshop_claims(label):
     for name, reason in expected.items():
         if not any(h["fact"].get("name") == name and h["fact"].get("resolution") == {"Unresolved": {"reason": reason}} for h in refs):
             fail(f"{label}: missing typed unbound {name}/{reason}: {refs}")
+    dropped = [h["fact"] for h in refs if h["fact"].get("name") == "legacy_code"]
+    if not any(isinstance(f.get("resolution"), dict) and f["resolution"].get("Resolved", {}).get("live") is False for f in dropped):
+        fail(f"{label}: dropped legacy_code was not reported with a dead entity: {dropped}")
     column = impact_page(label + "-column-impact", "--sql-column", "books.list_price_cents")
     nodes = [r["node"] for r in column["rows"]]
     for path in ("db/queries/book_by_isbn.sql", "db/queries/reprice_book.sql", "db/queries/place_order_line.sql"):
