@@ -142,6 +142,10 @@ mod graph_evidence_tests {
             mutate(&mut changed);
             assert!(!replay_csharp_graph_evidence(&graph, &changed));
         }
+        assert!(mint_selected_graph_witness(&graph, graph.clone()).is_some());
+        let mut stale = graph.clone();
+        stale.nodes[1].config_digest[0] ^= 1;
+        assert!(mint_selected_graph_witness(&graph, stale).is_none());
     }
 }
 
