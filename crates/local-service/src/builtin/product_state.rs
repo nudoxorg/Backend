@@ -7816,6 +7816,18 @@ edition = \"2021\"
     }
 
     #[test]
+    fn indexed_manifest_free_root_has_a_profile() {
+        let root = fixture("manifest-free-profile");
+        let view = package_view(b"manifest-free-profile", &[root.as_path()]);
+        let package = PackageReference::parse(root.display().to_string()).expect("local path");
+        let reply = profile(&view, &[], &CatalogLookupIndex::from_catalog(&[]), &package, None)
+            .expect("indexed root profile");
+        assert!(matches!(reply, SurfaceReply::PackageProfile { latest: None, versions: 0, .. }));
+        reply.admit(backend_library::CommandId::PackageProfile).expect("admitted profile");
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
     fn python_local_profile_exposes_static_source_metadata_and_dynamic_absence() {
         let root = fixture("python-profile");
         fs::write(root.join("setup.cfg"), "[metadata]\nname=httpie\nversion=attr: httpie.__version__\ndescription=HTTP client\nproject_urls=\n Documentation=https://example.test/docs\n GitHub=https://example.test/repo\n[options]\ninstall_requires=requests[socks]>=2,<3\n").expect("manifest");
