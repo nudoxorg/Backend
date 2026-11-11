@@ -63,6 +63,113 @@ pub struct CSharpSdkObservation {
     pub outside_root_unknown: bool,
 }
 
+/// Ask the selected SDK's ResolveAssemblyReference target to choose among
+/// package/framework candidates. The generated project has no user imports or
+/// restore inputs; only explicit, confined HintPath references are admitted.
+/// Missing or ambiguous SDK metadata is a hard failure.
+pub fn resolve_references_with_sdk(
+    dotnet: &Path,
+    target_framework: &str,
+    candidates: &[PathBuf],
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> Result<Vec<PathBuf>, &'static str> {
+    if candidates.is_empty() || candidates.len() > 8192 || !target_framework.starts_with("net") {
+        return Err("invalid SDK reference candidates");
+    }
+    let scratch = tempfile::tempdir().map_err(|_| "SDK scratch unavailable")?;
+    let project = scratch.path().join("resolve.csproj");
+    let mut xml = format!(
+        "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>{target_framework}</TargetFramework><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets></PropertyGroup><ItemGroup>"
+    );
+    for (index, path) in candidates.iter().enumerate() {
+        if !path.is_absolute() || !path.is_file() {
+            return Err("SDK candidate unavailable");
+        }
+        let path = path
+            .to_str()
+            .ok_or("SDK candidate path encoding")?
+            .replace('&', "&amp;")
+            .replace('"', "&quot;");
+        xml.push_str(&format!("<Reference Include=\"Candidate{index}\"><HintPath>{path}</HintPath><Private>false</Private></Reference>"));
+    }
+    xml.push_str("</ItemGroup></Project>");
+    fs::write(&project, xml).map_err(|_| "SDK scratch unavailable")?;
+    let args = vec![
+        OsString::from("msbuild"),
+        project.as_os_str().to_owned(),
+        OsString::from("-nologo"),
+        OsString::from("-noAutoResponse"),
+        OsString::from("-nodeReuse:false"),
+        OsString::from("-target:ResolveReferences"),
+        OsString::from("-getItem:ReferencePath"),
+        OsString::from("-p:RestoreSources="),
+        OsString::from("-p:MSBuildEnableWorkloadResolver=false"),
+        OsString::from("-p:ImportDirectoryBuildProps=false"),
+        OsString::from("-p:ImportDirectoryBuildTargets=false"),
+    ];
+    let command = CaptureCommand {
+        program: dotnet.as_os_str().to_owned(),
+        args,
+        cwd: Some(scratch.path().to_path_buf()),
+        environment: CaptureEnvironment::Clear,
+        overrides: [
+            ("HOME".into(), Some(scratch.path().as_os_str().to_owned())),
+            (
+                "DOTNET_CLI_HOME".into(),
+                Some(scratch.path().as_os_str().to_owned()),
+            ),
+            ("DOTNET_NOLOGO".into(), Some(OsString::from("1"))),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let output = capture(
+        &command,
+        CaptureLimits {
+            deadline,
+            stdout_bytes: 512 * 1024,
+            stderr_bytes: 1024 * 1024,
+        },
+        cancelled,
+    )
+    .map_err(|_| "SDK resolution failed")?;
+    if !output.status.success() {
+        return Err("SDK resolution failed");
+    }
+    let value: Value =
+        serde_json::from_slice(&output.stdout).map_err(|_| "SDK resolution malformed")?;
+    let items = value
+        .get("Items")
+        .and_then(Value::as_object)
+        .and_then(|o| o.get("ReferencePath"))
+        .and_then(Value::as_array)
+        .ok_or("SDK resolution missing ReferencePath")?;
+    let mut selected = Vec::new();
+    for item in items {
+        let path = item
+            .get("FullPath")
+            .or_else(|| item.get("Identity"))
+            .and_then(Value::as_str)
+            .ok_or("SDK resolution path missing")?;
+        let path = fs::canonicalize(path).map_err(|_| "SDK resolution path unavailable")?;
+        if !candidates
+            .iter()
+            .any(|candidate| fs::canonicalize(candidate).ok().as_ref() == Some(&path))
+        {
+            return Err("SDK selected an unrequested reference");
+        }
+        if selected.contains(&path) {
+            return Err("SDK selected duplicate reference");
+        }
+        selected.push(path);
+    }
+    if selected.is_empty() {
+        return Err("SDK selected no references");
+    }
+    Ok(selected)
+}
+
 /// Private copies of the observed targeting assemblies used by one compile.
 /// This does not authenticate the SDK, host, runtime, or observation process.
 #[derive(Debug)]
@@ -99,11 +206,14 @@ pub fn resolve_sdk_owned_references(
             }
             continue;
         }
-        merged.insert(key, CSharpTargetingReference {
-            name: reference.name.clone(),
-            length: reference.length,
-            sha256: reference.sha256,
-        });
+        merged.insert(
+            key,
+            CSharpTargetingReference {
+                name: reference.name.clone(),
+                length: reference.length,
+                sha256: reference.sha256,
+            },
+        );
     }
     Ok(merged.into_values().collect())
 }
@@ -113,7 +223,9 @@ impl CSharpTargetingSnapshot {
     /// the same selected targeting set even if the installed pack changes.
     pub fn capture(directories: &[PathBuf]) -> Result<Self, &'static str> {
         use sha2::{Digest, Sha256};
-        if directories.is_empty() || directories.len() > 16 { return Err("invalid targeting directories"); }
+        if directories.is_empty() || directories.len() > 16 {
+            return Err("invalid targeting directories");
+        }
         let directory = tempfile::tempdir().map_err(|_| "targeting snapshot unavailable")?;
         let mut copies = Vec::new();
         let mut hash = Sha256::new();
@@ -128,53 +240,106 @@ impl CSharpTargetingSnapshot {
             fs::create_dir(&destination).map_err(|_| "targeting snapshot unavailable")?;
             hash.update((index as u64).to_le_bytes());
             for name in &entries {
-                let stem = name.strip_suffix(".dll").ok_or("targeting filename unavailable")?;
-                if !stem.is_ascii() || stem.is_empty() { return Err("targeting filename unavailable"); }
+                let stem = name
+                    .strip_suffix(".dll")
+                    .ok_or("targeting filename unavailable")?;
+                if !stem.is_ascii() || stem.is_empty() {
+                    return Err("targeting filename unavailable");
+                }
                 let lower = stem.to_ascii_lowercase();
-                if lower.starts_with("api-ms-") || lower.starts_with("clr") || lower == "hostfxr"
-                    || lower == "hostpolicy" || lower == "microsoft.diasymreader.native.amd64" { continue; }
-                if !names.insert(lower) { return Err("duplicate targeting assembly"); }
+                if lower.starts_with("api-ms-")
+                    || lower.starts_with("clr")
+                    || lower == "hostfxr"
+                    || lower == "hostpolicy"
+                    || lower == "microsoft.diasymreader.native.amd64"
+                {
+                    continue;
+                }
+                if !names.insert(lower) {
+                    return Err("duplicate targeting assembly");
+                }
                 count = count.checked_add(1).ok_or("targeting snapshot limit")?;
-                if count > 8192 { return Err("targeting snapshot limit"); }
-                let bytes = backend_platform::durable::read_regular_bounded_stable(&source.join(name), 32 * 1024 * 1024)
-                    .map_err(|_| "targeting assembly unavailable")?;
-                total = total.checked_add(bytes.len()).ok_or("targeting snapshot limit")?;
-                if bytes.is_empty() || total > 256 * 1024 * 1024 { return Err("targeting snapshot limit"); }
+                if count > 8192 {
+                    return Err("targeting snapshot limit");
+                }
+                let bytes = backend_platform::durable::read_regular_bounded_stable(
+                    &source.join(name),
+                    32 * 1024 * 1024,
+                )
+                .map_err(|_| "targeting assembly unavailable")?;
+                total = total
+                    .checked_add(bytes.len())
+                    .ok_or("targeting snapshot limit")?;
+                if bytes.is_empty() || total > 256 * 1024 * 1024 {
+                    return Err("targeting snapshot limit");
+                }
                 hash.update((name.len() as u64).to_le_bytes());
                 hash.update(name.as_bytes());
                 hash.update((bytes.len() as u64).to_le_bytes());
                 let sha256: [u8; 32] = Sha256::digest(&bytes).into();
                 hash.update(sha256);
-                references.push(CSharpTargetingReference { name: stem.to_owned(), length: bytes.len() as u64, sha256 });
-                fs::write(destination.join(name), bytes).map_err(|_| "targeting snapshot unavailable")?;
+                references.push(CSharpTargetingReference {
+                    name: stem.to_owned(),
+                    length: bytes.len() as u64,
+                    sha256,
+                });
+                fs::write(destination.join(name), bytes)
+                    .map_err(|_| "targeting snapshot unavailable")?;
             }
-            if entries != targeting_entries(source)? { return Err("targeting directory changed"); }
+            if entries != targeting_entries(source)? {
+                return Err("targeting directory changed");
+            }
             copies.push(destination);
         }
-        if count == 0 { return Err("targeting assemblies unavailable"); }
-        Ok(Self { directory, directories: copies, digest: hash.finalize().into(), references })
+        if count == 0 {
+            return Err("targeting assemblies unavailable");
+        }
+        Ok(Self {
+            directory,
+            directories: copies,
+            digest: hash.finalize().into(),
+            references,
+        })
     }
 
-    pub fn directories(&self) -> &[PathBuf] { &self.directories }
-    pub fn digest(&self) -> [u8; 32] { self.digest }
-    pub fn references(&self) -> &[CSharpTargetingReference] { &self.references }
+    pub fn directories(&self) -> &[PathBuf] {
+        &self.directories
+    }
+    pub fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
+    pub fn references(&self) -> &[CSharpTargetingReference] {
+        &self.references
+    }
     /// Keep the private directory alive for the complete compilation.
-    pub fn root(&self) -> &Path { self.directory.path() }
+    pub fn root(&self) -> &Path {
+        self.directory.path()
+    }
 }
 
 fn targeting_entries(directory: &Path) -> Result<Vec<String>, &'static str> {
     let mut entries = Vec::new();
-    for (count, entry) in fs::read_dir(directory).map_err(|_| "targeting directory unavailable")?.enumerate() {
-        if count >= 16384 { return Err("targeting directory limit"); }
+    for (count, entry) in fs::read_dir(directory)
+        .map_err(|_| "targeting directory unavailable")?
+        .enumerate()
+    {
+        if count >= 16384 {
+            return Err("targeting directory limit");
+        }
         let entry = entry.map_err(|_| "targeting directory unavailable")?;
-        let name = entry.file_name().into_string().map_err(|_| "targeting filename unavailable")?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| "targeting filename unavailable")?;
         // .NET's glob is case-sensitive on Unix and case-insensitive on Windows.
         // Reject mixed-case extensions rather than capture a platform-dependent set.
         if name.to_ascii_lowercase().ends_with(".dll") && !name.ends_with(".dll") {
             return Err("targeting extension differs by platform");
         }
         if name.ends_with(".dll") {
-            if entries.len() >= 8192 { return Err("targeting snapshot limit"); }
+            if entries.len() >= 8192 {
+                return Err("targeting snapshot limit");
+            }
             entries.push(name);
         }
     }
@@ -635,8 +800,14 @@ mod tests {
         let first = CSharpTargetingSnapshot::capture(&[source.path().to_path_buf()]).unwrap();
         fs::write(source.path().join("Core.dll"), b"second").unwrap();
         let second = CSharpTargetingSnapshot::capture(&[source.path().to_path_buf()]).unwrap();
-        assert_eq!(fs::read(first.directories()[0].join("Core.dll")).unwrap(), b"first");
-        assert_eq!(fs::read(second.directories()[0].join("Core.dll")).unwrap(), b"second");
+        assert_eq!(
+            fs::read(first.directories()[0].join("Core.dll")).unwrap(),
+            b"first"
+        );
+        assert_eq!(
+            fs::read(second.directories()[0].join("Core.dll")).unwrap(),
+            b"second"
+        );
         assert_ne!(first.digest(), second.digest());
         fs::write(source.path().join("Other.dll"), b"third").unwrap();
         let third = CSharpTargetingSnapshot::capture(&[source.path().to_path_buf()]).unwrap();
@@ -649,14 +820,32 @@ mod tests {
         let second = tempfile::tempdir().unwrap();
         fs::write(first.path().join("Core.dll"), b"first").unwrap();
         fs::write(second.path().join("core.dll"), b"second").unwrap();
-        assert!(CSharpTargetingSnapshot::capture(&[first.path().to_path_buf(), second.path().to_path_buf()]).is_err());
+        assert!(
+            CSharpTargetingSnapshot::capture(&[
+                first.path().to_path_buf(),
+                second.path().to_path_buf()
+            ])
+            .is_err()
+        );
     }
 
     #[test]
     fn sdk_owned_reference_join_rejects_different_package_overlap() {
-        let sdk = CSharpTargetingReference { name: "System.Runtime".into(), length: 3, sha256: [1; 32] };
-        let identical = CSharpTargetingReference { name: "system.runtime".into(), length: 3, sha256: [1; 32] };
-        let different = CSharpTargetingReference { name: "System.Runtime".into(), length: 4, sha256: [2; 32] };
+        let sdk = CSharpTargetingReference {
+            name: "System.Runtime".into(),
+            length: 3,
+            sha256: [1; 32],
+        };
+        let identical = CSharpTargetingReference {
+            name: "system.runtime".into(),
+            length: 3,
+            sha256: [1; 32],
+        };
+        let different = CSharpTargetingReference {
+            name: "System.Runtime".into(),
+            length: 4,
+            sha256: [2; 32],
+        };
         let joined = resolve_sdk_owned_references(&[sdk], &[identical]).unwrap();
         assert_eq!(joined.len(), 1);
         assert_eq!(joined[0].name, "System.Runtime");
@@ -680,7 +869,11 @@ mod tests {
         let source = tempfile::tempdir().unwrap();
         let other = tempfile::tempdir().unwrap();
         fs::write(other.path().join("Core.dll"), b"reference").unwrap();
-        std::os::unix::fs::symlink(other.path().join("Core.dll"), source.path().join("Core.dll")).unwrap();
+        std::os::unix::fs::symlink(
+            other.path().join("Core.dll"),
+            source.path().join("Core.dll"),
+        )
+        .unwrap();
         assert!(CSharpTargetingSnapshot::capture(&[source.path().to_path_buf()]).is_err());
     }
 
