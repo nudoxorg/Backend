@@ -52,7 +52,7 @@ const MAX_LINEAGE_FACET_VALUES: usize = 16_384;
 const SEARCH_PROJECTION_DIRECTORY: &str = "v1";
 const SEARCH_PROJECTION_MANIFEST: &str = "selected-root-v1";
 const SEARCH_PROJECTION_ROOT_LEASE: &str = ".backend-root-reader.lock";
-const SEARCH_PROJECTION_SCHEMA: &[u8] = b"backend-discovery-tantivy-v6\0";
+const SEARCH_PROJECTION_SCHEMA: &[u8] = b"backend-discovery-tantivy-v7\0";
 const MAX_RETAINED_SEARCH_PROJECTIONS: usize = 4;
 const MAX_SEARCH_PROJECTION_FILES: usize = 196_608;
 const MAX_SEARCH_PROJECTION_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
@@ -5313,6 +5313,8 @@ fn discovery_lineage_key(
 }
 
 /// Deterministic stored sort key shared by discovery and acquired projections.
+/// Hex fields preserve lexical byte order and keep field separators unambiguous;
+/// length prefixes would incorrectly rank shorter package names first.
 pub(crate) fn lineage_sort_key(key: &LineageKey) -> String {
     let (source_kind, source_id, authority_marker) = match &key.source {
         LineageSearchSource::Discovery(DiscoverySearchSource::Registry(source)) => {
@@ -5328,15 +5330,14 @@ pub(crate) fn lineage_sort_key(key: &LineageKey) -> String {
         ),
     };
     let base = format!(
-        "{source_kind}\u{1f}{}\u{1f}{}\u{1f}{authority_marker}\u{1f}{}:{}",
+        "{source_kind}\u{1f}{}\u{1f}{}\u{1f}{authority_marker}\u{1f}{}",
         key.ecosystem.as_str(),
         hex(&source_id),
-        key.lineage.len(),
-        key.lineage,
+        hex(key.lineage.as_bytes()),
     );
     key.coordinate_suffix.as_ref().map_or_else(
         || base.clone(),
-        |suffix| format!("{base}\u{1f}{}:{suffix}", suffix.len()),
+        |suffix| format!("{base}\u{1f}{}", hex(suffix.as_bytes())),
     )
 }
 
@@ -8524,6 +8525,26 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["ample", "widget", "widget-a"]
         );
+    }
+
+    #[test]
+    fn lineage_sort_keys_preserve_names_and_suffixes_in_lexical_order() {
+        let cargo = source(RegistryEcosystem::Cargo, "https://index.crates.io");
+        let keys = ["alpha", "beta", "widget", "widget-small", "widget-tiny"]
+            .map(|name| discovery_lineage_key(
+                &DiscoverySearchSource::Registry(cargo), RegistryEcosystem::Cargo, name,
+            ));
+        assert!(keys.windows(2).all(|pair|
+            lineage_sort_key(&pair[0]) < lineage_sort_key(&pair[1])));
+        let mut first = keys[0].clone();
+        first.coordinate_suffix = Some("alpha".to_owned());
+        let mut second = first.clone();
+        second.coordinate_suffix = Some("beta".to_owned());
+        assert!(lineage_sort_key(&keys[0]) < lineage_sort_key(&first));
+        assert!(lineage_sort_key(&first) < lineage_sort_key(&second));
+        let mut embedded_separator = keys[0].clone();
+        embedded_separator.lineage.push_str("\u{1f}alpha");
+        assert_ne!(lineage_sort_key(&first), lineage_sort_key(&embedded_separator));
     }
 
     #[test]
