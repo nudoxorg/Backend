@@ -80,6 +80,9 @@ pub struct CSharpResolvedReferenceSnapshot {
 pub struct CSharpResolverReceipt {
     pub sdk_directory: PathBuf,
     pub sdk_kind: Box<str>,
+    pub nullable: Box<str>,
+    pub language_version: Box<str>,
+    pub output_type: Box<str>,
     pub target_framework: String,
     pub global_json_digest: Option<[u8; 32]>,
     pub candidate_digest: [u8; 32],
@@ -115,6 +118,10 @@ impl CSharpResolverReceipt {
         hash.update(sdk);
         hash.update((self.sdk_kind.len() as u64).to_le_bytes());
         hash.update(self.sdk_kind.as_bytes());
+        for value in [&self.nullable, &self.language_version, &self.output_type] {
+            hash.update((value.len() as u64).to_le_bytes());
+            hash.update(value.as_bytes());
+        }
         hash.update((self.target_framework.len() as u64).to_le_bytes());
         hash.update(self.target_framework.as_bytes());
         match self.global_json_digest {
@@ -396,6 +403,9 @@ pub fn resolve_references_with_sdk(
     observed_sdk_directory: &Path,
     captured_global_json: Option<&str>,
     sdk_kind: CSharpSdkKind,
+    nullable: &str,
+    language_version: &str,
+    output_type: &str,
     candidates: &[PathBuf],
     assets_file: Option<&Path>,
     assets_digest: Option<[u8; 32]>,
@@ -500,7 +510,7 @@ pub fn resolve_references_with_sdk(
         CSharpSdkKind::Web => "Microsoft.NET.Sdk.Web",
     };
     let mut xml = format!(
-        "<Project Sdk=\"{sdk_name}\"><PropertyGroup><TargetFramework>{target_framework}</TargetFramework><NetCoreTargetingPackRoot>{}</NetCoreTargetingPackRoot><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets></PropertyGroup><ItemGroup>", private_pack_root.display()
+        "<Project Sdk=\"{sdk_name}\"><PropertyGroup><TargetFramework>{target_framework}</TargetFramework><Nullable>{nullable}</Nullable><LangVersion>{language_version}</LangVersion><OutputType>{output_type}</OutputType><NetCoreTargetingPackRoot>{}</NetCoreTargetingPackRoot><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets></PropertyGroup><ItemGroup>", private_pack_root.display()
     );
     for path in candidates {
         if !path.is_absolute() || !path.is_file() {
@@ -747,6 +757,9 @@ pub fn resolve_references_with_sdk(
         receipt: CSharpResolverReceipt {
             sdk_directory: observed_sdk_directory,
             sdk_kind: sdk_name.into(),
+            nullable: nullable.into(),
+            language_version: language_version.into(),
+            output_type: output_type.into(),
             target_framework: target_framework.to_owned(),
             global_json_digest,
             candidate_digest: candidate_digest(&snapshots),
@@ -1402,6 +1415,9 @@ mod tests {
             receipt: CSharpResolverReceipt {
                 sdk_directory: std::env::temp_dir(),
                 sdk_kind: "Microsoft.NET.Sdk".into(),
+                nullable: "enable".into(),
+                language_version: "default".into(),
+                output_type: "Exe".into(),
                 target_framework: "net10.0".to_owned(),
                 global_json_digest: None,
                 candidate_digest: [7; 32],
@@ -1443,6 +1459,9 @@ mod tests {
         let receipt = CSharpResolverReceipt {
             sdk_directory: sdk.path().canonicalize().unwrap(),
             sdk_kind: "Microsoft.NET.Sdk".into(),
+            nullable: "enable".into(),
+            language_version: "default".into(),
+            output_type: "Exe".into(),
             target_framework: "net10.0".to_owned(),
             global_json_digest: None,
             candidate_digest: [8; 32],
