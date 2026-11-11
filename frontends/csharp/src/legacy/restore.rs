@@ -40,6 +40,7 @@ pub enum RestoreError {
 pub struct RestoreClosure {
     pub files: Vec<PathBuf>,
     pub digest: [u8; 32],
+    pub framework_references: Vec<String>,
     directory: tempfile::TempDir,
 }
 
@@ -124,6 +125,45 @@ pub fn resolve_project_assets_with_metadata(
         .get("libraries")
         .and_then(Value::as_object)
         .ok_or(RestoreError::Missing("libraries"))?;
+    let mut framework_references = BTreeSet::new();
+    if let Some(frameworks) = value
+        .get("project")
+        .and_then(|p| p.get("frameworks"))
+        .and_then(Value::as_object)
+    {
+        if let Some(refs) = frameworks
+            .get(target_framework)
+            .and_then(|f| f.get("frameworkReferences"))
+            .and_then(Value::as_object)
+        {
+            for name in refs.keys() {
+                admit_framework_reference(name, &mut framework_references)?;
+            }
+        }
+    }
+    for item in target.values() {
+        if let Some(refs) = item.get("frameworkReferences") {
+            match refs {
+                Value::Array(values) => {
+                    for value in values {
+                        if let Some(name) = value.as_str() {
+                            admit_framework_reference(name, &mut framework_references)?;
+                        }
+                    }
+                }
+                Value::Object(values) => {
+                    for name in values.keys() {
+                        admit_framework_reference(name, &mut framework_references)?;
+                    }
+                }
+                _ => {
+                    return Err(RestoreError::Unavailable(
+                        "invalid frameworkReferences entry".to_owned(),
+                    ));
+                }
+            }
+        }
+    }
     let mut files = Vec::new();
     if !expected_packages.is_empty() || !expected_projects.is_empty() {
         let dependencies = value
@@ -415,8 +455,22 @@ pub fn resolve_project_assets_with_metadata(
     Ok(RestoreClosure {
         files,
         digest: digest.finalize().into(),
+        framework_references: framework_references.into_iter().collect(),
         directory,
     })
+}
+
+fn admit_framework_reference(
+    name: &str,
+    output: &mut BTreeSet<String>,
+) -> Result<(), RestoreError> {
+    if !matches!(name, "Microsoft.NETCore.App" | "Microsoft.AspNetCore.App") {
+        return Err(RestoreError::Unavailable(format!(
+            "unsupported framework reference {name}"
+        )));
+    }
+    output.insert(name.to_owned());
+    Ok(())
 }
 
 fn asset_tokens(value: &str) -> BTreeSet<String> {
