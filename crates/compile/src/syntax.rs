@@ -972,9 +972,8 @@ impl SyntaxFrontend {
                     // extent, so its source location starts at the decorator.
                     // This keeps line numbering and excerpt geometry aligned.
                     if self.language == SourceLanguage::Python {
-                        NonZeroU32::new(excerpt.start_position().row as u32 + 1)
-                            .unwrap_or(definition.line)
-                            .get()
+                        u32::try_from(excerpt.start_position().row.saturating_add(1))
+                            .unwrap_or(u32::MAX)
                     } else {
                         definition.line.get()
                     },
