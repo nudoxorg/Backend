@@ -24,6 +24,7 @@ pub fn syntax_frontend() -> Result<SyntaxFrontend, SyntaxError> {
         "{}\n{}",
         tree_sitter_python::TAGS_QUERY,
         r#"
+(module (expression_statement (assignment left: (identifier) @name) @definition.variable))
 (class_definition
   body: (block (expression_statement (assignment left: (identifier) @name) @definition.field)))
 (decorated_definition
@@ -34,7 +35,7 @@ pub fn syntax_frontend() -> Result<SyntaxFrontend, SyntaxError> {
     );
     SyntaxFrontend::new(
         SourceLanguage::Python,
-        b"tree-sitter-python-0.25.0/tags-v6-python-header-ranges-import-binding-fields",
+        b"tree-sitter-python-0.25.0/tags-v7-python-module-assignment-source",
         vec![GrammarVariant::new(
             &["py", "pyi", "pyw"],
             tree_sitter_python::LANGUAGE.into(),
@@ -49,13 +50,14 @@ mod source_excerpt_tests {
 
     #[test]
     fn structural_python_source_retains_function_body_and_class_field() -> Result<(), String> {
-        let source = "# λ before the declaration\nclass App:\n    app = make_app()\n\n@app.get(\"/api/health\")\ndef health() -> dict[str, str]:\n    return {\"status\": \"ok\"}\n";
+        let source = "# λ before the declaration\napp = make_app()\nclass App:\n    field = 1\n\n@app.get(\"/api/health\")\ndef health() -> dict[str, str]:\n    return {\"status\": \"ok\"}\n";
         let analysis = super::syntax_frontend().map_err(|error| error.to_string())?
             .analyze(Path::new("backend/main.py"), source.as_bytes())
             .map_err(|error| error.to_string())?;
         for (name, expected) in [
             ("health", "@app.get(\"/api/health\")\ndef health() -> dict[str, str]:\n    return {\"status\": \"ok\"}"),
             ("app", "app = make_app()"),
+            ("field", "field = 1"),
         ] {
             let declaration = analysis.declarations().iter().find(|row| row.name() == name)
                 .ok_or_else(|| format!("missing {name}"))?;
