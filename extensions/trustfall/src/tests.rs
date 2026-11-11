@@ -6,11 +6,6 @@
 )]
 
 use super::*;
-use backend_version::{
-    AuthorityScopeClaim, Coverage, CoverageWitness, ProducerObservationClaims,
-    ProducerObservationVerifier, RelationState, ScopeRoot, UntrustedProducerObservation,
-    WorkspaceManifest, WorkspaceRoot, admit_complete_scope, admit_producer_observation,
-};
 use backend_semantic::ir::{
     DeclarationFamilyId, DeclarationIdentity, ExternalFragmentId, ExternalTarget,
     ExternalTargetIdentity, IrBuilder, SemanticCoreReader as _, SourceIdentity, StableRef,
@@ -19,8 +14,13 @@ use backend_semantic::ir::{
 use backend_semantic::vocabulary::{
     CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
 };
-use futures_util::StreamExt as _;
+use backend_version::{
+    admit_complete_scope, admit_producer_observation, AuthorityScopeClaim, Coverage,
+    CoverageWitness, ProducerObservationClaims, ProducerObservationVerifier, RelationState,
+    ScopeRoot, UntrustedProducerObservation, WorkspaceManifest, WorkspaceRoot,
+};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
+use futures_util::StreamExt as _;
 use std::collections::BTreeMap;
 
 struct FixtureCoverageVerifier {
@@ -155,19 +155,50 @@ fn compiler_external_corpus(
     image: [u8; 32],
     external_image: [u8; 32],
 ) -> Result<SemanticQueryCorpus, SemanticQueryError> {
+    compiler_external_corpus_with_authority(package, image, external_image, false, false)
+}
+
+fn compiler_external_corpus_with_authority(
+    package: backend_library::PackageKey,
+    image: [u8; 32],
+    external_image: [u8; 32],
+    source_observed: bool,
+    external_observed: bool,
+) -> Result<SemanticQueryCorpus, SemanticQueryError> {
     let (coordinate, profile, declaration, target, facts) = compiler_external_fixture();
     let project_id = backend_library::RowId::Package(package).stable_key();
-    let external = CompilerExternalTargetEvidence::new(
-        package,
-        coordinate.clone(),
-        profile,
-        target,
-        external_image,
-        facts,
-    );
+    let external = if external_observed {
+        CompilerExternalTargetEvidence::new_observed(
+            package,
+            coordinate.clone(),
+            profile,
+            target,
+            external_image,
+            facts,
+        )
+    } else {
+        CompilerExternalTargetEvidence::new(
+            package,
+            coordinate.clone(),
+            profile,
+            target,
+            external_image,
+            facts,
+        )
+    };
     let external_id = external.row_id();
-    let source =
-        CompilerSemanticEvidence::new(package, coordinate, profile, declaration, image, facts);
+    let source = if source_observed {
+        CompilerSemanticEvidence::new_observed(
+            package,
+            coordinate,
+            profile,
+            declaration,
+            image,
+            facts,
+        )
+    } else {
+        CompilerSemanticEvidence::new(package, coordinate, profile, declaration, image, facts)
+    };
     let source_id = source.row_id();
     SemanticQueryCorpus::admit(
         workspace(),
@@ -254,18 +285,16 @@ fn exact_cargo_alias_observations_change_the_typed_corpus_digest() {
         vec![CargoPackageAliasV1::CargoTargetName(
             CargoTargetNameV1::new("cargo_alias_fixture").expect("target alias"),
         )],
-        vec![
-            CargoPackageAliasObservationV1::from_wire_parts(
-                profile,
-                [1; 32],
-                Some(CargoPackageAliasCargoFactsV1::from_wire_parts(
-                    [2; 32], [3; 32], [4; 32],
-                )),
-                vec![0],
-                CargoPackageAliasCoverageV1::Complete,
-            )
-            .expect("profile observation"),
-        ],
+        vec![CargoPackageAliasObservationV1::from_wire_parts(
+            profile,
+            [1; 32],
+            Some(CargoPackageAliasCargoFactsV1::from_wire_parts(
+                [2; 32], [3; 32], [4; 32],
+            )),
+            vec![0],
+            CargoPackageAliasCoverageV1::Complete,
+        )
+        .expect("profile observation")],
     )
     .expect("Cargo alias evidence");
     let with_aliases = SemanticQueryCorpus::admit(
@@ -354,6 +383,38 @@ fn compiler_external_edge_is_typed_scoped_and_queryable() {
         compiler_external_fixture().4,
     );
     assert_ne!(first.row_id(), second.row_id());
+}
+
+#[test]
+fn observed_compiler_authority_changes_state_and_digest() {
+    let package = backend_library::package_key("observed-demo");
+    let current = compiler_external_corpus_with_authority(package, [7; 32], [7; 32], false, false)
+        .expect("current corpus");
+    let observed = compiler_external_corpus_with_authority(package, [7; 32], [7; 32], true, true)
+        .expect("observed corpus");
+    assert_ne!(
+        current.evidence_digest(),
+        observed.evidence_digest(),
+        "observed qualification is part of corpus authority"
+    );
+    assert_eq!(current.facts()[1].evidence().state(), "compiler_semantic");
+    assert_eq!(observed.facts()[1].evidence().state(), "compiler_observed");
+    assert_eq!(
+        observed.facts()[2].evidence().state(),
+        "compiler_external_observed"
+    );
+}
+
+#[test]
+fn observed_and_current_external_edges_cannot_mix() {
+    let package = backend_library::package_key("mixed-authority-demo");
+    let error = compiler_external_corpus_with_authority(package, [7; 32], [7; 32], false, true)
+        .expect_err("cross-qualified graph edge must be refused");
+    assert!(matches!(
+        error,
+        SemanticQueryError::Evidence(message)
+            if message.contains("qualification")
+    ));
 }
 
 #[test]
