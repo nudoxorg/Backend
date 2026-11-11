@@ -104,34 +104,42 @@ fn python_and_csharp_structural_source_survive_public_wire_and_cold_reopen() {
             );
             assert!(document.fragments.iter().any(|fragment| matches!(fragment, backend_library::Fragment::Text(note) if note == SourceRangeScope::StructuralDeclaration.description())), "default source explicitly qualifies structural capture");
         }
-        let mut start = 0;
-        let mut identity = None;
-        let mut body = String::new();
-        loop {
-            let request = SourceRangeRequest {
-                start,
-                limit: 16,
-                source_identity: identity,
-            };
-            let CommandReply::Document(document) =
-                source_command(&mut fixture, "health", Some(request))
-            else {
-                panic!("source range reply")
-            };
-            let page = document.source_range.expect("bounded source page");
-            assert!(page.admits(request));
-            assert_eq!(page.scope, SourceRangeScope::StructuralDeclaration);
-            body.push_str(&page.text);
-            identity = Some(page.source_identity);
-            start = page.end;
-            if page.end == page.total {
-                break;
+        for (name, expected) in [
+            (
+                "health",
+                "@app.get(\"/health\")\ndef health() -> dict[str, str]:\n    return {\"status\": \"ok\"}",
+            ),
+            (
+                "MissingFields",
+                "private static bool MissingFields(string value) {\n        return value.Length == 0;\n    }",
+            ),
+        ] {
+            let mut start = 0;
+            let mut identity = None;
+            let mut body = String::new();
+            loop {
+                let request = SourceRangeRequest {
+                    start,
+                    limit: 16,
+                    source_identity: identity,
+                };
+                let CommandReply::Document(document) =
+                    source_command(&mut fixture, name, Some(request))
+                else {
+                    panic!("source range reply")
+                };
+                let page = document.source_range.expect("bounded source page");
+                assert!(page.admits(request));
+                assert_eq!(page.scope, SourceRangeScope::StructuralDeclaration);
+                body.push_str(&page.text);
+                identity = Some(page.source_identity);
+                start = page.end;
+                if page.end == page.total {
+                    break;
+                }
             }
+            assert_eq!(body, expected);
         }
-        assert_eq!(
-            body,
-            "@app.get(\"/health\")\ndef health() -> dict[str, str]:\n    return {\"status\": \"ok\"}"
-        );
     }
     fs::write(
         root.join("main.py"),
