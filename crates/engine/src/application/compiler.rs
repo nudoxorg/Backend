@@ -4428,6 +4428,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 &observed.nullable,
                 &observed.language_version,
                 &observed.output_type,
+                restored_csharp_references.as_ref().map_or(&[][..], |references| references.framework_references.as_slice()),
                 &candidates,
                 assets.as_deref(),
                 assets.as_ref().and_then(|path| fs::read(path).ok()).map(|bytes| Sha256::digest(bytes).into()),

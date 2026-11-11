@@ -83,6 +83,7 @@ pub struct CSharpResolverReceipt {
     pub nullable: Box<str>,
     pub language_version: Box<str>,
     pub output_type: Box<str>,
+    pub framework_references: Box<[Box<str>]>,
     pub target_framework: String,
     pub global_json_digest: Option<[u8; 32]>,
     pub candidate_digest: [u8; 32],
@@ -119,6 +120,11 @@ impl CSharpResolverReceipt {
         hash.update((self.sdk_kind.len() as u64).to_le_bytes());
         hash.update(self.sdk_kind.as_bytes());
         for value in [&self.nullable, &self.language_version, &self.output_type] {
+            hash.update((value.len() as u64).to_le_bytes());
+            hash.update(value.as_bytes());
+        }
+        hash.update((self.framework_references.len() as u64).to_le_bytes());
+        for value in &self.framework_references {
             hash.update((value.len() as u64).to_le_bytes());
             hash.update(value.as_bytes());
         }
@@ -406,6 +412,7 @@ pub fn resolve_references_with_sdk(
     nullable: &str,
     language_version: &str,
     output_type: &str,
+    framework_references: &[String],
     candidates: &[PathBuf],
     assets_file: Option<&Path>,
     assets_digest: Option<[u8; 32]>,
@@ -535,6 +542,16 @@ pub fn resolve_references_with_sdk(
             .replace('>', "&gt;")
             .replace('"', "&quot;");
         xml.push_str(&format!("<Reference Include=\"{name}\"><HintPath>{escaped_path}</HintPath><Private>false</Private></Reference>"));
+    }
+    for reference in framework_references {
+        if reference.is_empty()
+            || !reference
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.')
+        {
+            return Err("SDK framework reference invalid");
+        }
+        xml.push_str(&format!("<FrameworkReference Include=\"{reference}\" />"));
     }
     xml.push_str("</ItemGroup></Project>");
     fs::write(&project, xml).map_err(|_| "SDK scratch unavailable")?;
@@ -760,6 +777,10 @@ pub fn resolve_references_with_sdk(
             nullable: nullable.into(),
             language_version: language_version.into(),
             output_type: output_type.into(),
+            framework_references: framework_references
+                .iter()
+                .map(|value| value.clone().into_boxed_str())
+                .collect(),
             target_framework: target_framework.to_owned(),
             global_json_digest,
             candidate_digest: candidate_digest(&snapshots),
@@ -1418,6 +1439,7 @@ mod tests {
                 nullable: "enable".into(),
                 language_version: "default".into(),
                 output_type: "Exe".into(),
+                framework_references: Box::new([]),
                 target_framework: "net10.0".to_owned(),
                 global_json_digest: None,
                 candidate_digest: [7; 32],
@@ -1462,6 +1484,7 @@ mod tests {
             nullable: "enable".into(),
             language_version: "default".into(),
             output_type: "Exe".into(),
+            framework_references: Box::new([]),
             target_framework: "net10.0".to_owned(),
             global_json_digest: None,
             candidate_digest: [8; 32],

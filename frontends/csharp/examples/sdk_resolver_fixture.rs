@@ -52,6 +52,7 @@ fn main() {
         "enable",
         "default",
         "Exe",
+        &[],
         &candidates,
         assets.as_deref(),
         assets_digest,
