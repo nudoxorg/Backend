@@ -5429,6 +5429,7 @@ impl NativeHeaderCustody {
         Ok(Some(Arc::new(custody)))
     }
     pub(in crate::builtin) fn entries(&self) -> &[backend_engine::application::StagedNativeTypeScriptHeaders] { &self.entries }
+    pub(in crate::builtin) fn retained_bytes(&self) -> usize { self.charge }
 }
 impl Drop for NativeHeaderCustody {
     fn drop(&mut self) { NATIVE_HEADER_CUSTODY_USED.fetch_sub(self.charge, Ordering::AcqRel); }

@@ -721,8 +721,9 @@ impl NativeTsOwnerCandidate {
         for change in &self.evidence_changes {
             charge_change_paths(&mut total, change)?;
         }
-        // Count the retained revalidation Arc, even if another candidate shares it.
+        // Count both retained private custodies, even if shared by another plan.
         total
+            .checked_add(self.publication.native_headers().map_or(0, |headers| headers.retained_bytes()))?
             .checked_add(2 * std::mem::size_of::<usize>())?
             .checked_add(self.revalidated.checked_retained_bytes()?)
     }
