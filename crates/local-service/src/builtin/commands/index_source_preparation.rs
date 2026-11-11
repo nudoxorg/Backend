@@ -386,36 +386,14 @@ fn resolve_csharp_selector(
             "selected project is outside the observed workspace".to_owned(),
         ));
     }
-    let mut paths = vec![project_path.clone()];
-    let mut dir = project_path
-        .rsplit_once('/')
-        .map_or("", |(parent, _)| parent);
-    loop {
-        let prefix = if dir.is_empty() {
-            String::new()
-        } else {
-            format!("{dir}/")
-        };
-        paths.push(format!("{prefix}Directory.Build.props"));
-        paths.push(format!("{prefix}Directory.Build.targets"));
-        if dir.is_empty() {
-            break;
-        }
-        if paths.len() >= 17 {
-            return Err(BuiltinModelError("C# project path is too deep".to_owned()));
-        }
-        dir = dir.rsplit_once('/').map_or("", |(parent, _)| parent);
-    }
-    let config = snapshot
-        .capture_configuration_paths(&paths, 2 * 1024 * 1024)
-        .map_err(BuiltinModelError)?;
-    let sdk_config = snapshot.capture_csharp_global_json_paths(&project_path).map_err(BuiltinModelError)?;
-    if sdk_config.probes().any(|(_, bytes)| bytes.is_some_and(|bytes| std::str::from_utf8(bytes).is_err())) {
-        return Err(BuiltinModelError("C# global.json is not UTF-8".to_owned()));
-    }
+    let graph = capture_csharp_project_graph(snapshot, &[project_path.clone()])?;
+    let node = graph.node(&project_path).ok_or_else(|| BuiltinModelError("C# graph root is missing".to_owned()))?;
+    let config = node.config.clone();
+    let sdk_config = node.sdk_config.clone();
     let selected = ResolvedCSharpProject {
         project_path,
-        _capture_lease: lease,
+        _capture_lease: Arc::new(lease),
+        graph,
         solution,
         config,
         sdk_config,
@@ -424,6 +402,145 @@ fn resolve_csharp_selector(
         return Err(BuiltinModelError("C# capture retained bytes exceed bound".to_owned()));
     }
     Ok(selected)
+}
+
+/// Enumerates every observed project as an independent root, sharing one
+/// immutable capture and one bounded capture lease. This does not pick a root
+/// by file ordering and does not combine project assemblies.
+fn discover_observed_csharp_projects(
+    snapshot: Option<&ingest::CompilerWorkspaceSnapshot>,
+) -> Result<Vec<ResolvedCSharpProject>, BuiltinModelError> {
+    let Some(snapshot) = snapshot else { return Ok(Vec::new()); };
+    let paths = snapshot.entries().iter().filter(|entry|
+        entry.kind == ingest::CompilerWorkspaceEntryKind::File && entry.path.to_ascii_lowercase().ends_with(".csproj"))
+        .map(|entry| entry.path.clone()).collect::<Vec<_>>();
+    if paths.is_empty() { return Ok(Vec::new()); }
+    let lease = Arc::new(CSharpCaptureLease::acquire()?);
+    let graph = capture_csharp_project_graph(snapshot, &paths)?;
+    paths.into_iter().map(|project_path| {
+        let node = graph.node(&project_path).ok_or_else(|| BuiltinModelError("C# graph root is missing".to_owned()))?;
+        Ok(ResolvedCSharpProject { project_path, _capture_lease: Arc::clone(&lease), graph: Arc::clone(&graph),
+            solution: None, config: node.config.clone(), sdk_config: node.sdk_config.clone() })
+    }).collect()
+}
+
+fn capture_csharp_project_graph(
+    snapshot: &ingest::CompilerWorkspaceSnapshot,
+    roots: &[String],
+) -> Result<Arc<ResolvedCSharpProjectGraph>, BuiltinModelError> {
+    let mut pending = roots.to_vec();
+    let mut nodes = BTreeMap::new();
+    let mut edges = 0usize;
+    let mut retained = 0usize;
+    while let Some(project_path) = pending.pop() {
+        if nodes.contains_key(&project_path) { continue; }
+        if nodes.len() >= 64 || project_path.len() > 4096 || !project_path.to_ascii_lowercase().ends_with(".csproj")
+            || project_path.starts_with('/') || project_path.contains(['\\', ':'])
+            || project_path.split('/').any(|part| matches!(part, "" | "." | ".."))
+            || !snapshot.entries().iter().any(|entry| entry.kind == ingest::CompilerWorkspaceEntryKind::File && entry.path == project_path) {
+            return Err(BuiltinModelError("C# graph project is outside observed inventory or exceeds bound".to_owned()));
+        }
+        let mut paths = vec![project_path.clone()];
+        let mut dir = project_path.rsplit_once('/').map_or("", |(parent, _)| parent);
+        loop {
+            let prefix = if dir.is_empty() { String::new() } else { format!("{dir}/") };
+            paths.push(format!("{prefix}Directory.Build.props")); paths.push(format!("{prefix}Directory.Build.targets"));
+            if dir.is_empty() { break; }
+            if paths.len() >= 17 { return Err(BuiltinModelError("C# graph project path is too deep".to_owned())); }
+            dir = dir.rsplit_once('/').map_or("", |(parent, _)| parent);
+        }
+        let config = snapshot.capture_configuration_paths(&paths, 2 * 1024 * 1024).map_err(BuiltinModelError)?;
+        let sdk_config = snapshot.capture_csharp_global_json_paths(&project_path).map_err(BuiltinModelError)?;
+        if config.probes().chain(sdk_config.probes()).any(|(_, bytes)| bytes.is_some_and(|bytes| std::str::from_utf8(bytes).is_err())) {
+            return Err(BuiltinModelError("C# graph configuration is not UTF-8".to_owned()));
+        }
+        let project = config.probes().next().and_then(|(_, bytes)| bytes).ok_or_else(|| BuiltinModelError("C# graph project is absent".to_owned()))?;
+        let project_references = captured_csharp_project_references(project, &project_path)?;
+        edges = edges.checked_add(project_references.len()).filter(|count| *count <= 256)
+            .ok_or_else(|| BuiltinModelError("C# graph exceeds edge limit".to_owned()))?;
+        retained = retained.checked_add(config.retained_bytes().ok_or_else(|| BuiltinModelError("C# graph size overflow".to_owned()))?)
+            .and_then(|bytes| bytes.checked_add(sdk_config.retained_bytes()?)).filter(|bytes| *bytes <= 4 * 1024 * 1024)
+            .ok_or_else(|| BuiltinModelError("C# graph configuration exceeds retained-byte bound".to_owned()))?;
+        pending.extend(project_references.iter().cloned());
+        nodes.insert(project_path.clone(), ResolvedCSharpProjectNode { project_path, config, sdk_config,
+            project_references: project_references.into_boxed_slice() });
+    }
+    let graph = Arc::new(ResolvedCSharpProjectGraph { nodes: nodes.into_values().collect() });
+    for root in roots { graph.closure(root)?; }
+    if graph.retained_bytes().is_none_or(|bytes| bytes > 4 * 1024 * 1024) {
+        return Err(BuiltinModelError("C# graph configuration exceeds retained-byte bound".to_owned()));
+    }
+    Ok(graph)
+}
+
+// Parse only literal ProjectReference edges from captured XML; no imports,
+// targets, property substitution, or MSBuild evaluation is performed here.
+fn captured_csharp_project_references(bytes: &[u8], project_path: &str) -> Result<Vec<String>, BuiltinModelError> {
+    use quick_xml::{Reader, events::Event};
+    let fail = || BuiltinModelError("unsupported captured C# project reference".to_owned());
+    let mut reader = Reader::from_reader(bytes);
+    reader.config_mut().expand_empty_elements = true;
+    let mut buffer = Vec::new();
+    let mut stack = Vec::<(Vec<u8>, bool)>::new();
+    let mut output = Vec::new();
+    let mut nodes = 0usize;
+    let mut saw_root = false;
+    loop {
+        match reader.read_event_into(&mut buffer).map_err(|_| fail())? {
+            Event::Start(node) => {
+                nodes += 1;
+                if nodes > 8192 || stack.len() >= 32 { return Err(fail()); }
+                let name = node.name().as_ref().to_vec();
+                if stack.is_empty() {
+                    if name != b"Project" { return Err(fail()); }
+                    saw_root = true;
+                } else if !saw_root {
+                    return Err(fail());
+                }
+                if stack.last().is_some_and(|(name, _)| name == b"ProjectReference") { return Err(fail()); }
+                let is_reference = name == b"ProjectReference";
+                let mut conditioned = false;
+                let mut include = None;
+                for attribute in node.attributes().with_checks(true) {
+                    let attribute = attribute.map_err(|_| fail())?;
+                    if attribute.key.as_ref() == b"Condition" { conditioned = true; }
+                    if is_reference {
+                        if attribute.key.as_ref() != b"Include" || include.is_some() { return Err(fail()); }
+                        include = Some(std::str::from_utf8(attribute.value.as_ref()).map_err(|_| fail())?.to_owned());
+                    }
+                }
+                if is_reference {
+                    if conditioned || stack.iter().any(|(_, condition)| *condition)
+                        || stack.len() != 2 || stack[0].0 != b"Project" || stack[1].0 != b"ItemGroup" { return Err(fail()); }
+                    let raw = include.ok_or_else(fail)?.replace('\\', "/");
+                    if raw.is_empty() || raw.len() > 4096 || raw.starts_with('/') || raw.contains(':')
+                        || raw.chars().any(|ch| ch.is_control() || matches!(ch, '$' | '@' | '%' | '*' | '?' | ';' | '&')) { return Err(fail()); }
+                    let directory = project_path.rsplit_once('/').map_or("", |(directory, _)| directory);
+                    let mut parts = if directory.is_empty() { Vec::new() } else { directory.split('/').collect::<Vec<_>>() };
+                    for part in raw.split('/') {
+                        match part { "" => return Err(fail()), "." => {}, ".." => { parts.pop().ok_or_else(fail)?; }, _ => parts.push(part) }
+                    }
+                    let path = parts.join("/");
+                    if !path.to_ascii_lowercase().ends_with(".csproj") || path.len() > 4096 || output.contains(&path) || output.len() >= 64 { return Err(fail()); }
+                    output.push(path);
+                }
+                stack.push((name, conditioned));
+            }
+            Event::End(node) => {
+                let (expected, _) = stack.pop().ok_or_else(fail)?;
+                if expected.as_slice() != node.name().as_ref() { return Err(fail()); }
+            }
+            Event::DocType(_) | Event::PI(_) | Event::CData(_) => return Err(fail()),
+            Event::Eof => break,
+            Event::Text(text) if stack.last().is_some_and(|(name, _)| name == b"ProjectReference")
+                && !text.iter().all(u8::is_ascii_whitespace) => return Err(fail()),
+            _ => {},
+        }
+        buffer.clear();
+    }
+    if nodes == 0 || !saw_root || !stack.is_empty() { return Err(fail()); }
+    output.sort();
+    Ok(output)
 }
 
 // Discovery only supplies a hint from observed paths; ignore-filtered
@@ -1960,6 +2077,25 @@ mod csharp_project_discovery_tests {
         })();
         let _ = std::fs::remove_dir_all(path);
         result
+    }
+
+    #[test]
+    fn captured_project_references_require_a_well_formed_project_root() {
+        assert!(captured_csharp_project_references(
+            br#"<NotProject><ItemGroup><ProjectReference Include="Api/Api.csproj"/></ItemGroup></NotProject>"#,
+            "Tests/Tests.csproj",
+        )
+        .is_err());
+        assert!(captured_csharp_project_references(
+            br#"<Project><ItemGroup><ProjectReference Include="Api/Api.csproj"></ItemGroup></Project>"#,
+            "Tests/Tests.csproj",
+        )
+        .is_err());
+        assert!(captured_csharp_project_references(
+            br#"<Project><ItemGroup><ProjectReference Include="Api/Api.csproj"/></ItemGroup></Project>"#,
+            "Tests/Tests.csproj",
+        )
+        .is_ok());
     }
 }
 
