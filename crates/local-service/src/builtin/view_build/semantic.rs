@@ -1284,10 +1284,18 @@ fn lookup_native_evidence(
     let key =
         backend_engine::builtin::native_source_evidence_key(package.to_bytes(), profile, path)
             .map_err(|error| BuiltinModelError(error.into()))?;
-    let Some(row) = relation
+    // Reserve the maximum row before the lazy relation materializes its result.
+    // The reservation covers both its decoded row and the returned clone.
+    let reservation = backend_engine::builtin::MAX_NATIVE_EVIDENCE_VALUE
+        .checked_mul(2).and_then(|n| n.checked_add(256))
+        .ok_or_else(|| BuiltinModelError("native evidence reservation overflow".into()))?;
+    *budget = budget.checked_sub(reservation)
+        .ok_or_else(|| BuiltinModelError("native evidence budget exceeded before lookup".into()))?;
+    let result = relation
         .lookup(&key)
-        .map_err(|error| BuiltinModelError(format!("read native evidence: {error}")))?
-    else {
+        .map_err(|error| BuiltinModelError(format!("read native evidence: {error}")))?;
+    let Some(row) = result else {
+        *budget = budget.checked_add(reservation).ok_or_else(|| BuiltinModelError("native evidence budget overflow".into()))?;
         return Ok(None);
     };
     // Relation lookup decodes a bounded line map. Charge every decoded
@@ -1295,8 +1303,10 @@ fn lookup_native_evidence(
     // same request-wide budget as the retained images.
     let map_bytes = row.checked_heap_bytes()
       .ok_or_else(|| BuiltinModelError("native evidence allocation overflow".into()))?;
-    *budget = budget.checked_sub(map_bytes)
-        .ok_or_else(|| BuiltinModelError("native evidence budget exceeded".into()))?;
+    let refund = reservation.checked_sub(map_bytes)
+        .ok_or_else(|| BuiltinModelError("native evidence reservation exceeded".into()))?;
+    *budget = budget.checked_add(refund)
+        .ok_or_else(|| BuiltinModelError("native evidence budget overflow".into()))?;
     if row.key().ok() != Some(key)
         || row.project != package.to_bytes()
         || row.profile != profile
