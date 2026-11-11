@@ -181,24 +181,18 @@ fn records_with_cursor(
     if let Some(gap) = list.graph_gap() {
         lines.push(format!("graph relations incomplete: {gap}"));
     }
-    for policy in list.graph_source_policies() {
-        if let Some(note) = policy.note() {
-            lines.push(note);
-        }
+    if !list.graph_source_policies().is_empty() || list.graph_edges().iter().any(|edge| !edge.source_policy.is_unknown()) {
+        lines.push("Unverified captured-source claims; effective ignore-policy stability unknown.".to_owned());
     }
     for edge in list.graph_edges() {
         lines.push(format!(
-            "graph edge {}: {} -> {}; relation {:?}; confidence {:?}; availability {:?}",
-            backend_library::encode_id(edge.id.as_bytes()),
-            backend_library::encode_id(edge.from.as_bytes()),
-            backend_library::encode_id(edge.to.as_bytes()),
+            "graph edge: {} -> {}; relation {:?}; confidence {:?}; availability {:?}",
+            list.graph_label(edge.from),
+            list.graph_label(edge.to),
             edge.kind,
             edge.provenance.confidence,
             edge.availability,
         ));
-        if let Some(note) = crate::product::source_policy_note(&edge.source_policy) {
-            lines.push(format!("  {note}"));
-        }
     }
     let cursor_note = if list.has_more() && list.continuation().is_some() {
         cursor.map(|cursor| continuation_note(target, cursor))

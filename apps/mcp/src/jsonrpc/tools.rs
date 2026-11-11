@@ -132,6 +132,7 @@ const SESSION_TOOLS: &[&str] = &[
     "backend.status",
     "backend.outline",
     "backend.search",
+    "backend.sql_query",
     "backend.resolve",
     "backend.document",
     "backend.source",

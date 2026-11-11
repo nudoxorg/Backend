@@ -914,7 +914,7 @@ pub const GRAMMARS: [CommandGrammar; 64] = [
             "Text to find in names, signatures, and documentation.",
         )],
         options: &[LIMIT, CURSOR],
-        when: "Search indexed declarations by name, signature, and documentation, then open a coordinate. Start with a distinctive name or term. Natural-language similarity depends on semantic search being available; check the returned semantic_search status. When search_scope is published_names_only, only published names are searched while full search prepares. For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package; to see what a CSS change affects, use impact or backend.impact. Reported score is a descending order key (u32::MAX - rank, zero-based), not a relevance probability; compare it only within the same query/revision.",
+        when: "Search indexed declarations by name, signature, and documentation, then open a coordinate. Start with a distinctive name or term. Natural-language similarity depends on semantic search being available; check the returned semantic_search status. When search_scope is published_names_only, only published names are searched while full search prepares. For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package; for SQL objects and analysis gaps, use sql-query or backend.sql_query; to see what a CSS change affects, use impact or backend.impact. Reported score is a descending order key (u32::MAX - rank, zero-based), not a relevance probability; compare it only within the same query/revision.",
     },
     CommandGrammar {
         name: "graph",

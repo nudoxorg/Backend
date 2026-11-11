@@ -461,7 +461,7 @@ pub fn empty_search_reason(published_names_only: bool, text: &str) -> String {
         );
     }
     reason.push_str(
-        "; the index reflects files as of the last index, so code edited or added on disk since then is not searchable until it is re-indexed (nudox add), and files of a type no frontend claims (for example .vue single-file components; `status` counts them) are not indexed at all. For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package",
+        "; the index reflects files as of the last index, so code edited or added on disk since then is not searchable until it is re-indexed (nudox add), and files of a type no frontend claims (for example .vue single-file components; `status` counts them) are not indexed at all. For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package; for SQL objects and analysis gaps, use sql-query or backend.sql_query",
     );
     reason
 }
@@ -586,9 +586,9 @@ pub fn answer_paged(
             let list = if list.is_empty() {
                 list.with_empty_reason(
                     if published_names.is_some() {
-                        "no current declaration names matched; full lexical search has not been queried in this result stage. For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package"
+                        "no current declaration names matched; full lexical search has not been queried in this result stage. For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package; for SQL objects and analysis gaps, use sql-query or backend.sql_query"
                     } else {
-                        "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword. For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package"
+                        "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword. For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package; for SQL objects and analysis gaps, use sql-query or backend.sql_query"
                     },
                 )
             } else {

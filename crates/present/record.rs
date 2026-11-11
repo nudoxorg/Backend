@@ -212,6 +212,7 @@ pub struct RecordList {
     graph_source_policies: Vec<GraphSourcePolicy>,
     graph_center: Option<backend_library::GraphNodeId>,
     graph_edges: Vec<backend_library::RichGraphEdge>,
+    graph_labels: Vec<(backend_library::GraphNodeId, String)>,
 }
 
 impl RecordList {
@@ -234,6 +235,7 @@ impl RecordList {
             graph_source_policies: Vec::new(),
             graph_center: None,
             graph_edges: Vec::new(),
+            graph_labels: Vec::new(),
         }
     }
 
@@ -242,10 +244,18 @@ impl RecordList {
     pub fn with_graph_source_policies(mut self, graph: Option<&backend_library::RichGraphSnapshot>) -> Self {
         if let Some(graph) = graph {
             self.graph_source_policies.extend(graph.nodes.iter().filter(|node| !node.source_policy.is_unknown()).map(|node| GraphSourcePolicy::Node { id: node.id, source_policy: node.source_policy.clone() }));
+            self.graph_labels.extend(graph.nodes.iter().map(|node| (node.id, node.label.as_str().to_owned())));
             self.graph_center = Some(graph.center);
             self.graph_edges.extend(graph.edges.iter().cloned());
         }
         self
+    }
+
+    /// Returns a readable graph node label when supplied by the owner.
+    #[must_use]
+    pub fn graph_label(&self, id: backend_library::GraphNodeId) -> String {
+        self.graph_labels.iter().find(|(key, _)| *key == id).map(|(_, label)| label.clone())
+            .unwrap_or_else(|| format!("node {}", &backend_library::encode_id(id.as_bytes())[..12]))
     }
 
     /// Returns unverified result-specific graph claims.
