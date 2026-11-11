@@ -201,9 +201,23 @@ fn copy_tree_bounded(
     files: &mut usize,
     bytes: &mut usize,
     manifest: &mut SnapshotManifest,
+    depth: usize,
+    entries: &mut usize,
+    path_bytes: &mut usize,
     control: CSharpAuthorityControl<'_>,
 ) -> Result<(), CSharpAuthorityError> {
     checkpoint(control, CSharpAuthorityPhase::Spawn)?;
+    if depth > 32 {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    *entries = entries
+        .checked_add(1)
+        .filter(|count| *count <= 16_384)
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    *path_bytes = path_bytes
+        .checked_add(source.as_os_str().as_encoded_bytes().len())
+        .filter(|size| *size <= 2 * 1024 * 1024)
+        .ok_or(CSharpAuthorityError::Configuration)?;
     let metadata = fs::symlink_metadata(source).map_err(|_| CSharpAuthorityError::Configuration)?;
     if metadata.file_type().is_symlink() {
         return Err(CSharpAuthorityError::Configuration);
@@ -218,6 +232,9 @@ fn copy_tree_bounded(
                 files,
                 bytes,
                 manifest,
+                depth + 1,
+                entries,
+                path_bytes,
                 control,
             )?;
         }
@@ -258,6 +275,8 @@ fn snapshot_execution(
     let mut files = 0;
     let mut bytes = 0;
     let mut manifest = SnapshotManifest::new();
+    let mut entries = 0;
+    let mut path_bytes = 0;
     // `dotnet exec` only needs the hostfxr and shared runtime trees. SDK packs,
     // templates, and workload caches are excluded from this execution closure.
     let tool_name = toolchain
@@ -302,6 +321,9 @@ fn snapshot_execution(
             &mut files,
             &mut bytes,
             &mut manifest,
+            0,
+            &mut entries,
+            &mut path_bytes,
             control,
         )?;
     }
@@ -381,12 +403,15 @@ fn snapshot_execution(
     for library in target.values() {
         // `runtimeTargets` carries RID-specific managed/native assets which
         // are omitted from `runtime`; both are part of the loader closure.
-        for field in ["runtime", "runtimeTargets"] {
+        for field in ["runtime", "runtimeTargets", "native"] {
             let Some(runtime) = library.get(field).and_then(serde_json::Value::as_object) else {
                 continue;
             };
             for relative in runtime.keys() {
                 let relative_path = Path::new(relative);
+                if relative.len() > 4096 || declared.len() >= 8192 {
+                    return Err(CSharpAuthorityError::Configuration);
+                }
                 if relative_path.is_absolute()
                     || relative_path
                         .components()
