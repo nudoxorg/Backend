@@ -1607,28 +1607,20 @@ fn signature_node(language: SourceLanguage, mut node: Node<'_>) -> Node<'_> {
 /// function captures `beacon_entry(unsigned long level)` while the reader
 /// wrote `unsigned long beacon_entry(unsigned long level) { ... }`, and an
 /// exported TypeScript function captures the function without `export`.
-/// The excerpt climbs to the enclosing definition. Python decorators are part
-/// of the authored declaration and remain in the retained source body; the
-/// declaration's binding line remains the function line for locations.
+/// The excerpt climbs to the enclosing definition, but only while it starts
+/// on the same line, because the excerpt is numbered from the declaration's
+/// own line: a decorator or `template<...>` line above it would shift every
+/// number shown.
 fn excerpt_node(mut node: Node<'_>) -> Node<'_> {
     for _ in 0..2 {
         let Some(parent) = node.parent() else {
             break;
         };
-        let same_line = parent.start_position().row == node.start_position().row;
-        let python_decorator = parent.kind() == "decorated_definition"
-            && node.kind() == "function_definition";
-        if !same_line && !python_decorator {
-            break;
-        }
         if !matches!(
             parent.kind(),
-            "function_definition"
-                | "declaration"
-                | "export_statement"
-                | "template_declaration"
-                | "decorated_definition"
-        ) {
+            "function_definition" | "declaration" | "export_statement" | "template_declaration"
+        ) || parent.start_position().row != node.start_position().row
+        {
             break;
         }
         node = parent;
