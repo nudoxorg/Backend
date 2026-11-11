@@ -2,11 +2,12 @@
 //! The result is a claim, not proof of MSBuild closure or selected compiler authority.
 use backend_platform::child_output::{CaptureCommand, CaptureEnvironment, CaptureLimits, capture};
 use serde_json::Value;
+use sha2::Digest;
 use std::{
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
-    sync::atomic::AtomicBool,
+    sync::atomic::{AtomicBool, Ordering},
     time::Instant,
 };
 
@@ -72,6 +73,13 @@ pub struct CSharpResolvedReferenceSnapshot {
     digest: [u8; 32],
 }
 
+struct CandidateSnapshot {
+    original: PathBuf,
+    canonical: PathBuf,
+    owned: PathBuf,
+    digest: [u8; 32],
+}
+
 impl CSharpResolvedReferenceSnapshot {
     pub fn references(&self) -> &[PathBuf] {
         &self.references
@@ -111,6 +119,8 @@ pub fn resolve_references_with_sdk(
     let candidate_root = scratch.path().join("candidates");
     fs::create_dir(&candidate_root).map_err(|_| "SDK snapshot unavailable")?;
     let mut captured_candidates = Vec::with_capacity(candidates.len());
+    let mut snapshots = Vec::with_capacity(candidates.len());
+    let mut by_original = std::collections::HashMap::with_capacity(candidates.len());
     let mut captured_bytes = 0usize;
     for (index, source) in candidates.iter().enumerate() {
         if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
@@ -122,6 +132,8 @@ pub fn resolve_references_with_sdk(
         let bytes =
             backend_platform::durable::read_regular_bounded_stable(source, 32 * 1024 * 1024)
                 .map_err(|_| "SDK candidate unavailable")?;
+        let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+        let canonical = fs::canonicalize(source).map_err(|_| "SDK candidate unavailable")?;
         captured_bytes = captured_bytes
             .checked_add(bytes.len())
             .ok_or("SDK snapshot limit")?;
@@ -133,6 +145,16 @@ pub fn resolve_references_with_sdk(
         fs::create_dir(&slot).map_err(|_| "SDK snapshot unavailable")?;
         let destination = slot.join(name);
         fs::write(&destination, bytes).map_err(|_| "SDK snapshot unavailable")?;
+        let destination = fs::canonicalize(&destination).map_err(|_| "SDK snapshot unavailable")?;
+        if by_original.insert(canonical.clone(), index).is_some() {
+            return Err("SDK candidate duplicate path");
+        }
+        snapshots.push(CandidateSnapshot {
+            original: source.clone(),
+            canonical,
+            owned: destination.clone(),
+            digest,
+        });
         captured_candidates.push(destination);
     }
     let candidates = captured_candidates.as_slice();
@@ -225,6 +247,23 @@ pub fn resolve_references_with_sdk(
     if !output.status.success() {
         return Err("SDK resolution failed");
     }
+    // Revalidate every input, including candidates not selected by RAR: an
+    // unselected conflict changing during the observation could change the
+    // winner on a retry while leaving this receipt apparently valid.
+    for snapshot in &snapshots {
+        if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+            return Err("SDK resolution cancelled");
+        }
+        let bytes = backend_platform::durable::read_regular_bounded_stable(
+            &snapshot.original,
+            32 * 1024 * 1024,
+        )
+        .map_err(|_| "SDK candidate unavailable")?;
+        let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+        if digest != snapshot.digest {
+            return Err("SDK candidate changed during resolution");
+        }
+    }
     let value: Value =
         serde_json::from_slice(&output.stdout).map_err(|_| "SDK resolution malformed")?;
     let items = value
@@ -234,23 +273,36 @@ pub fn resolve_references_with_sdk(
         .and_then(Value::as_array)
         .ok_or("SDK resolution missing ReferencePath")?;
     let mut selected = Vec::new();
+    let mut selected_indices = std::collections::HashSet::new();
     for item in items {
+        if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+            return Err("SDK resolution cancelled");
+        }
         let path = item
             .get("FullPath")
             .or_else(|| item.get("Identity"))
             .and_then(Value::as_str)
             .ok_or("SDK resolution path missing")?;
         let path = fs::canonicalize(path).map_err(|_| "SDK resolution path unavailable")?;
-        if !candidates
-            .iter()
-            .any(|candidate| fs::canonicalize(candidate).ok().as_ref() == Some(&path))
-        {
-            return Err("SDK selected an unrequested reference");
-        }
-        if selected.contains(&path) {
+        let index = by_original
+            .get(&path)
+            .copied()
+            .or_else(|| snapshots.iter().position(|snapshot| snapshot.owned == path))
+            .ok_or("SDK selected an unrequested reference")?;
+        if !selected_indices.insert(index) {
             return Err("SDK selected duplicate reference");
         }
-        selected.push(path);
+        let snapshot = &snapshots[index];
+        let current = backend_platform::durable::read_regular_bounded_stable(
+            &snapshot.original,
+            32 * 1024 * 1024,
+        )
+        .map_err(|_| "SDK candidate unavailable")?;
+        let current_digest: [u8; 32] = sha2::Sha256::digest(&current).into();
+        if current_digest != snapshot.digest {
+            return Err("SDK candidate changed during resolution");
+        }
+        selected.push(snapshot.owned.clone());
     }
     if selected.is_empty() {
         return Err("SDK selected no references");
