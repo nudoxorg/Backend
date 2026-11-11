@@ -70,11 +70,10 @@ fn source_command(
 fn python_and_csharp_structural_source_survive_public_wire_and_cold_reopen() {
     let mut fixture = AdapterFixture::new();
     let root = PathBuf::from(&fixture.label);
-    let python = "# λ before the source\napp = make_app()\n\ndef health() -> dict[str, str]:\n    return {\"status\": \"ok\"}\n";
+    let python = "# λ before the source\napp = make_app()\n\n@app.get(\"/health\")\ndef health() -> dict[str, str]:\n    return {\"status\": \"ok\"}\n";
     let csharp = "// λ before the source\npublic class BankAccount {\n    private static bool MissingFields(string value) {\n        return value.Length == 0;\n    }\n}\n";
     fs::write(root.join("main.py"), python).expect("real Python source");
     fs::write(root.join("BankAccount.cs"), csharp).expect("real C# source");
-    fs::write(root.join("App.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>").expect("real project manifest");
     index_fixture(&mut fixture);
     for cold in [false, true] {
         if cold {
@@ -83,7 +82,7 @@ fn python_and_csharp_structural_source_survive_public_wire_and_cold_reopen() {
         for (name, text) in [
             (
                 "health",
-                "def health() -> dict[str, str]:\n    return {\"status\": \"ok\"}",
+                "@app.get(\"/health\")\ndef health() -> dict[str, str]:\n    return {\"status\": \"ok\"}",
             ),
             ("app", "app = make_app()"),
             (
@@ -115,7 +114,7 @@ fn python_and_csharp_structural_source_survive_public_wire_and_cold_reopen() {
                 source_identity: identity,
             };
             let CommandReply::Document(document) =
-                source_command(&mut fixture, "MissingFields", Some(request))
+                source_command(&mut fixture, "health", Some(request))
             else {
                 panic!("source range reply")
             };
@@ -131,7 +130,7 @@ fn python_and_csharp_structural_source_survive_public_wire_and_cold_reopen() {
         }
         assert_eq!(
             body,
-            "private static bool MissingFields(string value) {\n        return value.Length == 0;\n    }"
+            "@app.get(\"/health\")\ndef health() -> dict[str, str]:\n    return {\"status\": \"ok\"}"
         );
     }
     fs::write(
