@@ -97,7 +97,8 @@ pub fn encode_durable_csharp_graph_relation(relation: &DurableCSharpGraphRelatio
 pub fn decode_durable_csharp_graph_relation(bytes: &[u8]) -> Option<DurableCSharpGraphRelation> {
     if bytes.len() > 2 * 1024 * 1024 { return None; }
     let relation = serde_json::from_slice::<DurableCSharpGraphRelation>(bytes).ok()?;
-    (relation.format == 1 && relation.operation != [0; 32] && relation.attempt != [0; 32] && relation.snapshot != [0; 32]).then_some(relation)
+    if relation.format != 1 || relation.operation == [0; 32] || relation.attempt == [0; 32] || relation.snapshot == [0; 32] || encode_csharp_graph_evidence(&relation.graph).is_none() { return None; }
+    Some(relation)
 }
 
 /// Owner-minted selected witness. The graph payload is private; callers can
@@ -179,7 +180,7 @@ mod graph_evidence_tests {
         assert_eq!(decode_csharp_graph_evidence(&encoded), Some(graph.clone()));
         assert!(decode_csharp_graph_evidence(&encoded[..encoded.len() - 1]).is_none());
         let mut changed = graph.clone();
-        changed.nodes[0].project_references.clear();
+        changed.nodes[1].project_references.clear();
         assert!(!replay_csharp_graph_evidence(&graph, &changed));
         for mutate in [
             |g: &mut CSharpGraphEvidence| g.config_digest[0] ^= 1,

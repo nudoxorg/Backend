@@ -441,6 +441,9 @@ impl OwnedCSharpProjectGraph {
     }
 
     pub fn with_nodes(mut self, nodes: Box<[OwnedCSharpProjectNode]>) -> Result<Self, PackageSourceSetError> {
+        let mut nodes = nodes.into_vec();
+        nodes.sort_by(|left, right| left.project_path.cmp(&right.project_path));
+        let nodes = nodes.into_boxed_slice();
         if nodes.len() != self.project_paths.len()
             || nodes.iter().any(|node| !self.project_paths.iter().any(|path| path == &node.project_path))
             || !nodes.iter().any(|node| node.project_path.as_ref() == self.root_project.as_ref())
