@@ -48,6 +48,7 @@ pub struct CSharpExecutionClosure {
     digest: [u8; 32],
 }
 
+#[derive(Debug)]
 struct CSharpExecutionSnapshot {
     _directory: tempfile::TempDir,
     toolchain: PathBuf,
@@ -305,7 +306,10 @@ fn snapshot_execution(
         )?;
     }
     checkpoint(control, CSharpAuthorityPhase::Spawn)?;
-    let copied_oracle = directory.path().join("oracle.dll");
+    let oracle_name = oracle
+        .file_name()
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    let copied_oracle = directory.path().join(oracle_name);
     let oracle_bytes =
         backend_platform::durable::read_regular_bounded_stable(oracle, 64 * 1024 * 1024)
             .map_err(|_| CSharpAuthorityError::Configuration)?;
