@@ -326,6 +326,18 @@ impl CSharpResolvedReferenceSnapshot {
     pub fn root(&self) -> &Path {
         self.directory.path()
     }
+    /// Evidence descriptors derived from the retained selected bytes.
+    pub fn targeting_references(&self) -> Result<Vec<CSharpTargetingReference>, &'static str> {
+        if !self.receipt_is_consistent() { return Err("SDK selected custody unavailable"); }
+        self.references.iter().map(|path| {
+            let name = path.file_stem().and_then(|name| name.to_str())
+                .ok_or("SDK selected filename unavailable")?;
+            let bytes = backend_platform::durable::read_regular_bounded_stable(path, 32 * 1024 * 1024)
+                .map_err(|_| "SDK selected custody unavailable")?;
+            Ok(CSharpTargetingReference { name: name.to_owned(), length: bytes.len() as u64,
+                sha256: sha2::Sha256::digest(&bytes).into() })
+        }).collect()
+    }
     pub fn receipt(&self) -> &CSharpResolverReceipt {
         &self.receipt
     }
@@ -439,9 +451,9 @@ pub fn resolve_references_with_sdk(
     language_version: &str,
     output_type: &str,
     framework_references: &[String],
-    candidates: &[PathBuf],
-    assets_file: Option<&Path>,
-    assets_digest: Option<[u8; 32]>,
+    pack_candidates: &[PathBuf],
+    package_candidates: &[PathBuf],
+    assets_bytes: Option<&[u8]>,
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<CSharpResolvedReferenceSnapshot, &'static str> {
@@ -454,7 +466,8 @@ pub fn resolve_references_with_sdk(
     {
         return Err("SDK compiler property invalid");
     }
-    if candidates.is_empty()
+    let candidates = pack_candidates.iter().chain(package_candidates).cloned().collect::<Vec<_>>();
+    if pack_candidates.is_empty()
         || candidates.len() > 8192
         || !target_framework.starts_with("net")
         || target_framework.len() > 32
@@ -524,28 +537,31 @@ pub fn resolve_references_with_sdk(
         captured_candidates.push(destination);
     }
     let candidates = captured_candidates.as_slice();
-    let private_pack_root = copy_pack_layout(&snapshots, scratch.path(), deadline, cancelled)?;
-    let original_pack_root = snapshots
+    let private_pack_root = copy_pack_layout(&snapshots[..pack_candidates.len()], scratch.path(), deadline, cancelled)?;
+    let original_pack_root = snapshots[..pack_candidates.len()]
         .iter()
         .flat_map(|snapshot| snapshot.canonical.ancestors())
         .find(|path| path.file_name().is_some_and(|name| name == "packs"))
         .map(Path::to_path_buf)
         .ok_or("SDK pack layout unavailable")?;
-    if let Some(assets_file) = assets_file {
-        if !assets_file.is_absolute() || !assets_file.is_file() {
+    // Every admitted pack candidate must be exactly the bytes the SDK sees
+    // in its private pack layout; restored candidates never become pack inputs.
+    for snapshot in &snapshots[..pack_candidates.len()] {
+        let relative = snapshot.canonical.strip_prefix(&original_pack_root)
+            .map_err(|_| "SDK pack candidate outside pack layout")?;
+        let bytes = backend_platform::durable::read_regular_bounded_stable(
+            &private_pack_root.join(relative), 32 * 1024 * 1024,
+        ).map_err(|_| "SDK pack candidate unavailable")?;
+        if <[u8; 32]>::from(sha2::Sha256::digest(&bytes)) != snapshot.digest {
+            return Err("SDK pack candidate changed during capture");
+        }
+    }
+    if let Some(bytes) = assets_bytes {
+        if bytes.is_empty() || bytes.len() > 64 * 1024 * 1024 {
             return Err("SDK assets unavailable");
         }
         let obj = scratch.path().join("obj");
         fs::create_dir(&obj).map_err(|_| "SDK scratch unavailable")?;
-        let bytes =
-            backend_platform::durable::read_regular_bounded_stable(assets_file, 64 * 1024 * 1024)
-                .map_err(|_| "SDK assets unavailable")?;
-        if let Some(expected) = assets_digest {
-            use sha2::{Digest, Sha256};
-            if Sha256::digest(&bytes).as_slice() != expected {
-                return Err("SDK assets digest changed");
-            }
-        }
         fs::write(obj.join("project.assets.json"), bytes).map_err(|_| "SDK scratch unavailable")?;
     }
     if let Some(global_json) = captured_global_json {
@@ -774,12 +790,15 @@ pub fn resolve_references_with_sdk(
     let selected_dir = scratch.path().join("selected");
     fs::create_dir(&selected_dir).map_err(|_| "SDK snapshot unavailable")?;
     let mut owned = Vec::with_capacity(selected.len());
-    let mut owned = Vec::with_capacity(selected.len());
+    let mut selected_names_seen = std::collections::HashSet::new();
     for (source, fusion_name) in selected {
         if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
             return Err("SDK snapshot cancelled");
         }
         let name = source.file_name().ok_or("SDK snapshot filename")?;
+        if !selected_names_seen.insert(name.to_ascii_lowercase()) {
+            return Err("SDK snapshot duplicate assembly");
+        }
         let destination = selected_dir.join(name);
         let bytes =
             backend_platform::durable::read_regular_bounded_stable(&source, 32 * 1024 * 1024)
@@ -1512,6 +1531,10 @@ mod tests {
             },
         };
         assert!(snapshot.receipt_is_consistent());
+        let evidence = snapshot.targeting_references().unwrap();
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].name, "System.Runtime");
+        assert_eq!(evidence[0].sha256, <[u8; 32]>::from(sha2::Sha256::digest(&bytes)));
         assert!(snapshot.receipt_matches(&std::env::temp_dir(), "net10.0", None, [7; 32],));
         let encoded = snapshot.receipt().encode().unwrap();
         assert_eq!(
@@ -1521,6 +1544,7 @@ mod tests {
         assert!(!snapshot.receipt_matches(&std::env::temp_dir(), "net9.0", None, [7; 32],));
         fs::write(&snapshot.references[0], b"changed").unwrap();
         assert!(!snapshot.receipt_is_consistent());
+        assert!(snapshot.targeting_references().is_err());
     }
 
     #[test]

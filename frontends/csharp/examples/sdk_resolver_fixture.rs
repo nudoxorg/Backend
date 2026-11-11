@@ -29,6 +29,11 @@ fn main() {
     if candidates.is_empty() {
         usage();
     }
+    // Separate package candidates may have the same filename as framework
+    // candidates. Their identities must reach SDK resolution independently.
+    let package_candidates = env::var_os("CSHARP_FIXTURE_PACKAGE_CANDIDATES")
+        .map(|value| env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
     let assets = args.next().map(PathBuf::from);
     let global_json = args
         .next()
@@ -39,23 +44,21 @@ fn main() {
     if args.next().is_some() {
         usage();
     }
-    let assets_digest = assets
-        .as_ref()
-        .map(|path| Sha256::digest(fs::read(path).expect("project.assets.json")).into());
+    let assets_bytes = assets.as_ref().map(|path| fs::read(path).expect("project.assets.json"));
     let cancelled = AtomicBool::new(false);
     let snapshot = resolve_references_with_sdk(
         &dotnet,
         &target.to_string_lossy(),
         &sdk,
         global_json.as_deref(),
-        CSharpSdkKind::Standard,
-        "enable",
-        "default",
-        "Exe",
-        &[],
+        if env::var("CSHARP_FIXTURE_SDK_KIND").as_deref() == Ok("Web") { CSharpSdkKind::Web } else { CSharpSdkKind::Standard },
+        &env::var("CSHARP_FIXTURE_NULLABLE").unwrap_or_else(|_| "enable".into()),
+        &env::var("CSHARP_FIXTURE_LANGUAGE").unwrap_or_else(|_| "default".into()),
+        &env::var("CSHARP_FIXTURE_OUTPUT").unwrap_or_else(|_| "Exe".into()),
+        &env::var("CSHARP_FIXTURE_FRAMEWORKS").unwrap_or_default().split(',').filter(|value| !value.is_empty()).map(str::to_owned).collect::<Vec<_>>(),
         &candidates,
-        assets.as_deref(),
-        assets_digest,
+        &package_candidates,
+        assets_bytes.as_deref(),
         Instant::now() + Duration::from_secs(120),
         &cancelled,
     )
@@ -87,7 +90,8 @@ fn main() {
     {
         let bytes = fs::read(path).expect("selected reference");
         println!(
-            "selected_ref name={} fusion_name={} length={} sha256={:x}",
+            "selected_ref path={} name={} fusion_name={} length={} sha256={:x}",
+            path.display(),
             path.file_name()
                 .and_then(|name| name.to_str())
                 .expect("UTF-8 assembly name"),
