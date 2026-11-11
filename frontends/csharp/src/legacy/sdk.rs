@@ -616,6 +616,26 @@ mod tests {
         assert_ne!(second.digest(), third.digest());
     }
 
+    #[test]
+    fn targeting_snapshot_refuses_duplicate_reference_names() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        fs::write(first.path().join("Core.dll"), b"first").unwrap();
+        fs::write(second.path().join("core.dll"), b"second").unwrap();
+        assert!(CSharpTargetingSnapshot::capture(&[first.path().to_path_buf(), second.path().to_path_buf()]).is_err());
+    }
+
+    #[test]
+    fn targeting_snapshot_excludes_native_host_shims() {
+        let source = tempfile::tempdir().unwrap();
+        fs::write(source.path().join("Core.dll"), b"reference").unwrap();
+        fs::write(source.path().join("hostfxr.dll"), b"native").unwrap();
+        let snapshot = CSharpTargetingSnapshot::capture(&[source.path().to_path_buf()]).unwrap();
+        assert_eq!(snapshot.references().len(), 1);
+        assert_eq!(snapshot.references()[0].name, "Core");
+        assert!(!snapshot.directories()[0].join("hostfxr.dll").exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn targeting_snapshot_refuses_symlinked_assemblies() {
