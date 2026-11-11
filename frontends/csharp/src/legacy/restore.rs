@@ -21,7 +21,9 @@ pub enum RestoreError {
     Json(#[from] serde_json::Error),
     #[error("project.assets.json is missing {0}")]
     Missing(&'static str),
-    #[error("project.assets.json contains a path from another operating system: {0}")]
+    #[error(
+        "project.assets.json was restored for another operating system ({0}); run dotnet restore with the current operating system's SDK in a separate working copy"
+    )]
     ForeignPath(String),
     #[error("restored reference path escapes the package root: {0}")]
     OutsideRoot(String),
@@ -154,6 +156,27 @@ pub fn resolve_project_assets_with_metadata(
                         .map(|(_, value)| value)
                 })
                 .ok_or(RestoreError::Missing("direct package metadata"))?;
+            let requested_version = dependency
+                .get("version")
+                .and_then(Value::as_str)
+                .ok_or(RestoreError::Missing("direct package version"))?;
+            let minimum = requested_version
+                .trim_start_matches('[')
+                .split(',')
+                .next()
+                .unwrap_or("")
+                .trim_end_matches(']')
+                .trim();
+            let expected_version = expected_packages
+                .iter()
+                .find(|(id, _)| id.eq_ignore_ascii_case(name))
+                .map(|(_, version)| *version)
+                .ok_or(RestoreError::Missing("expected package version"))?;
+            if minimum != expected_version {
+                return Err(RestoreError::Unavailable(format!(
+                    "package {name} version changed; run dotnet restore for the current project"
+                )));
+            }
             let authored = expected_include_assets
                 .iter()
                 .find(|(id, _)| id.eq_ignore_ascii_case(name))
@@ -257,6 +280,11 @@ pub fn resolve_project_assets_with_metadata(
                 return Err(RestoreError::Limit);
             }
             checked_relative(relative)?;
+            if !relative.ends_with(".dll") {
+                return Err(RestoreError::Unavailable(format!(
+                    "unsupported compile asset {identity}/{relative}; a managed DLL reference is required"
+                )));
+            }
             if kind != "project" {
                 checked_relative(relative_base)?;
             }
@@ -428,6 +456,9 @@ fn checked_path(path: &str) -> Result<&Path, RestoreError> {
 }
 
 fn checked_relative(path: &str) -> Result<(), RestoreError> {
+    if path.is_empty() || path.len() > 4096 || path.bytes().any(|byte| byte.is_ascii_control()) {
+        return Err(RestoreError::Limit);
+    }
     let p = Path::new(path);
     if p.is_absolute()
         || p.components().any(|c| {
