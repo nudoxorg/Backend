@@ -360,12 +360,21 @@ fn merge_program_source_claim(
 ) -> Result<(), BuiltinModelError> {
     let mut comparable = row.clone();
     comparable.kind = prior.kind;
+    comparable.headers = prior.headers.clone();
     if *prior != comparable {
         return Err(BuiltinModelError(
             "native TypeScript candidates disagree on a source".into(),
         ));
     }
-    if row.admits_image() { prior.kind = row.kind; }
+    if prior.admits_image() && row.admits_image() && prior.headers != row.headers {
+        return Err(BuiltinModelError(
+            "native TypeScript candidates disagree on image headers".into(),
+        ));
+    }
+    if row.admits_image() && !prior.admits_image() {
+        prior.kind = row.kind;
+        prior.headers.clone_from(&row.headers);
+    }
     Ok(())
 }
 
@@ -386,11 +395,19 @@ mod program_source_claim_tests {
         };
         let mut image = member.clone();
         image.kind = NativeSourceEvidenceKind::Image;
+        image.headers = Some(backend_engine::builtin::NativeHeaderEvidence {
+            image_identity: [4; 32], image_byte_len: 1, producer_recipe: [5; 32], entries: Vec::new(),
+        });
         let mut merged = member.clone();
         merge_program_source_claim(&mut merged, &image).expect("same source");
         assert!(merged.admits_image());
+        assert_eq!(merged.headers, image.headers);
         merge_program_source_claim(&mut merged, &member).expect("same source in reverse order");
         assert!(merged.admits_image());
+        assert_eq!(merged.headers, image.headers);
+        let mut conflicting_image = image.clone();
+        conflicting_image.headers.as_mut().unwrap().image_identity[0] ^= 1;
+        assert!(merge_program_source_claim(&mut merged, &conflicting_image).is_err());
         let mut different = member;
         different.source_digest[0] ^= 1;
         assert!(merge_program_source_claim(&mut merged, &different).is_err());
