@@ -653,21 +653,27 @@ pub fn function_headers(
 /// must first authenticate the source bytes, image, entity and source policy.
 pub fn selected_function_header<'a>(
     rows: &[NativeFunctionHeader], text: &'a str, compiler_extent: (u32, u32), name: &str,
-) -> Option<&'a str> {
-    let mut matches = rows.iter().filter(|row| {
+    checkpoint: &dyn ExecutionCheckpoint,
+) -> Result<Option<&'a str>, String> {
+    let mut selected = None;
+    for row in rows {
+        poll(checkpoint, 1)?;
         let (start, end) = row.declaration;
         let (compiler_start, compiler_end) = compiler_extent;
         let header_start = row.export_start.unwrap_or(compiler_start);
-        compiler_end == end && header_start <= compiler_start && compiler_start <= start
+        if compiler_end == end && header_start <= compiler_start && compiler_start <= start
             && (if row.is_async { compiler_start < start } else { compiler_start == start })
             && row.name.0 >= start && row.name.1 <= row.body_start
             && text.get(row.name.0 as usize..row.name.1 as usize) == Some(name)
-    });
-    let row = matches.next()?;
-    if matches.next().is_some() { return None; }
+        {
+            if selected.replace(row).is_some() { return Ok(None); }
+        }
+    }
+    let Some(row) = selected else { return Ok(None) };
     let start = row.export_start.unwrap_or(compiler_extent.0);
-    let header = text.get(start as usize..row.body_start as usize)?.trim();
-    (!header.is_empty()).then_some(header)
+    let Some(header) = text.get(start as usize..row.body_start as usize) else { return Ok(None) };
+    let header = header.trim();
+    Ok((!header.is_empty()).then_some(header))
 }
 
 trait NativeCheckpoint {
@@ -1206,12 +1212,12 @@ mod tests {
                 })
             },
         )?.ok_or("compiler function missing")?;
-        assert_eq!(selected_function_header(&headers, source, compiler_extent, "run"),
+        assert_eq!(selected_function_header(&headers, source, compiler_extent, "run", &Unlimited)?,
             Some("export async function run(x: { a: number }): Promise<string>"));
-        assert_eq!(selected_function_header(&headers, source, (compiler_extent.0, compiler_extent.1 - 1), "run"), None);
-        assert_eq!(selected_function_header(&headers, source, compiler_extent, "other"), None);
+        assert_eq!(selected_function_header(&headers, source, (compiler_extent.0, compiler_extent.1 - 1), "run", &Unlimited)?, None);
+        assert_eq!(selected_function_header(&headers, source, compiler_extent, "other", &Unlimited)?, None);
         let duplicate = [headers[0], headers[0]];
-        assert_eq!(selected_function_header(&duplicate, source, compiler_extent, "run"), None);
+        assert_eq!(selected_function_header(&duplicate, source, compiler_extent, "run", &Unlimited)?, None);
         for (path, source, expected) in [
             ("src/main.ts", "const async = 1; async\nfunction plain() {}", None),
             ("src/main.ts", "const async = 1; async; function plain() {}", Some("function plain()")),
@@ -1230,7 +1236,7 @@ mod tests {
                     })
                 },
             )?.ok_or("compiler function missing")?;
-            assert_eq!(selected_function_header(&rows, source, compiler_extent, "plain"), expected, "{source}");
+            assert_eq!(selected_function_header(&rows, source, compiler_extent, "plain", &Unlimited)?, expected, "{source}");
         }
         Ok(())
     }
