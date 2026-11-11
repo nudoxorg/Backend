@@ -1229,7 +1229,8 @@ fn read(view: &ViewRoot, locators: &[ProductText]) -> Result<Box<[DeclarationRec
     locators
         .iter()
         .map(|locator| {
-            let row = view.row_by_label(locator.as_str());
+            let row = backend_library::resolve_selected_document_row(view, locator.as_str())
+                .map_err(|error| error.to_string())?;
             Ok(DeclarationRecord {
                 source_policy: backend_library::SourcePolicyQualification::Unknown,
                 extent: row

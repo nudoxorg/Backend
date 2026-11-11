@@ -471,7 +471,12 @@ impl RevalidatedNativeTsCapture {
         allocation(&mut total, fence.requested_root.capacity())?;
         allocation(&mut total, fence.root.capacity())?;
         allocation(&mut total, capture.sources.capacity().checked_mul(std::mem::size_of::<NativeTsCapturedSource>())?)?;
-        for source in &capture.sources { allocation(&mut total, source.evidence.path.capacity())?; }
+        for source in &capture.sources {
+            allocation(&mut total, source.evidence.path.capacity())?;
+            if let Some(lines) = &source.evidence.line_starts {
+                allocation(&mut total, lines.capacity().checked_mul(std::mem::size_of::<u32>())?)?;
+            }
+        }
         allocation(&mut total, fence.directories.capacity().checked_mul(std::mem::size_of::<(PathBuf, Option<FileSystemRevision>)>())?)?;
         for (path, _) in &fence.directories { allocation(&mut total, path.capacity())?; }
         allocation(&mut total, fence.files.capacity().checked_mul(std::mem::size_of::<CompilerFileRevision>())?)?;
@@ -554,7 +559,6 @@ impl NativeTsCapture {
             }
         }
         let mut witnessed = BTreeSet::new();
-        let mut evidence = Vec::new();
         for image in activated.images() {
             let view = image.reopen().map_err(|error| format!("reopen native image: {error}"))?;
             let backend_semantic::ir::ImageProvenance::Captured { source, recipe, scope, .. } =
@@ -571,8 +575,20 @@ impl NativeTsCapture {
             {
                 return Err("native image is not an exact program member".into());
             }
-            evidence.push(captured_source.evidence.clone());
         }
+        // A mapped program input is source evidence even when this profile
+        // did not emit an image for it. Keep that weaker fact distinct from
+        // an admitted image; consumers must not infer declarations from it.
+        let mut evidence = members.keys().map(|path| {
+            let mut row = captured.get(path)
+                .ok_or("native program member lost its captured source")?.evidence.clone();
+            row.kind = if witnessed.contains(*path) {
+                backend_engine::builtin::NativeSourceEvidenceKind::Image
+            } else {
+                backend_engine::builtin::NativeSourceEvidenceKind::ProgramMember
+            };
+            Ok(row)
+        }).collect::<Result<Vec<_>, &str>>()?;
         evidence.sort_unstable_by(|left, right| left.path.cmp(&right.path));
         Ok(evidence)
     }
@@ -707,6 +723,8 @@ fn capture_native_typescript_sources(
             input_digest: content,
             source_digest: *source_fact_identity.as_ref(),
             byte_length,
+            kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
+            line_starts: backend_engine::builtin::NativeSourceEvidence::capture_line_starts(&bytes),
         };
         evidence.validate().map_err(str::to_owned)?;
         let mut encoded = Vec::new();
@@ -2809,7 +2827,8 @@ fn read_native_evidence_host(
     evidence
         .validate()
         .map_err(|_| SourceRangeError::Unavailable)?;
-    if image_source.byte_len != evidence.byte_length
+    if !evidence.admits_image()
+        || image_source.byte_len != evidence.byte_length
         || image_source.identity.as_ref() != evidence.source_digest.as_slice()
     {
         return Err(SourceRangeError::Unavailable);
@@ -2832,6 +2851,8 @@ fn read_native_evidence_host(
     if bytes.len() != evidence.byte_length as usize {
         return Err(SourceRangeError::Stale);
     }
+    evidence.verify_host(&bytes, image_source.identity)
+        .map_err(|_| SourceRangeError::Stale)?;
     Ok(bytes.to_vec())
 }
 
@@ -5944,6 +5965,8 @@ mod tests {
             input_digest: typed_of::<InputContentSchema>(source).to_bytes(),
             source_digest: *image.identity.as_ref(),
             byte_length: source.len() as u32,
+            kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
+            line_starts: None,
         };
         assert_eq!(
             indexed_native_evidence_matches(root.path(), &evidence, image),

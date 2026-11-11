@@ -12,6 +12,9 @@ use backend_version::{
 use std::collections::BTreeMap;
 
 const MAGIC: &[u8; 4] = b"NSE1";
+const MAGIC_V2: &[u8; 4] = b"NSE2";
+/// Maximum retained line starts per file.
+pub const MAX_NATIVE_EVIDENCE_LINES: usize = 1_000_000;
 const ROOT_KEY: [u8; 32] = [0x45; 32];
 /// Maximum path and captured input sizes, matching native source admission.
 pub const MAX_NATIVE_EVIDENCE_PATH: usize = 4096;
@@ -22,7 +25,7 @@ pub const MAX_NATIVE_EVIDENCE_ROWS: usize = 262_144;
 pub const MAX_NATIVE_EVIDENCE_PROJECT_ROWS: usize = 100_000;
 /// Maximum canonical row value; framing and key are charged separately.
 pub const MAX_NATIVE_EVIDENCE_VALUE: usize =
-    4 + 32 + 2 + 2 + MAX_NATIVE_EVIDENCE_PATH + 32 + 32 + 4 + 1;
+    4 + 32 + 2 + 2 + MAX_NATIVE_EVIDENCE_PATH + 32 + 32 + 4 + 1 + 1 + 4 + MAX_NATIVE_EVIDENCE_LINES * 4;
 
 /// Independently selected native-source claim relation.
 #[derive(Debug)]
@@ -39,6 +42,15 @@ impl Schema for NativeSourceEvidenceRootSchema {
     }
 }
 
+/// Relationship of the source to the selected native program.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeSourceEvidenceKind {
+    /// Member of the program without its own emitted image.
+    ProgramMember,
+    /// Program member with an independently admitted emitted image.
+    Image,
+}
+
 /// Untrusted persisted claims, not a verified source capability.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeSourceEvidence {
@@ -50,12 +62,46 @@ pub struct NativeSourceEvidence {
     /// Raw expected source fact digest; verification mints the typed identity from bytes.
     pub source_digest: [u8; 32],
     pub byte_length: u32,
+    /// Program membership is distinct from image provenance.
+    pub kind: NativeSourceEvidenceKind,
+    /// Complete line-start offsets captured from these exact bytes, if representable.
+    pub line_starts: Option<Vec<u32>>,
 }
 impl NativeSourceEvidence {
+    /// Whether this claim names a separately admitted program image.
+    pub fn admits_image(&self) -> bool { self.kind == NativeSourceEvidenceKind::Image }
+
+    /// Captures a bounded complete line map when line endings are representable.
+    pub fn capture_line_starts(bytes: &[u8]) -> Option<Vec<u32>> {
+        let text = std::str::from_utf8(bytes).ok()?;
+        if text.contains('\u{2028}') || text.contains('\u{2029}') { return None; }
+        let mut starts = vec![0];
+        for (i, byte) in bytes.iter().enumerate() {
+            if *byte == b'\r' && bytes.get(i + 1) != Some(&b'\n') { return None; }
+            if *byte == b'\n' {
+                if starts.len() == MAX_NATIVE_EVIDENCE_LINES { return None; }
+                starts.push(u32::try_from(i + 1).ok()?);
+            }
+        }
+        Some(starts)
+    }
+
+    /// Returns the one-based line of an offset in the captured source.
+    pub fn line_at(&self, offset: u32) -> Option<u32> {
+        if offset > self.byte_length { return None; }
+        u32::try_from(self.line_starts.as_ref()?.partition_point(|start| *start <= offset)).ok()
+    }
+
     /// No declaration inventory completeness follows from this row.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.byte_length > MAX_NATIVE_EVIDENCE_SOURCE {
             return Err("invalid native source evidence length");
+        }
+        if let Some(lines) = &self.line_starts {
+            if lines.is_empty() || lines.len() > MAX_NATIVE_EVIDENCE_LINES || lines[0] != 0
+                || lines.windows(2).any(|pair| pair[0] >= pair[1])
+                || lines.last().is_some_and(|last| *last > self.byte_length)
+            { return Err("invalid native source line map"); }
         }
         native_source_evidence_key(self.project, self.profile, &self.path).map(|_| ())
     }
@@ -67,8 +113,14 @@ impl NativeSourceEvidence {
         image_source: backend_version::ContentId<backend_version::SourceFactDomain>,
     ) -> Result<backend_compile::VerifiedSourceText<'a>, &'static str> {
         self.validate()?;
+        if !self.admits_image() {
+            return Err("native program member has no admitted image");
+        }
         if bytes.len() != self.byte_length as usize {
             return Err("native source length differs");
+        }
+        if self.line_starts.is_some() && Self::capture_line_starts(bytes) != self.line_starts {
+            return Err("native source line map differs");
         }
         if image_source.as_ref() != self.source_digest.as_slice() {
             return Err("native image source differs from evidence");
@@ -78,9 +130,7 @@ impl NativeSourceEvidence {
     }
     /// Key binds the complete canonical owner, profile and path.
     pub fn key(&self) -> Result<[u8; 32], &'static str> {
-        if self.byte_length > MAX_NATIVE_EVIDENCE_SOURCE {
-            return Err("invalid native source evidence length");
-        }
+        self.validate()?;
         native_source_evidence_key(self.project, self.profile, &self.path)
     }
 }
@@ -121,7 +171,8 @@ impl Relation for NativeSourceEvidenceRelation {
         output.extend_from_slice(value);
     }
     fn encode_value(value: &Self::Value, output: &mut Vec<u8>) {
-        output.extend_from_slice(MAGIC);
+        let legacy = value.kind == NativeSourceEvidenceKind::Image && value.line_starts.is_none();
+        output.extend_from_slice(if legacy { MAGIC } else { MAGIC_V2 });
         output.extend_from_slice(&value.project);
         output.extend_from_slice(&<[u8; 2]>::from(value.profile));
         output.extend_from_slice(&(value.path.len() as u16).to_be_bytes());
@@ -130,6 +181,11 @@ impl Relation for NativeSourceEvidenceRelation {
         output.extend_from_slice(&value.source_digest);
         output.extend_from_slice(&value.byte_length.to_be_bytes());
         output.push(0); // InventoryUnknown; no complete-inventory claim.
+        if legacy { return; }
+        output.push(match value.kind { NativeSourceEvidenceKind::ProgramMember => 0, NativeSourceEvidenceKind::Image => 1 });
+        let lines = value.line_starts.as_deref().unwrap_or(&[]);
+        output.extend_from_slice(&(lines.len() as u32).to_be_bytes());
+        for line in lines { output.extend_from_slice(&line.to_be_bytes()); }
     }
 }
 impl CanonicalRelation for NativeSourceEvidenceRelation {
@@ -138,7 +194,7 @@ impl CanonicalRelation for NativeSourceEvidenceRelation {
     }
     fn decode_value(bytes: &[u8]) -> Result<Self::Value, RelationDecodeError> {
         fn parse(bytes: &[u8]) -> Option<NativeSourceEvidence> {
-            if bytes.len() > MAX_NATIVE_EVIDENCE_VALUE || bytes.get(..4)? != MAGIC {
+            if bytes.len() > MAX_NATIVE_EVIDENCE_VALUE || (bytes.get(..4)? != MAGIC && bytes.get(..4)? != MAGIC_V2) {
                 return None;
             }
             let project = bytes.get(4..36)?.try_into().ok()?;
@@ -148,9 +204,19 @@ impl CanonicalRelation for NativeSourceEvidenceRelation {
             let end = 40usize.checked_add(len)?;
             let path = std::str::from_utf8(bytes.get(40..end)?).ok()?.to_owned();
             let rest = bytes.get(end..)?;
-            if rest.len() != 69 || rest[68] != 0 {
-                return None;
-            }
+            if rest.len() < 69 || rest[68] != 0 { return None; }
+            let (kind, line_starts) = if bytes.get(..4)? == MAGIC {
+                if rest.len() != 69 { return None; }
+                (NativeSourceEvidenceKind::Image, None)
+            } else {
+                let kind = match *rest.get(69)? { 0 => NativeSourceEvidenceKind::ProgramMember, 1 => NativeSourceEvidenceKind::Image, _ => return None };
+                let count = u32::from_be_bytes(rest.get(70..74)?.try_into().ok()?) as usize;
+                if count > MAX_NATIVE_EVIDENCE_LINES || rest.len() != 74usize.checked_add(count.checked_mul(4)?)? { return None; }
+                let mut lines = Vec::with_capacity(count);
+                for chunk in rest.get(74..)?.chunks_exact(4) { lines.push(u32::from_be_bytes(chunk.try_into().ok()?)); }
+                if kind == NativeSourceEvidenceKind::Image && count == 0 { return None; }
+                (kind, if count == 0 { None } else { Some(lines) })
+            };
             let record = NativeSourceEvidence {
                 project,
                 profile,
@@ -158,6 +224,8 @@ impl CanonicalRelation for NativeSourceEvidenceRelation {
                 input_digest: rest.get(..32)?.try_into().ok()?,
                 source_digest: rest.get(32..64)?.try_into().ok()?,
                 byte_length: u32::from_be_bytes(rest.get(64..68)?.try_into().ok()?),
+                kind,
+                line_starts,
             };
             record.validate().ok()?;
             Some(record)
@@ -239,6 +307,8 @@ mod tests {
             input_digest: [8; 32],
             source_digest: [9; 32],
             byte_length: 42,
+            kind: NativeSourceEvidenceKind::Image,
+            line_starts: None,
         }
     }
 
@@ -265,6 +335,42 @@ mod tests {
         let mut too_large = row;
         too_large.byte_length = MAX_NATIVE_EVIDENCE_SOURCE + 1;
         assert!(too_large.key().is_err());
+    }
+
+    #[test]
+    fn line_map_roundtrips_and_is_bound_to_verified_bytes() {
+        let bytes = "α\r\nsecond\n".as_bytes();
+        let image = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(bytes);
+        let mut claim = row();
+        claim.byte_length = bytes.len() as u32;
+        claim.input_digest = backend_compile::typed_of::<backend_compile::InputContentSchema>(bytes).to_bytes();
+        claim.source_digest.copy_from_slice(image.as_ref());
+        claim.line_starts = NativeSourceEvidence::capture_line_starts(bytes);
+        assert_eq!(claim.line_at(0), Some(1));
+        assert_eq!(claim.line_at(4), Some(2));
+        assert_eq!(claim.line_at(bytes.len() as u32), Some(3));
+        let mut encoded = Vec::new();
+        NativeSourceEvidenceRelation::encode_value(&claim, &mut encoded);
+        assert_eq!(&encoded[..4], MAGIC_V2);
+        assert_eq!(NativeSourceEvidenceRelation::decode_value(&encoded).unwrap(), claim);
+        assert!(claim.verify_host(bytes, image).is_ok());
+        claim.line_starts.as_mut().unwrap()[1] += 1;
+        assert!(claim.verify_host(bytes, image).is_err());
+        assert!(NativeSourceEvidence::capture_line_starts(b"a\rb").is_none());
+        let long = vec![b'\n'; 20_000];
+        assert_eq!(NativeSourceEvidence::capture_line_starts(&long).unwrap().len(), 20_001);
+        assert!(NativeSourceEvidence::capture_line_starts(&vec![b'\n'; MAX_NATIVE_EVIDENCE_LINES]).is_none());
+        let mut invalid = claim.clone();
+        invalid.line_starts = Some(vec![0, 0]);
+        assert!(invalid.validate().is_err());
+        assert!(invalid.key().is_err());
+        let mut malformed = Vec::new();
+        NativeSourceEvidenceRelation::encode_value(&invalid, &mut malformed);
+        assert!(NativeSourceEvidenceRelation::decode_value(&malformed).is_err());
+        assert!(NativeSourceEvidence::capture_line_starts("a\u{2028}b".as_bytes()).is_none());
+        claim.kind = NativeSourceEvidenceKind::ProgramMember;
+        assert!(!claim.admits_image());
+        assert!(claim.verify_host(bytes, image).is_err());
     }
 
     #[test]

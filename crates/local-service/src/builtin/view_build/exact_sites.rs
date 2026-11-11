@@ -480,6 +480,7 @@ mod tests {
                 path,
                 site_declarations: &current,
                 native_source: None,
+            native_ts_evidence: None,
                 exact_sites: &mut exact,
             },
         )
@@ -846,6 +847,7 @@ mod tests {
                 site_declarations: &current,
                 exact_sites: &mut exact,
                 native_source: None,
+            native_ts_evidence: None,
             },
         )
         .map_err(|error| error.to_string())?;

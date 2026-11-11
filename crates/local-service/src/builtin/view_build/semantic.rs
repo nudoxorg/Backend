@@ -671,6 +671,9 @@ pub(in crate::builtin) struct NseProgramProof {
     >,
 }
 impl NseProgramProof {
+    pub(super) fn projection_safe(&self) -> bool {
+        self.projection_safe
+    }
     pub(in crate::builtin) fn source_basis(&self) -> super::super::native_ts_admission::NativeTsSourceBasis {
         self.source_basis
     }
@@ -718,7 +721,7 @@ impl NseProgramProof {
 
 /// Strictly validates the selected Program and every admitted image, then
 /// returns only positive per-file NSE claims. No inventory completeness follows.
-fn selected_nse_program_files(
+pub(super) fn selected_nse_program_files(
     snapshot: &WorkspaceSnapshot,
     sources: &IndexedSources,
     key: &backend_engine::builtin::ProductSemanticPublicationKey,
@@ -832,7 +835,7 @@ fn selected_nse_program_files(
         let structural_input = structural_files
             .get(path)
             .and_then(|(identity, input)| (*identity == row.source.identity).then_some(*input));
-        let evidence_row = lookup_native_evidence(evidence, package, profile, path, row.source)?;
+        let evidence_row = lookup_native_evidence(evidence, package, profile, path, row.source, image_budget)?;
         let evidence_input = evidence_row.as_ref().map(|value| value.input_digest);
         let input = match (structural_input, evidence_input) {
             (Some(a), Some(b)) if a == b => a,
@@ -989,7 +992,9 @@ fn selected_nse_program_files(
         if recipe.profile != profile {
             return Ok(None);
         }
-        if let Some(row) = lookup_native_evidence(evidence, package, profile, path, source)? {
+        if let Some(row) = lookup_native_evidence(evidence, package, profile, path, source, image_budget)?
+            && row.admits_image()
+        {
             // Image-level projection must not make legacy Unavailable entities
             // current merely because one file claim matches. Entity-specific
             // source lookup can independently accept a PrimaryOwned entity.
@@ -1003,9 +1008,10 @@ fn selected_nse_program_files(
                     projection_safe = false;
                 }
             }
-            if let Some(prior) = positive.insert(path.to_owned(), (row.clone(), source)) {
-                if prior != (row, source) {
-                    return Ok(None);
+            match positive.entry(path.to_owned()) {
+                std::collections::btree_map::Entry::Vacant(entry) => { entry.insert((row, source)); }
+                std::collections::btree_map::Entry::Occupied(entry) => {
+                    if entry.get() != &(row, source) { return Ok(None); }
                 }
             }
         }
@@ -1168,7 +1174,7 @@ fn native_owned_file_in_image(
     }))
 }
 
-fn selected_typescript_structural_files(
+pub(super) fn selected_typescript_structural_files(
     sources: &IndexedSources,
     package: backend_engine::PackageKey,
 ) -> Result<
@@ -1249,6 +1255,7 @@ fn lookup_native_evidence(
     profile: backend_semantic::vocabulary::LanguageProfile,
     path: &str,
     image_source: backend_semantic::ir::SourceIdentity,
+    budget: &mut usize,
 ) -> Result<Option<backend_engine::builtin::NativeSourceEvidence>, BuiltinModelError> {
     let key =
         backend_engine::builtin::native_source_evidence_key(package.to_bytes(), profile, path)
@@ -1259,6 +1266,15 @@ fn lookup_native_evidence(
     else {
         return Ok(None);
     };
+    // Relation lookup decodes a bounded line map. Charge every decoded
+    // allocation, including repeated lookups across profiles, against the
+    // same request-wide budget as the retained images.
+    let map_bytes = row.line_starts.as_ref().map_or(Some(0), |lines| {
+        lines.capacity().checked_mul(std::mem::size_of::<u32>())
+    }).and_then(|bytes| bytes.checked_add(row.path.capacity()))
+      .ok_or_else(|| BuiltinModelError("native evidence allocation overflow".into()))?;
+    *budget = budget.checked_sub(map_bytes)
+        .ok_or_else(|| BuiltinModelError("native evidence budget exceeded".into()))?;
     if row.key().ok() != Some(key)
         || row.project != package.to_bytes()
         || row.profile != profile
@@ -2472,6 +2488,9 @@ fn semantic_rows(
                         path: &path,
                         site_declarations: &site_declarations,
                         native_source: native_source.as_ref(),
+                        native_ts_evidence: nse_current.then(|| nse_positive.as_ref()
+                            .and_then(|proof| proof.positive.get(&path))
+                            .map(|(claim, _)| claim).filter(|claim| claim.admits_image())).flatten(),
                     };
                     match image {
                         super::image_rows::CompiledImage::Opened { view, .. } => {
@@ -2760,6 +2779,8 @@ pub(super) struct SemanticRowSink<'a> {
     pub(super) site_declarations: &'a [&'a backend_compile::SourceDeclaration],
     /// Authenticated bytes from the same selected native-only frontier.
     pub(super) native_source: Option<&'a backend_engine::builtin::VerifiedNativeSource>,
+    /// Selected image's capture-time, source-bound line offsets.
+    pub(super) native_ts_evidence: Option<&'a backend_engine::builtin::NativeSourceEvidence>,
 }
 
 impl SemanticRowSink<'_> {
@@ -3138,6 +3159,23 @@ pub(super) fn project_image_rows(
     native: Option<super::native_sites::NativeProjection<'_>>,
     native_csharp: Option<super::csharp_native_sites::NativeCSharpProjection<'_>>,
 ) -> Result<ProjectedImage, BuiltinModelError> {
+    project_image_rows_with_native_ts(image, image_identity, project, profile, basis, stale,
+        path, site_declarations, native, native_csharp, None)
+}
+
+pub(super) fn project_image_rows_with_native_ts(
+    image: &SemanticImageView<'_>,
+    image_identity: [u8; 32],
+    project: &IndexedProject,
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    basis: backend_engine::Basis,
+    stale: bool,
+    path: &str,
+    site_declarations: &[&backend_compile::SourceDeclaration],
+    native: Option<super::native_sites::NativeProjection<'_>>,
+    native_csharp: Option<super::csharp_native_sites::NativeCSharpProjection<'_>>,
+    native_ts: Option<&backend_engine::builtin::NativeSourceEvidence>,
+) -> Result<ProjectedImage, BuiltinModelError> {
     let session = DocumentationSession::new(image);
     let kinds = entity_kinds(profile, image, &session, site_declarations)?;
     let sites = &kinds.sites;
@@ -3308,6 +3346,19 @@ pub(super) fn project_image_rows(
                     BuiltinModelError(format!("native C# semantic declaration source site: {error}"))
                 })?;
             row = row.with_source(location).with_excerpt(excerpt);
+        } else if let Some(location) = native_ts.filter(|_| !stale).and_then(|claim| {
+            use backend_semantic::ir::{DeclarationPublicationRole, FactAvailability};
+            let span = entity.entity.source?;
+            if !claim.admits_image() || claim.path != path
+                || entity.entity.authority.publication != DeclarationPublicationRole::PrimaryOwned
+                || entity.entity.authority.source != FactAvailability::Captured
+                || entity.entity.authority.source_file != FactAvailability::Captured
+                || span.is_empty() || span.end() > claim.byte_length
+                || image.atom(span.file()) != Some(path.as_bytes())
+            { return None; }
+            backend_compile::SourceLocation::new(path, claim.line_at(span.start())?).ok()
+        }) {
+            row = row.with_source(location);
         } else if let Some(site) = sites.get(&identity) {
             charges.push(Charge::Sub(site.source_excerpt().text().map_or(0, str::len)));
             let location =

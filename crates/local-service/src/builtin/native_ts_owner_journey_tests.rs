@@ -285,6 +285,32 @@ pub(super) fn selected_evidence_root(
     Ok(*evidence.root().as_bytes())
 }
 
+fn assert_legacy_coordinate_routes(
+    session: &mut Session,
+    project: &Path,
+    expected: backend_library::SymbolKey,
+) -> Result<(), Box<dyn Error>> {
+    let coordinate = format!("{}::view.ts:3::Greeting", project.display());
+    for reply in [session.document(&coordinate)?, session.source(&coordinate)?] {
+        let CommandReply::Document(document) = reply.reply else { return Err("legacy document reply".into()) };
+        assert_eq!(document.symbol, expected);
+        assert_eq!(document.selection.as_ref().ok_or("legacy selection")?.coordinate(), coordinate);
+    }
+    for reply in [session.graph(&coordinate)?, session.related(&coordinate)?] {
+        let CommandReply::Graph(graph) = reply.reply else { return Err("legacy graph reply".into()) };
+        assert!(graph.root.row_ref(backend_library::RowId::Symbol(expected)).is_some());
+    }
+    let locator = ProductText::new(coordinate.clone()).map_err(|e| io::Error::other(e.to_string()))?;
+    let SurfaceReply::Read(records) = session.surface(SurfaceCommand::Read { locators: vec![locator.clone()].into_boxed_slice() })? else { return Err("legacy read reply".into()) };
+    assert_eq!(records[0].stable_id, Some(expected.to_bytes()));
+    assert_eq!(records[0].label.as_str(), coordinate);
+    let SurfaceReply::References { target, .. } = session.surface(SurfaceCommand::References { target: locator })? else { return Err("legacy references reply".into()) };
+    assert_eq!(target.as_str(), coordinate);
+    let wrong = format!("{}::view.ts:4::Greeting", project.display());
+    assert!(session.source(&wrong).is_err());
+    Ok(())
+}
+
 fn native_ts_listener_journey(
     reject_frontends: bool,
     require_references: bool,
@@ -324,6 +350,7 @@ fn native_ts_listener_journey(
     let site = observed.location.captured().ok_or("observed native site")?;
     assert_eq!(site.path(), "view.ts");
     assert_eq!(site.start_line(), 3);
+    assert_legacy_coordinate_routes(&mut session, &project, observed.symbol)?;
     assert!(observed.excerpt.text().is_some_and(|text| text.contains("return 'before'")));
     let original = match query(
         &mut session,
@@ -362,6 +389,8 @@ fn native_ts_listener_journey(
     )?;
     let owner = start_owner(&paths)?;
     let mut session = Session::connect(owner.endpoint())?;
+    let (_, cold_document) = select_native_document(&mut session, &authority, "Greeting", "view.ts")?;
+    assert_legacy_coordinate_routes(&mut session, &project, cold_document.symbol)?;
     let cold = query(
         &mut session,
         &authority,
@@ -404,6 +433,11 @@ fn native_ts_listener_journey(
     let owner = start_owner(&paths)?;
     let mut session = Session::connect(owner.endpoint())?;
     fs::write(project.join("view.ts"), after)?;
+    let stale_coordinate = format!("{}::view.ts:3::Greeting", project.display());
+    assert!(session.source(&stale_coordinate).is_err());
+    assert!(session.document(&stale_coordinate).is_err());
+    let stale_locator = ProductText::new(stale_coordinate).map_err(|e| io::Error::other(e.to_string()))?;
+    assert!(session.surface(SurfaceCommand::Read { locators: vec![stale_locator].into_boxed_slice() }).is_err());
     index(&mut session, &project, 0x42)?;
     let edited = query(
         &mut session,
@@ -953,7 +987,7 @@ fn native_ts_retirement_journey(exclude: bool, check_search: bool) -> Result<(),
     fs::create_dir(&project)?;
     fs::write(
         project.join("tsconfig.json"),
-        "{\"compilerOptions\":{\"strict\":true},\"include\":[\"*.ts\"]}",
+        "{\"compilerOptions\":{\"strict\":true},\"include\":[\"*.ts\",\"*.tsx\"]}",
     )?;
     fs::write(
         project.join("view.ts"),
@@ -963,6 +997,7 @@ fn native_ts_retirement_journey(exclude: bool, check_search: bool) -> Result<(),
         project.join("other.ts"),
         "export function Kept() { return 'current'; }\n",
     )?;
+    fs::write(project.join("component.tsx"), "export function Widget() { return 'widget'; }\n")?;
     let paths = backend_runtime::WorkspacePaths::discover(
         Some(fixture.path().join("owner")),
         Some(fixture.path().join("state")),
@@ -976,6 +1011,13 @@ fn native_ts_retirement_journey(exclude: bool, check_search: bool) -> Result<(),
     let (old_coordinate, old_document) =
         select_native_document(&mut session, &authority, "Retired", "view.ts")?;
     let (_, kept_document) = select_native_document(&mut session, &authority, "Kept", "other.ts")?;
+    if check_search {
+        assert_native_search_and_query(&mut session, &kept_document)?;
+        let (_, widget) = select_native_document(&mut session, &authority, "Widget", "component.tsx")?;
+        let selected = widget.selection.as_ref().ok_or("selected TSX document")?;
+        let CommandReply::Search(search) = session.search("Widget", 100)?.reply else { return Err("TSX search reply".into()) };
+        assert!(search.root.rows().iter().any(|row| row.id == backend_library::RowId::Symbol(selected.symbol())));
+    }
     assert!(
         old_document
             .excerpt
@@ -1003,7 +1045,7 @@ fn native_ts_retirement_journey(exclude: bool, check_search: bool) -> Result<(),
         // configuration omits them from the fresh same-profile Program.
         fs::write(
             project.join("tsconfig.json"),
-            "{\"compilerOptions\":{\"strict\":true},\"include\":[\"*.ts\"],\"exclude\":[\"view.ts\"]}",
+            "{\"compilerOptions\":{\"strict\":true},\"include\":[\"*.ts\",\"*.tsx\"],\"exclude\":[\"view.ts\"]}",
         )?;
     } else {
         fs::remove_file(project.join("view.ts"))?;
@@ -1058,6 +1100,9 @@ fn native_ts_retirement_journey(exclude: bool, check_search: bool) -> Result<(),
     let mut cold = Session::connect(owner.endpoint())?;
     assert_retired_handle_unavailable(&mut cold, &selector)?;
     let (_, kept) = select_native_document(&mut cold, &authority, "Kept", "other.ts")?;
+    if check_search {
+        assert_native_search_and_query(&mut cold, &kept)?;
+    }
     assert!(
         kept.excerpt
             .text()
@@ -1066,6 +1111,25 @@ fn native_ts_retirement_journey(exclude: bool, check_search: bool) -> Result<(),
     drop(cold);
     assert_eq!(owner.close()?.failures, 0);
     assert_retired_native_evidence(paths.data(), &project, "view.ts")?;
+    Ok(())
+}
+
+fn assert_native_search_and_query(
+    session: &mut Session,
+    document: &backend_library::Document,
+) -> Result<(), Box<dyn Error>> {
+    let selection = document.selection.as_ref().ok_or("selected native document")?;
+    let CommandReply::Search(search) = session.search("Kept", 100)?.reply else {
+        return Err("native search reply".into());
+    };
+    assert!(search.root.rows().iter().any(|row| row.id == backend_library::RowId::Symbol(selection.symbol())));
+    let page = session.graph_query(
+        "{ Declaration { name @filter(op: \"=\", value: [\"$name\"]) name @output state @output } }".to_owned(),
+        std::collections::BTreeMap::from([("name".to_owned(), backend_library::GraphValue::String("Kept".to_owned()))]),
+        100, None, false,
+    )?;
+    let rows = format!("{:?}", page.rows);
+    assert!(rows.contains("Kept") && rows.contains("compiler_observed"), "{rows}");
     Ok(())
 }
 
