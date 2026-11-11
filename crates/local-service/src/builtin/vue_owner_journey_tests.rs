@@ -175,20 +175,28 @@ fn vue_scripts_answer_search_source_references_after_cold_owner_reopen()
         Some(fixture.path().join("owner.sock")),
     )?;
     paths.initialize()?;
-    let owner = super::native_ts_owner_journey_tests::start_owner(&paths)?;
-    let mut session = Session::connect(owner.endpoint())?;
-    index(&mut session, &project, 0x81)?;
-    verify(&mut session, &project)?;
+    let owner = super::native_ts_owner_journey_tests::start_owner(&paths)
+        .map_err(|e| std::io::Error::other(format!("initial owner start: {e}")))?;
+    let mut session = Session::connect(owner.endpoint())
+        .map_err(|e| std::io::Error::other(format!("initial owner connect: {e}")))?;
+    index(&mut session, &project, 0x81)
+        .map_err(|e| std::io::Error::other(format!("initial index: {e}")))?;
+    verify(&mut session, &project)
+        .map_err(|e| std::io::Error::other(format!("initial verification: {e}")))?;
     drop(session);
     assert_eq!(owner.close()?.failures, 0);
-    let owner = super::native_ts_owner_journey_tests::start_owner(&paths)?;
-    let mut session = Session::connect(owner.endpoint())?;
-    verify(&mut session, &project)?;
+    let owner = super::native_ts_owner_journey_tests::start_owner(&paths)
+        .map_err(|e| std::io::Error::other(format!("cold owner start: {e}")))?;
+    let mut session = Session::connect(owner.endpoint())
+        .map_err(|e| std::io::Error::other(format!("cold owner connect: {e}")))?;
+    verify(&mut session, &project)
+        .map_err(|e| std::io::Error::other(format!("cold verification: {e}")))?;
     fs::write(
         project.join("App.vue"),
         "<script setup>function replacement() { return 2; }</script>",
     )?;
-    index(&mut session, &project, 0x82)?;
+    index(&mut session, &project, 0x82)
+        .map_err(|e| std::io::Error::other(format!("edited index: {e}")))?;
     let CommandReply::Names(names) = session.names("mounted", 100)?.reply else {
         return Err("names reply".into());
     };
