@@ -75,9 +75,11 @@ def main():
         ]:
             rc, _, raw = journey.cli(phase + '-' + command, [command, purl])
             require(phase + ' CLI ' + command, rc == 0 and all(w.lower() in raw.lower() for w in witnesses), raw)
+            require(phase + ' CLI confinement ' + command, 'PRIVATE_SYMLINK_SENTINEL' not in raw, raw)
             result = mcp(tool, {'package': purl}, phase + '-mcp-' + command)
             rendered = json.dumps(result, ensure_ascii=False).lower()
             require(phase + ' MCP ' + command, all(w.lower() in rendered for w in witnesses), result)
+            require(phase + ' MCP confinement ' + command, 'private_symlink_sentinel' not in rendered, result)
         return observed
 
     try:
@@ -86,9 +88,12 @@ def main():
         journey.project = project
         package = project / 'frontend/node_modules/vue'
         package.mkdir(parents=True)
-        (package / 'package.json').write_text(json.dumps({'name': 'vue', 'version': '3.5.44', 'types': 'index.d.ts', 'engines': {'node': '>=22'}, 'dependencies': {'@vue/runtime-dom': '3.5.44'}}))
+        (package / 'package.json').write_text(json.dumps({'name': 'vue', 'version': '3.5.44', 'types': 'index.d.ts', 'main': 'leak.js', 'engines': {'node': '>=22'}, 'dependencies': {'@vue/runtime-dom': '3.5.44'}}))
         (package / 'index.d.ts').write_text('export declare function createApp(component: unknown): unknown;\n')
         (package / 'README.md').write_text('# Installed Vue API documentation\n')
+        outside = journey.root / 'private.js'
+        outside.write_text('PRIVATE_SYMLINK_SENTINEL')
+        (package / 'leak.js').symlink_to(outside)
         (project / 'App.vue').write_bytes('<template><button @click="mounted">Run</button></template>\r\n<script setup lang="ts">\r\n// é漢\r\nfunction mounted() { return \'é漢\'; }\r\nmounted();\r\nfunction wrapper() { mounted(); }\r\nfunction shadow(mounted: () => void) { mounted(); }\r\n</script>\r\n'.encode())
         journey.start_owner(project)
         journey.start_mcp()
