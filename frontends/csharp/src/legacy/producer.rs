@@ -18,7 +18,10 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Instant,
 };
 
@@ -50,6 +53,19 @@ struct CSharpExecutionSnapshot {
     toolchain: PathBuf,
     oracle: PathBuf,
     digest: [u8; 32],
+}
+
+/// Owner-held custody for the exact private runtime/helper snapshot used by a
+/// producer attempt. The constructor is private; callers can only obtain this
+/// lease from a completed [`CSharpAuthorityImage`].
+#[derive(Clone, Debug)]
+pub struct CSharpExecutionLease(Arc<CSharpExecutionSnapshot>);
+
+impl CSharpExecutionLease {
+    #[must_use]
+    pub const fn digest(&self) -> [u8; 32] {
+        self.0.digest
+    }
 }
 
 type SnapshotManifest = Vec<(PathBuf, [u8; 32], usize)>;
@@ -618,11 +634,12 @@ pub struct CSharpOracle {
 /// [`CSharpImage`] can be opened from [`Self::as_bytes`] for exactly as long
 /// as this value remains alive, without introducing a self-referential Rust
 /// object.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct CSharpAuthorityImage {
     bytes: Box<[u8]>,
     evidence: Option<Box<[u8]>>,
     execution_digest: [u8; 32],
+    execution: Arc<CSharpExecutionSnapshot>,
 }
 
 impl CSharpAuthorityImage {
@@ -638,6 +655,13 @@ impl CSharpAuthorityImage {
     #[must_use]
     pub const fn execution_digest(&self) -> [u8; 32] {
         self.execution_digest
+    }
+
+    /// Retains the immutable runtime/helper snapshot for selected-attempt
+    /// publication and cold replay custody.
+    #[must_use]
+    pub fn execution_lease(&self) -> CSharpExecutionLease {
+        CSharpExecutionLease(Arc::clone(&self.execution))
     }
 
     /// Borrows the exact validated image bytes for the next compiler boundary.
@@ -728,13 +752,21 @@ impl CSharpOracle {
         request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
     ) -> Result<Vec<u8>, CSharpAuthorityError> {
         self.authority_image_with_evidence(request)
-            .map(|(image, _, _)| image)
+            .map(|(image, _, _, _)| image)
     }
 
     fn authority_image_with_evidence<'request, 'config, 'cancel>(
         &self,
         request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
-    ) -> Result<(Vec<u8>, Option<Box<[u8]>>, [u8; 32]), CSharpAuthorityError> {
+    ) -> Result<
+        (
+            Vec<u8>,
+            Option<Box<[u8]>>,
+            [u8; 32],
+            Arc<CSharpExecutionSnapshot>,
+        ),
+        CSharpAuthorityError,
+    > {
         checkpoint(request.control, CSharpAuthorityPhase::Admission)?;
         if request.configuration.exact_nullable.is_some()
             != request.configuration.exact_unsafe.is_some()
@@ -920,7 +952,11 @@ impl CSharpOracle {
             })
             .transpose()?;
         checkpoint(request.control, CSharpAuthorityPhase::Spawn)?;
-        let execution = snapshot_execution(request.toolchain, &self.oracle, request.control)?;
+        let execution = Arc::new(snapshot_execution(
+            request.toolchain,
+            &self.oracle,
+            request.control,
+        )?);
         let execution_digest = execution.digest;
         let mut command = Command::new(&execution.toolchain);
         isolate_authority_environment(&mut command);
@@ -1102,7 +1138,7 @@ impl CSharpOracle {
         };
         drop(manifest_directory);
         checkpoint(request.control, CSharpAuthorityPhase::Return)?;
-        Ok((stdout, evidence, execution_digest))
+        Ok((stdout, evidence, execution_digest, execution))
     }
 
     /// Runs [`Self::authority_image`] and retains its bytes in an owned image.
@@ -1113,12 +1149,14 @@ impl CSharpOracle {
         &self,
         request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
     ) -> Result<CSharpAuthorityImage, CSharpAuthorityError> {
-        self.authority_image_with_evidence(request)
-            .map(|(bytes, evidence, execution_digest)| CSharpAuthorityImage {
+        self.authority_image_with_evidence(request).map(
+            |(bytes, evidence, execution_digest, execution)| CSharpAuthorityImage {
                 bytes: bytes.into_boxed_slice(),
                 evidence,
                 execution_digest,
-            })
+                execution,
+            },
+        )
     }
 }
 
