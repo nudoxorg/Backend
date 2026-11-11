@@ -8,10 +8,9 @@
 //! spelling in the host, so a reader can show the exact source.
 use backend_compile::VerifiedSourceExtent;
 use std::ops::Range;
-use verter_core::ast::types::AstNodeKind;
 use verter_core::diagnostics::{SyntaxPluginContext, SyntaxPluginOptions};
 use verter_core::parser::Syntax;
-use verter_core::tokenizer::byte::tokenize_sfc;
+use verter_core::tokenizer::{Event, byte::tokenize_sfc};
 
 /// One class token in a template.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,35 +59,64 @@ pub fn template_classes(host: &VerifiedSourceExtent<'_>) -> Option<TemplateClass
     };
     let mut syntax = Syntax::new(false);
     let mut events = 0usize;
+    // Attributes of the whole file, reconstructed from the tokenizer's own events;
+    // only those inside the template block are read below.
+    struct Attr {
+        directive: bool,
+        name: Range<usize>,
+        argument: Option<Range<usize>>,
+        value: Option<Range<usize>>,
+    }
+    let mut attrs: Vec<Attr> = Vec::new();
+    let mut current: Option<Attr> = None;
     tokenize_sfc(source.as_bytes(), |event| {
         events += 1;
-        if events <= 2_000_000 {
-            syntax.handle(&event, &ctx);
+        if events > 2_000_000 {
+            return;
+        }
+        syntax.handle(&event, &ctx);
+        match event {
+            Event::AttribName { start, end } => {
+                current = Some(Attr { directive: false, name: start as usize..end as usize, argument: None, value: None });
+            }
+            Event::DirName { start, end } => {
+                current = Some(Attr { directive: true, name: start as usize..end as usize, argument: None, value: None });
+            }
+            Event::DirArg { start, end, .. } => {
+                if let Some(attr) = current.as_mut() {
+                    attr.argument = Some(start as usize..end as usize);
+                }
+            }
+            Event::AttribData { start, end } => {
+                if let Some(attr) = current.as_mut() {
+                    let (start, end) = (start as usize, end as usize);
+                    attr.value = Some(match attr.value.take() {
+                        Some(range) => range.start.min(start)..range.end.max(end),
+                        None => start..end,
+                    });
+                }
+            }
+            Event::AttribEnd { .. } => attrs.extend(current.take()),
+            _ => {}
         }
     });
     let ast = syntax.template_ast()?;
+    let block = ast.root.content.as_ref().map(|content| content.start as usize..content.end as usize)?;
     let mut found = TemplateClasses::default();
-    for node in &ast.nodes {
-        let AstNodeKind::Element(element) = &node.kind else { continue };
-        for prop in &element.props {
-            let name = source.get(prop.start as usize..prop.name_end as usize).unwrap_or("");
-            let (Some(start), Some(end)) = (prop.value_start, prop.value_end) else { continue };
-            let (start, end) = (start as usize, end as usize);
-            if source.get(start..end).is_none() {
-                continue;
-            }
-            if !prop.is_directive && name == "class" {
-                push_tokens(source, start..end, false, &mut found);
-            } else if prop.is_directive {
-                let argument = prop
-                    .arg_start
-                    .zip(prop.arg_end)
-                    .and_then(|(a, b)| source.get(a as usize..b as usize));
-                if argument == Some("class") && matches!(name, ":" | "v-bind") {
-                    found.dynamic_bindings += 1;
-                    scan_expression(source, start..end, &mut found);
-                }
-            }
+    for attr in attrs {
+        let Some(value) = attr.value else { continue };
+        if source.get(value.clone()).is_none() || attr.name.start < block.start || attr.name.end > block.end {
+            continue;
+        }
+        let name = source.get(attr.name.clone()).unwrap_or("");
+        if !attr.directive && name == "class" {
+            push_tokens(source, value, false, &mut found);
+        } else if attr.directive
+            && matches!(name, ":" | "v-bind")
+            && attr.argument.and_then(|argument| source.get(argument)) == Some("class")
+        {
+            found.dynamic_bindings += 1;
+            scan_expression(source, value, &mut found);
         }
     }
     found.classes.sort_by_key(|class| class.range.start);
