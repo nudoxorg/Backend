@@ -5543,6 +5543,8 @@ mod tests {
                 .expect("fixture input identity").content().to_bytes(),
             source_digest: *source.identity.as_ref(),
             byte_length: source.byte_len,
+            kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
+            line_starts: None,
         };
         let spare_source = backend_semantic::ir::SourceIdentity::from_bytes(SPARE.as_bytes())
             .expect("spare source identity");

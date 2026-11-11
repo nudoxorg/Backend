@@ -471,7 +471,12 @@ impl RevalidatedNativeTsCapture {
         allocation(&mut total, fence.requested_root.capacity())?;
         allocation(&mut total, fence.root.capacity())?;
         allocation(&mut total, capture.sources.capacity().checked_mul(std::mem::size_of::<NativeTsCapturedSource>())?)?;
-        for source in &capture.sources { allocation(&mut total, source.evidence.path.capacity())?; }
+        for source in &capture.sources {
+            allocation(&mut total, source.evidence.path.capacity())?;
+            if let Some(lines) = &source.evidence.line_starts {
+                allocation(&mut total, lines.capacity().checked_mul(std::mem::size_of::<u32>())?)?;
+            }
+        }
         allocation(&mut total, fence.directories.capacity().checked_mul(std::mem::size_of::<(PathBuf, Option<FileSystemRevision>)>())?)?;
         for (path, _) in &fence.directories { allocation(&mut total, path.capacity())?; }
         allocation(&mut total, fence.files.capacity().checked_mul(std::mem::size_of::<CompilerFileRevision>())?)?;
@@ -707,6 +712,8 @@ fn capture_native_typescript_sources(
             input_digest: content,
             source_digest: *source_fact_identity.as_ref(),
             byte_length,
+            kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
+            line_starts: backend_engine::builtin::NativeSourceEvidence::capture_line_starts(&bytes),
         };
         evidence.validate().map_err(str::to_owned)?;
         let mut encoded = Vec::new();
@@ -5944,6 +5951,8 @@ mod tests {
             input_digest: typed_of::<InputContentSchema>(source).to_bytes(),
             source_digest: *image.identity.as_ref(),
             byte_length: source.len() as u32,
+            kind: backend_engine::builtin::NativeSourceEvidenceKind::Image,
+            line_starts: None,
         };
         assert_eq!(
             indexed_native_evidence_matches(root.path(), &evidence, image),
