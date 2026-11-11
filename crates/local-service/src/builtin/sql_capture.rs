@@ -471,7 +471,9 @@ pub(super) fn capture_sqlite_host(
     // ProcessSupervisor does not promise a hard memory bound on every host.
     settings_bytes.extend_from_slice(b"memory-limit-unavailable\0");
     let settings = digest(b"nudox.sql.sqlite.settings.v1\0", &settings_bytes);
+    let hashed = std::time::Instant::now();
     let evidence = response_evidence(&request, &response, &permit.artifact, cancellation)?;
+    super::sql_index::trace(format_args!("sqlite response evidence for {} took {} ms", host.selected().path, hashed.elapsed().as_millis()));
     Ok(SqlHostDraft {
         host_key,
         path: host.selected().path.clone(),

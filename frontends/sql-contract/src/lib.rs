@@ -753,6 +753,20 @@ pub fn analyze_checked_until<'a>(
     )
 }
 
+/// Phase timings of one checked launch, printed only when `NUDOX_TRACE` is set.
+struct PhaseTrace(Option<std::time::Instant>);
+impl PhaseTrace {
+    fn start() -> Self {
+        Self(std::env::var_os("NUDOX_TRACE").map(|_| std::time::Instant::now()))
+    }
+    fn mark(&mut self, phase: &str) {
+        if let Some(last) = self.0 {
+            eprintln!("backend-sql-contract: launch phase {phase}: {} ms", last.elapsed().as_millis());
+            self.0 = Some(std::time::Instant::now());
+        }
+    }
+}
+
 /// Whether a caller's own absolute deadline has passed once the child is reaped.
 /// A launch with no caller deadline is bounded by its wall alone, which ended
 /// with the process: the owner's decoding and verification are never charged to it.
@@ -889,8 +903,10 @@ fn analyze_checked_inner<'a>(
     {
         return Err(CheckedError::InputLimit);
     }
+    let mut trace = PhaseTrace::start();
     let verified = VerifiedSourceText::admit(host, expected_input, expected_source)
         .map_err(CheckedError::Source)?;
+    trace.mark("verify host text");
     if launch.cancellation.is_cancelled() {
         return Err(CheckedError::Cancelled);
     }
@@ -905,6 +921,7 @@ fn analyze_checked_inner<'a>(
         return Err(CheckedError::UnsupportedSettings);
     }
     let encoded = serde_json::to_vec(request).map_err(|_| CheckedError::InvalidResponse)?;
+    trace.mark("encode request");
     // ProcessEnvironment is explicit; it is committed into command.identity().
     let environment: ProcessEnvironment = launch.environment;
     let command = SupervisedCommand::for_authority_with_artifact_until(
@@ -921,6 +938,7 @@ fn analyze_checked_inner<'a>(
         deadline,
     )
     .map_err(CheckedError::Process)?;
+    trace.mark("admit executable and build command");
     let command_id = command.identity();
     let supervisor = ProcessSupervisor::new(command);
     let receipt = match &library {
@@ -935,6 +953,7 @@ fn analyze_checked_inner<'a>(
         ),
     }
     .map_err(CheckedError::Process)?;
+    trace.mark("run child");
     #[cfg(target_os = "linux")]
     if let CheckedPrivateLibrary::Linux(lease) = library {
         let mut lease = std::sync::Arc::try_unwrap(lease)
@@ -952,6 +971,7 @@ fn analyze_checked_inner<'a>(
     let digest: [u8; 32] = Sha256::digest(host).into();
     let response = decode_response(receipt.stdout(), request, dialect, engine, digest)
         .ok_or(CheckedError::InvalidResponse)?;
+    trace.mark("decode response");
     if response.syntax == Syntax::UnsupportedSettings {
         return Err(CheckedError::UnsupportedSettings);
     }
@@ -997,6 +1017,7 @@ fn analyze_checked_inner<'a>(
         }
         _ => {}
     }
+    trace.mark("verify extents");
     if launch.cancellation.is_cancelled() {
         return Err(CheckedError::Cancelled);
     }
