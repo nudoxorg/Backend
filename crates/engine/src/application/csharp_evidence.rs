@@ -134,7 +134,7 @@ mod graph_evidence_tests {
             }],
         };
         let encoded = encode_csharp_graph_evidence(&graph).expect("bounded CSE2");
-        assert_eq!(decode_csharp_graph_evidence(&encoded), Some(graph));
+        assert_eq!(decode_csharp_graph_evidence(&encoded), Some(graph.clone()));
         assert!(decode_csharp_graph_evidence(&encoded[..encoded.len() - 1]).is_none());
         let mut changed = graph.clone();
         changed.nodes[0].project_references.clear();
