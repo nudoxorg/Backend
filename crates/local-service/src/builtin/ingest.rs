@@ -2860,6 +2860,26 @@ fn read_native_evidence_host(
     Ok(bytes.to_vec())
 }
 
+/// Reads a header extent already joined to the selected compiler entity.
+/// The source is reopened under the same digest and policy as native ranges.
+pub(super) fn read_indexed_native_evidence_header(
+    root: &Path,
+    evidence: &backend_engine::builtin::NativeSourceEvidence,
+    image_source: backend_semantic::ir::SourceIdentity,
+    extent: (u32, u32),
+) -> Result<String, super::source_range::SourceRangeError> {
+    use super::source_range::SourceRangeError;
+    let length = extent.1.checked_sub(extent.0).ok_or(SourceRangeError::InvalidExtent)? as usize;
+    if length == 0 || length > backend_compile::SourceDeclaration::MAX_TEXT_BYTES {
+        return Err(SourceRangeError::InvalidExtent);
+    }
+    let bytes = read_native_evidence_host(root, evidence, image_source)?;
+    let text = std::str::from_utf8(bytes.get(extent.0 as usize..extent.1 as usize)
+        .ok_or(SourceRangeError::InvalidExtent)?)
+        .map_err(|_| SourceRangeError::InvalidExtent)?;
+    Ok(text.to_owned())
+}
+
 /// Reopens one confined indexed host and reads only a verified declaration range.
 /// The caller is responsible for selecting the exact revision, file fact, and
 /// declaration binding before invoking this helper.
