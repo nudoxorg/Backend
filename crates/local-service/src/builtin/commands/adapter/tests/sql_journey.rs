@@ -552,3 +552,45 @@ fn killing_the_owner_mid_publication_never_leaves_a_torn_sql_analysis() {
         fs::remove_dir_all(workspace.parent().expect("fixture root")).expect("remove crashed fixture");
     }
 }
+
+#[test]
+fn flat_sql_upsert_and_renamed_objects_keep_precise_owner_edges() {
+    use backend_library::impact::{ImpactDomain, ImpactRequest, ImpactSeed, ImpactSeedSpec};
+    let workers = admitted_workers(Some(frontend_worker("sqlite", "sqlite-worker")), None);
+    let files = [
+        ("db/0001_init.sql", "CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT, country TEXT);\nCREATE TABLE books (id INTEGER PRIMARY KEY, price_cents INTEGER, title TEXT);\nCREATE TABLE order_items (book_id INTEGER REFERENCES books(id));\nCREATE INDEX books_by_title ON books(title);"),
+        ("db/0002_rename.sql", "ALTER TABLE books RENAME COLUMN price_cents TO list_price_cents;\nALTER TABLE order_items RENAME TO order_lines;"),
+        ("db/catalog.sql", "INSERT INTO authors (id, name, country) VALUES (?1, ?2, ?3) ON CONFLICT (id) DO UPDATE SET name = excluded.name, country = excluded.country;\nSELECT list_price_cents FROM books;\nSELECT title FROM books;"),
+        ("db/broken.sql", "SELECT price_cents FROM books;\nSELECT * FROM order_items;"),
+    ].into_iter().map(|(path, text)| (path.to_owned(), text.as_bytes().to_vec())).collect();
+    let mut wire = SourceWire::start_sql(TestStage::BeforeSourcePreparation, true, SqlFixture { files, workers });
+    wire.wait_at_source_within(TERMINAL_WAIT);
+    wire.release();
+    wire.wait_terminal_within(TERMINAL_WAIT);
+    mixed_published(&wire);
+    let project = wire.source.parent().expect("project").to_owned();
+    let mut session = Session::connect(&wire.endpoint).expect("listener");
+    let (page, _) = all_hits(&mut session, request(&project, SqlQueryRole::Gap));
+    assert_eq!(page.basis.gaps, Default::default(), "valid flat files must all reach SQLite");
+    let mut upsert = request(&project, SqlQueryRole::Reference);
+    upsert.uses = Some("authors.name".into());
+    let (_, hits) = all_hits(&mut session, upsert);
+    assert!(hits.iter().any(|hit| matches!(&hit.fact, SqlFact::Reference(reference) if reference.qualifier.as_deref() == Some("excluded") && matches!(reference.resolution, SqlResolution::Resolved { .. }))));
+    let (_, diagnostics) = all_hits(&mut session, request(&project, SqlQueryRole::Diagnostic));
+    for name in ["price_cents", "order_items"] {
+        assert!(diagnostics.iter().any(|hit| matches!(&hit.fact, SqlFact::Reference(reference) if reference.name == name && matches!(reference.resolution, SqlResolution::Unresolved { .. }))), "unbound {name} is discoverable without a name filter");
+    }
+    let impact = |session: &mut Session, kind: &str, name: &str| {
+        let request = ImpactRequest::new(
+            backend_library::PackageReference::parse(project.to_str().unwrap().to_owned()).unwrap(),
+            ImpactSeed::Named(ImpactSeedSpec { domain: ImpactDomain::Sql, kind: kind.into(), name: name.into(), path: None }),
+        );
+        let backend_library::SurfaceReply::Impact(report) = session.surface(backend_library::SurfaceCommand::Impact { request }).expect("public impact") else { panic!("impact reply") };
+        report
+    };
+    let column = impact(&mut session, "column", "books.list_price_cents");
+    assert!(column.rows.iter().any(|row| row.node.kind == "query"));
+    assert!(column.rows.iter().all(|row| row.node.kind != "table" && row.node.kind != "index"), "column impact cannot spread through containment: {:?}", column.rows);
+    let table = impact(&mut session, "table", "order_lines");
+    assert!(table.rows.iter().all(|row| row.node.name != "order_items"), "the old table spelling must share the renamed entity");
+}
