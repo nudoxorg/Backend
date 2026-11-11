@@ -75,4 +75,15 @@ fn main() {
         receipt.selected_digest(),
         receipt.digest()
     );
+    for path in snapshot.references() {
+        let bytes = fs::read(path).expect("selected reference");
+        println!(
+            "selected_ref name={} length={} sha256={:x}",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .expect("UTF-8 assembly name"),
+            bytes.len(),
+            Sha256::digest(&bytes)
+        );
+    }
 }
