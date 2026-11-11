@@ -12,6 +12,7 @@ mod image;
 mod oracle;
 mod producer;
 mod sdk;
+mod restore;
 
 pub use self::image::{
     Atom, Attribute, CSharpImage, Declaration, DeclarationFlags, DeclarationIter, DeclarationKind,
@@ -36,3 +37,4 @@ pub use self::sdk::{
     observe_csharp_sdk, observe_csharp_sdk_with, CSharpSdkKind, CSharpSdkObservation,
     CSharpSdkProbe, CSharpSdkProjectProperties,
 };
+pub use self::restore::{resolve_project_assets, resolve_project_assets_checked, RestoreClosure, RestoreError};
