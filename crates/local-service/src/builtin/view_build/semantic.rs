@@ -474,7 +474,7 @@ pub(in crate::builtin) fn admitted_native_evidence<'a>(
 ) -> Result<Option<AdmittedNativeEvidence<'a>>, BuiltinModelError> {
     use backend_engine::builtin::{
         ProductSemanticCaptureOutcome, ProductSemanticPublicationRecord,
-        native_source_evidence_relation, product_native_frontier_relation,
+        native_source_evidence_relation_budgeted, product_native_frontier_relation,
     };
     use backend_semantic::vocabulary::LanguageProfile;
     let Some(project) = sources.projects.get(&package.to_bytes()) else {
@@ -485,8 +485,9 @@ pub(in crate::builtin) fn admitted_native_evidence<'a>(
     {
         return Ok(None);
     }
-    super::super::profile::native_evidence_basis_for_snapshot(snapshot)?;
-    let Some(evidence) = native_source_evidence_relation(snapshot)
+    let mut image_budget = MAX_REBUILD_BYTES;
+    super::super::profile::native_evidence_basis_for_snapshot_budgeted(snapshot, &mut image_budget)?;
+    let Some(evidence) = native_source_evidence_relation_budgeted(snapshot, &mut image_budget)
         .map_err(|error| BuiltinModelError(format!("open selected native evidence: {error}")))?
     else {
         return Ok(None);
@@ -510,7 +511,6 @@ pub(in crate::builtin) fn admitted_native_evidence<'a>(
     let mut first = true;
     let mut found = None;
     let mut count = 0usize;
-    let mut image_budget = MAX_REBUILD_BYTES;
     let mut program_path_work = 0usize;
     loop {
         let page = if first {
@@ -633,6 +633,7 @@ pub(in crate::builtin) fn admitted_native_evidence<'a>(
 /// native evidence. It does not claim a complete source inventory.
 pub(in crate::builtin) fn selected_nse_typescript_owners(
     relation: &backend_engine::workspace::WorkspaceRelationHandle<backend_engine::builtin::NativeSourceEvidenceRelation>,
+    budget: &mut usize,
 ) -> Result<BTreeSet<[u8; 32]>, BuiltinModelError> {
     let mut owners = BTreeSet::new();
     let mut projects = BTreeMap::<[u8; 32], usize>::new();
@@ -641,7 +642,7 @@ pub(in crate::builtin) fn selected_nse_typescript_owners(
     let mut previous = None;
     let mut after = None;
     loop {
-        let page = relation.page(after.as_ref(), 1)
+        let page = backend_engine::builtin::native_source_evidence_page_budgeted(relation, after.as_ref(), budget)
             .map_err(|error| BuiltinModelError(format!("scan native evidence: {error}")))?;
         for (key, row) in page.entries() {
             count = count.checked_add(1).ok_or_else(|| BuiltinModelError("native evidence row overflow".into()))?;
@@ -655,13 +656,19 @@ pub(in crate::builtin) fn selected_nse_typescript_owners(
             if bytes > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES {
                 return Err(BuiltinModelError("native evidence byte budget exceeded".into()));
             }
+            if !projects.contains_key(&row.project) {
+                *budget = budget.checked_sub(256).ok_or_else(|| BuiltinModelError("native evidence project cache budget exceeded".into()))?;
+            }
             let project_count = projects.entry(row.project).or_default();
             *project_count = project_count.checked_add(1).ok_or_else(|| BuiltinModelError("native evidence project count overflow".into()))?;
             if *project_count > backend_engine::builtin::MAX_NATIVE_EVIDENCE_PROJECT_ROWS {
                 return Err(BuiltinModelError("native evidence project budget exceeded".into()));
             }
             if matches!(row.profile, backend_semantic::vocabulary::LanguageProfile::TypeScript(_)) {
-                owners.insert(row.project);
+                if !owners.contains(&row.project) {
+                    *budget = budget.checked_sub(256).ok_or_else(|| BuiltinModelError("native evidence owner cache budget exceeded".into()))?;
+                    owners.insert(row.project);
+                }
             }
         }
         match page.next().copied() { Some(next) => after = Some(next), None => break }
@@ -1118,8 +1125,9 @@ pub(in crate::builtin) fn load_selected_nse_program(
     {
         return Ok(NseProgramAdmission::Unavailable);
     }
-    super::super::profile::native_evidence_basis_for_snapshot(snapshot)?;
-    let Some(evidence) = backend_engine::builtin::native_source_evidence_relation(snapshot)
+    let mut image_budget = MAX_REBUILD_BYTES;
+    super::super::profile::native_evidence_basis_for_snapshot_budgeted(snapshot, &mut image_budget)?;
+    let Some(evidence) = backend_engine::builtin::native_source_evidence_relation_budgeted(snapshot, &mut image_budget)
         .map_err(|error| BuiltinModelError(format!("open selected native evidence: {error}")))?
     else {
         return Ok(NseProgramAdmission::Unavailable);
@@ -1129,7 +1137,6 @@ pub(in crate::builtin) fn load_selected_nse_program(
     let files = selected_typescript_structural_files(sources, key.package_key())?;
     let activated = super::super::load_semantic_publication(compiler, key, claim, generations)?;
     let mut path_work = 0;
-    let mut image_budget = MAX_REBUILD_BYTES;
     let Some(proof) = selected_nse_program_files(
         snapshot,
         sources,
@@ -1284,29 +1291,8 @@ fn lookup_native_evidence(
     let key =
         backend_engine::builtin::native_source_evidence_key(package.to_bytes(), profile, path)
             .map_err(|error| BuiltinModelError(error.into()))?;
-    // Reserve the maximum row before the lazy relation materializes its result.
-    // The reservation covers both its decoded row and the returned clone.
-    let reservation = backend_engine::builtin::MAX_NATIVE_EVIDENCE_VALUE
-        .checked_mul(2).and_then(|n| n.checked_add(256))
-        .ok_or_else(|| BuiltinModelError("native evidence reservation overflow".into()))?;
-    *budget = budget.checked_sub(reservation)
-        .ok_or_else(|| BuiltinModelError("native evidence budget exceeded before lookup".into()))?;
-    let result = relation
-        .lookup(&key)
-        .map_err(|error| BuiltinModelError(format!("read native evidence: {error}")))?;
-    let Some(row) = result else {
-        *budget = budget.checked_add(reservation).ok_or_else(|| BuiltinModelError("native evidence budget overflow".into()))?;
-        return Ok(None);
-    };
-    // Relation lookup decodes a bounded line map. Charge every decoded
-    // allocation, including repeated lookups across profiles, against the
-    // same request-wide budget as the retained images.
-    let map_bytes = row.checked_heap_bytes()
-      .ok_or_else(|| BuiltinModelError("native evidence allocation overflow".into()))?;
-    let refund = reservation.checked_sub(map_bytes)
-        .ok_or_else(|| BuiltinModelError("native evidence reservation exceeded".into()))?;
-    *budget = budget.checked_add(refund)
-        .ok_or_else(|| BuiltinModelError("native evidence budget overflow".into()))?;
+    let Some(row) = backend_engine::builtin::native_source_evidence_lookup_budgeted(relation, &key, budget)
+        .map_err(|error| BuiltinModelError(format!("read native evidence: {error}")))? else { return Ok(None) };
     if row.key().ok() != Some(key)
         || row.project != package.to_bytes()
         || row.profile != profile
@@ -2008,12 +1994,13 @@ fn semantic_rows(
     // publication rows; malformed capture state must still refuse the view.
     let capture_relation = semantic_capture_relation(snapshot)
         .map_err(|error| BuiltinModelError(format!("open semantic capture relation: {error}")))?;
-    let nse_evidence = backend_engine::builtin::native_source_evidence_relation(snapshot)
+    let mut nse_image_budget = MAX_REBUILD_BYTES;
+    let nse_evidence = backend_engine::builtin::native_source_evidence_relation_budgeted(snapshot, &mut nse_image_budget)
         .map_err(|error| BuiltinModelError(format!("open selected native evidence: {error}")))?;
     if nse_evidence.is_some() {
-        super::super::profile::native_evidence_basis_for_snapshot(snapshot)?;
+        super::super::profile::native_evidence_basis_for_snapshot_budgeted(snapshot, &mut nse_image_budget)?;
     }
-    let nse_owners = nse_evidence.as_ref().map(selected_nse_typescript_owners).transpose()?.unwrap_or_default();
+    let nse_owners = nse_evidence.as_ref().map(|r| selected_nse_typescript_owners(r, &mut nse_image_budget)).transpose()?.unwrap_or_default();
     let nse_frontiers = if nse_evidence.is_some() {
         backend_engine::builtin::product_native_frontier_relation(snapshot)
             .map_err(|error| BuiltinModelError(format!("open native frontier: {error}")))?
@@ -2022,7 +2009,6 @@ fn semantic_rows(
     let mut nse_structural_work = 0usize;
     let mut nse_program_work = 0usize;
     let mut nse_context_scan_work = 0usize;
-    let mut nse_image_budget = MAX_REBUILD_BYTES;
     let mut rows = Vec::new();
     let mut exact_sites = super::exact_sites::ExactDeclarationSites::default();
     let mut complete = BTreeSet::new();

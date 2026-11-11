@@ -546,7 +546,8 @@ pub(super) fn plan_native_ts_evidence(
         ))?.clone();
     }
     changes.retain(|_, change| change.expected.as_ref() != Some(&change.after));
-    let relation = backend_engine::builtin::native_source_evidence_relation(base)
+    let mut read_budget = MAX_NATIVE_EVIDENCE_BYTES;
+    let relation = backend_engine::builtin::native_source_evidence_relation_budgeted(base, &mut read_budget)
         .map_err(|error| BuiltinModelError(format!("open selected native evidence: {error}")))?;
     let mut scan_work = 0usize;
     let mut count = 0usize;
@@ -564,8 +565,7 @@ pub(super) fn plan_native_ts_evidence(
                     "native TypeScript rewalk was cancelled".into(),
                 ));
             }
-            let page = relation
-                .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+            let page = backend_engine::builtin::native_source_evidence_page_budgeted(&relation, after.as_ref(), &mut read_budget)
                 .map_err(|error| {
                     BuiltinModelError(format!("read selected native evidence: {error}"))
                 })?;
@@ -630,6 +630,9 @@ pub(super) fn plan_native_ts_evidence(
                         {
                             return Err(BuiltinModelError("native retirement exceeds its bound".into()));
                         }
+                        let clone_bytes = row.checked_heap_bytes().and_then(|n| n.checked_add(std::mem::size_of::<NativeTsEvidenceRetirement>() + 128))
+                            .ok_or_else(|| BuiltinModelError("native retirement clone overflow".into()))?;
+                        read_budget = read_budget.checked_sub(clone_bytes).ok_or_else(|| BuiltinModelError("native retirement clone budget exceeded".into()))?;
                         retirements.push(NativeTsEvidenceRetirement { key: *key, expected: row.clone() });
                     }
                 }
@@ -919,8 +922,9 @@ pub(super) fn admit_native_ts_owner_candidate(
         .map(|image| image.content_digest())
         .collect::<Vec<_>>()
         .into_boxed_slice();
-    let evidence_basis = super::profile::native_evidence_basis_for_snapshot(base)?;
-    let selected_evidence = backend_engine::builtin::native_source_evidence_relation(base)
+    let mut read_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
+    let evidence_basis = super::profile::native_evidence_basis_for_snapshot_budgeted(base, &mut read_budget)?;
+    let selected_evidence = backend_engine::builtin::native_source_evidence_relation_budgeted(base, &mut read_budget)
         .map_err(|error| BuiltinModelError(format!("open selected native evidence: {error}")))?;
     let mut evidence_changes = Vec::with_capacity(evidence.len());
     let mut evidence_work = 0usize;
@@ -930,7 +934,7 @@ pub(super) fn admit_native_ts_owner_candidate(
         let key = row.key().map_err(|error| BuiltinModelError(error.into()))?;
         let expected = selected_evidence
             .as_ref()
-            .map(|relation| relation.lookup(&key))
+            .map(|relation| backend_engine::builtin::native_source_evidence_lookup_budgeted(relation, &key, &mut read_budget))
             .transpose()
             .map_err(|error| BuiltinModelError(format!("read selected native evidence: {error}")))?
             .flatten();
@@ -966,6 +970,9 @@ pub(super) fn admit_native_ts_owner_candidate(
                 "native evidence work exceeds its bound".into(),
             ));
         }
+        let clone_bytes = row.checked_heap_bytes().and_then(|n| n.checked_add(std::mem::size_of::<NativeTsEvidenceChange>() + 128))
+            .ok_or_else(|| BuiltinModelError("native evidence clone overflow".into()))?;
+        read_budget = read_budget.checked_sub(clone_bytes).ok_or_else(|| BuiltinModelError("native evidence clone budget exceeded".into()))?;
         evidence_changes.push(NativeTsEvidenceChange {
             key,
             expected,

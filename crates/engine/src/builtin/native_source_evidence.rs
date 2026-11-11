@@ -411,6 +411,16 @@ pub fn native_source_evidence_relation_budgeted(
     Ok(result)
 }
 
+/// Reads the selected root object under the same node scratch reservation.
+pub fn native_source_evidence_root_object_budgeted(
+    relation: &WorkspaceRelationHandle<NativeSourceEvidenceRelation>, budget: &mut usize,
+) -> Result<TypedObject, WorkspaceRelationError> {
+    native_read_reserve(budget)?;
+    let object = relation.root_object()?;
+    native_read_refund(budget, NATIVE_EVIDENCE_ROOT_RESIDENT)?;
+    Ok(object)
+}
+
 /// Looks up a row after reserving scratch for every sibling in its node.
 /// The retained row remains charged to the same budget on return.
 pub fn native_source_evidence_lookup_budgeted(
@@ -454,6 +464,47 @@ mod tests {
             line_starts: None,
             headers: None,
         }
+    }
+
+    #[test]
+    fn budgeted_typed_relation_reads_charge_before_decoding_siblings() {
+        use backend_store::{FileStore, RelationAdmissionRegistry};
+        use backend_version::{CoverageWitness, RelationState, ScopeRoot, UntrustedCoverageScope};
+        use std::sync::Arc;
+        let directory = tempfile::tempdir().unwrap();
+        let registry = RelationAdmissionRegistry::new().with_relation::<NativeSourceEvidenceRelation>().unwrap();
+        let store = FileStore::open_with_registry(directory.path(), 1024 * 1024, registry).unwrap();
+        let mut rows = Vec::new();
+        for i in 0..200 {
+            let mut item = row();
+            item.path = format!("pkg/{i:03}.go");
+            item.byte_length = 2048;
+            item.line_starts = Some((0..1024).map(|n| n * 2).collect());
+            rows.push((item.key().unwrap(), item));
+        }
+        rows.sort_unstable_by_key(|(key, _)| *key);
+        let state = RelationState::<NativeSourceEvidenceRelation>::from_entries(rows.clone(),
+            CoverageWitness::Partial(UntrustedCoverageScope::from_scope_root(ScopeRoot::from_u64(1)))).unwrap();
+        store.write_relation_state(&state).unwrap();
+        let relation = WorkspaceRelationHandle::<NativeSourceEvidenceRelation>::open(Arc::new(store), *state.root().as_bytes()).unwrap();
+        let mut short = NATIVE_EVIDENCE_READ_SCRATCH - 1;
+        assert!(native_source_evidence_lookup_budgeted(&relation, &rows[100].0, &mut short).is_err());
+        assert_eq!(short, NATIVE_EVIDENCE_READ_SCRATCH - 1);
+        let mut budget = 64 * 1024 * 1024;
+        let found = native_source_evidence_lookup_budgeted(&relation, &rows[100].0, &mut budget).unwrap().unwrap();
+        assert_eq!(found, rows[100].1);
+        assert!(budget < 64 * 1024 * 1024);
+        let mut cursor = None;
+        let mut visited = 0;
+        loop {
+            let page = native_source_evidence_page_budgeted(&relation, cursor.as_ref(), &mut budget).unwrap();
+            if page.entries().is_empty() { break; }
+            assert_eq!(page.entries()[0], rows[visited]);
+            visited += 1;
+            cursor = page.next().copied();
+            if cursor.is_none() { break; }
+        }
+        assert_eq!(visited, rows.len());
     }
 
     #[test]
