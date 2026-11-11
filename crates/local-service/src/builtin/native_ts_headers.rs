@@ -22,16 +22,20 @@ pub(super) fn producer_recipe() -> [u8; 32] {
 /// publication; these checks do not manufacture that authority.
 pub(super) fn admit_image(
     claim: &NativeSourceEvidence,
-    headers: &backend_engine::builtin::NativeHeaderEvidence,
+    file: &backend_semantic::native_ts_headers::NativeTsHeaderFile,
     image: &SemanticImageView<'_>,
     encoded: &[u8],
 ) -> Result<(), String> {
+    let headers = claim.headers.as_ref().ok_or("native header reference absent")?;
     let identity = *backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(encoded).as_ref();
-    if headers.image_identity != identity || headers.image_byte_len != encoded.len() as u64 {
-        return Err("native header image differs".into());
-    }
+    if headers.image_identity != identity || headers.image_byte_len != encoded.len() as u64
+        || file.path != claim.path || file.source.byte_len != claim.byte_length
+        || file.source.identity.as_ref() != claim.source_digest.as_slice()
+        || file.image_identity != identity || file.image_byte_len != encoded.len() as u64
+        || file.producer_recipe != headers.producer_recipe
+    { return Err("native header image or source differs".into()); }
     let session = DocumentationSession::new(image);
-    for entry in &headers.entries {
+    for entry in &file.entries {
         let entity = session.entity(backend_semantic::ir::EntityId::new(entry.entity_id))
             .map_err(|error| format!("native header entity: {error}"))?;
         let Some(span) = entity.entity.source else { return Err("native header source absent".into()) };

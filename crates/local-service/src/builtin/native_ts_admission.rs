@@ -393,7 +393,7 @@ mod program_source_claim_tests {
         let mut image = member.clone();
         image.kind = NativeSourceEvidenceKind::Image;
         image.headers = Some(backend_engine::builtin::NativeHeaderEvidence {
-            image_identity: [4; 32], image_byte_len: 1, producer_recipe: [5; 32], entries: Vec::new(),
+            image_identity: [4; 32], image_byte_len: 1, producer_recipe: [5; 32], aggregate_digest: [6; 32],
         });
         let mut merged = member.clone();
         merge_program_source_claim(&mut merged, &image).expect("same source");

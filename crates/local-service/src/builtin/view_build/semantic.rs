@@ -588,17 +588,10 @@ pub(in crate::builtin) fn admitted_native_evidence<'a>(
                 else {
                     continue;
                 };
-                let image_identity = *backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref()).as_ref();
-                let header_extent = row.headers.as_ref().and_then(|headers| {
-                    if headers.image_identity != image_identity
-                        || headers.image_byte_len != image.as_ref().len() as u64
-                        || headers.producer_recipe != super::super::native_ts_headers::producer_recipe()
-                    { return None; }
-                    let entry = headers.entries.binary_search_by_key(&owned.entity_id.raw, |entry| entry.entity_id)
-                        .ok().and_then(|index| headers.entries.get(index))?;
-                    (entry.identity == owned.declaration_identity && Some(entry.compiler_extent) == owned.extent)
-                        .then_some(entry.header_extent)
-                });
+                // The raw source row is not a compiler receipt. Header
+                // resolution is performed only after opening its selected
+                // closure witness in the command adapter.
+                let header_extent = None;
                 if found
                     .replace(AdmittedNativeEvidence {
                         claim: row.clone(),
