@@ -368,6 +368,19 @@ impl CSharpOracle {
                 observed: request.native_tool,
             });
         }
+        if let Some(snapshot) = request.resolved_reference_snapshot {
+            if !snapshot.receipt_is_consistent()
+                || snapshot.receipt().target_framework
+                    != request.configuration.target_framework.unwrap_or("")
+                || request.configuration.reference_directory.is_some()
+                || !request
+                    .configuration
+                    .additional_reference_directories
+                    .is_empty()
+            {
+                return Err(CSharpAuthorityError::Configuration);
+            }
+        }
         validate_absolute_paths(&self.oracle, request)?;
         let maximum_source_bytes = request.configuration.maximum_source_bytes;
         if request.source.len() > maximum_source_bytes {

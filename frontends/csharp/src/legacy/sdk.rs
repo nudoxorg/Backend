@@ -71,6 +71,18 @@ pub struct CSharpResolvedReferenceSnapshot {
     directory: tempfile::TempDir,
     references: Box<[PathBuf]>,
     digest: [u8; 32],
+    receipt: CSharpResolverReceipt,
+}
+
+/// Canonical identity of one SDK reference-resolution observation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CSharpResolverReceipt {
+    pub sdk_directory: PathBuf,
+    pub target_framework: String,
+    pub global_json_digest: Option<[u8; 32]>,
+    pub candidate_digest: [u8; 32],
+    pub selected_digest: [u8; 32],
+    pub selected_names: Box<[Box<str>]>,
 }
 
 struct CandidateSnapshot {
@@ -78,6 +90,35 @@ struct CandidateSnapshot {
     canonical: PathBuf,
     owned: PathBuf,
     digest: [u8; 32],
+    length: usize,
+    name: Box<str>,
+}
+
+fn candidate_digest(snapshots: &[CandidateSnapshot]) -> [u8; 32] {
+    let mut rows = snapshots
+        .iter()
+        .map(|snapshot| {
+            (
+                snapshot.canonical.as_os_str().as_encoded_bytes().to_vec(),
+                snapshot.name.as_bytes().to_vec(),
+                snapshot.length,
+                snapshot.digest,
+            )
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut hash = sha2::Sha256::new();
+    hash.update(b"csharp.sdk-candidate-set.v1\0");
+    hash.update((rows.len() as u64).to_le_bytes());
+    for (path, name, length, digest) in rows {
+        hash.update((path.len() as u64).to_le_bytes());
+        hash.update(path);
+        hash.update((name.len() as u64).to_le_bytes());
+        hash.update(name);
+        hash.update((length as u64).to_le_bytes());
+        hash.update(digest);
+    }
+    hash.finalize().into()
 }
 
 impl CSharpResolvedReferenceSnapshot {
@@ -89,6 +130,44 @@ impl CSharpResolvedReferenceSnapshot {
     }
     pub fn root(&self) -> &Path {
         self.directory.path()
+    }
+    pub fn receipt(&self) -> &CSharpResolverReceipt {
+        &self.receipt
+    }
+
+    /// Rechecks that the owned selected files still match the receipt before
+    /// a producer consumes them or a replay validates the attempt.
+    pub fn receipt_is_consistent(&self) -> bool {
+        if self.receipt.selected_digest != self.digest
+            || self.references.len() != self.receipt.selected_names.len()
+        {
+            return false;
+        }
+        let mut hash = sha2::Sha256::new();
+        hash.update(b"csharp.sdk-reference-snapshot.v2\0");
+        hash.update((self.references.len() as u64).to_le_bytes());
+        for (path, expected_name) in self.references.iter().zip(&self.receipt.selected_names) {
+            if !path.starts_with(self.directory.path()) {
+                return false;
+            }
+            let Some(name) = path.file_name() else {
+                return false;
+            };
+            if name.to_string_lossy().as_ref() != expected_name.as_ref() {
+                return false;
+            }
+            let Ok(bytes) =
+                backend_platform::durable::read_regular_bounded_stable(path, 32 * 1024 * 1024)
+            else {
+                return false;
+            };
+            let name = name.as_encoded_bytes();
+            hash.update((name.len() as u64).to_le_bytes());
+            hash.update(name);
+            hash.update((bytes.len() as u64).to_le_bytes());
+            hash.update(&bytes);
+        }
+        hash.finalize().as_slice() == self.digest
     }
 }
 
@@ -130,6 +209,8 @@ pub fn resolve_references_with_sdk(
             serde_json::from_str(global_json).map_err(|_| "captured global.json is invalid")?;
     }
     let scratch = tempfile::tempdir().map_err(|_| "SDK scratch unavailable")?;
+    let global_json_digest =
+        captured_global_json.map(|text| sha2::Sha256::digest(text.as_bytes()).into());
     let candidate_root = scratch.path().join("candidates");
     fs::create_dir(&candidate_root).map_err(|_| "SDK snapshot unavailable")?;
     let mut captured_candidates = Vec::with_capacity(candidates.len());
@@ -147,6 +228,7 @@ pub fn resolve_references_with_sdk(
             backend_platform::durable::read_regular_bounded_stable(source, 32 * 1024 * 1024)
                 .map_err(|_| "SDK candidate unavailable")?;
         let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+        let length = bytes.len();
         let canonical = fs::canonicalize(source).map_err(|_| "SDK candidate unavailable")?;
         captured_bytes = captured_bytes
             .checked_add(bytes.len())
@@ -168,6 +250,8 @@ pub fn resolve_references_with_sdk(
             canonical,
             owned: destination.clone(),
             digest,
+            length,
+            name: name.to_string_lossy().into_owned().into_boxed_str(),
         });
         captured_candidates.push(destination);
     }
@@ -371,10 +455,29 @@ pub fn resolve_references_with_sdk(
         hash.update((bytes.len() as u64).to_le_bytes());
         hash.update(&bytes);
     }
+    let selected_digest: [u8; 32] = hash.finalize().into();
+    let selected_names = owned
+        .iter()
+        .map(|path| {
+            path.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+                .into_boxed_str()
+        })
+        .collect::<Box<[_]>>();
     Ok(CSharpResolvedReferenceSnapshot {
         directory: scratch,
         references: owned.into_boxed_slice(),
-        digest: hash.finalize().into(),
+        digest: selected_digest,
+        receipt: CSharpResolverReceipt {
+            sdk_directory: observed_sdk_directory,
+            target_framework: target_framework.to_owned(),
+            global_json_digest,
+            candidate_digest: candidate_digest(&snapshots),
+            selected_digest,
+            selected_names,
+        },
     })
 }
 
