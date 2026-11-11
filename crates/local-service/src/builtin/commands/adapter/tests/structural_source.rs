@@ -170,3 +170,26 @@ fn python_and_csharp_structural_source_survive_public_wire_and_cold_reopen() {
         matches!(source_command(&mut fixture, "health", None), CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(ref reason)) if reason.contains("changed"))
     );
 }
+
+#[test]
+fn selected_csharp_project_keeps_source_through_owner_and_cold_reopen() {
+    let mut fixture = AdapterFixture::new();
+    let root = PathBuf::from(&fixture.label);
+    let csharp = "public class Account {\n    private bool IsEmpty() { return true; }\n}\n";
+    fs::write(root.join("Account.cs"), csharp).expect("real C# source");
+    fs::write(root.join("Account.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>").expect("real C# project");
+    index_fixture(&mut fixture);
+    for cold in [false, true] {
+        if cold {
+            fixture = fixture.reopen();
+        }
+        let CommandReply::Document(document) = source_command(&mut fixture, "IsEmpty", None) else {
+            panic!("selected project source reply")
+        };
+        assert_eq!(
+            document.excerpt.text(),
+            Some("private bool IsEmpty() { return true; }")
+        );
+        assert!(document.source_policy.is_unknown());
+    }
+}
