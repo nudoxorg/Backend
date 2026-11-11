@@ -53,7 +53,7 @@ pub use manifest::{
 pub use native_source_evidence::{
     NativeHeaderEntry, NativeHeaderEvidence, MAX_NATIVE_HEADER_ENTRIES, NativeSourceEvidence, NativeSourceEvidenceKind, NativeSourceEvidenceRelation, NativeSourceEvidenceRootSchema,
     MAX_NATIVE_EVIDENCE_BYTES, MAX_NATIVE_EVIDENCE_PATH, MAX_NATIVE_EVIDENCE_PROJECT_ROWS,
-    MAX_NATIVE_EVIDENCE_ROWS, MAX_NATIVE_EVIDENCE_SOURCE, MAX_NATIVE_EVIDENCE_VALUE,
+    MAX_NATIVE_EVIDENCE_ROWS, MAX_NATIVE_EVIDENCE_SOURCE, MAX_NATIVE_EVIDENCE_VALUE, MAX_NATIVE_EVIDENCE_STORED_VALUE,
     native_source_evidence_key, native_source_evidence_relation, native_source_evidence_relation_budgeted,
     native_source_evidence_lookup_budgeted, native_source_evidence_page_budgeted, NATIVE_EVIDENCE_READ_SCRATCH, native_source_evidence_root_object, native_source_evidence_root_object_budgeted,
     native_source_evidence_root_pointer_key, validate_native_source_evidence_rows,

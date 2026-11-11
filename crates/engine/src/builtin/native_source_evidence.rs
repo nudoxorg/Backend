@@ -30,6 +30,8 @@ pub const MAX_NATIVE_EVIDENCE_PROJECT_ROWS: usize = 100_000;
 /// Maximum canonical row value; framing and key are charged separately.
 pub const MAX_NATIVE_EVIDENCE_VALUE: usize =
     4 + 32 + 2 + 2 + MAX_NATIVE_EVIDENCE_PATH + 32 + 32 + 4 + 1 + 1 + 4 + MAX_NATIVE_EVIDENCE_LINES * 4 + 32 + 8 + 32 + 4 + MAX_NATIVE_HEADER_ENTRIES * HEADER_ENTRY_BYTES;
+/// A relation node has a smaller capacity than the standalone legacy codec.
+pub const MAX_NATIVE_EVIDENCE_STORED_VALUE: usize = 64 * 1024 - 72;
 
 /// Independently selected native-source claim relation.
 #[derive(Debug)]
@@ -331,6 +333,9 @@ pub fn validate_native_source_evidence_rows(
             return Err("noncanonical native source evidence key");
         }
         previous = Some(*key);
+        if row.checked_encoded_len().is_none_or(|len| len > MAX_NATIVE_EVIDENCE_STORED_VALUE) {
+            return Err("native source evidence row exceeds canonical node capacity");
+        }
         let count = projects.entry(row.project).or_default();
         *count = count
             .checked_add(1)
@@ -505,6 +510,34 @@ mod tests {
             if cursor.is_none() { break; }
         }
         assert_eq!(visited, rows.len());
+    }
+
+    #[test]
+    fn typed_relation_persists_maximum_row_and_rejects_one_byte_more() {
+        use backend_store::{FileStore, RelationAdmissionRegistry};
+        use backend_version::{CoverageWitness, RelationState, ScopeRoot, UntrustedCoverageScope};
+        use std::sync::Arc;
+        let directory = tempfile::tempdir().unwrap();
+        let registry = RelationAdmissionRegistry::new().with_relation::<NativeSourceEvidenceRelation>().unwrap();
+        let store = FileStore::open_with_registry(directory.path(), 1024 * 1024, registry).unwrap();
+        let mut claim = row();
+        claim.path = "xx".into();
+        claim.byte_length = 16_336;
+        claim.line_starts = Some((0..=16_336).collect());
+        assert_eq!(claim.checked_encoded_len(), Some(MAX_NATIVE_EVIDENCE_STORED_VALUE));
+        let key = claim.key().unwrap();
+        let coverage = CoverageWitness::Partial(UntrustedCoverageScope::from_scope_root(ScopeRoot::from_u64(1)));
+        let state = RelationState::<NativeSourceEvidenceRelation>::from_entries([(key, claim.clone())], coverage).unwrap();
+        store.write_relation_state(&state).unwrap();
+        let relation = WorkspaceRelationHandle::<NativeSourceEvidenceRelation>::open(Arc::new(store), *state.root().as_bytes()).unwrap();
+        let mut budget = 64 * 1024 * 1024;
+        assert_eq!(native_source_evidence_lookup_budgeted(&relation, &key, &mut budget).unwrap(), Some(claim.clone()));
+        assert_eq!(native_source_evidence_page_budgeted(&relation, None, &mut budget).unwrap().entries()[0].1, claim);
+        claim.path.push('x');
+        assert_eq!(claim.checked_encoded_len(), Some(MAX_NATIVE_EVIDENCE_STORED_VALUE + 1));
+        let key = claim.key().unwrap();
+        assert!(validate_native_source_evidence_rows(&[(key, claim.clone())]).is_err());
+        assert!(RelationState::<NativeSourceEvidenceRelation>::from_entries([(key, claim)], coverage).is_err());
     }
 
     #[test]

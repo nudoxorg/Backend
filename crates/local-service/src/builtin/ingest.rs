@@ -742,7 +742,7 @@ fn capture_native_typescript_sources(
             u32::try_from(bytes.len()).map_err(|_| "native TypeScript file length overflow")?;
         let content = typed_of::<InputContentSchema>(&bytes).to_bytes();
         let source_fact_identity = SourceFactIdentity::from_canonical_bytes(&bytes);
-        let evidence = backend_engine::builtin::NativeSourceEvidence {
+        let mut evidence = backend_engine::builtin::NativeSourceEvidence {
             project,
             profile,
             path: normalized.clone(),
@@ -753,6 +753,9 @@ fn capture_native_typescript_sources(
             line_starts: backend_engine::builtin::NativeSourceEvidence::capture_line_starts(&bytes),
             headers: None,
         };
+        if evidence.checked_encoded_len().is_none_or(|len| len > backend_engine::builtin::MAX_NATIVE_EVIDENCE_STORED_VALUE) {
+            evidence.line_starts = None;
+        }
         evidence.validate().map_err(str::to_owned)?;
         let mut encoded = Vec::new();
         backend_engine::builtin::NativeSourceEvidenceRelation::encode_value(

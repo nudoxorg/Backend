@@ -804,14 +804,15 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         &self,
         limit: usize,
         entries: &mut Vec<(R::Key, R::Value)>,
-        pending: &mut Vec<UntrustedId<R>>,
+        pending: &mut Vec<(UntrustedId<R>, u16)>,
         max_depth: usize,
     ) -> Result<LazyTreePage<R>, LazyTreeError<L::Error>> {
         while entries.len() < limit {
-            let Some(claim) = pending.pop() else {
+            let Some((claim, expected_level)) = pending.pop() else {
                 break;
             };
             let node = self.load(claim)?;
+            if node.node().level() != expected_level { return Err(LazyTreeError::Node(NodeError::LevelMismatch)); }
             self.take_page(&node, PageStart::Beginning, limit, entries, pending, max_depth)?;
         }
         let next = (entries.len() == limit)
@@ -833,10 +834,12 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         start: PageStart<'k, R::Key>,
         limit: usize,
         entries: &mut Vec<(R::Key, R::Value)>,
-        pending: &mut Vec<UntrustedId<R>>,
+        pending: &mut Vec<(UntrustedId<R>, u16)>,
         max_depth: usize,
     ) -> Result<(), LazyTreeError<L::Error>> {
-        if max_depth == 0 { return Err(LazyTreeError::Node(NodeError::OversizedNode)); }
+        if max_depth == 0 || usize::from(node.node().level()) >= max_depth {
+            return Err(LazyTreeError::Node(NodeError::OversizedNode));
+        }
         if entries.len() == limit {
             return Ok(());
         }
@@ -874,9 +877,10 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
                 .saturating_sub(1),
         };
         for child in children[index + 1..].iter().rev() {
-            pending.push(child_claim(child).map_err(LazyTreeError::Node)?);
+            pending.push((child_claim(child).map_err(LazyTreeError::Node)?, child.level));
         }
         let child = self.load(child_claim(&children[index]).map_err(LazyTreeError::Node)?)?;
+        if child.node().level() != children[index].level { return Err(LazyTreeError::Node(NodeError::LevelMismatch)); }
         self.take_page(&child, start, limit, entries, pending, max_depth - 1)
     }
 
