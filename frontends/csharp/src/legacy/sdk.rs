@@ -180,6 +180,58 @@ fn candidate_digest(snapshots: &[CandidateSnapshot]) -> [u8; 32] {
     hash.finalize().into()
 }
 
+fn copy_pack_layout(
+    snapshots: &[CandidateSnapshot],
+    destination: &Path,
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> Result<PathBuf, &'static str> {
+    let mut roots = snapshots.iter().filter_map(|snapshot| {
+        snapshot
+            .canonical
+            .ancestors()
+            .find(|path| path.file_name().is_some_and(|name| name == "packs"))
+            .map(Path::to_path_buf)
+    });
+    let source = roots.next().ok_or("SDK pack layout unavailable")?;
+    if roots.any(|root| root != source) {
+        return Err("SDK pack roots differ");
+    }
+    if snapshots.iter().any(|snapshot| !snapshot.canonical.starts_with(&source)) {
+        return Err("SDK candidate outside pack layout");
+    }
+    let target = destination.join("packs");
+    let mut total = 0usize;
+    fn copy_dir(
+        source: &Path,
+        target: &Path,
+        total: &mut usize,
+        deadline: Instant,
+        cancelled: &AtomicBool,
+    ) -> Result<(), &'static str> {
+        if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+            return Err("SDK pack snapshot cancelled");
+        }
+        fs::create_dir_all(target).map_err(|_| "SDK pack snapshot unavailable")?;
+        for entry in fs::read_dir(source).map_err(|_| "SDK pack snapshot unavailable")? {
+            let entry = entry.map_err(|_| "SDK pack snapshot unavailable")?;
+            let from = entry.path();
+            let to = target.join(entry.file_name());
+            if from.is_dir() {
+                copy_dir(&from, &to, total, deadline, cancelled)?;
+            } else {
+                let metadata = fs::metadata(&from).map_err(|_| "SDK pack snapshot unavailable")?;
+                *total = total.checked_add(metadata.len() as usize).ok_or("SDK pack snapshot limit")?;
+                if *total > 256 * 1024 * 1024 { return Err("SDK pack snapshot limit"); }
+                fs::copy(&from, &to).map_err(|_| "SDK pack snapshot unavailable")?;
+            }
+        }
+        Ok(())
+    }
+    copy_dir(&source, &target, &mut total, deadline, cancelled)?;
+    Ok(target)
+}
+
 impl CSharpResolvedReferenceSnapshot {
     /// Copies selected bytes into a fresh owner for an independent authority
     /// lifetime. The returned snapshot never borrows the resolver scratch.
@@ -391,6 +443,7 @@ pub fn resolve_references_with_sdk(
         captured_candidates.push(destination);
     }
     let candidates = captured_candidates.as_slice();
+    let private_pack_root = copy_pack_layout(&snapshots, scratch.path(), deadline, cancelled)?;
     if let Some(assets_file) = assets_file {
         if !assets_file.is_absolute() || !assets_file.is_file() {
             return Err("SDK assets unavailable");
@@ -414,7 +467,7 @@ pub fn resolve_references_with_sdk(
     }
     let project = scratch.path().join("resolve.csproj");
     let mut xml = format!(
-        "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>{target_framework}</TargetFramework><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets><DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences></PropertyGroup><ItemGroup>"
+        "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>{target_framework}</TargetFramework><NetCoreTargetingPackRoot>{}</NetCoreTargetingPackRoot><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets></PropertyGroup><ItemGroup>", private_pack_root.display()
     );
     for path in candidates {
         if !path.is_absolute() || !path.is_file() {
