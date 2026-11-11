@@ -8236,7 +8236,13 @@ mod persisted_intent_tests {
         intent.csharp_extension = Some(super::super::csharp_intent::tests::example(package.to_bytes()));
         let encoded = intent.canonical_bytes();
         assert_eq!(&encoded[..5], b"BPIG\x10");
-        assert_eq!(BuiltinIntent::decode(&encoded).unwrap(), intent);
+        let decoded = BuiltinIntent::decode(&encoded).unwrap();
+        assert_eq!(decoded, intent);
+        // The durable representation is a claim: decoding cannot recreate the
+        // private source/attempt custody required even for staging.
+        let base = super::super::genesis().unwrap().snapshot();
+        let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        assert!(decoded.validate_csharp_stage_custody(&base, &cancellation).is_err());
         assert!(BuiltinIntent::decode(&encoded[..encoded.len() - 1]).is_err());
         let mut trailing = encoded.clone(); trailing.push(0);
         assert!(BuiltinIntent::decode(&trailing).is_err());
