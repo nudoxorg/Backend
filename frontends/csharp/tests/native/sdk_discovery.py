@@ -112,6 +112,13 @@ def main():
         assert unbound.returncode != 0
         fallback = subprocess.run([arg for arg in cmd if arg != "--exact-defines"], input=json.dumps([{"Path":"Program.cs", "Text":source}]), capture_output=True, text=True, check=True, timeout=30)
         assert json.loads(out.read_text())["diagnostics"]["errorCount"] > 0, fallback.stderr
+        # A class-library test project inherits the Web framework from a
+        # referenced API, while retaining the standard SDK's namespace policy.
+        project.write_text('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets></PropertyGroup><ItemGroup><FrameworkReference Include="Microsoft.AspNetCore.App"/></ItemGroup></Project>')
+        inherited = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, check=True, timeout=30)
+        inherited_items = json.loads(inherited.stdout)["Items"]
+        assert {item["NuGetPackageId"] for item in inherited_items["TargetingPack"]} == {"Microsoft.NETCore.App.Ref", "Microsoft.AspNetCore.App.Ref"}
+        assert not any(item["Identity"] == "Microsoft.AspNetCore.Builder" for item in inherited_items["Using"])
         (root / "global.json").write_text('{"sdk":{"version":"9999.0.100","rollForward":"disable"}}')
         missing = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=30)
         assert missing.returncode != 0

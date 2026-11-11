@@ -312,6 +312,7 @@ pub(super) fn simple_csharp_sdk_options(
             output_type,
             nullable,
             allow_unsafe_blocks: allow_unsafe,
+            framework_references: Vec::new(),
         },
     })
 }

@@ -98,15 +98,29 @@ pub struct CSharpSdkProjectProperties {
     pub nullable: Option<String>,
     /// `true` or `false`.
     pub allow_unsafe_blocks: Option<String>,
+    /// Known shared frameworks required by the restored project-reference graph.
+    pub framework_references: Vec<String>,
 }
 
 impl CSharpSdkProjectProperties {
     fn xml(&self) -> Result<String, &'static str> {
         let mut xml = String::new();
         for (name, value, allowed) in [
-            ("OutputType", &self.output_type, &["Exe", "Library", "WinExe"][..]),
-            ("Nullable", &self.nullable, &["enable", "disable", "warnings", "annotations"][..]),
-            ("AllowUnsafeBlocks", &self.allow_unsafe_blocks, &["true", "false"][..]),
+            (
+                "OutputType",
+                &self.output_type,
+                &["Exe", "Library", "WinExe"][..],
+            ),
+            (
+                "Nullable",
+                &self.nullable,
+                &["enable", "disable", "warnings", "annotations"][..],
+            ),
+            (
+                "AllowUnsafeBlocks",
+                &self.allow_unsafe_blocks,
+                &["true", "false"][..],
+            ),
         ] {
             if let Some(value) = value {
                 if !allowed.contains(&value.as_str()) {
@@ -217,8 +231,22 @@ pub fn observe_csharp_sdk_with(
     };
     let enabled = if implicit_usings { "enable" } else { "disable" };
     let extra = properties.xml()?;
+    let mut frameworks = String::new();
+    for name in &properties.framework_references {
+        if !matches!(
+            name.as_str(),
+            "Microsoft.NETCore.App" | "Microsoft.AspNetCore.App"
+        ) {
+            return Err("unsupported restored framework reference");
+        }
+        if name == "Microsoft.AspNetCore.App" && matches!(kind, CSharpSdkKind::Standard) {
+            frameworks =
+                "<ItemGroup><FrameworkReference Include=\"Microsoft.AspNetCore.App\"/></ItemGroup>"
+                    .to_owned();
+        }
+    }
     let xml = format!(
-        "<Project Sdk=\"{sdk}\"><PropertyGroup><TargetFramework>{target_framework}</TargetFramework><ImplicitUsings>{enabled}</ImplicitUsings>{extra}<ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets></PropertyGroup></Project>"
+        "<Project Sdk=\"{sdk}\"><PropertyGroup><TargetFramework>{target_framework}</TargetFramework><ImplicitUsings>{enabled}</ImplicitUsings>{extra}<ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets></PropertyGroup>{frameworks}</Project>"
     );
     fs::write(&project, xml).map_err(|_| "SDK scratch unavailable")?;
     let command = CaptureCommand {

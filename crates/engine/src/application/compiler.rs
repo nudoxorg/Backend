@@ -4316,9 +4316,13 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 Ok(ToolchainSelection::ResolvedNative(toolchain)) => toolchain.external().map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" })?,
                 _ => return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" }),
             };
+            let mut properties = options.properties.clone();
+            if let Some(references) = restored_csharp_references.as_ref() {
+                properties.framework_references.clone_from(&references.framework_references);
+            }
             let observed = backend_frontend_csharp::legacy::observe_csharp_sdk_with(
                 toolchain.executable(), project_path, probes, options.kind, &options.target_framework,
-                options.implicit_usings, &options.properties, control.deadline, cancelled,
+                options.implicit_usings, &properties, control.deadline, cancelled,
             ).map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK observation unavailable" })?;
             // With no global.json inside the captured root the installed SDK's own
             // default applies; a pin above the captured root is not observable

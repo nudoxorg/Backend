@@ -146,9 +146,10 @@ pub fn resolve_project_assets_with_metadata(
             match refs {
                 Value::Array(values) => {
                     for value in values {
-                        if let Some(name) = value.as_str() {
-                            admit_framework_reference(name, &mut framework_references)?;
-                        }
+                        let name = value.as_str().ok_or_else(|| {
+                            RestoreError::Unavailable("invalid framework reference name".to_owned())
+                        })?;
+                        admit_framework_reference(name, &mut framework_references)?;
                     }
                 }
                 Value::Object(values) => {
@@ -499,6 +500,9 @@ fn asset_tokens(value: &str) -> BTreeSet<String> {
 }
 
 fn checked_path(path: &str) -> Result<&Path, RestoreError> {
+    if path.len() > 4096 || path.bytes().any(|byte| byte.is_ascii_control()) {
+        return Err(RestoreError::Limit);
+    }
     let p = Path::new(path);
     if path.is_empty()
         || !p.is_absolute()
