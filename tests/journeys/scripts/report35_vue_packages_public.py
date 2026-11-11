@@ -54,6 +54,12 @@ def main():
         require(phase + ' CLI source', rc == 0 and "return 'é漢'" in raw and '<template>' not in raw, raw)
         result = mcp('backend.source', {'coordinate': coord}, phase + '-mcp-source')
         require(phase + ' MCP source', "return 'é漢'" in json.dumps(result, ensure_ascii=False), result)
+        module = f'{journey.project}::App.vue:1::App'
+        rc, _, raw = journey.cli(phase + '-component-source', ['source', module])
+        require(phase + ' CLI full component source', rc == 0 and '<template>' in raw and '<script setup' in raw, raw)
+        result = mcp('backend.source', {'coordinate': module}, phase + '-mcp-component-source')
+        component = json.dumps(result, ensure_ascii=False)
+        require(phase + ' MCP full component source', '<template>' in component and '<script setup' in component, result)
         rc, refs, raw = journey.cli(phase + '-refs', ['references', coord])
         observed = spans(refs)
         require(phase + ' CLI references', rc == 0 and len(observed) == 2 and coverage_word(refs) == 'partial', raw)
@@ -100,6 +106,8 @@ def main():
         require('edit published', rc == 0 and state == 'published', raw)
         rc, result, raw = journey.cli('edited-search', ['search', 'mounted', '--limit', '100'])
         require('edit retires declaration', rc == 0 and not declarations(result, 'mounted', {'function'}, None), raw)
+        result = mcp('backend.search', {'query': 'mounted', 'limit': 100}, 'edited-mcp-search')
+        require('MCP edit retires declaration', not declarations(result, 'mounted', {'function'}, None), result)
     except Exception as error:
         checks.append({'name': 'journey completed', 'pass': False, 'detail': repr(error)})
     finally:
