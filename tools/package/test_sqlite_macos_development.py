@@ -85,7 +85,7 @@ class SqliteDevelopmentTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'worker changed while rechecking'):
                     recipe.verify_after_signing(record,source=source,target_triple='aarch64-apple-darwin',deadline=999999999,companion=Companion)
                 mutation['target']=None
-                (macos/'sqlite-worker').write_bytes(b'tampered')
+                (macos/'backend-sqlite-worker').write_bytes(b'tampered')
                 with self.assertRaisesRegex(ValueError,'changed SQLite worker'):
                     recipe.verify_after_signing(record,source=source,target_triple='aarch64-apple-darwin',deadline=999999999,companion=Companion)
 

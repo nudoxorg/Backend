@@ -58,7 +58,7 @@ def prepare(*, source: Path, target: Path, env: dict[str, str], output: Path,
     observer = release / 'examples/installed_basis_observer'
     raw_size, raw_hash = package.admit_file_digest(raw_worker, package.MAX_BINARY_BYTES)
     observer_before = common.artifact_identity(observer)
-    worker = output / 'sqlite-worker'
+    worker = output / 'backend-sqlite-worker'
     package.copy_admitted_file(raw_worker, worker, raw_hash, raw_size, package.MAX_BINARY_BYTES)
     worker.chmod(0o700)
     old_run = package.run
