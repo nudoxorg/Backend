@@ -12,7 +12,7 @@ const MEMBER_PAGE_SIZE: usize = 128;
 // Keep repeated publication retries from flooding diagnostic logs. The trace
 // records only the failing admission stage and error category, never paths or
 // closure identifiers; it does not change the returned store error.
-fn trace_admission_error(stage: &str, error: &StoreError) {
+pub(crate) fn trace_admission_error(stage: &str, error: &StoreError) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static REPORTED: AtomicUsize = AtomicUsize::new(0);
     if matches!(error, StoreError::Bounds)
