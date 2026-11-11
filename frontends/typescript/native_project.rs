@@ -580,6 +580,8 @@ pub fn build_with_root_selection_observer(
 pub struct NativeFunctionHeader {
     /// Complete declaration extent used to join an emitted compiler entity.
     pub declaration: (u32, u32),
+    /// Candidate compiler extent, to be checked against the selected image.
+    pub compiler_extent: (u32, u32),
     /// Authored header extent, including TSZ-owned modifiers.
     pub header: (u32, u32),
 }
@@ -600,6 +602,24 @@ pub fn function_headers(
         .map_err(|error| format!("native TSZ header parse stopped: {error:?}"))?;
     if !parser.get_diagnostics().is_empty() { return Ok(Vec::new()); }
     let arena = &parser.arena;
+    // TSZ stores `async` separately and starts the function node at `function`.
+    // The native scanner supplies its token position; this is only a candidate
+    // until the selected compiler image proves the complete matching extent.
+    let mut scanner = tsz::ScannerState::new(text.to_owned(), true);
+    let mut preceding_async = BTreeMap::new();
+    let mut previous = None;
+    loop {
+        poll(checkpoint, 1)?;
+        let kind = scanner.scan();
+        if kind == SyntaxKind::EndOfFileToken { break; }
+        let start = u32::try_from(scanner.get_token_start()).map_err(|_| "native token offset overflow")?;
+        if kind == SyntaxKind::FunctionKeyword {
+            if let Some((SyntaxKind::AsyncKeyword, async_start)) = previous {
+                preceding_async.insert(start, async_start);
+            }
+        }
+        previous = Some((kind, start));
+    }
     let mut export_starts = BTreeMap::<u32, Option<u32>>::new();
     for (index, node) in arena.nodes.iter().enumerate() {
         poll(checkpoint, 1)?;
@@ -619,16 +639,19 @@ pub fn function_headers(
         let Some((body_start, _)) = arena.pos_end_at(function.body) else { continue };
         let Some((name_start, name_end)) = arena.pos_end_at(function.name) else { continue };
         if !(start <= name_start && name_start < name_end && name_end <= body_start && body_start < end) { continue; }
+        let compiler_start = if function.is_async {
+            let Some(start) = preceding_async.get(&start).copied() else { continue };
+            start
+        } else { start };
         let header_start = match export_starts.get(&index.0) {
             Some(Some(start)) => *start,
             Some(None) => continue,
-            None if function.is_async => continue,
-            None => start,
+            None => compiler_start,
         };
         if header_start > start || text.get(header_start as usize..body_start as usize).is_none()
             || text.get(start as usize..end as usize).is_none() { continue; }
         if headers.len() == MAX_HEADERS { return Ok(Vec::new()); }
-        headers.push(NativeFunctionHeader { declaration: (start, end), header: (header_start, body_start) });
+        headers.push(NativeFunctionHeader { declaration: (start, end), compiler_extent: (compiler_start, end), header: (header_start, body_start) });
     }
     headers.sort_unstable_by_key(|header| header.declaration);
     if headers.windows(2).any(|pair| pair[0].declaration == pair[1].declaration) {
@@ -1176,7 +1199,7 @@ mod tests {
                 })
             },
         )?.ok_or("compiler function missing")?;
-        assert_eq!(header.declaration, compiler_extent, "TSZ and emitted function extent must agree");
+        assert_eq!(header.compiler_extent, compiler_extent, "TSZ token candidate and emitted function extent must agree");
         Ok(())
     }
 
