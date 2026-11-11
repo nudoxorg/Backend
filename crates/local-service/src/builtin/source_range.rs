@@ -175,20 +175,24 @@ fn context_head(prefix: &str) -> NativeContextHead<'_> {
 // site when a bare CR or a Unicode line separator would make those numbers
 // misleading. `native_page` calls this only after verifying the entire host
 // and admitting the selected extent on that same byte buffer.
-fn observed_start_line(host: &[u8], owner_start: usize, owner: &str) -> Option<u32> {
-    let prefix = std::str::from_utf8(host.get(..owner_start)?).ok()?;
-    let representable = |text: &str| {
-        !text.contains('\u{2028}') && !text.contains('\u{2029}')
-            && text.as_bytes().iter().enumerate().all(|(at, byte)| {
-                *byte != b'\r' || text.as_bytes().get(at + 1) == Some(&b'\n')
-            })
-    };
-    if !representable(prefix) || !representable(owner) {
-        return None;
+fn observed_start_line(host: &[u8], owner_start: usize, _owner: &str) -> Option<u32> {
+    let text = std::str::from_utf8(host).ok()?;
+    if !text.is_char_boundary(owner_start) { return None; }
+    let mut chars = text.char_indices().peekable();
+    let mut line = 1_u32;
+    while let Some((at, ch)) = chars.next() {
+        let end = match ch {
+            '\r' if chars.peek().is_some_and(|(_, next)| *next == '\n') => {
+                let (next, _) = chars.next()?;
+                next + 1
+            }
+            '\r' | '\n' | '\u{2028}' | '\u{2029}' => at + ch.len_utf8(),
+            _ => continue,
+        };
+        if end > owner_start { break; }
+        line = line.checked_add(1)?;
     }
-    u32::try_from(prefix.bytes().filter(|byte| *byte == b'\n').count())
-        .ok()?
-        .checked_add(1)
+    Some(line)
 }
 
 /// Checks the host against the selected source identity and binding evidence.
@@ -248,14 +252,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_owner_line_uses_verified_host_and_refuses_unrenderable_breaks() {
+    fn native_owner_line_uses_verified_host_with_all_line_breaks() {
         for (prefix, body, expected) in [
             ("// é\r\n// 漢\n", "function f() {\r\n  return 1;\r\n}", Some(3)),
-            ("// old\rline\n", "function f() {}", None),
-            ("// old\u{2028}line\n", "function f() {}", None),
-            ("// old\u{2029}line\n", "function f() {}", None),
-            ("// before\n", "function f() {\rreturn 1;}", None),
-            ("// before\n", "function f() {\u{2028}return 1;}", None),
+            ("// old\rline\n", "function f() {}", Some(3)),
+            ("// old\u{2028}line\n", "function f() {}", Some(3)),
+            ("// old\u{2029}line\n", "function f() {}", Some(3)),
+            ("// before\n", "function f() {\rreturn 1;}", Some(2)),
+            ("// before\n", "function f() {\u{2028}return 1;}", Some(2)),
         ] {
             let host = format!("{prefix}{body}");
             let source = ContentId::<SourceFactDomain>::from_canonical_bytes(host.as_bytes());

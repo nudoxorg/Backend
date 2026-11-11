@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 const MAGIC: &[u8; 4] = b"NSE1";
 const MAGIC_V2: &[u8; 4] = b"NSE2";
 /// Maximum retained line starts per file.
-pub const MAX_NATIVE_EVIDENCE_LINES: usize = 16_384;
+pub const MAX_NATIVE_EVIDENCE_LINES: usize = 1_000_000;
 const ROOT_KEY: [u8; 32] = [0x45; 32];
 /// Maximum path and captured input sizes, matching native source admission.
 pub const MAX_NATIVE_EVIDENCE_PATH: usize = 4096;
@@ -74,14 +74,19 @@ impl NativeSourceEvidence {
     /// Captures a bounded complete line map when line endings are representable.
     pub fn capture_line_starts(bytes: &[u8]) -> Option<Vec<u32>> {
         let text = std::str::from_utf8(bytes).ok()?;
-        if text.contains('\u{2028}') || text.contains('\u{2029}') { return None; }
         let mut starts = vec![0];
-        for (i, byte) in bytes.iter().enumerate() {
-            if *byte == b'\r' && bytes.get(i + 1) != Some(&b'\n') { return None; }
-            if *byte == b'\n' {
-                if starts.len() == MAX_NATIVE_EVIDENCE_LINES { return None; }
-                starts.push(u32::try_from(i + 1).ok()?);
-            }
+        let mut chars = text.char_indices().peekable();
+        while let Some((at, ch)) = chars.next() {
+            let end = match ch {
+                '\r' if chars.peek().is_some_and(|(_, next)| *next == '\n') => {
+                    let (next, _) = chars.next()?;
+                    next + 1
+                }
+                '\r' | '\n' | '\u{2028}' | '\u{2029}' => at + ch.len_utf8(),
+                _ => continue,
+            };
+            if starts.len() == MAX_NATIVE_EVIDENCE_LINES { return None; }
+            starts.push(u32::try_from(end).ok()?);
         }
         Some(starts)
     }
@@ -356,7 +361,9 @@ mod tests {
         assert!(claim.verify_host(bytes, image).is_ok());
         claim.line_starts.as_mut().unwrap()[1] += 1;
         assert!(claim.verify_host(bytes, image).is_err());
-        assert!(NativeSourceEvidence::capture_line_starts(b"a\rb").is_none());
+        assert_eq!(NativeSourceEvidence::capture_line_starts(b"a\rb"), Some(vec![0, 2]));
+        let long = vec![b'\n'; 20_000];
+        assert_eq!(NativeSourceEvidence::capture_line_starts(&long).unwrap().len(), 20_001);
         assert!(NativeSourceEvidence::capture_line_starts(&vec![b'\n'; MAX_NATIVE_EVIDENCE_LINES]).is_none());
         let mut invalid = claim.clone();
         invalid.line_starts = Some(vec![0, 0]);
@@ -365,7 +372,7 @@ mod tests {
         let mut malformed = Vec::new();
         NativeSourceEvidenceRelation::encode_value(&invalid, &mut malformed);
         assert!(NativeSourceEvidenceRelation::decode_value(&malformed).is_err());
-        assert!(NativeSourceEvidence::capture_line_starts("a\u{2028}b".as_bytes()).is_none());
+        assert_eq!(NativeSourceEvidence::capture_line_starts("a\u{2028}b\u{2029}c".as_bytes()), Some(vec![0, 4, 8]));
         claim.kind = NativeSourceEvidenceKind::ProgramMember;
         assert!(!claim.admits_image());
         assert!(claim.verify_host(bytes, image).is_err());
