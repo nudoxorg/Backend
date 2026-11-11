@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import pathlib
+import subprocess
 import sys
 
 from csharp_public_route import Journey
@@ -26,6 +27,12 @@ def main():
     parser.add_argument('--output', required=True)
     parser.add_argument('--source-commit', required=True)
     args = parser.parse_args()
+    repo = pathlib.Path(__file__).resolve().parents[3]
+    git = lambda *cmd: subprocess.check_output(['git', '-C', str(repo), *cmd], text=True).strip()
+    head = git('rev-parse', 'HEAD')
+    if head != args.source_commit or git('status', '--porcelain'):
+        raise SystemExit('source checkout must be clean and match --source-commit exactly')
+    tree = git('rev-parse', 'HEAD^{tree}')
     output = pathlib.Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     checks = []
@@ -117,7 +124,7 @@ def main():
         checks.append({'name': 'journey completed', 'pass': False, 'detail': repr(error)})
     finally:
         journey.close()
-    receipt = {'source_commit_claimed': args.source_commit, 'binary_sha256': {name: digest(pathlib.Path(args.bin_dir) / name) for name in ('backend-cli', 'backend-mcp', 'backend-locald')}, 'mode': 'development; account gate not exercised', 'fixture': 'synthetic; package code not executed', 'nuget_public_journey': 'not exercised', 'checks': checks}
+    receipt = {'source_commit': head, 'source_tree': tree, 'cargo_lock_sha256': digest(repo / 'Cargo.lock'), 'binary_sha256': {name: digest(pathlib.Path(args.bin_dir) / name) for name in ('backend-cli', 'backend-mcp', 'backend-locald')}, 'binary_source_binding': 'not independently attested', 'mode': 'development assumed; authenticated account not exercised', 'account_gate_environment_set': 'NUDOX_ACCOUNT_GATE' in journey.env, 'fixture': 'synthetic; package code not executed', 'nuget_public_journey': 'not exercised', 'checks': checks}
     (output / 'receipt.json').write_text(json.dumps(receipt, indent=2))
     print(json.dumps(receipt, indent=2))
     return 0 if checks and all(check['pass'] for check in checks) else 1
