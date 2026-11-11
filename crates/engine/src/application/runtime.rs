@@ -306,6 +306,15 @@ pub struct OwnedCSharpProjectNode {
     project_references: Box<[Box<str>]>,
 }
 
+struct BorrowedCSharpProjectNode<'a> {
+    source_rows: Vec<backend_frontend_csharp::legacy::CSharpCapturedSource<'a>>,
+    config: Vec<backend_frontend_csharp::legacy::CSharpCapturedConfig<'a>>,
+    refs: Vec<&'a Path>,
+    symbols: Vec<&'a str>,
+    usings: Vec<&'a str>,
+    project_references: Vec<&'a str>,
+}
+
 impl OwnedCSharpProjectNode {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -392,12 +401,40 @@ impl OwnedCSharpProjectGraph {
         if self.nodes.len() != self.project_paths.len() || self.nodes.is_empty() {
             return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
         }
-        // The graph protocol borrows per-node arrays. Building a safe arena
-        // for those arrays is deferred until the runtime can retain that arena
-        // through the complete authority call; reject here rather than leak
-        // heap allocations or return references to temporary vectors.
-        let _ = (package_sources, f);
-        Err(PackageSourceSetError::NativeCSharpProfileMismatch)
+        let mut arena = Vec::with_capacity(self.nodes.len());
+        for node in self.nodes.iter() {
+            let mut source_rows = Vec::with_capacity(node.sources.len());
+            for claim in node.sources.iter() {
+                let source = package_sources.iter().find(|source| source.relative_path.as_ref() == claim.path.as_ref())
+                    .ok_or(PackageSourceSetError::NativeCSharpProfileMismatch)?;
+                let text = match &source.source {
+                    OwnedPackageSourceContents::Utf8(text) => text.as_str(),
+                    OwnedPackageSourceContents::Raw(_) => return Err(PackageSourceSetError::NativeCSharpProfileMismatch),
+                };
+                if text.len() != claim.byte_length as usize
+                    || backend_compile::VerifiedSourceText::capture(text.as_bytes()).map_err(|_| PackageSourceSetError::NativeCSharpProfileMismatch)?.content().to_bytes() != claim.input_content
+                    || backend_semantic::ir::SourceIdentity::from_bytes(text.as_bytes()).is_none_or(|identity| identity.identity.as_ref() != &claim.source_fact)
+                { return Err(PackageSourceSetError::NativeCSharpProfileMismatch); }
+                source_rows.push(backend_frontend_csharp::legacy::CSharpCapturedSource { path: &source.relative_path, text });
+            }
+            arena.push(BorrowedCSharpProjectNode {
+                source_rows,
+                config: node.config.iter().map(|probe| backend_frontend_csharp::legacy::CSharpCapturedConfig { path: &probe.path, text: probe.text.as_deref() }).collect(),
+                refs: node.reference_directories.iter().map(|path| path.as_ref()).collect(),
+                symbols: node.define_symbols.iter().map(|symbol| symbol.as_ref()).collect(),
+                usings: node.usings.iter().map(|using| using.as_ref()).collect(),
+                project_references: node.project_references.iter().map(|path| path.as_ref()).collect(),
+            });
+        }
+        let nodes = self.nodes.iter().zip(arena.iter()).map(|(node, view)| backend_frontend_csharp::legacy::CSharpCapturedProjectNode {
+            project_path: &node.project_path, assembly_name: &node.assembly_name,
+            target_framework: &node.target_framework, language_version: &node.language_version,
+            define_symbols: &view.symbols, nullable: &node.nullable, allow_unsafe: node.allow_unsafe,
+            output_type: &node.output_type, usings: &view.usings, sources: &view.source_rows,
+            config: &view.config, reference_directories: &view.refs, project_references: &view.project_references,
+        }).collect::<Vec<_>>();
+        let graph = backend_frontend_csharp::legacy::CSharpCapturedProjectGraph { format: 1, root_project: &self.root_project, projects: &nodes };
+        Ok(f(&graph))
     }
 }
 
