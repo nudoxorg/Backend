@@ -181,6 +181,26 @@ fn candidate_digest(snapshots: &[CandidateSnapshot]) -> [u8; 32] {
 }
 
 impl CSharpResolvedReferenceSnapshot {
+    /// Copies selected bytes into a fresh owner for an independent authority
+    /// lifetime. The returned snapshot never borrows the resolver scratch.
+    pub fn clone_owned(&self) -> Result<Self, &'static str> {
+        let directory = tempfile::tempdir().map_err(|_| "SDK snapshot unavailable")?;
+        let selected = directory.path().join("selected");
+        fs::create_dir(&selected).map_err(|_| "SDK snapshot unavailable")?;
+        let mut references = Vec::with_capacity(self.references.len());
+        for path in &self.references {
+            let name = path.file_name().ok_or("SDK snapshot filename")?;
+            let destination = selected.join(name);
+            fs::copy(path, &destination).map_err(|_| "SDK snapshot unavailable")?;
+            references.push(destination);
+        }
+        Ok(Self {
+            directory,
+            references: references.into_boxed_slice(),
+            digest: self.digest,
+            receipt: self.receipt.clone(),
+        })
+    }
     pub fn references(&self) -> &[PathBuf] {
         &self.references
     }

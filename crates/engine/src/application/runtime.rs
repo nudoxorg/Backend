@@ -5740,6 +5740,7 @@ fn run_worker_generation(
                 include_non_public: csharp.include_non_public,
                 maximum_source_bytes: csharp.maximum_source_bytes,
             },
+            resolved_reference_snapshot: None,
         });
     let authority = PackageAuthorityConfiguration {
         clang: configuration.package_authority.clang.as_ref(),

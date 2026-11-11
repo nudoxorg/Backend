@@ -104,6 +104,9 @@ pub struct CSharpPackageAuthorityConfiguration<'config> {
     pub producer: &'config CSharpOracle,
     /// Closed helper policy borrowed by each C# authority transaction.
     pub configuration: CSharpAuthorityConfiguration<'config>,
+    /// Resolver-selected references to clone into owner custody.
+    pub resolved_reference_snapshot:
+        Option<&'config backend_frontend_csharp::legacy::CSharpResolvedReferenceSnapshot>,
 }
 
 /// Explicit Rust project authority inputs that cannot be inferred from source
@@ -1090,26 +1093,35 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         });
                     }
                 };
-                let image = configuration
-                    .producer
-                    .produce(CSharpAuthorityRequest {
-                        package_root: request.package_root,
-                        source_path: request.source_path,
-                        project_file: project_file.as_deref(),
-                        source: request.source,
-                        captured_sources: request.csharp_sources,
-                        captured_config: request.csharp_config,
-                        captured_project_graph: None,
-                        profile,
-                        native_tool: resolved.tool,
-                        toolchain: resolved.as_ref(),
-                        control: CSharpAuthorityControl {
-                            deadline: request.control.deadline,
-                            cancelled: request.control.cancelled,
-                        },
-                        configuration: configuration.configuration,
-                    })
-                    .map_err(PackageAuthorityError::CSharp)?;
+                let request = CSharpAuthorityRequest {
+                    package_root: request.package_root,
+                    source_path: request.source_path,
+                    project_file: project_file.as_deref(),
+                    source: request.source,
+                    captured_sources: request.csharp_sources,
+                    captured_config: request.csharp_config,
+                    captured_project_graph: None,
+                    profile,
+                    native_tool: resolved.tool,
+                    toolchain: resolved.as_ref(),
+                    control: CSharpAuthorityControl {
+                        deadline: request.control.deadline,
+                        cancelled: request.control.cancelled,
+                    },
+                    configuration: configuration.configuration,
+                };
+                let image = match configuration.resolved_reference_snapshot {
+                    Some(snapshot) => configuration
+                        .producer
+                        .produce_with_owned_reference_snapshot(
+                            request,
+                            std::sync::Arc::new(snapshot.clone_owned().map_err(|_| {
+                                PackageAuthorityError::CSharp(CSharpAuthorityError::Configuration)
+                            })?),
+                        ),
+                    None => configuration.producer.produce(request),
+                }
+                .map_err(PackageAuthorityError::CSharp)?;
                 let resolver_snapshot = image.resolved_reference_snapshot().cloned();
                 let (image, evidence, resolver_receipt) = image.into_parts_with_resolver_receipt();
                 let image = retain_image(
