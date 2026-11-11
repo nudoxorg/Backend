@@ -22,11 +22,11 @@ pub(super) fn producer_recipe() -> [u8; 32] {
 /// publication; these checks do not manufacture that authority.
 pub(super) fn admit_image(
     claim: &NativeSourceEvidence,
+    headers: &backend_engine::builtin::NativeHeaderEvidence,
     file: &backend_semantic::native_ts_headers::NativeTsHeaderFile,
     image: &SemanticImageView<'_>,
     encoded: &[u8],
 ) -> Result<(), String> {
-    let headers = claim.headers.as_ref().ok_or("native header reference absent")?;
     let identity = *backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(encoded).as_ref();
     if headers.image_identity != identity || headers.image_byte_len != encoded.len() as u64
         || file.path != claim.path || file.source.byte_len != claim.byte_length

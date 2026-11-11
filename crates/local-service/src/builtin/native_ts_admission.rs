@@ -241,6 +241,10 @@ pub(super) fn refresh_native_ts_evidence_plan(
             .native_program_sources
             .as_ref()
             .ok_or_else(|| BuiltinModelError("native TypeScript program is unavailable".into()))?;
+        let mut header_budget = MAX_NATIVE_EVIDENCE_BYTES;
+        let header_witness = semantic_authority.selected_native_header_aggregate(
+            candidate.publication.key(), candidate.publication.claim(), &mut header_budget,
+        )?;
         if program.membership_identity() != candidate.program_identity
             || program_package_paths(program)? != candidate.program_paths
             || !activated
@@ -250,7 +254,7 @@ pub(super) fn refresh_native_ts_evidence_plan(
                 .eq(candidate.image_digests.iter().copied())
             || candidate
                 .revalidated
-                .program_image_evidence(&activated, candidate.publication.native_headers())
+                .program_image_evidence(&activated, header_witness.as_ref().map(|(aggregate, digest)| (aggregate, *digest)))
                 .map_err(BuiltinModelError)?
                 != candidate.evidence
         {
@@ -735,9 +739,8 @@ impl NativeTsOwnerCandidate {
         for change in &self.evidence_changes {
             charge_change_paths(&mut total, change)?;
         }
-        // Count both retained private custodies, even if shared by another plan.
+        // Count the retained revalidation Arc, even if another candidate shares it.
         total
-            .checked_add(self.publication.native_headers().map_or(0, |headers| headers.retained_bytes()))?
             .checked_add(2 * std::mem::size_of::<usize>())?
             .checked_add(self.revalidated.checked_retained_bytes()?)
     }
@@ -920,8 +923,12 @@ pub(super) fn admit_native_ts_owner_candidate(
         &mut generations,
         &mut image_rows,
     )?;
+    let mut header_budget = MAX_NATIVE_EVIDENCE_BYTES;
+    let header_witness = semantic_authority.selected_native_header_aggregate(
+        publication.key(), publication.claim(), &mut header_budget,
+    )?;
     let evidence = revalidated
-        .program_image_evidence(&activated, publication.native_headers())
+        .program_image_evidence(&activated, header_witness.as_ref().map(|(aggregate, digest)| (aggregate, *digest)))
         .map_err(BuiltinModelError)?;
     let program = activated.native_program_sources.as_ref()
         .ok_or_else(|| BuiltinModelError("native TypeScript program is unavailable".into()))?;

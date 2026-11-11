@@ -504,7 +504,7 @@ impl RevalidatedNativeTsCapture {
     pub(super) fn program_image_evidence(
         &self,
         activated: &super::ActivatedProductSemantics,
-        headers: Option<&super::commands::index::NativeHeaderCustody>,
+        headers: Option<(&backend_semantic::native_ts_headers::NativeTsHeaderAggregate, [u8; 32])>,
     ) -> Result<Vec<backend_engine::builtin::NativeSourceEvidence>, String> {
         self.capture.program_image_evidence(activated, headers)
     }
@@ -540,11 +540,11 @@ impl NativeTsCapture {
     pub(super) fn program_image_evidence(
         &self,
         activated: &super::ActivatedProductSemantics,
-        headers: Option<&super::commands::index::NativeHeaderCustody>,
+        headers: Option<(&backend_semantic::native_ts_headers::NativeTsHeaderAggregate, [u8; 32])>,
     ) -> Result<Vec<backend_engine::builtin::NativeSourceEvidence>, String> {
         let mut header_claims = BTreeMap::new();
-        if let Some(headers) = headers {
-            for header in headers.entries() {
+        if let Some((aggregate, _)) = headers {
+            for header in &aggregate.files {
                 if header_claims.insert(header.path.as_str(), header).is_some() {
                     return Err("duplicate native header source".into());
                 }
@@ -587,21 +587,16 @@ impl NativeTsCapture {
                 return Err("native image is not an exact program member".into());
             }
             if let Some(header) = header_claims.remove(path) {
-                if header.source != source
-                    || header.headers.producer_recipe != super::native_ts_headers::producer_recipe()
-                { return Err("native header producer or source differs".into()); }
-                super::native_ts_headers::admit_image(&captured_source.evidence, &header.headers, &view, image.as_ref())?;
-                // NSE3 adds kind/count to NSE1, then its fixed header framing
-                // and fixed-size entries. Forecast without cloning or encoding.
-                let base = captured_source.evidence.checked_encoded_len().ok_or("native source evidence size overflow")?;
-                let legacy_extra = usize::from(captured_source.evidence.line_starts.is_none()) * 5;
-                let header_bytes = header.headers.entries.len().checked_mul(52)
-                    .and_then(|n| n.checked_add(76)).ok_or("native header framing overflow")?;
-                let total = base.checked_add(legacy_extra).and_then(|n| n.checked_add(header_bytes))
-                    .ok_or("native header evidence size overflow")?;
-                if total <= backend_engine::builtin::MAX_NATIVE_EVIDENCE_STORED_VALUE {
-                    admitted_headers.insert(path, &header.headers);
+                if header.source != source || header.producer_recipe != super::native_ts_headers::producer_recipe() {
+                    return Err("native header producer or source differs".into());
                 }
+                let (_, aggregate_digest) = headers.ok_or("native header closure witness absent")?;
+                let reference = backend_engine::builtin::NativeHeaderEvidence {
+                    image_identity: header.image_identity, image_byte_len: header.image_byte_len,
+                    producer_recipe: header.producer_recipe, aggregate_digest,
+                };
+                super::native_ts_headers::admit_image(&captured_source.evidence, &reference, header, &view, image.as_ref())?;
+                admitted_headers.insert(path, reference);
             }
         }
         if !header_claims.is_empty() { return Err("native headers lack their selected image".into()); }
@@ -613,9 +608,8 @@ impl NativeTsCapture {
             let source = captured.get(path).ok_or("native program member lost its captured source")?;
             let mut charge = source.evidence.checked_heap_bytes().and_then(|n| n.checked_add(256))
                 .ok_or("native source evidence resident overflow")?;
-            if let Some(headers) = admitted_headers.get(path) {
-                charge = charge.checked_add(headers.entries.capacity().checked_mul(std::mem::size_of::<backend_engine::builtin::NativeHeaderEntry>()).ok_or("native header resident overflow")?)
-                    .and_then(|n| n.checked_add(128)).ok_or("native header resident overflow")?;
+            if admitted_headers.contains_key(path) {
+                charge = charge.checked_add(128).ok_or("native header resident overflow")?;
             }
             candidate_budget = candidate_budget.checked_sub(charge).ok_or("native evidence candidate budget exceeded")?;
             let mut row = source.evidence.clone();
@@ -624,7 +618,7 @@ impl NativeTsCapture {
             } else {
                 backend_engine::builtin::NativeSourceEvidenceKind::ProgramMember
             };
-            row.headers = admitted_headers.remove(*path).cloned();
+            row.headers = admitted_headers.remove(*path);
             Ok(row)
         }).collect::<Result<Vec<_>, &str>>()?;
         evidence.sort_unstable_by(|left, right| left.path.cmp(&right.path));

@@ -2035,6 +2035,29 @@ impl SemanticAuthority {
             .ok()?
     }
 
+    /// Reopens the exact selected compiler's bounded native header aggregate.
+    /// The returned claims still require source/image/entity admission.
+    pub(super) fn selected_native_header_aggregate(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        claim: SemanticPublicationClaim,
+        budget: &mut usize,
+    ) -> Result<Option<(backend_semantic::native_ts_headers::NativeTsHeaderAggregate, [u8; 32])>, BuiltinModelError> {
+        if !key.is_selected() || !matches!(key.profile(), LanguageProfile::TypeScript(_)) {
+            return Err(BuiltinModelError("native header publication is not selected TypeScript".into()));
+        }
+        let (actual, selected) = self.read_selected_pair(key)?;
+        if actual != claim { return Err(BuiltinModelError("native header selected claim differs".into())); }
+        let witness = backend_extension_turso::reopen_selected_native_headers(&self.store, &selected, *budget)
+            .map_err(|error| BuiltinModelError(format!("reopen selected native headers: {error}")))?;
+        let Some(witness) = witness else { return Ok(None) };
+        *budget = budget.checked_sub(witness.as_bytes().len().saturating_add(2 * std::mem::size_of::<usize>()))
+            .ok_or_else(|| BuiltinModelError("native header witness budget exceeded".into()))?;
+        let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(witness.as_bytes(), budget)
+            .map_err(|error| BuiltinModelError(format!("decode selected native headers: {error}")))?;
+        Ok(Some((aggregate, *witness.object_id())))
+    }
+
     /// Reopens only a structurally correlated C# evidence claim from the exact
     /// current compiler selection. This is not source/read/foreign authority:
     /// helper/runtime identity and current M0 source still require admission.
