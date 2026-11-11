@@ -482,6 +482,23 @@ mod tests {
             if cursor.is_none() { break; }
         }
         assert_eq!(visited, rows.len());
+        // Corrupt the selected child after root admission. Insufficient credit
+        // must fail before touching that child; sufficient credit reaches it.
+        let root = relation.root_node().unwrap();
+        let page = relation.node_page(root, 0, 1).unwrap();
+        let child = match page {
+            crate::workspace::WorkspaceRelationNodePage::Branch { children, .. } => children[0].handle(),
+            _ => panic!("fixture must span multiple leaves"),
+        };
+        let name: String = child.object().as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+        let path = directory.path().join("objects").join(format!("{name}.object"));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(path, b"corrupt").unwrap();
+        let mut short = NATIVE_EVIDENCE_READ_SCRATCH - 1;
+        assert!(matches!(native_source_evidence_lookup_budgeted(&relation, &rows[0].0, &mut short), Err(WorkspaceRelationError::Store(backend_store::StoreError::Bounds))));
+        assert_eq!(short, NATIVE_EVIDENCE_READ_SCRATCH - 1);
+        let mut enough = 64 * 1024 * 1024;
+        assert!(native_source_evidence_lookup_budgeted(&relation, &rows[0].0, &mut enough).is_err());
     }
 
     #[test]
