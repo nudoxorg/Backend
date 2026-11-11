@@ -23,6 +23,7 @@ internal sealed record LoadedCompilation
     public IReadOnlyDictionary<string, byte[]>? CapturedBytes { get; init; }
     public string? CapturedConfigDigest { get; init; }
     public IReadOnlyList<CapturedReferenceWitness>? CapturedReferences { get; init; }
+    public IReadOnlySet<SyntaxTree>? CapturedGraphTrees { get; init; }
     public IReadOnlyList<string>? CapturedAcceptedUsings { get; init; }
     public IReadOnlyList<string>? CapturedDefines { get; init; }
     public required CSharpCompilation Compilation { get; init; }
@@ -89,7 +90,7 @@ internal sealed record LoadedCompilation
 /// name after stripping a recognized TFM tag, and a lone TFM-tagged file with
 /// no such sibling is always kept untouched.
 /// </remarks>
-internal static class SourceLoader
+internal static partial class SourceLoader
 {
     private sealed record CapturedSource(string Path, string Text);
     private sealed record CapturedConfig(string Path, string? Text);
@@ -97,6 +98,9 @@ internal static class SourceLoader
     // The owner supplies the exact ordered project and in-package ancestor probes.
     // Null Text is a captured absence, not permission to reread the path.
     private static (IReadOnlyList<string> Documents, string Digest) ReadCapturedConfig(string root, string projectFile, string manifestPath)
+        => ParseCapturedConfig(root, projectFile, ReadBoundedManifest(manifestPath, 16 * 1024 * 1024));
+
+    private static string ReadBoundedManifest(string manifestPath, int maximum)
     {
         string json;
         try
@@ -107,7 +111,7 @@ internal static class SourceLoader
             int count;
             while ((count = reader.Read(buffer, 0, buffer.Length)) != 0)
             {
-                if (text.Length > 16 * 1024 * 1024 - count)
+                if (text.Length > maximum - count)
                     throw new OracleFailure("captured config manifest exceeds limit");
                 text.Append(buffer, 0, count);
             }
@@ -117,6 +121,11 @@ internal static class SourceLoader
         {
             throw new OracleFailure("captured config manifest could not be read");
         }
+        return json;
+    }
+
+    private static (IReadOnlyList<string> Documents, string Digest) ParseCapturedConfig(string root, string projectFile, string json)
+    {
         CapturedConfig[] entries;
         try { entries = JsonSerializer.Deserialize<CapturedConfig[]>(json) ?? throw new OracleFailure("empty captured configuration"); }
         catch (JsonException) { throw new OracleFailure("invalid captured configuration"); }
@@ -204,20 +213,26 @@ internal static class SourceLoader
     private const int MaxReportedDiagnostics = 25;
 
     public static LoadedCompilation Load(OracleOptions options)
+        => options.CapturedProjectGraphPath is { } graphPath ? LoadCapturedGraph(options, graphPath) : LoadCore(options);
+
+    private static LoadedCompilation LoadCore(OracleOptions options,
+        Dictionary<string, byte[]>? suppliedSources = null,
+        (IReadOnlyList<string> Documents, string Digest)? suppliedConfig = null,
+        IReadOnlyList<MetadataReference>? projectReferences = null)
     {
         // Narrow to the one project the caller actually asked for, when the
         // evidence to do so unambiguously exists. See `ScopeToMatchingProject`
         // for why this exists and what it deliberately does not do.
         var identityRoot = Path.GetFullPath(options.Roots[0]);
-        (IReadOnlyList<string> Documents, string Digest)? config = options.CapturedConfigPath is { } configPath && options.ProjectFile is { } configProject
+        (IReadOnlyList<string> Documents, string Digest)? config = suppliedConfig ?? (options.CapturedConfigPath is { } configPath && options.ProjectFile is { } configProject
             ? ReadCapturedConfig(identityRoot, configProject, configPath)
-            : null;
+            : null);
         var roots = options.ProjectFile is { } exactProject
             ? ScopeToExactProject(options.Roots, exactProject, config is null)
             : ScopeToMatchingProject(options.Roots, options.AssemblyName);
 
-        Dictionary<string, byte[]>? captured = null;
-        if (options.CapturedSourcesPath is { } manifestPath)
+        Dictionary<string, byte[]>? captured = suppliedSources;
+        if (suppliedSources is null && options.CapturedSourcesPath is { } manifestPath)
         {
             try
             {
@@ -229,7 +244,7 @@ internal static class SourceLoader
                 throw new OracleFailure("captured source manifest could not be read");
             }
         }
-        else if (options.CapturedSources)
+        else if (suppliedSources is null && options.CapturedSources)
         {
             captured = ReadCapturedSources(identityRoot, roots, Console.In);
         }
@@ -274,6 +289,7 @@ internal static class SourceLoader
             : DetectedFrameworks.None;
         var (references, capturedReferences) = ReferenceAssemblies(
             options.ReferenceDirectories, captured is not null, detectedFrameworks.ReferenceDirectories);
+        if (projectReferences is not null) references.AddRange(projectReferences);
         if (detectedFrameworks.ReferenceDirectories.Count > 0)
         {
             Console.Error.WriteLine(

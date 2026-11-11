@@ -1068,6 +1068,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         source: request.source,
                         captured_sources: request.csharp_sources,
                         captured_config: request.csharp_config,
+                        captured_project_graph: None,
                         profile,
                         native_tool: resolved.tool,
                         toolchain: resolved.as_ref(),
