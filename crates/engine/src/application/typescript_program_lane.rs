@@ -259,7 +259,7 @@ pub(super) fn capture_headers(
         else {
             continue;
         };
-        entries.push(crate::builtin::NativeHeaderEntry {
+        entries.push(backend_semantic::native_ts_headers::NativeTsHeaderEntry {
             entity_id,
             identity,
             compiler_extent: (start, end),
@@ -275,7 +275,12 @@ pub(super) fn capture_headers(
         return Ok(None);
     }
     let charge = std::mem::size_of::<super::compiler::StagedNativeTypeScriptHeaders>()
-        .checked_add(path.len()).and_then(|n| n.checked_add(entries.capacity().checked_mul(std::mem::size_of::<crate::builtin::NativeHeaderEntry>())?))
+        .checked_add(path.len())
+        .and_then(|n| {
+            n.checked_add(entries.capacity().checked_mul(std::mem::size_of::<
+                backend_semantic::native_ts_headers::NativeTsHeaderEntry,
+            >())?)
+        })
         .ok_or("header budget overflow")?;
     *remaining = remaining
         .checked_sub(charge)
@@ -289,14 +294,10 @@ pub(super) fn capture_headers(
     Ok(Some(super::compiler::StagedNativeTypeScriptHeaders {
         path: path.to_owned(),
         source,
-        headers: crate::builtin::NativeHeaderEvidence {
-            image_identity: *backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(
-                encoded,
-            )
+        image_identity: *backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(encoded)
             .as_ref(),
-            image_byte_len: encoded.len() as u64,
-            producer_recipe: *hash.finalize().as_bytes(),
-            entries,
-        },
+        image_byte_len: encoded.len() as u64,
+        producer_recipe: *hash.finalize().as_bytes(),
+        entries,
     }))
 }

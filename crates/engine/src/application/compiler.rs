@@ -3553,20 +3553,7 @@ pub(crate) struct StagedPackageCompilation {
 }
 
 /// Untrusted header claims captured from the admitted compiler arena and image.
-#[derive(Clone, Debug)]
-pub struct StagedNativeTypeScriptHeaders {
-    pub path: String,
-    pub source: backend_semantic::ir::SourceIdentity,
-    pub headers: crate::builtin::NativeHeaderEvidence,
-}
-
-impl StagedNativeTypeScriptHeaders {
-    /// Heap retained by this compact claim, including vector capacity.
-    pub fn checked_retained_bytes(&self) -> Option<usize> {
-        std::mem::size_of::<Self>().checked_add(self.path.capacity())?
-            .checked_add(self.headers.entries.capacity().checked_mul(std::mem::size_of::<crate::builtin::NativeHeaderEntry>())?)
-    }
-}
+pub type StagedNativeTypeScriptHeaders = backend_semantic::native_ts_headers::NativeTsHeaderFile;
 
 /// One same-attempt captured C# configuration presence or absence probe.
 pub struct StagedCSharpConfigProbe {

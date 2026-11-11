@@ -24,6 +24,13 @@ pub struct NativeTsHeaderFile {
     pub producer_recipe: [u8; 32],
     pub entries: Vec<NativeTsHeaderEntry>,
 }
+impl NativeTsHeaderFile {
+    /// Owned heap and record extent used by capture custody accounting.
+    pub fn checked_retained_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<Self>().checked_add(self.path.capacity())?
+            .checked_add(self.entries.capacity().checked_mul(std::mem::size_of::<NativeTsHeaderEntry>())?)
+    }
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeTsHeaderAggregate { pub files: Vec<NativeTsHeaderFile> }
 pub struct NativeTsHeaderAggregateSchema;
