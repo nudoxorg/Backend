@@ -1,7 +1,12 @@
 # Development companion builds
 
-A plain `cargo build --locked` builds the Rust workspace. Several native
-frontends also need companion executables. A successful Cargo build alone does
+A plain `cargo build --locked` builds the four public applications: CLI, MCP,
+local owner and desktop. Workspace QA members opt into GPUI's test-support and
+visual-harness features; the product defaults keep those features out of an
+ordinary desktop build. Use `cargo test --workspace` for complete workspace
+validation and explicit package/feature selections for GUI capture tooling.
+
+Several native frontends also need companion executables. A successful Cargo build alone does
 not mean those frontends are available. Missing companions remain explicit
 capability gaps in the owner; they do not select a syntax-parser fallback.
 
@@ -45,9 +50,11 @@ its executable identity, compiles that identity into the owner, and stages the
 worker beside the owner under the fixed `backend-sqlite-worker` name. This
 journey builds the CLI, MCP server and owner. For desktop development, the desktop
 must also be compiled with the same `NUDOX_BUILD_SQLITE_WORKER_ID` and use the same
-worker sibling. Release packaging uses `sqlite_linux_development.py` or
-`sqlite_macos_development.py` to retain the platform closure and recheck identity
-after relocation/signing; a development journey is not release evidence.
+worker sibling. The platform companion phases `sqlite_linux_development.py` and
+`sqlite_macos_development.py` retain the runtime closure and recheck identity
+after relocation/signing. Linux product packaging still needs explicit
+integration of its companion phase. A development journey is not release
+evidence.
 
 ## CSS / Stylo and PostgreSQL
 
