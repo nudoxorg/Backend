@@ -1476,7 +1476,7 @@ pub fn reopen_selected_compiler_publication(
         .map_err(|error| error.to_string())?;
     let _ = reopen_typescript_snapshot_witness_bounded(store, &manifest, &metadata)?;
     let _ = reopen_csharp_evidence_bounded(store, &manifest, &metadata)?;
-    let _ = reopen_native_headers_bounded(store, &manifest, &metadata)?;
+    let _ = reopen_native_headers_bounded(store, &manifest, &metadata, 96 * 1024 * 1024)?;
     if selected.semantic_manifest_root().copied() != metadata.semantic_manifest_root().copied() {
         return Err("selected semantic-plane root differs from compiler metadata".to_owned());
     }
@@ -1602,18 +1602,19 @@ pub fn reopen_selected_native_headers(store: &FileStore, selected: &SelectedGene
     if closure.id().as_bytes() != selected.closure_id() { return Err("header closure identity mismatch".into()); }
     let Some(member) = reopened.metadata().native_headers() else { return Ok(None) };
     if member.byte_length() as usize > max_bytes { return Err("header aggregate exceeds caller budget".into()); }
-    reopen_native_headers_bounded(store, &closure, reopened.metadata()).map(|value| value.map(|bytes| VerifiedNativeHeadersWitness { bytes: bytes.into_boxed_slice(), object_id: *member.object_id() }))
+    reopen_native_headers_bounded(store, &closure, reopened.metadata(), max_bytes).map(|value| value.map(|bytes| VerifiedNativeHeadersWitness { bytes: bytes.into_boxed_slice(), object_id: *member.object_id() }))
 }
 
-fn reopen_native_headers_bounded(store: &FileStore, closure: &backend_store::DurableManifest, metadata: &CompilerPublicationMetadata) -> Result<Option<Vec<u8>>, String> {
+fn reopen_native_headers_bounded(store: &FileStore, closure: &backend_store::DurableManifest, metadata: &CompilerPublicationMetadata, max_bytes: usize) -> Result<Option<Vec<u8>>, String> {
     let Some(member) = metadata.native_headers() else { return Ok(None) };
     let len = member.byte_length() as usize;
-    if len == 0 || len > MAX_COMPILER_NATIVE_HEADERS_BYTES { return Err("header aggregate extent invalid".into()); }
+    if len == 0 || len > MAX_COMPILER_NATIVE_HEADERS_BYTES || len > max_bytes { return Err("header aggregate extent invalid".into()); }
+    let mut decoded_budget = max_bytes - len;
     let claim = UntrustedObjectId::from_bytes(*member.object_id());
     closure.admit_claim(claim).map_err(|e| format!("admit header aggregate: {e:?}"))?.ok_or("header aggregate absent from selected closure")?;
     let mut bytes = Vec::new();
     let verified = store.write_verified_object_payload(claim, u64::from(member.byte_length()), &mut bytes).map_err(|e| format!("read header aggregate: {e:?}"))?;
-    let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical(&bytes).map_err(|e| e.to_string())?;
+    let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(&bytes, &mut decoded_budget).map_err(|e| e.to_string())?;
     if verified.id().as_bytes() != member.object_id() || verified.schema() != COMPILER_NATIVE_HEADERS_SCHEMA || verified.payload_len() != u64::from(member.byte_length()) || verified.key() != ObjectKey::<backend_semantic::native_ts_headers::NativeTsHeaderAggregateSchema>::from_value(&aggregate).as_bytes() || bytes.len() != len { return Err("header aggregate schema, key, identity, or extent mismatch".into()); }
     Ok(Some(bytes))
 }
@@ -2122,7 +2123,7 @@ fn verify_semantic_image_members(
     let _coverage = reopen_source_coverage(manifest, metadata)?;
     let _ = reopen_typescript_snapshot_witness_bounded(store, manifest, metadata)?;
     let _ = reopen_csharp_evidence_bounded(store, manifest, metadata)?;
-    let _ = reopen_native_headers_bounded(store, manifest, metadata)?;
+    let _ = reopen_native_headers_bounded(store, manifest, metadata, 96 * 1024 * 1024)?;
     let program = reopen_native_program_sources(manifest, metadata)?;
     let mappings = program.as_ref().map(|program| {
         program
@@ -3410,13 +3411,13 @@ mod tests {
         assert!(metadata_member_ids(&current).contains(header_member.object_id()));
         let id = store.write_closure(&ClosureManifest::new(vec![object]).unwrap()).unwrap();
         let closure = store.open_closure(id).unwrap();
-        assert_eq!(reopen_native_headers_bounded(&store, &closure, &current).unwrap().as_deref(), Some(bytes.as_slice()));
+        assert_eq!(reopen_native_headers_bounded(&store, &closure, &current, 1024).unwrap().as_deref(), Some(bytes.as_slice()));
         let mut altered = current.clone();
         altered.native_headers.as_mut().unwrap().byte_length += 1;
-        assert!(reopen_native_headers_bounded(&store, &closure, &altered).is_err());
+        assert!(reopen_native_headers_bounded(&store, &closure, &altered, 1024).is_err());
         let id = store.write_closure(&ClosureManifest::new(vec![member(b"other")]).unwrap()).unwrap();
         let missing = store.open_closure(id).unwrap();
-        assert!(reopen_native_headers_bounded(&store, &missing, &current).is_err());
+        assert!(reopen_native_headers_bounded(&store, &missing, &current, 1024).is_err());
         drop(missing); drop(closure); drop(store);
         std::fs::remove_dir_all(directory).unwrap();
     }
