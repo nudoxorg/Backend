@@ -40,6 +40,7 @@ const PROGRAM_METADATA_VERSION: u16 = 5;
 const COVERAGE_METADATA_VERSION: u16 = 6;
 const TYPESCRIPT_SNAPSHOT_METADATA_VERSION: u16 = 7;
 const CSHARP_EVIDENCE_METADATA_VERSION: u16 = 8;
+const NATIVE_HEADERS_METADATA_VERSION: u16 = 9;
 const MAX_PROFILE_BYTES: usize = 256;
 /// Maximum number of members in one authenticated compiler publication closure.
 pub const MAX_COMPILER_PUBLICATION_MEMBER_IDS: usize = 100_000;
@@ -76,6 +77,33 @@ pub const COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA: SchemaIdentity =
     SchemaIdentity::new(0x7a, 0xc002, 7);
 /// Metadata with one bounded C# captured invocation evidence aggregate.
 pub const COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc002, 8);
+/// Metadata and typed object schemas for compiler-attested native TypeScript headers.
+pub const COMPILER_NATIVE_HEADERS_METADATA_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc002, 9);
+pub const COMPILER_NATIVE_HEADERS_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc00e, 1);
+pub const MAX_COMPILER_NATIVE_HEADERS_BYTES: usize = 32 * 1024 * 1024;
+
+/// Bounded object member; its contents become authoritative only via selected closure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompilerNativeHeadersMember { object_id: AuthorityHash, byte_length: u32 }
+impl CompilerNativeHeadersMember {
+    pub fn from_verified_object(object: VerifiedObjectEnvelope, bytes: &[u8]) -> Result<Self, CompilerEnvelopeError> {
+        let key = ObjectKey::<CompilerNativeHeadersSchema>::from_value(bytes);
+        if bytes.is_empty() || bytes.len() > MAX_COMPILER_NATIVE_HEADERS_BYTES || object.schema() != COMPILER_NATIVE_HEADERS_SCHEMA || object.key() != key.as_bytes() || object.payload_len() != bytes.len() as u64 { return Err(CompilerEnvelopeError::NativeHeaders); }
+        Ok(Self { object_id: *object.id().as_bytes(), byte_length: u32::try_from(bytes.len()).map_err(|_| CompilerEnvelopeError::NativeHeaders)? })
+    }
+    pub const fn object_id(&self) -> &AuthorityHash { &self.object_id }
+    pub const fn byte_length(&self) -> u32 { self.byte_length }
+}
+/// Constructs the typed aggregate object; the canonical aggregate decoder must validate its contents.
+pub fn compiler_native_headers_object(bytes: &[u8]) -> Result<TypedObject, CompilerEnvelopeError> {
+    if bytes.is_empty() || bytes.len() > MAX_COMPILER_NATIVE_HEADERS_BYTES { return Err(CompilerEnvelopeError::NativeHeaders); }
+    Ok(TypedObject::from_value(&ObjectKey::<CompilerNativeHeadersSchema>::from_value(bytes), bytes))
+}
+/// Bytes authenticated by the selected compiler closure; source/image admission remains separate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedNativeHeadersWitness(Box<[u8]>);
+impl VerifiedNativeHeadersWitness { pub fn as_bytes(&self) -> &[u8] { &self.0 } }
+
 /// Typed CAS schema for the C# invocation evidence aggregate.
 pub const COMPILER_CSHARP_EVIDENCE_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc00c, 1);
 
@@ -422,6 +450,7 @@ pub struct CompilerPublicationMetadata {
     source_coverage: Option<CompilerSourceCoverageMember>,
     typescript_snapshot: Option<CompilerTypeScriptSnapshotMember>,
     csharp_evidence: Option<CompilerCSharpEvidenceMember>,
+    native_headers: Option<CompilerNativeHeadersMember>,
 }
 
 impl CompilerPublicationMetadata {
@@ -519,6 +548,7 @@ impl CompilerPublicationMetadata {
             source_coverage: None,
             typescript_snapshot: None,
             csharp_evidence: None,
+            native_headers: None,
         })
     }
 
@@ -598,8 +628,18 @@ impl CompilerPublicationMetadata {
     /// Optional typed C# evidence object; this alone is not source authority.
     pub const fn csharp_evidence(&self) -> Option<&CompilerCSharpEvidenceMember> { self.csharp_evidence.as_ref() }
 
+    /// Binds the aggregate to this exact compiler publication before sealing.
+    pub fn with_native_headers(mut self, member: CompilerNativeHeadersMember) -> Result<Self, CompilerEnvelopeError> {
+        if self.native_headers.is_some() || self.typescript_snapshot.is_none() || self.csharp_evidence.is_some() || metadata_member_ids(&self).len() >= MAX_MEMBER_IDS { return Err(CompilerEnvelopeError::NativeHeaders); }
+        self.native_headers = Some(member);
+        Ok(self)
+    }
+    pub const fn native_headers(&self) -> Option<&CompilerNativeHeadersMember> { self.native_headers.as_ref() }
+
     fn schema(&self) -> SchemaIdentity {
-        if self.csharp_evidence.is_some() {
+        if self.native_headers.is_some() {
+            COMPILER_NATIVE_HEADERS_METADATA_SCHEMA
+        } else if self.csharp_evidence.is_some() {
             COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA
         } else if self.typescript_snapshot.is_some() {
             COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA
@@ -712,7 +752,9 @@ impl CompilerPublicationMetadata {
         );
         output.extend_from_slice(METADATA_MAGIC);
         output.extend_from_slice(
-            &if self.csharp_evidence.is_some() {
+            &if self.native_headers.is_some() {
+                NATIVE_HEADERS_METADATA_VERSION
+            } else if self.csharp_evidence.is_some() {
                 CSHARP_EVIDENCE_METADATA_VERSION
             } else if self.typescript_snapshot.is_some() {
                 TYPESCRIPT_SNAPSHOT_METADATA_VERSION
@@ -783,13 +825,20 @@ impl CompilerPublicationMetadata {
             output.extend_from_slice(&member.object_id);
             output.extend_from_slice(&member.byte_length.to_le_bytes());
         }
+        if let Some(member) = self.native_headers {
+            output.extend_from_slice(&member.object_id);
+            output.extend_from_slice(&member.byte_length.to_le_bytes());
+        }
         output
     }
 
     /// Returns the typed FileStore metadata object.
     #[must_use]
     pub fn typed_object(&self) -> TypedObject {
-        if self.csharp_evidence.is_some() {
+        if self.native_headers.is_some() {
+            let key = ObjectKey::<CompilerNativeHeadersMetadataSchema>::from_value(self);
+            TypedObject::from_value(&key, self)
+        } else if self.csharp_evidence.is_some() {
             let key = ObjectKey::<CompilerCSharpEvidenceMetadataSchema>::from_value(self);
             TypedObject::from_value(&key, self)
         } else if self.typescript_snapshot.is_some() {
@@ -832,6 +881,7 @@ impl CompilerPublicationMetadata {
                 | COVERAGE_METADATA_VERSION
                 | TYPESCRIPT_SNAPSHOT_METADATA_VERSION
                 | CSHARP_EVIDENCE_METADATA_VERSION
+                | NATIVE_HEADERS_METADATA_VERSION
         ) {
             return Err(CompilerEnvelopeError::MetadataVersion);
         }
@@ -872,7 +922,7 @@ impl CompilerPublicationMetadata {
         };
         let has_program = if matches!(
             version,
-            COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION
+            COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION
         ) {
             match input.u8()? {
                 0 => false,
@@ -900,7 +950,7 @@ impl CompilerPublicationMetadata {
         };
         let has_coverage = match version {
             COVERAGE_METADATA_VERSION => true,
-            TYPESCRIPT_SNAPSHOT_METADATA_VERSION => match input.u8()? {
+            TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION => match input.u8()? {
                 0 => false,
                 1 => true,
                 _ => return Err(CompilerEnvelopeError::SourceCoverage),
@@ -922,7 +972,7 @@ impl CompilerPublicationMetadata {
         } else {
             None
         };
-        let typescript_snapshot = if version == TYPESCRIPT_SNAPSHOT_METADATA_VERSION {
+        let typescript_snapshot = if matches!(version, TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION) {
             let member = CompilerTypeScriptSnapshotMember {
                 object_id: input.array::<32>()?,
                 byte_length: input.u32()?,
@@ -942,6 +992,11 @@ impl CompilerPublicationMetadata {
             if member.byte_length == 0 || member.byte_length as usize > backend_semantic::ir::MAX_CSHARP_INVOCATION_EVIDENCE_BYTES {
                 return Err(CompilerEnvelopeError::CSharpInvocationEvidence);
             }
+            Some(member)
+        } else { None };
+        let native_headers = if version == NATIVE_HEADERS_METADATA_VERSION {
+            let member = CompilerNativeHeadersMember { object_id: input.array::<32>()?, byte_length: input.u32()? };
+            if member.byte_length == 0 || member.byte_length as usize > MAX_COMPILER_NATIVE_HEADERS_BYTES { return Err(CompilerEnvelopeError::NativeHeaders); }
             Some(member)
         } else { None };
         if !input.is_empty() {
@@ -969,6 +1024,7 @@ impl CompilerPublicationMetadata {
             metadata = metadata.with_typescript_snapshot_witness(member)?;
         }
         if let Some(member) = csharp_evidence { metadata = metadata.with_csharp_evidence(member)?; }
+        if let Some(member) = native_headers { metadata = metadata.with_native_headers(member)?; }
         if metadata.canonical_bytes() != bytes {
             return Err(CompilerEnvelopeError::NonCanonical);
         }
@@ -1399,6 +1455,7 @@ pub fn reopen_selected_compiler_publication(
             | COMPILER_COVERAGE_METADATA_SCHEMA
             | COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA
             | COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA
+            | COMPILER_NATIVE_HEADERS_METADATA_SCHEMA
     ) {
         return Err("selected compiler metadata has the wrong schema".to_owned());
     }
@@ -1414,6 +1471,7 @@ pub fn reopen_selected_compiler_publication(
         .map_err(|error| error.to_string())?;
     let _ = reopen_typescript_snapshot_witness_bounded(store, &manifest, &metadata)?;
     let _ = reopen_csharp_evidence_bounded(store, &manifest, &metadata)?;
+    let _ = reopen_native_headers_bounded(store, &manifest, &metadata)?;
     if selected.semantic_manifest_root().copied() != metadata.semantic_manifest_root().copied() {
         return Err("selected semantic-plane root differs from compiler metadata".to_owned());
     }
@@ -1485,6 +1543,7 @@ pub fn reopen_selected_compiler_metadata(
             | COMPILER_COVERAGE_METADATA_SCHEMA
             | COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA
             | COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA
+            | COMPILER_NATIVE_HEADERS_METADATA_SCHEMA
     ) {
         return Err("selected compiler metadata has the wrong schema".to_owned());
     }
@@ -1528,6 +1587,27 @@ pub fn reopen_selected_typescript_snapshot_witness(
     }
     reopen_typescript_snapshot_witness_bounded(store, &manifest, reopened.metadata())
         .map(|bytes| bytes.map(|bytes| VerifiedTypeScriptSnapshotWitness(bytes.into_boxed_slice())))
+}
+
+/// Reopens the aggregate only from the selected authenticated compiler closure.
+pub fn reopen_selected_native_headers(store: &FileStore, selected: &SelectedGeneration) -> Result<Option<VerifiedNativeHeadersWitness>, String> {
+    let reopened = reopen_selected_compiler_metadata(store, selected)?;
+    let closure = store.open_closure_claim(ArtifactClosureClaim::from_bytes(*selected.closure_id()))
+        .map_err(|error| format!("open selected header closure: {error:?}"))?;
+    if closure.id().as_bytes() != selected.closure_id() { return Err("header closure identity mismatch".into()); }
+    reopen_native_headers_bounded(store, &closure, reopened.metadata()).map(|value| value.map(|bytes| VerifiedNativeHeadersWitness(bytes.into_boxed_slice())))
+}
+
+fn reopen_native_headers_bounded(store: &FileStore, closure: &backend_store::DurableManifest, metadata: &CompilerPublicationMetadata) -> Result<Option<Vec<u8>>, String> {
+    let Some(member) = metadata.native_headers() else { return Ok(None) };
+    let len = member.byte_length() as usize;
+    if len == 0 || len > MAX_COMPILER_NATIVE_HEADERS_BYTES { return Err("header aggregate extent invalid".into()); }
+    let claim = UntrustedObjectId::from_bytes(*member.object_id());
+    closure.admit_claim(claim).map_err(|e| format!("admit header aggregate: {e:?}"))?.ok_or("header aggregate absent from selected closure")?;
+    let mut bytes = Vec::new();
+    let verified = store.write_verified_object_payload(claim, u64::from(member.byte_length()), &mut bytes).map_err(|e| format!("read header aggregate: {e:?}"))?;
+    if verified.id().as_bytes() != member.object_id() || verified.schema() != COMPILER_NATIVE_HEADERS_SCHEMA || verified.payload_len() != u64::from(member.byte_length()) || verified.key() != ObjectKey::<CompilerNativeHeadersSchema>::from_value(&bytes).as_bytes() || bytes.len() != len { return Err("header aggregate schema, key, identity, or extent mismatch".into()); }
+    Ok(Some(bytes))
 }
 
 /// Exact envelope and typed metadata reopened without loading output payloads.
@@ -1638,6 +1718,7 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
                 | COMPILER_COVERAGE_METADATA_SCHEMA
                 | COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA
                 | COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA
+            | COMPILER_NATIVE_HEADERS_METADATA_SCHEMA
         ) {
             return Err("compiler metadata object has the wrong schema".to_owned());
         }
@@ -1688,6 +1769,7 @@ fn metadata_member_ids(metadata: &CompilerPublicationMetadata) -> Vec<AuthorityH
         members.push(*member.object_id());
     }
     if let Some(member) = metadata.csharp_evidence() { members.push(*member.object_id()); }
+    if let Some(member) = metadata.native_headers() { members.push(*member.object_id()); }
     members.extend(metadata.images.iter().map(|image| image.object_id));
     if let Some(planes) = &metadata.versioned_planes {
         members.extend(
@@ -2032,6 +2114,7 @@ fn verify_semantic_image_members(
     let _coverage = reopen_source_coverage(manifest, metadata)?;
     let _ = reopen_typescript_snapshot_witness_bounded(store, manifest, metadata)?;
     let _ = reopen_csharp_evidence_bounded(store, manifest, metadata)?;
+    let _ = reopen_native_headers_bounded(store, manifest, metadata)?;
     let program = reopen_native_program_sources(manifest, metadata)?;
     let mappings = program.as_ref().map(|program| {
         program
@@ -2374,6 +2457,8 @@ pub enum CompilerEnvelopeError {
     TypeScriptSnapshotWitness,
     /// A C# invocation evidence object is malformed, oversized, or misbound.
     CSharpInvocationEvidence,
+    /// Native header aggregate is malformed or misbound.
+    NativeHeaders,
     /// The canonical versioned-plane metadata is invalid.
     VersionedPlane(VersionedPlaneError),
 }
@@ -2559,6 +2644,19 @@ impl Schema for CompilerTypeScriptSnapshotMetadataSchema {
     fn encode(value: &Self::Value, output: &mut Vec<u8>) {
         output.extend_from_slice(&value.canonical_bytes());
     }
+}
+
+struct CompilerNativeHeadersMetadataSchema;
+impl Schema for CompilerNativeHeadersMetadataSchema {
+    const DOMAIN: u8 = 0x7a; const TYPE: u16 = 0xc002; const VERSION: u8 = 9;
+    type Value = CompilerPublicationMetadata;
+    fn encode(value: &Self::Value, output: &mut Vec<u8>) { output.extend_from_slice(&value.canonical_bytes()); }
+}
+struct CompilerNativeHeadersSchema;
+impl Schema for CompilerNativeHeadersSchema {
+    const DOMAIN: u8 = 0x7a; const TYPE: u16 = 0xc00e; const VERSION: u8 = 1;
+    type Value = [u8];
+    fn encode(value: &Self::Value, output: &mut Vec<u8>) { output.extend_from_slice(value); }
 }
 
 struct CompilerCSharpEvidenceMetadataSchema;
@@ -3133,7 +3231,7 @@ mod tests {
             Err(CompilerEnvelopeError::NativeProgramSources)
         );
         let mut future = bytes;
-        future[METADATA_MAGIC.len()..METADATA_MAGIC.len() + 2].copy_from_slice(&9u16.to_le_bytes());
+        future[METADATA_MAGIC.len()..METADATA_MAGIC.len() + 2].copy_from_slice(&10u16.to_le_bytes());
         assert_eq!(
             CompilerPublicationMetadata::decode(&future),
             Err(CompilerEnvelopeError::MetadataVersion)
@@ -3288,6 +3386,38 @@ mod tests {
         drop(closure);
         drop(store);
         std::fs::remove_dir_all(directory).expect("cleanup");
+    }
+
+    #[test]
+    fn native_headers_v9_binds_exact_closure_member_and_extent() {
+        let (image, _) = compiler_image();
+        let program = CompilerProgramSourceMember { object_id: [0x11; 32], program: [0x22; 32], byte_length: 8 };
+        let snapshot = CompilerTypeScriptSnapshotMember { object_id: [0x33; 32], byte_length: 8 };
+        let legacy = metadata(image).with_native_program_sources(program).unwrap().with_typescript_snapshot_witness(snapshot).unwrap();
+        let legacy_bytes = legacy.canonical_bytes();
+        let bytes = b"compiler header aggregate";
+        let object = compiler_native_headers_object(bytes).unwrap();
+        let directory = scratch_store();
+        let store = FileStore::open(&directory, 1024 * 1024).unwrap();
+        store.write_object(&object).unwrap();
+        let verified = store.verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes())).unwrap();
+        let header_member = CompilerNativeHeadersMember::from_verified_object(verified, bytes).unwrap();
+        let current = legacy.clone().with_native_headers(header_member).unwrap();
+        assert_eq!(legacy.canonical_bytes(), legacy_bytes);
+        assert_eq!(CompilerPublicationMetadata::decode(&current.canonical_bytes()).unwrap(), current);
+        assert_eq!(current.typed_object().schema(), COMPILER_NATIVE_HEADERS_METADATA_SCHEMA);
+        assert!(metadata_member_ids(&current).contains(header_member.object_id()));
+        let id = store.write_closure(&ClosureManifest::new(vec![object]).unwrap()).unwrap();
+        let closure = store.open_closure(id).unwrap();
+        assert_eq!(reopen_native_headers_bounded(&store, &closure, &current).unwrap().as_deref(), Some(bytes.as_slice()));
+        let mut altered = current.clone();
+        altered.native_headers.as_mut().unwrap().byte_length += 1;
+        assert!(reopen_native_headers_bounded(&store, &closure, &altered).is_err());
+        let id = store.write_closure(&ClosureManifest::new(vec![member(b"other")]).unwrap()).unwrap();
+        let missing = store.open_closure(id).unwrap();
+        assert!(reopen_native_headers_bounded(&store, &missing, &current).is_err());
+        drop(missing); drop(closure); drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
