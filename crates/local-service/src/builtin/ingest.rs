@@ -12239,7 +12239,7 @@ fn infer_sql_dialect(path: &str, bytes: &[u8]) -> Option<backend_library::sql_wo
     let text = String::from_utf8_lossy(head).to_ascii_lowercase();
     const POSTGRES: &[&str] = &["$$", "::", "create extension", "plpgsql", " serial", "bigserial", "timestamptz",
         "jsonb", "create schema", "returns ", "language sql", "set search_path", "create type", " uuid", "using gin",
-        "generated always as identity", "create or replace function", "create sequence", "materialized view", "on conflict"];
+        "generated always as identity", "create or replace function", "create sequence", "materialized view"];
     const SQLITE: &[&str] = &["pragma ", "autoincrement", "without rowid", "insert or replace", "insert or ignore",
         "sqlite_", "create virtual table", "strict;"];
     let pg = POSTGRES.iter().filter(|needle| text.contains(**needle)).count()
@@ -12250,6 +12250,17 @@ fn infer_sql_dialect(path: &str, bytes: &[u8]) -> Option<backend_library::sql_wo
         (true, false) => Some(SqlDialect::Postgres),
         (false, true) => Some(SqlDialect::Sqlite),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod sql_dialect_tests {
+    #[test]
+    fn shared_upsert_syntax_does_not_select_postgres_or_poison_project_consensus() {
+        let upsert = b"INSERT INTO authors (id, name, country) VALUES (?1, ?2, ?3) ON CONFLICT (id) DO UPDATE SET name = excluded.name, country = excluded.country;";
+        assert_eq!(super::infer_sql_dialect("db/catalog.sql", upsert), None);
+        assert_eq!(super::infer_sql_dialect("db/catalog.sql", b"SELECT name FROM authors;"), None);
+        assert_eq!(super::infer_sql_dialect("db/analytics.sql", b"SELECT id::text FROM authors;"), Some(backend_library::sql_workspace::SqlDialect::Postgres));
     }
 }
 
