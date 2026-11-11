@@ -559,7 +559,13 @@ fn discover_observed_csharp_project(
         return Ok(None);
     };
     if projects.next().is_some() {
-        return Ok(None);
+        // A source-only observation cannot safely choose an assembly root when
+        // several projects are present. Fail closed and require an explicit
+        // project/solution selector; silently returning None would let the
+        // caller proceed without C# custody.
+        return Err(BuiltinModelError(
+            "multiple observed C# projects require an explicit project selector".to_owned(),
+        ));
     }
     resolve_csharp_selector(
         snapshot,
@@ -2055,7 +2061,11 @@ mod csharp_project_discovery_tests {
             std::fs::write(path.join("Other.csproj"), "<Project/>\n").map_err(|error| error.to_string())?;
             std::fs::write(path.join("App.slnx"), "<Solution><Project Path=\"App.csproj\"/><Project Path=\"Other.csproj\"/></Solution>").map_err(|error| error.to_string())?;
             let snapshot = ingest::CompilerWorkspaceSnapshot::open(&path)?;
-            assert!(discover_observed_csharp_project(Some(&snapshot)).map_err(|error| error.to_string())?.is_none());
+            let ambiguity = match discover_observed_csharp_project(Some(&snapshot)) {
+                Err(error) => error,
+                Ok(_) => return Err("multiple C# projects were not rejected".to_owned()),
+            };
+            assert!(ambiguity.to_string().contains("multiple observed C# projects"));
             let selected = resolve_csharp_selector(&snapshot, CSharpProjectSelector::SolutionProject { solution_path: "App.slnx".to_owned(), project_path: "Other.csproj".to_owned() }).map_err(|e| e.to_string())?;
             assert_eq!(selected.project_path, "Other.csproj");
             assert_eq!(selected.solution.as_ref().map(|solution| solution.path()), Some("App.slnx"));
