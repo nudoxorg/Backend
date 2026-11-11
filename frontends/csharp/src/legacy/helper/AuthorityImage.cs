@@ -32,7 +32,7 @@ internal static class AuthorityImage
         var offsets = Extractor.BuildByteOffsets(
             tree,
             source.AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }) ? 3 : 0);
-        var builder = new Builder(loaded.Compilation, tree, offsets, loaded.Root, loaded.CapturedBytes, captureOccurrences);
+        var builder = new Builder(loaded.Compilation, tree, offsets, loaded.Root, loaded.CapturedBytes, loaded.CapturedGraphTrees, captureOccurrences);
         var image = builder.Build(source, loaded.ErrorCount, loaded.CapturedBytes is not null);
         destination.Write(image);
         return builder.ForeignOccurrences;
@@ -65,6 +65,7 @@ internal static class AuthorityImage
         private readonly string root;
         private readonly IReadOnlyDictionary<string, byte[]>? capturedBytes;
         private readonly bool captureOccurrences;
+        private readonly IReadOnlySet<SyntaxTree>? capturedGraphTrees;
         private readonly Dictionary<string, uint> atomMap = new(StringComparer.Ordinal);
         private readonly List<byte> atomBytes = [];
         private readonly List<byte[]> declarations = [];
@@ -87,13 +88,14 @@ internal static class AuthorityImage
         public IReadOnlyList<ForeignOccurrence> ForeignOccurrences => foreignOccurrences;
 
         public Builder(CSharpCompilation compilation, SyntaxTree tree, int[] offsets, string root,
-            IReadOnlyDictionary<string, byte[]>? capturedBytes, bool captureOccurrences)
+            IReadOnlyDictionary<string, byte[]>? capturedBytes, IReadOnlySet<SyntaxTree>? capturedGraphTrees, bool captureOccurrences)
         {
             this.compilation = compilation;
             this.tree = tree;
             this.offsets = offsets;
             this.root = root;
             this.capturedBytes = capturedBytes;
+            this.capturedGraphTrees = capturedGraphTrees;
             this.captureOccurrences = captureOccurrences;
         }
 
@@ -567,7 +569,7 @@ internal static class AuthorityImage
             if (declarations.Length != 1 || declarations[0].GetSyntax() is not MethodDeclarationSyntax declaration)
                 return false;
             var targetTree = declaration.SyntaxTree;
-            if (targetTree == tree || !compilation.SyntaxTrees.Contains(targetTree)) return false;
+            if (targetTree == tree || !(capturedGraphTrees?.Contains(targetTree) ?? compilation.SyntaxTrees.Contains(targetTree))) return false;
             var fullPath = Path.GetFullPath(targetTree.FilePath);
             if (!capturedBytes.TryGetValue(fullPath, out var source)) return false;
             var path = RelativeSourcePath(root, fullPath);

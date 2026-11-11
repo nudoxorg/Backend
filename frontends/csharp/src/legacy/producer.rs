@@ -131,6 +131,8 @@ pub struct CSharpAuthorityRequest<'request, 'config, 'cancel> {
     pub captured_sources: Option<&'request [CSharpCapturedSource<'request>]>,
     /// Owner-captured ordered project/config probes, when available.
     pub captured_config: Option<&'request [CSharpCapturedConfig<'request>]>,
+    /// Exact bounded project graph. Nodes compile into separate assemblies.
+    pub captured_project_graph: Option<&'request CSharpCapturedProjectGraph<'request>>,
     /// Closed C# language version selected for Roslyn parsing.
     pub profile: CSharpVersion,
     /// Native tool family already selected by the enclosing compiler request.
@@ -163,6 +165,50 @@ pub struct CSharpCapturedConfig<'source> {
     /// Captured UTF-8 bytes, or an observed absence.
     #[serde(rename = "Text")]
     pub text: Option<&'source str>,
+}
+
+/// A closed captured project-reference graph; no MSBuild execution is permitted.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CSharpCapturedProjectGraph<'a> {
+    /// Protocol version, currently one.
+    pub format: u8,
+    /// Exact package-relative project selected for this invocation.
+    pub root_project: &'a str,
+    /// All and only projects reachable from the root (at most 64).
+    pub projects: &'a [CSharpCapturedProjectNode<'a>],
+}
+
+/// Exact input custody and compiler options for one distinct assembly.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CSharpCapturedProjectNode<'a> {
+    /// Exact package-relative .csproj path.
+    pub project_path: &'a str,
+    /// Assembly identity admitted from the captured configuration.
+    pub assembly_name: &'a str,
+    /// Exact simple target framework moniker.
+    pub target_framework: &'a str,
+    /// Closed language version, for example "12.0".
+    pub language_version: &'a str,
+    /// Exact preprocessor symbols.
+    pub define_symbols: &'a [&'a str],
+    /// Nullable mode (disable, enable, warnings, annotations).
+    pub nullable: &'a str,
+    /// Exact unsafe compiler setting.
+    pub allow_unsafe: bool,
+    /// Exe, Library or WinExe.
+    pub output_type: &'a str,
+    /// Complete admitted global namespace imports.
+    pub usings: &'a [&'a str],
+    /// Exact source buffers, scoped to this project.
+    pub sources: &'a [CSharpCapturedSource<'a>],
+    /// Ordered project and ancestor presence/absence probes.
+    pub config: &'a [CSharpCapturedConfig<'a>],
+    /// Owner-staged immutable directories of exact managed reference snapshots.
+    pub reference_directories: &'a [&'a Path],
+    /// Direct dependencies by exact package-relative project path.
+    pub project_references: &'a [&'a str],
 }
 
 struct ManifestWriter(Vec<u8>);
@@ -309,7 +355,9 @@ impl CSharpOracle {
         request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
     ) -> Result<(Vec<u8>, Option<Box<[u8]>>), CSharpAuthorityError> {
         checkpoint(request.control, CSharpAuthorityPhase::Admission)?;
-        if request.configuration.exact_nullable.is_some() != request.configuration.exact_unsafe.is_some() {
+        if request.configuration.exact_nullable.is_some()
+            != request.configuration.exact_unsafe.is_some()
+        {
             return Err(CSharpAuthorityError::Configuration);
         }
         if request.native_tool != NativeTool::CSharpCompiler {
@@ -420,6 +468,56 @@ impl CSharpOracle {
                 Ok(writer.0)
             })
             .transpose()?;
+        let graph_manifest = request
+            .captured_project_graph
+            .map(|graph| {
+                if request.captured_config.is_some()
+                    || project_file.is_none()
+                    || request.captured_sources.is_none()
+                    || graph.format != 1
+                    || graph.projects.is_empty()
+                    || graph.projects.len() > 64
+                    || project_file
+                        .as_ref()
+                        .and_then(|path| path.strip_prefix(&package_root).ok())
+                        .and_then(Path::to_str)
+                        .map(|path| path.replace('\\', "/"))
+                        .as_deref()
+                        != Some(graph.root_project)
+                {
+                    return Err(CSharpAuthorityError::Manifest);
+                }
+                let expected = request
+                    .captured_sources
+                    .ok_or(CSharpAuthorityError::Manifest)?;
+                if graph
+                    .projects
+                    .iter()
+                    .map(|node| node.sources.len())
+                    .sum::<usize>()
+                    != expected.len()
+                    || graph
+                        .projects
+                        .iter()
+                        .flat_map(|node| node.sources)
+                        .any(|source| {
+                            expected
+                                .iter()
+                                .filter(|entry| {
+                                    entry.path == source.path && entry.text == source.text
+                                })
+                                .count()
+                                != 1
+                        })
+                {
+                    return Err(CSharpAuthorityError::Manifest);
+                }
+                let mut writer = ManifestWriter(Vec::new());
+                serde_json::to_writer(&mut writer, graph)
+                    .map_err(|_| CSharpAuthorityError::Manifest)?;
+                Ok(writer.0)
+            })
+            .transpose()?;
         let config_manifest = request
             .captured_config
             .map(|config| {
@@ -458,15 +556,24 @@ impl CSharpOracle {
                 stream: "manifest",
                 source,
             })?;
-            command.arg("--captured-sources-file").arg(path);
-            if let Some(config) = config_manifest {
-                let config_hash = format!("{:x}", Sha256::digest(&config));
+            if graph_manifest.is_none() {
+                command.arg("--captured-sources-file").arg(path);
+            }
+            let capture_config = graph_manifest.as_ref().or(config_manifest.as_ref());
+            if let Some(config) = capture_config {
+                let config_hash = format!("{:x}", Sha256::digest(config));
                 let path = directory.path().join("captured-config.json");
                 fs::write(&path, config).map_err(|source| CSharpAuthorityError::Pipe {
                     stream: "config manifest",
                     source,
                 })?;
-                command.arg("--captured-config-file").arg(path);
+                command
+                    .arg(if graph_manifest.is_some() {
+                        "--captured-project-graph-file"
+                    } else {
+                        "--captured-config-file"
+                    })
+                    .arg(path);
                 let nonce_hash = format!(
                     "{:x}",
                     Sha256::digest(directory.path().as_os_str().as_encoded_bytes())
@@ -491,35 +598,44 @@ impl CSharpOracle {
         }
 
         let configuration = request.configuration;
-        if let Some(name) = configuration.assembly_name {
-            command.args(["--assembly-name", name]);
-        }
-        if let Some(directory) = configuration.reference_directory {
-            command.arg("--ref-dir").arg(directory);
-        }
-        for directory in configuration.additional_reference_directories {
-            command.arg("--ref-dir").arg(directory);
-        }
-        for symbol in configuration.define_symbols {
-            command.args(["--define", symbol]);
-        }
-        if configuration.exact_define_symbols {
-            command.arg("--exact-defines");
-        }
-        if let Some(framework) = configuration.target_framework {
-            command.args(["--target-framework", framework]);
-        }
-        if let Some(output_type) = configuration.exact_output_type {
-            command.args(["--exact-output-type", output_type]);
-        }
-        if let (Some(nullable), Some(allow_unsafe)) = (configuration.exact_nullable, configuration.exact_unsafe) {
-            command.args(["--exact-nullable", nullable, "--exact-unsafe", if allow_unsafe { "true" } else { "false" }]);
-        }
-        for namespace in configuration.extra_usings {
-            command.args(["--using", namespace]);
-        }
-        if !configuration.implicit_usings {
-            command.arg("--no-implicit-usings");
+        if request.captured_project_graph.is_none() {
+            if let Some(name) = configuration.assembly_name {
+                command.args(["--assembly-name", name]);
+            }
+            if let Some(directory) = configuration.reference_directory {
+                command.arg("--ref-dir").arg(directory);
+            }
+            for directory in configuration.additional_reference_directories {
+                command.arg("--ref-dir").arg(directory);
+            }
+            for symbol in configuration.define_symbols {
+                command.args(["--define", symbol]);
+            }
+            if configuration.exact_define_symbols {
+                command.arg("--exact-defines");
+            }
+            if let Some(framework) = configuration.target_framework {
+                command.args(["--target-framework", framework]);
+            }
+            if let Some(output_type) = configuration.exact_output_type {
+                command.args(["--exact-output-type", output_type]);
+            }
+            if let (Some(nullable), Some(allow_unsafe)) =
+                (configuration.exact_nullable, configuration.exact_unsafe)
+            {
+                command.args([
+                    "--exact-nullable",
+                    nullable,
+                    "--exact-unsafe",
+                    if allow_unsafe { "true" } else { "false" },
+                ]);
+            }
+            for namespace in configuration.extra_usings {
+                command.args(["--using", namespace]);
+            }
+            if !configuration.implicit_usings {
+                command.arg("--no-implicit-usings");
+            }
         }
         if !configuration.include_non_public {
             command.arg("--public-only");
@@ -654,7 +770,10 @@ struct CapturedForeignOccurrence {
 }
 
 fn bounded_optional_evidence_vec<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
-where D: serde::Deserializer<'de>, T: serde::Deserialize<'de> {
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
     bounded_evidence_vec(deserializer).map(Some)
 }
 
@@ -721,8 +840,10 @@ fn validate_captured_evidence(
 ) -> Result<(), CSharpAuthorityError> {
     let evidence: CapturedEvidence =
         serde_json::from_slice(bytes).map_err(|_| CSharpAuthorityError::Evidence)?;
-    if !matches!((evidence.format, evidence.occurrences.is_some()), (1, false) | (2, true))
-        || evidence.nonce != nonce
+    if !matches!(
+        (evidence.format, evidence.occurrences.is_some()),
+        (1, false) | (2, true)
+    ) || evidence.nonce != nonce
         || evidence.config_sha256 != config_hash
         || evidence.source_binding != binding
         || evidence.image_length != image.len() as u64
@@ -761,14 +882,29 @@ fn validate_captured_evidence(
         });
         let mut target_bytes = 0usize;
         for occurrence in occurrences {
-            target_bytes = target_bytes.checked_add(occurrence.target.len()).ok_or(CSharpAuthorityError::Evidence)?;
-            if target_bytes > 1024 * 1024 { return Err(CSharpAuthorityError::Evidence); }
-            let claim = super::image::parse_foreign_source_claim(&occurrence.target).ok_or(CSharpAuthorityError::Evidence)?;
-            let reference = actual.next().ok_or(CSharpAuthorityError::Evidence)?.map_err(CSharpAuthorityError::Image)?;
-            if reference.owner != occurrence.owner || reference.start != occurrence.start || reference.end != occurrence.end
-                || reference.foreign_source != Some(claim) { return Err(CSharpAuthorityError::Evidence); }
+            target_bytes = target_bytes
+                .checked_add(occurrence.target.len())
+                .ok_or(CSharpAuthorityError::Evidence)?;
+            if target_bytes > 1024 * 1024 {
+                return Err(CSharpAuthorityError::Evidence);
+            }
+            let claim = super::image::parse_foreign_source_claim(&occurrence.target)
+                .ok_or(CSharpAuthorityError::Evidence)?;
+            let reference = actual
+                .next()
+                .ok_or(CSharpAuthorityError::Evidence)?
+                .map_err(CSharpAuthorityError::Image)?;
+            if reference.owner != occurrence.owner
+                || reference.start != occurrence.start
+                || reference.end != occurrence.end
+                || reference.foreign_source != Some(claim)
+            {
+                return Err(CSharpAuthorityError::Evidence);
+            }
         }
-        if actual.next().is_some() { return Err(CSharpAuthorityError::Evidence); }
+        if actual.next().is_some() {
+            return Err(CSharpAuthorityError::Evidence);
+        }
     }
     let mut expected = std::collections::BTreeMap::new();
     for source in sources {
@@ -1126,6 +1262,48 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     #[test]
+    fn captured_graph_protocol_keeps_project_edges_and_buffers_separate() {
+        let sources = [CSharpCapturedSource {
+            path: "Api/Api.cs",
+            text: "public class Api {}",
+        }];
+        let config = [CSharpCapturedConfig {
+            path: "Api/Api.csproj",
+            text: Some("<Project/>"),
+        }];
+        let nodes = [CSharpCapturedProjectNode {
+            project_path: "Api/Api.csproj",
+            assembly_name: "Api",
+            target_framework: "net8.0",
+            language_version: "12.0",
+            define_symbols: &["NET8_0"],
+            nullable: "enable",
+            allow_unsafe: false,
+            output_type: "Library",
+            usings: &["System"],
+            sources: &sources,
+            config: &config,
+            reference_directories: &[Path::new("/snapshots/api")],
+            project_references: &["Core/Core.csproj"],
+        }];
+        let graph = CSharpCapturedProjectGraph {
+            format: 1,
+            root_project: "Api/Api.csproj",
+            projects: &nodes,
+        };
+        let json = serde_json::to_value(graph).expect("serialize captured graph");
+        assert_eq!(json["RootProject"], "Api/Api.csproj");
+        let node = &json["Projects"][0];
+        assert_eq!(node["ProjectPath"], "Api/Api.csproj");
+        assert_eq!(node["ProjectReferences"][0], "Core/Core.csproj");
+        assert_eq!(node["Sources"][0]["Text"], "public class Api {}");
+        assert_eq!(node["Config"][0]["Text"], "<Project/>");
+        assert_eq!(node["ReferenceDirectories"][0], "/snapshots/api");
+        assert_eq!(node["AllowUnsafe"], false);
+        assert_eq!(node["DefineSymbols"][0], "NET8_0");
+    }
+
+    #[test]
     fn captured_evidence_rejects_changed_attempt_image_or_inputs() {
         let source = CSharpCapturedSource {
             path: "App.cs",
@@ -1180,6 +1358,7 @@ mod tests {
             source: b"class C {}",
             captured_sources: None,
             captured_config: None,
+            captured_project_graph: None,
             profile: CSharpVersion::CSharp14,
             native_tool: NativeTool::CSharpCompiler,
             toolchain: Path::new("/dotnet"),
@@ -1211,6 +1390,7 @@ mod tests {
             source: b"class Different {}",
             captured_sources: None,
             captured_config: None,
+            captured_project_graph: None,
             profile: CSharpVersion::CSharp14,
             native_tool: NativeTool::CSharpCompiler,
             toolchain: Path::new("/dotnet"),
@@ -1247,6 +1427,7 @@ mod tests {
             source: b"class A {}",
             captured_sources: None,
             captured_config: None,
+            captured_project_graph: None,
             profile: CSharpVersion::CSharp14,
             native_tool: NativeTool::CSharpCompiler,
             toolchain: &tool,

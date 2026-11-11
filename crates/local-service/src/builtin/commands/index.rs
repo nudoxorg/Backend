@@ -239,7 +239,7 @@ fn index_project_intent_at_with_cluster_and_intent(
         false,
     )? {
         PreparedIndex::Ready(prepared) => Ok(prepared.into_option()),
-        PreparedIndex::Compile(_) | PreparedIndex::Cluster(_) => Err(BuiltinModelError(
+        PreparedIndex::Compile(_) | PreparedIndex::Cluster(_) | PreparedIndex::CSharpParked(..) => Err(BuiltinModelError(
             "an index compile was deferred on a path that runs it in place".to_owned(),
         )),
     }
@@ -1042,8 +1042,9 @@ pub(super) fn finish_index_scan(
                     operation_key,
                     semantic_authority,
                     None,
+                    None,
                 )?;
-                deferred.csharp_capture = csharp_project;
+                deferred.csharp_capture = csharp_project.map(Arc::new);
                 return Ok(PreparedIndex::Compile(deferred));
             }
             let mut compiled = match compile_semantic_publications(
@@ -2353,6 +2354,8 @@ pub(super) enum PreparedIndex {
     /// A configured cluster route, including its local fallback, runs on an
     /// owned worker after the independent source capture was installed.
     Cluster(SourceCompilePlan),
+    /// The exact source candidate must be selected before materialization.
+    CSharpParked(SourceCompilePlan, WorkspaceSnapshot),
 }
 
 /// The compile an index job hands off the owner loop, and everything its
@@ -2375,7 +2378,9 @@ pub(super) struct DeferredIndex {
     source_changes: Vec<BuiltinSourceChange>,
     revision_fence: ingest::CompilerRevisionFence,
     // Narrow original capture and its non-clone memory credit; no inventory copy.
-    csharp_capture: Option<ResolvedCSharpProject>,
+    csharp_capture: Option<Arc<ResolvedCSharpProject>>,
+    // Selected-source custody alone does not authorize unit publication.
+    csharp_selected_source: Option<Arc<CapturedCSharpUnitAdmission>>,
     profiles: VecDeque<DeferredProfile>,
     expected_profiles: usize,
     completed_profiles: usize,
@@ -2666,11 +2671,13 @@ impl DeferredIndex {
 
     /// Worker-only recheck. No probe I/O occurs in the owner wrapper.
     pub(super) fn csharp_capture_is_current(
-        &self, ticket: &DeferredProfileTicket, cancellation: &AtomicBool,
+        &self, ticket: &DeferredProfileTicket, snapshot: &WorkspaceSnapshot, cancellation: &Arc<AtomicBool>,
     ) -> Result<bool, BuiltinModelError> {
         if !ticket.csharp_unit_claim_only { return Ok(true); }
+        let Some(witness) = &self.csharp_selected_source else { return Ok(false); };
+        if witness.key() != &ticket.key || !witness.revalidate(snapshot, cancellation)? { return Ok(false); }
         let selected = self.csharp_capture.as_ref().ok_or_else(|| BuiltinModelError("C# capture custody is missing".to_owned()))?;
-        selected.revalidate(&self.revision_fence, cancellation).map_err(BuiltinModelError)
+        selected.revalidate(&self.revision_fence, cancellation.as_ref()).map_err(BuiltinModelError)
     }
 
     pub(super) fn has_pending_profiles(&self) -> bool {
@@ -2859,6 +2866,7 @@ fn prepare_deferred_compile(
     reused_profiles: BTreeSet<LanguageProfile>,
     operation_key: Option<backend_library::IndexOperationKey>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
+    csharp_witness: Option<&CapturedCSharpUnitAdmission>,
     mut retained_attempts: Option<&mut Vec<backend_extension_turso::CandidateAttempt>>,
 ) -> Result<DeferredIndex, BuiltinModelError> {
     let mut by_profile = BTreeMap::<LanguageProfile, Vec<OwnedPackageSource>>::new();
@@ -2930,7 +2938,11 @@ fn prepare_deferred_compile(
                 BuiltinModelError("semantic compilation observation has no input digest".to_owned())
             })?;
             if context.csharp_project.is_some() && matches!(profile, LanguageProfile::CSharp(_)) {
-                return Err(BuiltinModelError("selected C# project awaits unit-scoped authority".to_owned()));
+                let witness = csharp_witness.ok_or_else(|| BuiltinModelError("selected C# source custody is missing".to_owned()))?;
+                if witness.key() != &key || !std::ptr::eq(context.cancellation, witness.cancellation.as_ref())
+                    || !witness.revalidate(snapshot, &witness.cancellation)? {
+                    return Err(BuiltinModelError("selected C# source custody differs from candidate".to_owned()));
+                }
             }
             let local_observation = semantic_authority.observe(
                 &key,
@@ -3023,6 +3035,7 @@ fn prepare_deferred_compile(
         source_changes,
         revision_fence,
         csharp_capture: None,
+        csharp_selected_source: None,
         profiles: profiles.into(),
         expected_profiles,
         completed_profiles: 0,
@@ -3547,9 +3560,73 @@ impl Drop for CSharpCaptureLease {
     fn drop(&mut self) { self.used.fetch_sub(CSHARP_CAPTURE_CREDIT, Ordering::AcqRel); }
 }
 
+/// Immutable captured project topology. Nodes retain confined presence/absence
+/// probes; compilation and selected publication remain separate owner joins.
+struct ResolvedCSharpProjectGraph {
+    nodes: Box<[ResolvedCSharpProjectNode]>,
+}
+
+struct ResolvedCSharpProjectNode {
+    project_path: String,
+    config: ingest::ConfinedConfigurationCapture,
+    sdk_config: ingest::ConfinedConfigurationCapture,
+    project_references: Box<[String]>,
+}
+
+impl ResolvedCSharpProjectGraph {
+    fn node(&self, path: &str) -> Option<&ResolvedCSharpProjectNode> {
+        self.nodes.binary_search_by(|node| node.project_path.as_str().cmp(path)).ok().map(|index| &self.nodes[index])
+    }
+
+    fn closure(&self, root: &str) -> Result<Vec<&ResolvedCSharpProjectNode>, BuiltinModelError> {
+        fn visit<'a>(graph: &'a ResolvedCSharpProjectGraph, path: &str, depth: usize,
+            visiting: &mut BTreeSet<String>, visited: &mut BTreeSet<String>, output: &mut Vec<&'a ResolvedCSharpProjectNode>) -> Result<(), BuiltinModelError> {
+            if depth > 16 || visiting.contains(path) { return Err(BuiltinModelError("C# graph cycle or depth limit".to_owned())); }
+            if !visited.insert(path.to_owned()) { return Ok(()); }
+            let node = graph.node(path).ok_or_else(|| BuiltinModelError("C# graph reference is missing".to_owned()))?;
+            visiting.insert(path.to_owned());
+            for dependency in &node.project_references { visit(graph, dependency, depth + 1, visiting, visited, output)?; }
+            visiting.remove(path);
+            output.push(node);
+            Ok(())
+        }
+        let mut output = Vec::new();
+        visit(self, root, 0, &mut BTreeSet::new(), &mut BTreeSet::new(), &mut output)?;
+        Ok(output)
+    }
+
+    // Deepest captured project directory wins; a source is never attached to
+    // every ancestor project merely because its path shares a prefix.
+    fn source_project_path(&self, path: &str) -> Option<&str> {
+        let mut selected = None;
+        let mut depth = None;
+        for node in &self.nodes {
+            let directory = node.project_path.rsplit_once('/').map_or("", |(directory, _)| directory);
+            if !directory.is_empty() && !path.strip_prefix(directory).is_some_and(|suffix| suffix.starts_with('/')) { continue; }
+            let candidate_depth = directory.len();
+            if depth == Some(candidate_depth) { return None; }
+            if depth.is_none_or(|current| candidate_depth > current) {
+                selected = Some(node.project_path.as_str()); depth = Some(candidate_depth);
+            }
+        }
+        selected
+    }
+
+    fn retained_bytes(&self) -> Option<usize> {
+        let mut total = std::mem::size_of::<Self>().checked_add(self.nodes.len().checked_mul(std::mem::size_of::<ResolvedCSharpProjectNode>())?)?;
+        for node in &self.nodes {
+            total = total.checked_add(node.project_path.capacity())?.checked_add(node.config.retained_bytes()?)?
+                .checked_add(node.sdk_config.retained_bytes()?)?.checked_add(node.project_references.len().checked_mul(std::mem::size_of::<String>())?)?;
+            for path in &node.project_references { total = total.checked_add(path.capacity())?; }
+        }
+        Some(total)
+    }
+}
+
 struct ResolvedCSharpProject {
     project_path: String,
-    _capture_lease: CSharpCaptureLease,
+    _capture_lease: Arc<CSharpCaptureLease>,
+    graph: Arc<ResolvedCSharpProjectGraph>,
     // Exact solution input when selected through an explicit .slnx project.
     solution: Option<ingest::ConfinedFileCapture>,
     config: ingest::ConfinedConfigurationCapture,
@@ -3561,7 +3638,8 @@ impl ResolvedCSharpProject {
         let mut total = std::mem::size_of::<Self>()
             .checked_add(self.project_path.capacity())?
             .checked_add(self.config.retained_bytes()?)?
-            .checked_add(self.sdk_config.retained_bytes()?)?;
+            .checked_add(self.sdk_config.retained_bytes()?)?
+            .checked_add(self.graph.retained_bytes()?)?;
         if let Some(solution) = &self.solution {
             total = total.checked_add(solution.retained_bytes()?)?;
         }
@@ -3581,6 +3659,10 @@ impl ResolvedCSharpProject {
         {
             return Ok(false);
         }
+        for node in &self.graph.nodes {
+            if !node.config.revalidate_revision_fence(fence, Some(cancellation))?
+                || !node.sdk_config.revalidate_revision_fence(fence, Some(cancellation))? { return Ok(false); }
+        }
         if let Some(solution) = &self.solution {
             if !solution.revalidate_revision_fence(fence, Some(cancellation))? {
                 return Ok(false);
@@ -3593,8 +3675,12 @@ impl ResolvedCSharpProject {
 /// Private pre-compiler custody minted only from an owned same-scan plan and
 /// the selected durable source snapshot. It is not itself a unit fence.
 pub(in crate::builtin) struct CapturedCSharpUnitAdmission {
-    plan: SourceCompilePlan,
+    project: Arc<ResolvedCSharpProject>,
+    revision_fence: ingest::CompilerRevisionFence,
+    sources: Vec<ingest::CompilerSource>,
+    cancellation: Arc<AtomicBool>,
     receipt: super::adapter::SelectedCSharpSourceCommit,
+    pending_capture: Option<SemanticSourceCapture>,
     snapshot_root: [u8; 32],
     snapshot_sequence: u64,
     snapshot_closure: [u8; 32],
@@ -3617,48 +3703,64 @@ impl CapturedCSharpUnitAdmission {
     pub(in crate::builtin) fn source_sequence(&self) -> u64 { self.snapshot_sequence }
     pub(in crate::builtin) fn source_closure(&self) -> [u8; 32] { self.snapshot_closure }
     pub(in crate::builtin) fn owner_epoch(&self) -> u64 { self.owner_epoch }
-    pub(in crate::builtin) fn cancellation(&self) -> &AtomicBool { self.plan.csharp_cancellation().as_ref() }
-    pub(in crate::builtin) fn project_path(&self) -> &str { self.plan.csharp_project_path() }
-    pub(in crate::builtin) fn config_probes(&self) -> impl Iterator<Item = (&str, Option<&[u8]>)> { self.plan.csharp_project().config.probes() }
-    pub(in crate::builtin) fn sdk_probes(&self) -> impl Iterator<Item = (&str, Option<&[u8]>)> { self.plan.csharp_project().sdk_config.probes() }
-    pub(in crate::builtin) fn solution(&self) -> Option<(&str, &[u8])> { self.plan.csharp_project().solution.as_ref().map(|file| (file.path(), file.bytes())) }
+    pub(in crate::builtin) fn cancellation(&self) -> &AtomicBool { self.cancellation.as_ref() }
+    pub(in crate::builtin) fn project_path(&self) -> &str { self.project.project_path.as_str() }
+    pub(in crate::builtin) fn config_probes(&self) -> impl Iterator<Item = (&str, Option<&[u8]>)> { self.project.config.probes() }
+    pub(in crate::builtin) fn sdk_probes(&self) -> impl Iterator<Item = (&str, Option<&[u8]>)> { self.project.sdk_config.probes() }
+    pub(in crate::builtin) fn solution(&self) -> Option<(&str, &[u8])> { self.project.solution.as_ref().map(|file| (file.path(), file.bytes())) }
     pub(in crate::builtin) fn sources(&self) -> impl Iterator<Item = (&str, &[u8], [u8; 32], ingest::SourceFactIdentity)> {
-        self.plan.csharp_sources().iter().map(|source| (source.relative_path.as_str(), source.source.as_slice(), source.content, source.source_fact_identity))
+        self.sources.iter().map(|source| (source.relative_path.as_str(), source.source.as_slice(), source.content, source.source_fact_identity))
     }
     pub(in crate::builtin) fn retained_bytes(&self) -> Option<usize> {
         // Product key and target each own exact boxed coordinate text; include
         // package, unit spelling and a conservative allocation/header allowance.
-        self.plan.csharp_retained_bytes()?
-            .checked_add(std::mem::size_of::<Self>())?
+        let mut retained = self.project.retained_bytes()?
+            .checked_add(self.revision_fence.csharp_retained_bytes()?)?
+            .checked_add(self.sources.capacity().checked_mul(std::mem::size_of::<ingest::CompilerSource>())?)?;
+        for source in &self.sources {
+            retained = retained.checked_add(source.relative_path.capacity())?.checked_add(source.source.capacity())?.checked_add(128)?;
+        }
+        retained.checked_add(std::mem::size_of::<Self>())?
             // PackageReference may retain spare String capacity; charge the
             // bounded Project label conservatively rather than its text length.
             .checked_add(ProductSourceRecord::MAX_LABEL_BYTES.checked_mul(4)?)?
             .checked_add(self.key.coordinate().as_str().len())?
             .checked_add(self.target.package().as_str().len())?
-            .checked_add(self.plan.csharp_project_path().len())?
+            .checked_add(self.project.project_path.as_str().len())?
             .checked_add(1024)
     }
 
     /// Worker-only: checks the exact still-selected snapshot and original
     /// confined buffers. Owner grant must independently check its held lease.
     pub(in crate::builtin) fn revalidate(&self, snapshot: &WorkspaceSnapshot, cancellation: &Arc<AtomicBool>) -> Result<bool, BuiltinModelError> {
-        if !Arc::ptr_eq(self.plan.csharp_cancellation(), cancellation) || cancellation.load(Ordering::Acquire)
+        if !Arc::ptr_eq(&self.cancellation, cancellation) || cancellation.load(Ordering::Acquire)
             || *snapshot.root().as_bytes() != self.snapshot_root || snapshot.sequence() != self.snapshot_sequence
             || *snapshot.closure().binding().closure().as_bytes() != self.snapshot_closure
             || snapshot.owner_epoch() != self.owner_epoch { return Ok(false); }
         if snapshot.with_persisted_transition(|transition, _| transition.request()).ok()
             != Some(self.receipt.request_identity()) { return Ok(false); }
+        if let Some(expected) = &self.pending_capture {
+            let relation = semantic_capture_relation(snapshot)
+                .map_err(|error| BuiltinModelError(format!("open selected C# capture: {error}")))?
+                .ok_or_else(|| BuiltinModelError("selected C# capture relation is missing".to_owned()))?;
+            let current = relation.lookup(&self.key)
+                .map_err(|error| BuiltinModelError(format!("read selected C# capture: {error}")))?;
+            if current.as_ref().is_none_or(|row| row.capture() != *expected
+                || !matches!(row.outcome(), ProductSemanticCaptureOutcome::Pending { .. })) {
+                return Ok(false);
+            }
+        } else { return Ok(false); }
         let (project, files, frontier) = bounded_csharp_project_frontier(snapshot, self.project_key, cancellation.as_ref())?;
         if selected_project_commitment(self.project_key, &project)? != self.project_commitment { return Ok(false); }
-        let source = checked_csharp_selected_sources(snapshot, self.project_key, &files, self.plan.csharp_sources(),
-            self.key.profile(), self.plan.csharp_project_path(), cancellation.as_ref())?;
+        let source = checked_csharp_selected_sources(snapshot, self.project_key, &files, &self.sources,
+            self.key.profile(), self.project.project_path.as_str(), cancellation.as_ref())?;
         if source != self.source_commitment || frontier != self.project_frontier {
             return Ok(false);
         }
-        if !self.plan.csharp_project().revalidate(self.plan.csharp_revision_fence(), cancellation.as_ref()).map_err(BuiltinModelError)?
-            || !ingest::revalidate_csharp_source_buffers(self.plan.csharp_revision_fence(), self.plan.csharp_sources(), self.plan.csharp_project_path(),
+        if !self.project.revalidate(&self.revision_fence, cancellation.as_ref()).map_err(BuiltinModelError)?
+            || !ingest::revalidate_csharp_source_buffers(&self.revision_fence, &self.sources, self.project.project_path.as_str(),
                 self.key.profile(), cancellation.as_ref()).map_err(BuiltinModelError)?
-            || !self.plan.csharp_project().revalidate(self.plan.csharp_revision_fence(), cancellation.as_ref()).map_err(BuiltinModelError)? {
+            || !self.project.revalidate(&self.revision_fence, cancellation.as_ref()).map_err(BuiltinModelError)? {
             return Ok(false);
         }
         Ok(snapshot.with_persisted_transition(|transition, _| transition.request()).ok() == Some(self.receipt.request_identity())

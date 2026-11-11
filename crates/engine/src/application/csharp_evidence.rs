@@ -121,6 +121,29 @@ where
     deserializer.deserialize_seq(Visitor(std::marker::PhantomData))
 }
 
+/// Correlates a helper's same-invocation reference claims with the private
+/// assembly bytes captured for the compilation. This is not toolchain or
+/// process authentication, and cannot by itself admit a selected unit.
+pub(super) fn references_match_snapshot(
+    bytes: &[u8],
+    expected: &[backend_frontend_csharp::legacy::CSharpTargetingReference],
+) -> bool {
+    if bytes.len() > 2 * 1024 * 1024 || expected.is_empty() || expected.len() > 8192 { return false; }
+    let Ok(sidecar) = serde_json::from_slice::<Sidecar>(bytes) else { return false; };
+    if sidecar.references.len() != expected.len() { return false; }
+    let mut remaining = std::collections::BTreeMap::new();
+    for reference in expected {
+        if remaining.insert(reference.name.as_str(), reference).is_some() { return false; }
+    }
+    for reference in &sidecar.references {
+        let Some(captured) = remaining.remove(reference.name.as_str()) else { return false; };
+        if reference.length != captured.length || reference.sha256 != hex_sha(&captured.sha256) {
+            return false;
+        }
+    }
+    remaining.is_empty()
+}
+
 struct Frames<'a> {
     bytes: &'a [u8],
     position: usize,
@@ -404,6 +427,23 @@ fn hex_sha(bytes: &[u8; 32]) -> String {
 mod tests {
     use super::*;
     use backend_semantic::vocabulary::CSharpVersion;
+
+    #[test]
+    fn invocation_references_must_match_captured_bytes() {
+        let aggregate = fixture();
+        let decoded = decode_csharp_evidence(&aggregate).unwrap();
+        let sidecar = decoded.sources[0].sidecar;
+        let mut expected = vec![backend_frontend_csharp::legacy::CSharpTargetingReference {
+            name: "System.Runtime".to_owned(), length: 1, sha256: [0xbb; 32],
+        }];
+        assert!(references_match_snapshot(sidecar, &expected));
+        expected[0].sha256[0] ^= 1;
+        assert!(!references_match_snapshot(sidecar, &expected));
+        expected[0].sha256[0] ^= 1;
+        expected[0].length += 1;
+        assert!(!references_match_snapshot(sidecar, &expected));
+        assert!(!references_match_snapshot(sidecar, &[]));
+    }
 
     fn frame(out: &mut Vec<u8>, value: &[u8]) {
         out.extend_from_slice(&(value.len() as u32).to_be_bytes());

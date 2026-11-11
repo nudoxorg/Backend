@@ -11,6 +11,7 @@
 mod image;
 mod oracle;
 mod producer;
+mod restore;
 mod sdk;
 
 pub use self::image::{
@@ -28,11 +29,15 @@ pub use self::producer::{
     CSHARP_CAPTURED_UNIT_POLICY_ID_V1, CSHARP_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1,
     CSharpAuthorityConfiguration, CSharpAuthorityControl, CSharpAuthorityError,
     CSharpAuthorityImage, CSharpAuthorityPhase, CSharpAuthorityProducer, CSharpAuthorityRequest,
-    CSharpCapturedConfig, CSharpCapturedSource, CSharpOracle, DEFAULT_IMAGE_LIMIT,
+    CSharpCapturedConfig, CSharpCapturedProjectGraph, CSharpCapturedProjectNode, CSharpCapturedSource, CSharpOracle, DEFAULT_IMAGE_LIMIT,
     DEFAULT_OUTPUT_LIMIT, DEFAULT_SOURCE_LIMIT,
 };
 
+pub use self::restore::{
+    RestoreClosure, RestoreError, resolve_project_assets, resolve_project_assets_checked,
+    resolve_project_assets_with_metadata,
+};
 pub use self::sdk::{
-    observe_csharp_sdk, observe_csharp_sdk_with, CSharpSdkKind, CSharpSdkObservation,
-    CSharpSdkProbe, CSharpSdkProjectProperties,
+    resolve_sdk_owned_references, CSharpSdkKind, CSharpSdkObservation, CSharpSdkProbe, CSharpSdkProjectProperties, CSharpTargetingReference, CSharpTargetingSnapshot,
+    observe_csharp_sdk, observe_csharp_sdk_with,
 };

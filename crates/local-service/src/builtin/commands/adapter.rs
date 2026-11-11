@@ -60,6 +60,25 @@ pub(in crate::builtin) struct SelectedCSharpSourceCommit {
 }
 
 impl SelectedCSharpSourceCommit {
+    pub(super) fn from_selected_candidate(
+        selected: &backend_engine::WorkspaceSnapshot,
+        candidate: &backend_engine::WorkspaceSnapshot,
+        operation_key: Option<backend_library::IndexOperationKey>,
+    ) -> Result<Self, BuiltinModelError> {
+        let selected_request = selected.with_persisted_transition(|transition, _| transition.request())
+            .map_err(|error| BuiltinModelError(error.to_string()))?;
+        let candidate_request = candidate.with_persisted_transition(|transition, _| transition.request())
+            .map_err(|error| BuiltinModelError(error.to_string()))?;
+        if operation_key.is_none() || selected.root() != candidate.root()
+            || selected.sequence() != candidate.sequence() || selected.owner_epoch() != candidate.owner_epoch()
+            || selected.closure().binding().closure() != candidate.closure().binding().closure()
+            || selected_request != candidate_request {
+            return Err(BuiltinModelError("C# source candidate was not selected exactly".to_owned()));
+        }
+        Ok(Self { root: *selected.root().as_bytes(), sequence: selected.sequence(),
+            closure: *selected.closure().binding().closure().as_bytes(), owner_epoch: selected.owner_epoch(),
+            request_identity: selected_request, operation_key })
+    }
     /// Synthetic fixture only; production receipts are minted by the actual
     /// adapter settlement path, which also binds the operation identity.
     #[cfg(test)]
@@ -578,6 +597,7 @@ enum OwnedIndexPhase {
         route: Option<SourceRoute>,
     },
     Cluster(SourceCompilePlan),
+    CSharpResume(SourceCompilePlan, backend_engine::WorkspaceSnapshot),
     Finalize(DeferredIndex),
     Cleanup {
         plan: CaptureFailurePlan,
@@ -2959,6 +2979,7 @@ impl CommandAdapter {
             &phase,
             OwnedIndexPhase::Source { .. }
                 | OwnedIndexPhase::Cluster(_)
+                | OwnedIndexPhase::CSharpResume(..)
                 | OwnedIndexPhase::Finalize(_)
         );
         let cleanup_phase = matches!(&phase, OwnedIndexPhase::Cleanup { .. });
@@ -2982,6 +3003,7 @@ impl CommandAdapter {
                 (empty(), Preparation::Source { scan, route })
             }
             OwnedIndexPhase::Cluster(plan) => (empty(), Preparation::Cluster(plan)),
+            OwnedIndexPhase::CSharpResume(plan, receipt) => (empty(), Preparation::CSharpResume(plan, receipt)),
             OwnedIndexPhase::Finalize(job) => (empty(), Preparation::Finalize(job)),
             OwnedIndexPhase::Cleanup { plan, outcome } => {
                 (empty(), Preparation::Cleanup { plan, outcome })
@@ -4038,6 +4060,13 @@ impl CommandAdapter {
                                     terminal = Some(backend_library::IndexJobOutcome::Failed(
                                         bounded_index_detail(error),
                                     ));
+                                }
+                            }
+                            PreparedIndex::CSharpParked(plan, candidate) => {
+                                if let Err(error) = self.start_owned_index_phase(
+                                    daemon, &mut indexing, OwnedIndexPhase::CSharpResume(plan, candidate),
+                                ) {
+                                    terminal = Some(backend_library::IndexJobOutcome::Failed(bounded_index_detail(error)));
                                 }
                             }
                             PreparedIndex::Cluster(plan) => {
@@ -5695,8 +5724,8 @@ impl CommandAdapter {
             }
         }
         if recover_excerpt && query.source_range().is_none() {
-            // A retained syntax excerpt is not native source authority. Only
-            // a current compiler-selected owner may supply the default body.
+            // The read revalidates indexed host bytes. Native and structural
+            // captures retain their distinct source scopes.
             if let Ok((page, Some(location), head)) = self.read_exact_source_range(
                 daemon,
                 row,
@@ -5720,6 +5749,11 @@ impl CommandAdapter {
                 document.excerpt = backend_library::SourceExcerpt::captured(&format!("{head}{}", page.text), extent)
                     .unwrap_or(backend_library::SourceExcerpt::NotCaptured);
                 document.location = backend_library::SourceAvailability::Captured(location);
+                if page.scope == backend_library::SourceRangeScope::StructuralDeclaration {
+                    let mut fragments = document.fragments.into_vec();
+                    fragments.push(backend_library::Fragment::Text(page.scope.description().to_owned()));
+                    document.fragments = fragments.into_boxed_slice();
+                }
             }
         }
         document.signature.clone_from(&row.signature);
@@ -5941,7 +5975,7 @@ impl CommandAdapter {
             .ok_or_else(unavailable)?;
         // The current publication and selected compiler identity supply the
         // primary owner path and extent, independent of row.source projection.
-        let (native_path, source_identity, extent) = view_build::admitted_native_source_extent(
+        let native = view_build::admitted_native_source_extent(
             &sources,
             &snapshot,
             &self.compiler,
@@ -5949,8 +5983,15 @@ impl CommandAdapter {
             row.id,
             &mut self.generations,
         )
-        .map_err(|_| unavailable())?
-        .ok_or_else(unavailable)?;
+        .map_err(|_| unavailable())?;
+        let structural = if native.is_none() {
+            super::structural_source::admit(&sources, row).map_err(|_| unavailable())?
+        } else { None };
+        let (native_path, source_identity, extent, scope) = match (native, structural.as_ref()) {
+            (Some((path, identity, extent)), _) => (path, identity, extent, backend_library::SourceRangeScope::NativePrimaryDeclaration),
+            (None, Some(source)) => (source.path.clone(), source.identity, source.binding.owner(), backend_library::SourceRangeScope::StructuralDeclaration),
+            _ => return Err(unavailable()),
+        };
         let record = sources
             .files
             .iter()
@@ -5976,7 +6017,13 @@ impl CommandAdapter {
             super::super::source_range::SourceRangeError::Stale => CommandFailure::CursorMismatch,
             _ => unavailable(),
         };
-        let (head, head_lines, page) = if with_context && request.start == 0 {
+        let (head, head_lines, page) = if let Some(source) = structural.as_ref() {
+            let page = super::super::ingest::read_indexed_source_range(
+                &source_root, fields.path, source_identity, fields.content_version,
+                source.binding, &source.name, request.start, u32::from(request.limit),
+            ).map_err(read_error)?;
+            (String::new(), 0, page)
+        } else if with_context && request.start == 0 {
             // The default excerpt also carries the modifiers and leading comment that the
             // compiler keeps outside its extent; they count against the byte bound.
             let (head, page, lines) = super::super::ingest::read_indexed_native_excerpt(
@@ -6011,7 +6058,7 @@ impl CommandAdapter {
             start: page.start,
             end: page.end,
             total: page.total,
-            scope: backend_library::SourceRangeScope::NativePrimaryDeclaration,
+            scope,
             source_identity: page.source_identity,
             owner_start,
             owner_end,
@@ -8934,6 +8981,8 @@ mod tests {
 
     #[path = "selected_read.rs"]
     mod selected_read_tests;
+    #[path = "structural_source.rs"]
+    mod structural_source_tests;
 
     #[path = "index_profile_worker.rs"]
     mod index_profile_worker_tests;

@@ -75,6 +75,7 @@ pub(super) enum Preparation {
         route: Option<super::super::index::SourceRoute>,
     },
     Cluster(super::super::index::SourceCompilePlan),
+    CSharpResume(super::super::index::SourceCompilePlan, WorkspaceSnapshot),
     Finalize(DeferredIndex),
     Cleanup {
         plan: super::super::index::CaptureFailurePlan,
@@ -82,6 +83,7 @@ pub(super) enum Preparation {
     },
     SourcePlan(super::super::index::SourceCompilePlan),
     SourcePrepared(PreparedProductSelection),
+    SourceResumed(PreparedIndex),
     SourceCaptured {
         continuation: PreparedIndex,
         captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
@@ -351,6 +353,7 @@ impl PublicationWork {
                 continuation,
                 captures,
             } => (continuation, captures),
+            Preparation::SourceResumed(continuation) => (continuation, BTreeMap::new()),
             _ => unreachable!("checked source completion"),
         }
     }
@@ -371,12 +374,12 @@ impl PublicationWork {
             )?;
         } else if matches!(
             self.preparation,
-            Preparation::Finalize(_) | Preparation::Cluster(_) | Preparation::Source { .. }
+            Preparation::Finalize(_) | Preparation::Cluster(_) | Preparation::CSharpResume(..) | Preparation::Source { .. }
         ) {
             #[cfg(test)]
             self.run_test_hook(match &self.preparation {
                 Preparation::Finalize(_) => TestStage::BeforeFinalization,
-                Preparation::Cluster(_) => TestStage::BeforeClusterCompile,
+                Preparation::Cluster(_) | Preparation::CSharpResume(..) => TestStage::BeforeClusterCompile,
                 Preparation::Source { .. } => TestStage::BeforeSourcePreparation,
                 _ => unreachable!("checked owned preparation"),
             });
@@ -395,6 +398,19 @@ impl PublicationWork {
                     }
                     let prepared = result?;
                     self.preparation = Preparation::SourcePrepared(prepared);
+                    return Ok(());
+                }
+                Preparation::CSharpResume(plan, candidate) => {
+                    let receipt = super::SelectedCSharpSourceCommit::from_selected_candidate(
+                        &self.base, &candidate, self.operation_key,
+                    )?;
+                    let (plan, witness) = plan.capture_csharp_admission(&self.base, receipt)?;
+                    let continuation = plan.finish_with_csharp_admission(
+                        witness, &self.base, &self.compiler,
+                        self.semantic.as_mut().expect("original source semantic writer").authority_mut(),
+                        &mut self.source_attempts,
+                    )?;
+                    self.preparation = Preparation::SourceResumed(continuation);
                     return Ok(());
                 }
                 Preparation::Cluster(plan) => {
@@ -637,7 +653,11 @@ impl PublicationWork {
                 unreachable!("checked source plan")
             };
             let captures = plan.captures.clone();
-            let continuation = plan.finish(
+            let continuation = if plan.requires_selected_csharp_admission() {
+                let mut plan = plan;
+                plan.prepare_csharp_source_only_for_park()?;
+                PreparedIndex::CSharpParked(plan, snapshot.clone())
+            } else { plan.finish(
                 &snapshot,
                 &self.compiler,
                 self.semantic
@@ -645,7 +665,7 @@ impl PublicationWork {
                     .expect("original source semantic writer")
                     .authority_mut(),
                 &mut self.source_attempts,
-            )?;
+            )? };
             self.preparation = Preparation::SourceCaptured {
                 continuation,
                 captures,
@@ -713,7 +733,7 @@ impl PublicationWork {
         if matches!(self.head, Head::Refresh(_) | Head::Refreshed(_)) {
             return self.attempt_refresh(events);
         }
-        if matches!(self.preparation, Preparation::SourcePrepared(_)) {
+        if matches!(self.preparation, Preparation::SourcePrepared(_) | Preparation::SourceResumed(_)) {
             return Ok(());
         }
         if !self.semantic_committed {
@@ -1232,7 +1252,7 @@ impl PublicationWork {
                     Disposition::Refreshed
                 } else if matches!(self.preparation, Preparation::SourceCaptured { .. }) {
                     Disposition::SourceCaptured
-                } else if matches!(self.preparation, Preparation::SourcePrepared(_)) {
+                } else if matches!(self.preparation, Preparation::SourcePrepared(_) | Preparation::SourceResumed(_)) {
                     Disposition::SourcePrepared
                 } else {
                     Disposition::Ready

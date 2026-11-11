@@ -29,7 +29,7 @@ pub(in crate::builtin::commands) struct SourceCompilePlan {
     native_typescript: Option<Arc<ingest::RevalidatedNativeTsCapture>>,
     mixed_stylo_proof: Option<crate::builtin::stylo_admission::StyloLiveProof>,
     rust_target: Option<ResolvedCargoTarget>,
-    csharp_project: Option<ResolvedCSharpProject>,
+    csharp_project: Option<Arc<ResolvedCSharpProject>>,
     csharp_shape: Option<CSharpScanShape>,
     expected_project_commitment: [u8; 32],
     pending_csharp_sources: Option<CSharpSourceHandles>,
@@ -386,36 +386,14 @@ fn resolve_csharp_selector(
             "selected project is outside the observed workspace".to_owned(),
         ));
     }
-    let mut paths = vec![project_path.clone()];
-    let mut dir = project_path
-        .rsplit_once('/')
-        .map_or("", |(parent, _)| parent);
-    loop {
-        let prefix = if dir.is_empty() {
-            String::new()
-        } else {
-            format!("{dir}/")
-        };
-        paths.push(format!("{prefix}Directory.Build.props"));
-        paths.push(format!("{prefix}Directory.Build.targets"));
-        if dir.is_empty() {
-            break;
-        }
-        if paths.len() >= 17 {
-            return Err(BuiltinModelError("C# project path is too deep".to_owned()));
-        }
-        dir = dir.rsplit_once('/').map_or("", |(parent, _)| parent);
-    }
-    let config = snapshot
-        .capture_configuration_paths(&paths, 2 * 1024 * 1024)
-        .map_err(BuiltinModelError)?;
-    let sdk_config = snapshot.capture_csharp_global_json_paths(&project_path).map_err(BuiltinModelError)?;
-    if sdk_config.probes().any(|(_, bytes)| bytes.is_some_and(|bytes| std::str::from_utf8(bytes).is_err())) {
-        return Err(BuiltinModelError("C# global.json is not UTF-8".to_owned()));
-    }
+    let graph = capture_csharp_project_graph(snapshot, &[project_path.clone()])?;
+    let node = graph.node(&project_path).ok_or_else(|| BuiltinModelError("C# graph root is missing".to_owned()))?;
+    let config = node.config.clone();
+    let sdk_config = node.sdk_config.clone();
     let selected = ResolvedCSharpProject {
         project_path,
-        _capture_lease: lease,
+        _capture_lease: Arc::new(lease),
+        graph,
         solution,
         config,
         sdk_config,
@@ -424,6 +402,145 @@ fn resolve_csharp_selector(
         return Err(BuiltinModelError("C# capture retained bytes exceed bound".to_owned()));
     }
     Ok(selected)
+}
+
+/// Enumerates every observed project as an independent root, sharing one
+/// immutable capture and one bounded capture lease. This does not pick a root
+/// by file ordering and does not combine project assemblies.
+fn discover_observed_csharp_projects(
+    snapshot: Option<&ingest::CompilerWorkspaceSnapshot>,
+) -> Result<Vec<ResolvedCSharpProject>, BuiltinModelError> {
+    let Some(snapshot) = snapshot else { return Ok(Vec::new()); };
+    let paths = snapshot.entries().iter().filter(|entry|
+        entry.kind == ingest::CompilerWorkspaceEntryKind::File && entry.path.to_ascii_lowercase().ends_with(".csproj"))
+        .map(|entry| entry.path.clone()).collect::<Vec<_>>();
+    if paths.is_empty() { return Ok(Vec::new()); }
+    let lease = Arc::new(CSharpCaptureLease::acquire()?);
+    let graph = capture_csharp_project_graph(snapshot, &paths)?;
+    paths.into_iter().map(|project_path| {
+        let node = graph.node(&project_path).ok_or_else(|| BuiltinModelError("C# graph root is missing".to_owned()))?;
+        Ok(ResolvedCSharpProject { project_path, _capture_lease: Arc::clone(&lease), graph: Arc::clone(&graph),
+            solution: None, config: node.config.clone(), sdk_config: node.sdk_config.clone() })
+    }).collect()
+}
+
+fn capture_csharp_project_graph(
+    snapshot: &ingest::CompilerWorkspaceSnapshot,
+    roots: &[String],
+) -> Result<Arc<ResolvedCSharpProjectGraph>, BuiltinModelError> {
+    let mut pending = roots.to_vec();
+    let mut nodes = BTreeMap::new();
+    let mut edges = 0usize;
+    let mut retained = 0usize;
+    while let Some(project_path) = pending.pop() {
+        if nodes.contains_key(&project_path) { continue; }
+        if nodes.len() >= 64 || project_path.len() > 4096 || !project_path.to_ascii_lowercase().ends_with(".csproj")
+            || project_path.starts_with('/') || project_path.contains(['\\', ':'])
+            || project_path.split('/').any(|part| matches!(part, "" | "." | ".."))
+            || !snapshot.entries().iter().any(|entry| entry.kind == ingest::CompilerWorkspaceEntryKind::File && entry.path == project_path) {
+            return Err(BuiltinModelError("C# graph project is outside observed inventory or exceeds bound".to_owned()));
+        }
+        let mut paths = vec![project_path.clone()];
+        let mut dir = project_path.rsplit_once('/').map_or("", |(parent, _)| parent);
+        loop {
+            let prefix = if dir.is_empty() { String::new() } else { format!("{dir}/") };
+            paths.push(format!("{prefix}Directory.Build.props")); paths.push(format!("{prefix}Directory.Build.targets"));
+            if dir.is_empty() { break; }
+            if paths.len() >= 17 { return Err(BuiltinModelError("C# graph project path is too deep".to_owned())); }
+            dir = dir.rsplit_once('/').map_or("", |(parent, _)| parent);
+        }
+        let config = snapshot.capture_configuration_paths(&paths, 2 * 1024 * 1024).map_err(BuiltinModelError)?;
+        let sdk_config = snapshot.capture_csharp_global_json_paths(&project_path).map_err(BuiltinModelError)?;
+        if config.probes().chain(sdk_config.probes()).any(|(_, bytes)| bytes.is_some_and(|bytes| std::str::from_utf8(bytes).is_err())) {
+            return Err(BuiltinModelError("C# graph configuration is not UTF-8".to_owned()));
+        }
+        let project = config.probes().next().and_then(|(_, bytes)| bytes).ok_or_else(|| BuiltinModelError("C# graph project is absent".to_owned()))?;
+        let project_references = captured_csharp_project_references(project, &project_path)?;
+        edges = edges.checked_add(project_references.len()).filter(|count| *count <= 256)
+            .ok_or_else(|| BuiltinModelError("C# graph exceeds edge limit".to_owned()))?;
+        retained = retained.checked_add(config.retained_bytes().ok_or_else(|| BuiltinModelError("C# graph size overflow".to_owned()))?)
+            .and_then(|bytes| bytes.checked_add(sdk_config.retained_bytes()?)).filter(|bytes| *bytes <= 4 * 1024 * 1024)
+            .ok_or_else(|| BuiltinModelError("C# graph configuration exceeds retained-byte bound".to_owned()))?;
+        pending.extend(project_references.iter().cloned());
+        nodes.insert(project_path.clone(), ResolvedCSharpProjectNode { project_path, config, sdk_config,
+            project_references: project_references.into_boxed_slice() });
+    }
+    let graph = Arc::new(ResolvedCSharpProjectGraph { nodes: nodes.into_values().collect() });
+    for root in roots { graph.closure(root)?; }
+    if graph.retained_bytes().is_none_or(|bytes| bytes > 4 * 1024 * 1024) {
+        return Err(BuiltinModelError("C# graph configuration exceeds retained-byte bound".to_owned()));
+    }
+    Ok(graph)
+}
+
+// Parse only literal ProjectReference edges from captured XML; no imports,
+// targets, property substitution, or MSBuild evaluation is performed here.
+fn captured_csharp_project_references(bytes: &[u8], project_path: &str) -> Result<Vec<String>, BuiltinModelError> {
+    use quick_xml::{Reader, events::Event};
+    let fail = || BuiltinModelError("unsupported captured C# project reference".to_owned());
+    let mut reader = Reader::from_reader(bytes);
+    reader.config_mut().expand_empty_elements = true;
+    let mut buffer = Vec::new();
+    let mut stack = Vec::<(Vec<u8>, bool)>::new();
+    let mut output = Vec::new();
+    let mut nodes = 0usize;
+    let mut saw_root = false;
+    loop {
+        match reader.read_event_into(&mut buffer).map_err(|_| fail())? {
+            Event::Start(node) => {
+                nodes += 1;
+                if nodes > 8192 || stack.len() >= 32 { return Err(fail()); }
+                let name = node.name().as_ref().to_vec();
+                if stack.is_empty() {
+                    if name != b"Project" { return Err(fail()); }
+                    saw_root = true;
+                } else if !saw_root {
+                    return Err(fail());
+                }
+                if stack.last().is_some_and(|(name, _)| name == b"ProjectReference") { return Err(fail()); }
+                let is_reference = name == b"ProjectReference";
+                let mut conditioned = false;
+                let mut include = None;
+                for attribute in node.attributes().with_checks(true) {
+                    let attribute = attribute.map_err(|_| fail())?;
+                    if attribute.key.as_ref() == b"Condition" { conditioned = true; }
+                    if is_reference {
+                        if attribute.key.as_ref() != b"Include" || include.is_some() { return Err(fail()); }
+                        include = Some(std::str::from_utf8(attribute.value.as_ref()).map_err(|_| fail())?.to_owned());
+                    }
+                }
+                if is_reference {
+                    if conditioned || stack.iter().any(|(_, condition)| *condition)
+                        || stack.len() != 2 || stack[0].0 != b"Project" || stack[1].0 != b"ItemGroup" { return Err(fail()); }
+                    let raw = include.ok_or_else(fail)?.replace('\\', "/");
+                    if raw.is_empty() || raw.len() > 4096 || raw.starts_with('/') || raw.contains(':')
+                        || raw.chars().any(|ch| ch.is_control() || matches!(ch, '$' | '@' | '%' | '*' | '?' | ';' | '&')) { return Err(fail()); }
+                    let directory = project_path.rsplit_once('/').map_or("", |(directory, _)| directory);
+                    let mut parts = if directory.is_empty() { Vec::new() } else { directory.split('/').collect::<Vec<_>>() };
+                    for part in raw.split('/') {
+                        match part { "" => return Err(fail()), "." => {}, ".." => { parts.pop().ok_or_else(fail)?; }, _ => parts.push(part) }
+                    }
+                    let path = parts.join("/");
+                    if !path.to_ascii_lowercase().ends_with(".csproj") || path.len() > 4096 || output.contains(&path) || output.len() >= 64 { return Err(fail()); }
+                    output.push(path);
+                }
+                stack.push((name, conditioned));
+            }
+            Event::End(node) => {
+                let (expected, _) = stack.pop().ok_or_else(fail)?;
+                if expected.as_slice() != node.name().as_ref() { return Err(fail()); }
+            }
+            Event::DocType(_) | Event::PI(_) | Event::CData(_) => return Err(fail()),
+            Event::Eof => break,
+            Event::Text(text) if stack.last().is_some_and(|(name, _)| name == b"ProjectReference")
+                && !text.iter().all(u8::is_ascii_whitespace) => return Err(fail()),
+            _ => {},
+        }
+        buffer.clear();
+    }
+    if nodes == 0 || !saw_root || !stack.is_empty() { return Err(fail()); }
+    output.sort();
+    Ok(output)
 }
 
 // Discovery only supplies a hint from observed paths; ignore-filtered
@@ -911,7 +1028,10 @@ pub(super) fn prepare_scan_source(
         if retained > 4 * 1024 * 1024 || !selected.revalidate(revision_fence, cancellation.as_ref()).map_err(BuiltinModelError)? {
             return Err(BuiltinModelError("selected C# capture exceeds its bound or changed".to_owned()));
         }
-        return Err(BuiltinModelError("selected C# project awaits unit-scoped authority".to_owned()));
+        if operation_key.is_none() || live.len() != 1 || !scan.native_clang_candidates.is_empty()
+            || !scan.native_csharp_candidates.is_empty() {
+            return Err(BuiltinModelError("selected C# project awaits unit-scoped authority".to_owned()));
+        }
     }
     let mut present =
         ingest::present_compiler_paths(&scan.compiler_sources, &scan.reused_compiler_files);
@@ -1640,7 +1760,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
                     native_typescript: None,
                     mixed_stylo_proof: None,
                     rust_target,
-                    csharp_project,
+                    csharp_project: csharp_project.map(Arc::new),
                     csharp_shape,
                     expected_project_commitment,
                     pending_csharp_sources: None,
@@ -1682,22 +1802,26 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
         native_csharp_candidates,
         native_frontier: compilation_native_frontier,
     } = *compilation;
-    // The owned path materializes before requesting any capture grant. The
-    // synchronous reference path deliberately commits Pending first instead.
+    // A single keyed C# profile can retain bounded handles until its source
+    // selection is installed. Other paths retain the established materialization.
+    let park_csharp = csharp_project.is_some() && csharp_shape.is_some()
+        && operation_key.is_some() && route.is_none() && rust_target.is_none()
+        && python_environment.is_none() && native_typescript.is_none()
+        && native_clang_candidates.is_empty() && native_csharp_candidates.is_empty()
+        && reused_profiles.is_empty() && observations.len() == 1 && captures.len() == 1;
     #[cfg(test)]
-    before_materialization();
-    let (sources, native_candidate_profiles) =
-        ingest::admit_compiler_sources_with_native_candidates_for_scan(
-            &requested_root,
-            &revision_fence,
-            fresh,
-            reused,
-            native_clang_candidates,
-            native_csharp_candidates,
-            source_admission_policy,
-            Some(cancellation.as_ref()),
-        )
-        .map_err(BuiltinModelError)?;
+    if !park_csharp { before_materialization(); }
+    let (sources, native_candidate_profiles, pending_csharp_sources) = if park_csharp {
+        (Vec::new(), ingest::NativeCandidateProfiles::default(), Some(CSharpSourceHandles {
+            fresh, reused, policy: source_admission_policy,
+        }))
+    } else {
+        let (sources, native) = ingest::admit_compiler_sources_with_native_candidates_for_scan(
+            &requested_root, &revision_fence, fresh, reused, native_clang_candidates,
+            native_csharp_candidates, source_admission_policy, Some(cancellation.as_ref()),
+        ).map_err(BuiltinModelError)?;
+        (sources, native, None)
+    };
     if native_typescript.is_some() && (sources.is_empty() || captures.is_empty()) {
         return Err(BuiltinModelError("native TypeScript empty scope requires explicit retirement".into()));
     }
@@ -1742,10 +1866,10 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
             native_typescript,
             mixed_stylo_proof: mixed_stylo_final,
             rust_target,
-            csharp_project,
+            csharp_project: csharp_project.map(Arc::new),
             csharp_shape,
             expected_project_commitment,
-            pending_csharp_sources: None,
+            pending_csharp_sources,
             csharp_parked: false,
             package,
             label,
@@ -1813,17 +1937,24 @@ mod csharp_project_discovery_tests {
         let mut daemon = crate::Locald::open_with_dispatcher_and_registry(&workspace, BuiltinModel, crate::builtin::genesis().map_err(|e| e.to_string())?, dispatcher,
             backend_engine::DaemonConfig::default(), crate::builtin::product_relation_registry().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         let operation = backend_library::IndexOperationKey::from_bytes([0x41; 32]).map_err(|e| e.to_string())?;
-        let intent = BuiltinIntent::index_with_semantics(package, label, vec![
+        let coordinate = selected_project_coordinate(package, profile, Some(&PackageUrl::parse(label).map_err(|e| format!("{e:?}"))?), Some("App.csproj")).map_err(|e| e.to_string())?;
+        let key = ProductSemanticPublicationKey::new(backend_engine::PackageReference::parse(label.to_owned()).map_err(|e| format!("{e:?}"))?, coordinate, profile).map_err(str::to_owned)?;
+        let mut authority = crate::builtin::semantic_authority::SemanticAuthority::open(&workspace).map_err(|e| e.to_string())?;
+        let observation = authority.observe(&key, [0x52; 32], 1).map_err(|e| e.to_string())?;
+        let capture = SemanticSourceCapture::new(Some(operation.to_bytes()), [0x31; 32], [0x52; 32], observation.sequence(), 1)?;
+        let intent = BuiltinIntent::index_with_capture(package, label, vec![
             BuiltinSourceChange { key: project_key, after: Some(project) },
             BuiltinSourceChange { key: source_key, after: Some(file) },
-        ], Vec::new()).map_err(|e| e.to_string())?.with_operation_key(operation).map_err(|e| e.to_string())?;
+        ], Vec::new(), vec![BuiltinCaptureChange { cargo_target: None, key: key.clone(), expected: None, capture,
+            outcome: ProductSemanticCaptureOutcome::Pending { prior: None }, compiler_failure: None }])
+            .map_err(|e| e.to_string())?.with_operation_key(operation).map_err(|e| e.to_string())?;
         super::super::super::adapter::commit_builtin_intent(&mut daemon, 1, &intent).map_err(|e| e.to_string())?;
         let snapshot = daemon.engine().daemon().owner().snapshot();
         let receipt = super::super::super::adapter::SelectedCSharpSourceCommit::from_selected_test(&snapshot, Some(operation)).map_err(|e| e.to_string())?;
         let cancellation = Arc::new(AtomicBool::new(false));
         let mut plan = SourceCompilePlan {
             native_typescript: None, mixed_stylo_proof: None,
-            rust_target: None, csharp_project: Some(selected), csharp_shape: Some(shape), expected_project_commitment: commitment,
+            rust_target: None, csharp_project: Some(Arc::new(selected)), csharp_shape: Some(shape), expected_project_commitment: commitment,
             pending_csharp_sources: Some(CSharpSourceHandles {
                 fresh: vec![ingest::CompilerSourceHandle { relative_path: source.relative_path.clone(), profile: source.profile, content: source.content, source_fact_identity: source.source_fact_identity, expected_byte_length: None }],
                 reused: Vec::new(),
@@ -1831,13 +1962,13 @@ mod csharp_project_discovery_tests {
             }),
             csharp_parked: false,
             package, label: label.to_owned(), project_key, coordinate: Some(PackageUrl::parse(label).map_err(|e| format!("{e:?}"))?), request_id: 1,
-            source_root: source_root.clone(), revision_fence: fence, sources: Vec::new(), observations: BTreeMap::new(), captures: BTreeMap::new(),
+            source_root: source_root.clone(), revision_fence: fence, sources: Vec::new(), observations: BTreeMap::from([(profile, observation)]), captures: BTreeMap::from([(key, capture)]),
             native_frontier: Vec::new(), native_candidate_profiles: ingest::NativeCandidateProfiles::default(), reused_profiles: BTreeSet::new(),
             operation_key: Some(operation), reuse_only: false, python_environment: None, cancellation: Arc::clone(&cancellation),
             workspace_snapshot: None, route: None, execution_intent: CompileExecutionIntent::Interactive,
         };
         plan.prepare_csharp_source_only_for_park().map_err(|e| e.to_string())?;
-        let witness = plan.capture_csharp_admission(&snapshot, receipt).map_err(|e| e.to_string())?;
+        let (_plan, witness) = plan.capture_csharp_admission(&snapshot, receipt).map_err(|e| e.to_string())?;
         assert!(witness.revalidate(&snapshot, &cancellation).map_err(|e| e.to_string())?);
         assert!(!witness.revalidate(&snapshot, &Arc::new(AtomicBool::new(false))).map_err(|e| e.to_string())?);
         std::fs::write(source_root.join("App.cs"), "class Else {}\n").map_err(|error| error.to_string())?;
@@ -1954,6 +2085,25 @@ mod csharp_project_discovery_tests {
         let _ = std::fs::remove_dir_all(path);
         result
     }
+
+    #[test]
+    fn captured_project_references_require_a_well_formed_project_root() {
+        assert!(captured_csharp_project_references(
+            br#"<NotProject><ItemGroup><ProjectReference Include="Api/Api.csproj"/></ItemGroup></NotProject>"#,
+            "Tests/Tests.csproj",
+        )
+        .is_err());
+        assert!(captured_csharp_project_references(
+            br#"<Project><ItemGroup><ProjectReference Include="Api/Api.csproj"></ItemGroup></Project>"#,
+            "Tests/Tests.csproj",
+        )
+        .is_err());
+        assert!(captured_csharp_project_references(
+            br#"<Project><ItemGroup><ProjectReference Include="Api/Api.csproj"/></ItemGroup></Project>"#,
+            "Tests/Tests.csproj",
+        )
+        .is_ok());
+    }
 }
 
 #[cfg(test)]
@@ -2023,7 +2173,7 @@ impl SourceCompilePlan {
         self.csharp_project.is_some()
     }
 
-    pub(super) fn csharp_project(&self) -> &ResolvedCSharpProject { self.csharp_project.as_ref().expect("sealed C# capture owns selection") }
+    pub(super) fn csharp_project(&self) -> &ResolvedCSharpProject { self.csharp_project.as_deref().expect("sealed C# capture owns selection") }
     pub(super) fn csharp_project_path(&self) -> &str { &self.csharp_project().project_path }
     pub(super) fn csharp_sources(&self) -> &[ingest::CompilerSource] { &self.sources }
     pub(super) fn csharp_revision_fence(&self) -> &ingest::CompilerRevisionFence { &self.revision_fence }
@@ -2039,7 +2189,12 @@ impl SourceCompilePlan {
             total = total.checked_add(source.relative_path.capacity())?.checked_add(source.source.capacity())?.checked_add(128)?;
         }
         if let Some(handles) = &self.pending_csharp_sources { total = total.checked_add(handles.retained_bytes()?)?; }
-        // Two Arc counters plus atomic cancellation state; bounded overcharge.
+        // At most one selected C# observation/capture is parked; account for
+        // their tree nodes, owned keys and bounded package/coordinate strings.
+        if self.observations.len() > 1 || self.captures.len() > 1 { return None; }
+        total = total.checked_add(self.observations.len().checked_mul(4096)?)?
+            .checked_add(self.captures.len().checked_mul(ProductSourceRecord::MAX_LABEL_BYTES.checked_mul(4)?.checked_add(4096)?)?)?;
+        // Arc counters plus atomic cancellation state; bounded overcharge.
         total.checked_add(512)
     }
 
@@ -2048,7 +2203,7 @@ impl SourceCompilePlan {
     pub(in crate::builtin::commands) fn prepare_csharp_source_only_for_park(&mut self) -> Result<(), BuiltinModelError> {
         if self.csharp_project.is_none() || self.csharp_shape.is_none() || self.pending_csharp_sources.is_none()
             || self.operation_key.is_none() || self.expected_project_commitment == [0; 32]
-            || !self.sources.is_empty() || !self.observations.is_empty() || !self.captures.is_empty()
+            || !self.sources.is_empty() || self.observations.len() > 1 || self.captures.len() > 1
             || !self.reused_profiles.is_empty() || self.rust_target.is_some() || self.python_environment.is_some()
             || self.route.is_some() || !self.native_candidate_profiles.clang.is_empty() || !self.native_candidate_profiles.csharp.is_empty() {
             return Err(BuiltinModelError("C# source-only plan is not isolated".to_owned()));
@@ -2069,7 +2224,7 @@ impl SourceCompilePlan {
         mut self,
         snapshot: &WorkspaceSnapshot,
         receipt: super::super::adapter::SelectedCSharpSourceCommit,
-    ) -> Result<CapturedCSharpUnitAdmission, BuiltinModelError> {
+    ) -> Result<(Self, CapturedCSharpUnitAdmission), BuiltinModelError> {
         if !self.csharp_parked || self.cancellation.load(Ordering::Acquire) || self.operation_key.is_none()
             || self.operation_key != receipt.operation_key()
             || *snapshot.root().as_bytes() != receipt.root() || snapshot.sequence() != receipt.sequence()
@@ -2084,8 +2239,8 @@ impl SourceCompilePlan {
         }
         // This finite source-only path does not take custody of other profile
         // attempts, pending rows, or a full workspace inventory.
-        if self.reuse_only || self.rust_target.is_some() || !self.captures.is_empty()
-            || !self.observations.is_empty() || !self.reused_profiles.is_empty()
+        if self.reuse_only || self.rust_target.is_some() || self.captures.len() > 1
+            || self.observations.len() > 1 || !self.reused_profiles.is_empty()
             || !self.native_candidate_profiles.clang.is_empty() || !self.native_candidate_profiles.csharp.is_empty()
             || self.python_environment.is_some() || self.route.is_some() || self.workspace_snapshot.is_some() {
             return Err(BuiltinModelError("C# source continuation is not isolated".to_owned()));
@@ -2132,6 +2287,16 @@ impl SourceCompilePlan {
         let target = CompilerPackageTargetV2::new(coordinate, backend_engine::application::CompilationUnitKeyV2::CSharpProject {
             project_path: selected.project_path.clone().into(),
         }).map_err(|error| BuiltinModelError(format!("C# unit target: {error:?}")))?;
+        // A production plan may retain exactly one profile's original Pending
+        // receipt. Bind it to this selected key and operation before carrying it
+        // into the deferred compiler; the empty pair is used by source fixtures.
+        match (self.captures.get(&key), self.observations.get(&shape.profile)) {
+            (Some(capture), Some(observation)) if self.captures.len() == 1 && self.observations.len() == 1
+                && capture.operation_key().copied() == self.operation_key.map(|key| key.to_bytes())
+                && capture.observation_sequence() == observation.sequence()
+                && observation.observation().revision().as_ref() == Some(capture.input_digest()) => {},
+            _ => return Err(BuiltinModelError("C# pending capture differs from selected profile".to_owned())),
+        }
         let (project, files, frontier) = bounded_csharp_project_frontier(snapshot, self.project_key, self.cancellation.as_ref())?;
         let project_commitment = selected_project_commitment(self.project_key, &project)?;
         if project.project_fields().is_none_or(|fields| fields.label != self.label)
@@ -2147,19 +2312,49 @@ impl SourceCompilePlan {
         let source_commitment = checked_csharp_selected_sources(snapshot, self.project_key, &files, &self.sources, shape.profile, &selected.project_path, self.cancellation.as_ref())?;
         let cancellation = Arc::clone(&self.cancellation);
         let witness = CapturedCSharpUnitAdmission {
-            plan: self, receipt,
+            project: Arc::clone(self.csharp_project.as_ref().expect("selected project checked")),
+            revision_fence: self.revision_fence.clone(), sources: self.sources.clone(),
+            cancellation: Arc::clone(&self.cancellation), receipt,
+            pending_capture: self.captures.get(&key).cloned(),
             snapshot_root: *snapshot.root().as_bytes(), snapshot_sequence: snapshot.sequence(),
             snapshot_closure: *snapshot.closure().binding().closure().as_bytes(), owner_epoch: snapshot.owner_epoch(),
             project_key: key.package_key().to_bytes(), project_commitment, project_frontier: frontier,
             source_commitment, key, target,
         };
-        if witness.retained_bytes().is_none_or(|bytes| bytes > 16 * 1024 * 1024) {
+        if witness.retained_bytes().and_then(|bytes| bytes.checked_add(self.csharp_retained_bytes()?))
+            .is_none_or(|bytes| bytes > 16 * 1024 * 1024) {
             return Err(BuiltinModelError("C# sealed witness exceeds retained-byte bound".to_owned()));
         }
         if !witness.revalidate(snapshot, &cancellation)? {
             return Err(BuiltinModelError("C# capture changed during selected-source admission".to_owned()));
         }
-        Ok(witness)
+        Ok((self, witness))
+    }
+
+    /// Consumes the materialized plan while retaining its independent selected
+    /// source custody through deferred compilation. This proof does not admit
+    /// SDK, helper, runtime or project-graph closure.
+    pub(in crate::builtin::commands) fn finish_with_csharp_admission(
+        self,
+        witness: CapturedCSharpUnitAdmission,
+        snapshot: &WorkspaceSnapshot,
+        compiler: &LocalCompilerClient,
+        semantic: &mut crate::builtin::semantic_authority::SemanticAuthority,
+        retained_attempts: &mut Vec<backend_extension_turso::CandidateAttempt>,
+    ) -> Result<PreparedIndex, BuiltinModelError> {
+        if !witness.revalidate(snapshot, &self.cancellation)?
+            || self.csharp_project.as_ref().is_none_or(|project| !Arc::ptr_eq(project, &witness.project))
+            || self.operation_key != witness.receipt.operation_key()
+            || self.project_key != witness.project_key
+            || self.captures.get(&witness.key) != witness.pending_capture.as_ref()
+            || self.sources.len() != witness.sources.len()
+            || self.sources.iter().zip(&witness.sources).any(|(a, b)| {
+                a.relative_path != b.relative_path || a.profile != b.profile || a.source != b.source
+                    || a.content != b.content || a.source_fact_identity != b.source_fact_identity
+            }) {
+            return Err(BuiltinModelError("C# compilation inputs differ from selected custody".to_owned()));
+        }
+        self.finish_inner(snapshot, compiler, semantic, retained_attempts, Some(Arc::new(witness)))
     }
 
     pub(in crate::builtin::commands) fn finish(
@@ -2168,6 +2363,17 @@ impl SourceCompilePlan {
         compiler: &LocalCompilerClient,
         semantic: &mut crate::builtin::semantic_authority::SemanticAuthority,
         retained_attempts: &mut Vec<backend_extension_turso::CandidateAttempt>,
+    ) -> Result<PreparedIndex, BuiltinModelError> {
+        self.finish_inner(snapshot, compiler, semantic, retained_attempts, None)
+    }
+
+    fn finish_inner(
+        self,
+        snapshot: &WorkspaceSnapshot,
+        compiler: &LocalCompilerClient,
+        semantic: &mut crate::builtin::semantic_authority::SemanticAuthority,
+        retained_attempts: &mut Vec<backend_extension_turso::CandidateAttempt>,
+        witness: Option<Arc<CapturedCSharpUnitAdmission>>,
     ) -> Result<PreparedIndex, BuiltinModelError> {
         if self.reuse_only {
             return Ok(PreparedIndex::Ready(self.reused_selection(snapshot)?));
@@ -2188,7 +2394,7 @@ impl SourceCompilePlan {
             self.cancellation.as_ref(),
         )?
         .with_rust_target(self.rust_target.as_ref())
-        .with_csharp_project(self.csharp_project.as_ref());
+        .with_csharp_project(self.csharp_project.as_deref());
         let mixed_stylo_proof = self.mixed_stylo_proof.as_ref().map(|proof| {
             crate::builtin::stylo_admission::SelectedStyloFence::from_selected(snapshot, proof, &self.cancellation)
                 .map(|fence| crate::builtin::stylo_admission::StyloGrantProof::Selected(Arc::new(fence)))
@@ -2220,11 +2426,13 @@ impl SourceCompilePlan {
             self.reused_profiles,
             self.operation_key,
             semantic,
+            witness.as_deref(),
             Some(retained_attempts),
         )?;
         deferred.native_typescript = native_typescript;
         deferred.mixed_stylo_proof = mixed_stylo_proof;
         deferred.csharp_capture = self.csharp_project;
+        deferred.csharp_selected_source = witness;
         Ok(PreparedIndex::Compile(deferred))
     }
 
@@ -2254,7 +2462,7 @@ impl SourceCompilePlan {
             self.cancellation.as_ref(),
         )?
         .with_rust_target(self.rust_target.as_ref())
-        .with_csharp_project(self.csharp_project.as_ref());
+        .with_csharp_project(self.csharp_project.as_deref());
         let route = self.route.as_ref().expect("configured route continuation");
         let mut compiled = compile_semantic_publications_for_snapshot(
             snapshot,
@@ -2332,6 +2540,7 @@ impl SourceCompilePlan {
             source_changes,
             revision_fence: self.revision_fence,
             csharp_capture: self.csharp_project,
+            csharp_selected_source: None,
             profiles: VecDeque::new(),
             expected_profiles: count,
             completed_profiles: count,
