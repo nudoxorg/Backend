@@ -338,6 +338,10 @@ impl OwnedCSharpProjectNode {
             || target_framework.len() < 4 || !target_framework.starts_with("net")
             || language_version.is_empty() || nullable.is_empty() || output_type.is_empty()
             || config.is_empty() || sources.is_empty()
+            || define_symbols.len() > 256 || define_symbols.iter().any(|symbol| symbol.len() > 256)
+            || usings.len() > 256 || usings.iter().any(|using| using.len() > 1024)
+            || config.len() > 8192 || config.iter().any(|probe| probe.path.len() > 4096 || probe.text.as_ref().is_some_and(|text| text.len() > 64 * 1024))
+            || sources.len() > 8192 || sources.iter().try_fold(0usize, |total, source| total.checked_add(source.byte_length as usize)).is_none_or(|total| total > 64 * 1024 * 1024)
             || project_references.len() > 64
             || project_references.iter().any(|path| PackageSource::validate_path(path).is_err())
         {
@@ -352,19 +356,14 @@ impl OwnedCSharpProjectNode {
     }
 
     fn retained_bytes(&self) -> Option<usize> {
-        let mut total = size_of::<Self>().checked_add(self.project_path.len())?
-            .and_then(|n| n.checked_add(self.assembly_name.len()))?
-            .and_then(|n| n.checked_add(self.target_framework.len()))?
-            .and_then(|n| n.checked_add(self.language_version.len()))?
-            .and_then(|n| n.checked_add(self.nullable.len()))?
-            .and_then(|n| n.checked_add(self.output_type.len()))?;
-        for symbol in &self.define_symbols { total = total.checked_add(symbol.len())?; }
-        for using in &self.usings { total = total.checked_add(using.len())?; }
-        for probe in &self.config { total = total.checked_add(probe.path.len())?.checked_add(probe.text.as_ref().map_or(0, |text| text.len()))?; }
-        for source in &self.sources { total = total.checked_add(source.path.len())?.checked_add(size_of::<OwnedCSharpSourceClaim>())?; }
-        total = total.checked_add(self.targeting_snapshot.directories().len() * size_of::<PathBuf>())?
-            .checked_add(self.targeting_snapshot.digest().len())?;
-        for path in &self.project_references { total = total.checked_add(path.len())?; }
+        let mut total = size_of::<Self>();
+        for bytes in [self.project_path.len(), self.assembly_name.len(), self.target_framework.len(), self.language_version.len(), self.nullable.len(), self.output_type.len()] { total = total.checked_add(bytes)?; }
+        for symbol in &self.define_symbols { total = total.checked_add(size_of::<Box<str>>())?.checked_add(symbol.len())?; }
+        for using in &self.usings { total = total.checked_add(size_of::<Box<str>>())?.checked_add(using.len())?; }
+        for probe in &self.config { total = total.checked_add(size_of::<OwnedCSharpConfigProbe>())?.checked_add(probe.path.len())?.checked_add(probe.text.as_ref().map_or(0, |text| text.len()))?; }
+        for source in &self.sources { total = total.checked_add(size_of::<OwnedCSharpSourceClaim>())?.checked_add(source.path.len())?; }
+        total = total.checked_add(self.targeting_snapshot.directories().len().checked_mul(size_of::<PathBuf>())?)?.checked_add(self.targeting_snapshot.digest().len())?;
+        for path in &self.project_references { total = total.checked_add(size_of::<Box<str>>())?.checked_add(path.len())?; }
         Some(total)
     }
 }
@@ -428,9 +427,12 @@ impl OwnedCSharpProjectGraph {
         if !visit(&self.root_project, &nodes, &mut active, &mut done) || done.len() != nodes.len() {
             return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
         }
-        if nodes.iter().map(|node| node.sources.len()).sum::<usize>() > 8192
-            || nodes.iter().map(|node| node.project_references.len()).sum::<usize>() > 256
-            || nodes.iter().filter_map(OwnedCSharpProjectNode::retained_bytes).sum::<usize>() > 64 * 1024 * 1024
+        let source_count = nodes.iter().try_fold(0usize, |total, node| total.checked_add(node.sources.len()));
+        let edge_count = nodes.iter().try_fold(0usize, |total, node| total.checked_add(node.project_references.len()));
+        let retained = nodes.iter().try_fold(0usize, |total, node| total.checked_add(node.retained_bytes()?));
+        if source_count.is_none_or(|count| count > 8192)
+            || edge_count.is_none_or(|count| count > 256)
+            || retained.is_none_or(|bytes| bytes > 64 * 1024 * 1024)
         {
             return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
         }
