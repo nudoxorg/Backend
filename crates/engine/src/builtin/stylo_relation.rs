@@ -1056,6 +1056,7 @@ mod tests {
                 terminal: StyloTerminal::Parsed(StyloCoverage::Partial),
                 fact_count: 1,
                 fact_digest,
+                fragment: None,
             };
             let host_digest = stylo_rows_digest(&[(host_key, &host)]).unwrap();
             let mut witness = StyloInventoryWitness::default();
