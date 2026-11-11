@@ -11,6 +11,7 @@ pub(super) fn append(
     sources: &IndexedSources,
     rows: &mut Vec<Row>,
 ) -> Result<(), BuiltinModelError> {
+    let mut bytes = super::super::admitted_view_bytes(rows)?;
     for (project, indexed) in &sources.projects {
         let Some(sql) = super::super::sql_catalog::load_project(snapshot, *project, &|| false)
             .map_err(BuiltinModelError)? else { continue };
@@ -39,12 +40,17 @@ pub(super) fn append(
             // same-name definitions distinct without inventing source lines.
             let coordinate = format!("{}::{path}::{display}", indexed.label);
             let preimage = format!("{coordinate}\0sql:{ordinal}");
-            rows.push(Row::in_package(RowId::Symbol(backend_engine::symbol_key(&preimage)), initial.basis(), indexed.package, coordinate)
+            let row = Row::in_package(RowId::Symbol(backend_engine::symbol_key(&preimage)), initial.basis(), indexed.package, coordinate)
                 .try_with_identity_preimage(&preimage)
                 .map_err(|error| BuiltinModelError(format!("SQL discovery identity: {error}")))?
                 .with_kind(if definition.kind == SqlObjectKind::Column { DeclarationKind::Field } else { DeclarationKind::Unknown })
                 .with_signature(format!("SQL {kind} {display}"))
-                .with_document(vec![Fragment::Text(format!("SQL {kind} in {path}; use sql-query for binding, migration history and checked source"))]));
+                .with_document(vec![Fragment::Text(format!("SQL {kind} in {path}; use sql-query for binding, migration history and checked source"))]);
+            bytes = bytes.checked_add(super::super::row_admission_bytes(&row)
+                .ok_or_else(|| BuiltinModelError("SQL discovery byte overflow".into()))?)
+                .ok_or_else(|| BuiltinModelError("SQL discovery byte overflow".into()))?;
+            super::super::finish_admitted_bytes(bytes)?;
+            rows.push(row);
         }
     }
     Ok(())
