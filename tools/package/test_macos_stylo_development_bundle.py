@@ -69,17 +69,17 @@ class DevelopmentBundleTests(unittest.TestCase):
                 if tamper_worker and command[:4] == ['/usr/bin/codesign','--force','--sign','-'] and command[-1].endswith('.app'):
                     (output/'Nudox Development.app/Contents/MacOS/backend-stylo-worker').write_bytes(b'tampered')
                 if tamper_sqlite and command[:4] == ['/usr/bin/codesign','--force','--sign','-'] and command[-1].endswith('.app'):
-                    (output/'Nudox Development.app/Contents/MacOS/sqlite-worker').write_bytes(b'tampered')
+                    (output/'Nudox Development.app/Contents/MacOS/backend-sqlite-worker').write_bytes(b'tampered')
                 return b''
             def inspect(path, target, **kwargs):
                 size, checksum = actor.companion.digest_regular(path)
                 return {'bytes':size, 'sha256':checksum, 'architecture':'arm64', 'system_loads':['/usr/lib/libSystem.B.dylib']}
             def sqlite_prepare(**kwargs):
-                (kwargs['macos']/'sqlite-worker').write_bytes(b'sqlite')
+                (kwargs['macos']/'backend-sqlite-worker').write_bytes(b'sqlite')
                 return {'artifact_identity':'2'*64, 'owner_environment':{'NUDOX_BUILD_SQLITE_WORKER_ID':'2'*64,
                                                                           'NUDOX_BUILD_SQLITE_BASIS_JSON':'{"basis":true}'}}
             def sqlite_verify(record, **kwargs):
-                if (output/'Nudox Development.app/Contents/MacOS/sqlite-worker').read_bytes() != b'sqlite':
+                if (output/'Nudox Development.app/Contents/MacOS/backend-sqlite-worker').read_bytes() != b'sqlite':
                     raise ValueError('outer signing changed SQLite worker')
             with patch.object(actor.sys, 'platform', 'darwin'), patch.object(actor.platform, 'machine', return_value='arm64'), \
                  patch.object(actor, 'source_snapshot', return_value=snapshot), patch.object(actor.common, 'ROOT', source), \
@@ -117,7 +117,7 @@ class DevelopmentBundleTests(unittest.TestCase):
                     self.assertEqual(len(receipt['bundle_digest']['files']), 14)
                     self.assertEqual(receipt['archive']['bytes'], len(b'archive'))
                     self.assertEqual(receipt['cli_checks']['workspace_version'], workspace_tag)
-                    self.assertEqual(set(receipt['native_images']), {'Nudox','backend-locald','backend-mcp','backend-cli','backend-stylo-worker','sqlite-worker'})
+                    self.assertEqual(set(receipt['native_images']), {'Nudox','backend-locald','backend-mcp','backend-cli','backend-stylo-worker','backend-sqlite-worker'})
                     plist = plistlib.loads((output/'Nudox Development.app/Contents/Info.plist').read_bytes())
                     self.assertEqual(plist['CFBundleIdentifier'], 'dev.nudox.support.development')
                     self.assertEqual(plist['CFBundleShortVersionString'], '0.2.0')

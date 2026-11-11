@@ -79,7 +79,7 @@ def prepare(*, source: Path, macos: Path, target: Path, build: Path, env: dict,
     execution = common.execute(command, source, worker_env, logs, deadline, 64 * 1024 * 1024)
     require(execution['exit'] == 0 and execution['process_group_retired'], 'SQLite worker/observer build failed')
     release = worker_target / target_triple / 'release'
-    worker = macos / 'sqlite-worker'
+    worker = macos / 'backend-sqlite-worker'
     copy_exact(release / 'sqlite-worker', worker, deadline)
     companion.run_tool(['/usr/bin/codesign', '--force', '--sign', '-', str(worker)], timeout=180, deadline=deadline)
     companion.run_tool(['/usr/bin/codesign', '--verify', '--strict', str(worker)], deadline=deadline)

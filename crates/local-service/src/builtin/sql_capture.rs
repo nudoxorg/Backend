@@ -31,6 +31,8 @@ pub(super) struct SqliteWorkerPermit {
     basis: backend_sql_contract::ProducerBasis,
     /// Wall-clock budget of one host launch; part of the recorded settings.
     wall: Duration,
+    #[cfg(target_os = "linux")]
+    library: Option<(PathBuf, backend_compile::ExecutableIdentity)>,
 }
 impl SqliteWorkerPermit {
     pub(super) fn from_admitted(
@@ -50,8 +52,89 @@ impl SqliteWorkerPermit {
             artifact,
             basis,
             wall: DEFAULT_WORKER_WALL,
+            #[cfg(target_os = "linux")]
+            library: None,
         })
     }
+    /// A source-bound installed worker with one exact private runtime dependency.
+    #[cfg(target_os = "linux")]
+    pub(super) fn from_admitted_with_linux_library(
+        program: PathBuf,
+        artifact: ToolchainArtifact,
+        basis: backend_sql_contract::ProducerBasis,
+        library: PathBuf,
+        identity: backend_compile::ExecutableIdentity,
+    ) -> Result<Self, &'static str> {
+        if !program.is_absolute()
+            || !library.is_absolute()
+            || library.file_name().and_then(|name| name.to_str()) != Some("libgcc_s.so.1")
+            || artifact.dependencies() != [identity.digest()]
+            || basis.engine != Engine::Syntaqlite4e4de76
+            || basis.support_sha256.is_none_or(|value| value == [0; 32])
+        {
+            return Err("SQLite private runtime closure not admitted");
+        }
+        Ok(Self {
+            program,
+            artifact,
+            basis,
+            wall: DEFAULT_WORKER_WALL,
+            library: Some((library, identity)),
+        })
+    }
+
+    fn analyze<'a>(
+        &self,
+        request: &Request,
+        host: &'a [u8],
+        input: backend_compile::InputContentVersion,
+        source: backend_version::ContentId<backend_version::SourceFactDomain>,
+        mut launch: CheckedLaunch<'_>,
+    ) -> Result<backend_sql_contract::CheckedResponse<'a>, backend_sql_contract::CheckedError> {
+        #[cfg(target_os = "linux")]
+        if let Some((path, identity)) = &self.library {
+            let deadline = std::time::Instant::now()
+                .checked_add(launch.limits.wall_time())
+                .ok_or(backend_sql_contract::CheckedError::Process(
+                    backend_compile::ProcessError::Deadline,
+                ))?;
+            let library = backend_compile::NativeLibraryLease::prepare(
+                path,
+                identity,
+                &self.artifact,
+                launch.cancellation,
+                deadline,
+            )
+            .map_err(|error| match error {
+                backend_compile::ProcessError::Cancelled => backend_sql_contract::CheckedError::Cancelled,
+                error => backend_sql_contract::CheckedError::Process(error),
+            })?;
+            launch.environment = library
+                .environment()
+                .map_err(backend_sql_contract::CheckedError::Process)?;
+            return backend_sql_contract::analyze_checked_with_linux_library_until(
+                request,
+                host,
+                input,
+                source,
+                launch,
+                Dialect::Sqlite,
+                Engine::Syntaqlite4e4de76,
+                deadline,
+                library,
+            );
+        }
+        backend_sql_contract::analyze_checked(
+            request,
+            host,
+            input,
+            source,
+            launch,
+            Dialect::Sqlite,
+            Engine::Syntaqlite4e4de76,
+        )
+    }
+
     /// A different per-host wall budget, for hosts where process start alone
     /// can exceed the default (a saturated build machine). It is recorded in the
     /// analysis settings, so rows made under another budget are distinct.
@@ -254,14 +337,8 @@ pub(super) fn capture_sqlite_host(
         limits,
         cancellation,
     };
-    let response = backend_sql_contract::analyze_checked(
-        &request,
-        host.bytes(),
-        host.input(),
-        host.source(),
-        launch,
-        Dialect::Sqlite,
-        Engine::Syntaqlite4e4de76,
+    let response = permit.analyze(
+        &request, host.bytes(), host.input(), host.source(), launch,
     )
     .map_err(|error| match error {
         backend_sql_contract::CheckedError::Cancelled => SqlUnavailable::Cancelled,

@@ -37,7 +37,7 @@ def verify(app: Path, receipt_path: Path, expected_receipt: str) -> dict:
     if actor.bundle_digest(app, deadline) != expected_bundle:
         raise ValueError('bundle bytes or modes differ from receipt')
     macos = app / 'Contents/MacOS'
-    for image in (app, macos/'Nudox', macos/'backend-locald', macos/'backend-mcp', macos/'backend-cli', macos/'backend-stylo-worker', macos/'sqlite-worker'):
+    for image in (app, macos/'Nudox', macos/'backend-locald', macos/'backend-mcp', macos/'backend-cli', macos/'backend-stylo-worker', macos/'backend-sqlite-worker'):
         companion.run_tool(['/usr/bin/codesign', '--verify', '--strict', str(image)], deadline=deadline)
     if actor.bundle_digest(app, deadline) != expected_bundle:
         raise ValueError('bundle changed during verification')
