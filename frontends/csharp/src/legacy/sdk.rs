@@ -197,38 +197,47 @@ impl CSharpResolvedReferenceSnapshot {
     /// Rechecks that the owned selected files still match the receipt before
     /// a producer consumes them or a replay validates the attempt.
     pub fn receipt_is_consistent(&self) -> bool {
-        if self.receipt.selected_digest != self.digest
-            || self.references.len() != self.receipt.selected_names.len()
-            || !self.receipt.sdk_directory.is_absolute()
-            || !self.receipt.sdk_directory.is_dir()
-        {
+        let Some((digest, names)) = self.selected_owner_evidence() else {
             return false;
-        }
+        };
+        self.receipt.selected_digest == digest
+            && self.digest == digest
+            && self.receipt.selected_names.as_ref() == names.as_slice()
+            && self.receipt.sdk_directory.is_absolute()
+            && self.receipt.sdk_directory.is_dir()
+    }
+
+    /// Recomputes selected names and bytes from the owned snapshot without
+    /// trusting receipt fields. This is the independent owner evidence used
+    /// by durable replay.
+    fn selected_owner_evidence(&self) -> Option<([u8; 32], Vec<Box<str>>)> {
         let mut hash = sha2::Sha256::new();
         hash.update(b"csharp.sdk-reference-snapshot.v2\0");
         hash.update((self.references.len() as u64).to_le_bytes());
-        for (path, expected_name) in self.references.iter().zip(&self.receipt.selected_names) {
+        let mut names = Vec::with_capacity(self.references.len());
+        if self.references.len() != self.receipt.selected_names.len() {
+            return None;
+        }
+        for path in &self.references {
             if !path.starts_with(self.directory.path()) {
-                return false;
+                return None;
             }
             let Some(name) = path.file_name() else {
-                return false;
+                return None;
             };
-            if name.to_string_lossy().as_ref() != expected_name.as_ref() {
-                return false;
-            }
             let Ok(bytes) =
                 backend_platform::durable::read_regular_bounded_stable(path, 32 * 1024 * 1024)
             else {
-                return false;
+                return None;
             };
             let name = name.as_encoded_bytes();
+            names.push(String::from_utf8_lossy(name).into_owned().into_boxed_str());
             hash.update((name.len() as u64).to_le_bytes());
             hash.update(name);
             hash.update((bytes.len() as u64).to_le_bytes());
             hash.update(&bytes);
         }
-        hash.finalize().as_slice() == self.digest
+        Some((hash.finalize().into(), names))
     }
 
     /// Validates a receipt against the SDK/configuration identity captured by
@@ -260,14 +269,20 @@ impl CSharpResolvedReferenceSnapshot {
         sdk_directory: &Path,
         target_framework: &str,
         global_json_digest: Option<[u8; 32]>,
+        candidate_digest: [u8; 32],
     ) -> bool {
-        persisted == &self.receipt
-            && self.receipt_matches(
-                sdk_directory,
-                target_framework,
-                global_json_digest,
-                persisted.candidate_digest,
-            )
+        let Some((selected_digest, selected_names)) = self.selected_owner_evidence() else {
+            return false;
+        };
+        let Ok(sdk_directory) = fs::canonicalize(sdk_directory) else {
+            return false;
+        };
+        persisted.sdk_directory == sdk_directory
+            && persisted.target_framework == target_framework
+            && persisted.global_json_digest == global_json_digest
+            && persisted.candidate_digest == candidate_digest
+            && persisted.selected_digest == selected_digest
+            && persisted.selected_names.as_ref() == selected_names.as_slice()
     }
 }
 
@@ -1321,65 +1336,9 @@ mod tests {
         };
         let encoded = receipt.encode().unwrap();
         let decoded = CSharpResolverReceipt::decode(&encoded).unwrap();
-        assert!(snapshot.replay_receipt(&decoded, sdk.path(), "net10.0", None));
+        assert!(snapshot.replay_receipt(&decoded, sdk.path(), "net10.0", None, [8; 32]));
         fs::write(&snapshot.references[0], b"tampered").unwrap();
-        assert!(!snapshot.replay_receipt(&decoded, sdk.path(), "net10.0", None));
-    }
-
-    /// Native fixture driver. Set `R35_CSHARP_SDK_DOTNET`,
-    /// `R35_CSHARP_SDK_DIR`, `R35_CSHARP_SDK_TARGET`, and a platform-separated
-    /// `R35_CSHARP_SDK_CANDIDATES` to run against the exact restored fixture.
-    /// This remains ignored by default because it invokes the selected SDK;
-    /// campaign orchestration owns the build/test slot.
-    #[test]
-    #[ignore = "requires the campaign's restored SDK fixture and allocated test slot"]
-    fn native_fixture_resolver_captures_selected_receipt() {
-        let dotnet = std::env::var_os("R35_CSHARP_SDK_DOTNET").expect("dotnet fixture path");
-        let sdk = std::env::var_os("R35_CSHARP_SDK_DIR").expect("SDK fixture path");
-        let target = std::env::var("R35_CSHARP_SDK_TARGET").expect("target framework");
-        let candidate_text =
-            std::env::var_os("R35_CSHARP_SDK_CANDIDATES").expect("candidate paths");
-        let candidates = std::env::split_paths(&candidate_text).collect::<Vec<_>>();
-        assert!(!candidates.is_empty());
-        let assets = std::env::var_os("R35_CSHARP_SDK_ASSETS").map(PathBuf::from);
-        let assets_digest = assets.as_ref().map(|path| {
-            let bytes = fs::read(path).expect("assets");
-            sha2::Sha256::digest(bytes).into()
-        });
-        let global_json = std::env::var_os("R35_CSHARP_SDK_GLOBAL_JSON")
-            .map(PathBuf::from)
-            .map(|path| fs::read_to_string(path).expect("global.json"));
-        let cancelled = std::sync::atomic::AtomicBool::new(false);
-        let snapshot = resolve_references_with_sdk(
-            Path::new(&dotnet),
-            &target,
-            Path::new(&sdk),
-            global_json.as_deref(),
-            &candidates,
-            assets.as_deref(),
-            assets_digest,
-            Instant::now() + Duration::from_secs(120),
-            &cancelled,
-        )
-        .expect("native SDK resolver");
-        assert!(snapshot.receipt_is_consistent());
-        let persisted = CSharpResolverReceipt::decode(&snapshot.receipt().encode().unwrap())
-            .expect("typed receipt");
-        assert!(snapshot.replay_receipt(
-            &persisted,
-            Path::new(&sdk),
-            &target,
-            global_json
-                .as_deref()
-                .map(|text| sha2::Sha256::digest(text.as_bytes()).into()),
-        ));
-        if let Ok(expected) = std::env::var("R35_CSHARP_SDK_EXPECTED_NAMES") {
-            let mut actual = snapshot.receipt().selected_names.to_vec();
-            actual.sort();
-            for name in expected.split(',').filter(|name| !name.is_empty()) {
-                assert!(actual.iter().any(|actual| actual.as_ref() == name));
-            }
-        }
+        assert!(!snapshot.replay_receipt(&decoded, sdk.path(), "net10.0", None, [8; 32]));
     }
     use super::*;
     use std::time::Duration;
