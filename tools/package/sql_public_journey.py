@@ -76,7 +76,7 @@ FILES.update({
         "ALTER TABLE order_items RENAME TO order_lines;\n"
         "ALTER TABLE customers DROP COLUMN legacy_code;\n"
         "CREATE TRIGGER reprice_book AFTER UPDATE OF list_price_cents ON books "
-        "BEGIN SELECT new.list_price_cents; END;\n"
+        "BEGIN SELECT old.list_price_cents, new.list_price_cents; END;\n"
     ),
     "db/queries/bookshop.sql": (
         "SELECT price_cents FROM books;\n"
@@ -321,6 +321,9 @@ def bookshop_claims(label):
     for path in ("db/queries/book_by_isbn.sql", "db/queries/reprice_book.sql", "db/queries/place_order_line.sql"):
         if not any(h["path"] == sql_path(path) and h["fact"].get("resolution") == {"Resolved": {"target": price_defs[0]["entity"], "live": True}} for h in price_refs["hits"]):
             fail(f"{label}: {path} does not bind the exact price entity: {price_refs['hits']}")
+    trigger_refs = [h["fact"] for h in price_refs["hits"] if h["path"] == sql_path("db/migrations/0011_bookshop_rename.sql") and (h["fact"].get("in_object") or {}).get("name") == "reprice_book"]
+    if not {"old", "new"}.issubset({r.get("qualifier") for r in trigger_refs}) or len(trigger_refs) < 3:
+        fail(f"{label}: trigger UPDATE OF / old / new price references missing: {trigger_refs}")
     diagnostics = sql_page(label + "-diagnostics", "--role", "diagnostic")
     refs = [h for h in diagnostics["hits"] if h["path"] == sql_path("db/queries/bookshop.sql") and h["fact"].get("fact") == "Reference"]
     expected = {"price_cents": "NoSuchColumn", "order_items": "NoSuchObject"}
