@@ -103,6 +103,29 @@ fn fake_npm_and_pypi_discovery_to_pinned_product_reads() {
         let search_json = serde_json::to_string(&search).expect("search JSON");
         assert!(search_json.contains(purl), "{search_json}");
         assert!(search_json.contains("discovered"), "{search_json}");
+        let explored = command(
+            &mut state,
+            SurfaceCommand::Explore {
+                query: Some(ProductText::new("fixture").expect("query")),
+                limit: 10,
+            },
+        )
+        .expect("explore discovered package");
+        assert_eq!(explored.id(), backend_library::CommandId::Explore);
+        explored
+            .admit(backend_library::CommandId::Explore)
+            .expect("admitted explore evidence");
+        let SurfaceReply::ExploredSearchPage(page) = &explored else {
+            panic!("explore must retain discovery authority");
+        };
+        let SurfaceReply::IndexSearchPage(search_page) = &search else {
+            panic!("search page");
+        };
+        assert_eq!(page.hits, search_page.hits);
+        let encoded = serde_json::to_vec(&explored).expect("encode explored reply");
+        let decoded: SurfaceReply =
+            serde_json::from_slice(&encoded).expect("decode explored reply");
+        assert_eq!(decoded.id(), backend_library::CommandId::Explore);
 
         let reply = command(
             &mut state,
@@ -1015,4 +1038,120 @@ fn retained_observation_description_and_alias_collision_keep_honest_scope() {
         issues.is_empty(),
         "retained observation provenance: {issues:?}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn fake_nuget_service_pages_to_pinned_product_reads() {
+    use std::{
+        io::{Read as _, Write as _},
+        net::TcpListener,
+        thread,
+        time::Duration,
+    };
+    let root = fixture("nuget-exact-discovery");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let service = serde_json::json!({"version":"3.0.0", "resources":[{"@id": format!("{base}/v3/registrations/"), "@type":["RegistrationsBaseUrl/3.0.0-beta", "RegistrationsBaseUrl/3.6.0"]}]}).to_string();
+    let index = serde_json::json!({"count":2,"items":[{"count":1,"items":[{"catalogEntry":{"id":"Microsoft.EntityFrameworkCore","version":"1.0.0","listed":true}}]},{"@id":format!("{base}/v3/unpredictable-page"),"count":1,"lower":"10.0.0","upper":"10.0.13"}]}).to_string();
+    let page = serde_json::json!({"count":1,"items":[{"catalogEntry":format!("{base}/v3/catalog/unpredictable-object")}]}).to_string();
+    let catalog = serde_json::json!({"id":"Microsoft.EntityFrameworkCore","version":"10.0.13","listed":true,"description":"Entity Framework metadata from private fixture","licenseExpression":"MIT","published":"2026-11-01T00:00:00Z"}).to_string();
+    let worker = thread::spawn(move || {
+        listener.set_nonblocking(true).unwrap();
+        for (path, body) in [
+            ("/v3/index.json", service),
+            (
+                "/v3/registrations/microsoft.entityframeworkcore/index.json",
+                index,
+            ),
+            ("/v3/unpredictable-page", page),
+            ("/v3/catalog/unpredictable-object", catalog),
+        ] {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "missing NuGet request {path}"
+                        );
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("accept: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() < 16 * 1024);
+            }
+            let request = String::from_utf8(request).unwrap();
+            assert!(request.starts_with(&format!("GET {path} ")), "{request}");
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+    });
+    let endpoint = RegistryEndpoint::new(
+        RegistryEcosystem::Nuget,
+        format!("{base}/v3/catalog0/index.json"),
+    )
+    .unwrap();
+    let mut gateway =
+        crate::discovery::exact_metadata_fixture_gateway(endpoint, root.join("discovery.journal"));
+    let purl = "pkg:nuget/Microsoft.EntityFrameworkCore@10.0.13";
+    let coordinate = backend_engine::registry::PackageCoordinate::parse(purl).unwrap();
+    assert!(
+        gateway.observe_package(&coordinate).is_none(),
+        "exact NuGet source metadata must be admitted"
+    );
+    worker.join().unwrap();
+    let mut state = ProductState::open(root.join("product.json")).unwrap();
+    let catalog = [];
+    let index = CatalogLookupIndex::from_catalog(&catalog);
+    let graph = indexed_graph(Vec::new());
+    let read = |state: &mut ProductState, command| {
+        state.execute_with_discovery(
+            command,
+            &view(),
+            &catalog,
+            &index,
+            &graph,
+            None,
+            Some(gateway.store()),
+        )
+    };
+    let reply = read(
+        &mut state,
+        SurfaceCommand::Package {
+            package: PackageReference::parse(purl).unwrap(),
+        },
+    )
+    .unwrap();
+    reply.admit(backend_library::CommandId::Package).unwrap();
+    let json = serde_json::to_string(&reply).unwrap();
+    assert!(
+        json.contains(purl) && json.contains("Entity Framework metadata from private fixture"),
+        "{json}"
+    );
+    assert!(
+        matches!(reply, SurfaceReply::PackageDiscovery { .. }),
+        "metadata is not acquisition authority"
+    );
+    let explored = read(
+        &mut state,
+        SurfaceCommand::Explore {
+            query: Some(ProductText::new("Microsoft.EntityFrameworkCore").unwrap()),
+            limit: 10,
+        },
+    )
+    .unwrap();
+    explored.admit(backend_library::CommandId::Explore).unwrap();
+    assert!(serde_json::to_string(&explored).unwrap().contains(purl));
+    drop(gateway);
+    fs::remove_dir_all(root).unwrap();
 }

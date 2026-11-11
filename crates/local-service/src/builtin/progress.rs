@@ -280,7 +280,7 @@ mod source_selection_tests {
         assert_eq!(observation.unknown_projects, 1);
         assert_eq!(observation.unsupported_extensions[0].files, 12);
         let text = observation.render();
-        assert!(text.contains(".vue: 12 excluded (unsupported extension)"));
+        assert!(text.contains(".vue: 12 unavailable inline scripts"));
         assert!(text.contains("unknown for 1 historical project"));
         assert!(text.contains("totals cover supported extensions"));
         let mut overflow = ProgressTally::default();

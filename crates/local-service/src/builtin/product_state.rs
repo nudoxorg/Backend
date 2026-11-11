@@ -642,12 +642,23 @@ impl ProductState {
                         limit,
                     )?)
                 } else {
-                    SurfaceReply::Explored(catalog_page(
-                        catalog,
-                        catalog_index,
-                        query.as_ref(),
-                        limit,
-                    )?)
+                    // A text exploration uses the same selected discovery and
+                    // acquisition evidence as index-search. Discovery must not
+                    // silently disappear merely because the route is explore.
+                    if let Some(query) = query {
+                        let (reply, _) = self.execute_admitted(
+                            SurfaceCommand::IndexSearch { query, limit, cursor: None },
+                            view, catalog, catalog_index, dependency_graph, workspace,
+                            discovery, selected_catalog_snapshot, forge_records,
+                            forge_catalog_revision,
+                        )?;
+                        let SurfaceReply::IndexSearchPage(page) = reply else {
+                            return Err("explore search returned an unexpected reply".to_owned());
+                        };
+                        SurfaceReply::ExploredSearchPage(page)
+                    } else {
+                        SurfaceReply::Explored(catalog_page(catalog, catalog_index, None, limit)?)
+                    }
                 };
                 (reply, false)
             }
@@ -741,7 +752,12 @@ impl ProductState {
                     }
                     PackageReference::Local(_) => Vec::new(),
                 };
-                if forge_details.is_empty() {
+                let mut installed = if forge_details.is_empty() && packages(catalog, catalog_index, &package)?.is_empty() {
+                    super::installed_packages::find(view, &package, false)?
+                } else { Vec::new() };
+                if !installed.is_empty() {
+                    (SurfaceReply::PackageInstalled(installed.remove(0)), false)
+                } else if forge_details.is_empty() {
                     let reply = match package_page(view, catalog, catalog_index, &package) {
                         Ok(rows) => SurfaceReply::Package(rows),
                         Err(error) => discovered_package(discovery, &package)?.ok_or(error)?,
@@ -763,10 +779,16 @@ impl ProductState {
                     "forge acquisition authority is not configured in this owner".to_owned(),
                 );
             }
-            SurfaceCommand::Dependencies { package } => (
-                SurfaceReply::Dependencies(dependencies(dependency_graph, &package)?),
-                false,
-            ),
+            SurfaceCommand::Dependencies { package } => {
+                let selected = dependencies(dependency_graph, &package)?;
+                let mut installed = if matches!(selected, DependencyFacts::Known(_)) { Vec::new() }
+                    else { super::installed_packages::find(view, &package, false)? };
+                if installed.is_empty() || matches!(selected, DependencyFacts::Known(_)) {
+                    (SurfaceReply::Dependencies(selected), false)
+                } else {
+                    (SurfaceReply::DependenciesInstalled(installed.remove(0)), false)
+                }
+            }
             SurfaceCommand::PackageGraphPage { .. } => {
                 return Err(
                     "package graph pages must be read by the durable snapshot projection"
@@ -789,6 +811,12 @@ impl ProductState {
                 return Err("native SQL reads require the durable owner snapshot adapter".to_owned());
             }
             SurfaceCommand::PackageVersions { package } => {
+                let installed = if catalog_index.records_for(catalog, &package, true)?.is_empty() {
+                    super::installed_packages::find(view, &package, true)?
+                } else { Vec::new() };
+                if !installed.is_empty() {
+                    return Ok((SurfaceReply::PackageVersionsInstalled(installed.into_boxed_slice()), false));
+                }
                 let rows =
                     package_versions(view, catalog, catalog_index, &package, workspace)?.rows;
                 if rows.is_empty() {
@@ -4153,6 +4181,7 @@ fn subject_title(subject: &TreeSubject) -> ProductText {
 mod tests {
     use super::*;
     include!("product_state/discovery_journey_test.rs");
+    include!("product_state/installed_package_tests.rs");
     include!("product_state/advisory_matrix_tests.rs");
     use backend_engine::registry::{
         DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryFact, DiscoveryObservedAt,

@@ -461,7 +461,7 @@ pub fn empty_search_reason(published_names_only: bool, text: &str) -> String {
         );
     }
     reason.push_str(
-        "; the index reflects files as of the last index, so code edited or added on disk since then is not searchable until it is re-indexed (nudox add), and files of a type no frontend claims (for example .vue single-file components; `status` counts them) are not indexed at all. For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package; for SQL objects and analysis gaps, use sql-query or backend.sql_query",
+        "; the index reflects files as of the last index, so code edited or added on disk since then is not searchable until it is re-indexed (nudox add), and files of a type no frontend claims are not indexed. Inline script blocks in .vue single-file components have partial native syntax coverage; template, style, external script and complete Vue framework semantics are unavailable (`status` counts hosts with unavailable inline scripts). For CSS classes and custom properties, use stylo-query or backend.stylo_query with the indexed package; for SQL objects and analysis gaps, use sql-query or backend.sql_query",
     );
     reason
 }

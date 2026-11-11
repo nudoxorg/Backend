@@ -208,6 +208,7 @@ use product_state::ProductState;
 mod coverage;
 #[path = "builtin/local_manifest.rs"]
 mod local_manifest;
+mod installed_packages;
 #[path = "builtin/project_root_residence.rs"]
 mod project_root_residence;
 #[path = "builtin/search_source_page.rs"]
@@ -2905,6 +2906,8 @@ mod native_ts_react_owner_journey_tests;
 #[cfg(all(test, unix))]
 #[path = "builtin/native_ts_owner_journey_tests.rs"]
 mod native_ts_owner_journey_tests;
+#[cfg(test)]
+mod vue_owner_journey_tests;
 
 #[cfg(test)]
 #[path = "builtin/publication_transport_tests.rs"]

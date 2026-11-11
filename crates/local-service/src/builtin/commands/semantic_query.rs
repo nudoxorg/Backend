@@ -2442,6 +2442,11 @@ pub(super) fn execute_references(
     };
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = read_package_sources(&snapshot, package)?;
+    if let Some(row) = view.row_ref(backend_engine::RowId::Symbol(target_symbol)) {
+        if let Some(reply) = super::vue_references::references(&sources, view, row, target)? {
+            return Ok(reply);
+        }
+    }
     let available = view_build::SourceAvailability::of(&sources)?;
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()

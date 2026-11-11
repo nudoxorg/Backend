@@ -1345,8 +1345,13 @@ impl CommandAdapter {
                     BuiltinModelError(format!("select forge metadata authority: {error:?}"))
                 })?
                 .is_empty();
+            let installed = !acquired && !forged && !super::super::installed_packages::find(
+                daemon.engine().daemon().library().view(),
+                &backend_library::PackageReference::Purl(package.clone()), false,
+            ).map_err(BuiltinModelError)?.is_empty();
             if !acquired
                 && !forged
+                && !installed
                 && let Some(discovery) = self.discovery.as_ref()
                 && let crate::discovery::package_metadata::PackageMetadataPreparation::Fetch(
                     metadata,
@@ -5717,8 +5722,11 @@ impl CommandAdapter {
                 }
                 None => {
                     return Err(backend_library::CommandFailure::InvalidQuery(
-                        "indexed source freshness could not be verified; reindex and retry"
-                            .to_owned(),
+                        if row.label.contains("::external::") {
+                            "external library source is not indexed; use package <version-pinned PURL> for installed metadata and API excerpts, or index the installed package directory".to_owned()
+                        } else {
+                            "indexed source freshness could not be verified; reindex and retry".to_owned()
+                        },
                     ));
                 }
             }
@@ -5984,11 +5992,18 @@ impl CommandAdapter {
             &mut self.generations,
         )
         .map_err(|_| unavailable())?;
+        let vue_host = if native.is_none() && row.kind == Some(backend_library::DeclarationKind::Module) {
+            super::vue_source::extent(&sources, row).map_err(|_| unavailable())?
+        } else { None };
+        let vue_host_scope = vue_host.is_some();
+        let native = native.or(vue_host);
         let structural = if native.is_none() {
             super::structural_source::admit(&sources, row).map_err(|_| unavailable())?
         } else { None };
         let (native_path, source_identity, extent, scope) = match (native, structural.as_ref()) {
-            (Some((path, identity, extent)), _) => (path, identity, extent, backend_library::SourceRangeScope::NativePrimaryDeclaration),
+            (Some((path, identity, extent)), _) => (path, identity, extent,
+                if vue_host_scope { backend_library::SourceRangeScope::StructuralDeclaration }
+                else { backend_library::SourceRangeScope::NativePrimaryDeclaration }),
             (None, Some(source)) => (source.path.clone(), source.identity, source.binding.owner(), backend_library::SourceRangeScope::StructuralDeclaration),
             _ => return Err(unavailable()),
         };

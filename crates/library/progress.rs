@@ -154,10 +154,11 @@ impl SourceSelectionObservation {
             .unsupported_extensions
             .iter()
             .map(|row| {
-                format!(
-                    ".{}: {} excluded (unsupported extension)",
-                    row.extension, row.files
-                )
+                if row.extension == "vue" {
+                    format!(".vue: {} unavailable inline scripts", row.files)
+                } else {
+                    format!(".{}: {} excluded (unsupported extension)", row.extension, row.files)
+                }
             })
             .collect::<Vec<_>>();
         if self.unknown_projects != 0 {

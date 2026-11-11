@@ -118,6 +118,8 @@ pub enum ForgeTransportError {
     Integrity,
     /// Credentials or local policy rejected the request.
     Policy,
+    /// Provider returned a non-success HTTP status.
+    HttpStatus(u16),
 }
 
 mod git;

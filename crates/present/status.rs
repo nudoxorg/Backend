@@ -592,7 +592,7 @@ mod source_selection_tests {
         let text = crate::render::text::status(&status, crate::Theme::plain());
         let markdown = crate::render::markdown::status(&status);
         for rendered in [&text, &markdown] {
-            assert!(rendered.contains(".vue: 12 excluded (unsupported extension)"));
+            assert!(rendered.contains(".vue: 12 unavailable inline scripts"));
             assert!(rendered.contains("totals cover supported extensions"));
         }
         let answer = crate::Answer::Status(Box::new(status));

@@ -397,10 +397,16 @@ impl ForgeAcquisitionService {
                     Err(_) => ForgeAcquisitionOutcome::Corrupt,
                 };
             }
+            Err(ForgeTransportError::HttpStatus(status)) => {
+                return ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::HttpStatus(status));
+            }
             Err(ForgeTransportError::Bounds) => {
                 return ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::Bounds);
             }
-            Err(ForgeTransportError::Protocol | ForgeTransportError::Policy) => {
+            Err(ForgeTransportError::Protocol) => {
+                return ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::Protocol);
+            }
+            Err(ForgeTransportError::Policy) => {
                 return ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::Policy);
             }
             Err(ForgeTransportError::Integrity) => {
@@ -416,6 +422,9 @@ impl ForgeAcquisitionService {
             Err(ForgeTransportError::RetryAfter(millis)) => {
                 return ForgeAcquisitionOutcome::RetryAfter(millis);
             }
+            Err(ForgeTransportError::HttpStatus(status)) => {
+                return ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::HttpStatus(status));
+            }
             Err(ForgeTransportError::Bounds) => {
                 return ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::Bounds);
             }
@@ -430,6 +439,9 @@ impl ForgeAcquisitionService {
         };
         let metadata = match transport.fetch_metadata(coordinate, &resolution) {
             Ok(metadata) => metadata,
+            Err(ForgeTransportError::HttpStatus(status)) => {
+                return ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::HttpStatus(status));
+            }
             Err(ForgeTransportError::Bounds) => {
                 return ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::Bounds);
             }
