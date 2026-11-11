@@ -72,6 +72,7 @@ pub fn resolve_references_with_sdk(
     target_framework: &str,
     candidates: &[PathBuf],
     assets_file: Option<&Path>,
+    assets_digest: Option<[u8; 32]>,
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<Vec<PathBuf>, &'static str> {
@@ -95,6 +96,12 @@ pub fn resolve_references_with_sdk(
         let bytes =
             backend_platform::durable::read_regular_bounded_stable(assets_file, 64 * 1024 * 1024)
                 .map_err(|_| "SDK assets unavailable")?;
+        if let Some(expected) = assets_digest {
+            use sha2::{Digest, Sha256};
+            if Sha256::digest(&bytes).as_slice() != expected {
+                return Err("SDK assets digest changed");
+            }
+        }
         fs::write(obj.join("project.assets.json"), bytes).map_err(|_| "SDK scratch unavailable")?;
     }
     let project = scratch.path().join("resolve.csproj");
