@@ -1200,6 +1200,25 @@ mod tests {
             },
         )?.ok_or("compiler function missing")?;
         assert_eq!(header.compiler_extent, compiler_extent, "TSZ token candidate and emitted function extent must agree");
+        for (source, expected) in [
+            ("const async = 1; async\nfunction plain() {}", "function plain()"),
+            ("export /* comment */ default async function* plain(): Promise<number> { yield 1; }", "export /* comment */ default async function* plain(): Promise<number>"),
+            ("export async /* comment */ function plain(): Promise<number> { return 1; }", "export async /* comment */ function plain(): Promise<number>"),
+        ] {
+            let rows = function_headers(Path::new("src/main.ts"), source, &Unlimited)?;
+            assert_eq!(rows.len(), 1, "{source}");
+            let row = rows[0];
+            assert_eq!(source[row.header.0 as usize..row.header.1 as usize].trim(), expected);
+            let compiler_extent = crate::legacy::with_analysis(
+                backend_semantic::vocabulary::TypeScriptSource::TypeScript, source, |module| {
+                    module.semantic.nodes().iter_enumerated().find_map(|(_, node)| {
+                        let function = node.kind().as_function()?;
+                        (function.id.as_ref()?.name.as_str() == "plain").then_some((function.span.start, function.span.end))
+                    })
+                },
+            )?.ok_or("compiler function missing")?;
+            assert_eq!(row.compiler_extent, compiler_extent, "{source}");
+        }
         Ok(())
     }
 
