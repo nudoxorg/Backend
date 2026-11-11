@@ -50,7 +50,9 @@ pub(super) fn load_project(
         implicit,
         gaps,
         ..
-    }) = relation.lookup(&sql_selection_key(project)).map_err(|e| e.to_string())?
+    }) = relation
+        .lookup(&sql_selection_key(project))
+        .map_err(|e| e.to_string())?
     else {
         return Ok(None);
     };
@@ -74,9 +76,15 @@ pub(super) fn load_project(
                 return Err("SQL relation exceeds the read bound".into());
             }
             match row {
-                SqlAnalysisRecord::Host { project: p, path, dialect, source, length, terminal, .. }
-                    if *p == project =>
-                {
+                SqlAnalysisRecord::Host {
+                    project: p,
+                    path,
+                    dialect,
+                    source,
+                    length,
+                    terminal,
+                    ..
+                } if *p == project => {
                     hosts.push(SqlHost {
                         key: *key,
                         path: path.clone(),
@@ -86,7 +94,11 @@ pub(super) fn load_project(
                         terminal: *terminal,
                     });
                 }
-                SqlAnalysisRecord::Fact { host, ordinal, fact } => {
+                SqlAnalysisRecord::Fact {
+                    host,
+                    ordinal,
+                    fact,
+                } => {
                     raw.push((*host, *ordinal, fact.clone()));
                 }
                 _ => {}
@@ -114,4 +126,51 @@ pub(super) fn load_project(
         hosts,
         facts,
     }))
+}
+
+/// Constant-size selected native host terminals for health. This says what the
+/// selected snapshot analysed, never what a later installation might admit.
+pub(super) fn progress(
+    snapshot: &WorkspaceSnapshot,
+) -> Result<Option<backend_library::SqlAnalysisProgress>, String> {
+    let Some(relation) = sql_analysis_relation(snapshot).map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    let mut summary = backend_library::SqlAnalysisProgress::default();
+    let mut after = None;
+    let mut rows = 0usize;
+    loop {
+        let page = relation
+            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+            .map_err(|e| e.to_string())?;
+        for (_, row) in page.entries() {
+            rows += 1;
+            if rows > MAX_ROWS {
+                return Err("SQL status exceeds the read bound".to_owned());
+            }
+            let SqlAnalysisRecord::Host { terminal, .. } = row else {
+                continue;
+            };
+            let count = match terminal {
+                SqlHostTerminal::Parsed { .. } => &mut summary.analysed_files,
+                SqlHostTerminal::NativeError => &mut summary.rejected_files,
+                SqlHostTerminal::Unavailable(
+                    backend_engine::builtin::SqlUnavailable::EngineNotAdmitted,
+                ) => &mut summary.no_worker_files,
+                SqlHostTerminal::Unavailable(
+                    backend_engine::builtin::SqlUnavailable::UnsupportedDialect,
+                ) => &mut summary.unsupported_dialect_files,
+                SqlHostTerminal::Unavailable(_) => &mut summary.other_unavailable_files,
+            };
+            *count = count
+                .checked_add(1)
+                .ok_or_else(|| "SQL status count overflow".to_owned())?;
+        }
+        match page.next().copied() {
+            Some(next) if after != Some(next) => after = Some(next),
+            Some(_) => return Err("SQL status page did not advance".to_owned()),
+            None => break,
+        }
+    }
+    Ok((summary != Default::default()).then_some(summary))
 }

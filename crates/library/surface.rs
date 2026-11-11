@@ -6314,10 +6314,10 @@ fn admit_sql_page(page: &crate::sql_query::SqlQueryPage) -> Result<(), ProductAd
     use backend_semantic::sql_analysis::{SqlCoverage, SqlDialect, SqlFact, SqliteLineageCoverage};
     let invalid = || ProductAdmissionError::SemanticVersionShape;
     let selected = matches!(page.basis.attempt, SqlAttemptState::LatestObserved | SqlAttemptState::RetainedAfterUnavailable { .. });
-    if page.hits.len() > 128 || serialized_json_size(page) > 4 * 1024 * 1024
+    if page.hits.len() + page.host_gaps.len() > 128 || page.host_gaps.iter().any(|gap| !valid_stylo_path(&gap.path)) || serialized_json_size(page) > 4 * 1024 * 1024
         || page.basis.source_occurrences_complete || page.basis.catalog_is_deployed
         || (selected && (page.basis.sql_root.is_none() || matches!(page.terminal, SqlQueryTerminal::Unavailable)))
-        || (!selected && (!page.hits.is_empty() || page.basis.inventory_complete || page.basis.policy_complete || !matches!(page.terminal, SqlQueryTerminal::Unavailable)))
+        || (!selected && (!page.hits.is_empty() || !page.host_gaps.is_empty() || page.basis.inventory_complete || page.basis.policy_complete || !matches!(page.terminal, SqlQueryTerminal::Unavailable)))
         || (matches!(page.basis.attempt, SqlAttemptState::ProjectNotSelected) && page.basis.sql_root.is_some()) {
         return Err(invalid());
     }

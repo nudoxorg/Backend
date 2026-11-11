@@ -358,6 +358,7 @@ pub struct Status {
     compiler_refusal: Option<crate::Fault>,
     source_selection: Option<backend_library::SourceSelectionObservation>,
     source_selection_scope: Option<backend_library::SourceSelectionScopeCoverage>,
+    sql_analysis: Option<backend_library::SqlAnalysisProgress>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -404,6 +405,7 @@ impl Status {
             compiler_refusal: None,
             source_selection: report.progress().source_selection().cloned(),
             source_selection_scope: report.progress().source_selection_scope().cloned(),
+            sql_analysis: report.progress().sql_analysis().cloned(),
         }
     }
 
@@ -431,6 +433,10 @@ impl Status {
         self.compiler_refusal = fault;
         self
     }
+
+    /// Selected SQL analysis outcomes, if captured by the owner.
+    #[must_use]
+    pub fn sql_analysis(&self) -> Option<&backend_library::SqlAnalysisProgress> { self.sql_analysis.as_ref() }
 
     /// Per-extension selection scope, including unknown historical rows.
     pub fn source_selection_scope(&self) -> Option<&backend_library::SourceSelectionScopeCoverage> {
@@ -527,6 +533,25 @@ impl Status {
 #[cfg(test)]
 mod source_selection_tests {
     use super::*;
+
+    #[test]
+    fn status_exposes_selected_sql_analysis_at_every_detail() {
+        let library = backend_library::Library::new();
+        let summary = backend_library::SqlAnalysisProgress { analysed_files: 2, no_worker_files: 1, unsupported_dialect_files: 0, rejected_files: 1, other_unavailable_files: 0 };
+        let progress = backend_library::IngestProgress::default().with_sql_analysis(summary).unwrap();
+        let report = HealthReport::from_root(library.view(), library.cursor()).with_progress(progress);
+        let status = Status::from_report(&report, None);
+        for rendered in [crate::render::text::status(&status, crate::Theme::plain()), crate::render::markdown::status(&status)] {
+            assert!(rendered.contains("2 analysed, 1 without an admitted worker"));
+            assert!(rendered.contains("sql-query --role gap"));
+        }
+        let answer = crate::Answer::Status(Box::new(status));
+        for detail in [crate::Detail::Summary, crate::Detail::Standard, crate::Detail::Full] {
+            let encoded = crate::budget::encode_answer(&answer, detail, None, 48 * 1024).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&encoded.bytes).unwrap();
+            assert_eq!(value["sql_analysis"]["no_worker_files"], 1);
+        }
+    }
 
     #[test]
     fn status_discloses_mixed_scope_without_duplicate_legacy_totals() {

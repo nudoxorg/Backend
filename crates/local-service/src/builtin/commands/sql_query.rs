@@ -181,6 +181,10 @@ fn matches_filter(fact: &SqlFact, request: &SqlQueryRequest, uses: Option<&UsesS
             request.name.as_ref().is_none_or(|n| n == output_name)
         }
         (SqlQueryRole::Diagnostic, SqlFact::Diagnostic { .. }) => true,
+        (SqlQueryRole::Diagnostic, SqlFact::Reference(reference)) => {
+            matches!(reference.kind, R::Column | R::Relation)
+                && matches!(reference.resolution, SqlResolution::Unresolved { .. } | SqlResolution::Resolved { live: false, .. } | SqlResolution::Relation { live: false, .. })
+        }
         (SqlQueryRole::ColumnRead, SqlFact::PostgresColumnRead { .. }) => true,
         (SqlQueryRole::Statement, SqlFact::Statement { .. }) => true,
         (SqlQueryRole::Gap, SqlFact::Statement { support, .. }) => {
@@ -260,6 +264,7 @@ fn empty(
     attempt: SqlAttemptState,
 ) -> SqlQueryPage {
     SqlQueryPage {
+        host_gaps: Vec::new(),
         basis: SqlQueryBasis {
             manifest_root,
             sql_root,
@@ -392,6 +397,7 @@ pub(in crate::builtin) fn query(
             return Err(error("continuation expired: SQL selection unavailable"));
         }
         return Ok(SqlQueryPage {
+            host_gaps: Vec::new(),
             basis,
             hits: Vec::new(),
             terminal: SqlQueryTerminal::Unavailable,
@@ -424,11 +430,13 @@ pub(in crate::builtin) fn query(
         None => None,
     };
     let mut hits = Vec::new();
+    let mut host_gaps = Vec::new();
     let mut output = serde_json::to_vec(&basis).map_err(error)?.len() + 2048;
     loop {
         if !work.can_scan() {
             let after = after.ok_or_else(|| error("SQL work budget cannot progress"))?;
             return Ok(SqlQueryPage {
+                host_gaps,
                 basis,
                 hits,
                 terminal: SqlQueryTerminal::More {
@@ -440,6 +448,7 @@ pub(in crate::builtin) fn query(
         let page = relation.page(after.as_ref(), 1).map_err(error)?;
         let Some((key, row)) = page.entries().first() else {
             return Ok(SqlQueryPage {
+                host_gaps,
                 basis,
                 hits,
                 terminal: SqlQueryTerminal::Complete,
@@ -453,6 +462,30 @@ pub(in crate::builtin) fn query(
         } else {
             true
         };
+        let host_gap = match row {
+            SqlAnalysisRecord::Host { project: owner, path, dialect, terminal, .. }
+                if *owner == project && matches!(request.role, SqlQueryRole::Gap | SqlQueryRole::Diagnostic) => {
+                let reason = match terminal {
+                    SqlHostTerminal::Unavailable(reason) => Some(SqlHostGapReason::Unavailable { reason: failure(*reason) }),
+                    SqlHostTerminal::NativeError => Some(SqlHostGapReason::NativeError),
+                    SqlHostTerminal::Parsed { .. } => None,
+                };
+                reason.map(|reason| SqlHostGap { path: path.clone(), dialect: *dialect, reason })
+            }
+            _ => None,
+        };
+        if let Some(gap) = host_gap {
+            let size = serde_json::to_vec(&gap).map_err(error)?.len().saturating_add(1);
+            if output.saturating_add(size) > request.output_bytes as usize {
+                let prior = after.ok_or_else(|| error("SQL first gap exceeds output budget"))?;
+                return Ok(SqlQueryPage { basis, hits, host_gaps, terminal: SqlQueryTerminal::More {
+                    continuation: cursor(request, secret, manifest_root, sql_root, project, prior)?,
+                    work_limited: false,
+                }});
+            }
+            output += size;
+            host_gaps.push(gap);
+        }
         let candidate = if let SqlAnalysisRecord::Fact {
             host,
             ordinal,
@@ -556,6 +589,7 @@ pub(in crate::builtin) fn query(
             if output.saturating_add(size) > request.output_bytes as usize {
                 let prior = after.ok_or_else(|| error("SQL first hit exceeds output budget"))?;
                 return Ok(SqlQueryPage {
+                    host_gaps,
                     basis,
                     hits,
                     terminal: SqlQueryTerminal::More {
@@ -577,13 +611,15 @@ pub(in crate::builtin) fn query(
         after = Some(*key);
         if is_last {
             return Ok(SqlQueryPage {
+                host_gaps,
                 basis,
                 hits,
                 terminal: SqlQueryTerminal::Complete,
             });
         }
-        if hits.len() == usize::from(request.page_rows) {
+        if hits.len() + host_gaps.len() >= usize::from(request.page_rows) {
             return Ok(SqlQueryPage {
+                host_gaps,
                 basis,
                 hits,
                 terminal: SqlQueryTerminal::More {

@@ -132,6 +132,12 @@ pub(super) fn publication_plan(
     let Some(prior) = prior else {
         return PublicationPlan::Hydrate;
     };
+    // SQL binding is project-wide: a migration may rename declarations in
+    // other files without changing their structural source rows. Rebuild from
+    // the selected native SQL relation before considering source-only reuse.
+    if edit.is_some_and(BuiltinIntent::replaces_sql_project) {
+        return PublicationPlan::Hydrate;
+    }
     // A capture transition can change readiness without changing either main
     // relation. Rebuild against the authenticated companion before reuse.
     if prior.capture != roots.capture_target {

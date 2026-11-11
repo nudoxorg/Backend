@@ -902,6 +902,9 @@ pub fn status(status: &Status) -> String {
         lines.push("Observed failed compiler attempt (served coverage above is unchanged):");
         lines.push(fault(cause));
     }
+    if let Some(sql) = status.sql_analysis() {
+        lines.push(sql.render());
+    }
     if let Some(scope) = status.source_selection_scope() {
         lines.push(scope.render());
     } else if let Some(observation) = status.source_selection() {

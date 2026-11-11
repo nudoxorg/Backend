@@ -228,7 +228,7 @@ pub use package_graph_page::{
 };
 pub use progress::{
     FaultRows, IngestProgress, LanguageRows, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,
-    ProgressError, SourceExtensionExclusion, SourceSelectionObservation, SourceSelectionScopeCoverage, SourceSelectionExtensionCoverage, SourceUnavailableReason,
+    ProgressError, SqlAnalysisProgress, SourceExtensionExclusion, SourceSelectionObservation, SourceSelectionScopeCoverage, SourceSelectionExtensionCoverage, SourceUnavailableReason,
 };
 pub use published_search::{
     FullSearchReadiness, PublishedNameSearchPage, PublishedNameSearchQuery,

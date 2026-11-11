@@ -1461,13 +1461,18 @@ fn admit_surface_reply_internal(
             return Err(ReplyAdmissionError::Protocol("SQL query reply kind changed".into()));
         };
         if page.basis.project != crate::package_key(request.package.as_str()).to_bytes()
-            || page.hits.len() > usize::from(request.page_rows)
+            || (!page.host_gaps.is_empty() && !matches!(request.role, SqlQueryRole::Gap | SqlQueryRole::Diagnostic))
+            || page.hits.len() + page.host_gaps.len() > usize::from(request.page_rows)
             || crate::surface::serialized_json_size(reply) > request.output_bytes as usize
             || page.hits.iter().any(|hit| !match (request.role, &hit.fact) {
                 (SqlQueryRole::Any, _) => true,
                 (SqlQueryRole::Relation, SqlFact::SqliteRelation { name, .. }) => request.name.as_ref().is_none_or(|value| value == name),
                 (SqlQueryRole::OutputLineage, SqlFact::SqliteOutputLineage { output_name, .. }) => request.name.as_ref().is_none_or(|value| value == output_name),
                 (SqlQueryRole::Diagnostic, SqlFact::Diagnostic { .. }) => true,
+                (SqlQueryRole::Diagnostic, SqlFact::Reference(reference)) => {
+                    matches!(reference.kind, backend_semantic::sql_analysis::SqlRefKind::Column | backend_semantic::sql_analysis::SqlRefKind::Relation)
+                        && matches!(reference.resolution, backend_semantic::sql_analysis::SqlResolution::Unresolved { .. } | backend_semantic::sql_analysis::SqlResolution::Resolved { live: false, .. } | backend_semantic::sql_analysis::SqlResolution::Relation { live: false, .. })
+                }
                 (SqlQueryRole::ColumnRead, SqlFact::PostgresColumnRead { .. }) => true,
                 (SqlQueryRole::Statement, SqlFact::Statement { .. }) => true,
                 (SqlQueryRole::Gap, SqlFact::Statement { support, .. }) => {

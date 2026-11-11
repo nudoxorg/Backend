@@ -318,6 +318,7 @@ pub fn encode_answer_with_call(
                     detail,
                     next_cursor,
                     SummaryStatusDto {
+                        sql_analysis: status.sql_analysis,
                         source_selection: status.source_selection,
                         source_selection_scope: status.source_selection_scope,
                         availability: status.availability,
@@ -813,6 +814,8 @@ struct SummaryOutlineDto {
 
 #[derive(Serialize)]
 struct SummaryStatusDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sql_analysis: Option<backend_library::SqlAnalysisProgress>,
     #[serde(skip_serializing_if = "Option::is_none")]
     source_selection: Option<backend_library::SourceSelectionObservation>,
     #[serde(skip_serializing_if = "Option::is_none")]

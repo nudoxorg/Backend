@@ -758,7 +758,28 @@ pub(super) fn view_coverage(
             after = Some(next);
         }
     }
-    Ok(tally.coverage())
+    let mut coverage = tally.coverage();
+    if let Some(sql) = backend_engine::builtin::sql_analysis_relation(snapshot)
+        .map_err(|error| BuiltinModelError(error.to_string()))? {
+        let mut after = None;
+        loop {
+            let page = sql.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+                .map_err(|error| BuiltinModelError(error.to_string()))?;
+            for (_, row) in page.entries() {
+                if let backend_engine::builtin::SqlAnalysisRecord::Selection { inventory, gaps, .. } = row {
+                    if !matches!(inventory, backend_engine::builtin::SqlInventory::Complete)
+                        || *gaps != Default::default() {
+                        if !coverage.contains(&ViewCoverage::Gapped { lane: Lane::Names }) {
+                            coverage.push(ViewCoverage::Gapped { lane: Lane::Names });
+                        }
+                    }
+                }
+            }
+            let Some(next) = page.next().copied() else { break };
+            after = Some(next);
+        }
+    }
+    Ok(coverage)
 }
 
 #[cfg(test)]

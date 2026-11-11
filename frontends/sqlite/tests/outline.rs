@@ -1219,3 +1219,14 @@ fn damaged_inputs_never_panic_and_never_yield_an_invalid_outline() {
     }
     assert!(checked > 5000 && parsed > 500, "{checked} {parsed}");
 }
+
+#[test]
+fn excluded_upsert_without_update_where_has_valid_native_outline() {
+    let src = "INSERT INTO authors (id, name, country) VALUES (?1, ?2, ?3)\nON CONFLICT (id) DO UPDATE SET name = excluded.name, country = excluded.country;";
+    let o = outline(src);
+    assert_eq!(o.statements.len(), 1);
+    let s = &o.statements[0];
+    assert_eq!(s.support, StatementSupport::Full);
+    assert!(col(s, RefRole::Read).contains(&"excluded.name".to_owned()));
+    assert!(col(s, RefRole::Read).contains(&"excluded.country".to_owned()));
+}
