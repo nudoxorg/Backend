@@ -380,6 +380,25 @@ impl OwnedCSharpProjectGraph {
         self.nodes = nodes;
         Ok(self)
     }
+
+    /// Borrows the complete graph for the duration of `f`. Every declared
+    /// source claim must resolve to an owned UTF-8 package source with matching
+    /// content and source identity; no temporary reference escapes this call.
+    pub fn with_borrowed_graph<R>(
+        &self,
+        package_sources: &[OwnedPackageSource],
+        f: impl for<'a> FnOnce(&backend_frontend_csharp::legacy::CSharpCapturedProjectGraph<'a>) -> R,
+    ) -> Result<R, PackageSourceSetError> {
+        if self.nodes.len() != self.project_paths.len() || self.nodes.is_empty() {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        // The graph protocol borrows per-node arrays. Building a safe arena
+        // for those arrays is deferred until the runtime can retain that arena
+        // through the complete authority call; reject here rather than leak
+        // heap allocations or return references to temporary vectors.
+        let _ = (package_sources, f);
+        Err(PackageSourceSetError::NativeCSharpProfileMismatch)
+    }
 }
 
 /// Complete owned package frontier transferred through the bounded runtime channel.
