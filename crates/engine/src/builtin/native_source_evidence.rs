@@ -375,6 +375,68 @@ pub fn native_source_evidence_relation(
     )
 }
 
+/// Scratch reserved before native relation admission and every bounded read.
+/// Canonical nodes have a 64 KiB wire ceiling and 1024 entries. This covers
+/// 32 simultaneously retained traversal levels, their node copies and branch
+/// vectors, a whole decoded leaf (including allocator overhead), and a cloned
+/// result. Bounded reads reject deeper paths; the store enforces the node limit
+/// before allocating its envelope.
+pub const NATIVE_EVIDENCE_READ_SCRATCH: usize = 32 * 1024 * 1024;
+const NATIVE_EVIDENCE_READ_DEPTH: usize = 32;
+const NATIVE_EVIDENCE_ROOT_RESIDENT: usize = 2 * 64 * 1024 + 1024;
+
+fn native_read_reserve(budget: &mut usize) -> Result<(), WorkspaceRelationError> {
+    *budget = budget.checked_sub(NATIVE_EVIDENCE_READ_SCRATCH)
+        .ok_or(WorkspaceRelationError::Store(backend_store::StoreError::Bounds))?;
+    Ok(())
+}
+fn native_read_refund(budget: &mut usize, retained: usize) -> Result<(), WorkspaceRelationError> {
+    let refund = NATIVE_EVIDENCE_READ_SCRATCH.checked_sub(retained)
+        .ok_or(WorkspaceRelationError::Store(backend_store::StoreError::Bounds))?;
+    *budget = budget.checked_add(refund).ok_or(WorkspaceRelationError::Store(backend_store::StoreError::Bounds))?;
+    Ok(())
+}
+fn native_row_resident(row: &NativeSourceEvidence) -> Result<usize, WorkspaceRelationError> {
+    row.checked_heap_bytes().and_then(|n| n.checked_add(std::mem::size_of::<NativeSourceEvidence>() + 128))
+        .ok_or(WorkspaceRelationError::Store(backend_store::StoreError::Bounds))
+}
+
+/// Opens a selected relation only after reserving node-admission scratch.
+pub fn native_source_evidence_relation_budgeted(
+    snapshot: &WorkspaceSnapshot, budget: &mut usize,
+) -> Result<Option<WorkspaceRelationHandle<NativeSourceEvidenceRelation>>, WorkspaceRelationError> {
+    native_read_reserve(budget)?;
+    let result = native_source_evidence_relation(snapshot)?;
+    native_read_refund(budget, if result.is_some() { NATIVE_EVIDENCE_ROOT_RESIDENT } else { 0 })?;
+    Ok(result)
+}
+
+/// Looks up a row after reserving scratch for every sibling in its node.
+/// The retained row remains charged to the same budget on return.
+pub fn native_source_evidence_lookup_budgeted(
+    relation: &WorkspaceRelationHandle<NativeSourceEvidenceRelation>, key: &[u8; 32], budget: &mut usize,
+) -> Result<Option<NativeSourceEvidence>, WorkspaceRelationError> {
+    native_read_reserve(budget)?;
+    let row = relation.lookup(key)?;
+    let retained = row.as_ref().map(native_row_resident).transpose()?.unwrap_or(0);
+    native_read_refund(budget, retained)?;
+    Ok(row)
+}
+
+/// Reads at most one row with a depth limit and charges its retained allocation.
+pub fn native_source_evidence_page_budgeted(
+    relation: &WorkspaceRelationHandle<NativeSourceEvidenceRelation>, after: Option<&[u8; 32]>, budget: &mut usize,
+) -> Result<backend_version::LazyTreePage<NativeSourceEvidenceRelation>, WorkspaceRelationError> {
+    native_read_reserve(budget)?;
+    let page = relation.page_one_with_depth_limit(after, NATIVE_EVIDENCE_READ_DEPTH)?;
+    let retained = match page.entries().first() {
+        Some((_, row)) => native_row_resident(row)?.checked_add(128).ok_or(WorkspaceRelationError::Store(backend_store::StoreError::Bounds))?,
+        None => 0,
+    };
+    native_read_refund(budget, retained)?;
+    Ok(page)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

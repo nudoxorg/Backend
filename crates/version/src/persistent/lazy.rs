@@ -750,8 +750,8 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             Some(after) => PageStart::After(after),
             None => PageStart::Beginning,
         };
-        self.take_page(&self.root, start, limit, &mut entries, &mut pending)?;
-        self.finish_page(limit, &mut entries, &mut pending)
+        self.take_page(&self.root, start, limit, &mut entries, &mut pending, usize::MAX)?;
+        self.finish_page(limit, &mut entries, &mut pending, usize::MAX)
     }
 
     /// Reads at most `limit` rows starting at `start`, including `start`.
@@ -781,8 +781,23 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             limit,
             &mut entries,
             &mut pending,
+            usize::MAX,
         )?;
-        self.finish_page(limit, &mut entries, &mut pending)
+        self.finish_page(limit, &mut entries, &mut pending, usize::MAX)
+    }
+
+    /// Reads one row after `after`, rejecting traversals deeper than `max_depth`.
+    /// This bounds simultaneous recursive branch and pending-sibling storage.
+    /// The caller must reserve the relation-specific node and row scratch before calling.
+    pub fn page_one_with_depth_limit(
+        &self, after: Option<&R::Key>, max_depth: usize,
+    ) -> Result<LazyTreePage<R>, LazyTreeError<L::Error>> {
+        if max_depth == 0 { return Err(LazyTreeError::Node(NodeError::OversizedNode)); }
+        let mut entries = Vec::with_capacity(1);
+        let mut pending = Vec::new();
+        let start = after.map_or(PageStart::Beginning, PageStart::After);
+        self.take_page(&self.root, start, 1, &mut entries, &mut pending, max_depth)?;
+        self.finish_page(1, &mut entries, &mut pending, max_depth)
     }
 
     fn finish_page(
@@ -790,13 +805,14 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         limit: usize,
         entries: &mut Vec<(R::Key, R::Value)>,
         pending: &mut Vec<UntrustedId<R>>,
+        max_depth: usize,
     ) -> Result<LazyTreePage<R>, LazyTreeError<L::Error>> {
         while entries.len() < limit {
             let Some(claim) = pending.pop() else {
                 break;
             };
             let node = self.load(claim)?;
-            self.take_page(&node, PageStart::Beginning, limit, entries, pending)?;
+            self.take_page(&node, PageStart::Beginning, limit, entries, pending, max_depth)?;
         }
         let next = (entries.len() == limit)
             .then(|| entries.last().map(|(key, _)| key.clone()))
@@ -818,7 +834,9 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         limit: usize,
         entries: &mut Vec<(R::Key, R::Value)>,
         pending: &mut Vec<UntrustedId<R>>,
+        max_depth: usize,
     ) -> Result<(), LazyTreeError<L::Error>> {
+        if max_depth == 0 { return Err(LazyTreeError::Node(NodeError::OversizedNode)); }
         if entries.len() == limit {
             return Ok(());
         }
@@ -859,7 +877,7 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             pending.push(child_claim(child).map_err(LazyTreeError::Node)?);
         }
         let child = self.load(child_claim(&children[index]).map_err(LazyTreeError::Node)?)?;
-        self.take_page(&child, start, limit, entries, pending)
+        self.take_page(&child, start, limit, entries, pending, max_depth - 1)
     }
 
     /// Replaces an existing value by loading its root-to-leaf path.

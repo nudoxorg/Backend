@@ -689,6 +689,15 @@ impl<R: CanonicalRelation> WorkspaceRelationHandle<R> {
             .map_err(|error| map_tree_error::<R>(error, None))
     }
 
+    /// Reads one row with a caller-supplied traversal depth limit.
+    /// The caller must reserve scratch and retained allocations before calling.
+    pub fn page_one_with_depth_limit(
+        &self, after: Option<&R::Key>, max_depth: usize,
+    ) -> Result<LazyTreePage<R>, WorkspaceRelationError> {
+        self.tree().page_one_with_depth_limit(after, max_depth)
+            .map_err(|error| map_tree_error::<R>(error, None))
+    }
+
     /// Reads one bounded page in canonical key order.
     /// # Errors
     ///
