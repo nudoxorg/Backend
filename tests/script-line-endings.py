@@ -56,5 +56,39 @@ class ScriptCheckoutTests(unittest.TestCase):
             self.assertEqual(result.returncode, 37)
 
 
+    def test_upgrading_an_existing_crlf_linker_rewrites_its_shebang(self):
+        with tempfile.TemporaryDirectory(prefix="nudox-script-upgrade-") as directory:
+            repository = Path(directory)
+            def git(*arguments):
+                return subprocess.check_output(["git", *arguments], cwd=repository,
+                                               stderr=subprocess.DEVNULL).strip()
+            git("init", "-q")
+            git("config", "core.autocrlf", "true")
+            linker_name = SCRIPTS[0]
+            linker = repository / linker_name
+            linker.parent.mkdir(parents=True)
+            # Exact pre-fix linker bytes: changing only attributes does not
+            # cause Git to rewrite this already checked-out file on upgrade.
+            old = (ROOT / "tests/fixtures/cargo-linker-pre-lf-policy.txt").read_bytes()
+            linker.write_bytes(old)
+            linker.chmod(0o755)
+            git("add", ".")
+            git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "before")
+            before = git("rev-parse", "HEAD").decode()
+            shutil.copy2(ROOT / ".gitattributes", repository / ".gitattributes")
+            shutil.copy2(ROOT / linker_name, linker)
+            git("add", ".")
+            git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixed")
+            fixed = git("rev-parse", "HEAD").decode()
+            git("checkout", "-q", before)
+            self.assertIn(b"\r\n", linker.read_bytes(), "pre-fix Windows checkout reproduces CRLF")
+            git("checkout", "-q", fixed)
+            self.assertNotIn(b"\r", linker.read_bytes(), "normal upgrade repairs the existing shebang")
+            # Kernel invocation succeeds on the upgraded checkout too.
+            result = subprocess.run([str(linker), "--version"], stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+            self.assertEqual(result.returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
