@@ -286,13 +286,14 @@ impl FileStore {
             return Err(StoreError::Corrupt);
         }
         let object_id = self.read_relation_ref(schema, claim.as_bytes())?;
-        let object = self.read_object(object_id)?;
-        if object.schema() != schema || object.version() != claim.as_bytes() {
-            return Err(StoreError::Corrupt);
-        }
-        let node =
-            admit_canonical_root_claim(claim, object.bytes()).map_err(|_| StoreError::Corrupt)?;
-        Ok((object_id, object, node))
+        self.with_verified_relation_object(crate::UntrustedObjectId::from_bytes(*object_id.as_bytes()), |view| {
+            if view.schema() != schema || view.version() != claim.as_bytes() {
+                return Err(StoreError::Corrupt);
+            }
+            let node = admit_canonical_root_claim(claim, view.bytes()).map_err(|_| StoreError::Corrupt)?;
+            let object = TypedObject::from_wire_parts(view.schema(), *view.key(), *view.version(), view.bytes().to_vec().into_boxed_slice());
+            Ok((object_id, object, node))
+        })
     }
 
     /// Loads one authenticated relation node and resolves its direct child

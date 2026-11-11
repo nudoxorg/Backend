@@ -483,7 +483,18 @@ impl FileStore {
         let Some(file) = super::artifact_fs::open_object(self, claimed_id)? else {
             return Ok(None);
         };
-        self.with_verified_object_file(file, claim, visit).map(Some)
+        self.with_verified_object_file(file, claim, self.object_envelope_limit()?, visit).map(Some)
+    }
+
+    /// Reads a relation object with the canonical node envelope ceiling before allocation.
+    pub(in crate::durable) fn with_verified_relation_object<T, F>(
+        &self, claim: UntrustedObjectId, visit: F,
+    ) -> Result<T, StoreError>
+    where F: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<T, StoreError> {
+        let id = ObjectId::from_bytes(*claim.as_bytes());
+        let file = super::artifact_fs::open_object(self, id)?.ok_or(StoreError::Corrupt)?;
+        let maximum = self.object_envelope_limit()?.min(super::relation_object_limit()?);
+        self.with_verified_object_file(file, claim, maximum, visit)
     }
 
     /// Admits one object from an already-open immutable object descriptor.
@@ -495,12 +506,12 @@ impl FileStore {
         &self,
         mut file: File,
         claim: UntrustedObjectId,
+        maximum: usize,
         visit: F,
     ) -> Result<T, StoreError>
     where
         F: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<T, StoreError>,
     {
-        let maximum = self.object_envelope_limit()?;
         let metadata = file.metadata().map_err(|error| io_error(&error))?;
         let maximum_u64 = u64::try_from(maximum).map_err(|_| StoreError::Bounds)?;
         if metadata.len() > maximum_u64 {
@@ -735,6 +746,7 @@ mod tests {
             store.with_verified_object_file(
                 file,
                 UntrustedObjectId::from_bytes(*expected.id().as_bytes()),
+                store.object_envelope_limit().expect("object limit"),
                 |_| Ok(()),
             ),
             Err(StoreError::Corrupt)
