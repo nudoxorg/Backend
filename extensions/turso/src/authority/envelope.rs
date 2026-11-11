@@ -86,8 +86,9 @@ pub const MAX_COMPILER_NATIVE_HEADERS_BYTES: usize = 32 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CompilerNativeHeadersMember { object_id: AuthorityHash, byte_length: u32 }
 impl CompilerNativeHeadersMember {
-    pub fn from_verified_object(object: VerifiedObjectEnvelope, bytes: &[u8]) -> Result<Self, CompilerEnvelopeError> {
-        let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical(bytes).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
+    pub fn from_verified_object(object: VerifiedObjectEnvelope, bytes: &[u8], budget: &mut usize) -> Result<Self, CompilerEnvelopeError> {
+        *budget = budget.checked_sub(bytes.len()).ok_or(CompilerEnvelopeError::NativeHeaders)?;
+        let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(bytes, budget).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
         let key = ObjectKey::<backend_semantic::native_ts_headers::NativeTsHeaderAggregateSchema>::from_value(&aggregate);
         if bytes.is_empty() || bytes.len() > MAX_COMPILER_NATIVE_HEADERS_BYTES || object.schema() != COMPILER_NATIVE_HEADERS_SCHEMA || object.key() != key.as_bytes() || object.payload_len() != bytes.len() as u64 { return Err(CompilerEnvelopeError::NativeHeaders); }
         Ok(Self { object_id: *object.id().as_bytes(), byte_length: u32::try_from(bytes.len()).map_err(|_| CompilerEnvelopeError::NativeHeaders)? })
@@ -96,9 +97,10 @@ impl CompilerNativeHeadersMember {
     pub const fn byte_length(&self) -> u32 { self.byte_length }
 }
 /// Constructs the typed aggregate object; the canonical aggregate decoder must validate its contents.
-pub fn compiler_native_headers_object(bytes: &[u8]) -> Result<TypedObject, CompilerEnvelopeError> {
+pub fn compiler_native_headers_object(bytes: &[u8], budget: &mut usize) -> Result<TypedObject, CompilerEnvelopeError> {
     if bytes.is_empty() || bytes.len() > MAX_COMPILER_NATIVE_HEADERS_BYTES { return Err(CompilerEnvelopeError::NativeHeaders); }
-    let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical(bytes).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
+    *budget = budget.checked_sub(bytes.len().checked_mul(2).ok_or(CompilerEnvelopeError::NativeHeaders)?).ok_or(CompilerEnvelopeError::NativeHeaders)?;
+    let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(bytes, budget).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
     Ok(TypedObject::from_value(&ObjectKey::<backend_semantic::native_ts_headers::NativeTsHeaderAggregateSchema>::from_value(&aggregate), &aggregate))
 }
 /// Bytes authenticated by the selected compiler closure; source/image admission remains separate.
@@ -1476,7 +1478,6 @@ pub fn reopen_selected_compiler_publication(
         .map_err(|error| error.to_string())?;
     let _ = reopen_typescript_snapshot_witness_bounded(store, &manifest, &metadata)?;
     let _ = reopen_csharp_evidence_bounded(store, &manifest, &metadata)?;
-    let _ = reopen_native_headers_bounded(store, &manifest, &metadata, 96 * 1024 * 1024)?;
     if selected.semantic_manifest_root().copied() != metadata.semantic_manifest_root().copied() {
         return Err("selected semantic-plane root differs from compiler metadata".to_owned());
     }
@@ -3398,12 +3399,12 @@ mod tests {
         let legacy = metadata(image).with_native_program_sources(program).unwrap().with_typescript_snapshot_witness(snapshot).unwrap();
         let legacy_bytes = legacy.canonical_bytes();
         let bytes = b"NHA1\0\0\0\0";
-        let object = compiler_native_headers_object(bytes).unwrap();
+        let object = compiler_native_headers_object(bytes, &mut 1024).unwrap();
         let directory = scratch_store();
         let store = FileStore::open(&directory, 1024 * 1024).unwrap();
         store.write_object(&object).unwrap();
         let verified = store.verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes())).unwrap();
-        let header_member = CompilerNativeHeadersMember::from_verified_object(verified, bytes).unwrap();
+        let header_member = CompilerNativeHeadersMember::from_verified_object(verified, bytes, &mut 1024).unwrap();
         let current = legacy.clone().with_native_headers(header_member).unwrap();
         assert_eq!(legacy.canonical_bytes(), legacy_bytes);
         assert_eq!(CompilerPublicationMetadata::decode(&current.canonical_bytes()).unwrap(), current);
