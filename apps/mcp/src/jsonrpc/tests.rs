@@ -6176,7 +6176,7 @@ fn tool_catalog_names_callable_routes_without_advertising_unready_surfaces() {
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert_eq!(advertised.len(), 18);
+    assert_eq!(advertised.len(), 19);
     assert!(
         advertised
             .iter()
