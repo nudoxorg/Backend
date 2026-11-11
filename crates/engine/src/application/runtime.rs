@@ -6540,6 +6540,8 @@ mod fragment_budget_tests {
                 bytes,
                 if matches!(profile, LanguageProfile::Go(_)) {
                     go_bytes
+                } else if matches!(profile, LanguageProfile::TypeScript(_)) {
+                    python_bytes + 32 * 1024 * 1024
                 } else {
                     python_bytes
                 }
