@@ -71,6 +71,7 @@ pub fn resolve_references_with_sdk(
     dotnet: &Path,
     target_framework: &str,
     candidates: &[PathBuf],
+    assets_file: Option<&Path>,
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<Vec<PathBuf>, &'static str> {
@@ -85,6 +86,17 @@ pub fn resolve_references_with_sdk(
         return Err("invalid SDK reference candidates");
     }
     let scratch = tempfile::tempdir().map_err(|_| "SDK scratch unavailable")?;
+    if let Some(assets_file) = assets_file {
+        if !assets_file.is_absolute() || !assets_file.is_file() {
+            return Err("SDK assets unavailable");
+        }
+        let obj = scratch.path().join("obj");
+        fs::create_dir(&obj).map_err(|_| "SDK scratch unavailable")?;
+        let bytes =
+            backend_platform::durable::read_regular_bounded_stable(assets_file, 64 * 1024 * 1024)
+                .map_err(|_| "SDK assets unavailable")?;
+        fs::write(obj.join("project.assets.json"), bytes).map_err(|_| "SDK scratch unavailable")?;
+    }
     let project = scratch.path().join("resolve.csproj");
     let mut xml = format!(
         "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>{target_framework}</TargetFramework><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets></PropertyGroup><ItemGroup>"
