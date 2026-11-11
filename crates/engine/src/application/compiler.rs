@@ -4356,7 +4356,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         // this compile. The snapshot is a byte custody improvement, not proof of
         // the SDK observation or of the helper/runtime execution closure.
         let targeting_snapshot = sdk_observation.as_ref().map(|observation| {
-            backend_frontend_csharp::legacy::CSharpTargetingSnapshot::capture(&observation.targeting_directories)
+            let mut directories = observation.targeting_directories.clone();
+            if let Some(references) = restored_csharp_references.as_ref() {
+                directories.push(references.reference_directory().to_path_buf());
+            }
+            backend_frontend_csharp::legacy::CSharpTargetingSnapshot::capture(&directories)
                 .map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# targeting assembly snapshot unavailable" })
         }).transpose()?;
         if let (Some(fingerprint), Some(snapshot)) = (sdk_fingerprint.as_mut(), targeting_snapshot.as_ref()) {
@@ -4366,10 +4370,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             hasher.update(&snapshot.digest());
             *fingerprint = *hasher.finalize().as_bytes();
         }
-        let mut sdk_reference_paths = targeting_snapshot.as_ref().map(|snapshot| snapshot.directories().iter().map(PathBuf::as_path).collect::<Vec<_>>());
-        if let (Some(paths), Some(references)) = (sdk_reference_paths.as_mut(), restored_csharp_references.as_ref()) {
-            paths.push(references.reference_directory());
-        }
+        let sdk_reference_paths = targeting_snapshot.as_ref().map(|snapshot| snapshot.directories().iter().map(PathBuf::as_path).collect::<Vec<_>>());
         let mut sdk_using_names = sdk_observation.as_ref().map(|observation| observation.usings.iter().map(String::as_str).collect::<Vec<_>>());
         let mut sdk_define_names = sdk_observation.as_ref().map(|observation| observation.defines.iter().map(String::as_str).collect::<Vec<_>>());
         let mut package_authority_configuration = self.package_authority;
@@ -5873,6 +5874,15 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     continue;
                 }
             };
+            if let Some(snapshot) = targeting_snapshot.as_ref() {
+                let evidence = match transient_authority.as_ref() {
+                    Some(super::package_authority::PackageAuthorityOwner::CSharp { evidence: Some(evidence), .. }) => evidence,
+                    _ => return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# reference evidence unavailable" }),
+                };
+                if !super::csharp_evidence::references_match_snapshot(evidence, snapshot.references()) {
+                    return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# reference evidence differs from snapshot" });
+                }
+            }
             // SDK-observed projects bind through their plane identity; the
             // per-source invocation aggregate is only minted for captured units
             // whose references are fully caller-supplied.

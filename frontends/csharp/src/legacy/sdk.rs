@@ -70,6 +70,15 @@ pub struct CSharpTargetingSnapshot {
     directory: tempfile::TempDir,
     directories: Vec<PathBuf>,
     digest: [u8; 32],
+    references: Vec<CSharpTargetingReference>,
+}
+
+/// One exact reference assembly retained in a targeting snapshot.
+#[derive(Debug, Eq, PartialEq)]
+pub struct CSharpTargetingReference {
+    pub name: String,
+    pub length: u64,
+    pub sha256: [u8; 32],
 }
 
 impl CSharpTargetingSnapshot {
@@ -84,12 +93,20 @@ impl CSharpTargetingSnapshot {
         hash.update(b"csharp.targeting-snapshot.v1\0");
         let mut total = 0usize;
         let mut count = 0usize;
+        let mut references = Vec::new();
+        let mut names = std::collections::BTreeSet::new();
         for (index, source) in directories.iter().enumerate() {
             let entries = targeting_entries(source)?;
             let destination = directory.path().join(index.to_string());
             fs::create_dir(&destination).map_err(|_| "targeting snapshot unavailable")?;
             hash.update((index as u64).to_le_bytes());
             for name in &entries {
+                let stem = name.strip_suffix(".dll").ok_or("targeting filename unavailable")?;
+                if !stem.is_ascii() || stem.is_empty() { return Err("targeting filename unavailable"); }
+                let lower = stem.to_ascii_lowercase();
+                if lower.starts_with("api-ms-") || lower.starts_with("clr") || lower == "hostfxr"
+                    || lower == "hostpolicy" || lower == "microsoft.diasymreader.native.amd64" { continue; }
+                if !names.insert(lower) { return Err("duplicate targeting assembly"); }
                 count = count.checked_add(1).ok_or("targeting snapshot limit")?;
                 if count > 8192 { return Err("targeting snapshot limit"); }
                 let bytes = backend_platform::durable::read_regular_bounded_stable(&source.join(name), 32 * 1024 * 1024)
@@ -99,18 +116,21 @@ impl CSharpTargetingSnapshot {
                 hash.update((name.len() as u64).to_le_bytes());
                 hash.update(name.as_bytes());
                 hash.update((bytes.len() as u64).to_le_bytes());
-                hash.update(Sha256::digest(&bytes));
+                let sha256: [u8; 32] = Sha256::digest(&bytes).into();
+                hash.update(sha256);
+                references.push(CSharpTargetingReference { name: stem.to_owned(), length: bytes.len() as u64, sha256 });
                 fs::write(destination.join(name), bytes).map_err(|_| "targeting snapshot unavailable")?;
             }
             if entries != targeting_entries(source)? { return Err("targeting directory changed"); }
             copies.push(destination);
         }
         if count == 0 { return Err("targeting assemblies unavailable"); }
-        Ok(Self { directory, directories: copies, digest: hash.finalize().into() })
+        Ok(Self { directory, directories: copies, digest: hash.finalize().into(), references })
     }
 
     pub fn directories(&self) -> &[PathBuf] { &self.directories }
     pub fn digest(&self) -> [u8; 32] { self.digest }
+    pub fn references(&self) -> &[CSharpTargetingReference] { &self.references }
     /// Keep the private directory alive for the complete compilation.
     pub fn root(&self) -> &Path { self.directory.path() }
 }
