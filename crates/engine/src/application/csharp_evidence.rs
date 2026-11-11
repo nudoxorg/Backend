@@ -44,7 +44,7 @@ pub struct CSharpGraphEvidence {
     pub config_digest: [u8; 32],
     pub source_digest: [u8; 32],
     pub reference_digest: [u8; 32],
-    #[serde(deserialize_with = "bounded_evidence_vec")]
+    #[serde(deserialize_with = "bounded_graph_nodes")]
     pub nodes: Vec<CSharpGraphEvidenceNode>,
 }
 
@@ -52,10 +52,26 @@ pub struct CSharpGraphEvidence {
 #[serde(deny_unknown_fields)]
 pub struct CSharpGraphEvidenceNode {
     pub project_path: String,
-    #[serde(deserialize_with = "bounded_evidence_vec")]
+    #[serde(deserialize_with = "bounded_graph_edges")]
     pub project_references: Vec<String>,
     pub config_digest: [u8; 32],
     pub source_digest: [u8; 32],
+}
+
+fn bounded_graph_nodes<'de, D>(deserializer: D) -> Result<Vec<CSharpGraphEvidenceNode>, D::Error>
+where D: serde::Deserializer<'de> {
+    let values = bounded_evidence_vec(deserializer)?;
+    if values.len() > 64 { return Err(serde::de::Error::custom("graph node limit")); }
+    Ok(values)
+}
+
+fn bounded_graph_edges<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where D: serde::Deserializer<'de> {
+    let values = bounded_evidence_vec(deserializer)?;
+    if values.len() > 64 || values.iter().any(|path| path.len() > 4096) {
+        return Err(serde::de::Error::custom("graph edge limit"));
+    }
+    Ok(values)
 }
 
 /// Durable owner relation binding graph evidence to one selected operation and
