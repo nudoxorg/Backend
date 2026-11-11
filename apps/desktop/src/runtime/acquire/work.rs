@@ -739,6 +739,20 @@ pub(crate) fn dependency_origin(origin: &PackageOrigin, release: &Release, sourc
     }
 }
 
+/// The owner's refusal, with what to do about the one it can only name with a
+/// closed tag. Cargo resolves a release's dev-dependencies too, and the desktop
+/// reads Cargo offline: when their sources are not in the Cargo cache the
+/// authority cannot bind the release, and says only "authority binding".
+pub(crate) fn refusal_words(owner_words: String) -> String {
+    if owner_words.contains("authority binding") {
+        format!(
+            "{owner_words}. This is most often because Cargo reads offline here and the sources of this release's dev-dependencies are not in your Cargo cache. Run `cargo fetch` in the release's folder to put them there, then add it again."
+        )
+    } else {
+        owner_words
+    }
+}
+
 /// Each of `found`'s registry packages the owner already lists (in any state,
 /// from one read of its list), with the stage it stands at: added, or thin
 /// for the reason the owner gave when it could not finish the compile. Only
@@ -854,7 +868,7 @@ fn index_release_in(composition: &Composition, release: &Release, owner: Option<
             if connect(composition, owner).is_ok_and(|mut session| is_listed(&mut session, coordinate, Listed::Any)) =>
         {
             if let Err(error) = check(owner) { return failed(error.to_string()); }
-            let words: Arc<str> = Arc::from(error.to_string());
+            let words: Arc<str> = Arc::from(refusal_words(error.to_string()));
             if let Some(refusals) = &refusals {
                 refusals.keep(coordinate, &words);
             }
@@ -937,7 +951,7 @@ fn add_published_release(
             stage
         }
         (Err(error), Ok(Some(package))) => {
-            let words: Arc<str> = Arc::from(error.to_string());
+            let words: Arc<str> = Arc::from(refusal_words(error.to_string()));
             if let Some(refusals) = composition.refusals.as_deref() {
                 Refusals::at(refusals).keep(package.as_str(), &words);
             }
@@ -1082,4 +1096,22 @@ fn is_listed(session: &mut Session, coordinate: &str, listed: Listed) -> bool {
     let Ok(reply) = session.packages() else { return false };
     let backend_library::CommandReply::Packages(snapshot) = reply.reply else { return false };
     snapshot.root.rows().iter().any(|row| row.label == coordinate && (listed == Listed::Any || row.state == backend_library::RowState::Ready))
+}
+
+#[cfg(test)]
+mod refusal_word_tests {
+    use super::refusal_words;
+
+    #[test]
+    fn an_authority_binding_refusal_says_what_usually_causes_it_and_what_to_do() {
+        let said = refusal_words("every language profile was refused: build.rs (authority_binding): resolve authority fault: authority binding".to_owned());
+        assert!(said.starts_with("every language profile was refused"), "the owner's words come first: {said}");
+        assert!(said.contains("dev-dependencies") && said.contains("cargo fetch"), "{said}");
+    }
+
+    #[test]
+    fn any_other_refusal_is_left_as_the_owner_said_it() {
+        let words = "the compiler stopped at src/lib.rs: type check authority fault".to_owned();
+        assert_eq!(refusal_words(words.clone()), words);
+    }
 }
