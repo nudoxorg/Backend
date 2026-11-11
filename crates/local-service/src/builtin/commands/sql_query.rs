@@ -183,7 +183,7 @@ fn matches_filter(fact: &SqlFact, request: &SqlQueryRequest, uses: Option<&UsesS
         (SqlQueryRole::Diagnostic, SqlFact::Diagnostic { .. }) => true,
         (SqlQueryRole::Diagnostic, SqlFact::Reference(reference)) => {
             matches!(reference.kind, R::Column | R::Relation)
-                && matches!(reference.resolution, SqlResolution::Unresolved { .. })
+                && matches!(reference.resolution, SqlResolution::Unresolved { .. } | SqlResolution::Resolved { live: false, .. } | SqlResolution::Relation { live: false, .. })
         }
         (SqlQueryRole::ColumnRead, SqlFact::PostgresColumnRead { .. }) => true,
         (SqlQueryRole::Statement, SqlFact::Statement { .. }) => true,

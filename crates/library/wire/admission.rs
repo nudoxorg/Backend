@@ -1470,7 +1470,7 @@ fn admit_surface_reply_internal(
                 (SqlQueryRole::Diagnostic, SqlFact::Diagnostic { .. }) => true,
                 (SqlQueryRole::Diagnostic, SqlFact::Reference(reference)) => {
                     matches!(reference.kind, backend_semantic::sql_analysis::SqlRefKind::Column | backend_semantic::sql_analysis::SqlRefKind::Relation)
-                        && matches!(reference.resolution, backend_semantic::sql_analysis::SqlResolution::Unresolved { .. })
+                        && matches!(reference.resolution, backend_semantic::sql_analysis::SqlResolution::Unresolved { .. } | backend_semantic::sql_analysis::SqlResolution::Resolved { live: false, .. } | backend_semantic::sql_analysis::SqlResolution::Relation { live: false, .. })
                 }
                 (SqlQueryRole::ColumnRead, SqlFact::PostgresColumnRead { .. }) => true,
                 (SqlQueryRole::Statement, SqlFact::Statement { .. }) => true,
