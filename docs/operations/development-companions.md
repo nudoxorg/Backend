@@ -45,9 +45,11 @@ its executable identity, compiles that identity into the owner, and stages the
 worker beside the owner under the fixed `backend-sqlite-worker` name. This
 journey builds the CLI, MCP server and owner. For desktop development, the desktop
 must also be compiled with the same `NUDOX_BUILD_SQLITE_WORKER_ID` and use the same
-worker sibling. Release packaging uses `sqlite_linux_development.py` or
-`sqlite_macos_development.py` to retain the platform closure and recheck identity
-after relocation/signing; a development journey is not release evidence.
+worker sibling. The platform companion phases `sqlite_linux_development.py` and
+`sqlite_macos_development.py` retain the platform closure and recheck identity
+after relocation/signing. The Linux product packaging pipeline still needs
+explicit integration of its SQLite phase; a development journey is not release
+evidence.
 
 ## CSS / Stylo and PostgreSQL
 
