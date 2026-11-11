@@ -1160,7 +1160,9 @@ fn cat_authority() -> (PathBuf, Vec<String>) {
             "-c".into(),
             "exec \"$1\"".into(),
             "fixture".into(),
-            cat.to_string_lossy().into_owned(),
+            cat.into_os_string()
+                .into_string()
+                .expect("cat path must be UTF-8 for command arguments"),
         ],
     )
 }
