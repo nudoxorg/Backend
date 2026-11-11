@@ -112,7 +112,25 @@ fn project_fixture(private: bool, graph_origin: bool) -> Result<(), Box<dyn std:
     let header = headers.entries.first().ok_or("async function header absent")?;
     assert_eq!(&unused[header.header_extent.0 as usize..header.header_extent.1 as usize], "export async function Unused()");
     assert!(header.header_extent.1 < header.compiler_extent.1);
+    let original_source = headers.source;
+    let original_image = headers.image_identity;
     drop(staged_ts);
+    let changed = "export async function Unused() { return 2; }\n";
+    fs::write(package.join("ui/unused.ts"), changed)?;
+    let changed_sources = vec![
+        OwnedPackageSource::new("ui/button.ts", button)?,
+        OwnedPackageSource::new("ui/index.ts", barrel)?,
+        OwnedPackageSource::new("ui/unused.ts", changed)?,
+    ].into_boxed_slice();
+    let changed_staged = client.compile_package_sources_staged(OwnedPackageSourceSet::new(
+        ts_request.clone(), package.clone(), changed_sources,
+    )?)?;
+    let changed_headers = changed_staged.native_typescript_headers().iter()
+        .find(|file| file.path == "ui/unused.ts").ok_or("changed source header absent")?;
+    assert_ne!(changed_headers.source, original_source);
+    assert_ne!(changed_headers.image_identity, original_image);
+    drop(changed_staged);
+    fs::write(package.join("ui/unused.ts"), unused)?;
     let first = client.compile_package_sources(OwnedPackageSourceSet::new(
         ts_request,
         package.clone(),
