@@ -352,7 +352,7 @@ pub fn resolve_project_assets_with_metadata(
             .file_name()
             .ok_or_else(|| RestoreError::Unavailable(source.display().to_string()))?
             .to_owned();
-        if !names.insert(name.clone()) {
+        if !names.insert(name.to_string_lossy().to_ascii_lowercase()) {
             return Err(RestoreError::Unavailable(format!(
                 "duplicate assembly filename {}",
                 name.to_string_lossy()
@@ -507,5 +507,106 @@ mod tests {
             resolve_project_assets(&assets, dir.path(), "net10.0"),
             Err(RestoreError::OutsideRoot(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod closure_regressions {
+    use super::*;
+    use serde_json::json;
+
+    fn package_fixture(root: &Path) -> PathBuf {
+        let package = root.join("packages/p/1.0/ref/net10.0");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("P.dll"), b"reference bytes").unwrap();
+        let assets = root.join("App/obj/project.assets.json");
+        fs::create_dir_all(assets.parent().unwrap()).unwrap();
+        let graph = json!({
+            "packageFolders": { root.join("packages").to_str().unwrap(): {} },
+            "targets": { "net10.0": { "P/1.0": {"compile": {"ref/net10.0/P.dll": {}}}}},
+            "libraries": {"P/1.0": {"type":"package", "path":"p/1.0"}},
+            "project": {"frameworks": {"net10.0": {"dependencies": {"P":{"target":"Package", "version":"[1.0, )"}}}}}
+        });
+        fs::write(&assets, serde_json::to_vec(&graph).unwrap()).unwrap();
+        assets
+    }
+
+    #[test]
+    fn exact_current_dependencies_are_required_before_binding() {
+        let root = tempfile::tempdir().unwrap();
+        let assets = package_fixture(root.path());
+        let closure =
+            resolve_project_assets_checked(&assets, root.path(), "net10.0", &[("P", "1.0")], &[])
+                .unwrap();
+        assert_eq!(
+            fs::read(closure.reference_directory().join("P.dll")).unwrap(),
+            b"reference bytes"
+        );
+        assert!(
+            resolve_project_assets_checked(&assets, root.path(), "net10.0", &[("P", "2.0")], &[])
+                .is_err()
+        );
+        assert!(
+            resolve_project_assets_with_metadata(
+                &assets,
+                root.path(),
+                "net10.0",
+                &[("P", "1.0")],
+                &[],
+                &[("P", "runtime")]
+            )
+            .is_err()
+        );
+        assert!(
+            resolve_project_assets_checked(&assets, root.path(), "net9.0", &[("P", "1.0")], &[])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn project_restore_placeholder_requires_real_reference_output() {
+        let root = tempfile::tempdir().unwrap();
+        let assets = root.path().join("Tests/obj/project.assets.json");
+        fs::create_dir_all(assets.parent().unwrap()).unwrap();
+        let api = root.path().join("Api");
+        fs::create_dir_all(api.join("obj/Debug/net10.0/ref")).unwrap();
+        fs::write(api.join("Api.csproj"), "<Project/>").unwrap();
+        let graph = json!({
+            "packageFolders": {},
+            "targets": {"net10.0": {"Api/1.0": {"type":"project", "framework":"net10.0", "compile":{"bin/placeholder/Api.dll":{}}}}},
+            "libraries": {"Api/1.0":{"type":"project", "path":"../Api/Api.csproj"}}
+        });
+        fs::write(&assets, serde_json::to_vec(&graph).unwrap()).unwrap();
+        let failure = resolve_project_assets_checked(
+            &assets,
+            root.path(),
+            "net10.0",
+            &[],
+            &["../Api/Api.csproj"],
+        )
+        .unwrap_err();
+        assert!(
+            failure
+                .to_string()
+                .contains("no built Debug reference assembly"),
+            "{failure}"
+        );
+        fs::write(
+            api.join("obj/Debug/net10.0/ref/Api.dll"),
+            b"project reference",
+        )
+        .unwrap();
+        let closure = resolve_project_assets_checked(
+            &assets,
+            root.path(),
+            "net10.0",
+            &[],
+            &["../Api/Api.csproj"],
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(closure.reference_directory().join("Api.dll")).unwrap(),
+            b"project reference"
+        );
     }
 }
