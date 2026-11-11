@@ -386,6 +386,26 @@ impl OwnedCSharpProjectGraph {
         {
             return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
         }
+        let known = nodes.iter().map(|node| node.project_path.as_ref()).collect::<std::collections::HashSet<_>>();
+        if nodes.iter().any(|node| {
+            node.project_references.len() > 64
+                || node.project_references.windows(2).any(|pair| pair[0] >= pair[1])
+                || node.project_references.iter().any(|path| !known.contains(path.as_ref()))
+        }) {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        fn visit(path: &str, nodes: &[OwnedCSharpProjectNode], active: &mut std::collections::HashSet<String>, done: &mut std::collections::HashSet<String>) -> bool {
+            if active.contains(path) { return false; }
+            if !done.insert(path.to_owned()) { return true; }
+            let Some(node) = nodes.iter().find(|node| node.project_path.as_ref() == path) else { return false; };
+            active.insert(path.to_owned());
+            let valid = node.project_references.iter().all(|dependency| visit(dependency, nodes, active, done));
+            active.remove(path);
+            valid
+        }
+        if !visit(&self.root_project, &nodes, &mut std::collections::HashSet::new(), &mut std::collections::HashSet::new()) {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
         self.nodes = nodes;
         Ok(self)
     }
@@ -401,11 +421,21 @@ impl OwnedCSharpProjectGraph {
         if self.nodes.len() != self.project_paths.len() || self.nodes.is_empty() {
             return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
         }
+        let mut source_index = HashMap::with_capacity(package_sources.len());
+        for source in package_sources {
+            if source_index.insert(source.relative_path.as_ref(), source).is_some() {
+                return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+            }
+        }
+        let mut claimed_paths = HashMap::new();
         let mut arena = Vec::with_capacity(self.nodes.len());
         for node in self.nodes.iter() {
             let mut source_rows = Vec::with_capacity(node.sources.len());
             for claim in node.sources.iter() {
-                let source = package_sources.iter().find(|source| source.relative_path.as_ref() == claim.path.as_ref())
+                if claimed_paths.insert(claim.path.as_ref(), node.project_path.as_ref()).is_some() {
+                    return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+                }
+                let source = source_index.get(claim.path.as_ref())
                     .ok_or(PackageSourceSetError::NativeCSharpProfileMismatch)?;
                 let text = match &source.source {
                     OwnedPackageSourceContents::Utf8(text) => text.as_str(),
