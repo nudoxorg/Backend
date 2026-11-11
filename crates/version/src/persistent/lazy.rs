@@ -915,7 +915,7 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             || child.node().first_key() != Some(&children[index].first_key) {
             return Err(LazyTreeError::Node(NodeError::AnchorMismatch));
         }
-        self.take_page(&child, start, limit, entries, pending, max_depth - 1)
+        self.take_page(&child, start, limit, entries, pending, if max_depth == usize::MAX { usize::MAX } else { max_depth - 1 })
     }
 
     /// Replaces an existing value by loading its root-to-leaf path.

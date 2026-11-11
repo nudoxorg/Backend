@@ -70,9 +70,6 @@ fn charge_row_path(
     if let Some(lines) = &row.line_starts {
         charge_allocation(total, lines.capacity().checked_mul(std::mem::size_of::<u32>())?)?;
     }
-    if let Some(headers) = &row.headers {
-        charge_allocation(total, headers.entries.capacity().checked_mul(std::mem::size_of::<backend_engine::builtin::NativeHeaderEntry>())?)?;
-    }
     Some(())
 }
 

@@ -63,7 +63,7 @@ pub struct NativeHeaderEvidence {
     pub image_identity: [u8; 32],
     pub image_byte_len: u64,
     pub producer_recipe: [u8; 32],
-    pub entries: Vec<NativeHeaderEntry>,
+    pub aggregate_digest: [u8; 32],
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeHeaderEntry {
@@ -100,17 +100,14 @@ impl NativeSourceEvidence {
         if self.headers.is_none() && self.kind == NativeSourceEvidenceKind::Image && self.line_starts.is_none() { return Some(base); }
         let lines = self.line_starts.as_ref().map_or(0, Vec::len);
         let mut size = base.checked_add(1 + 4)?.checked_add(lines.checked_mul(4)?)?;
-        if let Some(headers) = &self.headers {
-            size = size.checked_add(76)?.checked_add(headers.entries.len().checked_mul(HEADER_ENTRY_BYTES)?)?;
-        }
+        if self.headers.is_some() { size = size.checked_add(104)?; }
         Some(size)
     }
 
     /// Heap owned by this row, excluding the row itself and allocator metadata.
     pub fn checked_heap_bytes(&self) -> Option<usize> {
         let lines = self.line_starts.as_ref().map_or(Some(0), |v| v.capacity().checked_mul(std::mem::size_of::<u32>()))?;
-        let headers = self.headers.as_ref().map_or(Some(0), |h| h.entries.capacity().checked_mul(std::mem::size_of::<NativeHeaderEntry>()))?;
-        self.path.capacity().checked_add(lines)?.checked_add(headers)
+        self.path.capacity().checked_add(lines)
     }
 
     /// Captures a bounded complete line map when line endings are representable.
@@ -145,15 +142,8 @@ impl NativeSourceEvidence {
                 || lines.last().is_some_and(|last| *last > self.byte_length)
             { return Err("invalid native source line map"); }
         }
-        if let Some(headers) = &self.headers {
-            if !self.admits_image() || headers.entries.len() > MAX_NATIVE_HEADER_ENTRIES
-                || headers.entries.windows(2).any(|p| p[0].entity_id >= p[1].entity_id)
-                || headers.entries.iter().any(|entry| {
-                    let (start, end) = entry.compiler_extent;
-                    let (head_start, head_end) = entry.header_extent;
-                    start >= end || end > self.byte_length || head_start > start
-                        || start >= head_end || head_end > end
-                }) { return Err("invalid native header evidence"); }
+        if self.headers.is_some() && !self.admits_image() {
+            return Err("native program member cannot carry header evidence");
         }
         native_source_evidence_key(self.project, self.profile, &self.path).map(|_| ())
     }
@@ -242,15 +232,7 @@ impl Relation for NativeSourceEvidenceRelation {
             output.extend_from_slice(&headers.image_identity);
             output.extend_from_slice(&headers.image_byte_len.to_be_bytes());
             output.extend_from_slice(&headers.producer_recipe);
-            output.extend_from_slice(&(headers.entries.len() as u32).to_be_bytes());
-            for entry in &headers.entries {
-                output.extend_from_slice(&entry.entity_id.to_be_bytes());
-                output.extend_from_slice(entry.identity.family.as_bytes());
-                output.extend_from_slice(entry.identity.variant.as_bytes());
-                for extent in [entry.compiler_extent.0, entry.compiler_extent.1, entry.header_extent.0, entry.header_extent.1] {
-                    output.extend_from_slice(&extent.to_be_bytes());
-                }
-            }
+            output.extend_from_slice(&headers.aggregate_digest);
         }
     }
 }
@@ -284,18 +266,8 @@ impl CanonicalRelation for NativeSourceEvidenceRelation {
                 if bytes.get(..4)? == MAGIC_V2 && kind == NativeSourceEvidenceKind::Image && count == 0 { return None; }
                 let headers = if bytes.get(..4)? == MAGIC_V3 {
                     let tail = rest.get(line_end..)?;
-                    let header_count = u32::from_be_bytes(tail.get(72..76)?.try_into().ok()?) as usize;
-                    if header_count > MAX_NATIVE_HEADER_ENTRIES || tail.len() != 76usize.checked_add(header_count.checked_mul(HEADER_ENTRY_BYTES)?)? { return None; }
-                    let mut entries = Vec::with_capacity(header_count);
-                    for chunk in tail.get(76..)?.chunks_exact(HEADER_ENTRY_BYTES) {
-                        let number = |offset| Some(u32::from_be_bytes(chunk.get(offset..offset+4)?.try_into().ok()?));
-                        entries.push(NativeHeaderEntry {
-                            entity_id: number(0)?,
-                            identity: DeclarationIdentity { family: DeclarationFamilyId::from_raw(chunk.get(4..20)?.try_into().ok()?), variant: VariantFingerprint::from_raw(chunk.get(20..36)?.try_into().ok()?) },
-                            compiler_extent: (number(36)?, number(40)?), header_extent: (number(44)?, number(48)?),
-                        });
-                    }
-                    Some(NativeHeaderEvidence { image_identity: tail.get(..32)?.try_into().ok()?, image_byte_len: u64::from_be_bytes(tail.get(32..40)?.try_into().ok()?), producer_recipe: tail.get(40..72)?.try_into().ok()?, entries })
+                    if tail.len() != 104 { return None; }
+                    Some(NativeHeaderEvidence { image_identity: tail.get(..32)?.try_into().ok()?, image_byte_len: u64::from_be_bytes(tail.get(32..40)?.try_into().ok()?), producer_recipe: tail.get(40..72)?.try_into().ok()?, aggregate_digest: tail.get(72..104)?.try_into().ok()? })
                 } else { None };
                 let mut lines = Vec::with_capacity(count);
                 for chunk in rest.get(74..line_end)?.chunks_exact(4) { lines.push(u32::from_be_bytes(chunk.try_into().ok()?)); }
@@ -604,33 +576,17 @@ mod tests {
     }
 
     #[test]
-    fn nse3_headers_are_bounded_untrusted_claims() {
+    fn nse3_reference_is_bounded_and_untrusted() {
         let mut claim = row();
-        claim.headers = Some(NativeHeaderEvidence {
-            image_identity: [3; 32], image_byte_len: 100, producer_recipe: [4; 32],
-            entries: vec![NativeHeaderEntry { entity_id: 7,
-                identity: DeclarationIdentity { family: DeclarationFamilyId::from_raw([5; 16]), variant: VariantFingerprint::from_raw([6; 16]) },
-                compiler_extent: (1, 40), header_extent: (1, 12) }],
-        });
+        claim.headers = Some(NativeHeaderEvidence { image_identity: [3; 32], image_byte_len: 100, producer_recipe: [4; 32], aggregate_digest: [5; 32] });
         let mut bytes = Vec::new();
         NativeSourceEvidenceRelation::encode_value(&claim, &mut bytes);
         assert_eq!(&bytes[..4], MAGIC_V3);
         assert_eq!(claim.checked_encoded_len(), Some(bytes.len()));
-        assert!(claim.checked_heap_bytes().unwrap() >= claim.path.len() + std::mem::size_of::<NativeHeaderEntry>());
         assert_eq!(NativeSourceEvidenceRelation::decode_value(&bytes).unwrap(), claim);
         for end in 0..bytes.len() { assert!(NativeSourceEvidenceRelation::decode_value(&bytes[..end]).is_err()); }
-        let mut invalid = claim.clone();
-        let duplicate = invalid.headers.as_ref().unwrap().entries[0].clone();
-        invalid.headers.as_mut().unwrap().entries.push(duplicate);
-        assert!(invalid.validate().is_err());
-        let mut invalid = claim.clone();
-        invalid.headers.as_mut().unwrap().entries[0].header_extent = (2, 12);
-        assert!(invalid.validate().is_err());
-        invalid.kind = NativeSourceEvidenceKind::ProgramMember;
-        assert!(invalid.validate().is_err());
-        let count_offset = bytes.len() - HEADER_ENTRY_BYTES - 4;
-        bytes[count_offset..count_offset + 4].copy_from_slice(&u32::MAX.to_be_bytes());
-        assert!(NativeSourceEvidenceRelation::decode_value(&bytes).is_err());
+        claim.kind = NativeSourceEvidenceKind::ProgramMember;
+        assert!(claim.validate().is_err());
     }
 
     #[test]

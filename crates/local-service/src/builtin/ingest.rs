@@ -476,9 +476,6 @@ impl RevalidatedNativeTsCapture {
             if let Some(lines) = &source.evidence.line_starts {
                 allocation(&mut total, lines.capacity().checked_mul(std::mem::size_of::<u32>())?)?;
             }
-            if let Some(headers) = &source.evidence.headers {
-                allocation(&mut total, headers.entries.capacity().checked_mul(std::mem::size_of::<backend_engine::builtin::NativeHeaderEntry>())?)?;
-            }
         }
         allocation(&mut total, fence.directories.capacity().checked_mul(std::mem::size_of::<(PathBuf, Option<FileSystemRevision>)>())?)?;
         for (path, _) in &fence.directories { allocation(&mut total, path.capacity())?; }
