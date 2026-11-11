@@ -953,7 +953,7 @@ fn native_ts_retirement_journey(exclude: bool, check_search: bool) -> Result<(),
     fs::create_dir(&project)?;
     fs::write(
         project.join("tsconfig.json"),
-        "{\"compilerOptions\":{\"strict\":true},\"include\":[\"*.ts\"]}",
+        "{\"compilerOptions\":{\"strict\":true},\"include\":[\"*.ts\",\"*.tsx\"]}",
     )?;
     fs::write(
         project.join("view.ts"),
@@ -963,6 +963,7 @@ fn native_ts_retirement_journey(exclude: bool, check_search: bool) -> Result<(),
         project.join("other.ts"),
         "export function Kept() { return 'current'; }\n",
     )?;
+    fs::write(project.join("component.tsx"), "export function Widget() { return 'widget'; }\n")?;
     let paths = backend_runtime::WorkspacePaths::discover(
         Some(fixture.path().join("owner")),
         Some(fixture.path().join("state")),
@@ -978,6 +979,10 @@ fn native_ts_retirement_journey(exclude: bool, check_search: bool) -> Result<(),
     let (_, kept_document) = select_native_document(&mut session, &authority, "Kept", "other.ts")?;
     if check_search {
         assert_native_search_and_query(&mut session, &kept_document)?;
+        let (_, widget) = select_native_document(&mut session, &authority, "Widget", "component.tsx")?;
+        let selected = widget.selection.as_ref().ok_or("selected TSX document")?;
+        let CommandReply::Search(search) = session.search("Widget", 100)?.reply else { return Err("TSX search reply".into()) };
+        assert!(search.root.rows().iter().any(|row| row.id == backend_library::RowId::Symbol(selected.symbol())));
     }
     assert!(
         old_document
