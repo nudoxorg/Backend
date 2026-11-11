@@ -396,6 +396,9 @@ fn python(
             requirements.push(ProductText::new(value).map_err(|e| e.to_string())?);
         }
         if let Some(value) = line.strip_prefix("Requires-Python: ") {
+            if engines.len() >= 16 {
+                return Err("installed Python runtime metadata exceeds bound".to_owned());
+            }
             engines.push(ProductText::new(format!("python {value}")).map_err(|e| e.to_string())?);
         }
     }

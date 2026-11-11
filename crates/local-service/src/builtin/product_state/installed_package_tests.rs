@@ -1,5 +1,19 @@
 #[cfg(unix)]
 #[test]
+fn installed_python_runtime_metadata_is_bounded() {
+    let root = fixture("installed-python-runtime-bound");
+    let metadata = root.join(".venv/lib/python3.14/site-packages/demo-1.0.0.dist-info/METADATA");
+    fs::create_dir_all(metadata.parent().unwrap()).unwrap();
+    fs::write(&metadata, format!("Name: demo\nVersion: 1.0.0\n{}\n", "Requires-Python: >=3.10\n".repeat(17))).unwrap();
+    let selected = package_view(b"installed-python-runtime-bound", &[root.as_path()]);
+    let package = PackageReference::parse("pkg:pypi/demo@1.0.0").unwrap();
+    let error = super::super::installed_packages::find(&selected, &package, false).unwrap_err();
+    assert!(error.contains("runtime metadata exceeds bound"), "{error}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn installed_npm_and_virtualenv_packages_answer_public_package_routes() {
     let root = fixture("installed-package-routes");
     let npm = root.join("frontend/node_modules/vue");
