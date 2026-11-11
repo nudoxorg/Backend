@@ -7,7 +7,7 @@ mod cluster_coordinator;
 mod compiler;
 mod csharp_evidence;
 mod csharp_sdk_options;
-pub use csharp_evidence::{decode_csharp_evidence, decode_csharp_graph_evidence, encode_csharp_graph_evidence, replay_csharp_graph_evidence, CSharpEvidenceClaim, CSharpEvidenceConfig, CSharpEvidenceSource, CSharpGraphEvidence, CSharpGraphEvidenceNode, SelectedCSharpGraphWitness};
+pub use csharp_evidence::{decode_csharp_evidence, decode_csharp_graph_evidence, decode_durable_csharp_graph_relation, encode_csharp_graph_evidence, encode_durable_csharp_graph_relation, replay_csharp_graph_evidence, CSharpEvidenceClaim, CSharpEvidenceConfig, CSharpEvidenceSource, CSharpGraphEvidence, CSharpGraphEvidenceNode, DurableCSharpGraphRelation, SelectedCSharpGraphWitness};
 mod compiler_terminal_text;
 mod compiler_typescript_failure;
 mod compiler_typescript_observation;

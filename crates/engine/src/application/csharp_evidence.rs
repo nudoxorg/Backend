@@ -58,6 +58,32 @@ pub struct CSharpGraphEvidenceNode {
     pub source_digest: [u8; 32],
 }
 
+/// Durable owner relation binding graph evidence to one selected operation and
+/// workspace snapshot. This relation is claim storage only; grant still needs
+/// the private selected-witness mint.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DurableCSharpGraphRelation {
+    pub format: u8,
+    pub operation: [u8; 32],
+    pub attempt: [u8; 32],
+    pub owner_epoch: u64,
+    pub snapshot: [u8; 32],
+    pub graph: CSharpGraphEvidence,
+}
+
+pub fn encode_durable_csharp_graph_relation(relation: &DurableCSharpGraphRelation) -> Option<Vec<u8>> {
+    if relation.format != 1 { return None; }
+    let payload = serde_json::to_vec(relation).ok()?;
+    (payload.len() <= 2 * 1024 * 1024).then(|| payload)
+}
+
+pub fn decode_durable_csharp_graph_relation(bytes: &[u8]) -> Option<DurableCSharpGraphRelation> {
+    if bytes.len() > 2 * 1024 * 1024 { return None; }
+    let relation = serde_json::from_slice::<DurableCSharpGraphRelation>(bytes).ok()?;
+    (relation.format == 1 && relation.operation != [0; 32] && relation.attempt != [0; 32] && relation.snapshot != [0; 32]).then_some(relation)
+}
+
 /// Owner-minted selected witness. The graph payload is private; callers can
 /// obtain one only by joining staged evidence with a separately selected
 /// same-attempt snapshot through `mint_selected_graph_witness`.
