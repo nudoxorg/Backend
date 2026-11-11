@@ -253,7 +253,7 @@ pub(super) fn refresh_native_ts_evidence_plan(
                 .eq(candidate.image_digests.iter().copied())
             || candidate
                 .revalidated
-                .program_image_evidence(&activated)
+                .program_image_evidence(&activated, candidate.publication.native_headers())
                 .map_err(BuiltinModelError)?
                 != candidate.evidence
         {
@@ -906,7 +906,7 @@ pub(super) fn admit_native_ts_owner_candidate(
         &mut image_rows,
     )?;
     let evidence = revalidated
-        .program_image_evidence(&activated)
+        .program_image_evidence(&activated, publication.native_headers())
         .map_err(BuiltinModelError)?;
     let program = activated.native_program_sources.as_ref()
         .ok_or_else(|| BuiltinModelError("native TypeScript program is unavailable".into()))?;

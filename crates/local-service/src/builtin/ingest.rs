@@ -507,8 +507,9 @@ impl RevalidatedNativeTsCapture {
     pub(super) fn program_image_evidence(
         &self,
         activated: &super::ActivatedProductSemantics,
+        headers: Option<&super::commands::index::NativeHeaderCustody>,
     ) -> Result<Vec<backend_engine::builtin::NativeSourceEvidence>, String> {
-        self.capture.program_image_evidence(activated)
+        self.capture.program_image_evidence(activated, headers)
     }
 }
 
@@ -542,7 +543,16 @@ impl NativeTsCapture {
     pub(super) fn program_image_evidence(
         &self,
         activated: &super::ActivatedProductSemantics,
+        headers: Option<&super::commands::index::NativeHeaderCustody>,
     ) -> Result<Vec<backend_engine::builtin::NativeSourceEvidence>, String> {
+        let mut header_claims = BTreeMap::new();
+        if let Some(headers) = headers {
+            for header in headers.entries() {
+                if header_claims.insert(header.path.as_str(), header).is_some() {
+                    return Err("duplicate native header source".into());
+                }
+            }
+        }
         let program = activated.native_program_sources.as_ref()
             .ok_or("native TypeScript program is unavailable")?;
         let captured: BTreeMap<_, _> = self.sources.iter()
@@ -562,6 +572,7 @@ impl NativeTsCapture {
             }
         }
         let mut witnessed = BTreeSet::new();
+        let mut admitted_headers = BTreeMap::new();
         for image in activated.images() {
             let view = image.reopen().map_err(|error| format!("reopen native image: {error}"))?;
             let backend_semantic::ir::ImageProvenance::Captured { source, recipe, scope, .. } =
@@ -578,7 +589,18 @@ impl NativeTsCapture {
             {
                 return Err("native image is not an exact program member".into());
             }
+            if let Some(header) = header_claims.remove(path) {
+                if header.source != source
+                    || header.headers.producer_recipe != super::native_ts_headers::producer_recipe()
+                { return Err("native header producer or source differs".into()); }
+                let mut row = captured_source.evidence.clone();
+                row.headers = Some(header.headers.clone());
+                row.validate().map_err(str::to_owned)?;
+                super::native_ts_headers::admit_image(&row, &view, image.as_ref())?;
+                admitted_headers.insert(path.to_owned(), header.headers.clone());
+            }
         }
+        if !header_claims.is_empty() { return Err("native headers lack their selected image".into()); }
         // A mapped program input is source evidence even when this profile
         // did not emit an image for it. Keep that weaker fact distinct from
         // an admitted image; consumers must not infer declarations from it.
@@ -590,6 +612,7 @@ impl NativeTsCapture {
             } else {
                 backend_engine::builtin::NativeSourceEvidenceKind::ProgramMember
             };
+            row.headers = admitted_headers.remove(*path);
             Ok(row)
         }).collect::<Result<Vec<_>, &str>>()?;
         evidence.sort_unstable_by(|left, right| left.path.cmp(&right.path));
