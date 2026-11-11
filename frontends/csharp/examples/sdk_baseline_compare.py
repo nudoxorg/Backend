@@ -56,7 +56,7 @@ with tempfile.TemporaryDirectory(prefix='csharp-baseline-') as scratch:
     project = root / 'resolve.csproj'
     project.write_text(f'''<Project Sdk="{sdk}"><PropertyGroup><TargetFramework>{esc(a.target)}</TargetFramework><Nullable>{esc(a.nullable)}</Nullable><LangVersion>{esc(a.language)}</LangVersion><OutputType>{esc(a.output)}</OutputType><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets></PropertyGroup><ItemGroup>{''.join(refs)}{frameworks}</ItemGroup></Project>''')
     env = {k: v for k, v in os.environ.items() if k in ('PATH', 'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH')}
-    env.update(HOME=scratch, DOTNET_CLI_HOME=scratch, NUGET_PACKAGES=scratch, DOTNET_CLI_TELEMETRY_OPTOUT='1', DOTNET_SKIP_FIRST_TIME_EXPERIENCE='1', DOTNET_NOLOGO='1')
+    env.update(DOTNET_CLI_HOME=scratch, NUGET_PACKAGES=scratch, DOTNET_CLI_TELEMETRY_OPTOUT='1', DOTNET_SKIP_FIRST_TIME_EXPERIENCE='1', DOTNET_NOLOGO='1')
     args = [a.dotnet, 'msbuild', str(project), '-nologo', '-noAutoResponse', '-nodeReuse:false', '-target:ResolveReferences', '-getItem:ReferencePath', '-getProperty:MSBuildSDKsPath', '-p:RestoreSources=', '-p:MSBuildEnableWorkloadResolver=false']
     for stem in ('MicrosoftCommonProps', 'MicrosoftCommonTargets', 'MicrosoftCSharpTargets', 'MicrosoftCommonCrossTargetingTargets', 'MicrosoftNetFrameworkProps', 'MicrosoftNetFrameworkTargets', 'MicrosoftVisualBasicTargets'):
         for when in ('Before', 'After'):
