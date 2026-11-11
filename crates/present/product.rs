@@ -2180,7 +2180,21 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
             rows.extend(page.host_gaps.iter().map(|gap| {
                 let reason = match &gap.reason {
                     backend_library::sql_query::SqlHostGapReason::NativeError => "parser rejected the file".to_owned(),
-                    backend_library::sql_query::SqlHostGapReason::Unavailable { reason } => format!("analysis unavailable: {reason:?}"),
+                    backend_library::sql_query::SqlHostGapReason::Unavailable { reason } => {
+                        use backend_library::sql_query::SqlFailure;
+                        match reason {
+                            SqlFailure::EngineNotAdmitted => "no SQL worker is admitted or available".to_owned(),
+                            SqlFailure::UnsupportedDialect => "no admitted worker supports this SQL dialect".to_owned(),
+                            SqlFailure::Read => "source file could not be read".to_owned(),
+                            SqlFailure::SelectionUnavailable => "SQL file selection is unavailable".to_owned(),
+                            SqlFailure::InvalidUtf8 => "source file is not valid UTF-8".to_owned(),
+                            SqlFailure::Limit => "analysis exceeded a limit".to_owned(),
+                            SqlFailure::Deadline => "analysis timed out".to_owned(),
+                            SqlFailure::Cancelled => "analysis was cancelled".to_owned(),
+                            SqlFailure::WorkerFailure => "SQL worker failed".to_owned(),
+                            SqlFailure::Context => "SQL analysis context is unavailable".to_owned(),
+                        }
+                    },
                 };
                 ProductRecord::new(format!("SQL gap: {reason}"), None, vec![gap.path.clone(), format!("{:?}", gap.dialect)])
             }));
