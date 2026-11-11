@@ -14,6 +14,7 @@ mod search_lane;
 mod semantic_query;
 mod semantic_shapes;
 mod semantic_source;
+mod structural_source;
 mod snapshot;
 mod stylo_query;
 pub(in crate::builtin) mod sql_query;
