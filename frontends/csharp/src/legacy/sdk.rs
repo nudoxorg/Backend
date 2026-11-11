@@ -1542,6 +1542,10 @@ mod tests {
             snapshot.receipt().clone()
         );
         assert!(!snapshot.receipt_matches(&std::env::temp_dir(), "net9.0", None, [7; 32],));
+        assert!(!snapshot.receipt_matches(&std::env::temp_dir(), "net10.0", None, [8; 32],));
+        let mut changed_options = snapshot.receipt().clone();
+        changed_options.nullable = "disable".into();
+        assert_ne!(snapshot.receipt().digest(), changed_options.digest());
         fs::write(&snapshot.references[0], b"changed").unwrap();
         assert!(!snapshot.receipt_is_consistent());
         assert!(snapshot.targeting_references().is_err());

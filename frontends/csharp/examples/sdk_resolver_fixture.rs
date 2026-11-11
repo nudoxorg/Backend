@@ -89,15 +89,12 @@ fn main() {
         .zip(receipt.selected_fusion_names.iter())
     {
         let bytes = fs::read(path).expect("selected reference");
-        println!(
-            "selected_ref path={} name={} fusion_name={} length={} sha256={:x}",
-            path.display(),
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .expect("UTF-8 assembly name"),
-            fusion_name,
-            bytes.len(),
-            Sha256::digest(&bytes)
-        );
+        println!("{}", serde_json::json!({
+            "path": path.display().to_string(),
+            "name": path.file_name().and_then(|name| name.to_str()).expect("UTF-8 assembly name"),
+            "fusion_name": fusion_name.to_string(),
+            "length": bytes.len(),
+            "sha256": format!("{:x}", Sha256::digest(&bytes)),
+        }));
     }
 }
