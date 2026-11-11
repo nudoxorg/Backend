@@ -43,6 +43,29 @@ fn discovery_empty_source_list_does_not_assert_complete_security_or_backfill() {
 }
 
 #[test]
+fn discovery_row_displays_only_source_reported_release_text() {
+    let candidate = RegistryDiscoveryCandidate {
+        source: [1; 32],
+        coordinate: backend_library::PackageCoordinate::parse("pkg:nuget/example@1.0.0").unwrap(),
+        standing: RegistryDiscoveryStanding::Published,
+        completeness: RegistryDiscoveryCompleteness::Incomplete,
+        caught_up: false,
+        freshness: RegistryDiscoveryFreshness::Historical { observed_at_millis: 1 },
+        proof: [2; 32],
+        metadata: RegistryDiscoveryMetadata {
+            description: RegistryEvidenceFacet::Known(backend_library::ProductText::new("source description").unwrap()),
+            license: RegistryEvidenceFacet::Known(backend_library::ProductText::new("MIT").unwrap()),
+            ..RegistryDiscoveryMetadata::default()
+        },
+    };
+    let row = discovery_row(&candidate);
+    assert!(row.tags().iter().any(|tag| tag == "description: source description"));
+    assert!(row.tags().iter().any(|tag| tag == "license: MIT"));
+    assert!(!row.tags().iter().any(|tag| tag.starts_with("published:")));
+    assert!(row.tags().iter().any(|tag| tag == "historical observation"));
+}
+
+#[test]
 fn retained_positive_is_labeled_historical_and_source_scoped() {
     let advisory = backend_library::RegistryDiscoveryAdvisory {
         id: backend_library::ProductText::new("GHSA-history").expect("id"),

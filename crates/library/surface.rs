@@ -4591,6 +4591,12 @@ impl<T> Default for RegistryEvidenceFacet<T> {
     }
 }
 
+impl<T> RegistryEvidenceFacet<T> {
+    fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown)
+    }
+}
+
 /// Advisory evidence attached to the enclosing registry source claim.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -4612,6 +4618,15 @@ pub struct RegistryDiscoveryAdvisory {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegistryDiscoveryMetadata {
+    /// Source-reported description for this exact release.
+    #[serde(default, skip_serializing_if = "RegistryEvidenceFacet::is_unknown")]
+    pub description: RegistryEvidenceFacet<ProductText>,
+    /// Source-reported license, without inferred legal interpretation.
+    #[serde(default, skip_serializing_if = "RegistryEvidenceFacet::is_unknown")]
+    pub license: RegistryEvidenceFacet<ProductText>,
+    /// Source-reported publication timestamp.
+    #[serde(default, skip_serializing_if = "RegistryEvidenceFacet::is_unknown")]
+    pub published_at: RegistryEvidenceFacet<ProductText>,
     /// Exact per-release download count. Zero remains distinct from absence.
     pub downloads: RegistryEvidenceFacet<u64>,
     /// Advisory source facts for this release.
@@ -4697,6 +4712,11 @@ impl RegistryDiscoveryCandidate {
 fn admit_registry_discovery_metadata(
     metadata: &RegistryDiscoveryMetadata,
 ) -> Result<(), ProductAdmissionError> {
+    for facet in [&metadata.description, &metadata.license, &metadata.published_at] {
+        if matches!(facet, RegistryEvidenceFacet::Known(value) if value.as_str().len() > MAX_PRODUCT_TEXT_BYTES) {
+            return Err(ProductAdmissionError::RegistryDiscoveryMetadata);
+        }
+    }
     let RegistryEvidenceFacet::Known(advisories) = &metadata.advisories else {
         return Ok(());
     };
@@ -6225,7 +6245,7 @@ impl SurfaceReply {
                     RegistrySearchHit::LocalDeclaration(record) => fixed_record_bound()
                         .saturating_add(serde_json::to_vec(record).map_or(0, |bytes| bytes.len())),
                     RegistrySearchHit::Discovered(candidate) => {
-                        fixed_record_bound().saturating_add(candidate.coordinate.as_str().len())
+                        fixed_record_bound().saturating_add(serialized_json_size(candidate))
                     }
                     RegistrySearchHit::ForgeDiscovered(candidate) => fixed_record_bound()
                         .saturating_add(
@@ -8585,6 +8605,31 @@ mod tests {
         let decoded: SurfaceReply = serde_json::from_slice(&encoded).expect("partial wire decode");
         assert_eq!(decoded, reply);
         assert!(reply.encoded_size_bound() >= encoded.len());
+    }
+
+    #[test]
+    fn discovery_release_text_facets_are_bounded_and_old_wire_defaults_unknown() {
+        let old = r#"{"downloads":{"state":"unknown"},"advisories":{"state":"unknown"},"yanked":{"state":"unknown"}}"#;
+        let decoded: RegistryDiscoveryMetadata = serde_json::from_str(old).unwrap();
+        assert_eq!(decoded.description, RegistryEvidenceFacet::Unknown);
+        assert_eq!(decoded.license, RegistryEvidenceFacet::Unknown);
+        assert_eq!(decoded.published_at, RegistryEvidenceFacet::Unknown);
+        let metadata = RegistryDiscoveryMetadata {
+            description: RegistryEvidenceFacet::Known(ProductText::new("description").unwrap()),
+            license: RegistryEvidenceFacet::Absent,
+            published_at: RegistryEvidenceFacet::Known(ProductText::new("2026-11-01T00:00:00Z").unwrap()),
+            downloads: RegistryEvidenceFacet::Known(7),
+            yanked: RegistryEvidenceFacet::Known(false),
+            ..RegistryDiscoveryMetadata::default()
+        };
+        admit_registry_discovery_metadata(&metadata).unwrap();
+        let wire = serde_json::to_vec(&metadata).unwrap();
+        assert_eq!(serde_json::from_slice::<RegistryDiscoveryMetadata>(&wire).unwrap(), metadata);
+        let oversized = RegistryDiscoveryMetadata {
+            description: RegistryEvidenceFacet::Known(ProductText("x".repeat(MAX_PRODUCT_TEXT_BYTES + 1))),
+            ..RegistryDiscoveryMetadata::default()
+        };
+        assert_eq!(admit_registry_discovery_metadata(&oversized), Err(ProductAdmissionError::RegistryDiscoveryMetadata));
     }
 
     #[test]

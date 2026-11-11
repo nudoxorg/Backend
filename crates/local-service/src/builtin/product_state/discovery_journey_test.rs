@@ -1,5 +1,14 @@
 // A loopback HTTP registry exercises source metadata and product reads without
 // acquiring an archive or contacting a public registry.
+#[test]
+fn discovery_optional_text_preserves_absence_and_bounds_known_values() {
+    use backend_engine::registry::DiscoveryFacet;
+    assert_eq!(discovery_optional_text(&DiscoveryFacet::Absent), RegistryEvidenceFacet::Absent);
+    assert_eq!(discovery_optional_text(&DiscoveryFacet::Unknown), RegistryEvidenceFacet::Unknown);
+    assert_eq!(discovery_optional_text(&DiscoveryFacet::Known("x".repeat(backend_library::MAX_PRODUCT_TEXT_BYTES + 1))), RegistryEvidenceFacet::Unknown);
+    assert!(matches!(discovery_optional_text(&DiscoveryFacet::Known("MIT".to_owned())), RegistryEvidenceFacet::Known(value) if value.as_str() == "MIT"));
+}
+
 #[cfg(unix)]
 #[test]
 fn fake_npm_and_pypi_discovery_to_pinned_product_reads() {
@@ -1110,6 +1119,9 @@ fn fake_nuget_service_pages_to_pinned_product_reads() {
         "exact NuGet source metadata must be admitted"
     );
     worker.join().unwrap();
+    let source_fact = gateway.store().facts().find_map(|(_, fact)|
+        (fact.coordinate == coordinate).then_some((fact.source.id(), fact.proof))
+    ).expect("exact retained source fact");
     let mut state = ProductState::open(root.join("product.json")).unwrap();
     let catalog = [];
     let index = CatalogLookupIndex::from_catalog(&catalog);
@@ -1142,6 +1154,15 @@ fn fake_nuget_service_pages_to_pinned_product_reads() {
         matches!(reply, SurfaceReply::PackageDiscovery { .. }),
         "metadata is not acquisition authority"
     );
+    let SurfaceReply::PackageDiscovery { observation: backend_library::RegistryPackageDiscoveryObservation::Observed { candidates }, .. } = &reply else {
+        panic!("source observation expected")
+    };
+    let [candidate] = candidates.as_ref() else { panic!("one exact candidate") };
+    assert_eq!((candidate.source, candidate.proof), source_fact);
+    assert!(matches!(&candidate.metadata.description, RegistryEvidenceFacet::Known(value) if value.as_str() == "Entity Framework metadata from private fixture"));
+    assert!(matches!(&candidate.metadata.license, RegistryEvidenceFacet::Known(value) if value.as_str() == "MIT"));
+    assert!(matches!(&candidate.metadata.published_at, RegistryEvidenceFacet::Known(value) if value.as_str() == "2026-11-01T00:00:00Z"));
+    assert!(matches!(&candidate.metadata.yanked, RegistryEvidenceFacet::Known(false)));
     let explored = read(
         &mut state,
         SurfaceCommand::Explore {

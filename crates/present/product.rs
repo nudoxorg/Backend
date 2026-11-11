@@ -2861,6 +2861,15 @@ fn discovery_row(candidate: &RegistryDiscoveryCandidate) -> ProductRecord {
         freshness.to_owned(),
         format!("source {source}"),
     ];
+    for (label, facet) in [
+        ("description", &candidate.metadata.description),
+        ("license", &candidate.metadata.license),
+        ("published", &candidate.metadata.published_at),
+    ] {
+        if let RegistryEvidenceFacet::Known(value) = facet {
+            tags.push(format!("{label}: {}", value.as_str()));
+        }
+    }
     match &candidate.metadata.downloads {
         RegistryEvidenceFacet::Known(value) => tags.push(format!("{value} downloads")),
         RegistryEvidenceFacet::Absent => tags.push("downloads not published".to_owned()),

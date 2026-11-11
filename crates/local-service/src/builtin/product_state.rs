@@ -2779,10 +2779,26 @@ fn registry_discovery_metadata(
         DiscoveryFacet::Unknown => RegistryEvidenceFacet::Unknown,
     };
     Ok(backend_library::RegistryDiscoveryMetadata {
+        description: discovery_optional_text(&metadata.description),
+        license: discovery_optional_text(&metadata.license),
+        published_at: discovery_optional_text(&metadata.published_at),
         downloads: discovery_product_facet(&metadata.downloads, |value| Ok(*value))?,
         advisories,
         yanked: discovery_product_facet(&metadata.yanked, |value| Ok(*value))?,
     })
+}
+
+fn discovery_optional_text(
+    facet: &backend_engine::registry::DiscoveryFacet<String>,
+) -> backend_library::RegistryEvidenceFacet<ProductText> {
+    use backend_engine::registry::DiscoveryFacet;
+    use backend_library::RegistryEvidenceFacet;
+    match facet {
+        DiscoveryFacet::Known(value) if value.len() <= backend_library::MAX_PRODUCT_TEXT_BYTES =>
+            ProductText::new(value.as_str()).map_or(RegistryEvidenceFacet::Unknown, RegistryEvidenceFacet::Known),
+        DiscoveryFacet::Absent => RegistryEvidenceFacet::Absent,
+        DiscoveryFacet::Known(_) | DiscoveryFacet::Unknown => RegistryEvidenceFacet::Unknown,
+    }
 }
 
 fn discovery_product_facet<T, U>(
@@ -2800,6 +2816,9 @@ fn discovery_product_facet<T, U>(
 }
 
 fn discovery_product_text(value: &str) -> Result<ProductText, String> {
+    if value.len() > backend_library::MAX_PRODUCT_TEXT_BYTES {
+        return Err("registry discovery text violates product bounds".to_owned());
+    }
     ProductText::new(value.to_owned())
         .map_err(|error| format!("registry discovery text violates product bounds: {error}"))
 }
