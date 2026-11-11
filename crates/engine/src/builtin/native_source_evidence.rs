@@ -127,9 +127,7 @@ impl NativeSourceEvidence {
     }
     /// Key binds the complete canonical owner, profile and path.
     pub fn key(&self) -> Result<[u8; 32], &'static str> {
-        if self.byte_length > MAX_NATIVE_EVIDENCE_SOURCE {
-            return Err("invalid native source evidence length");
-        }
+        self.validate()?;
         native_source_evidence_key(self.project, self.profile, &self.path)
     }
 }
@@ -360,6 +358,10 @@ mod tests {
         let mut invalid = claim.clone();
         invalid.line_starts = Some(vec![0, 0]);
         assert!(invalid.validate().is_err());
+        assert!(invalid.key().is_err());
+        let mut malformed = Vec::new();
+        NativeSourceEvidenceRelation::encode_value(&invalid, &mut malformed);
+        assert!(NativeSourceEvidenceRelation::decode_value(&malformed).is_err());
         assert!(NativeSourceEvidence::capture_line_starts("a\u{2028}b".as_bytes()).is_none());
         claim.kind = NativeSourceEvidenceKind::ProgramMember;
         assert!(!claim.admits_image());
