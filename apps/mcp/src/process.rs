@@ -562,7 +562,7 @@ mod tests {
         assert_eq!(replies[1]["id"], 2);
         assert_eq!(
             replies[1]["result"]["tools"].as_array().map(Vec::len),
-            Some(18)
+            Some(19)
         );
         assert_eq!(
             fs::read(&fixture.data).expect("original unavailable state"),

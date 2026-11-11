@@ -3212,6 +3212,7 @@ fn every_registry_row_is_reachable_as_exactly_one_tool() {
             "backend.status",
             "backend.outline",
             "backend.search",
+            "backend.sql_query",
             "backend.resolve",
             "backend.document",
             "backend.source",
