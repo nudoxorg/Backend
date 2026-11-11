@@ -82,6 +82,7 @@ fn public_alias_document_source_graph_related_and_every_page_survive_real_wire_a
     for (index, command) in [
         Command::Document(doc),
         Command::Source(doc),
+        Command::Show { symbol: symbol_key(&alias) },
         Command::Graph(graph),
         Command::Related(graph),
     ]

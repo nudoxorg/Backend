@@ -6882,8 +6882,14 @@ impl CommandAdapter {
                 let source_basis = backend_library::Basis { root: view.root(), ..view.basis() };
                 let mut source_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
                 for (locator, record) in locators.iter().zip(records.iter_mut()) {
-                    let Some(row) = view.row_by_label(locator.as_str()) else { continue };
-                    let selection = backend_library::DocumentSelection::from_row(row, source_basis);
+                    let row = match backend_library::resolve_selected_document_row(view, locator.as_str()) {
+                        Ok(Some(row)) => row,
+                        Ok(None) => continue,
+                        Err(error) => return Ok((CommandReply::Failed(error), None)),
+                    };
+                    let selection = backend_library::DocumentSelection::from_selected_view(
+                        view, source_basis, locator.as_str(),
+                    );
                     if let Some(selection) = selection {
                         match self.selected_native_document_source(
                             daemon, row, &selection, None, true, &mut source_budget,
@@ -7601,15 +7607,17 @@ impl CommandAdapter {
         certificate: Option<WireCertificate>,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match command {
-            Command::Document(query) | Command::Source(query) => match self
+            Command::Document(_) | Command::Source(_) | Command::Show { .. } => match self
                 .canonical_claim_document(
                     daemon,
-                    query,
+                    &command.as_document_query(daemon.engine().daemon().library().revision_root())
+                        .expect("document command"),
                     certificate.as_ref(),
                     matches!(command, Command::Source(_)),
                 ) {
                 Ok(Some(document)) => CommandReply::Document(document),
-                Ok(None) if query.source_range().is_some() => {
+                Ok(None) if command.as_document_query(daemon.engine().daemon().library().revision_root())
+                    .is_some_and(|query| query.source_range().is_some()) => {
                     CommandReply::Failed(backend_library::CommandFailure::CursorMismatch)
                 }
                 Ok(None) => match daemon

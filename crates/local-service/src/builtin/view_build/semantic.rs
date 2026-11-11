@@ -2477,6 +2477,9 @@ fn semantic_rows(
                         path: &path,
                         site_declarations: &site_declarations,
                         native_source: native_source.as_ref(),
+                        native_ts_evidence: nse_current.then(|| nse_positive.as_ref()
+                            .and_then(|proof| proof.positive.get(&path))
+                            .map(|(claim, _)| claim).filter(|claim| claim.admits_image())).flatten(),
                     };
                     match image {
                         super::image_rows::CompiledImage::Opened { view, .. } => {
@@ -2765,6 +2768,8 @@ pub(super) struct SemanticRowSink<'a> {
     pub(super) site_declarations: &'a [&'a backend_compile::SourceDeclaration],
     /// Authenticated bytes from the same selected native-only frontier.
     pub(super) native_source: Option<&'a backend_engine::builtin::VerifiedNativeSource>,
+    /// Selected image's capture-time, source-bound line offsets.
+    pub(super) native_ts_evidence: Option<&'a backend_engine::builtin::NativeSourceEvidence>,
 }
 
 impl SemanticRowSink<'_> {
@@ -3143,6 +3148,23 @@ pub(super) fn project_image_rows(
     native: Option<super::native_sites::NativeProjection<'_>>,
     native_csharp: Option<super::csharp_native_sites::NativeCSharpProjection<'_>>,
 ) -> Result<ProjectedImage, BuiltinModelError> {
+    project_image_rows_with_native_ts(image, image_identity, project, profile, basis, stale,
+        path, site_declarations, native, native_csharp, None)
+}
+
+pub(super) fn project_image_rows_with_native_ts(
+    image: &SemanticImageView<'_>,
+    image_identity: [u8; 32],
+    project: &IndexedProject,
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    basis: backend_engine::Basis,
+    stale: bool,
+    path: &str,
+    site_declarations: &[&backend_compile::SourceDeclaration],
+    native: Option<super::native_sites::NativeProjection<'_>>,
+    native_csharp: Option<super::csharp_native_sites::NativeCSharpProjection<'_>>,
+    native_ts: Option<&backend_engine::builtin::NativeSourceEvidence>,
+) -> Result<ProjectedImage, BuiltinModelError> {
     let session = DocumentationSession::new(image);
     let kinds = entity_kinds(profile, image, &session, site_declarations)?;
     let sites = &kinds.sites;
@@ -3313,6 +3335,19 @@ pub(super) fn project_image_rows(
                     BuiltinModelError(format!("native C# semantic declaration source site: {error}"))
                 })?;
             row = row.with_source(location).with_excerpt(excerpt);
+        } else if let Some(location) = native_ts.filter(|_| !stale).and_then(|claim| {
+            use backend_semantic::ir::{DeclarationPublicationRole, FactAvailability};
+            let span = entity.entity.source?;
+            if !claim.admits_image() || claim.path != path
+                || entity.entity.authority.publication != DeclarationPublicationRole::PrimaryOwned
+                || entity.entity.authority.source != FactAvailability::Captured
+                || entity.entity.authority.source_file != FactAvailability::Captured
+                || span.is_empty() || span.end() > claim.byte_length
+                || image.atom(span.file()) != Some(path.as_bytes())
+            { return None; }
+            backend_compile::SourceLocation::new(path, claim.line_at(span.start())?).ok()
+        }) {
+            row = row.with_source(location);
         } else if let Some(site) = sites.get(&identity) {
             charges.push(Charge::Sub(site.source_excerpt().text().map_or(0, str::len)));
             let location =

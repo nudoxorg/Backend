@@ -285,6 +285,32 @@ pub(super) fn selected_evidence_root(
     Ok(*evidence.root().as_bytes())
 }
 
+fn assert_legacy_coordinate_routes(
+    session: &mut Session,
+    project: &Path,
+    expected: backend_library::SymbolKey,
+) -> Result<(), Box<dyn Error>> {
+    let coordinate = format!("{}::view.ts:3::Greeting", project.display());
+    for reply in [session.document(&coordinate)?, session.source(&coordinate)?] {
+        let CommandReply::Document(document) = reply.reply else { return Err("legacy document reply".into()) };
+        assert_eq!(document.symbol, expected);
+        assert_eq!(document.selection.as_ref().ok_or("legacy selection")?.coordinate(), coordinate);
+    }
+    for reply in [session.graph(&coordinate)?, session.related(&coordinate)?] {
+        let CommandReply::Graph(graph) = reply.reply else { return Err("legacy graph reply".into()) };
+        assert!(graph.root.row_ref(backend_library::RowId::Symbol(expected)).is_some());
+    }
+    let locator = ProductText::new(coordinate.clone()).map_err(|e| io::Error::other(e.to_string()))?;
+    let SurfaceReply::Read(records) = session.surface(SurfaceCommand::Read { locators: vec![locator.clone()].into_boxed_slice() })? else { return Err("legacy read reply".into()) };
+    assert_eq!(records[0].stable_id, Some(expected.to_bytes()));
+    assert_eq!(records[0].label.as_str(), coordinate);
+    let SurfaceReply::References { target, .. } = session.surface(SurfaceCommand::References { target: locator })? else { return Err("legacy references reply".into()) };
+    assert_eq!(target.as_str(), coordinate);
+    let wrong = format!("{}::view.ts:4::Greeting", project.display());
+    assert!(session.source(&wrong).is_err());
+    Ok(())
+}
+
 fn native_ts_listener_journey(
     reject_frontends: bool,
     require_references: bool,
@@ -324,6 +350,7 @@ fn native_ts_listener_journey(
     let site = observed.location.captured().ok_or("observed native site")?;
     assert_eq!(site.path(), "view.ts");
     assert_eq!(site.start_line(), 3);
+    assert_legacy_coordinate_routes(&mut session, &project, observed.symbol)?;
     assert!(observed.excerpt.text().is_some_and(|text| text.contains("return 'before'")));
     let original = match query(
         &mut session,
@@ -362,6 +389,8 @@ fn native_ts_listener_journey(
     )?;
     let owner = start_owner(&paths)?;
     let mut session = Session::connect(owner.endpoint())?;
+    let (_, cold_document) = select_native_document(&mut session, &authority, "Greeting", "view.ts")?;
+    assert_legacy_coordinate_routes(&mut session, &project, cold_document.symbol)?;
     let cold = query(
         &mut session,
         &authority,
@@ -404,6 +433,11 @@ fn native_ts_listener_journey(
     let owner = start_owner(&paths)?;
     let mut session = Session::connect(owner.endpoint())?;
     fs::write(project.join("view.ts"), after)?;
+    let stale_coordinate = format!("{}::view.ts:3::Greeting", project.display());
+    assert!(session.source(&stale_coordinate).is_err());
+    assert!(session.document(&stale_coordinate).is_err());
+    let stale_locator = ProductText::new(stale_coordinate).map_err(|e| io::Error::other(e.to_string()))?;
+    assert!(session.surface(SurfaceCommand::Read { locators: vec![stale_locator].into_boxed_slice() }).is_err());
     index(&mut session, &project, 0x42)?;
     let edited = query(
         &mut session,

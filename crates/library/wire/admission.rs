@@ -1139,7 +1139,8 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply, local_policy: bool
             Command::Show { symbol },
             CommandReply::Document(document) | CommandReply::Page(document),
         ) => {
-            if document.symbol != *symbol {
+            let query = crate::DocumentQuery::new(*symbol, document.basis());
+            if !document.admits_query(&query) {
                 return Err(ReplyAdmissionError::Protocol(
                     "document reply identity does not match the query".to_owned(),
                 ));

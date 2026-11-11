@@ -343,7 +343,7 @@ pub(super) fn append_resident_image_rows(
     if let Some(cached) = residence.cached(key) {
         return apply_projected_image(cached, sink);
     }
-    let projected = project_image_rows(
+    let projected = super::semantic::project_image_rows_with_native_ts(
         image,
         image_identity,
         project,
@@ -354,6 +354,7 @@ pub(super) fn append_resident_image_rows(
         sink.site_declarations,
         sink.native_projection(),
         sink.native_csharp_projection(),
+        sink.native_ts_evidence,
     )?;
     match residence.store(key, projected) {
         Ok(cached) => apply_projected_image(cached, sink),
@@ -447,6 +448,16 @@ fn projection_key(
         hasher.update(&[1]);
         hasher.update(source.source_identity().as_ref());
         hasher.update(&source.content_digest());
+    } else {
+        hasher.update(&[0]);
+    }
+    if let Some(claim) = sink.native_ts_evidence {
+        use backend_engine::Relation as _;
+        let mut encoded = Vec::new();
+        backend_engine::builtin::NativeSourceEvidenceRelation::encode_value(claim, &mut encoded);
+        hasher.update(&[1]);
+        hasher.update(&(encoded.len() as u64).to_le_bytes());
+        hasher.update(&encoded);
     } else {
         hasher.update(&[0]);
     }
@@ -1308,6 +1319,7 @@ fn publish_image_batch(
                     path: &path,
                     site_declarations: &[],
                     native_source: None,
+            native_ts_evidence: None,
                 };
                 append_resident_image_rows(view, project, profile, &mut sink, residence)
                     .expect("project image");
@@ -1325,6 +1337,7 @@ fn publish_image_batch(
                     path: path.as_str(),
                     site_declarations: &[],
                     native_source: None,
+            native_ts_evidence: None,
                 };
                 let applied = apply_resident_image(*digest, project, profile, &mut sink, residence)
                     .expect("apply image");
@@ -1372,6 +1385,7 @@ fn admit(
         path: "src/worker.rs",
         site_declarations: &[],
         native_source: None,
+            native_ts_evidence: None,
     };
     append_resident_image_rows(
         image,
@@ -1620,6 +1634,7 @@ mod tests {
             path: PATH,
             site_declarations: sites,
             native_source: None,
+            native_ts_evidence: None,
         };
         super::apply_projected_image(&projected, &mut sink).expect("apply direct projection");
         rows
@@ -1648,6 +1663,7 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
         };
         append_image_rows(
             image,
@@ -2074,6 +2090,7 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
         };
         apply_projected_image(&tweaked, &mut sink).expect("apply");
         let admitted = rows.first().expect("admitted");
@@ -2241,6 +2258,7 @@ mod tests {
                 path,
                 site_declarations: &[],
                 native_source: None,
+            native_ts_evidence: None,
             };
             append_resident_image_rows(
                 &image,
@@ -2268,6 +2286,7 @@ mod tests {
             path: "src/a.rs",
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
         };
         append_resident_image_rows(
             &image,
@@ -2293,6 +2312,7 @@ mod tests {
             path: "src/c.rs",
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
         };
         append_resident_image_rows(
             &image,
@@ -2523,6 +2543,7 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
         };
         apply_projected_image(projected, &mut sink).expect("replay projected rows");
         (rows, remaining_bytes)
@@ -2679,6 +2700,7 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
         };
         let applied = apply_resident_image(
             digest,
@@ -2734,6 +2756,7 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
         };
         let applied = apply_resident_image(
             digest,
@@ -2783,6 +2806,7 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
         };
         let fresh_hit = apply_resident_image(
             digest,
@@ -2841,6 +2865,7 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
         };
         let failed = apply_resident_image(
             digest,
@@ -2871,6 +2896,7 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
         };
         let recovered = apply_resident_image(
             digest,
@@ -3236,6 +3262,7 @@ mod tests {
             path: PATH,
             site_declarations: &[],
             native_source: None,
+            native_ts_evidence: None,
         };
         let applied = apply_resident_image(
             digest,
