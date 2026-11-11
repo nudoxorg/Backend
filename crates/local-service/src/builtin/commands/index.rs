@@ -5282,10 +5282,11 @@ fn admit_local_compile(
     } else {
         for gap in staged.coverage_gaps() {
             eprintln!(
-                "locald semantic source scope gap: path={} source={:?} bytes={} cause={:?}",
+                "locald semantic source scope gap: path={} source={:?} bytes={} cause={:?} ({})",
                 gap.relative_path(),
                 gap.source().identity,
                 gap.source().byte_len,
+                gap.cause(),
                 gap.cause(),
             );
             if let Some(status) = gap.python_source_status() {

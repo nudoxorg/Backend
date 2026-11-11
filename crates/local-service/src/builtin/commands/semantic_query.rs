@@ -104,6 +104,25 @@ fn typescript_requires_nse(
         .is_none_or(|project| project.files.is_empty())
 }
 
+/// The coverage sentence for a profile that published only some of its sources.
+///
+/// A C# source is left out of a publication for one reason only: Roslyn reports
+/// errors in that file (an unrestored package or a missing reference is the usual
+/// cause). Say so, so the next step is to restore packages and reindex rather
+/// than to read a bare count.
+fn partial_profile_gap(
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    partial: &backend_engine::builtin::PartialSemanticCoverage,
+) -> String {
+    let (completed, total) = (partial.completed(), partial.total());
+    if matches!(profile, backend_semantic::vocabulary::LanguageProfile::CSharp(_)) {
+        return format!(
+            "{profile:?} profile partial ({completed}/{total}): the other C# files do not compile, usually because packages are not restored, so they have no semantic facts; restore packages and reindex; inspect package_profile"
+        );
+    }
+    format!("{profile:?} profile partial ({completed}/{total}); inspect package_profile")
+}
+
 const OBSERVED_POLICY_GAP: &str = "Source selection was captured from observed inputs; current ignore-policy stability is unknown; reindex and inspect package_profile";
 
 fn restrict_typescript_inventory(
@@ -217,7 +236,7 @@ pub(super) fn execute_semantic_graph(
                 gaps.insert(format!("{:?} profile unavailable ({reason}); inspect package_profile", key.profile()));
             }
             ProductSemanticPublicationRecord::Published { coverage: SemanticPublicationCoverage::Partial(partial), .. } => {
-                gaps.insert(format!("{:?} profile partial ({}/{}); inspect package_profile", key.profile(), partial.completed(), partial.total()));
+                gaps.insert(partial_profile_gap(key.profile(), partial));
             }
             ProductSemanticPublicationRecord::Published { .. } => {}
         }
@@ -358,9 +377,13 @@ pub(super) fn execute_semantic_related_page(
             gaps.insert(format!("{:?} profile unavailable; inspect package_profile", key.profile()));
             return Ok(());
         };
-        if matches!(coverage, SemanticPublicationCoverage::Partial(_)) {
+        if let SemanticPublicationCoverage::Partial(partial) = coverage {
             withheld = true;
-            gaps.insert(format!("{:?} profile partial; inspect package_profile", key.profile()));
+            gaps.insert(if matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::CSharp(_)) {
+                partial_profile_gap(key.profile(), partial)
+            } else {
+                format!("{:?} profile partial; inspect package_profile", key.profile())
+            });
         }
         if matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::TypeScript(_)) && typescript_requires_nse(&sources, package) {
             withheld = true;
@@ -3119,7 +3142,7 @@ pub(super) fn execute_references(
                 coverage_gaps.insert(format!("{:?} profile unavailable ({reason}); inspect package_profile{guidance}", key.profile()));
             }
             ProductSemanticPublicationRecord::Published { coverage: SemanticPublicationCoverage::Partial(partial), .. } => {
-                coverage_gaps.insert(format!("{:?} profile partial ({}/{}); inspect package_profile", key.profile(), partial.completed(), partial.total()));
+                coverage_gaps.insert(partial_profile_gap(key.profile(), partial));
             }
             ProductSemanticPublicationRecord::Published { .. } => {}
         }
