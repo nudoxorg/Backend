@@ -687,6 +687,7 @@ pub fn selected_function_header_range(
     let Some(header) = selected_function_header(rows, text, compiler_extent, name, checkpoint)? else {
         return Ok(None);
     };
+    if header.len() > backend_compile::SourceDeclaration::MAX_TEXT_BYTES { return Ok(None); }
     let start = (header.as_ptr() as usize).checked_sub(text.as_ptr() as usize)
         .and_then(|offset| u32::try_from(offset).ok())
         .ok_or("native header source offset overflow")?;
