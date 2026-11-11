@@ -456,6 +456,11 @@ pub(super) fn plan_native_ts_evidence(
     let first = &candidates[0];
     let admitted_base = NativeTsBase::from_snapshot(base)?;
     let owner = first.revalidated.project();
+    let mut read_budget = MAX_NATIVE_EVIDENCE_BYTES;
+    for candidate in &candidates {
+        let retained = candidate.checked_retained_bytes().ok_or_else(|| BuiltinModelError("native candidate resident overflow".into()))?;
+        read_budget = read_budget.checked_sub(retained).ok_or_else(|| BuiltinModelError("native candidate resident budget exceeded".into()))?;
+    }
     let mut profiles = BTreeSet::new();
     let mut positive = BTreeMap::<[u8; 32], backend_engine::builtin::NativeSourceEvidence>::new();
     let mut changes = BTreeMap::<[u8; 32], NativeTsEvidenceChange>::new();
@@ -502,6 +507,9 @@ pub(super) fn plan_native_ts_evidence(
                     "native positive evidence exceeds its bound".into(),
                 ));
             }
+            let clone_bytes = row.checked_heap_bytes().and_then(|n| n.checked_add(std::mem::size_of::<backend_engine::builtin::NativeSourceEvidence>() + 256))
+                .ok_or_else(|| BuiltinModelError("native positive clone overflow".into()))?;
+            read_budget = read_budget.checked_sub(clone_bytes).ok_or_else(|| BuiltinModelError("native positive clone budget exceeded".into()))?;
             positive.insert(key, row.clone());
         }
         for change in &candidate.evidence_changes {
@@ -534,6 +542,9 @@ pub(super) fn plan_native_ts_evidence(
                     "native evidence change work exceeds its bound".into(),
                 ));
             }
+            let mut clone_bytes = std::mem::size_of::<NativeTsEvidenceChange>() + 256;
+            charge_change_paths(&mut clone_bytes, change).ok_or_else(|| BuiltinModelError("native change clone overflow".into()))?;
+            read_budget = read_budget.checked_sub(clone_bytes).ok_or_else(|| BuiltinModelError("native change clone budget exceeded".into()))?;
             changes.insert(change.key, change.clone());
         }
     }
@@ -541,12 +552,15 @@ pub(super) fn plan_native_ts_evidence(
     // emits its image. Publish the strongest matching claim once, comparing
     // against the same selected before-row used by each candidate.
     for (key, change) in &mut changes {
-        change.after = positive.get(key).ok_or_else(|| BuiltinModelError(
+        let replacement = positive.get(key).ok_or_else(|| BuiltinModelError(
             "native evidence delta has no positive program member".into(),
-        ))?.clone();
+        ))?;
+        let clone_bytes = replacement.checked_heap_bytes().and_then(|n| n.checked_add(128))
+            .ok_or_else(|| BuiltinModelError("native replacement clone overflow".into()))?;
+        read_budget = read_budget.checked_sub(clone_bytes).ok_or_else(|| BuiltinModelError("native replacement clone budget exceeded".into()))?;
+        change.after = replacement.clone();
     }
     changes.retain(|_, change| change.expected.as_ref() != Some(&change.after));
-    let mut read_budget = MAX_NATIVE_EVIDENCE_BYTES;
     let relation = backend_engine::builtin::native_source_evidence_relation_budgeted(base, &mut read_budget)
         .map_err(|error| BuiltinModelError(format!("open selected native evidence: {error}")))?;
     let mut scan_work = 0usize;
