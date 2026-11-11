@@ -1130,6 +1130,9 @@ pub(super) fn admit_replayed_native_evidence(
             }
             let Some(row) = remaining.remove(path) else { continue };
             witnessed.insert(path.to_owned());
+            if !row.admits_image() {
+                return Err(BuiltinModelError("native replay Program member unexpectedly has an image".into()));
+            }
             capture.key.admit_image(&view).map_err(|error| BuiltinModelError(format!("bind native replay image: {error}")))?;
             if members.remove(path) != Some(source) || recipe.profile != row.profile
                 || recipe.tool != backend_semantic::vocabulary::NativeTool::TypeScriptCompiler
@@ -1138,8 +1141,15 @@ pub(super) fn admit_replayed_native_evidence(
                 return Err(BuiltinModelError("native replay image differs from Program or evidence".into()));
             }
         }
-        if !remaining.is_empty() || !members.is_empty() {
-            return Err(BuiltinModelError("native replay source has no admitted Program image".into()));
+        for (path, row) in remaining {
+            // Non-emitted inputs still bind the exact Program, but cannot
+            // authorize an image or source projection.
+            if row.admits_image() || members.remove(path).is_none() {
+                return Err(BuiltinModelError("native replay source lacks its claimed Program evidence".into()));
+            }
+        }
+        if !members.is_empty() {
+            return Err(BuiltinModelError("native replay Program evidence was not consumed".into()));
         }
     }
     Ok(())
