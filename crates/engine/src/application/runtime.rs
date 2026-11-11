@@ -5158,7 +5158,7 @@ mod rust_target_selector_admission_tests {
         drop(staged);
 
         // The second private fixture takes real SDK-selected Web references through
-        // the same worker. SDK closure is still unknown, so no CSE1 authority is minted.
+        // the same worker. The CSE1 aggregate remains a claim, not SDK closure authority.
         let project_xml = r#"<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>"#;
         let web_source = "#if RELEASE\nMissingReleaseDefine();\n#endif\n#if NET10_0 && DEBUG\nvar builder = WebApplication.CreateBuilder(args);\nvar app = builder.Build();\napp.Run();\n#else\nMissingSdkDefine();\n#endif\npublic partial class Program;\n";
         std::fs::write(package.join("src/App.csproj"), project_xml).unwrap();
@@ -5185,10 +5185,13 @@ mod rust_target_selector_admission_tests {
         let web_staged = client.compile_package_sources_staged(web_request.clone()).expect("stage native SDK Web fixture");
         assert_eq!(web_staged.artifacts().len(), 1);
         assert!(web_staged.coverage_gaps().is_empty());
-        // SDK-observed projects never mint the caller-supplied-reference aggregate;
-        // their SDK facts are sealed into the host-local plane identity instead.
-        assert!(web_staged.csharp_invocation_evidence().is_empty());
-        assert!(web_staged.csharp_invocation_evidence_object(*web_staged.input_witness().input_root()).is_none());
+        // The helper receipt is retained as a same-attempt claim even though
+        // SDK, helper, and runtime closure authority remain unknown.
+        assert_eq!(web_staged.csharp_invocation_evidence().len(), 1);
+        let web_evidence = web_staged.csharp_invocation_evidence_object(*web_staged.input_witness().input_root()).expect("SDK invocation claim");
+        let web_decoded = crate::application::decode_csharp_evidence(&web_evidence).expect("decode SDK invocation claim");
+        assert_eq!(web_decoded.project_path, "src/App.csproj");
+        assert_eq!(web_decoded.sources[0].path, "src/App.cs");
         assert!(web_staged.execution_identity().is_none());
         assert!(web_staged.plane_execution_identity().is_some());
         drop(web_staged);

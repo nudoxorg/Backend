@@ -5883,10 +5883,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# reference evidence differs from snapshot" });
                 }
             }
-            // SDK-observed projects bind through their plane identity; the
-            // per-source invocation aggregate is only minted for captured units
-            // whose references are fully caller-supplied.
-            if sdk_fingerprint.is_none() && let Some(super::package_authority::PackageAuthorityOwner::CSharp {
+            // Retain same-invocation claims for both caller-supplied and
+            // SDK-observed references. The aggregate is not closure authority.
+            if let Some(super::package_authority::PackageAuthorityOwner::CSharp {
                 evidence: Some(evidence), ..
             }) = transient_authority.as_ref() {
                 csharp_evidence_bytes = csharp_evidence_bytes
@@ -6379,7 +6378,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             csharp_evidence: csharp_evidence.into_boxed_slice(),
             csharp_config: csharp_config.into_boxed_slice(),
             csharp_unit: match package.package_target.unit_key() {
-                CompilationUnitKeyV2::CSharpProject { project_path } if package.csharp_config.is_some() && package.csharp_sdk_probes.is_none() => Some(project_path.clone()),
+                CompilationUnitKeyV2::CSharpProject { project_path } if package.csharp_config.is_some() => Some(project_path.clone()),
                 _ => None,
             },
             package_identity: *package.request.as_ref().identity.as_ref(),
