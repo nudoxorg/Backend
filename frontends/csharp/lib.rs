@@ -92,3 +92,27 @@ public struct OrdinaryStruct {}
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod source_excerpt_tests {
+    use std::path::Path;
+
+    #[test]
+    fn structural_csharp_source_retains_class_method_and_private_body() -> Result<(), String> {
+        let source = "// λ before the declaration\npublic class BankAccount {\n    public string Name { get; set; }\n    private static bool MissingFields(string value) {\n        return value.Length == 0;\n    }\n}\n";
+        let analysis = super::syntax_frontend().map_err(|error| error.to_string())?
+            .analyze(Path::new("BankAccount.cs"), source.as_bytes())
+            .map_err(|error| error.to_string())?;
+        for (name, expected) in [
+            ("BankAccount", source.lines().skip(1).collect::<Vec<_>>().join("\n")),
+            ("MissingFields", "private static bool MissingFields(string value) {\n        return value.Length == 0;\n    }".to_owned()),
+            ("Name", "public string Name { get; set; }".to_owned()),
+        ] {
+            let declaration = analysis.declarations().iter().find(|row| row.name() == name)
+                .ok_or_else(|| format!("missing {name}"))?;
+            assert_eq!(declaration.source_excerpt().text(), Some(expected.as_str()));
+            assert_eq!(declaration.source_excerpt().extent(), Some(backend_compile::SourceExcerptExtent::Complete));
+        }
+        Ok(())
+    }
+}

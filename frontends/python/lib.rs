@@ -42,3 +42,26 @@ pub fn syntax_frontend() -> Result<SyntaxFrontend, SyntaxError> {
         )?],
     )
 }
+
+#[cfg(test)]
+mod source_excerpt_tests {
+    use std::path::Path;
+
+    #[test]
+    fn structural_python_source_retains_function_body_and_class_field() -> Result<(), String> {
+        let source = "# λ before the declaration\nclass App:\n    app = make_app()\n\n@app.get(\"/api/health\")\ndef health() -> dict[str, str]:\n    return {\"status\": \"ok\"}\n";
+        let analysis = super::syntax_frontend().map_err(|error| error.to_string())?
+            .analyze(Path::new("backend/main.py"), source.as_bytes())
+            .map_err(|error| error.to_string())?;
+        for (name, expected) in [
+            ("health", "@app.get(\"/api/health\")\ndef health() -> dict[str, str]:\n    return {\"status\": \"ok\"}"),
+            ("app", "app = make_app()"),
+        ] {
+            let declaration = analysis.declarations().iter().find(|row| row.name() == name)
+                .ok_or_else(|| format!("missing {name}"))?;
+            assert_eq!(declaration.source_excerpt().text(), Some(expected));
+            assert_eq!(declaration.source_excerpt().extent(), Some(backend_compile::SourceExcerptExtent::Complete));
+        }
+        Ok(())
+    }
+}
