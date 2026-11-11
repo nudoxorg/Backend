@@ -598,14 +598,26 @@ pub fn function_headers(
     checkpoint: &dyn ExecutionCheckpoint,
 ) -> Result<Vec<NativeFunctionHeader>, String> {
     const MAX_SOURCE: usize = 256 * 1024;
-    const MAX_HEADERS: usize = 4096;
     if text.len() > MAX_SOURCE { return Ok(Vec::new()); }
     poll(checkpoint, 0)?;
     let mut parser = MeteredParserState::new(path.to_string_lossy().into_owned(), text.to_owned());
     parser.parse_source_file_with_execution_checkpoint(checkpoint)
         .map_err(|error| format!("native TSZ header parse stopped: {error:?}"))?;
     if !parser.get_diagnostics().is_empty() { return Ok(Vec::new()); }
-    let arena = &parser.arena;
+    function_headers_from_arena(&parser.arena, text, checkpoint)
+}
+
+/// Extracts compact header claims from the native compiler's already-admitted
+/// TSZ arena. The caller owns and budgets the arena and exact source bytes.
+pub fn function_headers_from_arena(
+    arena: &crate::TszNodeArena,
+    text: &str,
+    checkpoint: &dyn ExecutionCheckpoint,
+) -> Result<Vec<NativeFunctionHeader>, String> {
+    const MAX_SOURCE: usize = 256 * 1024;
+    const MAX_HEADERS: usize = 4096;
+    poll(checkpoint, 0)?;
+    if text.len() > MAX_SOURCE { return Ok(Vec::new()); }
     let mut export_starts = BTreeMap::<u32, Option<u32>>::new();
     for (index, node) in arena.nodes.iter().enumerate() {
         poll(checkpoint, 1)?;
