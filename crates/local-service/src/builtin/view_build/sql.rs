@@ -59,7 +59,14 @@ pub(super) fn append(
             let path = &sql.hosts[*host].path;
             // The source ordinal is an admitted SQL fact identity. It keeps
             // same-name definitions distinct without inventing source lines.
-            let coordinate = format!("{}::{path}::{display}", indexed.label);
+            let coordinate = if definition.kind == SqlObjectKind::Column {
+                parent.map_or_else(
+                    || format!("{}::{path}::{name}", indexed.label),
+                    |parent| format!("{}::{path}::{parent}::{name}", indexed.label),
+                )
+            } else {
+                format!("{}::{path}::{name}", indexed.label)
+            };
             let preimage = format!("{coordinate}\0sql:{ordinal}");
             let row = Row::in_package(RowId::Symbol(backend_engine::symbol_key(&preimage)), initial.basis(), indexed.package, coordinate)
                 .try_with_identity_preimage(&preimage)

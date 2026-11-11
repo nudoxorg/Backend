@@ -211,6 +211,9 @@ expect(text, ["view account_spend"], "views")
 code, raw = cli("search-sql", ["search", "account_spend"])
 if code != 0 or "account_spend" not in raw or "SQL view" not in raw:
     fail("normal search did not discover the SQL view: " + raw[:1200])
+code, raw = cli("search-sql-column", ["search", "balance"])
+if code != 0 or "SQL column accounts.balance" not in raw:
+    fail("normal search did not discover the SQL column by its leaf name: " + raw[:1200])
 code, raw = cli("outline-sql", ["outline", str(project)])
 if code != 0 or "account_spend" not in raw:
     fail("normal outline did not discover the SQL view: " + raw[:1200])
