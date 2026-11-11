@@ -4472,9 +4472,11 @@ pub struct InstalledPackageFile {
     pub digest: [u8; 32],
     /// Complete source byte length.
     pub bytes: u64,
-    /// UTF-8 prefix, bounded to the product text budget.
+    /// Starting byte offset of the observed UTF-8 window in the complete file.
+    pub offset: u64,
+    /// UTF-8 source window, bounded to the product text budget.
     pub excerpt: ProductText,
-    /// Whether the source exceeds the returned prefix.
+    /// Whether any original file bytes lie outside the returned window.
     pub truncated: bool,
 }
 
@@ -4502,7 +4504,7 @@ fn admit_installed_package(facts: &InstalledPackageFacts) -> Result<(), ProductA
     for text in std::iter::once(&facts.project).chain(facts.requirements.iter()).chain(facts.engines.iter()).chain(facts.files.iter().flat_map(|file| [&file.path, &file.excerpt])) {
         ProductText::new(text.as_str()).map_err(|_| ProductAdmissionError::RowBound)?;
     }
-    if facts.files.iter().any(|file| file.bytes > 4 * 1024 * 1024) {
+    if facts.files.iter().any(|file| file.bytes > 4 * 1024 * 1024 || file.offset.checked_add(file.excerpt.as_str().len() as u64).is_none_or(|end| end > file.bytes)) {
         return Err(ProductAdmissionError::RowBound);
     }
     Ok(())

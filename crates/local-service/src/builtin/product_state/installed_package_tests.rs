@@ -31,7 +31,7 @@ fn installed_npm_and_virtualenv_packages_answer_public_package_routes() {
     .unwrap();
     fs::write(
         python.join("fastapi/applications.py"),
-        "class FastAPI:\n    \"\"\"A web application.\"\"\"\n    def get(self, path: str): ...\n",
+        format!("{}class FastAPI:\n    \"\"\"A web application.\"\"\"\n    def get(self, path: str): ...\n", "# import preamble\n".repeat(400)),
     )
     .unwrap();
     let selected = package_view(b"installed-package-routes", &[root.as_path()]);
@@ -72,6 +72,22 @@ fn installed_npm_and_virtualenv_packages_answer_public_package_routes() {
                 .any(|r| r.as_str().contains(dependency))
         );
         assert!(!facts.engines.is_empty());
+        for file in facts.files.iter() {
+            let source = fs::read(root.join(file.path.as_str())).unwrap();
+            let start = file.offset as usize;
+            assert_eq!(
+                &source[start..start + file.excerpt.as_str().len()],
+                file.excerpt.as_str().as_bytes()
+            );
+            if file.path.as_str().ends_with("applications.py") {
+                assert!(
+                    file.offset > 4096,
+                    "native syntax locates API after a long import preamble"
+                );
+                assert!(file.excerpt.as_str().starts_with("class FastAPI"));
+            }
+        }
+
         let encoded = serde_json::to_vec(&reply).unwrap();
         let decoded: SurfaceReply = serde_json::from_slice(&encoded).unwrap();
         decoded.admit(backend_library::CommandId::Package).unwrap();

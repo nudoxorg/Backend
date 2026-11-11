@@ -211,17 +211,18 @@ fn read(root: &Path, relative: &Path) -> Result<Option<(Vec<u8>, InstalledPackag
     while !source.is_char_boundary(end) {
         end -= 1;
     }
-    let excerpt = if source[..end].trim().is_empty() {
-        ProductText::from_static("(empty source)")
-    } else {
-        ProductText::new(&source[..end]).map_err(|e| e.to_string())?
-    };
+    let window = source[..end].trim();
+    if window.is_empty() {
+        return Ok(None);
+    }
+    let offset = source[..end].len() - source[..end].trim_start().len();
     let observed = InstalledPackageFile {
         path: ProductText::new(relative.to_string_lossy()).map_err(|e| e.to_string())?,
         digest: *blake3::hash(&bytes).as_bytes(),
         bytes: bytes.len() as u64,
-        excerpt,
-        truncated: end < source.len(),
+        offset: offset as u64,
+        excerpt: ProductText::new(window).map_err(|e| e.to_string())?,
+        truncated: offset > 0 || window.len() < source.len(),
     };
     Ok(Some((bytes, observed)))
 }
@@ -229,6 +230,57 @@ fn read(root: &Path, relative: &Path) -> Result<Option<(Vec<u8>, InstalledPackag
 #[cfg(not(unix))]
 fn read(_root: &Path, _relative: &Path) -> Result<Option<(Vec<u8>, InstalledPackageFile)>, String> {
     Ok(None)
+}
+
+/// Native syntax locates a useful declaration window in API files; leading
+/// imports must not consume the entire API excerpt for a large Python module.
+fn read_api(root: &Path, relative: &Path) -> Result<Option<InstalledPackageFile>, String> {
+    let Some((bytes, mut observed)) = read(root, relative)? else {
+        return Ok(None);
+    };
+    let frontend = if relative.extension().and_then(|s| s.to_str()) == Some("py") {
+        backend_frontend_python::syntax_frontend()
+    } else {
+        backend_frontend_typescript::syntax_frontend()
+    };
+    let Ok(frontend) = frontend else {
+        return Ok(Some(observed));
+    };
+    let Ok(analysis) = frontend.analyze(relative, &bytes) else {
+        return Ok(Some(observed));
+    };
+    let Some(declaration) = analysis.declarations().iter().find(|declaration| {
+        matches!(
+            declaration.kind(),
+            backend_compile::DeclarationKind::Class
+                | backend_compile::DeclarationKind::Function
+                | backend_compile::DeclarationKind::Interface
+                | backend_compile::DeclarationKind::Type
+                | backend_compile::DeclarationKind::Enum
+        )
+    }) else {
+        return Ok(Some(observed));
+    };
+    let source = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
+    let start = source
+        .split_inclusive('\n')
+        .take(declaration.line().saturating_sub(1) as usize)
+        .map(str::len)
+        .sum::<usize>();
+    let mut end = source
+        .len()
+        .min(start.saturating_add(backend_library::MAX_PRODUCT_TEXT_BYTES));
+    while !source.is_char_boundary(end) {
+        end -= 1;
+    }
+    let window = source[start..end].trim();
+    if !window.is_empty() {
+        let leading = source[start..end].len() - source[start..end].trim_start().len();
+        observed.offset = (start + leading) as u64;
+        observed.excerpt = ProductText::new(window).map_err(|e| e.to_string())?;
+        observed.truncated = observed.offset > 0 || window.len() < source.len();
+    }
+    Ok(Some(observed))
 }
 
 fn npm(root: &Path, relative: &Path) -> Result<Option<InstalledPackageFacts>, String> {
@@ -302,7 +354,7 @@ fn npm(root: &Path, relative: &Path) -> Result<Option<InstalledPackageFacts>, St
             break;
         }
         let path = relative.join(path.strip_prefix("./").unwrap_or(&path));
-        if let Some((_, file)) = read(root, &path)? {
+        if let Some(file) = read_api(root, &path)? {
             if !files.iter().any(|f| f.path == file.path) {
                 files.push(file);
             }
@@ -365,7 +417,7 @@ fn python(
         format!("{}/__init__.py", name.replace('-', "_")),
         format!("{}.py", name.replace('-', "_")),
     ] {
-        if let Some((_, file)) = read(root, &site.join(filename))? {
+        if let Some(file) = read_api(root, &site.join(filename))? {
             files.push(file);
         }
     }
@@ -379,7 +431,7 @@ fn python(
                 if files.len() >= 8 {
                     break;
                 }
-                if let Some((_, file)) = read(root, &site.join(path))? {
+                if let Some(file) = read_api(root, &site.join(path))? {
                     if !files.iter().any(|f| f.path == file.path) {
                         files.push(file);
                     }

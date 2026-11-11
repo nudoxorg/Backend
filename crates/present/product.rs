@@ -3707,7 +3707,7 @@ fn installed_package_view(heading: &str, facts: &backend_library::InstalledPacka
     rows.extend(facts.requirements.iter().map(|requirement| ProductRecord::new("declared dependency", None, vec![requirement.as_str().to_owned()])));
     if include_files {
         rows.extend(facts.files.iter().map(|file| ProductRecord::new(file.path.as_str(), None, vec![
-            format!("observed {} bytes · digest {} · {}", file.bytes, file.digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>(), if file.truncated { "partial source excerpt" } else { "complete source excerpt" }),
+            format!("observed {} bytes · source window starts at byte {} · digest {} · {}", file.bytes, file.offset, file.digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>(), if file.truncated { "partial source excerpt" } else { "complete source excerpt" }),
             file.excerpt.as_str().to_owned(),
         ])));
     }
