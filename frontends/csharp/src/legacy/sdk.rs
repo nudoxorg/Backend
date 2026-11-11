@@ -117,9 +117,15 @@ impl CSharpTargetingSnapshot {
 
 fn targeting_entries(directory: &Path) -> Result<Vec<String>, &'static str> {
     let mut entries = Vec::new();
-    for entry in fs::read_dir(directory).map_err(|_| "targeting directory unavailable")? {
+    for (count, entry) in fs::read_dir(directory).map_err(|_| "targeting directory unavailable")?.enumerate() {
+        if count >= 16384 { return Err("targeting directory limit"); }
         let entry = entry.map_err(|_| "targeting directory unavailable")?;
         let name = entry.file_name().into_string().map_err(|_| "targeting filename unavailable")?;
+        // .NET's glob is case-sensitive on Unix and case-insensitive on Windows.
+        // Reject mixed-case extensions rather than capture a platform-dependent set.
+        if name.to_ascii_lowercase().ends_with(".dll") && !name.ends_with(".dll") {
+            return Err("targeting extension differs by platform");
+        }
         if name.ends_with(".dll") {
             if entries.len() >= 8192 { return Err("targeting snapshot limit"); }
             entries.push(name);
