@@ -38,6 +38,6 @@ pub use self::restore::{
     resolve_project_assets_with_metadata,
 };
 pub use self::sdk::{
-    resolve_sdk_owned_references, CSharpSdkKind, CSharpSdkObservation, CSharpSdkProbe, CSharpSdkProjectProperties, CSharpTargetingReference, CSharpTargetingSnapshot,
+    resolve_references_with_sdk, resolve_sdk_owned_references, CSharpSdkKind, CSharpSdkObservation, CSharpSdkProbe, CSharpSdkProjectProperties, CSharpTargetingReference, CSharpTargetingSnapshot,
     observe_csharp_sdk, observe_csharp_sdk_with,
 };
