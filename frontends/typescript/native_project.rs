@@ -655,6 +655,7 @@ pub fn selected_function_header<'a>(
     rows: &[NativeFunctionHeader], text: &'a str, compiler_extent: (u32, u32), name: &str,
     checkpoint: &dyn ExecutionCheckpoint,
 ) -> Result<Option<&'a str>, String> {
+    poll(checkpoint, 0)?;
     let mut selected = None;
     for row in rows {
         poll(checkpoint, 1)?;
@@ -673,6 +674,7 @@ pub fn selected_function_header<'a>(
     let start = row.export_start.unwrap_or(compiler_extent.0);
     let Some(header) = text.get(start as usize..row.body_start as usize) else { return Ok(None) };
     let header = header.trim();
+    poll(checkpoint, 0)?;
     Ok((!header.is_empty()).then_some(header))
 }
 
@@ -1225,6 +1227,16 @@ mod tests {
             }
         }
         assert!(selected_function_header(&headers, source, compiler_extent, "run", &Stopped).is_err());
+        struct StopAfterOne(std::sync::atomic::AtomicUsize);
+        impl ExecutionCheckpoint for StopAfterOne {
+            fn checkpoint(&self, work: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+                if work != 0 && self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 1 {
+                    Err(tsz_common::ProjectExecutionStop::WorkBudgetExhausted)
+                } else { Ok(()) }
+            }
+        }
+        assert!(selected_function_header(&duplicate, source, compiler_extent, "run", &StopAfterOne(std::sync::atomic::AtomicUsize::new(0))).is_err());
+        assert!(selected_function_header(&[], source, compiler_extent, "run", &Stopped).is_err());
         for (path, source, expected) in [
             ("src/main.ts", "const async = 1; async\nfunction plain() {}", None),
             ("src/main.ts", "const async = 1; async; function plain() {}", Some("function plain()")),
