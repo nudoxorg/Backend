@@ -984,8 +984,15 @@ fn nuget_admit_link(service: &url::Url, value: &str) -> Result<url::Url, Discove
         .map(|(path, _)| format!("{path}/"))
         .ok_or(DiscoveryStoreError::Decode)?;
     let target = url::Url::parse(value).map_err(|_| DiscoveryStoreError::Decode)?;
+    // Some HTTP servers decode escaped separators (or decode twice) before
+    // routing. Refuse those spellings rather than relying on the URL parser's
+    // still-escaped path for the directory boundary.
+    let path = target.path().to_ascii_lowercase();
     if target.origin() != service.origin()
         || !target.path().starts_with(&directory)
+        || path.contains("%2f")
+        || path.contains("%5c")
+        || path.contains("%25")
         || !target.username().is_empty()
         || target.password().is_some()
         || target.query().is_some()
@@ -1864,6 +1871,9 @@ mod nuget_protocol_tests {
             "https://other.example.test/v3/page",
             "https://user:token@feed.example.test/v3/page",
             "https://feed.example.test/v3/../outside",
+            "https://feed.example.test/v3/%2f..%2foutside",
+            "https://feed.example.test/v3/%5c..%5coutside",
+            "https://feed.example.test/v3/%252e%252e/outside",
             "https://feed.example.test/v3/page?token=value",
             "https://feed.example.test/v3/page#fragment",
         ] {
