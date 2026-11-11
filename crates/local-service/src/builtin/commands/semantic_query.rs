@@ -123,6 +123,41 @@ fn partial_profile_gap(
     format!("{profile:?} profile partial ({completed}/{total}); inspect package_profile")
 }
 
+/// Names the C# files of a partially published project that have no semantic image.
+///
+/// The list is derived, not stored: the project's captured C# files minus the files
+/// the selected C# images were compiled from. Capped so the sentence stays bounded.
+fn csharp_unpublished_files_gap(
+    project_paths: &BTreeSet<String>,
+    images: &[backend_semantic::ir::SemanticImageView<'_>],
+) -> Result<Option<String>, BuiltinModelError> {
+    const SHOWN: usize = 8;
+    let mut published = BTreeSet::new();
+    for image in images {
+        if matches!(
+            image.image_facts().authority,
+            backend_semantic::ir::SemanticImageAuthority::Language(
+                backend_semantic::vocabulary::LanguageProfile::CSharp(_)
+            )
+        ) {
+            published.insert(view_build::compiled_source_path(image)?);
+        }
+    }
+    let missing = project_paths
+        .iter()
+        .filter(|path| path.ends_with(".cs") && !published.contains(*path))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(None);
+    }
+    let mut text = format!("C# files without semantic facts ({}): ", missing.len());
+    text.push_str(&missing.iter().take(SHOWN).map(|path| path.as_str()).collect::<Vec<_>>().join(", "));
+    if missing.len() > SHOWN {
+        text.push_str(&format!(", and {} more", missing.len() - SHOWN));
+    }
+    Ok(Some(text))
+}
+
 const OBSERVED_POLICY_GAP: &str = "Source selection was captured from observed inputs; current ignore-policy stability is unknown; reindex and inspect package_profile";
 
 fn restrict_typescript_inventory(
@@ -3129,6 +3164,7 @@ pub(super) fn execute_references(
     let mut activations = Vec::new();
     let mut publication_found = false;
     let mut typescript_publication_found = false;
+    let mut csharp_partial = false;
     let mut profile_scopes = std::collections::BTreeMap::new();
     let mut coverage_gaps = BTreeSet::new();
     for_package_publications(&relation, package, &sources, "references", |key, record| {
@@ -3142,6 +3178,7 @@ pub(super) fn execute_references(
                 coverage_gaps.insert(format!("{:?} profile unavailable ({reason}); inspect package_profile{guidance}", key.profile()));
             }
             ProductSemanticPublicationRecord::Published { coverage: SemanticPublicationCoverage::Partial(partial), .. } => {
+                csharp_partial |= matches!(key.profile(), backend_semantic::vocabulary::LanguageProfile::CSharp(_));
                 coverage_gaps.insert(partial_profile_gap(key.profile(), partial));
             }
             ProductSemanticPublicationRecord::Published { .. } => {}
@@ -3204,6 +3241,11 @@ pub(super) fn execute_references(
             opened.push(image.reopen().map_err(|error| {
                 BuiltinModelError(format!("reopen semantic references image: {error}"))
             })?);
+        }
+    }
+    if csharp_partial {
+        if let Some(gap) = csharp_unpublished_files_gap(&project_paths_for_package(&sources, package), &opened)? {
+            coverage_gaps.insert(gap);
         }
     }
     let retargeting_scopes = available.retargeting_scopes(package, &profile_scopes);
