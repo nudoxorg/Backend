@@ -372,7 +372,7 @@ pub fn resolve_project_assets_with_metadata(
                         .get("framework")
                         .and_then(Value::as_str)
                         .unwrap_or(target_framework);
-                    checked_relative(framework)?;
+                    let framework = project_output_framework(framework)?;
                     let reference = base
                         .join("obj/Debug")
                         .join(framework)
@@ -563,6 +563,30 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, RestoreError> {
         .map_err(|e| RestoreError::Unavailable(format!("{} ({e})", path.display())))
 }
 
+// NuGet writes framework monikers on project edges even when output folders
+// use the short TFM. Accept only the numeric .NETCoreApp form here.
+fn project_output_framework(framework: &str) -> Result<String, RestoreError> {
+    if let Some(version) = framework.strip_prefix(".NETCoreApp,Version=v") {
+        let Some((major, minor)) = version.split_once('.') else {
+            return Err(RestoreError::Unavailable(
+                "invalid project target framework".into(),
+            ));
+        };
+        if major.is_empty()
+            || minor.is_empty()
+            || !major.bytes().all(|b| b.is_ascii_digit())
+            || !minor.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Err(RestoreError::Unavailable(
+                "invalid project target framework".into(),
+            ));
+        }
+        return Ok(format!("net{major}.{minor}"));
+    }
+    checked_relative(framework)?;
+    Ok(framework.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,6 +717,16 @@ mod closure_regressions {
     }
 
     #[test]
+    fn project_output_framework_normalizes_restored_moniker() {
+        assert_eq!(
+            super::project_output_framework(".NETCoreApp,Version=v10.0").unwrap(),
+            "net10.0"
+        );
+        assert_eq!(super::project_output_framework("net8.0").unwrap(), "net8.0");
+        assert!(super::project_output_framework(".NETCoreApp,Version=v10.0/../../other").is_err());
+    }
+
+    #[test]
     fn project_restore_placeholder_requires_real_reference_output() {
         let root = tempfile::tempdir().unwrap();
         let assets = root.path().join("Tests/obj/project.assets.json");
@@ -702,7 +736,7 @@ mod closure_regressions {
         fs::write(api.join("Api.csproj"), "<Project/>").unwrap();
         let graph = json!({
             "packageFolders": {},
-            "targets": {"net10.0": {"Api/1.0": {"type":"project", "framework":"net10.0", "compile":{"bin/placeholder/Api.dll":{}}}}},
+            "targets": {"net10.0": {"Api/1.0": {"type":"project", "framework":".NETCoreApp,Version=v10.0", "compile":{"bin/placeholder/Api.dll":{}}}}},
             "libraries": {"Api/1.0":{"type":"project", "path":"../Api/Api.csproj"}}
         });
         fs::write(&assets, serde_json::to_vec(&graph).unwrap()).unwrap();
