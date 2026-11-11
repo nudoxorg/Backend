@@ -343,6 +343,8 @@ def bookshop_claims(label):
     if any(n.get("path") in (sql_path("db/queries/unrelated_title.sql"), sql_path("db/queries/bookshop.sql")) or n.get("kind") in ("table", "index") or n.get("name") in ("book_sales", "books_by_title", "order_items", "order_lines", "price_audit") for n in nodes):
         fail(f"{label}: column impact spread to unrelated objects: {nodes}")
     table = impact_page(label + "-table-impact", "--sql-table", "order_lines")
+    if len(table["seeds"]) != 1 or table["seeds"][0].get("name") != "order_lines":
+        fail(f"{label}: renamed table did not resolve to exactly one canonical seed: {table['seeds']}")
     if any(n.get("name") == "order_items" for n in table["seeds"] + [r["node"] for r in table["rows"]]):
         fail(f"{label}: old table name retained as a separate impact node: {table}")
     return definitions, diagnostics, column, table
