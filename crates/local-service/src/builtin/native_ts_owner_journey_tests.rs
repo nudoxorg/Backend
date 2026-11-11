@@ -976,6 +976,9 @@ fn native_ts_retirement_journey(exclude: bool, check_search: bool) -> Result<(),
     let (old_coordinate, old_document) =
         select_native_document(&mut session, &authority, "Retired", "view.ts")?;
     let (_, kept_document) = select_native_document(&mut session, &authority, "Kept", "other.ts")?;
+    if check_search {
+        assert_native_search_and_query(&mut session, &kept_document)?;
+    }
     assert!(
         old_document
             .excerpt
@@ -1058,6 +1061,9 @@ fn native_ts_retirement_journey(exclude: bool, check_search: bool) -> Result<(),
     let mut cold = Session::connect(owner.endpoint())?;
     assert_retired_handle_unavailable(&mut cold, &selector)?;
     let (_, kept) = select_native_document(&mut cold, &authority, "Kept", "other.ts")?;
+    if check_search {
+        assert_native_search_and_query(&mut cold, &kept)?;
+    }
     assert!(
         kept.excerpt
             .text()
@@ -1066,6 +1072,25 @@ fn native_ts_retirement_journey(exclude: bool, check_search: bool) -> Result<(),
     drop(cold);
     assert_eq!(owner.close()?.failures, 0);
     assert_retired_native_evidence(paths.data(), &project, "view.ts")?;
+    Ok(())
+}
+
+fn assert_native_search_and_query(
+    session: &mut Session,
+    document: &backend_library::Document,
+) -> Result<(), Box<dyn Error>> {
+    let selection = document.selection.as_ref().ok_or("selected native document")?;
+    let CommandReply::Search(search) = session.search("Kept", 100)?.reply else {
+        return Err("native search reply".into());
+    };
+    assert!(search.root.rows().iter().any(|row| row.id == backend_library::RowId::Symbol(selection.symbol())));
+    let page = session.graph_query(
+        "{ Declaration { name @filter(op: \"=\", value: [\"$name\"]) name @output state @output } }".to_owned(),
+        std::collections::BTreeMap::from([("name".to_owned(), backend_library::GraphValue::String("Kept".to_owned()))]),
+        100, None, false,
+    )?;
+    let rows = format!("{:?}", page.rows);
+    assert!(rows.contains("Kept") && rows.contains("compiler_observed"), "{rows}");
     Ok(())
 }
 
