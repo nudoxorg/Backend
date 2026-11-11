@@ -197,6 +197,49 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
                 "t1_artifact_sha256": "f" * 64, "t1_artifact_bytes": 8,
             })
 
+    def test_formal_companions_preserve_worker_and_private_library_bytes(self):
+        from record_stylo_owner_build import bounded_process
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            bin_dir = root / "input"
+            bin_dir.mkdir()
+            owner = root / "owner"
+            desktop = root / "desktop"
+            raw = root / "raw"
+            stylo = root / "stylo"
+            sqlite = root / "sqlite"
+            source_lib = root / "source-lib"
+            library = root / "private-lib"
+            for path in (owner, desktop, raw, stylo, sqlite, source_lib, library):
+                path.write_bytes(b"\x7fELF" + path.name.encode())
+            def identity(path):
+                return {"path": str(path), "bytes": path.stat().st_size, "sha256": release.sha256(path)}
+            companion = {"owner": identity(owner), "desktop": {"artifact": identity(desktop)},
+                "worker": identity(stylo), "formal_raw_stylo": str(raw),
+                "source_loader": {"path": "/loader"}, "observer_environment": {},
+                "dependency": identity(library), "dependency_source": identity(source_lib),
+                "sqlite": {"worker": identity(sqlite), "worker_raw": {"path": str(raw)},
+                           "tools": {"loader": {"path": "/loader"}}}}
+            calls = []
+            def fake_tool(command):
+                calls.append(command)
+                if command[1] == "--print-rpath":
+                    return "$ORIGIN" if Path(command[-1]).name == "libgcc_s.so.1" else "$ORIGIN/../lib"
+                return ""
+            def fake_info(_readelf, path):
+                return {"interpreter": release.INTERPRETER, "needed": ["libc.so.6", "libgcc_s.so.1"] if Path(path).parent.name == "bin" else ["libc.so.6"], "required_glibc_versions": ["2.17"]}
+            linkage = f"libgcc_s.so.1 => {source_lib} (0x1)\n"
+            with (patch.object(release, "run", side_effect=fake_tool),
+                  patch.object(release, "elf_info", side_effect=fake_info),
+                  patch("record_stylo_owner_build.bounded_process", return_value=linkage.encode())):
+                records, _ = release.portabilize(bin_dir, ("backend-locald", "backend-desktop", "backend-stylo-worker", "backend-sqlite-worker"), root / "out", Path("patchelf"), Path("readelf"), Path("ldd"), {}, companion)
+            package = root / "out/Nudox"
+            self.assertEqual((package / "bin/backend-sqlite-worker").read_bytes(), sqlite.read_bytes())
+            self.assertEqual((package / "bin/backend-stylo-worker").read_bytes(), stylo.read_bytes())
+            self.assertEqual((package / "lib/libgcc_s.so.1").read_bytes(), library.read_bytes())
+            self.assertFalse(any(command[1] == "--set-interpreter" and Path(command[-1]).name in {"backend-sqlite-worker", "backend-stylo-worker"} for command in calls))
+            self.assertEqual(len(records), 4)
+
     def test_build_manifest_records_mutated_post_relocation_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

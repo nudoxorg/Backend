@@ -710,5 +710,39 @@ class DesktopInstallerTests(unittest.TestCase):
             self.assertEqual((prefix / "bin/nudox-desktop").read_bytes(), b"user-owned launcher")
 
 
+class SQLiteClosureTests(unittest.TestCase):
+    def test_installer_binds_worker_library_and_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "bin").mkdir()
+            (root / "lib").mkdir()
+            worker = root / "bin/backend-sqlite-worker"
+            library = root / "lib/libgcc_s.so.1"
+            worker.write_bytes(b"worker")
+            worker.chmod(0o755)
+            library.write_bytes(b"library")
+            digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+            record = {"path": "bin/backend-sqlite-worker", "bytes": worker.stat().st_size,
+                      "sha256": digest(worker), "dependency_path": "lib/libgcc_s.so.1",
+                      "dependency_bytes": library.stat().st_size, "dependency_sha256": digest(library),
+                      "owner_source_sha256": "a" * 64, "owner_receipt_sha256": "b" * 64,
+                      "artifact_identity": "c" * 64, "sqlite_lock_sha256": "d" * 64}
+            package = {"sqlite_worker": record, "executables": [{"name": "backend-locald", "original_sha256": "a" * 64}],
+                       "stylo_worker": {"bound_owner": {"receipt_sha256": "b" * 64, "dependency_sha256": digest(library)}},
+                       "libraries": {"libgcc_s.so.1": {"packaged_sha256": digest(library)}}}
+            installer.verify_sqlite_worker(root, package)
+            for path in (worker, library):
+                original = path.read_bytes()
+                path.write_bytes(b"tampered")
+                with self.assertRaises(installer.InstallError):
+                    installer.verify_sqlite_worker(root, package)
+                path.write_bytes(original)
+            record["owner_source_sha256"] = "e" * 64
+            with self.assertRaises(installer.InstallError):
+                installer.verify_sqlite_worker(root, package)
+            with self.assertRaises(installer.InstallError):
+                installer.verify_sqlite_worker(root, {})
+
+
 if __name__ == "__main__":
     unittest.main()

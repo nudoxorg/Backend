@@ -2,6 +2,10 @@
 # retained as first-class workspace crates and adapted at product boundaries.
 [workspace]
 resolver = "3"
+# A plain build produces the public applications. Workspace QA members enable
+# GPUI test-support/visual-harness features, which must not unify into product
+# binaries. Complete validation still uses `cargo test --workspace` explicitly.
+default-members = ["apps/cli", "apps/mcp", "apps/locald", "apps/desktop"]
 members = [
     "crates/*",
     "frontends/*",

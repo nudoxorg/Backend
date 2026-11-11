@@ -1,7 +1,12 @@
 # Development companion builds
 
-A plain `cargo build --locked` builds the Rust workspace. Several native
-frontends also need companion executables. A successful Cargo build alone does
+A plain `cargo build --locked` builds the four public applications: CLI, MCP,
+local owner and desktop. Workspace QA members opt into GPUI's test-support and
+visual-harness features; the product defaults keep those features out of an
+ordinary desktop build. Use `cargo test --workspace` for complete workspace
+validation and explicit package/feature selections for GUI capture tooling.
+
+Several native frontends also need companion executables. A successful Cargo build alone does
 not mean those frontends are available. Missing companions remain explicit
 capability gaps in the owner; they do not select a syntax-parser fallback.
 
@@ -44,12 +49,22 @@ The script builds the syntaqlite worker from the standalone lockfile, observes
 its executable identity, compiles that identity into the owner, and stages the
 worker beside the owner under the fixed `backend-sqlite-worker` name. This
 journey builds the CLI, MCP server and owner. For desktop development, the desktop
-must also be compiled with the same `NUDOX_BUILD_SQLITE_WORKER_ID` and use the same
-worker sibling. The platform companion phases `sqlite_linux_development.py` and
-`sqlite_macos_development.py` retain the platform closure and recheck identity
-after relocation/signing. The Linux product packaging pipeline still needs
-explicit integration of its SQLite phase; a development journey is not release
-evidence.
+must also be compiled with the same `NUDOX_BUILD_SQLITE_WORKER_ID` and
+`NUDOX_BUILD_SQLITE_WORKER_BASIS` and use the same worker sibling. The platform companion phases `sqlite_linux_development.py` and
+`sqlite_macos_development.py` retain the runtime closure and recheck identity
+after relocation/signing. For the Linux source-bound release flow, pass `--sqlite`
+to `record_stylo_owner_build.py` and supply its resulting owner receipt to
+`linux_release_package.py` with the corresponding Stylo worker and receipt.
+Add `--sqlite-desktop` for a desktop built with both companion bases. For a
+formal Linux GUI candidate, supply that owner receipt, its CLI build manifest,
+the Stylo worker and worker receipt via `--companion-owner-receipt`,
+`--companion-cli-manifest`, `--stylo-worker`, and `--stylo-worker-receipt` to
+`linux_formal_release.py`. All four inputs are required together. The
+actor compiles both companion identities into the owner, and packaging requires
+the two workers to share the same relocated private libgcc. Packaging reobserves
+the staged SQLite closure; installation checks its receipt and bytes. These
+steps do not substitute for an installed product journey or native release QA.
+A development journey is not release evidence.
 
 ## CSS / Stylo and PostgreSQL
 

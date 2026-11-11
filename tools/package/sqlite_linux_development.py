@@ -58,7 +58,7 @@ def prepare(*, source: Path, target: Path, env: dict[str, str], output: Path,
     observer = release / 'examples/installed_basis_observer'
     raw_size, raw_hash = package.admit_file_digest(raw_worker, package.MAX_BINARY_BYTES)
     observer_before = common.artifact_identity(observer)
-    worker = output / 'sqlite-worker'
+    worker = output / 'backend-sqlite-worker'
     package.copy_admitted_file(raw_worker, worker, raw_hash, raw_size, package.MAX_BINARY_BYTES)
     worker.chmod(0o700)
     old_run = package.run
@@ -115,7 +115,7 @@ def prepare(*, source: Path, target: Path, env: dict[str, str], output: Path,
     require({name: common.observe_build_tool(str(path), name) for name, path in
              [('readelf', readelf), ('patchelf', patchelf), ('loader', admitted_loader)]} == tools,
             'SQLite ELF tool changed')
-    return {'schema': SCHEMA, 'source': snapshot, 'command': command, 'execution': execution,
+    return {'schema': SCHEMA, 'source': {**snapshot, 'path': str(snapshot['path'])}, 'command': command, 'execution': execution,
             'environment': dict(env), 'sqlite_lock_sha256': lock_hash, 'observer': observer_before,
             'worker_raw': {'path': str(raw_worker), 'bytes': raw_size, 'sha256': raw_hash},
             'worker': worker_identity, 'dependency': library_identity,
@@ -131,7 +131,9 @@ def prepare(*, source: Path, target: Path, env: dict[str, str], output: Path,
 def verify_after_owner(record: dict, *, source: Path, env: dict[str, str], deadline: float) -> None:
     """Recheck custody after the enclosing actor builds its anchored owner."""
     require = elf.require
-    require(record['schema'] == SCHEMA and common.clean_source_snapshot(source) == record['source'],
+    snapshot = common.clean_source_snapshot(source)
+    snapshot['path'] = str(snapshot['path'])
+    require(record['schema'] == SCHEMA and snapshot == record['source'],
             'SQLite source changed during owner build')
     lock = source / 'frontends/sqlite/Cargo.lock'
     require(package.admit_file_digest(lock, 1024 * 1024)[1] == record['sqlite_lock_sha256'],

@@ -11,7 +11,7 @@ class OwnerCustodyTests(unittest.TestCase):
         self.source = Path('/checkout')
         self.images = {name: {'path': '/' + name, 'bytes': 3, 'sha256': name}
                        for name in ('worker', 'dependency', 'observer')}
-        self.record = {'schema': phase.SCHEMA, 'source': {'commit': 'abc'},
+        self.record = {'schema': phase.SCHEMA, 'source': {'commit': 'abc', 'path': '/checkout'},
                        'sqlite_lock_sha256': 'lock', **self.images, 'tools': {},
                        'dependency_source': {'path': '/source-lib', 'bytes': 2, 'sha256': 'lib'},
                        'worker_raw': {'path': '/raw-worker', 'bytes': 4, 'sha256': 'lock'},
@@ -25,7 +25,7 @@ class OwnerCustodyTests(unittest.TestCase):
             return image
         def digest(path, maximum):
             return (2, 'lib') if path == Path('/source-lib') else (4, 'lock')
-        with patch.object(phase.common, 'clean_source_snapshot', return_value={'commit': 'abc'}), \
+        with patch.object(phase.common, 'clean_source_snapshot', return_value={'commit': 'abc', 'path': Path('/checkout')}), \
              patch.object(phase.common, 'artifact_identity', side_effect=artifact), \
              patch.object(phase.package, 'admit_file_digest', side_effect=digest), \
              patch.object(phase.elf, 'bounded_process', return_value=json.dumps({}).encode()), \

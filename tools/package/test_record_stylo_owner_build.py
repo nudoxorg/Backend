@@ -37,6 +37,8 @@ class StyloOwnerReceiptFixtures(HelperReceiptFixtures):
             actor.bounded_process([sys.executable, "-c", "import time; time.sleep(10)"], time.monotonic() + 0.2, dict(os.environ))
 
     def prepare_actor(self, *, tamper=False):
+        self.args.sqlite = False
+        self.args.sqlite_desktop = False
         worker = self.artifact.with_name("backend-stylo-worker")
         self.artifact.rename(worker)
         self.args.worker = worker
@@ -158,6 +160,40 @@ class StyloOwnerReceiptFixtures(HelperReceiptFixtures):
         candidate.write_text(json.dumps(changed))
         with self.assertRaisesRegex(ValueError, "byte bound"):
             producer.package.admit_stylo_bound_owner(candidate, **arguments)
+
+    def test_sqlite_desktop_and_locald_share_observed_build_basis(self):
+        worker = self.prepare_actor()
+        self.args.sqlite = True
+        self.args.sqlite_desktop = True
+        original_execute = producer.execute.side_effect
+        events = []
+        def execute(command, source, env, output, deadline, maximum):
+            events.append(tuple(command))
+            result = original_execute(command, source, env, output, deadline, maximum)
+            if command == actor.DESKTOP_ARGV:
+                desktop = self.args.target_dir / producer.TARGET / "release/backend-desktop"
+                desktop.write_bytes(worker.read_bytes())
+                desktop.chmod(0o700)
+            return result
+        def prepare(**kwargs):
+            events.append("sqlite-prepared")
+            dependency = producer.artifact_identity(self.args.output_dir / "libgcc_s.so.1")
+            return {"dependency": dependency, "owner_environment": {"NUDOX_BUILD_SQLITE_WORKER_ID": "b" * 64, "NUDOX_BUILD_SQLITE_BASIS_JSON": "basis"}}
+        def verify(*args, **kwargs):
+            events.append("sqlite-rechecked")
+        with (patch.object(producer, "execute", side_effect=execute),
+              patch.object(actor.sqlite_phase, "prepare", side_effect=prepare),
+              patch.object(actor.sqlite_phase, "verify_after_owner", side_effect=verify),
+              patch.object(producer.package, "admit_stylo_bound_owner", return_value=({}, "x"))):
+            receipt = json.loads(actor.capture(self.args).read_bytes())
+        self.assertLess(events.index("sqlite-prepared"), events.index(tuple(actor.ARGV)))
+        self.assertLess(events.index(tuple(actor.DESKTOP_ARGV)), events.index("sqlite-rechecked"))
+        for command, _, env, _, _ in self.execution_calls:
+            if command in (actor.ARGV, actor.DESKTOP_ARGV):
+                self.assertEqual(env["NUDOX_BUILD_STYLO_WORKER_ID"], "a" * 64)
+                self.assertEqual(env["NUDOX_BUILD_SQLITE_WORKER_ID"], "b" * 64)
+                self.assertEqual(env["NUDOX_BUILD_SQLITE_BASIS_JSON"], "basis")
+        self.assertEqual(receipt["desktop"]["argv"], actor.DESKTOP_ARGV)
 
     def test_worker_change_during_observation_cannot_start_owner_build(self):
         self.prepare_actor(tamper=True)

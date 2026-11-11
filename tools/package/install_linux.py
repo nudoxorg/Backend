@@ -316,7 +316,7 @@ def safe_extract(archive: Path, destination: Path, *, manifest: dict | None = No
                 source = bundle.extractfile(member)
                 if source is None:
                     raise InstallError(f"archive member could not be read: {member.name!r}")
-                mode = 0o755 if relative in allowed_bin or relative in {"bin/backend-stylo-worker", "share/nudox/typescript/node/bin/node", "share/nudox/embedding/bin/backend-embedding-candle"} else 0o644
+                mode = 0o755 if relative in allowed_bin or relative in {"bin/backend-stylo-worker", "bin/backend-sqlite-worker", "share/nudox/typescript/node/bin/node", "share/nudox/embedding/bin/backend-embedding-candle"} else 0o644
                 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
                 descriptor = os.open(target, flags, mode)
                 with os.fdopen(descriptor, "wb") as output, source:
@@ -662,6 +662,34 @@ def verify_stylo_worker(root: Path, package: dict) -> None:
             raise InstallError("Stylo bound dependency differs from the package closure")
 
 
+def verify_sqlite_worker(root: Path, package: dict) -> None:
+    """Verify the exact SQLite worker closure bound to the packaged owner."""
+    record = package.get("sqlite_worker")
+    path = root / "bin/backend-sqlite-worker"
+    if record is None:
+        if path.exists() or path.is_symlink():
+            raise InstallError("unreceipted SQLite worker is present")
+        return
+    if not isinstance(record, dict) or record.get("path") != "bin/backend-sqlite-worker" or record.get("dependency_path") != "lib/libgcc_s.so.1":
+        raise InstallError("invalid SQLite closure record")
+    for key in ("sha256", "dependency_sha256", "owner_source_sha256", "owner_receipt_sha256", "artifact_identity", "sqlite_lock_sha256"):
+        if not isinstance(record.get(key), str) or not re.fullmatch(r"[a-f0-9]{64}", record[key]) or record[key] == "0" * 64:
+            raise InstallError("invalid SQLite closure identity")
+    for name, size_key, digest_key, limit in ((record["path"], "bytes", "sha256", MAX_MEMBER_BYTES),
+            (record["dependency_path"], "dependency_bytes", "dependency_sha256", 16 * 1024 * 1024)):
+        artifact = _verified_package_path(root, name)
+        if type(record.get(size_key)) is not int or not 0 < record[size_key] <= limit or artifact.stat().st_size != record[size_key] or _file_sha256(artifact) != record[digest_key]:
+            raise InstallError("SQLite closure differs from package evidence")
+    if not os.access(path, os.X_OK):
+        raise InstallError("SQLite worker is not executable")
+    owners = [item for item in package.get("executables", []) if isinstance(item, dict) and item.get("name") == "backend-locald"]
+    stylo = package.get("stylo_worker")
+    bound = stylo.get("bound_owner") if isinstance(stylo, dict) else None
+    library = package.get("libraries", {}).get("libgcc_s.so.1") if isinstance(package.get("libraries"), dict) else None
+    if len(owners) != 1 or owners[0].get("original_sha256") != record["owner_source_sha256"] or not isinstance(bound, dict) or bound.get("receipt_sha256") != record["owner_receipt_sha256"] or bound.get("dependency_sha256") != record["dependency_sha256"] or not isinstance(library, dict) or library.get("packaged_sha256") != record["dependency_sha256"]:
+        raise InstallError("SQLite closure differs from the bound owner or package library")
+
+
 def verify_package(root: Path, entry: dict, manifest: dict) -> None:
     expected_binaries = release_binaries(manifest)
     _verified_package_path(root, "", directory=True)
@@ -726,6 +754,7 @@ def verify_package(root: Path, entry: dict, manifest: dict) -> None:
     verify_typescript_sdk(root, package)
     verify_embedding_setup(root, package)
     verify_stylo_worker(root, package)
+    verify_sqlite_worker(root, package)
     # Run harmless entrypoint checks with build-machine loader overrides removed.
     clean_env = {key: value for key, value in os.environ.items() if key not in {"LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "NIX_LD", "NIX_LD_LIBRARY_PATH"}}
     for name, args in (("backend-cli", ["--version"]), ("backend-mcp", ["--help"])):

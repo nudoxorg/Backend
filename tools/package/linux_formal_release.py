@@ -26,6 +26,9 @@ import subprocess
 import sys
 import tarfile
 import tomllib
+import time
+
+import linux_release_package as checkpoint
 
 from linux_release_package import (
     GLIBC_SONAMES,
@@ -202,7 +205,7 @@ def require_rpath(patchelf: Path, binary: Path, expected: str) -> None:
 
 
 def portabilize(bin_dir: Path, names: tuple[str, ...], output: Path, patchelf: Path, readelf: Path, ldd: Path,
-                expected_files: dict[str, dict]) -> tuple[list[dict], str]:
+                expected_files: dict[str, dict], companion: dict | None = None) -> tuple[list[dict], str]:
     """Rewrite executable RPATHs and bundle the non-glibc shared-library closure."""
     root = output / "Nudox"
     (root / "bin").mkdir(mode=0o700, parents=True)
@@ -211,10 +214,19 @@ def portabilize(bin_dir: Path, names: tuple[str, ...], output: Path, patchelf: P
     library_total_bytes = 0
     executables: list[dict] = []
     for name in names:
-        source_binary = (bin_dir / name).resolve(strict=True)
+        pre_relocated = companion is not None and name in {"backend-stylo-worker", "backend-sqlite-worker"}
+        if companion is not None and name in {"backend-locald", "backend-desktop"}:
+            source_binary = Path(companion["owner"]["path"] if name == "backend-locald" else companion["desktop"]["artifact"]["path"])
+            source_record = companion["owner"] if name == "backend-locald" else companion["desktop"]["artifact"]
+        elif pre_relocated:
+            source_record = companion["worker"] if name == "backend-stylo-worker" else companion["sqlite"]["worker"]
+            source_binary = Path(source_record["path"])
+        else:
+            source_binary = (bin_dir / name).resolve(strict=True)
+            source_record = expected_files.get(f"bin/{name}")
         packaged = root / "bin" / name
         digest_bytes, digest = admit_file_digest(source_binary, MAX_BINARY_BYTES)
-        recorded = expected_files.get(f"bin/{name}")
+        recorded = source_record
         if (not isinstance(recorded, dict) or recorded.get("bytes") != digest_bytes
                 or recorded.get("sha256") != digest):
             fail(f"{name} differs from the T1 artifact manifest")
@@ -223,7 +235,14 @@ def portabilize(bin_dir: Path, names: tuple[str, ...], output: Path, patchelf: P
         if not original["interpreter"]:
             fail(f"{name} has no ELF interpreter")
         packaged.chmod(0o755)
-        linkage = run([str(ldd), str(packaged)])
+        if pre_relocated:
+            from record_stylo_owner_build import bounded_process
+            sqlite = companion["sqlite"]
+            loader = companion["source_loader"]["path"] if name == "backend-stylo-worker" else sqlite["tools"]["loader"]["path"]
+            raw = companion["formal_raw_stylo"] if name == "backend-stylo-worker" else sqlite["worker_raw"]["path"]
+            linkage = bounded_process([loader, "--list", raw], time.monotonic() + 30, companion["observer_environment"]).decode("utf-8")
+        else:
+            linkage = run([str(ldd), str(packaged)])
         for soname, raw_path in ldd_dependencies(linkage):
             if soname in GLIBC_SONAMES:
                 continue
@@ -243,11 +262,14 @@ def portabilize(bin_dir: Path, names: tuple[str, ...], output: Path, patchelf: P
             if previous is None:
                 library_total_bytes += library_bytes
             libraries.setdefault(soname, {"source_path": dependency, "source_sha256": lib_digest, "source_bytes": library_bytes})
-        run([str(patchelf), "--set-interpreter", INTERPRETER, "--set-rpath", "$ORIGIN/../lib", str(packaged)])
+        if not pre_relocated:
+            run([str(patchelf), "--set-interpreter", INTERPRETER, "--set-rpath", "$ORIGIN/../lib", str(packaged)])
         patched = elf_info(readelf, packaged)
         if patched["interpreter"] != INTERPRETER or patched["needed"] != original["needed"]:
             fail(f"patchelf changed the wrong ELF contract for {name}")
         require_rpath(patchelf, packaged, "$ORIGIN/../lib")
+        if pre_relocated and sha256(packaged) != source_record["sha256"]:
+            fail("pre-relocated companion changed during formal assembly")
         packaged_bytes, packaged_digest = admit_file_digest(packaged, MAX_BINARY_BYTES)
         executables.append({
             "name": name,
@@ -257,13 +279,25 @@ def portabilize(bin_dir: Path, names: tuple[str, ...], output: Path, patchelf: P
             "t1_artifact_sha256": digest,
             "t1_artifact_bytes": digest_bytes,
             "required_glibc_versions": patched["required_glibc_versions"],
+            "companion_input": companion is not None and name in {"backend-locald", "backend-desktop", "backend-stylo-worker", "backend-sqlite-worker"},
         })
 
     for soname, record in libraries.items():
         packaged = root / "lib" / soname
-        copy_admitted_file(record["source_path"], packaged, record["source_sha256"], record["source_bytes"], 96 * 1024 * 1024)
+        bound = companion is not None and soname == "libgcc_s.so.1"
+        if bound:
+            source = companion["dependency_source"]
+            if (record["source_bytes"], record["source_sha256"]) != (source["bytes"], source["sha256"]):
+                fail("formal package source libgcc differs from companion closure")
+            dependency = companion["dependency"]
+            copy_admitted_file(Path(dependency["path"]), packaged, dependency["sha256"], dependency["bytes"], 16 * 1024 * 1024)
+        else:
+            copy_admitted_file(record["source_path"], packaged, record["source_sha256"], record["source_bytes"], 96 * 1024 * 1024)
         packaged.chmod(0o755)
-        run([str(patchelf), "--set-rpath", "$ORIGIN", str(packaged)])
+        if not bound:
+            run([str(patchelf), "--set-rpath", "$ORIGIN", str(packaged)])
+        if bound and sha256(packaged) != companion["dependency"]["sha256"]:
+            fail("formal package changed the companion libgcc")
         require_rpath(patchelf, packaged, "$ORIGIN")
         info = elf_info(readelf, packaged)
         record.update({"needed": info["needed"], "required_glibc_versions": info["required_glibc_versions"]})
@@ -282,7 +316,7 @@ def portabilize(bin_dir: Path, names: tuple[str, ...], output: Path, patchelf: P
 
 
 def write_build_manifest(output: Path, revision: str, tree: str, cargo_lock: str, executables: list[dict],
-                         profile: str = "t1") -> Path:
+                         profile: str = "t1", companion_evidence: dict | None = None) -> Path:
     manifest = {
         "schema": 1,
         "source": {"git_revision": revision, "git_tree": tree, "cargo_lock_sha256": cargo_lock},
@@ -290,10 +324,13 @@ def write_build_manifest(output: Path, revision: str, tree: str, cargo_lock: str
         "target": TARGET,
         "executables": {e["name"]: {
             "path": e["packaged_path"], "sha256": e["sha256"], "bytes": e["bytes"],
-            "t1_artifact_sha256": e["t1_artifact_sha256"],
-            "t1_artifact_bytes": e["t1_artifact_bytes"],
+            **({"companion_artifact_sha256": e["t1_artifact_sha256"], "companion_artifact_bytes": e["t1_artifact_bytes"]}
+               if e.get("companion_input") else
+               {"t1_artifact_sha256": e["t1_artifact_sha256"], "t1_artifact_bytes": e["t1_artifact_bytes"]}),
         } for e in executables},
     }
+    if companion_evidence is not None:
+        manifest["companion"] = companion_evidence
     path = output / "Nudox" / "resources" / "build-manifest.json"
     path.parent.mkdir(mode=0o700, parents=True)
     path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n")
@@ -320,7 +357,12 @@ def main() -> int:
     parser.add_argument("--strip", type=Path, help="strip tool; required with --release-dir")
     parser.add_argument("--gui-library-path", help="colon-separated directories holding the desktop's GUI libraries; "
                         "bundles them and adds the nudox, nudox-desktop and nudox-mcp launchers")
+    for name in ("companion-owner-receipt", "companion-cli-manifest", "stylo-worker", "stylo-worker-receipt"):
+        parser.add_argument("--" + name, type=Path, help="source-bound companion input for SQLite and Stylo")
     args = parser.parse_args()
+    companion_inputs = (args.companion_owner_receipt, args.companion_cli_manifest, args.stylo_worker, args.stylo_worker_receipt)
+    if any(companion_inputs) and not all(companion_inputs):
+        fail("formal companion inputs must be provided together")
 
     output = args.output.resolve()
     if output.exists() or output == args.source.resolve() or args.source.resolve() in output.parents:
@@ -335,6 +377,31 @@ def main() -> int:
         revision = git(args.source, "rev-parse", "HEAD")
     tree, cargo_lock, version = check_source(args.source, revision)
 
+    companion = None
+    companion_receipt_digest = None
+    if all(companion_inputs):
+        cli_bytes = read_regular_bytes(args.companion_cli_manifest, 16 * 1024 * 1024, "companion CLI manifest")
+        cli_build = parse_json_bytes(cli_bytes, "companion CLI manifest")
+        cli_receipt = checkpoint.admit_receipt(cli_build)
+        with checkpoint.clean_git_environment():
+            selected = checkpoint.check_source(args.source, cli_build, cli_receipt)
+        if selected[:3] != (revision, tree, cargo_lock):
+            fail("formal and companion sources differ")
+        worker, worker_digest = checkpoint.admit_stylo_worker(args.stylo_worker, args.stylo_worker_receipt, revision, tree, cargo_lock)
+        worker_raw = read_regular_bytes(args.stylo_worker_receipt, 65536, "Stylo worker receipt")
+        if hashlib.sha256(worker_raw).hexdigest() != worker_digest:
+            fail("Stylo worker receipt changed during admission")
+        worker_receipt = parse_json_bytes(worker_raw, "Stylo worker receipt")
+        private = [worker_receipt["source_path"], *[worker_receipt["environment"][key] for key in ("CARGO_HOME", "CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR")]]
+        companion, companion_receipt_digest = checkpoint.admit_stylo_bound_owner(args.companion_owner_receipt,
+            source=(revision, tree, cargo_lock), cli_record=cli_build["executables"]["backend-cli"],
+            cli_manifest_sha=hashlib.sha256(cli_bytes).hexdigest(), raw_worker=worker,
+            worker_receipt_sha=worker_digest, worker_private_paths=private)
+        if companion.get("sqlite") is None or companion.get("desktop") is None:
+            fail("formal companion receipt must bind SQLite to both desktop and locald")
+        if (companion["sqlite"]["dependency_source"]["bytes"], companion["sqlite"]["dependency_source"]["sha256"]) != (companion["dependency_source"]["bytes"], companion["dependency_source"]["sha256"]):
+            fail("formal companion workers require different source libgcc")
+        companion["formal_raw_stylo"] = str(args.stylo_worker.resolve(strict=True))
     output.mkdir(mode=0o700, parents=True)
     patchelf, readelf, ldd = require_tool(args.patchelf, "patchelf"), require_tool(args.readelf, "readelf"), require_tool(args.ldd, "ldd")
     if args.t1_artifact_dir is not None:
@@ -343,14 +410,56 @@ def main() -> int:
     else:
         bin_dir, profile = output / "stage", "release"
         expected_files = stage_release_build(args.release_dir, bin_dir, require_tool(args.strip, "strip"))
-    executables, minimum_glibc = portabilize(bin_dir, EXECUTABLES, output, patchelf, readelf, ldd, expected_files)
+    names = (*EXECUTABLES, "backend-stylo-worker", "backend-sqlite-worker") if companion else EXECUTABLES
+    executables, minimum_glibc = portabilize(bin_dir, names, output, patchelf, readelf, ldd, expected_files, companion)
     if profile == "release":
         shutil.rmtree(bin_dir)
     if args.gui_library_path is not None:
         search = [Path(item) for item in args.gui_library_path.split(":") if item]
         bundle_gui_libraries(output / "Nudox" / "lib", search, patchelf, readelf, minimum_glibc)
         write_launchers(output / "Nudox")
-    build_manifest_path = write_build_manifest(output, revision, tree, cargo_lock, executables, profile)
+    if companion is not None:
+        from record_stylo_owner_build import observe, bounded_process, require_runpath
+        import sqlite_macos_development as sqlite_common
+        root = output / "Nudox"
+        env = companion["observer_environment"]
+        library = root / "lib/libgcc_s.so.1"
+        stylo = root / "bin/backend-stylo-worker"
+        sqlite_worker = root / "bin/backend-sqlite-worker"
+        sqlite = companion["sqlite"]
+        require_runpath(readelf, library, "$ORIGIN", time.monotonic() + 30, env)
+        for worker in (stylo, sqlite_worker):
+            require_runpath(readelf, worker, "$ORIGIN/../lib", time.monotonic() + 30, env)
+        if observe(Path(companion["observer"]["path"]), stylo, library, time.monotonic() + 30, env) != companion["worker_anchor"]:
+            fail("formal Stylo closure differs from compiled owner anchor")
+        observed = bounded_process([sqlite["observer"]["path"], str(sqlite_worker), str(library)], time.monotonic() + 30, env, sqlite_common.MAX_BASIS_BYTES)
+        if sqlite_common.validate_observation(json.loads(observed), sqlite["sqlite_lock_sha256"]) != (sqlite["artifact_identity"], sqlite["basis_json"]):
+            fail("formal SQLite closure differs from compiled owner basis")
+        for path, record in ((stylo, companion["worker"]), (sqlite_worker, sqlite["worker"]), (library, companion["dependency"]), (Path(companion["observer"]["path"]), companion["observer"]), (Path(sqlite["observer"]["path"]), sqlite["observer"])):
+            if admit_file_digest(path, MAX_BINARY_BYTES) != (record["bytes"], record["sha256"]):
+                fail("formal companion or observer changed during observation")
+        for name in ("backend-locald", "backend-desktop"):
+            record = next(item for item in executables if item["name"] == name)
+            if admit_file_digest(root / "bin" / name, MAX_BINARY_BYTES) != (record["bytes"], record["sha256"]):
+                fail("formal owner changed during companion observation")
+        if hashlib.sha256(read_regular_bytes(args.companion_owner_receipt, 65536, "companion receipt")).hexdigest() != companion_receipt_digest:
+            fail("formal companion receipt changed during observation")
+    evidence = None
+    if companion is not None:
+        if checkpoint.admit_stylo_worker(args.stylo_worker, args.stylo_worker_receipt, revision, tree, cargo_lock)[1] != worker_digest:
+            fail("formal raw worker changed during assembly")
+        _, final_receipt_digest = checkpoint.admit_stylo_bound_owner(args.companion_owner_receipt,
+            source=(revision, tree, cargo_lock), cli_record=cli_build["executables"]["backend-cli"],
+            cli_manifest_sha=hashlib.sha256(cli_bytes).hexdigest(), raw_worker=worker,
+            worker_receipt_sha=worker_digest, worker_private_paths=private)
+        if final_receipt_digest != companion_receipt_digest:
+            fail("formal companion receipt changed during assembly")
+        evidence = {"owner_receipt_sha256": companion_receipt_digest,
+                    "stylo_anchor": companion["worker_anchor"],
+                    "sqlite_artifact_identity": companion["sqlite"]["artifact_identity"],
+                    "sqlite_lock_sha256": companion["sqlite"]["sqlite_lock_sha256"],
+                    "dependency_sha256": companion["dependency"]["sha256"]}
+    build_manifest_path = write_build_manifest(output, revision, tree, cargo_lock, executables, profile, evidence)
     normalize_modes(output / "Nudox")
     build_manifest_sha = sha256(build_manifest_path)
     archive = make_archive(output)

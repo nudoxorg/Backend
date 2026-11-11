@@ -212,7 +212,7 @@ def capture(args: argparse.Namespace) -> Path:
             destination.chmod(0o600)
         # Outer signing signs the main desktop image; never recursively sign the worker.
         companion.run_tool(['/usr/bin/codesign', '--force', '--sign', '-', str(app)], timeout=180, deadline=deadline)
-        for image in (app, macos / 'backend-locald', macos / 'backend-mcp', macos / 'backend-cli', worker, macos / 'sqlite-worker'):
+        for image in (app, macos / 'backend-locald', macos / 'backend-mcp', macos / 'backend-cli', worker, macos / 'backend-sqlite-worker'):
             companion.run_tool(['/usr/bin/codesign', '--verify', '--strict', str(image)], deadline=deadline)
         require(companion.inspect_system_executable(worker, args.target, deadline=deadline) == worker_image,
                 'outer signing changed the admitted worker')
@@ -223,7 +223,7 @@ def capture(args: argparse.Namespace) -> Path:
                 'observer changed during product build')
         sqlite.verify_after_signing(sqlite_record, source=source['path'], target_triple=args.target,
                                     deadline=deadline, companion=companion)
-        executable_names = ('Nudox', 'backend-locald', 'backend-mcp', 'backend-cli', 'backend-stylo-worker', 'sqlite-worker')
+        executable_names = ('Nudox', 'backend-locald', 'backend-mcp', 'backend-cli', 'backend-stylo-worker', 'backend-sqlite-worker')
         images = {name: companion.inspect_system_executable(macos / name, args.target, deadline=deadline)
                   for name in executable_names}
         for image in (macos / name for name in executable_names):
