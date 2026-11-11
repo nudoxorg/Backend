@@ -4294,6 +4294,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 config.first().and_then(|entry| entry.text).ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "captured C# project configuration" })?,
                 config.iter().skip(1).all(|entry| entry.text.is_none()),
             ).ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "unsupported C# SDK project options" })?;
+            if !options.package_references.is_empty() || !options.project_references.is_empty() {
+                return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "restored package and project reference inputs must be captured before compiling this C# project" });
+            }
             let CompilationUnitKeyV2::CSharpProject { project_path } = package.package_target.unit_key() else {
                 return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK project unit" });
             };

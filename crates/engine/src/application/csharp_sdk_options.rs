@@ -9,6 +9,8 @@ pub(super) struct CSharpSdkOptions {
     pub target_framework: String,
     pub implicit_usings: bool,
     pub properties: CSharpSdkProjectProperties,
+    pub package_references: Vec<(String, String)>,
+    pub project_references: Vec<String>,
 }
 
 /// Properties that change what the compiler binds or how it treats the
@@ -51,6 +53,8 @@ pub(super) fn simple_csharp_sdk_options(
     let mut forwarded: [Option<String>; 5] = Default::default();
     let mut active: Option<(Option<usize>, String)> = None;
     let mut nodes = 0usize;
+    let mut package_references = Vec::new();
+    let mut project_references = Vec::new();
     loop {
         let event = reader.read_event_into(&mut buffer).ok()?;
         match event {
@@ -80,8 +84,14 @@ pub(super) fn simple_csharp_sdk_options(
                             && group == "PropertyGroup"
                             && (FORWARDED.contains(&name.as_str())
                                 || BENIGN.contains(&name.as_str())) => {}
+                    [root, group]
+                        if root == "Project" && group == "ItemGroup"
+                            && matches!(name.as_str(), "PackageReference" | "ProjectReference") => {}
                     _ => return None,
                 }
+                let is_reference = stack.len() == 2 && stack[1] == "ItemGroup";
+                let mut include = None;
+                let mut version = None;
                 let mut sdk = None;
                 for attribute in start.attributes().with_checks(true) {
                     let attribute = attribute.ok()?;
@@ -94,8 +104,37 @@ pub(super) fn simple_csharp_sdk_options(
                         && value == "http://schemas.microsoft.com/developer/msbuild/2003"
                     {
                         // Conventional MSBuild namespace has no option effect.
+                    } else if is_reference && key == "Include" && include.is_none() {
+                        include = Some(value.to_owned());
+                    } else if is_reference && name == "PackageReference" && key == "Version" && version.is_none() {
+                        version = Some(value.to_owned());
                     } else {
                         return None;
+                    }
+                }
+                if is_reference {
+                    let include = include?;
+                    // MSBuild expressions, globs and lists are not literal restored identities.
+                    if include.is_empty() || include.len() > 4096
+                        || include.chars().any(|ch| ch.is_control() || matches!(ch, '$' | '@' | '%' | '*' | '?' | ';')) {
+                        return None;
+                    }
+                    if name == "PackageReference" {
+                        let version = version?;
+                        if !include.bytes().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'.' | b'-' | b'_'))
+                            || version.is_empty() || version.len() > 256
+                            || !version.bytes().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'.' | b'-' | b'+'))
+                            || package_references.iter().any(|(id, _): &(String, String)| id.eq_ignore_ascii_case(&include)) {
+                            return None;
+                        }
+                        package_references.push((include, version));
+                    } else {
+                        let include = include.replace('\\', "/");
+                        if !include.ends_with(".csproj") || include.starts_with('/')
+                            || include.contains(':') || project_references.contains(&include) {
+                            return None;
+                        }
+                        project_references.push(include);
                     }
                 }
                 if stack.is_empty() {
@@ -105,17 +144,25 @@ pub(super) fn simple_csharp_sdk_options(
                         _ => return None,
                     });
                 }
-                if stack.len() == 2 {
+                if stack.len() == 2 && !is_reference {
                     let slot = FORWARDED.iter().position(|candidate| *candidate == name);
                     if slot.is_some_and(|slot| forwarded[slot].is_some()) {
                         return None;
                     }
                     active = Some((slot, String::new()));
                 }
+                if is_reference {
+                    // Empty literal reference elements only: children cannot silently
+                    // add aliases or compiler-changing reference metadata.
+                    active = Some((None, String::new()));
+                }
                 stack.push(name);
             }
             Event::Text(text) => {
                 let decoded = text.decode().ok()?;
+                if stack.len() == 3 && stack[1] == "ItemGroup" && !decoded.trim().is_empty() {
+                    return None;
+                }
                 if let Some((_, value)) = &mut active {
                     value.push_str(&decoded);
                     if value.len() > 128 {
@@ -179,6 +226,8 @@ pub(super) fn simple_csharp_sdk_options(
         kind: kind?,
         target_framework,
         implicit_usings,
+        package_references,
+        project_references,
         properties: CSharpSdkProjectProperties {
             output_type,
             nullable,
@@ -239,7 +288,7 @@ mod tests {
             r#"<Using Remove="System"/>"#,
             r#"<Compile Remove="Generated.cs"/>"#,
             r#"<PackageReference Include="Example"/>"#,
-            r#"<ProjectReference Include="Other.csproj"/>"#,
+            r#"<ProjectReference Include="Other.csproj" Aliases="other"/>"#,
             r#"<Analyzer Include="Plugin.dll"/>"#,
         ] {
             let changed = good.replace(
@@ -268,5 +317,28 @@ mod tests {
         assert!(simple_csharp_sdk_options(&base("<Nullable>enable</Nullable><Nullable>disable</Nullable>"), true).is_none());
         assert!(simple_csharp_sdk_options(&base("<DefineConstants>X</DefineConstants>"), true).is_none());
         assert!(simple_csharp_sdk_options(&base("<LangVersion>latest</LangVersion>"), true).is_none());
+    }
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::simple_csharp_sdk_options;
+
+    #[test]
+    fn literal_restored_references_are_retained_for_exact_resolution() {
+        let project = |items: &str| format!(r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup>{items}</ItemGroup></Project>"#);
+        let options = simple_csharp_sdk_options(&project(r#"<PackageReference Include="Npgsql" Version="10.0.0"/><ProjectReference Include="..\Api\Api.csproj"/>"#), true).unwrap();
+        assert_eq!(options.package_references, [("Npgsql".to_owned(), "10.0.0".to_owned())]);
+        assert_eq!(options.project_references, ["../Api/Api.csproj"]);
+        for item in [
+            r#"<PackageReference Include="Npgsql" Version="$(Version)"/>"#,
+            r#"<PackageReference Include="Npgsql" Version="10.*"/>"#,
+            r#"<PackageReference Include="Npgsql" Version="10.0.0" ExcludeAssets="compile"/>"#,
+            r#"<PackageReference Include="Npgsql" Version="10.0.0"><Aliases>special</Aliases></PackageReference>"#,
+            r#"<ProjectReference Include="Api.csproj" Condition="true"/>"#,
+            r#"<ProjectReference Include="/elsewhere/Api.csproj"/>"#,
+        ] {
+            assert!(simple_csharp_sdk_options(&project(item), true).is_none(), "{item}");
+        }
     }
 }
