@@ -31,6 +31,7 @@ fn request<'a>(
         captured_sources: Some(members),
         captured_config: None,
         captured_project_graph: None,
+        execution_closure: None,
         profile: CSharpVersion::CSharp14,
         native_tool: NativeTool::CSharpCompiler,
         toolchain: dotnet,
@@ -97,9 +98,18 @@ fn captured_members_bind_cross_file_symbols_and_retain_incomplete_diagnostics()
     );
     // Exercise the Rust-side same-image check for persisted occurrence claims.
     let config = [
-        backend_frontend_csharp::legacy::CSharpCapturedConfig { path: "App.csproj", text: Some("<Project/>") },
-        backend_frontend_csharp::legacy::CSharpCapturedConfig { path: "Directory.Build.props", text: None },
-        backend_frontend_csharp::legacy::CSharpCapturedConfig { path: "Directory.Build.targets", text: None },
+        backend_frontend_csharp::legacy::CSharpCapturedConfig {
+            path: "App.csproj",
+            text: Some("<Project/>"),
+        },
+        backend_frontend_csharp::legacy::CSharpCapturedConfig {
+            path: "Directory.Build.props",
+            text: None,
+        },
+        backend_frontend_csharp::legacy::CSharpCapturedConfig {
+            path: "Directory.Build.targets",
+            text: None,
+        },
     ];
     let project = root.path().join("App.csproj");
     fs::write(&project, "<Project/>")?;
@@ -107,9 +117,19 @@ fn captured_members_bind_cross_file_symbols_and_retain_incomplete_diagnostics()
     captured.project_file = Some(&project);
     captured.captured_config = Some(&config);
     let admitted = producer.produce(captured)?;
-    let evidence: serde_json::Value = serde_json::from_slice(admitted.captured_evidence().ok_or("missing occurrence evidence")?)?;
+    let evidence: serde_json::Value = serde_json::from_slice(
+        admitted
+            .captured_evidence()
+            .ok_or("missing occurrence evidence")?,
+    )?;
     assert_eq!(evidence["format"], 2);
-    assert_eq!(evidence["occurrences"].as_array().ok_or("missing occurrences")?.len(), 1);
+    assert_eq!(
+        evidence["occurrences"]
+            .as_array()
+            .ok_or("missing occurrences")?
+            .len(),
+        1
+    );
     assert_eq!(evidence["occurrences"][0]["owner"], u32::MAX);
     let invalid = "MissingName();\npublic partial class Program;\n";
     fs::write(&binding, invalid)?;
@@ -205,19 +225,41 @@ fn private_calls_and_full_source_spans_survive_real_roslyn_capture() -> Result<(
     let binding = root.path().join("Accounts.cs");
     let source = "// λ before byte coordinates\npublic static class Accounts {\n    public static void MapAccounts() { MissingFields(); MissingFields(); }\n    private static bool MissingFields() { return false; }\n}\n";
     fs::write(&binding, source)?;
-    let members = [CSharpCapturedSource { path: "Accounts.cs", text: source }];
+    let members = [CSharpCapturedSource {
+        path: "Accounts.cs",
+        text: source,
+    }];
     let cancelled = AtomicBool::new(false);
-    let bytes = producer.authority_image(request(root.path(), &binding, &dotnet, source, &members, &cancelled))?;
+    let bytes = producer.authority_image(request(
+        root.path(),
+        &binding,
+        &dotnet,
+        source,
+        &members,
+        &cancelled,
+    ))?;
     let image = backend_frontend_csharp::legacy::CSharpImage::open(&bytes)?;
     assert_eq!(image.compilation_errors(), 0);
     let declarations = image.declarations().collect::<Result<Vec<_>, _>>()?;
-    let (target, declaration) = declarations.iter().enumerate()
+    let (target, declaration) = declarations
+        .iter()
+        .enumerate()
         .find(|(_, row)| row.name.bytes == b"MissingFields")
         .ok_or("private method missing")?;
-    assert_eq!(&source.as_bytes()[declaration.decl_start as usize..declaration.decl_end as usize],
-        b"private static bool MissingFields() { return false; }");
-    let calls = image.references().collect::<Result<Vec<_>, _>>()?.into_iter()
-        .filter(|row| row.target == Some(target as u32)).collect::<Vec<_>>();
-    assert_eq!(calls.len(), 2, "both same-file private calls must remain queryable");
+    assert_eq!(
+        &source.as_bytes()[declaration.decl_start as usize..declaration.decl_end as usize],
+        b"private static bool MissingFields() { return false; }"
+    );
+    let calls = image
+        .references()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|row| row.target == Some(target as u32))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        calls.len(),
+        2,
+        "both same-file private calls must remain queryable"
+    );
     Ok(())
 }

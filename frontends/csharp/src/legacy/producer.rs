@@ -33,6 +33,81 @@ use thiserror::Error;
 
 use crate::legacy::{CSharpImage, ImageError};
 
+/// Immutable custody for the executable files that participate in one Roslyn
+/// invocation.  The bytes are captured before spawning the helper and checked
+/// again immediately before use; a changed host/runtime fails closed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CSharpExecutionClosure {
+    files: Box<[(PathBuf, [u8; 32], u64)]>,
+    digest: [u8; 32],
+}
+
+impl CSharpExecutionClosure {
+    /// Captures a bounded set of regular executable/helper files.
+    pub fn capture(paths: &[&Path]) -> Result<Self, CSharpAuthorityError> {
+        if paths.is_empty() || paths.len() > 16 {
+            return Err(CSharpAuthorityError::Configuration);
+        }
+        let mut files = Vec::with_capacity(paths.len());
+        let mut total = 0usize;
+        let mut hash = Sha256::new();
+        hash.update(b"nudox.csharp.execution-closure.v1\0");
+        for path in paths {
+            let canonical =
+                fs::canonicalize(path).map_err(|_| CSharpAuthorityError::Configuration)?;
+            let bytes = backend_platform::durable::read_regular_bounded_stable(
+                &canonical,
+                256 * 1024 * 1024,
+            )
+            .map_err(|_| CSharpAuthorityError::Configuration)?;
+            if bytes.is_empty() {
+                return Err(CSharpAuthorityError::Configuration);
+            }
+            total = total.checked_add(bytes.len()).filter(|size| *size <= 256 * 1024 * 1024)
+                .ok_or(CSharpAuthorityError::Configuration)?;
+            let digest: [u8; 32] = Sha256::digest(&bytes).into();
+            let name = canonical.as_os_str().as_encoded_bytes();
+            hash.update((name.len() as u64).to_le_bytes());
+            hash.update(name);
+            hash.update((bytes.len() as u64).to_le_bytes());
+            hash.update(digest);
+            files.push((canonical, digest, bytes.len() as u64));
+        }
+        Ok(Self {
+            files: files.into_boxed_slice(),
+            digest: hash.finalize().into(),
+        })
+    }
+
+    /// Revalidates every executable and the closure digest before invocation.
+    pub fn validate(&self) -> bool {
+        let mut hash = Sha256::new();
+        hash.update(b"nudox.csharp.execution-closure.v1\0");
+        for (path, expected, length) in &self.files {
+            let Ok(bytes) =
+                backend_platform::durable::read_regular_bounded_stable(path, 256 * 1024 * 1024)
+            else {
+                return false;
+            };
+            if bytes.len() as u64 != *length || Sha256::digest(&bytes).as_slice() != expected {
+                return false;
+            }
+            let name = path.as_os_str().as_encoded_bytes();
+            hash.update((name.len() as u64).to_le_bytes());
+            hash.update(name);
+            hash.update(length.to_le_bytes());
+            hash.update(expected);
+        }
+        hash.finalize().as_slice() == self.digest
+    }
+
+    /// Stable digest for same-attempt receipts.
+    #[must_use]
+    pub const fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
+}
+
 /// The default maximum bytes accepted from either child stream.
 pub const DEFAULT_OUTPUT_LIMIT: usize = 32 * 1024 * 1024;
 /// The default maximum authority-image bytes retained by one producer call.
@@ -133,6 +208,9 @@ pub struct CSharpAuthorityRequest<'request, 'config, 'cancel> {
     pub captured_config: Option<&'request [CSharpCapturedConfig<'request>]>,
     /// Exact bounded project graph. Nodes compile into separate assemblies.
     pub captured_project_graph: Option<&'request CSharpCapturedProjectGraph<'request>>,
+    /// Immutable executable/helper custody for this invocation, when the
+    /// owner has admitted a native execution closure.
+    pub execution_closure: Option<&'request CSharpExecutionClosure>,
     /// Closed C# language version selected for Roslyn parsing.
     pub profile: CSharpVersion,
     /// Native tool family already selected by the enclosing compiler request.
@@ -364,6 +442,11 @@ impl CSharpOracle {
             return Err(CSharpAuthorityError::WrongToolchain {
                 observed: request.native_tool,
             });
+        }
+        if let Some(closure) = request.execution_closure {
+            if !closure.validate() {
+                return Err(CSharpAuthorityError::Configuration);
+            }
         }
         validate_absolute_paths(&self.oracle, request)?;
         let maximum_source_bytes = request.configuration.maximum_source_bytes;
@@ -1262,6 +1345,20 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     #[test]
+    fn execution_closure_rejects_changed_helper_bytes() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let dotnet = directory.path().join("dotnet");
+        let helper = directory.path().join("oracle.dll");
+        std::fs::write(&dotnet, b"dotnet-bytes").expect("dotnet");
+        std::fs::write(&helper, b"helper-bytes").expect("helper");
+        let closure = CSharpExecutionClosure::capture(&[dotnet.as_path(), helper.as_path()])
+            .expect("capture execution closure");
+        assert!(closure.validate());
+        std::fs::write(&helper, b"changed-helper").expect("mutate helper");
+        assert!(!closure.validate());
+    }
+
+    #[test]
     fn captured_graph_protocol_keeps_project_edges_and_buffers_separate() {
         let sources = [CSharpCapturedSource {
             path: "Api/Api.cs",
@@ -1359,6 +1456,7 @@ mod tests {
             captured_sources: None,
             captured_config: None,
             captured_project_graph: None,
+            execution_closure: None,
             profile: CSharpVersion::CSharp14,
             native_tool: NativeTool::CSharpCompiler,
             toolchain: Path::new("/dotnet"),
@@ -1391,6 +1489,7 @@ mod tests {
             captured_sources: None,
             captured_config: None,
             captured_project_graph: None,
+            execution_closure: None,
             profile: CSharpVersion::CSharp14,
             native_tool: NativeTool::CSharpCompiler,
             toolchain: Path::new("/dotnet"),
@@ -1428,6 +1527,7 @@ mod tests {
             captured_sources: None,
             captured_config: None,
             captured_project_graph: None,
+            execution_closure: None,
             profile: CSharpVersion::CSharp14,
             native_tool: NativeTool::CSharpCompiler,
             toolchain: &tool,

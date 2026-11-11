@@ -1059,6 +1059,12 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         });
                     }
                 };
+                let execution_closure =
+                    backend_frontend_csharp::legacy::CSharpExecutionClosure::capture(&[
+                        resolved.as_ref(),
+                        configuration.producer.oracle_path(),
+                    ])
+                    .map_err(PackageAuthorityError::CSharp)?;
                 let image = configuration
                     .producer
                     .produce(CSharpAuthorityRequest {
@@ -1069,6 +1075,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         captured_sources: request.csharp_sources,
                         captured_config: request.csharp_config,
                         captured_project_graph: None,
+                        execution_closure: Some(&execution_closure),
                         profile,
                         native_tool: resolved.tool,
                         toolchain: resolved.as_ref(),
