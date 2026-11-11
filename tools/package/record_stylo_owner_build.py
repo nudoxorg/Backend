@@ -25,6 +25,7 @@ import sqlite_linux_development as sqlite_phase
 
 
 ARGV = ["cargo", "build", "--release", "--locked", "-p", "backend-locald", "--bin", "backend-locald"]
+DESKTOP_ARGV = ["cargo", "build", "--release", "--locked", "-p", "backend-desktop", "--bin", "backend-desktop"]
 SCHEMA = "nudox.stylo-bound-owner-build-receipt.v4"
 OBSERVER_ARGV = ["cargo", "build", "--release", "--locked", "-p", "backend-compile", "--example", "stylo_identity_observer"]
 REMAP_SCHEMA = "nudox.stylo-owner-remap.v1"
@@ -97,6 +98,7 @@ def require_no_builder_paths(path: Path, private_paths: list[Path]) -> None:
 
 
 def capture(args: argparse.Namespace) -> Path:
+    require(not args.sqlite_desktop or args.sqlite, "desktop companion build requires SQLite")
     source = common.clean_source_snapshot(args.source_checkout)
     require(source["clean"] and source["path"] == common.ROOT, "owner source must be this exact clean checkout")
     require(type(args.jobs) is int and 1 <= args.jobs <= 4, "jobs must be between one and four")
@@ -250,6 +252,17 @@ def capture(args: argparse.Namespace) -> Path:
         env["NUDOX_BUILD_STYLO_WORKER_ID"] = anchor
         execution = common.execute(ARGV, source["path"], env, output, deadline, args.max_log_bytes)
         require(execution["exit"] == 0 and execution["process_group_retired"], "anchored owner build failed")
+        desktop_record = None
+        if args.sqlite_desktop:
+            desktop_logs = output / "desktop-build"
+            desktop_logs.mkdir(mode=0o700)
+            desktop_execution = common.execute(DESKTOP_ARGV, source["path"], env, desktop_logs, deadline, args.max_log_bytes)
+            require(desktop_execution["exit"] == 0 and desktop_execution["process_group_retired"], "anchored desktop build failed")
+            desktop = args.target_dir / common.TARGET / "release/backend-desktop"
+            desktop_identity = common.artifact_identity(desktop)
+            require_no_builder_paths(desktop, private_paths + [Path(path) for path in worker_private_paths])
+            require(common.artifact_identity(desktop) == desktop_identity, "desktop changed during privacy scan")
+            desktop_record = {"argv": DESKTOP_ARGV, "execution": desktop_execution, "artifact": desktop_identity}
         if sqlite_record is not None:
             sqlite_phase.verify_after_owner(sqlite_record, source=source["path"],
                 env=observer_environment, deadline=deadline)
@@ -291,7 +304,7 @@ def capture(args: argparse.Namespace) -> Path:
                    "remap_schema": REMAP_SCHEMA, "c_remap_schema": C_REMAP_SCHEMA, "source_path": str(source["path"]),
                    "exit": execution["exit"], "execution": execution,
                    "toolchain": {**tools, "unchanged": True}, "owner": owner_identity,
-                   "sqlite": sqlite_record}
+                   "sqlite": sqlite_record, "desktop": desktop_record}
         candidate = output / "candidate.json"
         require(len(common.shared.canonical_json(receipt)) + 1 <= 65536, "owner receipt exceeds its bound")
         common.runtime.write_new_json(candidate, receipt)
@@ -320,6 +333,7 @@ def main() -> int:
     for name in ("cargo", "rustc", "patchelf", "readelf", "source-loader"):
         parser.add_argument("--" + name + "-sha256", required=True)
     parser.add_argument("--sqlite", action="store_true", help="build and bind the SQLite companion to this owner")
+    parser.add_argument("--sqlite-desktop", action="store_true", help="also build the desktop against that same companion basis")
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--timeout-seconds", type=float, default=1800)
     parser.add_argument("--max-log-bytes", type=int, default=64 * 1024 * 1024)

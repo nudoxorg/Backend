@@ -54,7 +54,12 @@ worker sibling. The platform companion phases `sqlite_linux_development.py` and
 `sqlite_macos_development.py` retain the runtime closure and recheck identity
 after relocation/signing. For the Linux source-bound release flow, pass `--sqlite`
 to `record_stylo_owner_build.py` and supply its resulting owner receipt to
-`linux_release_package.py` with the corresponding Stylo worker and receipt. The
+`linux_release_package.py` with the corresponding Stylo worker and receipt.
+Add `--sqlite-desktop` for a desktop built with both companion bases. For a
+formal Linux GUI candidate, supply that owner receipt, its CLI build manifest,
+the Stylo worker and worker receipt via `--companion-owner-receipt`,
+`--companion-cli-manifest`, `--stylo-worker`, and `--stylo-worker-receipt` to
+`linux_formal_release.py`. All four inputs are required together. The
 actor compiles both companion identities into the owner, and packaging requires
 the two workers to share the same relocated private libgcc. Packaging reobserves
 the staged SQLite closure; installation checks its receipt and bytes. These

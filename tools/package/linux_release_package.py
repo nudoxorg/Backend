@@ -628,6 +628,16 @@ def admit_stylo_bound_owner(receipt_path: Path, *, source: tuple[str, str, str],
         if (sqlite.get("dependency", {}).get("bytes"), sqlite.get("dependency", {}).get("sha256")) != (dependency["bytes"], dependency["sha256"]):
             fail("SQLite and Stylo have different private libgcc bytes")
         sqlite_phase.verify_after_owner(sqlite, source=Path(source_path), env=receipt["observer_environment"], deadline=time.monotonic() + 30)
+    desktop = receipt.get("desktop")
+    if desktop is not None:
+        if sqlite is None or not isinstance(desktop, dict) or desktop.get("argv") != ["cargo", "build", "--release", "--locked", "-p", "backend-desktop", "--bin", "backend-desktop"] or desktop.get("execution", {}).get("exit") != 0 or desktop.get("execution", {}).get("process_group_retired") is not True:
+            fail("desktop companion build recipe is invalid")
+        image = desktop.get("artifact")
+        if not isinstance(image, dict) or image.get("path") != str(Path(env["CARGO_TARGET_DIR"]) / TARGET / "release/backend-desktop") or image.get("architecture") != "x86_64" or admit_file_digest(Path(image["path"]), MAX_BINARY_BYTES) != (image.get("bytes"), image.get("sha256")):
+            fail("desktop companion artifact differs from its build receipt")
+        reject_private_paths(Path(image["path"]), private_paths + worker_private_paths, "companion desktop")
+        if admit_file_digest(Path(image["path"]), MAX_BINARY_BYTES) != (image["bytes"], image["sha256"]):
+            fail("desktop companion changed during privacy scan")
     forbidden_paths = private_paths + worker_private_paths
     reject_private_paths(Path(owner["path"]), forbidden_paths, "Stylo owner")
     reject_private_paths(Path(relocated["path"]), forbidden_paths, "relocated Stylo worker")
@@ -764,6 +774,13 @@ def main() -> int:
             admitted_lengths["backend-stylo-worker"] = stylo_owner["worker"]["bytes"]
             if stylo_owner.get("sqlite") is not None:
                 sqlite = stylo_owner["sqlite"]
+                if args.include_desktop:
+                    desktop = stylo_owner.get("desktop")
+                    if desktop is None:
+                        fail("SQLite desktop package requires a desktop built with the same basis")
+                    sources["backend-desktop"] = Path(desktop["artifact"]["path"])
+                    admitted_digests["backend-desktop"] = desktop["artifact"]["sha256"]
+                    admitted_lengths["backend-desktop"] = desktop["artifact"]["bytes"]
                 sources["backend-sqlite-worker"] = Path(sqlite["worker"]["path"])
                 admitted_digests["backend-sqlite-worker"] = sqlite["worker"]["sha256"]
                 admitted_lengths["backend-sqlite-worker"] = sqlite["worker"]["bytes"]
