@@ -50,6 +50,26 @@ fn verify(session: &mut Session, project: &std::path::Path) -> Result<(), Box<dy
         .ok_or("Vue declaration absent from public names search")?;
     assert_eq!(row.source.captured().unwrap().start_line(), 4);
     let coordinate = row.label.clone();
+    let selected = row.id;
+    let CommandReply::Search(search) = session.search("mounted", 100)?.reply else {
+        return Err("Vue lexical search reply".into());
+    };
+    assert!(
+        search.root.rows().iter().any(|row| row.id == selected),
+        "ordinary lexical search retains the Vue declaration"
+    );
+    let module = format!("{}::App.vue:1::App", project.display());
+    let CommandReply::Document(component) = session.source(&module)?.reply else {
+        return Err("component source reply".into());
+    };
+    assert!(
+        component
+            .excerpt
+            .text()
+            .is_some_and(|text| text.starts_with("<template>") && text.contains("<script setup")),
+        "full verified Vue host source"
+    );
+
     let CommandReply::Document(document) = session.source(&coordinate)?.reply else {
         return Err("source reply".into());
     };
