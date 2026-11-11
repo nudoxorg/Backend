@@ -4424,6 +4424,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 &observed.target_framework,
                 &observed.sdk_directory,
                 global_json,
+                observed.sdk_kind,
                 &candidates,
                 assets.as_deref(),
                 assets.as_ref().and_then(|path| fs::read(path).ok()).map(|bytes| Sha256::digest(bytes).into()),

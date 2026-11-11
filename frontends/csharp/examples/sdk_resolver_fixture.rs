@@ -3,7 +3,7 @@
 //! This is intentionally an example instead of an auto-run test: invoking
 //! dotnet is campaign-controlled and requires an allocated host slot.
 
-use backend_frontend_csharp::legacy::resolve_references_with_sdk;
+use backend_frontend_csharp::legacy::{resolve_references_with_sdk, CSharpSdkKind};
 use sha2::{Digest, Sha256};
 use std::{
     env, fs,
@@ -48,6 +48,7 @@ fn main() {
         &target.to_string_lossy(),
         &sdk,
         global_json.as_deref(),
+        CSharpSdkKind::Standard,
         &candidates,
         assets.as_deref(),
         assets_digest,

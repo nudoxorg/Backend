@@ -45,6 +45,7 @@ pub struct CSharpSdkProbe<'a> {
 /// Observed SDK targeting inputs; no complete project-input claim is implied.
 #[derive(Debug)]
 pub struct CSharpSdkObservation {
+    pub sdk_kind: CSharpSdkKind,
     pub sdk_directory: PathBuf,
     /// Framework requested of the SDK for this observation.
     pub target_framework: String,
@@ -78,6 +79,7 @@ pub struct CSharpResolvedReferenceSnapshot {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CSharpResolverReceipt {
     pub sdk_directory: PathBuf,
+    pub sdk_kind: Box<str>,
     pub target_framework: String,
     pub global_json_digest: Option<[u8; 32]>,
     pub candidate_digest: [u8; 32],
@@ -111,6 +113,8 @@ impl CSharpResolverReceipt {
         let sdk = self.sdk_directory.as_os_str().as_encoded_bytes();
         hash.update((sdk.len() as u64).to_le_bytes());
         hash.update(sdk);
+        hash.update((self.sdk_kind.len() as u64).to_le_bytes());
+        hash.update(self.sdk_kind.as_bytes());
         hash.update((self.target_framework.len() as u64).to_le_bytes());
         hash.update(self.target_framework.as_bytes());
         match self.global_json_digest {
@@ -391,6 +395,7 @@ pub fn resolve_references_with_sdk(
     target_framework: &str,
     observed_sdk_directory: &Path,
     captured_global_json: Option<&str>,
+    sdk_kind: CSharpSdkKind,
     candidates: &[PathBuf],
     assets_file: Option<&Path>,
     assets_digest: Option<[u8; 32]>,
@@ -490,8 +495,12 @@ pub fn resolve_references_with_sdk(
             .map_err(|_| "SDK global.json unavailable")?;
     }
     let project = scratch.path().join("resolve.csproj");
+    let sdk_name = match sdk_kind {
+        CSharpSdkKind::Standard => "Microsoft.NET.Sdk",
+        CSharpSdkKind::Web => "Microsoft.NET.Sdk.Web",
+    };
     let mut xml = format!(
-        "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>{target_framework}</TargetFramework><NetCoreTargetingPackRoot>{}</NetCoreTargetingPackRoot><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets></PropertyGroup><ItemGroup>", private_pack_root.display()
+        "<Project Sdk=\"{sdk_name}\"><PropertyGroup><TargetFramework>{target_framework}</TargetFramework><NetCoreTargetingPackRoot>{}</NetCoreTargetingPackRoot><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets></PropertyGroup><ItemGroup>", private_pack_root.display()
     );
     for path in candidates {
         if !path.is_absolute() || !path.is_file() {
@@ -737,6 +746,7 @@ pub fn resolve_references_with_sdk(
         digest: selected_digest,
         receipt: CSharpResolverReceipt {
             sdk_directory: observed_sdk_directory,
+            sdk_kind: sdk_name.into(),
             target_framework: target_framework.to_owned(),
             global_json_digest,
             candidate_digest: candidate_digest(&snapshots),
@@ -1352,6 +1362,7 @@ pub fn observe_csharp_sdk_with(
         usings.push(name.to_owned());
     }
     Ok(CSharpSdkObservation {
+        sdk_kind: kind,
         sdk_directory,
         target_framework: target_framework.to_owned(),
         nullable,
@@ -1390,6 +1401,7 @@ mod tests {
             digest,
             receipt: CSharpResolverReceipt {
                 sdk_directory: std::env::temp_dir(),
+                sdk_kind: "Microsoft.NET.Sdk".into(),
                 target_framework: "net10.0".to_owned(),
                 global_json_digest: None,
                 candidate_digest: [7; 32],
@@ -1430,6 +1442,7 @@ mod tests {
         let sdk = tempfile::tempdir().unwrap();
         let receipt = CSharpResolverReceipt {
             sdk_directory: sdk.path().canonicalize().unwrap(),
+            sdk_kind: "Microsoft.NET.Sdk".into(),
             target_framework: "net10.0".to_owned(),
             global_json_digest: None,
             candidate_digest: [8; 32],
