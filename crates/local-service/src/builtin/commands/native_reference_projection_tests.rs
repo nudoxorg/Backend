@@ -55,7 +55,7 @@ fn project_fixture(private: bool, graph_origin: bool) -> Result<(), Box<dyn std:
     } else {
         "export function Button() { return 1; }\n"
     };
-    let unused = "export function Unused() { return 0; }\n";
+    let unused = "export async function Unused() { return 0; }\n";
     let barrel = "export { Button as Action } from './button';\n";
     let page = "// λ\nimport { Action as Confirm } from './ui';\nexport function Page() { return <><Confirm /><Confirm /></>; }\n";
     fs::write(package.join("ui/button.ts"), button)?;
@@ -103,6 +103,16 @@ fn project_fixture(private: bool, graph_origin: bool) -> Result<(), Box<dyn std:
         staged.input_witness().coverage().state(),
         backend_version::Coverage::Partial
     );
+    let staged_ts = client.compile_package_sources_staged(OwnedPackageSourceSet::new(
+        ts_request.clone(), package.clone(), ts_sources.clone(),
+    )?)?;
+    let headers = staged_ts.native_typescript_headers().iter()
+        .find(|file| file.path == "ui/unused.ts").ok_or("async source header absent")?;
+    assert_eq!(headers.source, backend_semantic::ir::SourceIdentity::from_bytes(unused.as_bytes()).ok_or("source identity")?);
+    let header = headers.entries.first().ok_or("async function header absent")?;
+    assert_eq!(&unused[header.header_extent.0 as usize..header.header_extent.1 as usize], "export async function Unused()");
+    assert!(header.header_extent.1 < header.compiler_extent.1);
+    drop(staged_ts);
     let first = client.compile_package_sources(OwnedPackageSourceSet::new(
         ts_request,
         package.clone(),
