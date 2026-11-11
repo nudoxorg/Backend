@@ -36,7 +36,7 @@ pub(super) fn scan(
         .map_err(|error| error.to_string())?;
     let content = typed_of::<InputContentSchema>(&bytes).to_bytes();
     let source_identity = SourceFactIdentity::from_canonical_bytes(&bytes);
-    let analysis = backend_frontend_vue::support_fingerprint();
+    let analysis = vue_analysis_version();
     let mut declarations = Vec::new();
     let mut supported = false;
     if let Ok(container) = backend_frontend_vue::parse(&bytes) {
@@ -169,7 +169,7 @@ fn unavailable(
         project,
         relative.clone(),
         SourceLanguage::TypeScript,
-        backend_frontend_vue::support_fingerprint(),
+        vue_analysis_version(),
         reason,
         None,
     )?;

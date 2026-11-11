@@ -37,7 +37,7 @@ pub(super) fn extent(
     let file = record
         .file_fields()
         .ok_or_else(|| BuiltinModelError("Vue source is not a file".to_owned()))?;
-    if file.analysis_version != backend_frontend_vue::support_fingerprint() {
+    if file.analysis_version != super::super::ingest::vue_analysis_version() {
         return Ok(None);
     }
     let Some(identity) = file.source_identity else {

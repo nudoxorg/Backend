@@ -8,6 +8,15 @@ use super::source_frontier;
 mod go_project;
 #[path = "ingest/vue.rs"]
 mod vue;
+
+/// Native container/compiler sources plus this source-facts projection recipe.
+/// Changes to generic file facts must invalidate warm source selection too.
+pub(super) fn vue_analysis_version() -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nudox.vue-script-source-projection.v1\0");
+    hash.update(&backend_frontend_vue::support_fingerprint());
+    *hash.finalize().as_bytes()
+}
 use self::go_project::GoProjectCapture;
 use backend_compile::{
     DeclarationKind, InputContentSchema, SourceExcerpt, SourceLanguage, SyntaxError,
