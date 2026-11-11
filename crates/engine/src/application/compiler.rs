@@ -4420,6 +4420,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             if candidates.is_empty() { return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK resolver candidates unavailable" }); }
             let project = package.package_root.join(csharp_project_path.ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK project path unavailable" })?.as_ref());
             let assets = project.parent().map(|directory| directory.join("obj/project.assets.json"));
+            let assets_digest = assets.as_ref().map(|path| backend_platform::durable::read_regular_bounded_stable(path, 64 * 1024 * 1024).map(|bytes| Sha256::digest(bytes).into())).transpose().map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# assets capture unavailable" })?;
             let global_json = captured_global_json;
             let snapshot = backend_frontend_csharp::legacy::resolve_references_with_sdk(
                 self.toolchain(first_application_request).map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" })?.external().map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" })?.executable(),
@@ -4433,7 +4434,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 restored_csharp_references.as_ref().map_or(&[][..], |references| references.framework_references.as_slice()),
                 &candidates,
                 assets.as_deref(),
-                assets.as_ref().and_then(|path| fs::read(path).ok()).map(|bytes| Sha256::digest(bytes).into()),
+                assets_digest,
                 control.deadline,
                 cancelled,
             ).map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK reference resolution unavailable" })?;
