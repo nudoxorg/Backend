@@ -413,18 +413,19 @@ impl OwnedCSharpProjectGraph {
         }) {
             return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
         }
-        fn visit(path: &str, nodes: &[OwnedCSharpProjectNode], active: &mut std::collections::HashSet<String>, done: &mut std::collections::HashSet<String>) -> bool {
+        fn visit(path: &str, depth: usize, nodes: &[OwnedCSharpProjectNode], active: &mut std::collections::HashSet<String>, done: &mut std::collections::HashSet<String>) -> bool {
+            if depth > 16 { return false; }
             if active.contains(path) { return false; }
             if !done.insert(path.to_owned()) { return true; }
             let Some(node) = nodes.iter().find(|node| node.project_path.as_ref() == path) else { return false; };
             active.insert(path.to_owned());
-            let valid = node.project_references.iter().all(|dependency| visit(dependency, nodes, active, done));
+            let valid = node.project_references.iter().all(|dependency| visit(dependency, depth + 1, nodes, active, done));
             active.remove(path);
             valid
         }
         let mut active = std::collections::HashSet::new();
         let mut done = std::collections::HashSet::new();
-        if !visit(&self.root_project, &nodes, &mut active, &mut done) || done.len() != nodes.len() {
+        if !visit(&self.root_project, 0, &nodes, &mut active, &mut done) || done.len() != nodes.len() {
             return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
         }
         let source_count = nodes.iter().try_fold(0usize, |total, node| total.checked_add(node.sources.len()));
