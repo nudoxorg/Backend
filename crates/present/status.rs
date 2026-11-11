@@ -300,6 +300,7 @@ impl CapabilitySummary {
                 oracles.push_str(&format!("; {} installed but not yet ready", self.oracles.waiting()));
             }
             oracles.push(')');
+            oracles.push_str("; counts are global, not project coverage; inspect package-profile for the indexed project");
             parts.push(oracles);
         }
         for rollup in &self.reasons {
