@@ -99,17 +99,26 @@ mod source_excerpt_tests {
 
     #[test]
     fn structural_csharp_source_retains_class_method_and_private_body() -> Result<(), String> {
-        let source = "// λ before the declaration\npublic class BankAccount {\n    public string Name { get; set; }\n    private int First;\n    private int Second;\n    private static bool MissingFields(string value) {\n        return value.Length == 0;\n    }\n}\n";
+        let source = "// λ before the declaration\npublic class BankAccount {\n    public string Name { get; set; }\n    private int First, Second;\n    private static bool MissingFields(string value) {\n        return value.Length == 0;\n    }\n}\n";
         let analysis = super::syntax_frontend()
             .map_err(|error| error.to_string())?
             .analyze(Path::new("BankAccount.cs"), source.as_bytes())
             .map_err(|error| error.to_string())?;
+        let class_binding = analysis
+            .declarations()
+            .iter()
+            .find(|row| row.name() == "BankAccount")
+            .and_then(|row| match row.binding_identity() {
+                backend_compile::SourceBindingIdentity::Exact(capture) => Some(capture.binding()),
+                backend_compile::SourceBindingIdentity::Legacy => None,
+            })
+            .ok_or_else(|| "missing exact class binding".to_owned())?;
         for (name, expected) in [
             ("BankAccount", source.lines().skip(1).collect::<Vec<_>>().join("\n")),
             ("MissingFields", "private static bool MissingFields(string value) {\n        return value.Length == 0;\n    }".to_owned()),
             ("Name", "public string Name { get; set; }".to_owned()),
-            ("First", "private int First;".to_owned()),
-            ("Second", "private int Second;".to_owned()),
+            ("First", "private int First, Second;".to_owned()),
+            ("Second", "private int First, Second;".to_owned()),
         ] {
             let declaration = analysis.declarations().iter().find(|row| row.name() == name && row.kind() != backend_compile::DeclarationKind::Module)
                 .ok_or_else(|| format!("missing authored declaration {name}"))?;
@@ -120,12 +129,10 @@ mod source_excerpt_tests {
                 backend_compile::SourceBindingIdentity::Exact(_)
             ));
             if matches!(name, "First" | "Second") {
-                assert_eq!(
+                assert!(matches!(
                     declaration.container(),
-                    &backend_compile::Container::Attached {
-                        type_name: "BankAccount".to_owned()
-                    }
-                );
+                    backend_compile::Container::Binding { binding } if *binding == class_binding
+                ));
             }
         }
         Ok(())
