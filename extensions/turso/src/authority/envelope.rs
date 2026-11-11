@@ -87,7 +87,8 @@ pub const MAX_COMPILER_NATIVE_HEADERS_BYTES: usize = 32 * 1024 * 1024;
 pub struct CompilerNativeHeadersMember { object_id: AuthorityHash, byte_length: u32 }
 impl CompilerNativeHeadersMember {
     pub fn from_verified_object(object: VerifiedObjectEnvelope, bytes: &[u8]) -> Result<Self, CompilerEnvelopeError> {
-        let key = ObjectKey::<CompilerNativeHeadersSchema>::from_value(bytes);
+        let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical(bytes).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
+        let key = ObjectKey::<backend_semantic::native_ts_headers::NativeTsHeaderAggregateSchema>::from_value(&aggregate);
         if bytes.is_empty() || bytes.len() > MAX_COMPILER_NATIVE_HEADERS_BYTES || object.schema() != COMPILER_NATIVE_HEADERS_SCHEMA || object.key() != key.as_bytes() || object.payload_len() != bytes.len() as u64 { return Err(CompilerEnvelopeError::NativeHeaders); }
         Ok(Self { object_id: *object.id().as_bytes(), byte_length: u32::try_from(bytes.len()).map_err(|_| CompilerEnvelopeError::NativeHeaders)? })
     }
@@ -97,12 +98,16 @@ impl CompilerNativeHeadersMember {
 /// Constructs the typed aggregate object; the canonical aggregate decoder must validate its contents.
 pub fn compiler_native_headers_object(bytes: &[u8]) -> Result<TypedObject, CompilerEnvelopeError> {
     if bytes.is_empty() || bytes.len() > MAX_COMPILER_NATIVE_HEADERS_BYTES { return Err(CompilerEnvelopeError::NativeHeaders); }
-    Ok(TypedObject::from_value(&ObjectKey::<CompilerNativeHeadersSchema>::from_value(bytes), bytes))
+    let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical(bytes).map_err(|_| CompilerEnvelopeError::NativeHeaders)?;
+    Ok(TypedObject::from_value(&ObjectKey::<backend_semantic::native_ts_headers::NativeTsHeaderAggregateSchema>::from_value(&aggregate), &aggregate))
 }
 /// Bytes authenticated by the selected compiler closure; source/image admission remains separate.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VerifiedNativeHeadersWitness(Box<[u8]>);
-impl VerifiedNativeHeadersWitness { pub fn as_bytes(&self) -> &[u8] { &self.0 } }
+pub struct VerifiedNativeHeadersWitness { bytes: Box<[u8]>, object_id: AuthorityHash }
+impl VerifiedNativeHeadersWitness {
+    pub fn as_bytes(&self) -> &[u8] { &self.bytes }
+    pub const fn object_id(&self) -> &AuthorityHash { &self.object_id }
+}
 
 /// Typed CAS schema for the C# invocation evidence aggregate.
 pub const COMPILER_CSHARP_EVIDENCE_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc00c, 1);
@@ -1590,12 +1595,14 @@ pub fn reopen_selected_typescript_snapshot_witness(
 }
 
 /// Reopens the aggregate only from the selected authenticated compiler closure.
-pub fn reopen_selected_native_headers(store: &FileStore, selected: &SelectedGeneration) -> Result<Option<VerifiedNativeHeadersWitness>, String> {
+pub fn reopen_selected_native_headers(store: &FileStore, selected: &SelectedGeneration, max_bytes: usize) -> Result<Option<VerifiedNativeHeadersWitness>, String> {
     let reopened = reopen_selected_compiler_metadata(store, selected)?;
     let closure = store.open_closure_claim(ArtifactClosureClaim::from_bytes(*selected.closure_id()))
         .map_err(|error| format!("open selected header closure: {error:?}"))?;
     if closure.id().as_bytes() != selected.closure_id() { return Err("header closure identity mismatch".into()); }
-    reopen_native_headers_bounded(store, &closure, reopened.metadata()).map(|value| value.map(|bytes| VerifiedNativeHeadersWitness(bytes.into_boxed_slice())))
+    let Some(member) = reopened.metadata().native_headers() else { return Ok(None) };
+    if member.byte_length() as usize > max_bytes { return Err("header aggregate exceeds caller budget".into()); }
+    reopen_native_headers_bounded(store, &closure, reopened.metadata()).map(|value| value.map(|bytes| VerifiedNativeHeadersWitness { bytes: bytes.into_boxed_slice(), object_id: *member.object_id() }))
 }
 
 fn reopen_native_headers_bounded(store: &FileStore, closure: &backend_store::DurableManifest, metadata: &CompilerPublicationMetadata) -> Result<Option<Vec<u8>>, String> {
@@ -1606,7 +1613,8 @@ fn reopen_native_headers_bounded(store: &FileStore, closure: &backend_store::Dur
     closure.admit_claim(claim).map_err(|e| format!("admit header aggregate: {e:?}"))?.ok_or("header aggregate absent from selected closure")?;
     let mut bytes = Vec::new();
     let verified = store.write_verified_object_payload(claim, u64::from(member.byte_length()), &mut bytes).map_err(|e| format!("read header aggregate: {e:?}"))?;
-    if verified.id().as_bytes() != member.object_id() || verified.schema() != COMPILER_NATIVE_HEADERS_SCHEMA || verified.payload_len() != u64::from(member.byte_length()) || verified.key() != ObjectKey::<CompilerNativeHeadersSchema>::from_value(&bytes).as_bytes() || bytes.len() != len { return Err("header aggregate schema, key, identity, or extent mismatch".into()); }
+    let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical(&bytes).map_err(|e| e.to_string())?;
+    if verified.id().as_bytes() != member.object_id() || verified.schema() != COMPILER_NATIVE_HEADERS_SCHEMA || verified.payload_len() != u64::from(member.byte_length()) || verified.key() != ObjectKey::<backend_semantic::native_ts_headers::NativeTsHeaderAggregateSchema>::from_value(&aggregate).as_bytes() || bytes.len() != len { return Err("header aggregate schema, key, identity, or extent mismatch".into()); }
     Ok(Some(bytes))
 }
 
@@ -2652,13 +2660,6 @@ impl Schema for CompilerNativeHeadersMetadataSchema {
     type Value = CompilerPublicationMetadata;
     fn encode(value: &Self::Value, output: &mut Vec<u8>) { output.extend_from_slice(&value.canonical_bytes()); }
 }
-struct CompilerNativeHeadersSchema;
-impl Schema for CompilerNativeHeadersSchema {
-    const DOMAIN: u8 = 0x7a; const TYPE: u16 = 0xc00e; const VERSION: u8 = 1;
-    type Value = [u8];
-    fn encode(value: &Self::Value, output: &mut Vec<u8>) { output.extend_from_slice(value); }
-}
-
 struct CompilerCSharpEvidenceMetadataSchema;
 impl Schema for CompilerCSharpEvidenceMetadataSchema {
     const DOMAIN: u8 = 0x7a;
@@ -3395,7 +3396,7 @@ mod tests {
         let snapshot = CompilerTypeScriptSnapshotMember { object_id: [0x33; 32], byte_length: 8 };
         let legacy = metadata(image).with_native_program_sources(program).unwrap().with_typescript_snapshot_witness(snapshot).unwrap();
         let legacy_bytes = legacy.canonical_bytes();
-        let bytes = b"compiler header aggregate";
+        let bytes = b"NHA1\0\0\0\0";
         let object = compiler_native_headers_object(bytes).unwrap();
         let directory = scratch_store();
         let store = FileStore::open(&directory, 1024 * 1024).unwrap();
