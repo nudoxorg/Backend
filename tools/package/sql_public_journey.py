@@ -13,7 +13,7 @@ at the typed account refusal and is not a pass.
 
 No real accounts, no network, a private temporary state and project directory.
 """
-import argparse, json, os, pathlib, re, select, shutil, signal, subprocess, sys, tempfile, time
+import argparse, atexit, json, os, pathlib, re, select, shutil, signal, subprocess, sys, tempfile, time
 
 p = argparse.ArgumentParser()
 p.add_argument("--bundle", required=True)
@@ -122,6 +122,9 @@ def cleanup():
                 except Exception:
                     pass
 
+
+# Also retire children if a malformed response raises outside fail().
+atexit.register(cleanup)
 
 root = pathlib.Path(tempfile.mkdtemp(prefix="ndx-sql-public-"))  # under TMPDIR
 os.chmod(root, 0o700)
