@@ -203,6 +203,7 @@ internal sealed record OracleOptions
     public bool CapturedSources { get; init; }
     public string? CapturedSourcesPath { get; init; }
     public string? CapturedConfigPath { get; init; }
+    public string? CapturedProjectGraphPath { get; init; }
     public string? CaptureEvidencePath { get; init; }
     public string? CaptureEvidenceNonce { get; init; }
 
@@ -265,6 +266,7 @@ internal sealed record OracleOptions
           --source-binding FILE Bind the authority image to this configured source file.
           --captured-sources   Read a bounded JSON source manifest from standard input.
           --captured-sources-file FILE Read a bounded captured source manifest from FILE.
+          --captured-project-graph-file FILE Bind a bounded graph of separate captured projects.
           --captured-config-file FILE Read bounded project and ancestor probes from FILE.
           --lang-version VER   C# language version (csharp-10 through csharp-14).
           --assembly-name NAME  Override the inferred assembly name.
@@ -300,6 +302,7 @@ internal sealed record OracleOptions
         var capturedSources = false;
         string? capturedSourcesPath = null;
         string? capturedConfigPath = null;
+        string? capturedProjectGraphPath = null;
         string? captureEvidencePath = null;
         string? captureEvidenceNonce = null;
         string? sourceBinding = null;
@@ -345,6 +348,9 @@ internal sealed record OracleOptions
                     break;
                 case "--captured-sources-file":
                     capturedSourcesPath = Value("--captured-sources-file");
+                    break;
+                case "--captured-project-graph-file":
+                    capturedProjectGraphPath = Value("--captured-project-graph-file");
                     break;
                 case "--captured-config-file":
                     capturedConfigPath = Value("--captured-config-file");
@@ -415,6 +421,10 @@ internal sealed record OracleOptions
         {
             throw new OracleUsageException("--authority-image requires --source-binding FILE");
         }
+        if (capturedProjectGraphPath is not null && (capturedSources || capturedSourcesPath is not null || capturedConfigPath is not null
+            || projectFile is null || roots.Count != 1 || exactDefines || targetFramework is not null || exactNullable is not null
+            || exactUnsafe is not null || exactOutputType is not null || assemblyName is not null || refDirs.Count != 0 || defines.Count != 0 || usings.Count != 0))
+            throw new OracleUsageException("captured graph requires one root and exact project, with options inside graph nodes");
         if (capturedSources && capturedSourcesPath is not null)
             throw new OracleUsageException("choose one captured source manifest input");
         if (capturedConfigPath is not null && ((!capturedSources && capturedSourcesPath is null) || projectFile is null))
@@ -432,7 +442,7 @@ internal sealed record OracleOptions
             || exactOutputType is not ("Exe" or "Library" or "WinExe")))
             throw new OracleUsageException("exact output type requires captured inputs and a valid output type");
         if ((captureEvidencePath is null) != (captureEvidenceNonce is null)
-            || (captureEvidencePath is not null && (!authorityImage || capturedConfigPath is null
+            || (captureEvidencePath is not null && (!authorityImage || (capturedConfigPath is null && capturedProjectGraphPath is null)
                 || captureEvidenceNonce!.Length != 32 || !captureEvidenceNonce.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f'))))
             throw new OracleUsageException("captured evidence requires an image, captured inputs, and a lowercase nonce");
 
@@ -463,6 +473,7 @@ internal sealed record OracleOptions
             CapturedSources = capturedSources,
             CapturedSourcesPath = capturedSourcesPath,
             CapturedConfigPath = capturedConfigPath,
+            CapturedProjectGraphPath = capturedProjectGraphPath,
             CaptureEvidencePath = captureEvidencePath,
             CaptureEvidenceNonce = captureEvidenceNonce,
             AssemblyName = assemblyName,
