@@ -57,7 +57,7 @@ pub use self::compiler::{
     StagedSemanticOutputObject, StagedCSharpConfigProbe, StagedCSharpInvocationEvidence, StagedSemanticPackage, StagedSemanticReaderError,
     StagedSemanticReaderMetrics, StagedTypedPlaneContentArtifact, StagedTypedPlaneContentError,
     StagedTypedPlaneContentV3, StagedVersionedPlaneArtifact, StagedVersionedPlaneError,
-    StagedVersionedPlaneSegment, StagedVersionedPlanes,
+    StagedVersionedPlaneSegment, StagedVersionedPlanes, StagedNativeTypeScriptHeaders,
 };
 pub use self::config::{
     LocalCompilerConfig, LocalCompilerControl, LocalCompilerScratch, LocalCompilerScratchError,

@@ -1858,6 +1858,11 @@ impl StagedSemanticPackage {
         self.staged.source_coverage.as_ref()
     }
 
+    /// Same-attempt parser claims; consumers must independently admit source and image.
+    pub fn native_typescript_headers(&self) -> &[StagedNativeTypeScriptHeaders] {
+        &self.staged.native_typescript_headers
+    }
+
     /// Exact full native program membership, including libraries and dependencies.
     /// This is not a complete-fact or complete-read certificate.
     #[must_use]
@@ -3540,10 +3545,27 @@ pub(crate) struct StagedPackageCompilation {
         std::sync::Arc<crate::application::typescript_program::TypeScriptForestClosureWitness>,
     >,
     native_program_sources: Option<backend_semantic::ir::NativeProgramSources>,
+    native_typescript_headers: Vec<StagedNativeTypeScriptHeaders>,
     source_coverage: Option<backend_semantic::ir::SourceCoverageObservation>,
     python_witness: Option<StagedPythonProjectWitness>,
     embeddings: Option<StagedEmbeddingOutput>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
+}
+
+/// Untrusted header claims captured from the admitted compiler arena and image.
+#[derive(Clone, Debug)]
+pub struct StagedNativeTypeScriptHeaders {
+    pub path: String,
+    pub source: backend_semantic::ir::SourceIdentity,
+    pub headers: crate::builtin::NativeHeaderEvidence,
+}
+
+impl StagedNativeTypeScriptHeaders {
+    /// Heap retained by this compact claim, including vector capacity.
+    pub fn checked_retained_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<Self>().checked_add(self.path.capacity())?
+            .checked_add(self.headers.entries.capacity().checked_mul(std::mem::size_of::<crate::builtin::NativeHeaderEntry>())?)
+    }
 }
 
 /// One same-attempt captured C# configuration presence or absence probe.
@@ -4955,6 +4977,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             .try_reserve_exact(source_count)
             .map_err(PackageSemanticError::Allocation)?;
         let mut semantic_images = Vec::new();
+        let mut native_typescript_headers = Vec::new();
+        let mut native_header_budget = 32 * 1024 * 1024usize;
         let mut csharp_evidence = Vec::new();
         let csharp_config = package.csharp_config.map_or_else(Vec::new, |probes| {
             probes.iter().map(|probe| StagedCSharpConfigProbe {
@@ -5863,6 +5887,24 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     evidence: copy.into_boxed_slice(),
                 });
             }
+            if let (Some(budget), Some(crate::application::typescript_program::TypeScriptForestSourceMembership::Selected { program, program_path })) =
+                (tsz_budget.as_ref(), tsz_package_membership.get(source.relative_path()))
+            {
+                if let Some(project) = tsz_projects.get(*program).copied().flatten() {
+                    let captured = project.with_source_nodes(program_path, |arena, text| {
+                        if text != source.source { return Ok(None); }
+                        super::typescript_program_lane::capture_headers(
+                            arena, text, source.relative_path(), compiled.source,
+                            &compiled.semantic_image, budget, &mut native_header_budget,
+                        )
+                    });
+                    if let Some(result) = captured {
+                        if let Some(headers) = result.map_err(|_| PackageSemanticError::Capacity { lane: "TypeScript header capture" })? {
+                            native_typescript_headers.push(headers);
+                        }
+                    }
+                }
+            }
             let fragment_length = compiled.fragment.len();
             fragment_bytes =
                 checked_package_fragment_bytes(fragment_bytes, fragment_length, target.profile)?;
@@ -6350,6 +6392,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 .map(|project| std::sync::Arc::clone(project.witness())),
             typescript_closure_witness: typescript_closure_witness.map(std::sync::Arc::new),
             native_program_sources,
+            native_typescript_headers,
             source_coverage,
             python_witness: python_project
                 .as_ref()

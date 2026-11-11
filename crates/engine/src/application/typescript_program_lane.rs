@@ -167,3 +167,136 @@ mod tests {
         assert!(lane.project(&None).is_none());
     }
 }
+
+/// Capture only compact claims while the admitted TSZ arena and exact image coexist.
+pub(super) fn capture_headers(
+    arena: &backend_frontend_typescript::TszNodeArena,
+    text: &str,
+    path: &str,
+    source: backend_semantic::ir::SourceIdentity,
+    encoded: &[u8],
+    checkpoint: &dyn backend_frontend_typescript::TszExecutionCheckpoint,
+    remaining: &mut usize,
+) -> Result<Option<super::compiler::StagedNativeTypeScriptHeaders>, String> {
+    use backend_semantic::ir::{
+        DeclarationPublicationRole, FactAvailability, ImageProvenance, ItemKind,
+        SemanticCoreReader as _, SemanticImageView,
+    };
+    const SCRATCH: usize = 4096 * 512;
+    checkpoint
+        .checkpoint(0)
+        .map_err(|e| format!("header capture stopped: {e:?}"))?;
+    if text.len() > 256 * 1024 || path.len() > 4096 || *remaining < SCRATCH {
+        return Ok(None);
+    }
+    let image = SemanticImageView::reopen(encoded).map_err(|e| format!("header image: {e}"))?;
+    let ImageProvenance::Captured {
+        source: image_source,
+        recipe,
+        scope,
+        ..
+    } = image.image_facts().provenance
+    else {
+        return Ok(None);
+    };
+    if image_source != source
+        || image.atom(scope.path) != Some(path.as_bytes())
+        || recipe.tool != backend_semantic::vocabulary::NativeTool::TypeScriptCompiler
+    {
+        return Ok(None);
+    }
+    let rows = backend_frontend_typescript::native_project::function_headers_from_arena(
+        arena, text, checkpoint,
+    )?;
+    let session = super::DocumentationSession::new(&image);
+    let mut slots = BTreeMap::new();
+    for item in session.publication_entities() {
+        checkpoint
+            .checkpoint(1)
+            .map_err(|e| format!("header capture stopped: {e:?}"))?;
+        let item = item.map_err(|e| format!("header entity: {e}"))?;
+        if item.entity.kind != ItemKind::Function
+            || item.entity.authority.publication != DeclarationPublicationRole::PrimaryOwned
+            || item.entity.authority.source != FactAvailability::Captured
+            || item.entity.authority.source_file != FactAvailability::Captured
+        {
+            continue;
+        }
+        let Some(span) = item.entity.source.filter(|span| !span.is_empty()) else {
+            continue;
+        };
+        if image.atom(span.file()) != Some(path.as_bytes()) {
+            continue;
+        }
+        let Some(name) = item
+            .name
+            .named_bytes()
+            .and_then(|name| std::str::from_utf8(name).ok())
+        else {
+            continue;
+        };
+        if slots.len() >= 4096 {
+            return Ok(None);
+        }
+        slots
+            .entry((span.start(), span.end(), name))
+            .and_modify(|slot| *slot = None)
+            .or_insert(Some((item.entity.id.raw, item.entity.version.identity())));
+    }
+    let mut entries = Vec::new();
+    for ((start, end, name), identity) in slots {
+        let Some((entity_id, identity)) = identity else {
+            continue;
+        };
+        let Some(header_extent) =
+            backend_frontend_typescript::native_project::selected_function_header_range(
+                &rows,
+                text,
+                (start, end),
+                name,
+                checkpoint,
+            )?
+        else {
+            continue;
+        };
+        entries.push(crate::builtin::NativeHeaderEntry {
+            entity_id,
+            identity,
+            compiler_extent: (start, end),
+            header_extent,
+        });
+    }
+    entries.sort_unstable_by_key(|entry| entry.entity_id);
+    if entries.is_empty()
+        || entries
+            .windows(2)
+            .any(|pair| pair[0].entity_id == pair[1].entity_id)
+    {
+        return Ok(None);
+    }
+    let charge = SCRATCH
+        .checked_add(path.len())
+        .ok_or("header budget overflow")?;
+    *remaining = remaining
+        .checked_sub(charge)
+        .ok_or("header budget exhausted")?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nudox.native-ts-header-spans.v1\0");
+    hash.update(backend_frontend_typescript::TSZ_NATIVE_AUTHORITY_IDENTITY);
+    checkpoint
+        .checkpoint(0)
+        .map_err(|e| format!("header capture stopped: {e:?}"))?;
+    Ok(Some(super::compiler::StagedNativeTypeScriptHeaders {
+        path: path.to_owned(),
+        source,
+        headers: crate::builtin::NativeHeaderEvidence {
+            image_identity: *backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(
+                encoded,
+            )
+            .as_ref(),
+            image_byte_len: encoded.len() as u64,
+            producer_recipe: *hash.finalize().as_bytes(),
+            entries,
+        },
+    }))
+}
