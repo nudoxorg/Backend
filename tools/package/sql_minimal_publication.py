@@ -34,7 +34,11 @@ for name in ('backend-cli', 'backend-locald', 'backend-mcp', 'backend-sqlite-wor
         if name in ('backend-mcp', 'backend-sqlite-worker'):
             continue
         raise SystemExit(f'missing {name}')
-    identities[name] = hashlib.sha256(source.read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    with source.open('rb') as binary:
+        for block in iter(lambda: binary.read(1024 * 1024), b''):
+            digest.update(block)
+    identities[name] = digest.hexdigest()
     os.link(source, bundle / name)
 project = private / 'project'
 project.mkdir()
