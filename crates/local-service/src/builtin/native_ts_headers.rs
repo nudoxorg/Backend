@@ -34,6 +34,7 @@ pub(super) fn capture(
 ) -> Result<Vec<NativeTsHeader>, String> {
     const MAX_HEADERS: usize = 4096;
     const MAX_SOURCE: usize = 256 * 1024;
+    checkpoint.checkpoint(0).map_err(|e| format!("native header capture stopped: {e:?}"))?;
     if bytes.len() > MAX_SOURCE { return Ok(Vec::new()); }
     // Precharge parser source/arena, row collections and B-tree slack before
     // any allocations. The capture shares this budget across all files.
@@ -42,7 +43,6 @@ pub(super) fn capture(
         .ok_or("native header capture byte charge overflow")?;
     let Some(after) = remaining_bytes.checked_sub(charge) else { return Ok(Vec::new()) };
     *remaining_bytes = after;
-    checkpoint.checkpoint(0).map_err(|e| format!("native header capture stopped: {e:?}"))?;
     let ImageProvenance::Captured { source, recipe, scope, .. } = image.image_facts().provenance else {
         return Ok(Vec::new());
     };
