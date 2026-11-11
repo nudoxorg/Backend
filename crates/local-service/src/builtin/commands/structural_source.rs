@@ -30,7 +30,7 @@ pub(super) fn admit(
     if project.package != package || project.files.binary_search(&key).is_err() {
         return Ok(None);
     }
-    let Some(record) = sources.files.get(&key) else {
+    let Some((_, record)) = sources.files.iter().find(|(file_key, _)| *file_key == key) else {
         return Ok(None);
     };
     let file = record
