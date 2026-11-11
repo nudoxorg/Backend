@@ -1902,6 +1902,39 @@ mod csharp_project_discovery_tests {
     static SERIAL: AtomicU64 = AtomicU64::new(0);
 
     #[test]
+    fn graph_source_owner_ignores_shallow_ties_when_deeper_project_exists() -> Result<(), String> {
+        let root = tempfile::tempdir().map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(root.path().join("A/Deep")).map_err(|error| error.to_string())?;
+        for path in ["A/A.csproj", "A/B.csproj", "A/Deep/C.csproj"] {
+            std::fs::write(root.path().join(path), "<Project/>").map_err(|error| error.to_string())?;
+        }
+        let snapshot = ingest::CompilerWorkspaceSnapshot::open(root.path())?;
+        let roots = ["A/A.csproj".to_owned(), "A/B.csproj".to_owned(), "A/Deep/C.csproj".to_owned()];
+        let graph = capture_csharp_project_graph(&snapshot, &roots).map_err(|error| error.to_string())?;
+        assert_eq!(graph.source_project_path("A/Deep/Owned.cs"), Some("A/Deep/C.csproj"));
+        assert_eq!(graph.source_project_path("A/Ambiguous.cs"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn graph_revisits_shared_nodes_at_greater_depth() -> Result<(), String> {
+        let root = tempfile::tempdir().map_err(|error| error.to_string())?;
+        std::fs::write(root.path().join("Root.csproj"), "<Project><ItemGroup><ProjectReference Include=\"A.csproj\"/><ProjectReference Include=\"B00.csproj\"/></ItemGroup></Project>").map_err(|error| error.to_string())?;
+        std::fs::write(root.path().join("A.csproj"), "<Project><ItemGroup><ProjectReference Include=\"Y.csproj\"/></ItemGroup></Project>").map_err(|error| error.to_string())?;
+        std::fs::write(root.path().join("Y.csproj"), "<Project/>").map_err(|error| error.to_string())?;
+        for index in 0..15 {
+            let next = if index == 14 { "A.csproj".to_owned() } else { format!("B{:02}.csproj", index + 1) };
+            let xml = format!("<Project><ItemGroup><ProjectReference Include=\"{next}\"/></ItemGroup></Project>");
+            std::fs::write(root.path().join(format!("B{index:02}.csproj")), xml).map_err(|error| error.to_string())?;
+        }
+        let snapshot = ingest::CompilerWorkspaceSnapshot::open(root.path())?;
+        let error = capture_csharp_project_graph(&snapshot, &["Root.csproj".to_owned()]).err()
+            .ok_or_else(|| "over-depth graph was admitted".to_owned())?;
+        assert!(error.to_string().contains("depth"), "{error}");
+        Ok(())
+    }
+
+    #[test]
     fn selected_source_witness_requires_same_bytes_and_original_cancellation() -> Result<(), String> {
         let temporary = tempfile::tempdir().map_err(|error| error.to_string())?;
         let source_root = temporary.path().join("source");
