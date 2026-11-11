@@ -67,7 +67,17 @@ impl<'a> Reader<'a> {
     fn u32(&mut self)->Option<u32>{Some(u32::from_be_bytes(self.take(4)?.try_into().ok()?))}
     fn u64(&mut self)->Option<u64>{Some(u64::from_be_bytes(self.take(8)?.try_into().ok()?))}
 }
+impl NativeTsHeaderFile {
+    /// Finds an entity in a canonically validated file. This is only a claim.
+    pub fn entry(&self, entity_id: u32) -> Option<&NativeTsHeaderEntry> {
+        self.entries.binary_search_by_key(&entity_id, |entry| entry.entity_id).ok().map(|i| &self.entries[i])
+    }
+}
 impl NativeTsHeaderAggregate {
+    /// Finds a path in a canonically validated aggregate; no authority follows.
+    pub fn file(&self, path: &str) -> Option<&NativeTsHeaderFile> {
+        self.files.binary_search_by(|file| file.path.as_str().cmp(path)).ok().map(|i| &self.files[i])
+    }
     /// Validates canonical framing and geometry before allocating any file or entry vectors.
     pub fn decode_canonical(bytes: &[u8]) -> Result<Self, &'static str> {
         Self::decode_canonical_budgeted(bytes, &mut usize::MAX)
