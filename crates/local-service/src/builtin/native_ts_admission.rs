@@ -389,7 +389,8 @@ mod program_source_claim_tests {
     }
 }
 
-/// The selected Program's mapped paths are separate from its image inventory.
+/// The selected Program's mapped paths are separate from its image inventory;
+/// member-only evidence never establishes an emitted declaration.
 fn program_package_paths(
     program: &backend_semantic::ir::NativeProgramSources,
 ) -> Result<Vec<String>, BuiltinModelError> {
