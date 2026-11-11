@@ -634,36 +634,39 @@ pub(in crate::builtin) fn admitted_native_evidence<'a>(
 pub(in crate::builtin) fn selected_nse_typescript_owners(
     relation: &backend_engine::workspace::WorkspaceRelationHandle<backend_engine::builtin::NativeSourceEvidenceRelation>,
 ) -> Result<BTreeSet<[u8; 32]>, BuiltinModelError> {
-    let mut rows = Vec::new();
+    let mut owners = BTreeSet::new();
+    let mut projects = BTreeMap::<[u8; 32], usize>::new();
+    let mut count = 0usize;
     let mut bytes = 0usize;
-    let mut resident = 0usize;
+    let mut previous = None;
     let mut after = None;
     loop {
         let page = relation.page(after.as_ref(), 1)
             .map_err(|error| BuiltinModelError(format!("scan native evidence: {error}")))?;
         for (key, row) in page.entries() {
-            if rows.len() >= backend_engine::builtin::MAX_NATIVE_EVIDENCE_ROWS {
-                return Err(BuiltinModelError("native evidence row budget exceeded".into()));
+            count = count.checked_add(1).ok_or_else(|| BuiltinModelError("native evidence row overflow".into()))?;
+            if count > backend_engine::builtin::MAX_NATIVE_EVIDENCE_ROWS
+                || previous.is_some_and(|prior| prior >= *key) || row.key().ok() != Some(*key) {
+                return Err(BuiltinModelError("invalid selected native evidence key or row budget".into()));
             }
+            previous = Some(*key);
             bytes = bytes.checked_add(40).and_then(|work| work.checked_add(row.checked_encoded_len()?))
                 .ok_or_else(|| BuiltinModelError("native evidence scan overflow".into()))?;
             if bytes > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES {
                 return Err(BuiltinModelError("native evidence byte budget exceeded".into()));
             }
-            resident = resident.checked_add(std::mem::size_of::<([u8; 32], backend_engine::builtin::NativeSourceEvidence)>())
-                .and_then(|work| work.checked_add(row.checked_heap_bytes()?))
-                .and_then(|work| work.checked_add(6 * std::mem::size_of::<usize>()))
-                .ok_or_else(|| BuiltinModelError("native evidence resident overflow".into()))?;
-            if resident > backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES {
-                return Err(BuiltinModelError("native evidence resident budget exceeded".into()));
+            let project_count = projects.entry(row.project).or_default();
+            *project_count = project_count.checked_add(1).ok_or_else(|| BuiltinModelError("native evidence project count overflow".into()))?;
+            if *project_count > backend_engine::builtin::MAX_NATIVE_EVIDENCE_PROJECT_ROWS {
+                return Err(BuiltinModelError("native evidence project budget exceeded".into()));
             }
-            rows.push((*key, row.clone()));
+            if matches!(row.profile, backend_semantic::vocabulary::LanguageProfile::TypeScript(_)) {
+                owners.insert(row.project);
+            }
         }
         match page.next().copied() { Some(next) => after = Some(next), None => break }
     }
-    backend_engine::builtin::validate_native_source_evidence_rows(&rows)
-        .map_err(|error| BuiltinModelError(format!("invalid selected native evidence: {error}")))?;
-    Ok(rows.into_iter().filter_map(|(_, row)| matches!(row.profile, backend_semantic::vocabulary::LanguageProfile::TypeScript(_)).then_some(row.project)).collect())
+    Ok(owners)
 }
 
 /// Index exact admitted structural file rows once, rather than rescanning the
