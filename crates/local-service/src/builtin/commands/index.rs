@@ -3553,9 +3553,73 @@ impl Drop for CSharpCaptureLease {
     fn drop(&mut self) { self.used.fetch_sub(CSHARP_CAPTURE_CREDIT, Ordering::AcqRel); }
 }
 
+/// Immutable captured project topology. Nodes retain confined presence/absence
+/// probes; compilation and selected publication remain separate owner joins.
+struct ResolvedCSharpProjectGraph {
+    nodes: Box<[ResolvedCSharpProjectNode]>,
+}
+
+struct ResolvedCSharpProjectNode {
+    project_path: String,
+    config: ingest::ConfinedConfigurationCapture,
+    sdk_config: ingest::ConfinedConfigurationCapture,
+    project_references: Box<[String]>,
+}
+
+impl ResolvedCSharpProjectGraph {
+    fn node(&self, path: &str) -> Option<&ResolvedCSharpProjectNode> {
+        self.nodes.binary_search_by(|node| node.project_path.as_str().cmp(path)).ok().map(|index| &self.nodes[index])
+    }
+
+    fn closure(&self, root: &str) -> Result<Vec<&ResolvedCSharpProjectNode>, BuiltinModelError> {
+        fn visit<'a>(graph: &'a ResolvedCSharpProjectGraph, path: &str, depth: usize,
+            visiting: &mut BTreeSet<String>, visited: &mut BTreeSet<String>, output: &mut Vec<&'a ResolvedCSharpProjectNode>) -> Result<(), BuiltinModelError> {
+            if depth > 16 || visiting.contains(path) { return Err(BuiltinModelError("C# graph cycle or depth limit".to_owned())); }
+            if !visited.insert(path.to_owned()) { return Ok(()); }
+            let node = graph.node(path).ok_or_else(|| BuiltinModelError("C# graph reference is missing".to_owned()))?;
+            visiting.insert(path.to_owned());
+            for dependency in &node.project_references { visit(graph, dependency, depth + 1, visiting, visited, output)?; }
+            visiting.remove(path);
+            output.push(node);
+            Ok(())
+        }
+        let mut output = Vec::new();
+        visit(self, root, 0, &mut BTreeSet::new(), &mut BTreeSet::new(), &mut output)?;
+        Ok(output)
+    }
+
+    // Deepest captured project directory wins; a source is never attached to
+    // every ancestor project merely because its path shares a prefix.
+    fn source_project_path(&self, path: &str) -> Option<&str> {
+        let mut selected = None;
+        let mut depth = None;
+        for node in &self.nodes {
+            let directory = node.project_path.rsplit_once('/').map_or("", |(directory, _)| directory);
+            if !directory.is_empty() && !path.strip_prefix(directory).is_some_and(|suffix| suffix.starts_with('/')) { continue; }
+            let candidate_depth = directory.len();
+            if depth == Some(candidate_depth) { return None; }
+            if depth.is_none_or(|current| candidate_depth > current) {
+                selected = Some(node.project_path.as_str()); depth = Some(candidate_depth);
+            }
+        }
+        selected
+    }
+
+    fn retained_bytes(&self) -> Option<usize> {
+        let mut total = std::mem::size_of::<Self>().checked_add(self.nodes.len().checked_mul(std::mem::size_of::<ResolvedCSharpProjectNode>())?)?;
+        for node in &self.nodes {
+            total = total.checked_add(node.project_path.capacity())?.checked_add(node.config.retained_bytes()?)?
+                .checked_add(node.sdk_config.retained_bytes()?)?.checked_add(node.project_references.len().checked_mul(std::mem::size_of::<String>())?)?;
+            for path in &node.project_references { total = total.checked_add(path.capacity())?; }
+        }
+        Some(total)
+    }
+}
+
 struct ResolvedCSharpProject {
     project_path: String,
-    _capture_lease: CSharpCaptureLease,
+    _capture_lease: Arc<CSharpCaptureLease>,
+    graph: Arc<ResolvedCSharpProjectGraph>,
     // Exact solution input when selected through an explicit .slnx project.
     solution: Option<ingest::ConfinedFileCapture>,
     config: ingest::ConfinedConfigurationCapture,
@@ -3567,7 +3631,8 @@ impl ResolvedCSharpProject {
         let mut total = std::mem::size_of::<Self>()
             .checked_add(self.project_path.capacity())?
             .checked_add(self.config.retained_bytes()?)?
-            .checked_add(self.sdk_config.retained_bytes()?)?;
+            .checked_add(self.sdk_config.retained_bytes()?)?
+            .checked_add(self.graph.retained_bytes()?)?;
         if let Some(solution) = &self.solution {
             total = total.checked_add(solution.retained_bytes()?)?;
         }
@@ -3586,6 +3651,10 @@ impl ResolvedCSharpProject {
             || !self.sdk_config.revalidate_revision_fence(fence, Some(cancellation))?
         {
             return Ok(false);
+        }
+        for node in &self.graph.nodes {
+            if !node.config.revalidate_revision_fence(fence, Some(cancellation))?
+                || !node.sdk_config.revalidate_revision_fence(fence, Some(cancellation))? { return Ok(false); }
         }
         if let Some(solution) = &self.solution {
             if !solution.revalidate_revision_fence(fence, Some(cancellation))? {
