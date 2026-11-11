@@ -111,11 +111,20 @@ impl NativeTsHeaderAggregate {
     }
     /// Validates a producer value and its exact canonical encoded size.
     pub fn encode_checked(&self) -> Result<Vec<u8>, &'static str> {
+        Self::encode_checked_budgeted(self, &mut usize::MAX)
+    }
+    /// Reserves encoded output and validation scratch before allocating.
+    pub fn encode_checked_budgeted(&self, budget: &mut usize) -> Result<Vec<u8>, &'static str> {
         let mut size=8usize;
         for f in &self.files { size=size.checked_add(114).and_then(|n|n.checked_add(f.path.len())).and_then(|n|n.checked_add(f.entries.len().checked_mul(ENTRY_BYTES)?)).ok_or("native header aggregate overflow")?; }
         if size>MAX_NATIVE_TS_HEADER_AGGREGATE_BYTES {return Err("native header aggregate too large");}
+        let scratch = size.checked_add(self.files.len().checked_mul(std::mem::size_of::<NativeTsHeaderFile>() + 64).ok_or("native header aggregate overflow")?).and_then(|n| n.checked_add(64)).ok_or("native header aggregate overflow")?;
+        let reservation = size.checked_add(scratch).ok_or("native header aggregate overflow")?;
+        *budget = budget.checked_sub(reservation).ok_or("native header aggregate allocation budget exceeded")?;
         let mut bytes=Vec::with_capacity(size); NativeTsHeaderAggregateSchema::encode(self,&mut bytes);
-        Self::decode_canonical(&bytes)?; Ok(bytes)
+        Self::decode_canonical(&bytes)?;
+        *budget = budget.checked_add(scratch).ok_or("native header aggregate budget overflow")?;
+        Ok(bytes)
     }
 }
 
