@@ -70,6 +70,70 @@ impl CSharpExecutionLease {
 
 type SnapshotManifest = Vec<(PathBuf, [u8; 32], usize)>;
 
+#[cfg(target_os = "linux")]
+fn require_relocatable_elf_host(bytes: &[u8]) -> Result<(), CSharpAuthorityError> {
+    // The private snapshot cannot make an ELF interpreter at an absolute
+    // `/nix/store` (or system) path immutable. Refuse such hosts until their
+    // interpreter and DT_NEEDED native closure are copied and verified too.
+    if bytes.get(..4) != Some(b"\x7fELF") || bytes.get(4) != Some(&2) {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    if bytes.get(5) != Some(&1) {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    let read_u16 = |at: usize| {
+        bytes
+            .get(at..at + 2)
+            .map(|part| u16::from_le_bytes([part[0], part[1]]))
+    };
+    let read_u64 = |at: usize| {
+        bytes
+            .get(at..at + 8)
+            .map(|part| u64::from_le_bytes(part.try_into().expect("slice length")))
+    };
+    let phoff = read_u64(32).ok_or(CSharpAuthorityError::Configuration)? as usize;
+    let phentsize = usize::from(read_u16(54).ok_or(CSharpAuthorityError::Configuration)?);
+    let phnum = usize::from(read_u16(56).ok_or(CSharpAuthorityError::Configuration)?);
+    if phentsize < 56 || phnum > 128 {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    for ordinal in 0..phnum {
+        let base = phoff
+            .checked_add(
+                ordinal
+                    .checked_mul(phentsize)
+                    .ok_or(CSharpAuthorityError::Configuration)?,
+            )
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        let kind = read_u32(bytes, base).ok_or(CSharpAuthorityError::Configuration)?;
+        if kind != 3 {
+            continue;
+        }
+        let offset = read_u64(base + 8).ok_or(CSharpAuthorityError::Configuration)? as usize;
+        let length = read_u64(base + 32).ok_or(CSharpAuthorityError::Configuration)? as usize;
+        let end = offset
+            .checked_add(length)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        let interpreter = bytes
+            .get(offset..end)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        if interpreter.first() == Some(&b'/')
+            || interpreter.iter().position(|byte| *byte == 0).is_none()
+        {
+            return Err(CSharpAuthorityError::Configuration);
+        }
+        return Ok(());
+    }
+    Err(CSharpAuthorityError::Configuration)
+}
+
+#[cfg(target_os = "linux")]
+fn read_u32(bytes: &[u8], at: usize) -> Option<u32> {
+    bytes
+        .get(at..at + 4)
+        .map(|part| u32::from_le_bytes(part.try_into().expect("slice length")))
+}
+
 fn copy_tree_bounded(
     source: &Path,
     target: &Path,
@@ -142,6 +206,8 @@ fn snapshot_execution(
     let tool_bytes =
         backend_platform::durable::read_regular_bounded_stable(toolchain, 64 * 1024 * 1024)
             .map_err(|_| CSharpAuthorityError::Configuration)?;
+    #[cfg(target_os = "linux")]
+    require_relocatable_elf_host(&tool_bytes)?;
     manifest.push((
         toolchain.to_path_buf(),
         Sha256::digest(&tool_bytes).into(),
