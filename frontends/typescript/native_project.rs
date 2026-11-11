@@ -678,6 +678,25 @@ pub fn selected_function_header<'a>(
     Ok((!header.is_empty()).then_some(header))
 }
 
+/// Returns the byte range of a selected authored header in the same verified
+/// source buffer. The returned range is still a claim until image admission.
+pub fn selected_function_header_range(
+    rows: &[NativeFunctionHeader], text: &str, compiler_extent: (u32, u32), name: &str,
+    checkpoint: &dyn ExecutionCheckpoint,
+) -> Result<Option<(u32, u32)>, String> {
+    let Some(header) = selected_function_header(rows, text, compiler_extent, name, checkpoint)? else {
+        return Ok(None);
+    };
+    let start = (header.as_ptr() as usize).checked_sub(text.as_ptr() as usize)
+        .and_then(|offset| u32::try_from(offset).ok())
+        .ok_or("native header source offset overflow")?;
+    let end = start.checked_add(u32::try_from(header.len()).map_err(|_| "native header length overflow")?)
+        .ok_or("native header source extent overflow")?;
+    if text.get(start as usize..end as usize) != Some(header) { return Err("native header source range differs".into()); }
+    poll(checkpoint, 0)?;
+    Ok(Some((start, end)))
+}
+
 trait NativeCheckpoint {
     fn poll(&self, work: u64) -> Result<(), String>;
 }
