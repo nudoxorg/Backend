@@ -455,7 +455,11 @@ fn projection_key(
         use backend_engine::Relation as _;
         let mut encoded = Vec::new();
         backend_engine::builtin::NativeSourceEvidenceRelation::encode_value(claim, &mut encoded);
+        hasher.update(&[1]);
+        hasher.update(&(encoded.len() as u64).to_le_bytes());
         hasher.update(&encoded);
+    } else {
+        hasher.update(&[0]);
     }
     for site in sink.site_declarations {
         match site.binding_identity() {
