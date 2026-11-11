@@ -1492,9 +1492,11 @@ fn supervisor_enforces_unix_process_count_limit() -> Result<(), Box<dyn Error>> 
         limits(64, 64, Duration::from_secs(2), 128)?.with_process_count_limit(1)?;
     // A resource-wrapper failure must never satisfy the refusal assertion.
     // First prove the requested authority actually runs under the same bound.
+    let python = required_test_tool("python3");
+    let python = python.to_str().ok_or("Python path is not UTF-8")?;
     let benign = command(
-        "/bin/sh",
-        &["-c", "printf authority-reached"],
+        python,
+        &["-c", "import os; os.write(1, b'authority-reached')"],
         process_limits,
     )?
     .run()?;
@@ -1508,8 +1510,6 @@ fn supervisor_enforces_unix_process_count_limit() -> Result<(), Box<dyn Error>> 
     }
     // A direct fork has a deterministic refusal: some shells retry a failed
     // fork until the supervisor deadline, hiding the actual limit result.
-    let python = required_test_tool("python3");
-    let python = python.to_str().ok_or("Python path is not UTF-8")?;
     let process = command(
         python,
         &[
