@@ -6025,11 +6025,14 @@ mod tests {
             read_indexed_native_evidence_range(root.path(), &evidence, image, extent, 0, 4096)
                 .expect("verified range");
         assert_eq!(page.text.as_bytes(), source);
+        assert_eq!(read_indexed_native_evidence_header(root.path(), &evidence, image, (0, 15)), Ok("package fixture".to_owned()));
+        assert_eq!(read_indexed_native_evidence_header(root.path(), &evidence, image, (0, 0)), Err(super::super::source_range::SourceRangeError::InvalidExtent));
         assert_eq!(
             read_indexed_native_evidence_range(root.path(), &evidence, image, (0, 0), 0, 4096),
             Err(super::super::source_range::SourceRangeError::InvalidExtent)
         );
         std::fs::write(&file, "package fixture\n// λ\n".as_bytes()).expect("same-length change");
+        assert_eq!(read_indexed_native_evidence_header(root.path(), &evidence, image, (0, 15)), Err(super::super::source_range::SourceRangeError::Stale));
         assert_eq!(
             read_indexed_native_evidence_range(root.path(), &evidence, image, extent, 0, 4096),
             Err(super::super::source_range::SourceRangeError::Stale)
