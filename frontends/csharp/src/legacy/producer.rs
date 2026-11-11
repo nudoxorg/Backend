@@ -265,6 +265,139 @@ fn require_relocatable_elf_host(bytes: &[u8]) -> Result<(), CSharpAuthorityError
     Err(CSharpAuthorityError::Configuration)
 }
 
+// A preparatory snapshot of an explicitly supplied ELF dependency graph.
+// This is intentionally not used to launch: a DT_NEEDED graph does not bound
+// dlopen, glibc cache/default/hwcaps lookup, or preserve host executable
+// identity. Enabling execution also requires containment of those lookups.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+struct ElfDependencySnapshot {
+    _directory: tempfile::TempDir,
+    interpreter: PathBuf,
+    libraries: PathBuf,
+    manifest: SnapshotManifest,
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+fn snapshot_elf_dependencies(
+    host: &[u8],
+    interpreter_source: &Path,
+    selected: &std::collections::BTreeMap<String, PathBuf>,
+    control: CSharpAuthorityControl<'_>,
+) -> Result<ElfDependencySnapshot, CSharpAuthorityError> {
+    use std::collections::{BTreeSet, VecDeque};
+    let invalid = || CSharpAuthorityError::Configuration;
+    let root = elf_runtime_requirements(host)?;
+    if root.interpreter.is_none()
+        || root.rpath.is_some()
+        || root.runpath.is_some()
+        || !interpreter_source.is_absolute()
+        || selected.len() > 256
+    {
+        return Err(invalid());
+    }
+    let directory = tempfile::tempdir().map_err(|_| invalid())?;
+    let libraries = directory.path().join("lib");
+    fs::create_dir(&libraries).map_err(|_| invalid())?;
+    let interpreter = directory.path().join("interpreter");
+    let mut manifest = SnapshotManifest::new();
+    let mut total = 0usize;
+    let mut queue: VecDeque<Box<str>> = root.needed.into_vec().into();
+    let mut seen = BTreeSet::<Box<str>>::new();
+    // The interpreter is an explicit input; callers must independently prove
+    // it corresponds to the selected host's PT_INTERP before using this data.
+    let loader_bytes = backend_platform::durable::read_regular_bounded_stable(
+        interpreter_source,
+        64 * 1024 * 1024,
+    )
+    .map_err(|_| invalid())?;
+    let loader = elf_runtime_requirements(&loader_bytes)?;
+    if loader.machine != root.machine
+        || loader.interpreter.is_some()
+        || loader.rpath.is_some()
+        || loader.runpath.is_some()
+    {
+        return Err(invalid());
+    }
+    queue.extend(loader.needed.into_vec());
+    total = total.checked_add(loader_bytes.len()).ok_or_else(invalid)?;
+    manifest.push((
+        interpreter_source.to_owned(),
+        Sha256::digest(&loader_bytes).into(),
+        loader_bytes.len(),
+    ));
+    fs::write(&interpreter, loader_bytes).map_err(|_| invalid())?;
+    fs::set_permissions(&interpreter, fs::Permissions::from_mode(0o500)).map_err(|_| invalid())?;
+    while let Some(name) = queue.pop_front() {
+        checkpoint(control, CSharpAuthorityPhase::Spawn)?;
+        if name.is_empty()
+            || name.len() > 255
+            || name.as_bytes().contains(&b'/')
+            || name.as_bytes().contains(&b'$')
+            || name.as_ref() == "."
+            || name.as_ref() == ".."
+        {
+            return Err(invalid());
+        }
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        if seen.len() > 256 {
+            return Err(invalid());
+        }
+        let source = selected.get(name.as_ref()).ok_or_else(invalid)?;
+        if !source.is_absolute() {
+            return Err(invalid());
+        }
+        let content =
+            backend_platform::durable::read_regular_bounded_stable(source, 64 * 1024 * 1024)
+                .map_err(|_| invalid())?;
+        total = total
+            .checked_add(content.len())
+            .filter(|n| *n <= 256 * 1024 * 1024)
+            .ok_or_else(invalid)?;
+        let requirements = elf_runtime_requirements(&content)?;
+        if requirements.machine != root.machine
+            || requirements.interpreter.is_some()
+            || requirements.rpath.is_some()
+            || requirements.runpath.is_some()
+        {
+            return Err(invalid());
+        }
+        queue.extend(requirements.needed.into_vec());
+        if queue.len() > 8192 {
+            return Err(invalid());
+        }
+        manifest.push((
+            source.to_owned(),
+            Sha256::digest(&content).into(),
+            content.len(),
+        ));
+        let target = libraries.join(name.as_ref());
+        fs::write(&target, content).map_err(|_| invalid())?;
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o400)).map_err(|_| invalid())?;
+    }
+    if selected.len() != seen.len() {
+        return Err(invalid());
+    }
+    for (source, digest, length) in &manifest {
+        checkpoint(control, CSharpAuthorityPhase::Spawn)?;
+        let current =
+            backend_platform::durable::read_regular_bounded_stable(source, 64 * 1024 * 1024)
+                .map_err(|_| invalid())?;
+        if current.len() != *length || Sha256::digest(&current).as_slice() != digest {
+            return Err(invalid());
+        }
+    }
+    Ok(ElfDependencySnapshot {
+        _directory: directory,
+        interpreter,
+        libraries,
+        manifest,
+    })
+}
+
 fn copy_tree_bounded(
     source: &Path,
     target: &Path,
@@ -1971,6 +2104,42 @@ mod tests {
         let mut bytes = sectionless_elf_fixture();
         bytes[264..272].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(elf_runtime_requirements(&bytes).is_err()); // unmapped DT_STRTAB
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn explicit_elf_snapshot_follows_cycles_and_rejects_missing_or_wrong_abi() {
+        use std::collections::BTreeMap;
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let mut host = sectionless_elf_fixture();
+        // Suppress the fixture's RUNPATH; this preparatory snapshot only
+        // accepts an explicit, globally unambiguous name-to-file selection.
+        host[304..312].copy_from_slice(&21u64.to_le_bytes());
+        let mut library = host.clone();
+        library[176..180].copy_from_slice(&0u32.to_le_bytes());
+        let loader = directory.path().join("loader");
+        let lib = directory.path().join("library");
+        fs::write(&loader, &library).unwrap();
+        fs::write(&lib, &library).unwrap();
+        let mut selected = BTreeMap::from([("libfoo.so".to_owned(), lib.clone())]);
+        let cancelled = AtomicBool::new(false);
+        let control = CSharpAuthorityControl {
+            deadline: Instant::now() + Duration::from_secs(10),
+            cancelled: &cancelled,
+        };
+        let snapshot = snapshot_elf_dependencies(&host, &loader, &selected, control)
+            .expect("explicit cyclic closure");
+        assert_eq!(
+            fs::read(snapshot.libraries.join("libfoo.so")).unwrap(),
+            library
+        );
+        assert_eq!(snapshot.manifest.len(), 2);
+        selected.clear();
+        assert!(snapshot_elf_dependencies(&host, &loader, &selected, control).is_err());
+        selected.insert("libfoo.so".to_owned(), lib.clone());
+        library[18..20].copy_from_slice(&183u16.to_le_bytes());
+        fs::write(lib, library).unwrap();
+        assert!(snapshot_elf_dependencies(&host, &loader, &selected, control).is_err());
     }
 
     #[test]
