@@ -63,11 +63,16 @@ impl<'a> Reader<'a> {
 impl NativeTsHeaderAggregate {
     /// Validates canonical framing and geometry before allocating any file or entry vectors.
     pub fn decode_canonical(bytes: &[u8]) -> Result<Self, &'static str> {
-        fn parse(bytes: &[u8], materialize: bool) -> Option<NativeTsHeaderAggregate> {
+        Self::decode_canonical_budgeted(bytes, &mut usize::MAX)
+    }
+    /// Precharges all retained file, path and entry allocations before decoding.
+    pub fn decode_canonical_budgeted(bytes: &[u8], budget: &mut usize) -> Result<Self, &'static str> {
+        fn parse(bytes: &[u8], materialize: bool) -> Option<(NativeTsHeaderAggregate, usize)> {
             if bytes.len() > MAX_NATIVE_TS_HEADER_AGGREGATE_BYTES { return None; }
             let mut r=Reader {bytes,at:0}; if r.take(4)? != b"NHA1" {return None;}
             let count=r.u32()? as usize;
             if count > MAX_NATIVE_TS_HEADER_FILES || count > bytes.len().saturating_sub(8)/114 {return None;}
+            let mut retained = count.checked_mul(std::mem::size_of::<NativeTsHeaderFile>())?.checked_add(32)?;
             let mut files=if materialize {Vec::with_capacity(count)} else {Vec::new()};
             let mut previous: Option<&str>=None;
             for _ in 0..count {
@@ -79,6 +84,7 @@ impl NativeTsHeaderAggregate {
                 let image_identity=r.take(32)?.try_into().ok()?; let image_byte_len=r.u64()?; let producer_recipe=r.take(32)?.try_into().ok()?;
                 let entries_count=r.u32()? as usize;
                 if entries_count>MAX_NATIVE_TS_HEADERS_PER_FILE || entries_count.checked_mul(ENTRY_BYTES)? > bytes.len().saturating_sub(r.at) {return None;}
+                retained = retained.checked_add(n)?.checked_add(32)?.checked_add(entries_count.checked_mul(std::mem::size_of::<NativeTsHeaderEntry>())?)?.checked_add(32)?;
                 let mut entries=if materialize {Vec::with_capacity(entries_count)} else {Vec::new()};
                 let mut prior=None;
                 for _ in 0..entries_count {
@@ -90,10 +96,11 @@ impl NativeTsHeaderAggregate {
                 }
                 if materialize {files.push(NativeTsHeaderFile {path:path.to_owned(),source,image_identity,image_byte_len,producer_recipe,entries});}
             }
-            if r.at != bytes.len(){return None;} Some(NativeTsHeaderAggregate{files})
+            if r.at != bytes.len(){return None;} Some((NativeTsHeaderAggregate{files}, retained))
         }
-        parse(bytes,false).ok_or("invalid native header aggregate")?;
-        parse(bytes,true).ok_or("invalid native header aggregate")
+        let (_, retained) = parse(bytes,false).ok_or("invalid native header aggregate")?;
+        *budget = budget.checked_sub(retained).ok_or("native header aggregate allocation budget exceeded")?;
+        parse(bytes,true).map(|(aggregate, _)| aggregate).ok_or("invalid native header aggregate")
     }
     /// Validates a producer value and its exact canonical encoded size.
     pub fn encode_checked(&self) -> Result<Vec<u8>, &'static str> {
