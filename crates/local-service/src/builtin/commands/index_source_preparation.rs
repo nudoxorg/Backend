@@ -29,7 +29,7 @@ pub(in crate::builtin::commands) struct SourceCompilePlan {
     native_typescript: Option<Arc<ingest::RevalidatedNativeTsCapture>>,
     mixed_stylo_proof: Option<crate::builtin::stylo_admission::StyloLiveProof>,
     rust_target: Option<ResolvedCargoTarget>,
-    csharp_project: Option<ResolvedCSharpProject>,
+    csharp_project: Option<Arc<ResolvedCSharpProject>>,
     csharp_shape: Option<CSharpScanShape>,
     expected_project_commitment: [u8; 32],
     pending_csharp_sources: Option<CSharpSourceHandles>,
@@ -1640,7 +1640,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
                     native_typescript: None,
                     mixed_stylo_proof: None,
                     rust_target,
-                    csharp_project,
+                    csharp_project: csharp_project.map(Arc::new),
                     csharp_shape,
                     expected_project_commitment,
                     pending_csharp_sources: None,
@@ -1742,7 +1742,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
             native_typescript,
             mixed_stylo_proof: mixed_stylo_final,
             rust_target,
-            csharp_project,
+            csharp_project: csharp_project.map(Arc::new),
             csharp_shape,
             expected_project_commitment,
             pending_csharp_sources: None,
@@ -1823,7 +1823,7 @@ mod csharp_project_discovery_tests {
         let cancellation = Arc::new(AtomicBool::new(false));
         let mut plan = SourceCompilePlan {
             native_typescript: None, mixed_stylo_proof: None,
-            rust_target: None, csharp_project: Some(selected), csharp_shape: Some(shape), expected_project_commitment: commitment,
+            rust_target: None, csharp_project: Some(Arc::new(selected)), csharp_shape: Some(shape), expected_project_commitment: commitment,
             pending_csharp_sources: Some(CSharpSourceHandles {
                 fresh: vec![ingest::CompilerSourceHandle { relative_path: source.relative_path.clone(), profile: source.profile, content: source.content, source_fact_identity: source.source_fact_identity, expected_byte_length: None }],
                 reused: Vec::new(),
@@ -1837,7 +1837,7 @@ mod csharp_project_discovery_tests {
             workspace_snapshot: None, route: None, execution_intent: CompileExecutionIntent::Interactive,
         };
         plan.prepare_csharp_source_only_for_park().map_err(|e| e.to_string())?;
-        let witness = plan.capture_csharp_admission(&snapshot, receipt).map_err(|e| e.to_string())?;
+        let (_plan, witness) = plan.capture_csharp_admission(&snapshot, receipt).map_err(|e| e.to_string())?;
         assert!(witness.revalidate(&snapshot, &cancellation).map_err(|e| e.to_string())?);
         assert!(!witness.revalidate(&snapshot, &Arc::new(AtomicBool::new(false))).map_err(|e| e.to_string())?);
         std::fs::write(source_root.join("App.cs"), "class Else {}\n").map_err(|error| error.to_string())?;
@@ -2023,7 +2023,7 @@ impl SourceCompilePlan {
         self.csharp_project.is_some()
     }
 
-    pub(super) fn csharp_project(&self) -> &ResolvedCSharpProject { self.csharp_project.as_ref().expect("sealed C# capture owns selection") }
+    pub(super) fn csharp_project(&self) -> &ResolvedCSharpProject { self.csharp_project.as_deref().expect("sealed C# capture owns selection") }
     pub(super) fn csharp_project_path(&self) -> &str { &self.csharp_project().project_path }
     pub(super) fn csharp_sources(&self) -> &[ingest::CompilerSource] { &self.sources }
     pub(super) fn csharp_revision_fence(&self) -> &ingest::CompilerRevisionFence { &self.revision_fence }
@@ -2069,7 +2069,7 @@ impl SourceCompilePlan {
         mut self,
         snapshot: &WorkspaceSnapshot,
         receipt: super::super::adapter::SelectedCSharpSourceCommit,
-    ) -> Result<CapturedCSharpUnitAdmission, BuiltinModelError> {
+    ) -> Result<(Self, CapturedCSharpUnitAdmission), BuiltinModelError> {
         if !self.csharp_parked || self.cancellation.load(Ordering::Acquire) || self.operation_key.is_none()
             || self.operation_key != receipt.operation_key()
             || *snapshot.root().as_bytes() != receipt.root() || snapshot.sequence() != receipt.sequence()
@@ -2147,19 +2147,51 @@ impl SourceCompilePlan {
         let source_commitment = checked_csharp_selected_sources(snapshot, self.project_key, &files, &self.sources, shape.profile, &selected.project_path, self.cancellation.as_ref())?;
         let cancellation = Arc::clone(&self.cancellation);
         let witness = CapturedCSharpUnitAdmission {
-            plan: self, receipt,
+            project: Arc::clone(self.csharp_project.as_ref().expect("selected project checked")),
+            revision_fence: self.revision_fence.clone(), sources: self.sources.clone(),
+            cancellation: Arc::clone(&self.cancellation), receipt,
             snapshot_root: *snapshot.root().as_bytes(), snapshot_sequence: snapshot.sequence(),
             snapshot_closure: *snapshot.closure().binding().closure().as_bytes(), owner_epoch: snapshot.owner_epoch(),
             project_key: key.package_key().to_bytes(), project_commitment, project_frontier: frontier,
             source_commitment, key, target,
         };
-        if witness.retained_bytes().is_none_or(|bytes| bytes > 16 * 1024 * 1024) {
+        if witness.retained_bytes().and_then(|bytes| bytes.checked_add(self.csharp_retained_bytes()?))
+            .is_none_or(|bytes| bytes > 16 * 1024 * 1024) {
             return Err(BuiltinModelError("C# sealed witness exceeds retained-byte bound".to_owned()));
         }
         if !witness.revalidate(snapshot, &cancellation)? {
             return Err(BuiltinModelError("C# capture changed during selected-source admission".to_owned()));
         }
-        Ok(witness)
+        Ok((self, witness))
+    }
+
+    /// Consumes the materialized plan while retaining its independent selected
+    /// source custody through deferred compilation. This proof does not admit
+    /// SDK, helper, runtime or project-graph closure.
+    pub(in crate::builtin::commands) fn finish_with_csharp_admission(
+        self,
+        witness: CapturedCSharpUnitAdmission,
+        snapshot: &WorkspaceSnapshot,
+        compiler: &LocalCompilerClient,
+        semantic: &mut crate::builtin::semantic_authority::SemanticAuthority,
+        retained_attempts: &mut Vec<backend_extension_turso::CandidateAttempt>,
+    ) -> Result<PreparedIndex, BuiltinModelError> {
+        if !witness.revalidate(snapshot, &self.cancellation)?
+            || self.sources.len() != witness.sources.len()
+            || self.sources.iter().zip(&witness.sources).any(|(a, b)| {
+                a.relative_path != b.relative_path || a.profile != b.profile || a.source != b.source
+                    || a.content != b.content || a.source_fact_identity != b.source_fact_identity
+            }) {
+            return Err(BuiltinModelError("C# compilation inputs differ from selected custody".to_owned()));
+        }
+        let prepared = self.finish(snapshot, compiler, semantic, retained_attempts)?;
+        match prepared {
+            PreparedIndex::Compile(mut deferred) => {
+                deferred.csharp_selected_source = Some(Arc::new(witness));
+                Ok(PreparedIndex::Compile(deferred))
+            }
+            _ => Err(BuiltinModelError("C# selected custody requires a local deferred compile".to_owned())),
+        }
     }
 
     pub(in crate::builtin::commands) fn finish(
@@ -2188,7 +2220,7 @@ impl SourceCompilePlan {
             self.cancellation.as_ref(),
         )?
         .with_rust_target(self.rust_target.as_ref())
-        .with_csharp_project(self.csharp_project.as_ref());
+        .with_csharp_project(self.csharp_project.as_deref());
         let mixed_stylo_proof = self.mixed_stylo_proof.as_ref().map(|proof| {
             crate::builtin::stylo_admission::SelectedStyloFence::from_selected(snapshot, proof, &self.cancellation)
                 .map(|fence| crate::builtin::stylo_admission::StyloGrantProof::Selected(Arc::new(fence)))
@@ -2254,7 +2286,7 @@ impl SourceCompilePlan {
             self.cancellation.as_ref(),
         )?
         .with_rust_target(self.rust_target.as_ref())
-        .with_csharp_project(self.csharp_project.as_ref());
+        .with_csharp_project(self.csharp_project.as_deref());
         let route = self.route.as_ref().expect("configured route continuation");
         let mut compiled = compile_semantic_publications_for_snapshot(
             snapshot,
@@ -2332,6 +2364,7 @@ impl SourceCompilePlan {
             source_changes,
             revision_fence: self.revision_fence,
             csharp_capture: self.csharp_project,
+            csharp_selected_source: None,
             profiles: VecDeque::new(),
             expected_profiles: count,
             completed_profiles: count,

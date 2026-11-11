@@ -86,7 +86,7 @@ impl ProfileWork {
             observation.phase("deferred-compile-start");
         }
         let check = self.job.csharp_capture_is_current(
-            self.profile.as_ref().expect("single-use compiler profile"), &self.cancelled,
+            self.profile.as_ref().expect("single-use compiler profile"), &self.snapshot, &self.cancelled,
         );
         if self.cancelled.load(Ordering::Acquire) {
             return ProfileOutcome::Cancelled;
@@ -112,7 +112,7 @@ impl ProfileWork {
             return ProfileOutcome::Cancelled;
         }
         let check = self.job.csharp_capture_is_current(
-            self.profile.as_ref().expect("single-use compiler profile"), &self.cancelled,
+            self.profile.as_ref().expect("single-use compiler profile"), &self.snapshot, &self.cancelled,
         );
         if self.cancelled.load(Ordering::Acquire) {
             return ProfileOutcome::Cancelled;

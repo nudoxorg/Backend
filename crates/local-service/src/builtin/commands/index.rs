@@ -1043,7 +1043,7 @@ pub(super) fn finish_index_scan(
                     semantic_authority,
                     None,
                 )?;
-                deferred.csharp_capture = csharp_project;
+                deferred.csharp_capture = csharp_project.map(Arc::new);
                 return Ok(PreparedIndex::Compile(deferred));
             }
             let mut compiled = match compile_semantic_publications(
@@ -2375,7 +2375,9 @@ pub(super) struct DeferredIndex {
     source_changes: Vec<BuiltinSourceChange>,
     revision_fence: ingest::CompilerRevisionFence,
     // Narrow original capture and its non-clone memory credit; no inventory copy.
-    csharp_capture: Option<ResolvedCSharpProject>,
+    csharp_capture: Option<Arc<ResolvedCSharpProject>>,
+    // Selected-source custody alone does not authorize unit publication.
+    csharp_selected_source: Option<Arc<CapturedCSharpUnitAdmission>>,
     profiles: VecDeque<DeferredProfile>,
     expected_profiles: usize,
     completed_profiles: usize,
@@ -2666,11 +2668,14 @@ impl DeferredIndex {
 
     /// Worker-only recheck. No probe I/O occurs in the owner wrapper.
     pub(super) fn csharp_capture_is_current(
-        &self, ticket: &DeferredProfileTicket, cancellation: &AtomicBool,
+        &self, ticket: &DeferredProfileTicket, snapshot: &WorkspaceSnapshot, cancellation: &Arc<AtomicBool>,
     ) -> Result<bool, BuiltinModelError> {
         if !ticket.csharp_unit_claim_only { return Ok(true); }
+        if let Some(witness) = &self.csharp_selected_source {
+            if witness.key() != &ticket.key || !witness.revalidate(snapshot, cancellation)? { return Ok(false); }
+        }
         let selected = self.csharp_capture.as_ref().ok_or_else(|| BuiltinModelError("C# capture custody is missing".to_owned()))?;
-        selected.revalidate(&self.revision_fence, cancellation).map_err(BuiltinModelError)
+        selected.revalidate(&self.revision_fence, cancellation.as_ref()).map_err(BuiltinModelError)
     }
 
     pub(super) fn has_pending_profiles(&self) -> bool {
@@ -3023,6 +3028,7 @@ fn prepare_deferred_compile(
         source_changes,
         revision_fence,
         csharp_capture: None,
+        csharp_selected_source: None,
         profiles: profiles.into(),
         expected_profiles,
         completed_profiles: 0,
@@ -3593,7 +3599,10 @@ impl ResolvedCSharpProject {
 /// Private pre-compiler custody minted only from an owned same-scan plan and
 /// the selected durable source snapshot. It is not itself a unit fence.
 pub(in crate::builtin) struct CapturedCSharpUnitAdmission {
-    plan: SourceCompilePlan,
+    project: Arc<ResolvedCSharpProject>,
+    revision_fence: ingest::CompilerRevisionFence,
+    sources: Vec<ingest::CompilerSource>,
+    cancellation: Arc<AtomicBool>,
     receipt: super::adapter::SelectedCSharpSourceCommit,
     snapshot_root: [u8; 32],
     snapshot_sequence: u64,
@@ -3617,32 +3626,37 @@ impl CapturedCSharpUnitAdmission {
     pub(in crate::builtin) fn source_sequence(&self) -> u64 { self.snapshot_sequence }
     pub(in crate::builtin) fn source_closure(&self) -> [u8; 32] { self.snapshot_closure }
     pub(in crate::builtin) fn owner_epoch(&self) -> u64 { self.owner_epoch }
-    pub(in crate::builtin) fn cancellation(&self) -> &AtomicBool { self.plan.csharp_cancellation().as_ref() }
-    pub(in crate::builtin) fn project_path(&self) -> &str { self.plan.csharp_project_path() }
-    pub(in crate::builtin) fn config_probes(&self) -> impl Iterator<Item = (&str, Option<&[u8]>)> { self.plan.csharp_project().config.probes() }
-    pub(in crate::builtin) fn sdk_probes(&self) -> impl Iterator<Item = (&str, Option<&[u8]>)> { self.plan.csharp_project().sdk_config.probes() }
-    pub(in crate::builtin) fn solution(&self) -> Option<(&str, &[u8])> { self.plan.csharp_project().solution.as_ref().map(|file| (file.path(), file.bytes())) }
+    pub(in crate::builtin) fn cancellation(&self) -> &AtomicBool { self.cancellation.as_ref() }
+    pub(in crate::builtin) fn project_path(&self) -> &str { self.project.project_path.as_str() }
+    pub(in crate::builtin) fn config_probes(&self) -> impl Iterator<Item = (&str, Option<&[u8]>)> { self.project.config.probes() }
+    pub(in crate::builtin) fn sdk_probes(&self) -> impl Iterator<Item = (&str, Option<&[u8]>)> { self.project.sdk_config.probes() }
+    pub(in crate::builtin) fn solution(&self) -> Option<(&str, &[u8])> { self.project.solution.as_ref().map(|file| (file.path(), file.bytes())) }
     pub(in crate::builtin) fn sources(&self) -> impl Iterator<Item = (&str, &[u8], [u8; 32], ingest::SourceFactIdentity)> {
-        self.plan.csharp_sources().iter().map(|source| (source.relative_path.as_str(), source.source.as_slice(), source.content, source.source_fact_identity))
+        self.sources.iter().map(|source| (source.relative_path.as_str(), source.source.as_slice(), source.content, source.source_fact_identity))
     }
     pub(in crate::builtin) fn retained_bytes(&self) -> Option<usize> {
         // Product key and target each own exact boxed coordinate text; include
         // package, unit spelling and a conservative allocation/header allowance.
-        self.plan.csharp_retained_bytes()?
-            .checked_add(std::mem::size_of::<Self>())?
+        let mut retained = self.project.retained_bytes()?
+            .checked_add(self.revision_fence.csharp_retained_bytes()?)?
+            .checked_add(self.sources.capacity().checked_mul(std::mem::size_of::<ingest::CompilerSource>())?)?;
+        for source in &self.sources {
+            retained = retained.checked_add(source.relative_path.capacity())?.checked_add(source.source.capacity())?.checked_add(128)?;
+        }
+        retained.checked_add(std::mem::size_of::<Self>())?
             // PackageReference may retain spare String capacity; charge the
             // bounded Project label conservatively rather than its text length.
             .checked_add(ProductSourceRecord::MAX_LABEL_BYTES.checked_mul(4)?)?
             .checked_add(self.key.coordinate().as_str().len())?
             .checked_add(self.target.package().as_str().len())?
-            .checked_add(self.plan.csharp_project_path().len())?
+            .checked_add(self.project.project_path.as_str().len())?
             .checked_add(1024)
     }
 
     /// Worker-only: checks the exact still-selected snapshot and original
     /// confined buffers. Owner grant must independently check its held lease.
     pub(in crate::builtin) fn revalidate(&self, snapshot: &WorkspaceSnapshot, cancellation: &Arc<AtomicBool>) -> Result<bool, BuiltinModelError> {
-        if !Arc::ptr_eq(self.plan.csharp_cancellation(), cancellation) || cancellation.load(Ordering::Acquire)
+        if !Arc::ptr_eq(&self.cancellation, cancellation) || cancellation.load(Ordering::Acquire)
             || *snapshot.root().as_bytes() != self.snapshot_root || snapshot.sequence() != self.snapshot_sequence
             || *snapshot.closure().binding().closure().as_bytes() != self.snapshot_closure
             || snapshot.owner_epoch() != self.owner_epoch { return Ok(false); }
@@ -3650,15 +3664,15 @@ impl CapturedCSharpUnitAdmission {
             != Some(self.receipt.request_identity()) { return Ok(false); }
         let (project, files, frontier) = bounded_csharp_project_frontier(snapshot, self.project_key, cancellation.as_ref())?;
         if selected_project_commitment(self.project_key, &project)? != self.project_commitment { return Ok(false); }
-        let source = checked_csharp_selected_sources(snapshot, self.project_key, &files, self.plan.csharp_sources(),
-            self.key.profile(), self.plan.csharp_project_path(), cancellation.as_ref())?;
+        let source = checked_csharp_selected_sources(snapshot, self.project_key, &files, &self.sources,
+            self.key.profile(), self.project.project_path.as_str(), cancellation.as_ref())?;
         if source != self.source_commitment || frontier != self.project_frontier {
             return Ok(false);
         }
-        if !self.plan.csharp_project().revalidate(self.plan.csharp_revision_fence(), cancellation.as_ref()).map_err(BuiltinModelError)?
-            || !ingest::revalidate_csharp_source_buffers(self.plan.csharp_revision_fence(), self.plan.csharp_sources(), self.plan.csharp_project_path(),
+        if !self.project.revalidate(&self.revision_fence, cancellation.as_ref()).map_err(BuiltinModelError)?
+            || !ingest::revalidate_csharp_source_buffers(&self.revision_fence, &self.sources, self.project.project_path.as_str(),
                 self.key.profile(), cancellation.as_ref()).map_err(BuiltinModelError)?
-            || !self.plan.csharp_project().revalidate(self.plan.csharp_revision_fence(), cancellation.as_ref()).map_err(BuiltinModelError)? {
+            || !self.project.revalidate(&self.revision_fence, cancellation.as_ref()).map_err(BuiltinModelError)? {
             return Ok(false);
         }
         Ok(snapshot.with_persisted_transition(|transition, _| transition.request()).ok() == Some(self.receipt.request_identity())
