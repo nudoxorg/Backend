@@ -2906,6 +2906,8 @@ mod native_ts_react_owner_journey_tests;
 #[cfg(all(test, unix))]
 #[path = "builtin/native_ts_owner_journey_tests.rs"]
 mod native_ts_owner_journey_tests;
+#[cfg(test)]
+mod vue_owner_journey_tests;
 
 #[cfg(test)]
 #[path = "builtin/publication_transport_tests.rs"]

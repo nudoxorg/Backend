@@ -6,6 +6,8 @@ use super::source_budget::{SourceAdmissionLedger, SourceAdmissionPolicy};
 use super::source_frontier;
 #[path = "ingest/go_project.rs"]
 mod go_project;
+#[path = "ingest/vue.rs"]
+mod vue;
 use self::go_project::GoProjectCapture;
 use backend_compile::{
     DeclarationKind, InputContentSchema, SourceExcerpt, SourceLanguage, SyntaxError,
@@ -3309,7 +3311,7 @@ fn scan_project_with_configuration_policy_attempt(
     }
     let frontends = selected_frontends;
     let frontier_policy_allowed = !native_typescript && discovery == source_selection_policy();
-    if native_typescript && !paths.is_empty() {
+    if native_typescript && (!paths.is_empty() || !project_paths.vue_paths.is_empty()) {
         if matches!(mode, NativeTsScanMode::Auto) {
             // Native evidence cannot carry a second language (the v13 intent
             // admits no structural rows), and dropping those files would hide
@@ -3372,7 +3374,7 @@ fn scan_project_with_configuration_policy_attempt(
             None => (Vec::new(), false),
         };
     let mut file_revisions = BTreeMap::<PathBuf, CompilerFileRevision>::new();
-    for path in paths.iter().chain(&native_paths) {
+    for path in paths.iter().chain(&native_paths).chain(&project_paths.vue_paths) {
         let relative = path
             .strip_prefix(&root)
             .map_err(|_| "discovered source escaped its project root".to_owned())?
@@ -3616,6 +3618,17 @@ fn scan_project_with_configuration_policy_attempt(
             &mut source_ledger, cancellation, observation,
         )?
     } else { Vec::new() };
+    // Vue script syntax belongs to the same source snapshot and facts plane,
+    // but the host file is never compiler input. Original byte offsets survive
+    // unchanged through source reads, search and structural declarations.
+    for path in &project_paths.vue_paths {
+        let (file, supported) = vue::scan(&root, &root_capability, path, project, source_policy, cancellation)?;
+        source_ledger.admit_with_fact_pages(source_policy,
+            source_policy.admit_actual_file(file.source_bytes).map_err(|e| e.to_string())?,
+            file.encoded_record_bytes, file.encoded_fact_bytes, false).map_err(|e| e.to_string())?;
+        if supported { project_paths.unsupported_vue = project_paths.unsupported_vue.saturating_sub(1); }
+        scanned.push(file);
+    }
     let mut native_bytes_read = 0usize;
     let mut native_typescript_capture = if native_typescript {
         let mut capture = capture_native_typescript_sources(
@@ -9859,7 +9872,7 @@ mod profile_tests {
     }
 
     #[test]
-    fn vue_discovery_exclusions_are_counted_without_claiming_ts_authority_or_compiler_membership()
+    fn vue_script_inventory_preserves_exclusions_without_compiler_membership()
     -> Result<(), String> {
         let scratch = scratch("unsupported-vue")?;
         fs::create_dir_all(scratch.0.join("src")).map_err(|e| e.to_string())?;
@@ -9906,20 +9919,20 @@ mod profile_tests {
         );
         let mut supported = paths_of(&first);
         supported.sort();
-        assert_eq!(supported, ["src/helpers.js", "src/main.ts"]);
+        assert_eq!(supported, ["src/App.vue", "src/Other.VUE", "src/helpers.js", "src/main.ts"]);
         assert_eq!(first.compiler_sources.len(), 2);
         assert_eq!(
             first.source_bytes_read,
-            "export const typed = 1;".len() + "export const scripted = 2;".len(),
-            "unsupported container bytes are not admitted or charged as compiler source"
+            "export const typed = 1;".len() + "export const scripted = 2;".len() + 2 + "<template><h1>unsupported Vue</h1></template>".len(),
+            "Vue host reads are charged without compiler membership"
         );
         assert!(
-            !first.revision_fence.files.iter().any(|file| file
+            first.revision_fence.files.iter().any(|file| file
                 .relative_path
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("vue"))),
-            "directory fences protect discovery counts without per-container metadata expansion"
+            "Vue host metadata is part of the same source revision fence"
         );
 
         assert!(
@@ -9939,19 +9952,17 @@ mod profile_tests {
         let before = first.source_selection;
         fs::write(
             scratch.0.join("src/New.vue"),
-            "<script>not submitted to TSZ</script>",
+            "<script>function mounted() { return 1; }</script>",
         )
         .map_err(|e| e.to_string())?;
         let second = scan(&scratch)?;
         assert_eq!(
             second.source_selection,
-            backend_library::SourceSelectionObservation::project_extensions(1, 1, 3)
+            backend_library::SourceSelectionObservation::project_extensions(1, 1, 2)
         );
-        assert_ne!(second.source_selection, before);
-        assert_eq!(
-            second.source_version, source_version,
-            "supported source identities are independent of excluded containers"
-        );
+        assert_eq!(second.source_selection, before);
+        assert_ne!(second.source_version, source_version, "Vue script edits change source identity");
+        assert!(names_of(&second, "src/New.vue").contains(&"mounted".to_owned()));
         assert_eq!(second.compiler_sources.len(), 2);
         Ok(())
     }

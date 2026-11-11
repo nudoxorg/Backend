@@ -5958,6 +5958,7 @@ impl CommandAdapter {
             &mut self.generations,
         )
         .map_err(|_| unavailable())?
+        .or(super::vue_source::extent(&sources, row).map_err(|_| unavailable())?)
         .ok_or_else(unavailable)?;
         let record = sources
             .files

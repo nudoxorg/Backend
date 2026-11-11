@@ -19,6 +19,8 @@ mod stylo_query;
 pub(in crate::builtin) mod sql_query;
 // Kept private until Vue owner replay and public-route admission are complete.
 mod vue_query;
+mod vue_source;
+mod vue_references;
 mod stylo_impact_capture;
 mod impact_retention;
 mod impact_diff;
