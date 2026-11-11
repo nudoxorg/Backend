@@ -17,6 +17,24 @@ pub(super) fn producer_recipe() -> [u8; 32] {
     *hash.finalize().as_bytes()
 }
 
+/// Joins a selected row's pointer to a compiler-closure aggregate file.
+pub(super) fn witnessed_file<'a>(
+    claim: &NativeSourceEvidence,
+    aggregate: &'a backend_semantic::native_ts_headers::NativeTsHeaderAggregate,
+    digest: [u8; 32],
+) -> Result<&'a backend_semantic::native_ts_headers::NativeTsHeaderFile, String> {
+    let reference = claim.headers.as_ref().ok_or("native header reference absent")?;
+    if reference.aggregate_digest != digest { return Err("native header closure differs".into()); }
+    let index = aggregate.files.binary_search_by(|file| file.path.as_str().cmp(&claim.path))
+        .map_err(|_| "native header file absent from compiler closure")?;
+    let file = &aggregate.files[index];
+    if file.source.byte_len != claim.byte_length || file.source.identity.as_ref() != claim.source_digest.as_slice()
+        || file.image_identity != reference.image_identity || file.image_byte_len != reference.image_byte_len
+        || file.producer_recipe != reference.producer_recipe
+    { return Err("native header file differs from source evidence".into()); }
+    Ok(file)
+}
+
 /// Revalidates every persisted claim against the exact reopened image. The
 /// header producer's own source evidence must already be admitted by the
 /// publication; these checks do not manufacture that authority.
