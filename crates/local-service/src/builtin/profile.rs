@@ -474,6 +474,7 @@ pub struct BuiltinIntent {
     sql_proof: Option<SqlLiveProofRef>,
     sql_extension: Option<super::sql_intent::SqlIntentExtension>,
     csharp_extension: Option<super::csharp_intent::CSharpReceiptIntentExtension>,
+    csharp_custody: Option<CSharpUnitCustody>,
     semantic_selection: Option<BuiltinSemanticSelectionIntent>,
     operation_key: Option<[u8; 32]>,
     capture_basis: Option<BuiltinCaptureBasis>,
@@ -482,6 +483,16 @@ pub struct BuiltinIntent {
 
 #[derive(Clone)]
 struct NativeTsLiveProof(Arc<super::native_ts_admission::RefreshedNativeTsEvidencePlan>);
+
+#[derive(Clone)]
+struct CSharpUnitCustody(Arc<super::csharp_admission::CSharpUnitAdmission>);
+impl fmt::Debug for CSharpUnitCustody {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.debug_struct("CSharpUnitCustody").finish_non_exhaustive() }
+}
+impl PartialEq for CSharpUnitCustody {
+    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+}
+impl Eq for CSharpUnitCustody {}
 
 #[derive(Clone)]
 struct SqlLiveProofRef(Arc<super::sql_admission::SqlLiveProof>);
@@ -1295,6 +1306,7 @@ impl BuiltinIntent {
             sql_proof: None,
             sql_extension: None,
             csharp_extension: None,
+            csharp_custody: None,
             semantic_selection,
             operation_key,
             capture_basis,
@@ -2050,6 +2062,38 @@ impl BuiltinIntent {
         Ok(self)
     }
 
+    /// Retain same-attempt source custody alongside the untrusted durable delta.
+    /// This is only preparatory: execution and SDK custody are still required.
+    pub(super) fn with_csharp_unit_custody(
+        mut self, base: &WorkspaceSnapshot,
+        custody: Arc<super::csharp_admission::CSharpUnitAdmission>,
+        cancellation: &Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<Self, BuiltinModelError> {
+        if self.operation != BuiltinIntentOperation::Index || self.package.to_bytes() != custody.project()
+            || self.operation_key != custody.operation_key() || self.operation_key.is_none()
+            || self.csharp_extension.is_some() || self.csharp_custody.is_some()
+            || self.sql_extension.is_some() || self.sql_proof.is_some()
+            || self.stylo_basis.is_some() || self.native_evidence_basis.is_some()
+        { return Err(BuiltinModelError("invalid C# custody attachment".into())); }
+        custody.revalidate(base, cancellation).map_err(BuiltinModelError)?;
+        let extension = custody.extension();
+        extension.encode().map_err(BuiltinModelError)?;
+        self.csharp_extension = Some(extension);
+        self.csharp_custody = Some(CSharpUnitCustody(custody));
+        self.encoding_version = Self::CSHARP_VERSION;
+        Ok(self)
+    }
+
+    pub(super) fn validate_csharp_stage_custody(&self, base: &WorkspaceSnapshot, cancellation: &Arc<std::sync::atomic::AtomicBool>) -> Result<(), BuiltinModelError> {
+        if self.encoding_version != Self::CSHARP_VERSION { return Ok(()); }
+        let custody = &self.csharp_custody.as_ref().ok_or_else(|| BuiltinModelError("C# staging requires live selected source custody".into()))?.0;
+        custody.revalidate(base, cancellation).map_err(BuiltinModelError)?;
+        if self.csharp_extension.as_ref() != Some(&custody.extension()) {
+            return Err(BuiltinModelError("C# staged claims differ from selected source plan".into()));
+        }
+        Ok(())
+    }
+
     /// Native evidence staging and hydration belong on the publication worker.
     pub(super) fn has_native_ts_evidence(&self) -> bool {
         self.encoding_version == Self::NATIVE_EVIDENCE_VERSION
@@ -2633,7 +2677,12 @@ impl backend_engine::queue::QueueSized for BuiltinIntent {
             Some(proof) => proof.0.checked_retained_bytes().ok_or(backend_engine::QueueError::Accounting)?,
             None => 0,
         };
-        encoded.checked_add(proof).and_then(|bytes| bytes.checked_add(sql_proof)).ok_or(backend_engine::QueueError::Accounting)
+        let csharp_custody = match &self.csharp_custody {
+            Some(custody) => custody.0.retained_bytes().ok_or(backend_engine::QueueError::Accounting)?,
+            None => 0,
+        };
+        encoded.checked_add(proof).and_then(|bytes| bytes.checked_add(sql_proof))
+            .and_then(|bytes| bytes.checked_add(csharp_custody)).ok_or(backend_engine::QueueError::Accounting)
     }
 }
 

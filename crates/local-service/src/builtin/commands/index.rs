@@ -3708,6 +3708,11 @@ pub(in crate::builtin) struct CapturedCSharpUnitAdmission {
 
 impl CapturedCSharpUnitAdmission {
     pub(in crate::builtin) fn key(&self) -> &ProductSemanticPublicationKey { &self.key }
+    pub(in crate::builtin) fn pending_capture(&self) -> Option<&SemanticSourceCapture> { self.pending_capture.as_ref() }
+    pub(in crate::builtin) fn source_request(&self) -> [u8; 32] { self.receipt.request_identity() }
+    pub(in crate::builtin) fn operation_key(&self) -> Option<[u8; 32]> { self.receipt.operation_key().map(|key| key.to_bytes()) }
+    pub(in crate::builtin) fn shares_cancellation(&self, cancellation: &Arc<AtomicBool>) -> bool { Arc::ptr_eq(&self.cancellation, cancellation) }
+
     pub(in crate::builtin) fn target(&self) -> &CompilerPackageTargetV2 { &self.target }
     pub(in crate::builtin) fn project_key(&self) -> [u8; 32] { self.project_key }
     pub(in crate::builtin) fn project_commitment(&self) -> [u8; 32] { self.project_commitment }

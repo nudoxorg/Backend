@@ -188,3 +188,75 @@ pub(super) fn plan_untrusted_csharp_replacement(
     }
     Ok(changes)
 }
+
+/// Live source/attempt custody for one planned unit delta. It is intentionally
+/// insufficient to authorize publication without the execution and SDK leases.
+/// Serialized intent bytes cannot construct this value.
+pub(super) struct CSharpUnitAdmission {
+    witness: std::sync::Arc<super::commands::index::CapturedCSharpUnitAdmission>,
+    attempt: backend_extension_turso::CandidateAttempt,
+    basis: CSharpReceiptBasis,
+    changes: Vec<CSharpReceiptChange>,
+    cancellation: std::sync::Arc<AtomicBool>,
+}
+
+impl CSharpUnitAdmission {
+    pub(super) fn capture(
+        base: &WorkspaceSnapshot,
+        witness: std::sync::Arc<super::commands::index::CapturedCSharpUnitAdmission>,
+        attempt: backend_extension_turso::CandidateAttempt,
+        replacement: &[([u8; 32], CSharpReceiptRecord)],
+        cancellation: std::sync::Arc<AtomicBool>,
+    ) -> Result<Self, String> {
+        let capture = witness.pending_capture().ok_or("C# Pending capture missing")?;
+        let key = witness.key();
+        let namespace = super::semantic_authority::SemanticAuthority::namespace(key.package(), key.coordinate(), key.profile())
+            .map_err(|error| error.to_string())?;
+        if !witness.shares_cancellation(&cancellation)
+            || cancellation.load(Ordering::Acquire)
+            || witness.operation_key().is_none()
+            || capture.operation_key().copied() != witness.operation_key()
+            || capture.input_digest() != attempt.input_digest()
+            || capture.observation_sequence() != attempt.observation().sequence()
+            || attempt.namespace() != &namespace
+            || attempt.observation().observation().namespace() != &namespace
+            || base.with_persisted_transition(|transition, _| transition.request()).ok() != Some(witness.source_request())
+            || !witness.revalidate(base, &cancellation).map_err(|error| error.to_string())?
+        { return Err("C# selected source or attempt changed".into()); }
+        let basis = csharp_receipt_basis(base)?;
+        let unit = CSharpReceiptUnit::Project { path: witness.project_path().to_owned() };
+        let changes = plan_untrusted_csharp_replacement(base, witness.project_key(), &unit, replacement, cancellation.as_ref())?;
+        if changes.is_empty() { return Err("C# unit delta is empty".into()); }
+        let extension = super::csharp_intent::CSharpReceiptIntentExtension { basis, changes: changes.clone() };
+        extension.encode()?;
+        if !witness.revalidate(base, &cancellation).map_err(|error| error.to_string())? {
+            return Err("C# source changed while planning".into());
+        }
+        Ok(Self { witness, attempt, basis, changes, cancellation })
+    }
+
+    pub(super) fn revalidate(&self, base: &WorkspaceSnapshot, cancellation: &std::sync::Arc<AtomicBool>) -> Result<(), String> {
+        if !std::sync::Arc::ptr_eq(&self.cancellation, cancellation)
+            || csharp_receipt_basis(base)? != self.basis
+            || !self.witness.revalidate(base, cancellation).map_err(|error| error.to_string())?
+        { return Err("C# unit custody changed".into()); }
+        let capture = self.witness.pending_capture().ok_or("C# Pending capture missing")?;
+        if capture.operation_key().copied() != self.witness.operation_key()
+            || capture.input_digest() != self.attempt.input_digest()
+            || capture.observation_sequence() != self.attempt.observation().sequence()
+        { return Err("C# attempt changed".into()); }
+        Ok(())
+    }
+
+    pub(super) fn project(&self) -> [u8; 32] { self.witness.project_key() }
+    pub(super) fn operation_key(&self) -> Option<[u8; 32]> { self.witness.operation_key() }
+
+    pub(super) fn extension(&self) -> super::csharp_intent::CSharpReceiptIntentExtension {
+        super::csharp_intent::CSharpReceiptIntentExtension { basis: self.basis, changes: self.changes.clone() }
+    }
+
+    pub(super) fn retained_bytes(&self) -> Option<usize> {
+        self.witness.retained_bytes()?.checked_add(self.extension().encode().ok()?.len())?
+            .checked_add(std::mem::size_of::<Self>())
+    }
+}
