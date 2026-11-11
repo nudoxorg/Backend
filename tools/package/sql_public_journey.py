@@ -61,6 +61,28 @@ FILES["db/queries/upsert.sql"] = (
     "ON CONFLICT (id) DO UPDATE SET name = excluded.name, country = excluded.country;\n"
 )
 
+# Report-specific migration history and positive/negative impact controls.
+FILES.update({
+    "db/migrations/0010_bookshop.sql": (
+        "CREATE TABLE books (id INTEGER PRIMARY KEY, price_cents INTEGER, title TEXT);\n"
+        "CREATE TABLE order_items (book_id INTEGER REFERENCES books(id));\n"
+        "CREATE INDEX books_by_title ON books(title);\n"
+        "CREATE VIEW book_sales AS SELECT title FROM books;\n"
+    ),
+    "db/migrations/0011_bookshop_rename.sql": (
+        "ALTER TABLE books RENAME COLUMN price_cents TO list_price_cents;\n"
+        "ALTER TABLE order_items RENAME TO order_lines;\n"
+        "CREATE TRIGGER reprice_book AFTER UPDATE OF list_price_cents ON books "
+        "BEGIN SELECT new.list_price_cents; END;\n"
+    ),
+    "db/queries/bookshop.sql": (
+        "SELECT list_price_cents FROM books;\n"
+        "SELECT title FROM books;\n"
+        "SELECT price_cents FROM books;\n"
+        "SELECT * FROM order_items;\n"
+    ),
+})
+
 def sql_path(path):
     return "db/" + pathlib.PurePosixPath(path).name if a.flat else path
 
@@ -138,7 +160,7 @@ def start_owner():
 
 
 def cli(label, args, timeout=900):
-    cmd = [str(bundle / "backend-cli"), "--format", "json", "--project", str(project), "--workspace", str(workspace),
+    cmd = [str(bundle / "backend-cli"), "--format", "json", "--detail", "full", "--project", str(project), "--workspace", str(workspace),
            "--endpoint", str(endpoint), *args]
     try:
         done = subprocess.run(cmd, cwd=project, env=env, capture_output=True, timeout=timeout)
@@ -239,6 +261,58 @@ if not reference:
 code, raw = cli("read-source", ["sql-read-source", reference])
 if code != 0 or '"text":"balance"' not in raw.replace(" ", "") and "balance" not in raw:
     fail("sql-read-source did not return the exact written name: " + raw[:400])
+def typed(body, kind, label):
+    semantic = body.get("semantic_data")
+    if not isinstance(semantic, dict) or semantic.get("kind") != kind or not isinstance(semantic.get("value"), dict):
+        fail(f"{label}: expected full typed {kind} payload: {body}")
+    return semantic["value"]
+
+
+def sql_page(label, *args):
+    body, _ = query(label, *args, "--limit", "128")
+    page = typed(body, "sql-query", label)
+    if page.get("terminal", {}).get("state") != "complete":
+        fail(f"{label}: incomplete typed SQL page: {page.get('terminal')}")
+    return page
+
+
+def impact_page(label, option, name):
+    code, raw = cli(label, ["impact", str(project), option, name, "--limit", "200"])
+    if code != 0:
+        fail(f"{label}: impact failed: {raw[:1200]}")
+    page = typed(json.loads(raw), "impact", label)
+    if page.get("seed_state", {}).get("state") != "resolved" or page.get("terminal", {}).get("state") != "complete":
+        fail(f"{label}: unresolved or incomplete impact: {page}")
+    return page
+
+
+def bookshop_claims(label):
+    definitions = sql_page(label + "-definitions", "--role", "definition", "--kind", "table")
+    names = [h["fact"] for h in definitions["hits"] if h["fact"].get("name") in ("order_items", "order_lines")]
+    if len(names) < 2 or any(n.get("head_name") != "order_lines" or n.get("entity") is None for n in names):
+        fail(f"{label}: missing renamed table claims: {names}")
+    if any(n["entity"] != names[0]["entity"] for n in names):
+        fail(f"{label}: rename split the exact table entity: {names}")
+    diagnostics = sql_page(label + "-diagnostics", "--role", "diagnostic")
+    refs = [h for h in diagnostics["hits"] if h["path"] == sql_path("db/queries/bookshop.sql") and h["fact"].get("fact") == "Reference"]
+    expected = {"price_cents": "NoSuchColumn", "order_items": "NoSuchObject"}
+    for name, reason in expected.items():
+        if not any(h["fact"].get("name") == name and h["fact"].get("resolution") == {"Unresolved": {"reason": reason}} for h in refs):
+            fail(f"{label}: missing typed unbound {name}/{reason}: {refs}")
+    column = impact_page(label + "-column-impact", "--sql-column", "books.list_price_cents")
+    nodes = [r["node"] for r in column["rows"]]
+    if not any(n.get("kind") == "query" and n.get("path") == sql_path("db/queries/bookshop.sql") for n in nodes):
+        fail(f"{label}: price query missing from impact: {nodes}")
+    if any(n.get("kind") in ("table", "index") or n.get("name") in ("book_sales", "books_by_title", "order_items", "order_lines") for n in nodes):
+        fail(f"{label}: column impact spread to unrelated objects: {nodes}")
+    table = impact_page(label + "-table-impact", "--sql-table", "order_lines")
+    if any(n.get("name") == "order_items" for n in table["seeds"] + [r["node"] for r in table["rows"]]):
+        fail(f"{label}: old table name retained as a separate impact node: {table}")
+    return definitions, diagnostics, column, table
+
+
+bookshop_before = bookshop_claims("bookshop")
+
 # 4. The same through MCP over stdio.
 mcp = subprocess.Popen([str(bundle / "backend-mcp"), "--project", str(project), "--workspace", str(workspace),
                         "--endpoint", str(endpoint)], cwd=project, env=env, stdin=subprocess.PIPE,
@@ -264,6 +338,25 @@ reply = rpc(2, "tools/call", {"name": "backend.sql_query", "arguments": {
 mtext = "\n".join(strings(reply))
 if reply.get("result", {}).get("isError") or "column accounts.balance" not in mtext:
     fail("MCP sql_query did not return the column definitions: " + mtext[:600])
+# Full typed MCP responses must carry the same facts and impact nodes as CLI.
+def mcp_typed(seq, tool, arguments, kind):
+    reply = rpc(seq, "tools/call", {"name": tool, "arguments": {"package": str(project), "detail": "full", **arguments}})
+    result = reply.get("result", {})
+    if result.get("isError") or not isinstance(result.get("structuredContent"), dict):
+        fail(f"{tool}: missing typed MCP response: {reply}")
+    return typed(result["structuredContent"], kind, tool)
+
+mcp_defs = mcp_typed(3, "backend.sql_query", {"role": "definition", "kind": "table", "limit": 128}, "sql-query")
+mcp_diag = mcp_typed(4, "backend.sql_query", {"role": "diagnostic", "limit": 128}, "sql-query")
+mcp_impact = mcp_typed(5, "backend.impact", {"sql_column": "books.list_price_cents", "limit": 200}, "impact")
+mcp_table = mcp_typed(9, "backend.impact", {"sql_table": "order_lines", "limit": 200}, "impact")
+for cli_page, mcp_page in ((bookshop_before[0], mcp_defs), (bookshop_before[1], mcp_diag)):
+    if cli_page["hits"] != mcp_page["hits"] or cli_page["terminal"] != mcp_page["terminal"]:
+        fail("CLI and MCP typed SQL facts differ")
+if [(r["node"], r["strength"], r["relation"]) for r in bookshop_before[2]["rows"]] != [(r["node"], r["strength"], r["relation"]) for r in mcp_impact["rows"]]:
+    fail("CLI and MCP typed column impact differs")
+if [(r["node"], r["strength"], r["relation"]) for r in bookshop_before[3]["rows"]] != [(r["node"], r["strength"], r["relation"]) for r in mcp_table["rows"]]:
+    fail("CLI and MCP typed renamed table impact differs")
 mcp.stdin.close()
 mcp.wait(timeout=10)
 
@@ -297,6 +390,31 @@ start_owner()
 after = query("post-kill", "--role", "definition", "--kind", "column", "--parent", "accounts")[1]
 if before != after:
     fail("definitions differ after a cold restart:\nBEFORE\n%s\nAFTER\n%s" % (before[:800], after[:800]))
+# Revalidate exact report claims after the cold restart. The added broken file
+# changes coverage but must not change these retained fact/entity identities.
+bookshop_after = bookshop_claims("bookshop-cold")
+for before_page, after_page in zip(bookshop_before[:2], bookshop_after[:2]):
+    before_hits = {tuple(h["id"]): h["fact"] for h in before_page["hits"] if "bookshop" in h["path"]}
+    after_hits = {tuple(h["id"]): h["fact"] for h in after_page["hits"] if "bookshop" in h["path"]}
+    if before_hits != after_hits:
+        fail("Bookshop typed fact identities changed after cold reopen")
+mcp = subprocess.Popen([str(bundle / "backend-mcp"), "--project", str(project), "--workspace", str(workspace),
+                        "--endpoint", str(endpoint)], cwd=project, env=env, stdin=subprocess.PIPE,
+                       stdout=subprocess.PIPE, stderr=(out / "mcp-cold.stderr").open("wb"), start_new_session=True)
+rpc(6, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "sql-public-journey", "version": "1"}})
+mcp.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+mcp.stdin.flush()
+cold_diag = mcp_typed(7, "backend.sql_query", {"role": "diagnostic", "limit": 128}, "sql-query")
+cold_impact = mcp_typed(8, "backend.impact", {"sql_column": "books.list_price_cents", "limit": 200}, "impact")
+cold_table = mcp_typed(10, "backend.impact", {"sql_table": "order_lines", "limit": 200}, "impact")
+if cold_diag["hits"] != bookshop_after[1]["hits"]:
+    fail("cold MCP typed diagnostics differ from CLI")
+if [(r["node"], r["strength"], r["relation"]) for r in cold_impact["rows"]] != [(r["node"], r["strength"], r["relation"]) for r in bookshop_after[2]["rows"]]:
+    fail("cold MCP typed column impact differs from CLI")
+if [(r["node"], r["strength"], r["relation"]) for r in cold_table["rows"]] != [(r["node"], r["strength"], r["relation"]) for r in bookshop_after[3]["rows"]]:
+    fail("cold MCP typed renamed table impact differs from CLI")
+mcp.stdin.close()
+mcp.wait(timeout=10)
 code, raw = cli("outline-cold", ["outline", str(project)])
 if code != 0 or "account_spend" not in raw or "SQL column accounts.balance" in raw:
     fail("cold ordinary outline lost SQL or retained a dropped column: " + raw[:1200])
