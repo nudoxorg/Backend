@@ -113,6 +113,9 @@ impl NativeSourceEvidence {
         image_source: backend_version::ContentId<backend_version::SourceFactDomain>,
     ) -> Result<backend_compile::VerifiedSourceText<'a>, &'static str> {
         self.validate()?;
+        if !self.admits_image() {
+            return Err("native program member has no admitted image");
+        }
         if bytes.len() != self.byte_length as usize {
             return Err("native source length differs");
         }
@@ -365,6 +368,7 @@ mod tests {
         assert!(NativeSourceEvidence::capture_line_starts("a\u{2028}b".as_bytes()).is_none());
         claim.kind = NativeSourceEvidenceKind::ProgramMember;
         assert!(!claim.admits_image());
+        assert!(claim.verify_host(bytes, image).is_err());
     }
 
     #[test]
