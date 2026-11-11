@@ -10222,8 +10222,10 @@ mod tests {
         let imported = format!("{project}::external::symbol:imported::httpie");
         let parse_args = format!("{project}::semantic::parse-args::parse_args");
         let mut labels = vec![parser.clone(), imported.clone(), parse_args.clone()];
+        // Fill the largest admitted patch including the three queried rows.
         labels.extend(
-            (0..256).map(|at| format!("{project}::external::symbol:{at:064x}::sleep_{at}")),
+            (0..backend_library::MAX_VIEW_PATCH_ROWS - labels.len())
+                .map(|at| format!("{project}::external::symbol:{at:064x}::sleep_{at}")),
         );
         let mut changes = labels
             .iter()
