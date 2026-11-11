@@ -83,7 +83,7 @@ fn python_and_csharp_structural_source_survive_public_wire_and_cold_reopen() {
             .expect("health view row");
         let sources = crate::builtin::read_package_sources(&snapshot, row.package.expect("health package"))
             .expect("selected project sources");
-        assert!(super::super::structural_source::admit(&sources, row)
+        assert!(super::super::super::structural_source::admit(&sources, row)
             .expect("complete selected structural facts").is_some(), "health structural row must join exact facts");
         let _ = adapter;
     }
