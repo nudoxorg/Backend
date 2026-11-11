@@ -125,8 +125,8 @@ fn snapshot_execution(
     fs::create_dir_all(&copied_root).map_err(|_| CSharpAuthorityError::Configuration)?;
     fs::write(&copied_tool, tool_bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
     // `fs::write` creates a non-executable file regardless of the source
-    // mode. Preserve only the source executable bits; a copied dotnet host
-    // must remain spawnable while no writable source permissions are needed.
+    // mode. Require an executable source, then use a private owner-only mode
+    // for the copied host; no source write/special bits enter the snapshot.
     #[cfg(unix)]
     {
         let mode = fs::metadata(toolchain)
@@ -136,7 +136,7 @@ fn snapshot_execution(
         if mode & 0o111 == 0 {
             return Err(CSharpAuthorityError::Configuration);
         }
-        fs::set_permissions(&copied_tool, fs::Permissions::from_mode(mode & 0o7777))
+        fs::set_permissions(&copied_tool, fs::Permissions::from_mode(0o500))
             .map_err(|_| CSharpAuthorityError::Configuration)?;
     }
     for directory_name in ["host", "shared"] {
