@@ -40,6 +40,21 @@ fn temp_store(label: &str) -> (TestDirectoryCleanup, FileStore, PathBuf) {
     (cleanup, store, path)
 }
 
+#[cfg(unix)]
+#[test]
+fn released_membership_leases_do_not_accumulate() {
+    let (_cleanup, store, path) = temp_store("released-membership-leases");
+    let closure = ClosureId::from_bytes([42; 32]);
+    let live = store.lease_closure_membership(closure).expect("live lease");
+    for _ in 0..32 {
+        drop(store.lease_closure_membership(closure).expect("temporary lease"));
+    }
+    let directory = path.join("closure-reader-leases");
+    assert_eq!(std::fs::read_dir(&directory).expect("leases").count(), 1);
+    drop(live);
+    assert_eq!(std::fs::read_dir(&directory).expect("leases").count(), 0);
+}
+
 fn object(value: u64) -> super::super::super::TypedObject {
     let key = ObjectKey::<TestSchema>::from_value(&value);
     super::super::super::TypedObject::from_value(&key, &value)
