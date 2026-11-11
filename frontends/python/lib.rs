@@ -76,6 +76,10 @@ mod source_excerpt_tests {
                 declaration.source_excerpt().extent(),
                 Some(backend_compile::SourceExcerptExtent::Complete)
             );
+            assert!(matches!(
+                declaration.binding_identity(),
+                backend_compile::SourceBindingIdentity::Exact(_)
+            ));
         }
         let user = analysis
             .declarations()

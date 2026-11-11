@@ -1114,12 +1114,23 @@ fn captured_definitions<'a>(
         };
         let owner_node = captured_owner_node(language, node, name);
         let name_node = name;
-        let binding_identity = if matches!(language, SourceLanguage::TypeScript | SourceLanguage::Go) {
+        let binding_identity = if matches!(
+            language,
+            SourceLanguage::TypeScript
+                | SourceLanguage::Go
+                | SourceLanguage::Python
+                | SourceLanguage::CSharp
+        ) {
             let (start, end) = if language == SourceLanguage::Go {
                 let extent = go_declaration_extent(node, name_node);
                 (extent.start_byte(), extent.end_byte())
             } else {
-                typescript_declaration_extent(owner_node)
+                let extent_owner = python_decorated_owner(language, owner_node);
+                if language == SourceLanguage::TypeScript {
+                    typescript_declaration_extent(extent_owner)
+                } else {
+                    (extent_owner.start_byte(), extent_owner.end_byte())
+                }
             };
             SourceBindingIdentity::Exact(
                 SourceBindingCapture::new(
@@ -1228,6 +1239,22 @@ fn captured_owner_node<'a>(
         }
     }
     definition
+}
+
+/// Returns the complete authored owner for binding authentication. Python's
+/// grammar places decorators in a sibling wrapper around the function/class;
+/// include that wrapper so exact source reads authenticate the same bytes that
+/// structural excerpts display.
+fn python_decorated_owner<'a>(language: SourceLanguage, node: Node<'a>) -> Node<'a> {
+    if language != SourceLanguage::Python {
+        return node;
+    }
+    node.parent()
+        .filter(|parent| {
+            parent.kind() == "decorated_definition"
+                && matches!(node.kind(), "function_definition" | "class_definition")
+        })
+        .unwrap_or(node)
 }
 
 /// TypeScript's native declaration range includes field terminators and
