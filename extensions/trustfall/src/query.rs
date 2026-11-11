@@ -125,6 +125,17 @@ impl PackageScopeEvidence {
     }
 }
 
+/// Qualification attached to compiler facts that are admitted into a query
+/// corpus. Observed facts are source-proven for the selected image but do not
+/// claim complete discovery or current policy eligibility.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompilerEvidenceAuthority {
+    /// The compiler publication is current and complete for its selected scope.
+    Current,
+    /// The image and source are proven, while discovery/policy completeness is unknown.
+    Observed,
+}
+
 /// Compiler-owned semantic authority retained for one declaration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompilerSemanticEvidence {
@@ -134,6 +145,7 @@ pub struct CompilerSemanticEvidence {
     declaration: DeclarationIdentity,
     image: [u8; 32],
     facts: SemanticImageFacts,
+    authority: CompilerEvidenceAuthority,
 }
 
 impl CompilerSemanticEvidence {
@@ -154,7 +166,23 @@ impl CompilerSemanticEvidence {
             declaration,
             image,
             facts,
+            authority: CompilerEvidenceAuthority::Current,
         }
+    }
+
+    /// Retains a declaration from a source-proven observed native image.
+    #[must_use]
+    pub fn new_observed(
+        package: PackageKey,
+        coordinate: PackageUrl,
+        profile: LanguageProfile,
+        declaration: DeclarationIdentity,
+        image: [u8; 32],
+        facts: SemanticImageFacts,
+    ) -> Self {
+        let mut value = Self::new(package, coordinate, profile, declaration, image, facts);
+        value.authority = CompilerEvidenceAuthority::Observed;
+        value
     }
 
     /// Returns the package that owns the declaration.
@@ -193,6 +221,12 @@ impl CompilerSemanticEvidence {
         self.facts
     }
 
+    /// Returns whether this fact is complete current evidence or observed-only evidence.
+    #[must_use]
+    pub const fn authority(&self) -> CompilerEvidenceAuthority {
+        self.authority
+    }
+
     /// Returns the canonical package-and-declaration product row identity.
     #[must_use]
     pub fn row_id(&self) -> String {
@@ -212,6 +246,7 @@ pub struct CompilerExternalTargetEvidence {
     target: ExternalTargetIdentity,
     image: [u8; 32],
     facts: SemanticImageFacts,
+    authority: CompilerEvidenceAuthority,
 }
 
 impl CompilerExternalTargetEvidence {
@@ -232,7 +267,23 @@ impl CompilerExternalTargetEvidence {
             target,
             image,
             facts,
+            authority: CompilerEvidenceAuthority::Current,
         }
+    }
+
+    /// Retains an external endpoint from a source-proven observed native image.
+    #[must_use]
+    pub fn new_observed(
+        package: PackageKey,
+        coordinate: PackageUrl,
+        profile: LanguageProfile,
+        target: ExternalTargetIdentity,
+        image: [u8; 32],
+        facts: SemanticImageFacts,
+    ) -> Self {
+        let mut value = Self::new(package, coordinate, profile, target, image, facts);
+        value.authority = CompilerEvidenceAuthority::Observed;
+        value
     }
 
     /// Returns the package that owns this external reference.
@@ -269,6 +320,12 @@ impl CompilerExternalTargetEvidence {
     #[must_use]
     pub const fn facts(&self) -> SemanticImageFacts {
         self.facts
+    }
+
+    /// Returns the qualification carried by this endpoint's source image.
+    #[must_use]
+    pub const fn authority(&self) -> CompilerEvidenceAuthority {
+        self.authority
     }
 
     /// Returns the only product row identity admitted for this scoped target.
@@ -343,8 +400,14 @@ impl SemanticQueryEvidence {
     fn state(&self) -> &'static str {
         match self {
             Self::Package(_) => "package_scope",
-            Self::Compiler(_) => "compiler_semantic",
-            Self::CompilerExternalTarget(_) => "compiler_external_target",
+            Self::Compiler(value) => match value.authority() {
+                CompilerEvidenceAuthority::Current => "compiler_semantic",
+                CompilerEvidenceAuthority::Observed => "compiler_observed",
+            },
+            Self::CompilerExternalTarget(value) => match value.authority() {
+                CompilerEvidenceAuthority::Current => "compiler_external_target",
+                CompilerEvidenceAuthority::Observed => "compiler_external_observed",
+            },
             Self::StructuralFallback(_) => "structural_fallback",
         }
     }
@@ -561,9 +624,10 @@ impl SemanticQueryCorpus {
                         || source.profile() != external.profile()
                         || source.coordinate() != external.coordinate()
                         || source.facts() != external.facts()
+                        || source.authority() != external.authority()
                     {
                         return Err(QueryError::Evidence(
-                            "compiler external edge crossed its exact image authority".to_owned(),
+                            "compiler external edge crossed its exact image authority or qualification".to_owned(),
                         ));
                     }
                 }
@@ -804,6 +868,10 @@ fn digest_corpus(workspace: WorkspaceRoot, facts: &[SemanticQueryFact]) -> [u8; 
                 hasher.update(value.declaration().family.as_bytes());
                 hasher.update(value.declaration().variant.as_bytes());
                 hasher.update(&value.image());
+                hasher.update(&[match value.authority() {
+                    CompilerEvidenceAuthority::Current => 0,
+                    CompilerEvidenceAuthority::Observed => 1,
+                }]);
                 hash_image_facts(&mut hasher, value.facts());
             }
             SemanticQueryEvidence::CompilerExternalTarget(value) => {
@@ -813,6 +881,10 @@ fn digest_corpus(workspace: WorkspaceRoot, facts: &[SemanticQueryFact]) -> [u8; 
                 hasher.update(&<[u8; 2]>::from(value.profile()));
                 hasher.update(value.target().as_bytes());
                 hasher.update(&value.image());
+                hasher.update(&[match value.authority() {
+                    CompilerEvidenceAuthority::Current => 0,
+                    CompilerEvidenceAuthority::Observed => 1,
+                }]);
                 hash_image_facts(&mut hasher, value.facts());
             }
             SemanticQueryEvidence::StructuralFallback(value) => {
