@@ -3061,7 +3061,7 @@ mod tests {
     fn owned_child_keeps_reserved_custody_until_the_shared_reaper_finishes() {
         let state = ChildReaperState::new(1);
         let permit = reserve_child_reaper_slot(Arc::clone(&state)).expect("reserve slot");
-        let child = Command::new("/bin/sleep")
+        let child = Command::new(crate::tests::required_test_tool("sleep"))
             .arg("30")
             .stdin(Stdio::null())
             .spawn()
@@ -3094,7 +3094,7 @@ mod tests {
         drop(owned);
 
         let permit = reserve_child_reaper_slot(Arc::clone(&state)).expect("reserve drop slot");
-        let child = Command::new("/bin/sleep")
+        let child = Command::new(crate::tests::required_test_tool("sleep"))
             .arg("30")
             .stdin(Stdio::null())
             .spawn()

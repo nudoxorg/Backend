@@ -3624,7 +3624,7 @@ while True:
     ) -> Result<(PathBuf, EmbeddingRuntimeSpecV1, EmbeddingExecutable), Box<dyn std::error::Error>>
     {
         let (root, program) = fixture()?;
-        let mut environment = vec![("PATH".into(), "/usr/bin:/bin".into())];
+        let mut environment = vec![("PATH".into(), crate::tests::required_python_path())];
         if let Some(counter) = counter {
             environment.push((
                 "BACKEND_EMBEDDING_ACTIVE_COUNTER".into(),
@@ -3654,7 +3654,7 @@ while True:
     {
         let (root, program) = fixture()?;
         let environment = ProcessEnvironment::new(vec![
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), crate::tests::required_python_path()),
             (
                 "BACKEND_EMBEDDING_CALL_COUNTER".into(),
                 call_counter.to_string_lossy().into_owned(),
@@ -3784,7 +3784,7 @@ while True:
                 calls.to_string_lossy().into_owned(),
             ),
             ("BACKEND_EMBEDDING_REQUIRE_BEM2".into(), "1".into()),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), crate::tests::required_python_path()),
         ])?;
         let (root, _, runtime) = activate_fixture(
             root,
@@ -3824,7 +3824,7 @@ while True:
                 "BACKEND_EMBEDDING_START_COUNTER".into(),
                 starts.to_string_lossy().into_owned(),
             ),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), crate::tests::required_python_path()),
         ])?;
         let (root, _, runtime) = activate_fixture(
             root,
@@ -3881,7 +3881,7 @@ while True:
                 "BACKEND_EMBEDDING_START_COUNTER".into(),
                 starts.to_string_lossy().into_owned(),
             ),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), crate::tests::required_python_path()),
         ])?;
         let (root, _, runtime) = activate_fixture(
             root,
@@ -3919,7 +3919,7 @@ while True:
                 "BACKEND_EMBEDDING_START_COUNTER".into(),
                 starts.to_string_lossy().into_owned(),
             ),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), crate::tests::required_python_path()),
         ])?;
         let limits = ProcessLimits::new(150, 64, Duration::from_secs(2), 512)?
             .with_input_bytes_limit(2_048)?;
@@ -3975,7 +3975,7 @@ while True:
                 "BACKEND_EMBEDDING_DELAY_FILE".into(),
                 delay.to_string_lossy().into_owned(),
             ),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), crate::tests::required_python_path()),
         ])?;
         let (root, _, runtime) = activate_fixture(
             root,
@@ -4038,7 +4038,7 @@ while True:
                 "BACKEND_EMBEDDING_DELAY_FILE".into(),
                 delay.to_string_lossy().into_owned(),
             ),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), crate::tests::required_python_path()),
         ])?;
         let (root, _, runtime) = activate_fixture(
             root,
@@ -4100,7 +4100,7 @@ while True:
                 "BACKEND_EMBEDDING_FAULT_FILE".into(),
                 fault.to_string_lossy().into_owned(),
             ),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), crate::tests::required_python_path()),
         ])?;
         let (root, _, runtime) = activate_fixture(
             root,
@@ -4148,7 +4148,7 @@ while True:
                 "BACKEND_EMBEDDING_FAULT_FILE".into(),
                 fault.to_string_lossy().into_owned(),
             ),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), crate::tests::required_python_path()),
         ])?;
         let (root, _, runtime) = activate_fixture(
             root,
@@ -4186,7 +4186,7 @@ while True:
                 "BACKEND_EMBEDDING_FAULT_FILE".into(),
                 fault.to_string_lossy().into_owned(),
             ),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), crate::tests::required_python_path()),
         ])?;
         let (root, _, runtime) = activate_fixture(
             root,
@@ -4249,7 +4249,7 @@ while True:
                 "BACKEND_EMBEDDING_FAULT_FILE".into(),
                 fault.to_string_lossy().into_owned(),
             ),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), crate::tests::required_python_path()),
         ])?;
         let (_, _, runtime) = activate_fixture(
             root.clone(),
@@ -4307,7 +4307,7 @@ while True:
                 "BACKEND_EMBEDDING_FAULT_FILE".into(),
                 fault.to_string_lossy().into_owned(),
             ),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), crate::tests::required_python_path()),
         ])?;
         let (root, _, runtime) = activate_fixture(
             root,
@@ -4358,7 +4358,7 @@ while True:
                 "BACKEND_EMBEDDING_FORK_SENTINEL".into(),
                 sentinel.to_string_lossy().into_owned(),
             ),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), crate::tests::required_python_path()),
         ])?;
         let (root, _, runtime) = activate_fixture(
             root,
@@ -4428,7 +4428,7 @@ while True:
                 "BACKEND_EMBEDDING_ESCAPED_PID_FILE".into(),
                 escaped_pid_file.to_string_lossy().into_owned(),
             ),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), crate::tests::required_python_path()),
         ])?;
         let (root, _, runtime) = activate_fixture(
             root,
@@ -4516,7 +4516,8 @@ while True:
         )?;
         fs::set_permissions(&program, fs::Permissions::from_mode(0o700))?;
         let executable = ToolchainArtifact::from_path(&program, Vec::new())?;
-        let environment = ProcessEnvironment::new(vec![("PATH".into(), "/usr/bin:/bin".into())])?;
+        let environment =
+            ProcessEnvironment::new(vec![("PATH".into(), crate::tests::required_python_path())])?;
         let limits = ProcessLimits::new(64, 64, Duration::from_millis(100), 128)?
             .with_input_bytes_limit(2 * 1024 * 1024)?;
         let command = SupervisedCommand::for_authority_with_artifact(
@@ -4654,7 +4655,7 @@ while True:
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
         let environment = ProcessEnvironment::new(vec![
             ("BACKEND_EMBEDDING_DEVICE".into(), "metal".into()),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), crate::tests::required_python_path()),
             ("LC_ALL".into(), "C".into()),
         ])?;
         let limits = ProcessLimits::new(
@@ -4837,7 +4838,7 @@ while True:
                     "BACKEND_EMBEDDING_CALL_COUNTER".into(),
                     calls.to_string_lossy().into_owned(),
                 ),
-                ("PATH".into(), "/usr/bin:/bin".into()),
+                ("PATH".into(), crate::tests::required_python_path()),
             ])
         };
 
@@ -5188,7 +5189,7 @@ while True:
         let gate = root.join("activation-gate");
         let counter = root.join("activation-calls");
         let environment = ProcessEnvironment::new(vec![
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), crate::tests::required_python_path()),
             (
                 "BACKEND_EMBEDDING_CALL_COUNTER".into(),
                 counter.to_str().ok_or("counter path")?.into(),
@@ -5319,7 +5320,7 @@ while True:
         let (root, program) = fixture()?;
         let call_counter = root.join("activation-calls.txt");
         let environment = ProcessEnvironment::new(vec![
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), crate::tests::required_python_path()),
             (
                 "BACKEND_EMBEDDING_CALL_COUNTER".into(),
                 call_counter.to_string_lossy().into_owned(),
