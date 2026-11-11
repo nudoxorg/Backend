@@ -234,7 +234,25 @@ if a.expect_no_worker:
         if any(gap.get("reason") != {"state": "unavailable", "reason": "engine_not_admitted"} for gap in gaps):
             fail(f"{label}: worker terminal reasons differ: {gaps}")
         return gaps
-    def mcp_unavailable_gaps(expected, label):
+    def unavailable_status(label):
+        code, raw = cli(label + "-status", ["status"])
+        if code != 0:
+            fail(f"{label}: status failed: {raw[:800]}")
+        status = json.loads(raw).get("sql_analysis")
+        count = sum(path.endswith(".sql") for path in FILES)
+        expected = {"analysed_files": 0, "no_worker_files": count, "unsupported_dialect_files": 0, "rejected_files": 0, "other_unavailable_files": 0}
+        if status != expected:
+            fail(f"{label}: selected SQL status differs: {status}")
+        code, raw = cli(label + "-outline", ["outline", str(project)])
+        if code != 0:
+            fail(f"{label}: outline failed: {raw[:800]}")
+        outline = json.loads(raw)
+        names = [lane for lane in outline.get("coverage", []) if lane.get("lane") == "names"]
+        if len(names) != 1 or names[0].get("state") == "complete":
+            fail(f"{label}: outline claims complete names despite SQL gaps: {names}")
+        return status, names
+
+    def mcp_unavailable_gaps(expected, expected_status, expected_names, label):
         global mcp
         mcp = subprocess.Popen([str(bundle / "backend-mcp"), "--project", str(project), "--workspace", str(workspace), "--endpoint", str(endpoint)], cwd=project, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=(out / f"{label}.stderr").open("wb"), start_new_session=True)
         def exchange(seq, method, params):
@@ -253,18 +271,31 @@ if a.expect_no_worker:
         data = result.get("structuredContent", {}).get("semantic_data", {})
         if result.get("isError") or data.get("kind") != "sql-query" or data.get("value", {}).get("host_gaps") != expected:
             fail(f"{label}: MCP gap facts differ from CLI: {reply}")
+        status_reply = exchange(3, "tools/call", {"name": "backend.status", "arguments": {"detail": "full"}})
+        status_result = status_reply.get("result", {})
+        if status_result.get("isError") or status_result.get("structuredContent", {}).get("sql_analysis") != expected_status:
+            fail(f"{label}: MCP SQL status differs from CLI: {status_reply}")
+        outline_reply = exchange(4, "tools/call", {"name": "backend.outline", "arguments": {"path": str(project), "detail": "full"}})
+        outline_result = outline_reply.get("result", {})
+        names = [lane for lane in outline_result.get("structuredContent", {}).get("coverage", []) if lane.get("lane") == "names"]
+        if outline_result.get("isError") or names != expected_names:
+            fail(f"{label}: MCP names coverage differs from CLI: {outline_reply}")
         mcp.stdin.close()
         mcp.wait(timeout=10)
 
     before = unavailable_gaps("no-worker-gaps")
-    mcp_unavailable_gaps(before, "no-worker-mcp-gaps")
+    before_status, before_names = unavailable_status("no-worker")
+    mcp_unavailable_gaps(before, before_status, before_names, "no-worker-mcp-gaps")
     os.killpg(owner.pid, signal.SIGKILL)
     owner.wait(timeout=10)
     start_owner()
     after = unavailable_gaps("no-worker-cold-gaps")
     if before != after:
         fail("unavailable SQL host gaps changed after cold reopen")
-    mcp_unavailable_gaps(after, "no-worker-cold-mcp-gaps")
+    after_status, after_names = unavailable_status("no-worker-cold")
+    if (before_status, before_names) != (after_status, after_names):
+        fail("selected SQL status or names coverage changed after cold reopen")
+    mcp_unavailable_gaps(after, after_status, after_names, "no-worker-cold-mcp-gaps")
     cleanup()
     (out / "journey.json").write_text(json.dumps(records, indent=1))
     print("PASS: SQL without worker publishes with named gaps and survives cold restart")
