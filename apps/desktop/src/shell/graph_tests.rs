@@ -342,9 +342,7 @@ pub(super) fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32,
     rig.go(Intent::SetAppearance(preference));
     let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
     rig.go(Intent::ZoomTo { display, percent: (scale * 100.0) as u16 });
-    // Startup admits the owner and RootOnly can publish a newer cursor before
-    // this fixture is installed. The projection must bind to the same exact
-    // authority the current Reader will request, not the launch gate's key.
+    // Bind the projection to the exact authority admitted by the Reader.
     let root = rig.graph.store.read_with(rig.cx, |store, _| {
         assert!(store.current_owner_attachment().is_some(), "canary needs a serving owner attachment");
         store.snapshot().key()
