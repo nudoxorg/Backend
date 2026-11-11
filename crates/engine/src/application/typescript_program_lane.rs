@@ -182,12 +182,12 @@ pub(super) fn capture_headers(
         DeclarationPublicationRole, FactAvailability, ImageProvenance, ItemKind,
         SemanticCoreReader as _, SemanticImageView,
     };
-    const SCRATCH: usize = 4096 * 512;
+    const SCRATCH: usize = 16384 * 512;
     checkpoint
         .checkpoint(0)
         .map_err(|e| format!("header capture stopped: {e:?}"))?;
-    if text.len() > 256 * 1024 || path.len() > 4096 || *remaining < SCRATCH {
-        return Ok(None);
+    if text.len() > 1024 * 1024 || path.len() > 4096 || *remaining < SCRATCH {
+        return Err("native header capture budget exceeded".into());
     }
     let image = SemanticImageView::reopen(encoded).map_err(|e| format!("header image: {e}"))?;
     let ImageProvenance::Captured {
@@ -235,8 +235,8 @@ pub(super) fn capture_headers(
         else {
             continue;
         };
-        if slots.len() >= 4096 {
-            return Ok(None);
+        if slots.len() >= 16384 {
+            return Err("native header entity limit exceeded".into());
         }
         slots
             .entry((span.start(), span.end(), name))
@@ -274,8 +274,8 @@ pub(super) fn capture_headers(
     {
         return Ok(None);
     }
-    let charge = SCRATCH
-        .checked_add(path.len())
+    let charge = std::mem::size_of::<super::compiler::StagedNativeTypeScriptHeaders>()
+        .checked_add(path.len()).and_then(|n| n.checked_add(entries.capacity().checked_mul(std::mem::size_of::<crate::builtin::NativeHeaderEntry>())?))
         .ok_or("header budget overflow")?;
     *remaining = remaining
         .checked_sub(charge)

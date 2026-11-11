@@ -614,10 +614,10 @@ pub fn function_headers_from_arena(
     text: &str,
     checkpoint: &dyn ExecutionCheckpoint,
 ) -> Result<Vec<NativeFunctionHeader>, String> {
-    const MAX_SOURCE: usize = 256 * 1024;
-    const MAX_HEADERS: usize = 4096;
+    const MAX_SOURCE: usize = 1024 * 1024;
+    const MAX_HEADERS: usize = 16384;
     poll(checkpoint, 0)?;
-    if text.len() > MAX_SOURCE { return Ok(Vec::new()); }
+    if text.len() > MAX_SOURCE { return Err("native TSZ header source limit exceeded".into()); }
     let mut export_starts = BTreeMap::<u32, Option<u32>>::new();
     for (index, node) in arena.nodes.iter().enumerate() {
         poll(checkpoint, 1)?;
@@ -628,7 +628,7 @@ pub fn function_headers_from_arena(
         let value = (!export.is_default_export).then_some(start);
         if !export_starts.contains_key(&export.export_clause.0) && export_starts.len() == MAX_HEADERS {
             poll(checkpoint, 0)?;
-            return Ok(Vec::new());
+            return Err("native TSZ export limit exceeded".into());
         }
         export_starts.entry(export.export_clause.0)
             .and_modify(|value| *value = None).or_insert(value);
@@ -653,7 +653,7 @@ pub fn function_headers_from_arena(
             || text.get(name_start as usize..name_end as usize).is_none() { continue; }
         if headers.len() == MAX_HEADERS {
             poll(checkpoint, 0)?;
-            return Ok(Vec::new());
+            return Err("native TSZ header limit exceeded".into());
         }
         headers.push(NativeFunctionHeader {
             declaration: (start, end), name: (name_start, name_end), export_start,
