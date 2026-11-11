@@ -1468,6 +1468,10 @@ fn admit_surface_reply_internal(
                 (SqlQueryRole::Relation, SqlFact::SqliteRelation { name, .. }) => request.name.as_ref().is_none_or(|value| value == name),
                 (SqlQueryRole::OutputLineage, SqlFact::SqliteOutputLineage { output_name, .. }) => request.name.as_ref().is_none_or(|value| value == output_name),
                 (SqlQueryRole::Diagnostic, SqlFact::Diagnostic { .. }) => true,
+                (SqlQueryRole::Diagnostic, SqlFact::Reference(reference)) => {
+                    matches!(reference.kind, backend_semantic::sql_analysis::SqlRefKind::Column | backend_semantic::sql_analysis::SqlRefKind::Relation)
+                        && matches!(reference.resolution, backend_semantic::sql_analysis::SqlResolution::Unresolved { .. })
+                }
                 (SqlQueryRole::ColumnRead, SqlFact::PostgresColumnRead { .. }) => true,
                 (SqlQueryRole::Statement, SqlFact::Statement { .. }) => true,
                 (SqlQueryRole::Gap, SqlFact::Statement { support, .. }) => {
