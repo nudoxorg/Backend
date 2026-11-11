@@ -120,7 +120,8 @@ and `Nudox/resources/build-manifest.json`. Embedded build evidence includes
 required helper/runtime; a portable archive cannot depend on the developer's Nix store.
 Linux staging must dereference links: release archives reject links/special files.
 
-linux-x64 builds itself (B7). Changing `workspace.package.version` on canonical makes the
+linux-x64 builds itself (B7). A release is a fast-forward of `main` to a canonical commit
+(B8, below); a new `workspace.package.version` reaching `main` makes the
 release pipeline plan a candidate (`linux_release_ci.py`), `cargo build --release` it, package
 it with `linux_formal_release.py --release-dir` (GUI libraries, launchers, glibc floor), run
 every linux-x64 QA case in stock Ubuntu 24.04 (`linux_release_qa.py`), tag it on Forgejo and
@@ -129,6 +130,28 @@ to that tag and archive hash. To release with red non-fast lanes, commit
 `tools/package/release-ci-waiver.json` (`version`, `contexts`, `reason`, `approved_by`,
 `approved_at`) with the version bump; it applies to that version only. MachineConfigurations
 `docs/backend-release.md` has the job-level detail.
+
+### Cutting a release (canonical → main)
+
+Day-to-day work merges into `canonical`. `main` only ever moves to a canonical commit,
+and only by a release PR, so `main` is always the last released source.
+
+1. `nu .config/scripts/release.nu bump <version>` (MachineConfigurations) branches from
+   canonical, sets `workspace.package.version`, refreshes `Cargo.lock`, and opens a PR into
+   canonical. Add the waiver to that PR if a non-fast lane must be waived.
+2. The bump changes `Cargo.toml` and `Cargo.lock`, which the native TypeScript authority
+   hashes (`frontends/typescript/build.rs`). That PR's T2 therefore reports one diff in
+   `tests/surface/snapshots/typescript-query-core.json`: the `source_root` (twice) and
+   `revision` fields. Copy the reported root into the snapshot on the same PR. Once fast, T1
+   and T2 are green, merge it.
+3. `nu .config/scripts/release.nu pr` opens the release PR `canonical` → `main`.
+   Its head is the canonical commit, which already carries `concourse/backend-fast` from
+   `nudox-backend-canonical-fast`.
+4. Merge it with **Fast-forward only** (`nu .config/scripts/release.nu merge <pr>` does exactly
+   that). A merge commit would be a new revision with no CI status, and the release plan
+   would refuse it.
+5. `build-linux-x64` starts on its own, then `validate-linux-x64` follows. Publish with
+   `nu .config/scripts/release.nu publish linux-x64`.
 
 linux-arm64 and Windows build tooling is not supplied by this pipeline. Their developers must
 provide portable payloads and genuine native/signing evidence meeting this contract. Intel Mac and ARM
