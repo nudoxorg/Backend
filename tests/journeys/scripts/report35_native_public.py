@@ -254,7 +254,7 @@ def main() -> int:
         check("runner", False, str(error))
     finally:
         route.stop()
-        receipt = receipt_header(args.bin_dir, args.source_commit)
+        receipt = receipt_header(args.bin_dir, args.source_commit, effective_env=route.env)
         receipt["scope"] = "synthetic TS/TSX-only CLI/MCP and cold-reopen regression; no real React or WSL proof"
         receipt["checks"] = checks
         receipt["pass"] = bool(checks) and all(item["pass"] for item in checks)
