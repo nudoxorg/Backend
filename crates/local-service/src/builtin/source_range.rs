@@ -356,6 +356,7 @@ mod tests {
                 37,
             )
             .expect("page");
+            assert_eq!(page.owner_start_line, Some(2));
             result.push_str(page.text);
             if page.end == page.total {
                 break;
