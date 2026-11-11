@@ -9,7 +9,7 @@ target=${CARGO_TARGET_DIR:?set a private target directory}
 output=${1:?provide a new output directory}
 mkdir -p "$output"
 git rev-parse HEAD
-rustc -Vv
+"${RUSTC:-rustc}" -Vv
 cargo build --locked --offline --manifest-path frontends/sqlite/Cargo.toml --bin sqlite-worker
 mkdir "$output/bundle"
 cp "$target/debug/sqlite-worker" "$output/bundle/backend-sqlite-worker"
