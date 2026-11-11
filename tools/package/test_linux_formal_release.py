@@ -240,6 +240,77 @@ class BuildManifestAndArchiveTests(unittest.TestCase):
             self.assertFalse(any(command[1] == "--set-interpreter" and Path(command[-1]).name in {"backend-sqlite-worker", "backend-stylo-worker"} for command in calls))
             self.assertEqual(len(records), 4)
 
+    def test_formal_main_readmits_original_worker_record_after_observation(self):
+        import record_stylo_owner_build as actor
+        import sqlite_macos_development as sqlite_common
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = root / "source"
+            source.mkdir()
+            revision, tree, lock = make_source_repo(source)
+            artifact = root / "artifact"
+            make_t1_artifact(artifact, revision)
+            raw_worker = root / "raw-worker"
+            raw_worker.write_bytes(b"raw worker")
+            worker_receipt = root / "worker-receipt.json"
+            worker_receipt.write_text(json.dumps({"source_path": "/source", "environment": {"CARGO_HOME": "/cargo", "CARGO_TARGET_DIR": "/target", "CARGO_BUILD_BUILD_DIR": "/build"}}))
+            owner_receipt = root / "owner-receipt.json"
+            owner_receipt.write_text("{}")
+            cli_manifest = root / "cli.json"
+            cli_manifest.write_text(json.dumps({"executables": {"backend-cli": {"sha256": "cli"}}}))
+            observer = root / "observer"
+            observer.write_bytes(b"observer")
+            identity = lambda path: {"path": str(path), "bytes": path.stat().st_size, "sha256": release.sha256(path)}
+            raw_record = {"bytes": raw_worker.stat().st_size, "sha256": release.sha256(raw_worker)}
+            worker_receipt_digest = release.sha256(worker_receipt)
+            owner_receipt_digest = release.sha256(owner_receipt)
+            payloads = {"backend-stylo-worker": b"stylo", "backend-sqlite-worker": b"sqlite", "libgcc_s.so.1": b"libgcc"}
+            def record_bytes(data):
+                return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+            dependency = record_bytes(payloads["libgcc_s.so.1"])
+            companion = {"desktop": {}, "owner": {}, "observer_environment": {},
+                "observer": identity(observer), "worker_anchor": "a" * 64,
+                "worker": record_bytes(payloads["backend-stylo-worker"]),
+                "dependency": dependency, "dependency_source": dependency,
+                "sqlite": {"dependency_source": dependency, "observer": identity(observer),
+                           "worker": record_bytes(payloads["backend-sqlite-worker"]),
+                           "sqlite_lock_sha256": "b" * 64, "artifact_identity": "c" * 64, "basis_json": "basis"}}
+            output = root / "candidate"
+            def portabilize(_bin, names, out, *_args):
+                package = out / "Nudox"
+                (package / "bin").mkdir(parents=True)
+                (package / "lib").mkdir()
+                (package / "lib/libgcc_s.so.1").write_bytes(payloads["libgcc_s.so.1"])
+                records = []
+                for name in names:
+                    path = package / "bin" / name
+                    path.write_bytes(payloads.get(name, name.encode()))
+                    info = record_bytes(path.read_bytes())
+                    records.append({"name": name, "packaged_path": "bin/" + name, **info,
+                        "t1_artifact_sha256": info["sha256"], "t1_artifact_bytes": info["bytes"]})
+                return records, "2.17"
+            admissions = []
+            def admit(_path, **kwargs):
+                admissions.append(kwargs["raw_worker"])
+                self.assertEqual(kwargs["raw_worker"], raw_record)
+                return companion, owner_receipt_digest
+            with (patch.object(release.checkpoint, "admit_receipt", return_value={}),
+                  patch.object(release.checkpoint, "check_source", return_value=(revision, tree, lock, "0.2.0")),
+                  patch.object(release.checkpoint, "admit_stylo_worker", return_value=(raw_record, worker_receipt_digest)),
+                  patch.object(release.checkpoint, "admit_stylo_bound_owner", side_effect=admit),
+                  patch.object(release, "require_tool", side_effect=lambda path, _label: path),
+                  patch.object(release, "portabilize", side_effect=portabilize),
+                  patch.object(actor, "require_runpath"), patch.object(actor, "observe", return_value="a" * 64),
+                  patch.object(actor, "bounded_process", return_value=b"{}"),
+                  patch.object(sqlite_common, "validate_observation", return_value=("c" * 64, "basis")),
+                  patch.object(sys, "argv", ["linux_formal_release.py", "--t1-artifact-dir", str(artifact),
+                      "--source", str(source), "--output", str(output), "--patchelf", "patchelf", "--readelf", "readelf", "--ldd", "ldd",
+                      "--companion-owner-receipt", str(owner_receipt), "--companion-cli-manifest", str(cli_manifest),
+                      "--stylo-worker", str(raw_worker), "--stylo-worker-receipt", str(worker_receipt)])):
+                self.assertEqual(release.main(), 0)
+            self.assertEqual(admissions, [raw_record, raw_record])
+            self.assertTrue((output / release.ASSET).is_file())
+
     def test_build_manifest_records_mutated_post_relocation_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

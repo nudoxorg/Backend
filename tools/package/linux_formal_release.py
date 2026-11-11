@@ -428,8 +428,8 @@ def main() -> int:
         sqlite_worker = root / "bin/backend-sqlite-worker"
         sqlite = companion["sqlite"]
         require_runpath(readelf, library, "$ORIGIN", time.monotonic() + 30, env)
-        for worker in (stylo, sqlite_worker):
-            require_runpath(readelf, worker, "$ORIGIN/../lib", time.monotonic() + 30, env)
+        for worker_path in (stylo, sqlite_worker):
+            require_runpath(readelf, worker_path, "$ORIGIN/../lib", time.monotonic() + 30, env)
         if observe(Path(companion["observer"]["path"]), stylo, library, time.monotonic() + 30, env) != companion["worker_anchor"]:
             fail("formal Stylo closure differs from compiled owner anchor")
         observed = bounded_process([sqlite["observer"]["path"], str(sqlite_worker), str(library)], time.monotonic() + 30, env, sqlite_common.MAX_BASIS_BYTES)
