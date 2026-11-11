@@ -911,7 +911,10 @@ pub(super) fn prepare_scan_source(
         if retained > 4 * 1024 * 1024 || !selected.revalidate(revision_fence, cancellation.as_ref()).map_err(BuiltinModelError)? {
             return Err(BuiltinModelError("selected C# capture exceeds its bound or changed".to_owned()));
         }
-        return Err(BuiltinModelError("selected C# project awaits unit-scoped authority".to_owned()));
+        if operation_key.is_none() || live.len() != 1 || !scan.native_clang_candidates.is_empty()
+            || !scan.native_csharp_candidates.is_empty() {
+            return Err(BuiltinModelError("selected C# project awaits unit-scoped authority".to_owned()));
+        }
     }
     let mut present =
         ingest::present_compiler_paths(&scan.compiler_sources, &scan.reused_compiler_files);
@@ -1682,22 +1685,26 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
         native_csharp_candidates,
         native_frontier: compilation_native_frontier,
     } = *compilation;
-    // The owned path materializes before requesting any capture grant. The
-    // synchronous reference path deliberately commits Pending first instead.
+    // A single keyed C# profile can retain bounded handles until its source
+    // selection is installed. Other paths retain the established materialization.
+    let park_csharp = csharp_project.is_some() && csharp_shape.is_some()
+        && operation_key.is_some() && route.is_none() && rust_target.is_none()
+        && python_environment.is_none() && native_typescript.is_none()
+        && native_clang_candidates.is_empty() && native_csharp_candidates.is_empty()
+        && reused_profiles.is_empty() && observations.len() == 1 && captures.len() == 1;
     #[cfg(test)]
-    before_materialization();
-    let (sources, native_candidate_profiles) =
-        ingest::admit_compiler_sources_with_native_candidates_for_scan(
-            &requested_root,
-            &revision_fence,
-            fresh,
-            reused,
-            native_clang_candidates,
-            native_csharp_candidates,
-            source_admission_policy,
-            Some(cancellation.as_ref()),
-        )
-        .map_err(BuiltinModelError)?;
+    if !park_csharp { before_materialization(); }
+    let (sources, native_candidate_profiles, pending_csharp_sources) = if park_csharp {
+        (Vec::new(), ingest::NativeCandidateProfiles::default(), Some(CSharpSourceHandles {
+            fresh, reused, policy: source_admission_policy,
+        }))
+    } else {
+        let (sources, native) = ingest::admit_compiler_sources_with_native_candidates_for_scan(
+            &requested_root, &revision_fence, fresh, reused, native_clang_candidates,
+            native_csharp_candidates, source_admission_policy, Some(cancellation.as_ref()),
+        ).map_err(BuiltinModelError)?;
+        (sources, native, None)
+    };
     if native_typescript.is_some() && (sources.is_empty() || captures.is_empty()) {
         return Err(BuiltinModelError("native TypeScript empty scope requires explicit retirement".into()));
     }
@@ -1745,7 +1752,7 @@ pub(in crate::builtin::commands) fn prepare_source_scan(
             csharp_project: csharp_project.map(Arc::new),
             csharp_shape,
             expected_project_commitment,
-            pending_csharp_sources: None,
+            pending_csharp_sources,
             csharp_parked: false,
             package,
             label,
@@ -2039,7 +2046,12 @@ impl SourceCompilePlan {
             total = total.checked_add(source.relative_path.capacity())?.checked_add(source.source.capacity())?.checked_add(128)?;
         }
         if let Some(handles) = &self.pending_csharp_sources { total = total.checked_add(handles.retained_bytes()?)?; }
-        // Two Arc counters plus atomic cancellation state; bounded overcharge.
+        // At most one selected C# observation/capture is parked; account for
+        // their tree nodes, owned keys and bounded package/coordinate strings.
+        if self.observations.len() > 1 || self.captures.len() > 1 { return None; }
+        total = total.checked_add(self.observations.len().checked_mul(4096)?)?
+            .checked_add(self.captures.len().checked_mul(ProductSourceRecord::MAX_LABEL_BYTES.checked_mul(4)?.checked_add(4096)?)?)?;
+        // Arc counters plus atomic cancellation state; bounded overcharge.
         total.checked_add(512)
     }
 
@@ -2048,7 +2060,7 @@ impl SourceCompilePlan {
     pub(in crate::builtin::commands) fn prepare_csharp_source_only_for_park(&mut self) -> Result<(), BuiltinModelError> {
         if self.csharp_project.is_none() || self.csharp_shape.is_none() || self.pending_csharp_sources.is_none()
             || self.operation_key.is_none() || self.expected_project_commitment == [0; 32]
-            || !self.sources.is_empty() || !self.observations.is_empty() || !self.captures.is_empty()
+            || !self.sources.is_empty() || self.observations.len() > 1 || self.captures.len() > 1
             || !self.reused_profiles.is_empty() || self.rust_target.is_some() || self.python_environment.is_some()
             || self.route.is_some() || !self.native_candidate_profiles.clang.is_empty() || !self.native_candidate_profiles.csharp.is_empty() {
             return Err(BuiltinModelError("C# source-only plan is not isolated".to_owned()));
@@ -2084,8 +2096,8 @@ impl SourceCompilePlan {
         }
         // This finite source-only path does not take custody of other profile
         // attempts, pending rows, or a full workspace inventory.
-        if self.reuse_only || self.rust_target.is_some() || !self.captures.is_empty()
-            || !self.observations.is_empty() || !self.reused_profiles.is_empty()
+        if self.reuse_only || self.rust_target.is_some() || self.captures.len() > 1
+            || self.observations.len() > 1 || !self.reused_profiles.is_empty()
             || !self.native_candidate_profiles.clang.is_empty() || !self.native_candidate_profiles.csharp.is_empty()
             || self.python_environment.is_some() || self.route.is_some() || self.workspace_snapshot.is_some() {
             return Err(BuiltinModelError("C# source continuation is not isolated".to_owned()));
@@ -2132,6 +2144,17 @@ impl SourceCompilePlan {
         let target = CompilerPackageTargetV2::new(coordinate, backend_engine::application::CompilationUnitKeyV2::CSharpProject {
             project_path: selected.project_path.clone().into(),
         }).map_err(|error| BuiltinModelError(format!("C# unit target: {error:?}")))?;
+        // A production plan may retain exactly one profile's original Pending
+        // receipt. Bind it to this selected key and operation before carrying it
+        // into the deferred compiler; the empty pair is used by source fixtures.
+        match (self.captures.get(&key), self.observations.get(&shape.profile)) {
+            (None, None) if self.captures.is_empty() && self.observations.is_empty() => {},
+            (Some(capture), Some(observation)) if self.captures.len() == 1 && self.observations.len() == 1
+                && capture.operation_key().copied() == self.operation_key.map(|key| key.to_bytes())
+                && capture.observation_sequence() == observation.sequence()
+                && observation.observation().revision().as_ref() == Some(capture.input_digest()) => {},
+            _ => return Err(BuiltinModelError("C# pending capture differs from selected profile".to_owned())),
+        }
         let (project, files, frontier) = bounded_csharp_project_frontier(snapshot, self.project_key, self.cancellation.as_ref())?;
         let project_commitment = selected_project_commitment(self.project_key, &project)?;
         if project.project_fields().is_none_or(|fields| fields.label != self.label)
@@ -2150,6 +2173,7 @@ impl SourceCompilePlan {
             project: Arc::clone(self.csharp_project.as_ref().expect("selected project checked")),
             revision_fence: self.revision_fence.clone(), sources: self.sources.clone(),
             cancellation: Arc::clone(&self.cancellation), receipt,
+            pending_capture: self.captures.get(&key).cloned(),
             snapshot_root: *snapshot.root().as_bytes(), snapshot_sequence: snapshot.sequence(),
             snapshot_closure: *snapshot.closure().binding().closure().as_bytes(), owner_epoch: snapshot.owner_epoch(),
             project_key: key.package_key().to_bytes(), project_commitment, project_frontier: frontier,
@@ -2177,6 +2201,10 @@ impl SourceCompilePlan {
         retained_attempts: &mut Vec<backend_extension_turso::CandidateAttempt>,
     ) -> Result<PreparedIndex, BuiltinModelError> {
         if !witness.revalidate(snapshot, &self.cancellation)?
+            || self.csharp_project.as_ref().is_none_or(|project| !Arc::ptr_eq(project, &witness.project))
+            || self.operation_key != witness.receipt.operation_key()
+            || self.project_key != witness.project_key
+            || self.captures.get(&witness.key) != witness.pending_capture.as_ref()
             || self.sources.len() != witness.sources.len()
             || self.sources.iter().zip(&witness.sources).any(|(a, b)| {
                 a.relative_path != b.relative_path || a.profile != b.profile || a.source != b.source

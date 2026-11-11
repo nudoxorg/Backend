@@ -239,7 +239,7 @@ fn index_project_intent_at_with_cluster_and_intent(
         false,
     )? {
         PreparedIndex::Ready(prepared) => Ok(prepared.into_option()),
-        PreparedIndex::Compile(_) | PreparedIndex::Cluster(_) => Err(BuiltinModelError(
+        PreparedIndex::Compile(_) | PreparedIndex::Cluster(_) | PreparedIndex::CSharpParked(..) => Err(BuiltinModelError(
             "an index compile was deferred on a path that runs it in place".to_owned(),
         )),
     }
@@ -2353,6 +2353,8 @@ pub(super) enum PreparedIndex {
     /// A configured cluster route, including its local fallback, runs on an
     /// owned worker after the independent source capture was installed.
     Cluster(SourceCompilePlan),
+    /// The exact source candidate must be selected before materialization.
+    CSharpParked(SourceCompilePlan, WorkspaceSnapshot),
 }
 
 /// The compile an index job hands off the owner loop, and everything its
@@ -2671,9 +2673,8 @@ impl DeferredIndex {
         &self, ticket: &DeferredProfileTicket, snapshot: &WorkspaceSnapshot, cancellation: &Arc<AtomicBool>,
     ) -> Result<bool, BuiltinModelError> {
         if !ticket.csharp_unit_claim_only { return Ok(true); }
-        if let Some(witness) = &self.csharp_selected_source {
-            if witness.key() != &ticket.key || !witness.revalidate(snapshot, cancellation)? { return Ok(false); }
-        }
+        let Some(witness) = &self.csharp_selected_source else { return Ok(false); };
+        if witness.key() != &ticket.key || !witness.revalidate(snapshot, cancellation)? { return Ok(false); }
         let selected = self.csharp_capture.as_ref().ok_or_else(|| BuiltinModelError("C# capture custody is missing".to_owned()))?;
         selected.revalidate(&self.revision_fence, cancellation.as_ref()).map_err(BuiltinModelError)
     }
@@ -3604,6 +3605,7 @@ pub(in crate::builtin) struct CapturedCSharpUnitAdmission {
     sources: Vec<ingest::CompilerSource>,
     cancellation: Arc<AtomicBool>,
     receipt: super::adapter::SelectedCSharpSourceCommit,
+    pending_capture: Option<SemanticSourceCapture>,
     snapshot_root: [u8; 32],
     snapshot_sequence: u64,
     snapshot_closure: [u8; 32],
@@ -3662,6 +3664,17 @@ impl CapturedCSharpUnitAdmission {
             || snapshot.owner_epoch() != self.owner_epoch { return Ok(false); }
         if snapshot.with_persisted_transition(|transition, _| transition.request()).ok()
             != Some(self.receipt.request_identity()) { return Ok(false); }
+        if let Some(expected) = &self.pending_capture {
+            let relation = semantic_capture_relation(snapshot)
+                .map_err(|error| BuiltinModelError(format!("open selected C# capture: {error}")))?
+                .ok_or_else(|| BuiltinModelError("selected C# capture relation is missing".to_owned()))?;
+            let current = relation.lookup(&self.key)
+                .map_err(|error| BuiltinModelError(format!("read selected C# capture: {error}")))?;
+            if current.as_ref().is_none_or(|row| row.capture() != *expected
+                || !matches!(row.outcome(), ProductSemanticCaptureOutcome::Pending { .. })) {
+                return Ok(false);
+            }
+        } else if !cfg!(test) { return Ok(false); }
         let (project, files, frontier) = bounded_csharp_project_frontier(snapshot, self.project_key, cancellation.as_ref())?;
         if selected_project_commitment(self.project_key, &project)? != self.project_commitment { return Ok(false); }
         let source = checked_csharp_selected_sources(snapshot, self.project_key, &files, &self.sources,

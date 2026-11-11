@@ -60,6 +60,25 @@ pub(in crate::builtin) struct SelectedCSharpSourceCommit {
 }
 
 impl SelectedCSharpSourceCommit {
+    fn from_selected_candidate(
+        selected: &backend_engine::WorkspaceSnapshot,
+        candidate: &backend_engine::WorkspaceSnapshot,
+        operation_key: Option<backend_library::IndexOperationKey>,
+    ) -> Result<Self, BuiltinModelError> {
+        let selected_request = selected.with_persisted_transition(|transition, _| transition.request())
+            .map_err(|error| BuiltinModelError(error.to_string()))?;
+        let candidate_request = candidate.with_persisted_transition(|transition, _| transition.request())
+            .map_err(|error| BuiltinModelError(error.to_string()))?;
+        if operation_key.is_none() || selected.root() != candidate.root()
+            || selected.sequence() != candidate.sequence() || selected.owner_epoch() != candidate.owner_epoch()
+            || selected.closure().binding().closure() != candidate.closure().binding().closure()
+            || selected_request != candidate_request {
+            return Err(BuiltinModelError("C# source candidate was not selected exactly".to_owned()));
+        }
+        Ok(Self { root: *selected.root().as_bytes(), sequence: selected.sequence(),
+            closure: *selected.closure().binding().closure().as_bytes(), owner_epoch: selected.owner_epoch(),
+            request_identity: selected_request, operation_key })
+    }
     /// Synthetic fixture only; production receipts are minted by the actual
     /// adapter settlement path, which also binds the operation identity.
     #[cfg(test)]
@@ -578,6 +597,7 @@ enum OwnedIndexPhase {
         route: Option<SourceRoute>,
     },
     Cluster(SourceCompilePlan),
+    CSharpResume(SourceCompilePlan, SelectedCSharpSourceCommit),
     Finalize(DeferredIndex),
     Cleanup {
         plan: CaptureFailurePlan,
@@ -2959,6 +2979,7 @@ impl CommandAdapter {
             &phase,
             OwnedIndexPhase::Source { .. }
                 | OwnedIndexPhase::Cluster(_)
+                | OwnedIndexPhase::CSharpResume(..)
                 | OwnedIndexPhase::Finalize(_)
         );
         let cleanup_phase = matches!(&phase, OwnedIndexPhase::Cleanup { .. });
@@ -2982,6 +3003,7 @@ impl CommandAdapter {
                 (empty(), Preparation::Source { scan, route })
             }
             OwnedIndexPhase::Cluster(plan) => (empty(), Preparation::Cluster(plan)),
+            OwnedIndexPhase::CSharpResume(plan, receipt) => (empty(), Preparation::CSharpResume(plan, receipt)),
             OwnedIndexPhase::Finalize(job) => (empty(), Preparation::Finalize(job)),
             OwnedIndexPhase::Cleanup { plan, outcome } => {
                 (empty(), Preparation::Cleanup { plan, outcome })
@@ -4038,6 +4060,19 @@ impl CommandAdapter {
                                     terminal = Some(backend_library::IndexJobOutcome::Failed(
                                         bounded_index_detail(error),
                                     ));
+                                }
+                            }
+                            PreparedIndex::CSharpParked(plan, candidate) => {
+                                let selected = daemon.engine().daemon().owner().snapshot();
+                                match SelectedCSharpSourceCommit::from_selected_candidate(&selected, &candidate, indexing.operation_key) {
+                                    Ok(receipt) => {
+                                        if let Err(error) = self.start_owned_index_phase(
+                                            daemon, &mut indexing, OwnedIndexPhase::CSharpResume(plan, receipt),
+                                        ) {
+                                            terminal = Some(backend_library::IndexJobOutcome::Failed(bounded_index_detail(error)));
+                                        }
+                                    }
+                                    Err(error) => terminal = Some(backend_library::IndexJobOutcome::Failed(bounded_index_detail(error))),
                                 }
                             }
                             PreparedIndex::Cluster(plan) => {
