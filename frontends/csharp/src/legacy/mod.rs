@@ -38,6 +38,6 @@ pub use self::restore::{
     resolve_project_assets_with_metadata,
 };
 pub use self::sdk::{
-    CSharpSdkKind, CSharpSdkObservation, CSharpSdkProbe, CSharpSdkProjectProperties,
+    CSharpSdkKind, CSharpSdkObservation, CSharpSdkProbe, CSharpSdkProjectProperties, CSharpTargetingSnapshot,
     observe_csharp_sdk, observe_csharp_sdk_with,
 };

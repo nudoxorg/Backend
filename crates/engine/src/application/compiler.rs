@@ -4352,7 +4352,21 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             sdk_fingerprint = Some(fingerprint);
             Some(observed)
         } else { None };
-        let mut sdk_reference_paths = sdk_observation.as_ref().map(|observation| observation.targeting_directories.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+        // Use one private copy of the observed targeting assemblies throughout
+        // this compile. The snapshot is a byte custody improvement, not proof of
+        // the SDK observation or of the helper/runtime execution closure.
+        let targeting_snapshot = sdk_observation.as_ref().map(|observation| {
+            backend_frontend_csharp::legacy::CSharpTargetingSnapshot::capture(&observation.targeting_directories)
+                .map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# targeting assembly snapshot unavailable" })
+        }).transpose()?;
+        if let (Some(fingerprint), Some(snapshot)) = (sdk_fingerprint.as_mut(), targeting_snapshot.as_ref()) {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"compiler.csharp.targeting-snapshot.v1\0");
+            hasher.update(fingerprint);
+            hasher.update(&snapshot.digest());
+            *fingerprint = *hasher.finalize().as_bytes();
+        }
+        let mut sdk_reference_paths = targeting_snapshot.as_ref().map(|snapshot| snapshot.directories().iter().map(PathBuf::as_path).collect::<Vec<_>>());
         if let (Some(paths), Some(references)) = (sdk_reference_paths.as_mut(), restored_csharp_references.as_ref()) {
             paths.push(references.reference_directory());
         }

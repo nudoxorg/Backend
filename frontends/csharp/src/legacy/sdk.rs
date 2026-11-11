@@ -63,6 +63,72 @@ pub struct CSharpSdkObservation {
     pub outside_root_unknown: bool,
 }
 
+/// Private copies of the observed targeting assemblies used by one compile.
+/// This does not authenticate the SDK, host, runtime, or observation process.
+#[derive(Debug)]
+pub struct CSharpTargetingSnapshot {
+    directory: tempfile::TempDir,
+    directories: Vec<PathBuf>,
+    digest: [u8; 32],
+}
+
+impl CSharpTargetingSnapshot {
+    /// Capture bounded assembly bytes once, so every source invocation consumes
+    /// the same selected targeting set even if the installed pack changes.
+    pub fn capture(directories: &[PathBuf]) -> Result<Self, &'static str> {
+        use sha2::{Digest, Sha256};
+        if directories.is_empty() || directories.len() > 16 { return Err("invalid targeting directories"); }
+        let directory = tempfile::tempdir().map_err(|_| "targeting snapshot unavailable")?;
+        let mut copies = Vec::new();
+        let mut hash = Sha256::new();
+        hash.update(b"csharp.targeting-snapshot.v1\0");
+        let mut total = 0usize;
+        let mut count = 0usize;
+        for (index, source) in directories.iter().enumerate() {
+            let entries = targeting_entries(source)?;
+            let destination = directory.path().join(index.to_string());
+            fs::create_dir(&destination).map_err(|_| "targeting snapshot unavailable")?;
+            hash.update((index as u64).to_le_bytes());
+            for name in &entries {
+                count = count.checked_add(1).ok_or("targeting snapshot limit")?;
+                if count > 8192 { return Err("targeting snapshot limit"); }
+                let bytes = backend_platform::durable::read_regular_bounded_stable(&source.join(name), 32 * 1024 * 1024)
+                    .map_err(|_| "targeting assembly unavailable")?;
+                total = total.checked_add(bytes.len()).ok_or("targeting snapshot limit")?;
+                if bytes.is_empty() || total > 256 * 1024 * 1024 { return Err("targeting snapshot limit"); }
+                hash.update((name.len() as u64).to_le_bytes());
+                hash.update(name.as_bytes());
+                hash.update((bytes.len() as u64).to_le_bytes());
+                hash.update(Sha256::digest(&bytes));
+                fs::write(destination.join(name), bytes).map_err(|_| "targeting snapshot unavailable")?;
+            }
+            if entries != targeting_entries(source)? { return Err("targeting directory changed"); }
+            copies.push(destination);
+        }
+        if count == 0 { return Err("targeting assemblies unavailable"); }
+        Ok(Self { directory, directories: copies, digest: hash.finalize().into() })
+    }
+
+    pub fn directories(&self) -> &[PathBuf] { &self.directories }
+    pub fn digest(&self) -> [u8; 32] { self.digest }
+    /// Keep the private directory alive for the complete compilation.
+    pub fn root(&self) -> &Path { self.directory.path() }
+}
+
+fn targeting_entries(directory: &Path) -> Result<Vec<String>, &'static str> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(directory).map_err(|_| "targeting directory unavailable")? {
+        let entry = entry.map_err(|_| "targeting directory unavailable")?;
+        let name = entry.file_name().into_string().map_err(|_| "targeting filename unavailable")?;
+        if name.ends_with(".dll") {
+            if entries.len() >= 8192 { return Err("targeting snapshot limit"); }
+            entries.push(name);
+        }
+    }
+    entries.sort_unstable();
+    Ok(entries)
+}
+
 /// Observes the selected installed SDK with a private, generated project and bounded process.
 /// Callers must separately authenticate captures and admit the actual SDK/pack bytes.
 pub fn observe_csharp_sdk(
@@ -508,6 +574,31 @@ pub fn observe_csharp_sdk_with(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn targeting_snapshot_retains_bytes_and_changes_identity() {
+        let source = tempfile::tempdir().unwrap();
+        fs::write(source.path().join("Core.dll"), b"first").unwrap();
+        let first = CSharpTargetingSnapshot::capture(&[source.path().to_path_buf()]).unwrap();
+        fs::write(source.path().join("Core.dll"), b"second").unwrap();
+        let second = CSharpTargetingSnapshot::capture(&[source.path().to_path_buf()]).unwrap();
+        assert_eq!(fs::read(first.directories()[0].join("Core.dll")).unwrap(), b"first");
+        assert_eq!(fs::read(second.directories()[0].join("Core.dll")).unwrap(), b"second");
+        assert_ne!(first.digest(), second.digest());
+        fs::write(source.path().join("Other.dll"), b"third").unwrap();
+        let third = CSharpTargetingSnapshot::capture(&[source.path().to_path_buf()]).unwrap();
+        assert_ne!(second.digest(), third.digest());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn targeting_snapshot_refuses_symlinked_assemblies() {
+        let source = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        fs::write(other.path().join("Core.dll"), b"reference").unwrap();
+        std::os::unix::fs::symlink(other.path().join("Core.dll"), source.path().join("Core.dll")).unwrap();
+        assert!(CSharpTargetingSnapshot::capture(&[source.path().to_path_buf()]).is_err());
+    }
 
     #[test]
     fn global_json_refuses_duplicate_and_unknown_sdk_keys() {
