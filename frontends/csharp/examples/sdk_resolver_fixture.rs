@@ -75,13 +75,18 @@ fn main() {
         receipt.selected_digest(),
         receipt.digest()
     );
-    for path in snapshot.references() {
+    for (path, fusion_name) in snapshot
+        .references()
+        .iter()
+        .zip(receipt.selected_fusion_names.iter())
+    {
         let bytes = fs::read(path).expect("selected reference");
         println!(
-            "selected_ref name={} length={} sha256={:x}",
+            "selected_ref name={} fusion_name={} length={} sha256={:x}",
             path.file_name()
                 .and_then(|name| name.to_str())
                 .expect("UTF-8 assembly name"),
+            fusion_name,
             bytes.len(),
             Sha256::digest(&bytes)
         );

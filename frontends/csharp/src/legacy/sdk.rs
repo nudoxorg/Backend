@@ -83,6 +83,7 @@ pub struct CSharpResolverReceipt {
     pub candidate_digest: [u8; 32],
     pub selected_digest: [u8; 32],
     pub selected_names: Box<[Box<str>]>,
+    pub selected_fusion_names: Box<[Box<str>]>,
 }
 
 impl CSharpResolverReceipt {
@@ -123,6 +124,10 @@ impl CSharpResolverReceipt {
         hash.update(self.selected_digest);
         hash.update((self.selected_names.len() as u64).to_le_bytes());
         for name in &self.selected_names {
+            hash.update((name.len() as u64).to_le_bytes());
+            hash.update(name.as_bytes());
+        }
+        for name in &self.selected_fusion_names {
             hash.update((name.len() as u64).to_le_bytes());
             hash.update(name.as_bytes());
         }
@@ -188,7 +193,12 @@ fn copy_pack_layout(
 ) -> Result<PathBuf, &'static str> {
     let pack_snapshots = snapshots
         .iter()
-        .filter(|snapshot| snapshot.canonical.components().any(|component| component.as_os_str() == "packs"))
+        .filter(|snapshot| {
+            snapshot
+                .canonical
+                .components()
+                .any(|component| component.as_os_str() == "packs")
+        })
         .collect::<Vec<_>>();
     let mut roots = pack_snapshots.iter().filter_map(|snapshot| {
         snapshot
@@ -201,7 +211,10 @@ fn copy_pack_layout(
     if roots.any(|root| root != source) {
         return Err("SDK pack roots differ");
     }
-    if pack_snapshots.iter().any(|snapshot| !snapshot.canonical.starts_with(&source)) {
+    if pack_snapshots
+        .iter()
+        .any(|snapshot| !snapshot.canonical.starts_with(&source))
+    {
         return Err("SDK candidate outside pack layout");
     }
     let target = destination.join("packs");
@@ -225,8 +238,12 @@ fn copy_pack_layout(
                 copy_dir(&from, &to, total, deadline, cancelled)?;
             } else {
                 let metadata = fs::metadata(&from).map_err(|_| "SDK pack snapshot unavailable")?;
-                *total = total.checked_add(metadata.len() as usize).ok_or("SDK pack snapshot limit")?;
-                if *total > 256 * 1024 * 1024 { return Err("SDK pack snapshot limit"); }
+                *total = total
+                    .checked_add(metadata.len() as usize)
+                    .ok_or("SDK pack snapshot limit")?;
+                if *total > 256 * 1024 * 1024 {
+                    return Err("SDK pack snapshot limit");
+                }
                 fs::copy(&from, &to).map_err(|_| "SDK pack snapshot unavailable")?;
             }
         }
@@ -291,7 +308,9 @@ impl CSharpResolvedReferenceSnapshot {
         hash.update(b"csharp.sdk-reference-snapshot.v2\0");
         hash.update((self.references.len() as u64).to_le_bytes());
         let mut names = Vec::with_capacity(self.references.len());
-        if self.references.len() != self.receipt.selected_names.len() {
+        if self.references.len() != self.receipt.selected_names.len()
+            || self.references.len() != self.receipt.selected_fusion_names.len()
+        {
             return None;
         }
         for path in &self.references {
@@ -359,6 +378,7 @@ impl CSharpResolvedReferenceSnapshot {
             && persisted.candidate_digest == candidate_digest
             && persisted.selected_digest == selected_digest
             && persisted.selected_names.as_ref() == selected_names.as_slice()
+            && persisted.selected_fusion_names == self.receipt.selected_fusion_names
     }
 }
 
@@ -624,6 +644,7 @@ pub fn resolve_references_with_sdk(
         .and_then(Value::as_array)
         .ok_or("SDK resolution missing ReferencePath")?;
     let mut selected = Vec::new();
+    let mut selected_fusion_names = Vec::new();
     let mut selected_indices = std::collections::HashSet::new();
     for item in items {
         if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
@@ -654,6 +675,13 @@ pub fn resolve_references_with_sdk(
             return Err("SDK candidate changed during resolution");
         }
         selected.push(snapshot.owned.clone());
+        selected_fusion_names.push(
+            item.get("FusionName")
+                .and_then(Value::as_str)
+                .ok_or("SDK selected assembly identity missing")?
+                .to_owned()
+                .into_boxed_str(),
+        );
     }
     if selected.is_empty() {
         return Err("SDK selected no references");
@@ -714,6 +742,7 @@ pub fn resolve_references_with_sdk(
             candidate_digest: candidate_digest(&snapshots),
             selected_digest,
             selected_names,
+            selected_fusion_names: selected_fusion_names.into_boxed_slice(),
         },
     })
 }
@@ -1366,6 +1395,8 @@ mod tests {
                 candidate_digest: [7; 32],
                 selected_digest: digest,
                 selected_names: vec!["System.Runtime.dll".into()].into_boxed_slice(),
+                selected_fusion_names: vec!["System.Runtime, Version=1.0.0.0".into()]
+                    .into_boxed_slice(),
             },
         };
         assert!(snapshot.receipt_is_consistent());
@@ -1404,6 +1435,7 @@ mod tests {
             candidate_digest: [8; 32],
             selected_digest,
             selected_names: vec!["A.dll".into()].into_boxed_slice(),
+            selected_fusion_names: vec!["A, Version=1.0.0.0".into()].into_boxed_slice(),
         };
         let snapshot = CSharpResolvedReferenceSnapshot {
             directory,
