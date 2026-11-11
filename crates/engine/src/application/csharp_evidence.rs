@@ -60,18 +60,32 @@ pub struct CSharpGraphEvidenceNode {
 
 fn bounded_graph_nodes<'de, D>(deserializer: D) -> Result<Vec<CSharpGraphEvidenceNode>, D::Error>
 where D: serde::Deserializer<'de> {
-    let values = bounded_evidence_vec(deserializer)?;
-    if values.len() > 64 { return Err(serde::de::Error::custom("graph node limit")); }
-    Ok(values)
+    struct Visitor;
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = Vec<CSharpGraphEvidenceNode>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("at most 64 graph nodes") }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut values = Vec::new();
+            while let Some(value) = seq.next_element()? { if values.len() >= 64 { return Err(serde::de::Error::custom("graph node limit")); } values.push(value); }
+            Ok(values)
+        }
+    }
+    deserializer.deserialize_seq(Visitor)
 }
 
 fn bounded_graph_edges<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where D: serde::Deserializer<'de> {
-    let values = bounded_evidence_vec(deserializer)?;
-    if values.len() > 64 || values.iter().any(|path| path.len() > 4096) {
-        return Err(serde::de::Error::custom("graph edge limit"));
+    struct Visitor;
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = Vec<String>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("at most 64 graph edges") }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut values = Vec::new();
+            while let Some(value) = seq.next_element::<String>()? { if values.len() >= 64 || value.len() > 4096 { return Err(serde::de::Error::custom("graph edge limit")); } values.push(value); }
+            Ok(values)
+        }
     }
-    Ok(values)
+    deserializer.deserialize_seq(Visitor)
 }
 
 /// Durable owner relation binding graph evidence to one selected operation and
