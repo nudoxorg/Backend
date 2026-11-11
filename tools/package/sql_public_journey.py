@@ -234,13 +234,37 @@ if a.expect_no_worker:
         if any(gap.get("reason") != {"state": "unavailable", "reason": "engine_not_admitted"} for gap in gaps):
             fail(f"{label}: worker terminal reasons differ: {gaps}")
         return gaps
+    def mcp_unavailable_gaps(expected, label):
+        global mcp
+        mcp = subprocess.Popen([str(bundle / "backend-mcp"), "--project", str(project), "--workspace", str(workspace), "--endpoint", str(endpoint)], cwd=project, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=(out / f"{label}.stderr").open("wb"), start_new_session=True)
+        def exchange(seq, method, params):
+            mcp.stdin.write((json.dumps({"jsonrpc": "2.0", "id": seq, "method": method, "params": params}) + "\n").encode())
+            mcp.stdin.flush()
+            if not select.select([mcp.stdout], [], [], 120)[0]:
+                fail(f"{label}: MCP {method} response timed out")
+            reply = json.loads(mcp.stdout.readline())
+            records.append({"label": label + ":" + method, "reply": reply})
+            return reply
+        exchange(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "sql-public-journey", "version": "1"}})
+        mcp.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+        mcp.stdin.flush()
+        reply = exchange(2, "tools/call", {"name": "backend.sql_query", "arguments": {"package": str(project), "role": "gap", "limit": 128, "detail": "full"}})
+        result = reply.get("result", {})
+        data = result.get("structuredContent", {}).get("semantic_data", {})
+        if result.get("isError") or data.get("kind") != "sql-query" or data.get("value", {}).get("host_gaps") != expected:
+            fail(f"{label}: MCP gap facts differ from CLI: {reply}")
+        mcp.stdin.close()
+        mcp.wait(timeout=10)
+
     before = unavailable_gaps("no-worker-gaps")
+    mcp_unavailable_gaps(before, "no-worker-mcp-gaps")
     os.killpg(owner.pid, signal.SIGKILL)
     owner.wait(timeout=10)
     start_owner()
     after = unavailable_gaps("no-worker-cold-gaps")
     if before != after:
         fail("unavailable SQL host gaps changed after cold reopen")
+    mcp_unavailable_gaps(after, "no-worker-cold-mcp-gaps")
     cleanup()
     (out / "journey.json").write_text(json.dumps(records, indent=1))
     print("PASS: SQL without worker publishes with named gaps and survives cold restart")
