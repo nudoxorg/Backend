@@ -37,8 +37,11 @@ pub(super) fn append(
             let path = &sql.hosts[*host].path;
             // The source ordinal is an admitted SQL fact identity. It keeps
             // same-name definitions distinct without inventing source lines.
-            let coordinate = format!("{}::{path}::sql:{ordinal}::{display}", indexed.label);
-            rows.push(Row::in_package(RowId::Symbol(backend_engine::symbol_key(&coordinate)), initial.basis(), indexed.package, coordinate)
+            let coordinate = format!("{}::{path}::{display}", indexed.label);
+            let preimage = format!("{coordinate}\0sql:{ordinal}");
+            rows.push(Row::in_package(RowId::Symbol(backend_engine::symbol_key(&preimage)), initial.basis(), indexed.package, coordinate)
+                .try_with_identity_preimage(&preimage)
+                .map_err(|error| BuiltinModelError(format!("SQL discovery identity: {error}")))?
                 .with_kind(if definition.kind == SqlObjectKind::Column { DeclarationKind::Field } else { DeclarationKind::Unknown })
                 .with_signature(format!("SQL {kind} {display}"))
                 .with_document(vec![Fragment::Text(format!("SQL {kind} in {path}; use sql-query for binding, migration history and checked source"))]));
