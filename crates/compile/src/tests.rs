@@ -2450,23 +2450,23 @@ while True:
         initial_pid, pid,
         "the changed environment must not reuse the prior process"
     );
-    let initial_alive = Command::new("/bin/kill")
-        .arg("-0")
-        .arg(initial_pid.to_string())
-        .status()
-        .is_ok_and(|status| status.success());
+    let as_pid = |raw: u32| -> Result<rustix::process::Pid, Box<dyn Error>> {
+        rustix::process::Pid::from_raw(i32::try_from(raw)?)
+            .ok_or_else(|| "fixture PID must be positive".into())
+    };
+    let is_alive = |raw: u32| -> Result<bool, Box<dyn Error>> {
+        match rustix::process::test_kill_process(as_pid(raw)?) {
+            Ok(()) => Ok(true),
+            Err(rustix::io::Errno::SRCH) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    };
+    let initial_alive = is_alive(initial_pid)?;
     assert!(
         !initial_alive,
         "the incompatible process recipe must be retired"
     );
-    assert!(
-        Command::new("/bin/kill")
-            .arg("-9")
-            .arg(pid.to_string())
-            .status()?
-            .success(),
-        "fixture process should accept the forced failure"
-    );
+    rustix::process::kill_process(as_pid(pid)?, rustix::process::Signal::KILL)?;
     assert!(
         request(
             &cache,
@@ -2509,21 +2509,13 @@ while True:
     );
     assert!(cache.invalidate(changed_preparation_key));
     for _ in 0..100 {
-        let alive = Command::new("/bin/kill")
-            .arg("-0")
-            .arg(recovered_pid.to_string())
-            .status()
-            .is_ok_and(|status| status.success());
+        let alive = is_alive(recovered_pid)?;
         if !alive {
             break;
         }
         thread::sleep(Duration::from_millis(2));
     }
-    let alive = Command::new("/bin/kill")
-        .arg("-0")
-        .arg(recovered_pid.to_string())
-        .status()
-        .is_ok_and(|status| status.success());
+    let alive = is_alive(recovered_pid)?;
     assert!(!alive, "retired persistent authority remained alive");
     assert_eq!(cache.stats().resident, 0);
     let _ = fs::remove_dir_all(workspace);
