@@ -713,6 +713,10 @@ impl<'source> PackageSourceSet<'source> {
         Ok(self)
     }
 
+    pub(crate) fn csharp_graph_evidence(&self) -> Option<crate::application::CSharpGraphEvidence> {
+        self.csharp_project_graph.and_then(|graph| graph.evidence())
+    }
+
     pub(crate) fn with_csharp_sdk_probes(mut self, probes: &'source [backend_frontend_csharp::legacy::CSharpSdkProbe<'source>]) -> Self {
         self.csharp_sdk_probes = Some(probes);
         self

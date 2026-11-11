@@ -394,6 +394,35 @@ impl OwnedCSharpProjectGraph {
     pub fn root_project(&self) -> &str { &self.root_project }
     pub fn project_paths(&self) -> &[Box<str>] { &self.project_paths }
 
+    pub(crate) fn evidence(&self) -> Option<crate::application::CSharpGraphEvidence> {
+        if self.nodes.len() != self.project_paths.len() || self.nodes.is_empty() { return None; }
+        let mut config = blake3::Hasher::new();
+        let mut source = blake3::Hasher::new();
+        let mut refs = blake3::Hasher::new();
+        config.update(b"csharp.graph.config.v1\0");
+        source.update(b"csharp.graph.source.v1\0");
+        refs.update(b"csharp.graph.references.v1\0");
+        let mut nodes = Vec::with_capacity(self.nodes.len());
+        for node in &self.nodes {
+            let mut node_config = blake3::Hasher::new();
+            let mut node_source = blake3::Hasher::new();
+            for probe in &node.config { node_config.update(probe.path.as_bytes()); if let Some(text) = &probe.text { node_config.update(text.as_bytes()); } }
+            for claim in &node.sources { node_source.update(claim.path.as_bytes()); node_source.update(&claim.source_fact); node_source.update(&claim.input_content); }
+            let config_digest = *node_config.finalize().as_bytes();
+            let source_digest = *node_source.finalize().as_bytes();
+            config.update(&config_digest);
+            source.update(&source_digest);
+            refs.update(&node.targeting_snapshot.digest());
+            nodes.push(crate::application::CSharpGraphEvidenceNode {
+                project_path: node.project_path.to_string(),
+                project_references: node.project_references.iter().map(|path| path.to_string()).collect(),
+                config_digest,
+                source_digest,
+            });
+        }
+        Some(crate::application::CSharpGraphEvidence { root_project: self.root_project.to_string(), config_digest: *config.finalize().as_bytes(), source_digest: *source.finalize().as_bytes(), reference_digest: *refs.finalize().as_bytes(), nodes })
+    }
+
     fn retained_bytes(&self) -> Option<usize> {
         self.nodes.iter().try_fold(size_of::<Self>().checked_add(self.root_project.len())?.checked_add(self.project_paths.len() * size_of::<Box<str>>())?, |total, node| total.checked_add(node.retained_bytes()?))
     }
