@@ -3169,6 +3169,12 @@ pub(super) fn finish_deferred_profile_for_snapshot(
             return Err(error.into());
         }
     };
+    // Reserve private custody before copying compact claims out of the staged
+    // compiler output lease. Only a fresh native-only completion can carry it.
+    let native_headers = if job.native_typescript.is_some() {
+        NativeHeaderCustody::capture(staged.native_typescript_headers())?
+    } else { None };
+
     // Keep the ticket's exact capability until the publication result is
     // known. `publish_staged` consumes its copy when constructing a candidate,
     // but any refusal before Turso selects that candidate still needs a
@@ -3201,7 +3207,7 @@ pub(super) fn finish_deferred_profile_for_snapshot(
         *claim.binding().identity.as_ref(),
         &staged,
     );
-    let completion = record_semantic_publication(
+    let mut completion = record_semantic_publication(
         &relation,
         profile.key.clone(),
         publication_coverage,
@@ -3209,6 +3215,7 @@ pub(super) fn finish_deferred_profile_for_snapshot(
         CapturePublicationOrigin::FreshLocalCompletion,
         &mut job.semantic_changes,
     )?;
+    completion.native_headers = native_headers;
     let selected_profile = profile.profile();
     job.capture_publications.push(completion);
     if let Some(evidence) = cargo_alias_evidence {
@@ -5400,6 +5407,33 @@ fn publish_local_compile(
     })
 }
 
+// Private credit follows compact compiler claims until the candidate plan
+// takes custody or the deferred operation is dropped.
+const NATIVE_HEADER_CUSTODY_BUDGET: usize = 128 * 1024 * 1024;
+static NATIVE_HEADER_CUSTODY_USED: AtomicUsize = AtomicUsize::new(0);
+#[derive(Debug)]
+pub(in crate::builtin) struct NativeHeaderCustody {
+    entries: Box<[backend_engine::application::StagedNativeTypeScriptHeaders]>,
+    charge: usize,
+}
+impl NativeHeaderCustody {
+    fn capture(rows: &[backend_engine::application::StagedNativeTypeScriptHeaders]) -> Result<Option<Arc<Self>>, BuiltinModelError> {
+        if rows.is_empty() { return Ok(None); }
+        let charge = rows.iter().try_fold(std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>(), |total, row| {
+            total.checked_add(row.checked_retained_bytes()?)
+        }).ok_or_else(|| BuiltinModelError("native header custody size overflow".into()))?;
+        NATIVE_HEADER_CUSTODY_USED.fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+            used.checked_add(charge).filter(|total| *total <= NATIVE_HEADER_CUSTODY_BUDGET)
+        }).map_err(|_| BuiltinModelError("native header custody budget exhausted".into()))?;
+        let custody = Self { entries: rows.to_vec().into_boxed_slice(), charge };
+        Ok(Some(Arc::new(custody)))
+    }
+    pub(in crate::builtin) fn entries(&self) -> &[backend_engine::application::StagedNativeTypeScriptHeaders] { &self.entries }
+}
+impl Drop for NativeHeaderCustody {
+    fn drop(&mut self) { NATIVE_HEADER_CUSTODY_USED.fetch_sub(self.charge, Ordering::AcqRel); }
+}
+
 /// A successful compiler admission, retained independently of relation
 /// changes. Its constructor is the publication recorder called only after
 /// the local or remote compiler result has been selected and admitted.
@@ -5409,6 +5443,7 @@ pub(in crate::builtin) struct AdmittedCapturePublication {
     coverage: SemanticPublicationCoverage,
     claim: SemanticPublicationClaim,
     origin: CapturePublicationOrigin,
+    native_headers: Option<Arc<NativeHeaderCustody>>,
 }
 
 // The native TS path only admits a freshly staged local compile. Other
@@ -5421,6 +5456,7 @@ impl AdmittedCapturePublication {
     pub(in crate::builtin) fn key(&self) -> &ProductSemanticPublicationKey { &self.key }
     pub(in crate::builtin) fn claim(&self) -> SemanticPublicationClaim { self.claim }
     pub(in crate::builtin) fn coverage(&self) -> SemanticPublicationCoverage { self.coverage }
+    pub(in crate::builtin) fn native_headers(&self) -> Option<&NativeHeaderCustody> { self.native_headers.as_deref() }
     pub(in crate::builtin) fn is_fresh_completion(&self) -> bool {
         matches!(self.origin, CapturePublicationOrigin::FreshLocalCompletion)
     }
@@ -5499,6 +5535,7 @@ pub(super) fn reused_capture_publications_for_snapshot(
             coverage,
             claim,
             origin: CapturePublicationOrigin::Other,
+            native_headers: None,
         });
     }
     if reused.len() != reused_profiles.len() {
@@ -5524,6 +5561,7 @@ fn record_semantic_publication(
         coverage: publication_coverage,
         claim,
         origin,
+        native_headers: None,
     };
     {
         let value = ProductSemanticPublicationRecord::Published {
