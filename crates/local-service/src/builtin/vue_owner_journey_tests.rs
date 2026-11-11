@@ -90,6 +90,36 @@ fn verify(session: &mut Session, project: &std::path::Path) -> Result<(), Box<dy
         let source = fs::read(project.join(span.file.as_str()))?;
         assert_eq!(&source[span.start as usize..span.end as usize], b"mounted");
     }
+    let package = PackageReference::parse("pkg:npm/vue@3.5.44")
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let installed = session.surface(SurfaceCommand::Package {
+        package: package.clone(),
+    })?;
+    let SurfaceReply::PackageInstalled(facts) = installed else {
+        return Err("installed package owner reply".into());
+    };
+    assert!(
+        facts
+            .files
+            .iter()
+            .any(|file| file.excerpt.as_str().contains("createApp"))
+    );
+    assert!(
+        facts
+            .engines
+            .iter()
+            .any(|engine| engine.as_str() == "node >=22")
+    );
+    assert!(matches!(
+        session.surface(SurfaceCommand::Dependencies {
+            package: package.clone()
+        })?,
+        SurfaceReply::DependenciesInstalled(_)
+    ));
+    assert!(matches!(
+        session.surface(SurfaceCommand::PackageVersions { package })?,
+        SurfaceReply::PackageVersionsInstalled(_)
+    ));
     Ok(())
 }
 
@@ -101,6 +131,20 @@ fn vue_scripts_answer_search_source_references_after_cold_owner_reopen()
         .tempdir_in("/tmp")?;
     let project = fixture.path().join("project");
     fs::create_dir(&project)?;
+    fs::create_dir_all(project.join("frontend/node_modules/vue"))?;
+    fs::write(
+        project.join("frontend/node_modules/vue/package.json"),
+        r#"{"name":"vue","version":"3.5.44","types":"index.d.ts","engines":{"node":">=22"},"dependencies":{"@vue/runtime-dom":"3.5.44"}}"#,
+    )?;
+    fs::write(
+        project.join("frontend/node_modules/vue/index.d.ts"),
+        "export declare function createApp(component: unknown): unknown;\n",
+    )?;
+    fs::write(
+        project.join("frontend/node_modules/vue/README.md"),
+        "# Installed Vue API documentation\n",
+    )?;
+
     fs::write(
         project.join("App.vue"),
         "<template><button @click=\"mounted\">Run</button></template>\r\n<script setup lang=\"ts\">\r\n// é漢\r\nfunction mounted() { return 'é漢'; }\r\nmounted();\r\nfunction wrapper() { mounted(); }\r\nfunction shadow(mounted: () => void) { mounted(); }\r\n</script>\r\n<style>.button { color: red; }</style>\r\n",
