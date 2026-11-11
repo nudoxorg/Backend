@@ -375,7 +375,7 @@ pub fn resolve_project_assets_with_metadata(
                     let framework = project_output_framework(framework)?;
                     let reference = base
                         .join("obj/Debug")
-                        .join(framework)
+                        .join(&framework)
                         .join("ref")
                         .join(name);
                     let implementation = base.join("bin/Debug").join(framework).join(name);
