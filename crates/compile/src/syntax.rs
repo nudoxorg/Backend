@@ -1627,7 +1627,7 @@ fn excerpt_node(mut node: Node<'_>) -> Node<'_> {
         };
         let same_line = parent.start_position().row == node.start_position().row;
         let python_decorator = parent.kind() == "decorated_definition"
-            && node.kind() == "function_definition";
+            && matches!(node.kind(), "function_definition" | "class_definition");
         if !same_line && !python_decorator {
             break;
         }
