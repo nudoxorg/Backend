@@ -94,6 +94,16 @@ fn python_and_csharp_structural_source_survive_public_wire_and_cold_reopen() {
                 panic!("source must return {name}")
             };
             assert_eq!(document.excerpt.text(), Some(text));
+            if name == "health" {
+                assert_eq!(
+                    document
+                        .location
+                        .captured()
+                        .expect("decorator location")
+                        .start_line(),
+                    4
+                );
+            }
             assert!(
                 document.source_range.is_none(),
                 "default source does not invent a range request"
@@ -128,6 +138,16 @@ fn python_and_csharp_structural_source_survive_public_wire_and_cold_reopen() {
                 else {
                     panic!("source range reply")
                 };
+                if name == "health" {
+                    assert_eq!(
+                        document
+                            .location
+                            .captured()
+                            .expect("paged decorator location")
+                            .start_line(),
+                        4
+                    );
+                }
                 let page = document.source_range.expect("bounded source page");
                 assert!(page.admits(request));
                 assert_eq!(page.scope, SourceRangeScope::StructuralDeclaration);
