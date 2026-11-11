@@ -31,11 +31,13 @@ pub fn syntax_frontend() -> Result<SyntaxFrontend, SyntaxError> {
   (decorator (identifier) @_decorator)
   definition: (function_definition name: (identifier) @name) @definition.property
   (#eq? @_decorator "property"))
+(decorated_definition
+  definition: (class_definition name: (identifier) @name) @definition.class)
 "#
     );
     SyntaxFrontend::new(
         SourceLanguage::Python,
-        b"tree-sitter-python-0.25.0/tags-v7-python-module-assignment-source",
+        b"tree-sitter-python-0.25.0/tags-v8-python-module-assignment-decorated-source",
         vec![GrammarVariant::new(
             &["py", "pyi", "pyw"],
             tree_sitter_python::LANGUAGE.into(),
@@ -50,7 +52,7 @@ mod source_excerpt_tests {
 
     #[test]
     fn structural_python_source_retains_function_body_and_class_field() -> Result<(), String> {
-        let source = "# λ before the declaration\napp = make_app()\nclass App:\n    field = 1\n\n@app.get(\"/api/health\")\ndef health() -> dict[str, str]:\n    return {\"status\": \"ok\"}\n\ndef local_only():\n    scratch = 1\n";
+        let source = "# λ before the declaration\napp = make_app()\nclass App:\n    field = 1\n\n@app.get(\"/api/health\")\ndef health() -> dict[str, str]:\n    return {\"status\": \"ok\"}\n\n@dataclass\nclass User:\n    name: str\n\ndef local_only():\n    scratch = 1\n";
         let analysis = super::syntax_frontend()
             .map_err(|error| error.to_string())?
             .analyze(Path::new("backend/main.py"), source.as_bytes())
@@ -62,6 +64,7 @@ mod source_excerpt_tests {
             ),
             ("app", "app = make_app()"),
             ("field", "field = 1"),
+            ("User", "@dataclass\nclass User:\n    name: str"),
         ] {
             let declaration = analysis
                 .declarations()
@@ -74,6 +77,12 @@ mod source_excerpt_tests {
                 Some(backend_compile::SourceExcerptExtent::Complete)
             );
         }
+        let user = analysis
+            .declarations()
+            .iter()
+            .find(|row| row.name() == "User")
+            .ok_or_else(|| "missing User".to_owned())?;
+        assert_eq!(user.location().start_line(), 10);
         assert!(
             !analysis
                 .declarations()
