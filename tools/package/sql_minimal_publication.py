@@ -84,9 +84,18 @@ try:
             if index['exit'] != 0:
                 cli('status')
                 raise RuntimeError(f"mixed publication failed: exit {index['exit']}")
+        status = cli('status')
+        if status['exit'] != 0:
+            raise RuntimeError('selected SQL status failed')
+        summary = json.loads(status['stdout']).get('sql_analysis')
+        expected_count = 'no_worker_files' if a.without_worker else 'analysed_files'
+        if not isinstance(summary, dict) or summary.get(expected_count) != 1:
+            raise RuntimeError(f'status did not preserve selected SQL {expected_count}: {summary}')
         gap = cli('sql-query', str(project), '--role', 'gap')
         if gap['exit'] != 0:
             raise RuntimeError('SQL gap query failed')
+        if a.without_worker and ('schema.sql' not in gap['stdout'] or 'worker' not in gap['stdout'].lower()):
+            raise RuntimeError('missing worker gap did not name the SQL file and reason')
         os.killpg(owner.pid, signal.SIGKILL)
         owner.wait(timeout=10)
         owner = None
