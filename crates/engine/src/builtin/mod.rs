@@ -51,7 +51,7 @@ pub use manifest::{
     semantic_execution_input_manifest_from_snapshot,
 };
 pub use native_source_evidence::{
-    NativeSourceEvidence, NativeSourceEvidenceRelation, NativeSourceEvidenceRootSchema,
+    NativeSourceEvidence, NativeSourceEvidenceKind, NativeSourceEvidenceRelation, NativeSourceEvidenceRootSchema,
     MAX_NATIVE_EVIDENCE_BYTES, MAX_NATIVE_EVIDENCE_PATH, MAX_NATIVE_EVIDENCE_PROJECT_ROWS,
     MAX_NATIVE_EVIDENCE_ROWS, MAX_NATIVE_EVIDENCE_SOURCE, MAX_NATIVE_EVIDENCE_VALUE,
     native_source_evidence_key, native_source_evidence_relation, native_source_evidence_root_object,
