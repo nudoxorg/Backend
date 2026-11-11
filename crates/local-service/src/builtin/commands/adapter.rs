@@ -7847,7 +7847,7 @@ fn semantic_readiness(
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let mut progress = super::super::ingest_progress(&snapshot)?;
     if let Some(summary) = super::super::sql_catalog::progress(&snapshot)
-        .map_err(|error| BuiltinModelError(error.0))? {
+        .map_err(BuiltinModelError)? {
         progress = progress.with_sql_analysis(summary)
             .map_err(|error| BuiltinModelError(format!("SQL status summary: {error}")))?;
     }
