@@ -41,7 +41,10 @@ class Route:
                   "XDG_RUNTIME_DIR", "TMPDIR", "CARGO_HOME"):
             env[k] = str(self.root / k)
             (self.root / k).mkdir(mode=0o700, exist_ok=True)
-        # The account gate is never configured here: development mode only.
+        # Preserve an inherited account gate exactly. Debug builds still skip the
+        # release gate, so this cannot by itself prove authenticated behaviour.
+        if "NUDOX_ACCOUNT_GATE" in os.environ:
+            env["NUDOX_ACCOUNT_GATE"] = os.environ["NUDOX_ACCOUNT_GATE"]
         env.update(extra_env or {})
         self.env = env
         self.workspace = self.root / "state"
@@ -178,15 +181,41 @@ class Route:
             self.poll_sizes.append(len(json.dumps(result)))
 
 
-def receipt_header(bin_dir, source_commit, mode="development"):
+def receipt_header(bin_dir, source_commit, mode="development", effective_env=None):
+    repo = HERE.parents[3]
+    actual_commit = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+        capture_output=True, text=True).stdout.strip()
+    tree = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD^{tree}"], check=True,
+        capture_output=True, text=True).stdout.strip()
+    dirty = subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain"], check=True,
+        capture_output=True, text=True).stdout
+    if actual_commit != source_commit:
+        raise RuntimeError(f"declared source commit {source_commit} differs from checkout HEAD {actual_commit}")
+    if dirty:
+        raise RuntimeError("source checkout is dirty; exact-head receipt refused")
+    lockfile = repo / "Cargo.lock"
+    gate_env = effective_env
+    gate_value = gate_env.get("NUDOX_ACCOUNT_GATE") if gate_env is not None else None
     bins = {}
     for name in ("backend-cli", "backend-mcp", "backend-locald"):
         p = pathlib.Path(bin_dir) / name
         bins[name] = sha(p) if p.exists() else None
     return {
         "source_commit": source_commit,
+        "source_tree": tree,
+        "source_checkout_clean": True,
+        "cargo_lock_sha256": sha(lockfile),
         "binaries": bins,
-        "mode": "development (debug build, account gate skipped; NUDOX_ACCOUNT_GATE unset)",
+        "mode": "development (debug build; account-gate behavior not validated)",
+        "account_gate_environment": (
+            {"state": "preserved-in-subprocess", "value_sha256": hashlib.sha256(gate_value.encode()).hexdigest()}
+            if gate_value is not None else
+            {"state": "unset-in-subprocess"} if gate_env is not None else
+            {"state": "not-recorded"}
+        ),
         "authenticated_account_exercised": False,
         "fixture_origin": "synthetic, written for this lane; no customer data",
     }
