@@ -81,6 +81,9 @@ fn require_relocatable_elf_host(bytes: &[u8]) -> Result<(), CSharpAuthorityError
     if bytes.get(5) != Some(&1) {
         return Err(CSharpAuthorityError::Configuration);
     }
+    // Let the native object reader validate the complete ELF container before
+    // inspecting bounded program-header fields below.
+    object::File::parse(bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
     let read_u16 = |at: usize| {
         bytes
             .get(at..at + 2)
