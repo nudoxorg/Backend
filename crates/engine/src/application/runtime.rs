@@ -406,13 +406,24 @@ impl OwnedCSharpProjectGraph {
         for node in &self.nodes {
             let mut node_config = blake3::Hasher::new();
             let mut node_source = blake3::Hasher::new();
-            for probe in &node.config { node_config.update(probe.path.as_bytes()); if let Some(text) = &probe.text { node_config.update(text.as_bytes()); } }
-            for claim in &node.sources { node_source.update(claim.path.as_bytes()); node_source.update(&claim.source_fact); node_source.update(&claim.input_content); }
+            for option in [&node.assembly_name, &node.target_framework, &node.language_version, &node.nullable, &node.output_type] { node_config.update(&(option.len() as u64).to_be_bytes()); node_config.update(option.as_bytes()); }
+            node_config.update(&[u8::from(node.allow_unsafe)]);
+            for symbol in &node.define_symbols { node_config.update(&(symbol.len() as u64).to_be_bytes()); node_config.update(symbol.as_bytes()); }
+            for using in &node.usings { node_config.update(&(using.len() as u64).to_be_bytes()); node_config.update(using.as_bytes()); }
+            for probe in &node.config {
+                node_config.update(&(probe.path.len() as u64).to_be_bytes());
+                node_config.update(probe.path.as_bytes());
+                match &probe.text { Some(text) => { node_config.update(&[1]); node_config.update(&(text.len() as u64).to_be_bytes()); node_config.update(text.as_bytes()); }, None => node_config.update(&[0]), }
+            }
+            for claim in &node.sources {
+                node_source.update(&(claim.path.len() as u64).to_be_bytes()); node_source.update(claim.path.as_bytes());
+                node_source.update(&(claim.byte_length as u64).to_be_bytes()); node_source.update(&claim.source_fact); node_source.update(&claim.input_content);
+            }
             let config_digest = *node_config.finalize().as_bytes();
             let source_digest = *node_source.finalize().as_bytes();
             config.update(&config_digest);
             source.update(&source_digest);
-            refs.update(&node.targeting_snapshot.digest());
+            refs.update(node.project_path.as_bytes()); refs.update(&node.targeting_snapshot.digest());
             nodes.push(crate::application::CSharpGraphEvidenceNode {
                 project_path: node.project_path.to_string(),
                 project_references: node.project_references.iter().map(|path| path.to_string()).collect(),

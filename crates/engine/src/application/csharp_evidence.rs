@@ -74,7 +74,9 @@ pub(crate) fn selected_graph_evidence(witness: &SelectedCSharpGraphWitness) -> &
 
 pub fn encode_csharp_graph_evidence(graph: &CSharpGraphEvidence) -> Option<Vec<u8>> {
     if graph.nodes.is_empty() || graph.nodes.len() > 64 || graph.root_project.len() > 4096
+        || graph.nodes.windows(2).any(|pair| pair[0].project_path >= pair[1].project_path)
         || graph.nodes.iter().any(|node| node.project_path.len() > 4096 || node.project_references.len() > 64)
+        || graph.nodes.iter().try_fold(0usize, |total, node| total.checked_add(node.project_references.len())).is_none_or(|edges| edges > 256)
     { return None; }
     let payload = serde_json::to_vec(graph).ok()?;
     if payload.len() > 2 * 1024 * 1024 { return None; }
@@ -90,7 +92,9 @@ pub fn decode_csharp_graph_evidence(bytes: &[u8]) -> Option<CSharpGraphEvidence>
     if length > 2 * 1024 * 1024 || bytes.len() != length.checked_add(8)? { return None; }
     let graph = serde_json::from_slice::<CSharpGraphEvidence>(&bytes[8..]).ok()?;
     if graph.nodes.is_empty() || graph.nodes.len() > 64 || graph.root_project.len() > 4096
-        || graph.nodes.iter().any(|node| node.project_path.len() > 4096 || node.project_references.len() > 64)
+        || graph.nodes.windows(2).any(|pair| pair[0].project_path >= pair[1].project_path)
+        || graph.nodes.iter().any(|node| node.project_path.len() > 4096 || node.project_references.len() > 64 || node.project_references.iter().any(|path| path.len() > 4096))
+        || graph.nodes.iter().try_fold(0usize, |total, node| total.checked_add(node.project_references.len())).is_none_or(|edges| edges > 256)
         || !graph.nodes.iter().any(|node| node.project_path == graph.root_project)
     { return None; }
     let mut paths = std::collections::BTreeSet::new();
