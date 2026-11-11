@@ -112,7 +112,8 @@ impl SqliteWorkerPermit {
             launch.environment = library
                 .environment()
                 .map_err(backend_sql_contract::CheckedError::Process)?;
-            return backend_sql_contract::analyze_checked_with_linux_library_until(
+            // The deadline is this launch's own wall; decoding the response is not charged to it.
+            return backend_sql_contract::analyze_checked_with_linux_library_within_wall(
                 request,
                 host,
                 input,
@@ -337,6 +338,7 @@ pub(super) fn capture_sqlite_host(
         limits,
         cancellation,
     };
+    let called = std::time::Instant::now();
     let response = permit.analyze(
         &request, host.bytes(), host.input(), host.source(), launch,
     )
@@ -357,6 +359,7 @@ pub(super) fn capture_sqlite_host(
         ) => SqlUnavailable::Cancelled,
         _ => SqlUnavailable::WorkerFailure,
     })?;
+    super::sql_index::trace(format_args!("sqlite worker call for {} took {} ms", host.selected().path, called.elapsed().as_millis()));
     let observed = response.response();
     let mut facts = Vec::new();
     let terminal = match &observed.syntax {

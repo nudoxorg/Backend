@@ -705,12 +705,10 @@ pub fn analyze_checked<'a>(
     if launch.cancellation.is_cancelled() {
         return Err(CheckedError::Cancelled);
     }
-    let deadline = std::time::Instant::now()
-        .checked_add(launch.limits.wall_time())
-        .ok_or(CheckedError::Process(
-            backend_compile::ProcessError::Deadline,
-        ))?;
-    analyze_checked_until(
+    // The per-launch wall bounds the child process (and the admission work before
+    // it). It is not a caller deadline: decoding and verifying a large response
+    // is the owner's own work and must not be charged to the worker's wall.
+    analyze_checked_inner(
         request,
         host,
         expected_input,
@@ -718,7 +716,9 @@ pub fn analyze_checked<'a>(
         launch,
         dialect,
         engine,
-        deadline,
+        None,
+        false,
+        CheckedPrivateLibrary::None,
     )
 }
 
@@ -747,9 +747,17 @@ pub fn analyze_checked_until<'a>(
         launch,
         dialect,
         engine,
-        deadline,
+        Some(deadline),
+        true,
         CheckedPrivateLibrary::None,
     )
+}
+
+/// Whether a caller's own absolute deadline has passed once the child is reaped.
+/// A launch with no caller deadline is bounded by its wall alone, which ended
+/// with the process: the owner's decoding and verification are never charged to it.
+fn caller_deadline_passed(caller: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    caller.is_some_and(|caller| now >= caller)
 }
 
 enum CheckedPrivateLibrary {
@@ -788,7 +796,42 @@ pub fn analyze_checked_with_linux_library_until<'a>(
         launch,
         dialect,
         engine,
-        deadline,
+        Some(deadline),
+        true,
+        CheckedPrivateLibrary::Linux(std::sync::Arc::new(library)),
+    )
+}
+
+/// Like [`analyze_checked_with_linux_library_until`] for a deadline which is the
+/// launch's own wall, started before the lease was prepared: it bounds the lease
+/// preparation and the child, and ends with the process. The owner's decoding
+/// and verification of the response are never charged to it, exactly as for
+/// [`analyze_checked`].
+///
+/// # Errors
+/// Returns the same checked errors as [`analyze_checked_with_linux_library_until`].
+#[cfg(target_os = "linux")]
+pub fn analyze_checked_with_linux_library_within_wall<'a>(
+    request: &Request,
+    host: &'a [u8],
+    expected_input: backend_compile::InputContentVersion,
+    expected_source: backend_version::ContentId<backend_version::SourceFactDomain>,
+    launch: CheckedLaunch<'_>,
+    dialect: Dialect,
+    engine: Engine,
+    wall_deadline: std::time::Instant,
+    library: backend_compile::NativeLibraryLease,
+) -> Result<CheckedResponse<'a>, CheckedError> {
+    analyze_checked_inner(
+        request,
+        host,
+        expected_input,
+        expected_source,
+        launch,
+        dialect,
+        engine,
+        Some(wall_deadline),
+        false,
         CheckedPrivateLibrary::Linux(std::sync::Arc::new(library)),
     )
 }
@@ -801,7 +844,8 @@ fn analyze_checked_inner<'a>(
     launch: CheckedLaunch<'_>,
     dialect: Dialect,
     engine: Engine,
-    deadline: std::time::Instant,
+    caller_deadline: Option<std::time::Instant>,
+    charge_decoding: bool,
     library: CheckedPrivateLibrary,
 ) -> Result<CheckedResponse<'a>, CheckedError> {
     use backend_compile::{
@@ -817,7 +861,7 @@ fn analyze_checked_inner<'a>(
         .ok_or(CheckedError::Process(
             backend_compile::ProcessError::Deadline,
         ))?;
-    let deadline = deadline.min(command_deadline);
+    let deadline = caller_deadline.map_or(command_deadline, |caller| caller.min(command_deadline));
     if std::time::Instant::now() >= deadline {
         return Err(CheckedError::Process(
             backend_compile::ProcessError::Deadline,
@@ -956,7 +1000,9 @@ fn analyze_checked_inner<'a>(
     if launch.cancellation.is_cancelled() {
         return Err(CheckedError::Cancelled);
     }
-    if std::time::Instant::now() >= deadline {
+    // Only a caller's own deadline outlives the child: the launch wall ended
+    // when the process was reaped.
+    if charge_decoding && caller_deadline_passed(caller_deadline, std::time::Instant::now()) {
         return Err(CheckedError::Process(
             backend_compile::ProcessError::Deadline,
         ));
@@ -1066,6 +1112,16 @@ mod tests {
         std::fs::write(&path, b"#!/bin/sh\nexit 0\n").unwrap();
         assert!(probe_basis_checked(launch(), Dialect::Sqlite, Engine::Syntaqlite4e4de76).is_err());
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn the_launch_wall_does_not_outlive_the_child_but_a_caller_deadline_does() {
+        let now = std::time::Instant::now();
+        let past = now - Duration::from_secs(60);
+        // No caller deadline: however long decoding took, the wall had already ended.
+        assert!(!caller_deadline_passed(None, now + Duration::from_secs(3600)));
+        assert!(caller_deadline_passed(Some(past), now));
+        assert!(!caller_deadline_passed(Some(now + Duration::from_secs(1)), now));
     }
 
     #[test]

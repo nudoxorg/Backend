@@ -1239,3 +1239,93 @@ fn the_synchronous_add_route_analyses_sql_like_the_owned_index_operation() {
     let again = crate::builtin::sql_journey_support::count_rows(&daemon.engine().daemon().owner().snapshot()).expect("SQL relation");
     assert_eq!(again.0, rows);
 }
+
+/// A migration file of `target` bytes shaped like real ones: tables, indexes,
+/// views and the queries that use them.
+fn realistic_sql(target: usize) -> String {
+    let mut out = String::new();
+    let mut index = 0usize;
+    while out.len() < target {
+        let parent = index.saturating_sub(1);
+        out.push_str(&format!(
+            "CREATE TABLE t{index} (\n  id INTEGER PRIMARY KEY,\n  parent_id INTEGER REFERENCES t{parent}(id),\n  name TEXT NOT NULL,\n  email TEXT UNIQUE,\n  balance INTEGER NOT NULL DEFAULT 0\n);\n\
+             CREATE INDEX t{index}_by_name ON t{index}(name);\n\
+             CREATE VIEW v{index} AS SELECT a.id, a.name, SUM(b.balance) AS total FROM t{index} a JOIN t{parent} b ON b.id = a.parent_id GROUP BY a.id, a.name;\n\
+             SELECT name, balance FROM t{index} WHERE id = ?1;\n\
+             UPDATE t{index} SET balance = balance - ?2 WHERE id = ?1;\n"
+        ));
+        index += 1;
+    }
+    out
+}
+
+/// The per-host wall is the worker process's, not the owner's: a host whose
+/// response is large is decoded, hashed and verified by the owner after the
+/// worker has finished, and that work must not be charged to the wall. This
+/// runs the checked path with the PRODUCT default wall (no test override) on
+/// migration files of 20 KB to 250 KB; each host must be analysed, none
+/// recorded as `Deadline`. Per-host times are printed with `--nocapture`.
+#[test]
+fn the_default_worker_wall_holds_for_realistic_migration_files() {
+    use backend_engine::builtin::{SqlAnalysisRecord, SqlHostTerminal, SqlUnavailable};
+    use backend_sql_contract::{Dialect, Engine, Request, Settings, call_worker};
+    let worker = frontend_worker("sqlite", "sqlite-worker");
+    let artifact = backend_compile::ToolchainArtifact::from_path(&worker, Vec::new()).expect("worker artifact");
+    let probe = Request {
+        version: backend_sql_contract::PROTOCOL_VERSION,
+        expected_basis: None,
+        source: b"SELECT 1".to_vec(),
+        settings: Settings::ProcessDefaults,
+        context: None,
+    };
+    let basis = (0..6)
+        .find_map(|_| call_worker(&worker, &probe, Dialect::Sqlite, Engine::Syntaqlite4e4de76).basis)
+        .expect("worker reports its producer basis");
+    // No `with_wall`: the default the product ships.
+    let permit = crate::builtin::sql_capture::SqliteWorkerPermit::from_admitted(worker, artifact, basis)
+        .expect("SQLite worker permit");
+
+    let root = tempfile::tempdir().expect("project directory");
+    let root_path = root.path().canonicalize().expect("canonical project directory");
+    for (name, size) in [("0001_small.sql", 20_000), ("0002_medium.sql", 100_000), ("0003_large.sql", 250_000)] {
+        let path = root_path.join("db").join(name);
+        fs::create_dir_all(path.parent().expect("parent")).expect("directory");
+        fs::write(path, realistic_sql(size)).expect("migration");
+    }
+    let label = root_path.to_str().expect("utf-8 path");
+    let scan = crate::builtin::ingest::scan_project(label, backend_engine::PackageKey::from_value(label).to_bytes(), &std::collections::BTreeMap::new())
+        .expect("scan");
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let captured = Arc::new(
+        crate::builtin::ingest::capture_sql_project(&scan.sql_walk, &scan.revision_fence, &root_path, &cancelled)
+            .expect("capture"),
+    );
+    let started = std::time::Instant::now();
+    let projection = crate::builtin::sql_capture::project_sql_project(
+        captured,
+        scan.sql_walk.clone(),
+        scan.revision_fence.clone(),
+        root_path.clone(),
+        Some(&permit),
+        None,
+        &cancelled,
+    )
+    .expect("project");
+    eprintln!("sql worker wall test: three hosts in {} ms", started.elapsed().as_millis());
+    let hosts: Vec<_> = projection
+        .rows()
+        .iter()
+        .filter_map(|(_, row)| match row {
+            SqlAnalysisRecord::Host { path, terminal, .. } => Some((path.clone(), *terminal)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(hosts.len(), 3);
+    for (path, terminal) in &hosts {
+        assert!(
+            !matches!(terminal, SqlHostTerminal::Unavailable(SqlUnavailable::Deadline)),
+            "{path} missed the default wall: {terminal:?}"
+        );
+        assert!(matches!(terminal, SqlHostTerminal::Parsed { .. }), "{path}: {terminal:?}");
+    }
+}
