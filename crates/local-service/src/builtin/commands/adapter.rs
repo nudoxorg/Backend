@@ -7844,7 +7844,13 @@ fn semantic_readiness(
     // names. `readiness_certificate` compares revision, basis, coverage, and
     // row count; the counts are derived from the same owner snapshot, so they
     // cannot disagree with the root the certificate commits to.
-    let progress = super::super::ingest_progress(&daemon.engine().daemon().owner().snapshot())?;
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let mut progress = super::super::ingest_progress(&snapshot)?;
+    if let Some(summary) = super::super::sql_catalog::progress(&snapshot)
+        .map_err(|error| BuiltinModelError(error.0))? {
+        progress = progress.with_sql_analysis(summary)
+            .map_err(|error| BuiltinModelError(format!("SQL status summary: {error}")))?;
+    }
     dump_view_rows(daemon.engine().daemon().library().view());
     Ok(CommandReply::Readiness(
         backend_engine::HealthReport::from_admitted_parts(
