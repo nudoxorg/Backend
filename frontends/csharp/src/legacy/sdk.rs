@@ -63,6 +63,27 @@ pub struct CSharpSdkObservation {
     pub outside_root_unknown: bool,
 }
 
+/// Owning selected reference custody. Paths remain valid only while this
+/// object is retained by the same compile attempt and replay witness.
+#[derive(Debug)]
+pub struct CSharpResolvedReferenceSnapshot {
+    directory: tempfile::TempDir,
+    references: Box<[PathBuf]>,
+    digest: [u8; 32],
+}
+
+impl CSharpResolvedReferenceSnapshot {
+    pub fn references(&self) -> &[PathBuf] {
+        &self.references
+    }
+    pub fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
+    pub fn root(&self) -> &Path {
+        self.directory.path()
+    }
+}
+
 /// Ask the selected SDK's ResolveAssemblyReference target to choose among
 /// package/framework candidates. The generated project has no user imports or
 /// restore inputs; only explicit, confined HintPath references are admitted.
@@ -75,7 +96,7 @@ pub fn resolve_references_with_sdk(
     assets_digest: Option<[u8; 32]>,
     deadline: Instant,
     cancelled: &AtomicBool,
-) -> Result<Vec<PathBuf>, &'static str> {
+) -> Result<CSharpResolvedReferenceSnapshot, &'static str> {
     if candidates.is_empty()
         || candidates.len() > 8192
         || !target_framework.starts_with("net")
@@ -206,7 +227,28 @@ pub fn resolve_references_with_sdk(
     if selected.is_empty() {
         return Err("SDK selected no references");
     }
-    Ok(selected)
+    let selected_dir = scratch.path().join("selected");
+    fs::create_dir(&selected_dir).map_err(|_| "SDK snapshot unavailable")?;
+    let mut owned = Vec::with_capacity(selected.len());
+    for source in selected {
+        let name = source.file_name().ok_or("SDK snapshot filename")?;
+        let destination = selected_dir.join(name);
+        let bytes =
+            backend_platform::durable::read_regular_bounded_stable(&source, 32 * 1024 * 1024)
+                .map_err(|_| "SDK snapshot unavailable")?;
+        fs::write(&destination, bytes).map_err(|_| "SDK snapshot unavailable")?;
+        owned.push(destination);
+    }
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    for path in &owned {
+        hash.update(path.as_os_str().as_encoded_bytes());
+    }
+    Ok(CSharpResolvedReferenceSnapshot {
+        directory: scratch,
+        references: owned.into_boxed_slice(),
+        digest: hash.finalize().into(),
+    })
 }
 
 /// Private copies of the observed targeting assemblies used by one compile.
