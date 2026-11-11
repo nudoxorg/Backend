@@ -5345,6 +5345,7 @@ fn standard_mcp_preview_retains_every_structured_coordinate_and_the_cli_projecti
         &Request::Search {
             text: "ferris".to_owned(),
             limit: 25,
+            declarations_only: false,
         },
     )
     .expect("fixture search answer");

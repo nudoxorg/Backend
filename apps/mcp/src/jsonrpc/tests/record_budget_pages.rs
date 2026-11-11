@@ -462,7 +462,7 @@ fn measured_catalog_page(
                 .expect("native query")
                 .to_owned();
             let request = if tool == "backend.search" {
-                Request::Search { text, limit }
+                Request::Search { text, limit, declarations_only: false }
             } else {
                 Request::Resolve { text, limit }
             };
