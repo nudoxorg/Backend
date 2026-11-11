@@ -671,6 +671,9 @@ pub(in crate::builtin) struct NseProgramProof {
     >,
 }
 impl NseProgramProof {
+    pub(super) fn projection_safe(&self) -> bool {
+        self.projection_safe
+    }
     pub(in crate::builtin) fn source_basis(&self) -> super::super::native_ts_admission::NativeTsSourceBasis {
         self.source_basis
     }
@@ -718,7 +721,7 @@ impl NseProgramProof {
 
 /// Strictly validates the selected Program and every admitted image, then
 /// returns only positive per-file NSE claims. No inventory completeness follows.
-fn selected_nse_program_files(
+pub(super) fn selected_nse_program_files(
     snapshot: &WorkspaceSnapshot,
     sources: &IndexedSources,
     key: &backend_engine::builtin::ProductSemanticPublicationKey,
@@ -1168,7 +1171,7 @@ fn native_owned_file_in_image(
     }))
 }
 
-fn selected_typescript_structural_files(
+pub(super) fn selected_typescript_structural_files(
     sources: &IndexedSources,
     package: backend_engine::PackageKey,
 ) -> Result<
