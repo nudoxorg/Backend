@@ -2714,6 +2714,19 @@ impl DegradedSources {
                 terminal: Box::new(terminal),
             });
         };
+        self.degrade_with_cause(terminal, path, source, cause, typescript_diagnostic, gaps)
+    }
+
+    /// Records `terminal` as `path`'s coverage gap with a cause the caller proved.
+    fn degrade_with_cause(
+        &mut self,
+        terminal: CompilerTerminal,
+        path: &str,
+        source: SourceAuthority,
+        cause: PackageSourceCoverageGapCause,
+        typescript_diagnostic: Option<SourceCoverageGapDiagnostic>,
+        gaps: &mut Vec<PackageSourceCoverageGap>,
+    ) -> Result<(), PackageSemanticError> {
         tracing::warn!(
             target: "compiler.package_source",
             path,
@@ -2772,6 +2785,30 @@ impl DegradedSources {
                 terminal: Box::new(terminal),
             })
     }
+}
+
+/// Whether `terminal` is Roslyn reporting errors in this exact C# source (the
+/// type-level refusal the producer derives from the file's own compile errors).
+fn csharp_source_compile_errors(
+    language: backend_semantic::vocabulary::Language,
+    terminal: &CompilerTerminal,
+    expected_source: SourceAuthority,
+) -> bool {
+    use backend_semantic::vocabulary::{
+        AuthorityDiagnosticClass as Class, AuthorityPhase as Phase,
+    };
+    language == backend_semantic::vocabulary::Language::CSharp
+        && matches!(
+            terminal,
+            CompilerTerminal::Compile {
+                attempted,
+                cause: CompilerCause::Authority {
+                    phase: Phase::TypeCheck,
+                    class: Class::Type,
+                    ..
+                },
+            } if attempted.source == expected_source
+        )
 }
 
 /// The gap a source's own terminal degrades to, or `None` for a failure that
@@ -3053,6 +3090,62 @@ mod source_degradation_tests {
             })),
             PackageSourceCoverageGapCause::RustSourceOutsideActiveCargoTarget,
         );
+    }
+
+    #[test]
+    fn only_roslyn_errors_in_a_csharp_source_degrade_it_to_a_does_not_compile_gap() {
+        use backend_semantic::vocabulary::{AuthorityPhase, Language};
+        let compile_errors = compile(CompilerCause::Authority {
+            phase: AuthorityPhase::TypeCheck,
+            class: AuthorityDiagnosticClass::Type,
+            diagnostic: None,
+        });
+        assert!(csharp_source_compile_errors(Language::CSharp, &compile_errors, source()));
+        // Another language's type-level refusal keeps its own policy.
+        assert!(!csharp_source_compile_errors(Language::Go, &compile_errors, source()));
+        assert!(!csharp_source_compile_errors(Language::TypeScript, &compile_errors, source()));
+        // A terminal about a different source is not this source's failure.
+        let other = SourceAuthority {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"package b"),
+            byte_len: 9,
+        };
+        assert!(!csharp_source_compile_errors(Language::CSharp, &compile_errors, other));
+        // A fault of the runtime or the helper (it concerns every file) stays a refusal.
+        for (phase, class) in [
+            (AuthorityPhase::Open, AuthorityDiagnosticClass::Authority),
+            (AuthorityPhase::TypeCheck, AuthorityDiagnosticClass::Authority),
+            (AuthorityPhase::Open, AuthorityDiagnosticClass::Binding),
+        ] {
+            assert!(!csharp_source_compile_errors(
+                Language::CSharp,
+                &compile(CompilerCause::Authority { phase, class, diagnostic: None }),
+                source(),
+            ));
+        }
+        assert!(!csharp_source_compile_errors(
+            Language::CSharp,
+            &compile(CompilerCause::DeadlineExceeded { diagnostic: None }),
+            source(),
+        ));
+        // It records the file's gap with the specific cause, and a project in which no file
+        // compiled still refuses with the first terminal.
+        let mut gaps = Vec::new();
+        let mut degraded = DegradedSources::default();
+        degraded
+            .degrade_with_cause(
+                compile_errors,
+                "src/Api/Restored.cs",
+                source(),
+                PackageSourceCoverageGapCause::CSharpSourceDoesNotCompile,
+                None,
+                &mut gaps,
+            )
+            .expect("a source-local failure degrades");
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].relative_path(), "src/Api/Restored.cs");
+        assert_eq!(gaps[0].cause(), PackageSourceCoverageGapCause::CSharpSourceDoesNotCompile);
+        assert!(gaps[0].cause().to_string().contains("restore packages"));
+        assert!(degraded.into_refusal_when_nothing_compiled(0).is_some());
     }
 
     #[test]
@@ -5995,6 +6088,30 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         source.relative_path,
                         source_authority,
                         diagnostic,
+                        &mut coverage_gaps,
+                    )?;
+                    continue;
+                }
+                // Roslyn compiles every file of a C# project together. When it
+                // reports errors in this exact file (an unrestored package, a
+                // missing reference) only this file is unreliable: it becomes a
+                // coverage gap with its reason and the files that compile keep
+                // their facts. A fault of the runtime or helper, a deadline or a
+                // cancellation stays a refusal, and a project in which no file
+                // compiled still refuses with the first terminal.
+                Err(terminal)
+                    if csharp_source_compile_errors(
+                        target.profile.language(),
+                        &terminal,
+                        source_authority,
+                    ) =>
+                {
+                    degraded.degrade_with_cause(
+                        terminal,
+                        source.relative_path,
+                        source_authority,
+                        PackageSourceCoverageGapCause::CSharpSourceDoesNotCompile,
+                        None,
                         &mut coverage_gaps,
                     )?;
                     continue;
