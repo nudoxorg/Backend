@@ -42,6 +42,96 @@ pub struct CSharpExecutionClosure {
     digest: [u8; 32],
 }
 
+struct CSharpExecutionSnapshot {
+    _directory: tempfile::TempDir,
+    toolchain: PathBuf,
+    oracle: PathBuf,
+}
+
+fn copy_tree_bounded(
+    source: &Path,
+    target: &Path,
+    files: &mut usize,
+    bytes: &mut usize,
+    control: CSharpAuthorityControl<'_>,
+) -> Result<(), CSharpAuthorityError> {
+    checkpoint(control, CSharpAuthorityPhase::Spawn)?;
+    let metadata = fs::symlink_metadata(source).map_err(|_| CSharpAuthorityError::Configuration)?;
+    if metadata.file_type().is_symlink() {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    if metadata.is_dir() {
+        fs::create_dir_all(target).map_err(|_| CSharpAuthorityError::Configuration)?;
+        for entry in fs::read_dir(source).map_err(|_| CSharpAuthorityError::Configuration)? {
+            let entry = entry.map_err(|_| CSharpAuthorityError::Configuration)?;
+            copy_tree_bounded(
+                &entry.path(),
+                &target.join(entry.file_name()),
+                files,
+                bytes,
+                control,
+            )?;
+        }
+    } else if metadata.is_file() {
+        *files = files
+            .checked_add(1)
+            .filter(|count| *count <= 8192)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        let content =
+            backend_platform::durable::read_regular_bounded_stable(source, 256 * 1024 * 1024)
+                .map_err(|_| CSharpAuthorityError::Configuration)?;
+        *bytes = bytes
+            .checked_add(content.len())
+            .filter(|size| *size <= 512 * 1024 * 1024)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|_| CSharpAuthorityError::Configuration)?;
+        }
+        fs::write(target, content).map_err(|_| CSharpAuthorityError::Configuration)?;
+    } else {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    Ok(())
+}
+
+fn snapshot_execution(
+    toolchain: &Path,
+    oracle: &Path,
+    control: CSharpAuthorityControl<'_>,
+) -> Result<CSharpExecutionSnapshot, CSharpAuthorityError> {
+    let root = toolchain
+        .parent()
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    let directory = tempfile::tempdir().map_err(|_| CSharpAuthorityError::Configuration)?;
+    let copied_root = directory.path().join("dotnet");
+    let mut files = 0;
+    let mut bytes = 0;
+    copy_tree_bounded(root, &copied_root, &mut files, &mut bytes, control)?;
+    checkpoint(control, CSharpAuthorityPhase::Spawn)?;
+    let copied_oracle = directory.path().join("oracle.dll");
+    let oracle_bytes =
+        backend_platform::durable::read_regular_bounded_stable(oracle, 64 * 1024 * 1024)
+            .map_err(|_| CSharpAuthorityError::Configuration)?;
+    checkpoint(control, CSharpAuthorityPhase::Spawn)?;
+    bytes = bytes
+        .checked_add(oracle_bytes.len())
+        .filter(|size| *size <= 512 * 1024 * 1024)
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    fs::write(&copied_oracle, oracle_bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
+    let tool_name = toolchain
+        .file_name()
+        .ok_or(CSharpAuthorityError::Configuration)?;
+    let copied_tool = copied_root.join(tool_name);
+    if !copied_tool.is_file() {
+        return Err(CSharpAuthorityError::Configuration);
+    }
+    Ok(CSharpExecutionSnapshot {
+        _directory: directory,
+        toolchain: copied_tool,
+        oracle: copied_oracle,
+    })
+}
+
 impl CSharpExecutionClosure {
     /// Captures a bounded set of regular executable/helper files.
     pub fn capture(paths: &[&Path]) -> Result<Self, CSharpAuthorityError> {
@@ -63,7 +153,9 @@ impl CSharpExecutionClosure {
             if bytes.is_empty() {
                 return Err(CSharpAuthorityError::Configuration);
             }
-            total = total.checked_add(bytes.len()).filter(|size| *size <= 256 * 1024 * 1024)
+            total = total
+                .checked_add(bytes.len())
+                .filter(|size| *size <= 256 * 1024 * 1024)
                 .ok_or(CSharpAuthorityError::Configuration)?;
             let digest: [u8; 32] = Sha256::digest(&bytes).into();
             let name = canonical.as_os_str().as_encoded_bytes();
@@ -617,11 +709,12 @@ impl CSharpOracle {
             })
             .transpose()?;
         checkpoint(request.control, CSharpAuthorityPhase::Spawn)?;
-        let mut command = Command::new(request.toolchain);
+        let execution = snapshot_execution(request.toolchain, &self.oracle, request.control)?;
+        let mut command = Command::new(&execution.toolchain);
         isolate_authority_environment(&mut command);
         command
             .arg("exec")
-            .arg(&self.oracle)
+            .arg(&execution.oracle)
             .args(["--mode", "source", "--root"])
             .arg(&package_root)
             .args(["--authority-image", "--source-binding"])
