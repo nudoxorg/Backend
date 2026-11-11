@@ -978,6 +978,25 @@ mod tests {
     }
 
     #[test]
+    fn typed_relation_read_rejects_oversized_envelope_before_reading() {
+        let (_cleanup_root, store, root) = test_store("typed-node-oversize");
+        let state = backend_version::RelationState::<crate::RawRelation>::from_entries(
+            [(b"a".to_vec(), crate::StoredValue::new(vec![1], 1, vec![]))],
+            backend_version::CoverageWitness::Partial(backend_version::partial_coverage(1)),
+        ).expect("state");
+        store.write_relation_state(&state).expect("write typed relation");
+        let object = store.read_relation_node(state.root()).expect("read typed root");
+        let path = store.object_path(object.id());
+        remove_immutable_fixture(&path);
+        let file = File::create(path).expect("create replacement");
+        let size = super::super::super::relation_object_limit().expect("relation limit") + 1;
+        assert!(size < store.object_envelope_limit().expect("object limit"));
+        file.set_len(size as u64).expect("set oversized length");
+        assert_eq!(store.read_relation_node(state.root()), Err(StoreError::Bounds));
+        let _ = remove_store_fixture(root);
+    }
+
+    #[test]
     fn relation_reference_rejects_an_oversized_object() {
         let (_cleanup_root, store, root) = test_store("oversized-object");
         let object = bytes_object(b"relation node bytes".to_vec());
