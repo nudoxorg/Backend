@@ -782,6 +782,36 @@ def perf_timing(bin_dir, out):
     return {"index_timing": {"pass": all(x["first_add_exit"] == 0 for x in rows), "detail": json.dumps(rows)}}
 
 
+def references_nested_calls(bin_dir, out):
+    """Three calls in nested callables of one component must be three rows, not six."""
+    import re
+    r = Route(bin_dir, out)
+    try:
+        proj = _project(r, "refs_nested_calls")
+        r.start_owner(proj)
+        r.cli("add", ["add", str(proj), "--wait", "--wait-timeout", "900"], proj)
+        _, found, _ = r.cli("find-aliasTarget", ["search", "aliasTarget", "--limit", "50"], proj)
+        coord = _coord(_rows(found), "aliasTarget", None, "semantic") or _coord(_rows(found), "aliasTarget")
+        if not coord:
+            return {"nested_calls": {"pass": False, "detail": "aliasTarget not found"}}
+        _, refs, text = r.cli("references-aliasTarget", ["references", coord], proj)
+        sites = []
+        for row in _rows(refs):
+            tags = row.get("tags", [])
+            rel = tags[0] if tags else ""
+            for tag in tags:
+                m = re.match(r"(.+?) \[bytes(\d+)\.\.(\d+)\)", tag)
+                if m:
+                    sites.append((m.group(1), m.group(2), m.group(3), rel))
+        nested = [x for x in sites if x[0].endswith("nested.tsx")]
+        calls = [x for x in nested if x[3] == "calls"]
+        distinct = len(set((x[0], x[1], x[2]) for x in nested))
+        ok = len(calls) == 3 and distinct == len(nested)
+        return {"nested_calls": {"pass": ok, "detail": f"nested.tsx rows={len(nested)} calls={len(calls)} distinct sites={distinct}; all rows={sites}"}}
+    finally:
+        r.stop()
+
+
 def gate_on_signed_out(bin_dir, out):
     """Which routes still answer when the account gate is ON and nobody is signed in.
 
@@ -804,5 +834,5 @@ def gate_on_signed_out(bin_dir, out):
         r.stop()
 
 
-SCENARIOS = {"perf_timing": perf_timing, "probe_owner_retirement": probe_owner_retirement, "query_output": query_output, "gate_on_signed_out": gate_on_signed_out, "verify_budget": verify_budget, "probe_budget_no_csharp": probe_budget_no_csharp, "probe_budget_no_appshell": probe_budget_no_appshell, "probe_budget_no_next": probe_budget_no_next, "probe_refusals": probe_refusals, "probe_refs_mixed": probe_refs_mixed, "startup_missing_checker": startup_missing_checker, "probe_crm": probe_crm, "probe_budget_diag": probe_budget_diag, "probe_reindex_refusal": probe_reindex_refusal, "probe_refs_nested": probe_refs_nested, "probe_refs_gap": probe_refs_gap, "probe_react_variants": probe_react_variants, "probe_budget": probe_budget, "startup_path": startup_path, "probe_refs": probe_refs,
+SCENARIOS = {"references_nested_calls": references_nested_calls, "perf_timing": perf_timing, "probe_owner_retirement": probe_owner_retirement, "query_output": query_output, "gate_on_signed_out": gate_on_signed_out, "verify_budget": verify_budget, "probe_budget_no_csharp": probe_budget_no_csharp, "probe_budget_no_appshell": probe_budget_no_appshell, "probe_budget_no_next": probe_budget_no_next, "probe_refusals": probe_refusals, "probe_refs_mixed": probe_refs_mixed, "startup_missing_checker": startup_missing_checker, "probe_crm": probe_crm, "probe_budget_diag": probe_budget_diag, "probe_reindex_refusal": probe_reindex_refusal, "probe_refs_nested": probe_refs_nested, "probe_refs_gap": probe_refs_gap, "probe_react_variants": probe_react_variants, "probe_budget": probe_budget, "startup_path": startup_path, "probe_refs": probe_refs,
              "probe_edits": probe_edits, "probe_churn": probe_churn, "probe_mcp": probe_mcp}
