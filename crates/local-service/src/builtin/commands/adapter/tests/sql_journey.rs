@@ -342,6 +342,11 @@ fn sqlite_project_indexes_publishes_queries_reindexes_and_survives_cold_reopen()
         .collect();
     assert_eq!(live, [false, false, false], "unchanged query file re-bound to the dropped column");
 
+    let (_, diagnostics) = all_hits(&mut session, request(&project, SqlQueryRole::Diagnostic));
+    assert!(diagnostics.iter().any(|hit| matches!(&hit.fact, SqlFact::Reference(reference)
+        if reference.name == "balance" && matches!(reference.resolution, SqlResolution::Resolved { live: false, .. }))),
+        "references to dropped columns are discoverable without knowing their names");
+
     // Cold reopen: no memory of the running owner survives.
     drop(session);
     let root = TempTree(std::mem::take(&mut wire.fixture.root.0));
