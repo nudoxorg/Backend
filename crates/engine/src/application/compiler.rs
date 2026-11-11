@@ -6714,6 +6714,15 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         cancelled: &AtomicBool,
         progress: &mut impl FnMut(PackageCompilePhase),
     ) -> Result<PublishedSemanticPackage, PackageSemanticError> {
+        if let Some(expected) = staged.csharp_graph_evidence.as_ref() {
+            let frame = crate::application::encode_csharp_graph_evidence(expected)
+                .ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# graph evidence framing" })?;
+            let actual = crate::application::decode_csharp_graph_evidence(&frame)
+                .ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# graph evidence replay" })?;
+            if !crate::application::replay_csharp_graph_evidence(expected, &actual) {
+                return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# graph evidence changed before publication" });
+            }
+        }
         if let Some(witness) = staged.python_witness.as_ref() {
             witness
                 .witness
