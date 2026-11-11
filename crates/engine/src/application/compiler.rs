@@ -6713,13 +6713,13 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         staged: StagedPackageCompilation,
         cancelled: &AtomicBool,
         progress: &mut impl FnMut(PackageCompilePhase),
-        selected_csharp_graph: Option<&crate::application::CSharpGraphEvidence>,
+        selected_csharp_graph: Option<&crate::application::csharp_evidence::SelectedCSharpGraphWitness>,
     ) -> Result<PublishedSemanticPackage, PackageSemanticError> {
         if let Some(expected) = staged.csharp_graph_evidence.as_ref() {
             let Some(actual) = selected_csharp_graph else {
                 return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# graph selected owner witness unavailable" });
             };
-            if !crate::application::replay_csharp_graph_evidence(expected, actual) {
+            if !crate::application::replay_csharp_graph_evidence(expected, crate::application::csharp_evidence::selected_graph_evidence(actual)) {
                 return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# graph selected owner witness changed" });
             }
         }

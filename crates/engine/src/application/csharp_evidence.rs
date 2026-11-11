@@ -56,6 +56,22 @@ pub struct CSharpGraphEvidenceNode {
     pub source_digest: [u8; 32],
 }
 
+/// Owner-minted selected witness. The graph payload is private; callers can
+/// obtain one only by joining staged evidence with a separately selected
+/// same-attempt snapshot through `mint_selected_graph_witness`.
+pub struct SelectedCSharpGraphWitness(CSharpGraphEvidence);
+
+pub(crate) fn mint_selected_graph_witness(
+    staged: &CSharpGraphEvidence,
+    selected: CSharpGraphEvidence,
+) -> Option<SelectedCSharpGraphWitness> {
+    replay_csharp_graph_evidence(staged, &selected).then_some(SelectedCSharpGraphWitness(selected))
+}
+
+pub(crate) fn selected_graph_evidence(witness: &SelectedCSharpGraphWitness) -> &CSharpGraphEvidence {
+    &witness.0
+}
+
 pub fn encode_csharp_graph_evidence(graph: &CSharpGraphEvidence) -> Option<Vec<u8>> {
     if graph.nodes.is_empty() || graph.nodes.len() > 64 || graph.root_project.len() > 4096
         || graph.nodes.iter().any(|node| node.project_path.len() > 4096 || node.project_references.len() > 64)
