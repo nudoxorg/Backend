@@ -9,7 +9,7 @@ use backend_library::{ProductText, RegistryPackageDiscoveryObservation};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_CACHE_OBJECTS: usize = 32;
 const MAX_CACHE_ENCODED_BYTES: usize = 64 * 1024 * 1024;
-const PARSER_IDENTITY: &str = "exact-registry-package-metadata-v4";
+const PARSER_IDENTITY: &str = "exact-registry-package-metadata-v5";
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum ExactVersionPresence {
@@ -125,11 +125,22 @@ impl PreparedPackageMetadata {
                 .and_then(|cached| cached.etag.as_deref());
             let fetch_started = Instant::now();
             let response = if self.ecosystem == RegistryEcosystem::Nuget {
-                fetch_nuget_registration(&self.key.endpoint, &self.name, self.maximum,
-                    || cancelled() || self.cancelled.load(Ordering::Acquire), &remaining_budget)
+                fetch_nuget_registration(
+                    &self.key.endpoint,
+                    &self.name,
+                    &self.package,
+                    self.maximum,
+                    || cancelled() || self.cancelled.load(Ordering::Acquire),
+                    &remaining_budget,
+                )
             } else {
-                fetch_object(&self.key.endpoint, self.maximum,
-                    || cancelled() || self.cancelled.load(Ordering::Acquire), &remaining_budget, etag)
+                fetch_object(
+                    &self.key.endpoint,
+                    self.maximum,
+                    || cancelled() || self.cancelled.load(Ordering::Acquire),
+                    &remaining_budget,
+                    etag,
+                )
             };
             trace_metadata(
                 self.request_id,
@@ -714,35 +725,87 @@ fn parse_object(
     }
 }
 
-fn parse_nuget_registration(bytes: &[u8], name: &str, package: &PackageCoordinate) -> Result<(Vec<DiscoveryReleaseObservation>, bool), DiscoveryStoreError> {
-    let root: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| DiscoveryStoreError::Decode)?;
-    let version = admit_registry_coordinate(package).map_err(|_| DiscoveryStoreError::Decode)?.version().as_str().to_owned();
-    let mut found: Option<serde_json::Value> = None;
-    let mut visit = |item: &serde_json::Value| {
-        let Some(entry) = item.get("catalogEntry") else { return };
-        if entry.get("id").and_then(serde_json::Value::as_str)
-            .is_some_and(|id| !id.eq_ignore_ascii_case(name)) { return; }
-        let Some(v) = entry.get("version").and_then(serde_json::Value::as_str) else { return };
-        if v.eq_ignore_ascii_case(&version) { found = Some(entry.clone()); }
-    };
-    if let Some(items) = root.get("items").and_then(serde_json::Value::as_array) {
-        for item in items { visit(item); }
-        for page in items {
-            if let Some(inner) = page.get("items").and_then(serde_json::Value::as_array) {
-                for item in inner { visit(item); }
-            }
-        }
+fn parse_nuget_registration(
+    bytes: &[u8],
+    name: &str,
+    package: &PackageCoordinate,
+) -> Result<(Vec<DiscoveryReleaseObservation>, bool), DiscoveryStoreError> {
+    let root: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| DiscoveryStoreError::Decode)?;
+    if root.get("absent").and_then(serde_json::Value::as_bool) == Some(true) {
+        let _: [u8; 32] = serde_json::from_value(
+            root.get("sourceProof")
+                .cloned()
+                .ok_or(DiscoveryStoreError::Decode)?,
+        )
+        .map_err(|_| DiscoveryStoreError::Decode)?;
+        return Ok((Vec::new(), true));
     }
-    let Some(entry) = found else { return Ok((Vec::new(), false)); };
-    let yanked = entry.get("listed").and_then(serde_json::Value::as_bool) == Some(false);
-    let mut metadata = DiscoveryMetadata { yanked: DiscoveryFacet::Known(yanked), ..DiscoveryMetadata::default() };
-    if let Some(v) = entry.get("description").and_then(serde_json::Value::as_str) { metadata.description = DiscoveryFacet::Known(v.to_owned()); }
-    if let Some(v) = entry.get("licenseExpression").and_then(serde_json::Value::as_str) { metadata.license = DiscoveryFacet::Known(v.to_owned()); }
-    if let Some(v) = entry.get("published").and_then(serde_json::Value::as_str) { metadata.published_at = DiscoveryFacet::Known(v.to_owned()); }
-    if let Some(v) = entry.get("downloads").and_then(serde_json::Value::as_u64) { metadata.downloads = DiscoveryFacet::Known(v); }
+    let entry = root
+        .get("catalogEntry")
+        .and_then(serde_json::Value::as_object)
+        .ok_or(DiscoveryStoreError::Decode)?;
+    let version = admit_registry_coordinate(package)
+        .map_err(|_| DiscoveryStoreError::Decode)?
+        .version()
+        .as_str()
+        .to_owned();
+    let id = entry
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(DiscoveryStoreError::Decode)?;
+    let observed_version = entry
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(DiscoveryStoreError::Decode)?;
+    if !id.eq_ignore_ascii_case(name) || !observed_version.eq_ignore_ascii_case(&version) {
+        return Err(DiscoveryStoreError::Decode);
+    }
+    let listed = match entry.get("listed") {
+        Some(value) => value.as_bool().ok_or(DiscoveryStoreError::Decode)?,
+        None => true,
+    };
+    let mut metadata = DiscoveryMetadata {
+        yanked: DiscoveryFacet::Known(!listed),
+        ..DiscoveryMetadata::default()
+    };
+    if let Some(value) = entry.get("description").and_then(serde_json::Value::as_str) {
+        metadata.description = DiscoveryFacet::Known(value.to_owned());
+    }
+    if let Some(value) = entry
+        .get("licenseExpression")
+        .and_then(serde_json::Value::as_str)
+    {
+        metadata.license = DiscoveryFacet::Known(value.to_owned());
+    }
+    if let Some(value) = entry.get("published").and_then(serde_json::Value::as_str) {
+        backend_engine::registry::DiscoveryTimestamp::parse_nuget_catalog_timestamp(value)?;
+        metadata.published_at = DiscoveryFacet::Known(value.to_owned());
+    }
+    if let Some(value) = entry.get("downloads").and_then(serde_json::Value::as_u64) {
+        metadata.downloads = DiscoveryFacet::Known(value);
+    }
     metadata.admit().map_err(|_| DiscoveryStoreError::Bounds)?;
-    let coordinate = PackageCoordinate::parse(format!("pkg:nuget/{name}@{version}")).map_err(|_| DiscoveryStoreError::Decode)?;
-    Ok((vec![DiscoveryReleaseObservation { coordinate, standing: if yanked { DiscoveryStanding::Yanked } else { DiscoveryStanding::Published }, source_event_time: entry.get("published").and_then(serde_json::Value::as_str).map(str::to_owned), proof: *blake3::hash(bytes).as_bytes(), metadata }], true))
+    let proof: [u8; 32] = serde_json::from_value(
+        root.get("sourceProof")
+            .cloned()
+            .ok_or(DiscoveryStoreError::Decode)?,
+    )
+    .map_err(|_| DiscoveryStoreError::Decode)?;
+    Ok((
+        vec![DiscoveryReleaseObservation {
+            coordinate: package.clone(),
+            standing: if listed {
+                DiscoveryStanding::Published
+            } else {
+                DiscoveryStanding::Yanked
+            },
+            source_event_time: None,
+            proof,
+            metadata,
+        }],
+        true,
+    ))
 }
 
 /// Parse the whole bounded JSON object, then retain only the exact target for
@@ -791,32 +854,263 @@ fn request_timeout(remaining_budget: Duration) -> Option<Duration> {
     (!timeout.is_zero()).then_some(timeout)
 }
 
-fn fetch_nuget_registration(
-    service_url: &str,
-    name: &str,
-    maximum: usize,
-    cancelled: impl Fn() -> bool + Copy,
-    remaining_budget: impl Fn() -> Duration + Copy,
-) -> Result<ObjectResponse, DiscoveryStoreError> {
-    let service_url = service_url
+fn nuget_service_url(endpoint: &str) -> String {
+    endpoint
         .strip_suffix("/catalog0/index.json")
         .map(|root| format!("{root}/index.json"))
-        .unwrap_or_else(|| service_url.to_owned());
-    let service = fetch_object(&service_url, maximum, cancelled, remaining_budget, None)?;
-    let ObjectResponse::Modified { bytes, .. } = service else { return Ok(service); };
-    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| DiscoveryStoreError::Decode)?;
-    let base = value.get("resources").and_then(serde_json::Value::as_array)
-        .and_then(|rows| rows.iter().find_map(|row| {
-            let is_registration = match row.get("@type")? {
-                serde_json::Value::String(ty) => ty.starts_with("RegistrationsBaseUrl"),
-                serde_json::Value::Array(types) => types.iter().any(|ty| ty.as_str().is_some_and(|v| v.starts_with("RegistrationsBaseUrl"))),
-                _ => false,
-            };
-            is_registration.then(|| row.get("@id")?.as_str().map(str::to_owned))?
-        }))
+        .unwrap_or_else(|| endpoint.to_owned())
+}
+
+/// Select the configured V3 registration resource and follow its bounded
+/// index/page links; partial page observations never stand in for absence.
+fn fetch_nuget_registration(
+    endpoint: &str,
+    name: &str,
+    package: &PackageCoordinate,
+    maximum: usize,
+    cancelled: impl Fn() -> bool,
+    remaining_budget: impl Fn() -> Duration,
+) -> Result<ObjectResponse, DiscoveryStoreError> {
+    let maximum = maximum.min(4 * 1024 * 1024);
+    let service_url = nuget_service_url(endpoint);
+    let service_origin = url::Url::parse(&service_url).map_err(|_| DiscoveryStoreError::Decode)?;
+    let admit_url = |value: &str| nuget_admit_link(&service_origin, value);
+    let fetch = |url: &str| fetch_object(url, maximum, &cancelled, &remaining_budget, None);
+    let ObjectResponse::Modified {
+        bytes: service_bytes,
+        ..
+    } = fetch(&service_url)?
+    else {
+        return Err(DiscoveryStoreError::Decode);
+    };
+    let service: serde_json::Value =
+        serde_json::from_slice(&service_bytes).map_err(|_| DiscoveryStoreError::Decode)?;
+    let resources = service
+        .get("resources")
+        .and_then(serde_json::Value::as_array)
         .ok_or(DiscoveryStoreError::Decode)?;
-    let registration = format!("{}/{}/index.json", base.trim_end_matches('/'), percent_encode_component(name).to_ascii_lowercase());
-    fetch_object(&registration, maximum, cancelled, remaining_budget, None)
+    if resources.len() > 256 {
+        return Err(DiscoveryStoreError::Bounds);
+    }
+    let mut selected = None;
+    for resource in resources {
+        let types = match resource.get("@type") {
+            Some(serde_json::Value::String(value)) => vec![value.as_str()],
+            Some(serde_json::Value::Array(values)) => values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect(),
+            _ => continue,
+        };
+        for resource_type in types {
+            let priority = match resource_type {
+                "RegistrationsBaseUrl/3.6.0" => 4,
+                "RegistrationsBaseUrl/3.4.0" => 3,
+                "RegistrationsBaseUrl/3.0.0-rc"
+                | "RegistrationsBaseUrl/3.0.0-beta"
+                | "RegistrationsBaseUrl/3.0.0" => 2,
+                "RegistrationsBaseUrl" => 1,
+                _ => continue,
+            };
+            let base = resource
+                .get("@id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(DiscoveryStoreError::Decode)?;
+            admit_url(base)?;
+            if selected
+                .as_ref()
+                .is_none_or(|(current, _)| priority > *current)
+            {
+                selected = Some((priority, base));
+            }
+        }
+    }
+    let (_, base) = selected.ok_or(DiscoveryStoreError::Decode)?;
+    let coordinate = admit_registry_coordinate(package).map_err(|_| DiscoveryStoreError::Decode)?;
+    let registration_url = format!(
+        "{}/{}/index.json",
+        base.trim_end_matches('/'),
+        percent_encode_component(name).to_ascii_lowercase()
+    );
+    admit_url(&registration_url)?;
+    let mut proof = blake3::Hasher::new();
+    proof.update(b"nudox.nuget-exact-service-registration.v1\0");
+    nuget_observe(&mut proof, &service_url, &service_bytes);
+    let response = fetch(&registration_url)?;
+    let root_bytes = match response {
+        ObjectResponse::Modified { bytes, .. } => bytes,
+        ObjectResponse::Missing { proof: absence } => {
+            nuget_observe(&mut proof, &registration_url, &absence);
+            return Ok(ObjectResponse::Missing {
+                proof: *proof.finalize().as_bytes(),
+            });
+        }
+        ObjectResponse::Unchanged => return Err(DiscoveryStoreError::Corrupt),
+    };
+    let mut work = NugetMetadataWork {
+        bytes: service_bytes.len(),
+        documents: 0,
+        leaves: 0,
+        visited: BTreeSet::from([service_url]),
+        proof,
+    };
+    let found = nuget_find_exact(
+        &registration_url,
+        root_bytes,
+        name,
+        coordinate.version().as_str(),
+        &admit_url,
+        &fetch,
+        &mut work,
+    )?;
+    let proof = *work.proof.finalize().as_bytes();
+    let document = match found {
+        Some(entry) => serde_json::json!({"catalogEntry": entry, "sourceProof": proof}),
+        None => serde_json::json!({"absent": true, "sourceProof": proof}),
+    };
+    let bytes = serde_json::to_vec(&document).map_err(|_| DiscoveryStoreError::Decode)?;
+    if bytes.len() > maximum {
+        return Err(DiscoveryStoreError::Bounds);
+    }
+    Ok(ObjectResponse::Modified { bytes, etag: None })
+}
+
+// NuGet page and leaf addresses are discovered links, not predictable paths:
+// https://learn.microsoft.com/en-us/nuget/api/registration-base-url-resource
+fn nuget_admit_link(service: &url::Url, value: &str) -> Result<url::Url, DiscoveryStoreError> {
+    let directory = service
+        .path()
+        .rsplit_once('/')
+        .map(|(path, _)| format!("{path}/"))
+        .ok_or(DiscoveryStoreError::Decode)?;
+    let target = url::Url::parse(value).map_err(|_| DiscoveryStoreError::Decode)?;
+    if target.origin() != service.origin()
+        || !target.path().starts_with(&directory)
+        || !target.username().is_empty()
+        || target.password().is_some()
+        || target.query().is_some()
+        || target.fragment().is_some()
+    {
+        return Err(DiscoveryStoreError::Decode);
+    }
+    Ok(target)
+}
+
+struct NugetMetadataWork {
+    bytes: usize,
+    documents: usize,
+    leaves: usize,
+    visited: BTreeSet<String>,
+    proof: blake3::Hasher,
+}
+
+fn nuget_observe(proof: &mut blake3::Hasher, url: &str, bytes: &[u8]) {
+    proof.update(&(url.len() as u64).to_be_bytes());
+    proof.update(url.as_bytes());
+    proof.update(&(bytes.len() as u64).to_be_bytes());
+    proof.update(bytes);
+}
+
+/// Iterative bounded walk follows provider links; page/leaf URLs are never
+/// guessed from version strings. Missing referenced pages are unavailable,
+/// and cannot certify that the requested version is absent.
+fn nuget_find_exact(
+    root_url: &str,
+    root_bytes: Vec<u8>,
+    name: &str,
+    version: &str,
+    admit: &impl Fn(&str) -> Result<url::Url, DiscoveryStoreError>,
+    fetch: &impl Fn(&str) -> Result<ObjectResponse, DiscoveryStoreError>,
+    work: &mut NugetMetadataWork,
+) -> Result<Option<serde_json::Value>, DiscoveryStoreError> {
+    let mut queue = VecDeque::from([(root_url.to_owned(), root_bytes, 0usize)]);
+    while let Some((url, bytes, depth)) = queue.pop_front() {
+        if depth > 4 || work.documents >= 64 || !work.visited.insert(url.clone()) {
+            return Err(DiscoveryStoreError::Bounds);
+        }
+        work.documents += 1;
+        work.bytes = work
+            .bytes
+            .checked_add(bytes.len())
+            .ok_or(DiscoveryStoreError::Bounds)?;
+        if work.bytes > 16 * 1024 * 1024 {
+            return Err(DiscoveryStoreError::Bounds);
+        }
+        nuget_observe(&mut work.proof, &url, &bytes);
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|_| DiscoveryStoreError::Decode)?;
+        let mut values = vec![&value];
+        while let Some(value) = values.pop() {
+            if let Some(entry) = value.get("catalogEntry") {
+                work.leaves += 1;
+                if work.leaves > 8192 {
+                    return Err(DiscoveryStoreError::Bounds);
+                }
+                let entry = match entry {
+                    serde_json::Value::Object(_) => entry.clone(),
+                    serde_json::Value::String(entry_url) => {
+                        admit(entry_url)?;
+                        if work.documents + queue.len() >= 64 {
+                            return Err(DiscoveryStoreError::Bounds);
+                        }
+                        let ObjectResponse::Modified { bytes, .. } = fetch(entry_url)? else {
+                            return Err(DiscoveryStoreError::Decode);
+                        };
+                        if !work.visited.insert(entry_url.clone()) {
+                            return Err(DiscoveryStoreError::Decode);
+                        }
+                        work.documents += 1;
+                        work.bytes = work
+                            .bytes
+                            .checked_add(bytes.len())
+                            .ok_or(DiscoveryStoreError::Bounds)?;
+                        if work.bytes > 16 * 1024 * 1024 {
+                            return Err(DiscoveryStoreError::Bounds);
+                        }
+                        nuget_observe(&mut work.proof, entry_url, &bytes);
+                        serde_json::from_slice(&bytes).map_err(|_| DiscoveryStoreError::Decode)?
+                    }
+                    _ => return Err(DiscoveryStoreError::Decode),
+                };
+                let id = entry
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(DiscoveryStoreError::Decode)?;
+                let observed = entry
+                    .get("version")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(DiscoveryStoreError::Decode)?;
+                if !id.eq_ignore_ascii_case(name) {
+                    return Err(DiscoveryStoreError::Decode);
+                }
+                if observed.eq_ignore_ascii_case(version) {
+                    return Ok(Some(entry));
+                }
+            } else if let Some(items) = value.get("items").and_then(serde_json::Value::as_array) {
+                if value.get("count").and_then(serde_json::Value::as_u64)
+                    != Some(items.len() as u64)
+                    || items.len() > 8192
+                {
+                    return Err(DiscoveryStoreError::Decode);
+                }
+                values.extend(items.iter().rev());
+            } else {
+                let page_url = value
+                    .get("@id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(DiscoveryStoreError::Decode)?;
+                admit(page_url)?;
+                if work.documents + queue.len() >= 64 {
+                    return Err(DiscoveryStoreError::Bounds);
+                }
+                let ObjectResponse::Modified { bytes, .. } = fetch(page_url)? else {
+                    return Err(DiscoveryStoreError::Decode);
+                };
+                queue.push_back((page_url.to_owned(), bytes, depth + 1));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn fetch_object(
@@ -930,7 +1224,9 @@ mod tests {
     #[test]
     fn expired_metadata_budget_does_not_issue_a_get() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
-        listener.set_nonblocking(true).expect("nonblocking listener");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
         let url = format!(
             "http://{}/metadata",
             listener.local_addr().expect("loopback address")
@@ -1528,5 +1824,112 @@ mod tests {
         assert_eq!(owner.package_metadata.objects.len(), MAX_CACHE_OBJECTS);
         drop(pinned);
         assert_eq!(server.join().expect("server").len(), MAX_CACHE_OBJECTS + 1);
+    }
+}
+
+#[cfg(test)]
+mod nuget_protocol_tests {
+    use super::*;
+
+    #[test]
+    fn canonical_nuget_service_url_and_exact_identity_are_checked() {
+        assert_eq!(
+            nuget_service_url("https://api.nuget.org/v3/catalog0/index.json"),
+            "https://api.nuget.org/v3/index.json"
+        );
+        assert_eq!(
+            nuget_service_url("https://private.example.test/nuget/v3/index.json"),
+            "https://private.example.test/nuget/v3/index.json"
+        );
+        let package = PackageCoordinate::parse("pkg:nuget/Widget@1.2.3").unwrap();
+        let encode = |id: &str, version: &str| {
+            serde_json::to_vec(&serde_json::json!({"catalogEntry":{"id":id,"version":version,"listed":false},"sourceProof":vec![1;32]})).unwrap()
+        };
+        assert!(
+            parse_nuget_registration(&encode("Different", "1.2.3"), "Widget", &package).is_err()
+        );
+        assert!(parse_nuget_registration(&encode("Widget", "1.2.4"), "Widget", &package).is_err());
+        let (facts, complete) =
+            parse_nuget_registration(&encode("WIDGET", "1.2.3"), "Widget", &package).unwrap();
+        assert!(complete);
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].standing, DiscoveryStanding::Yanked);
+    }
+
+    #[test]
+    fn nuget_delegation_refuses_cross_origin_credentials_and_directory_escape() {
+        let service = url::Url::parse("https://feed.example.test/v3/index.json").unwrap();
+        assert!(nuget_admit_link(&service, "https://feed.example.test/v3/registrations/").is_ok());
+        for rejected in [
+            "https://other.example.test/v3/page",
+            "https://user:token@feed.example.test/v3/page",
+            "https://feed.example.test/v3/../outside",
+            "https://feed.example.test/v3/page?token=value",
+            "https://feed.example.test/v3/page#fragment",
+        ] {
+            assert!(nuget_admit_link(&service, rejected).is_err(), "{rejected}");
+        }
+    }
+
+    #[test]
+    fn partial_missing_and_cyclic_registration_pages_cannot_certify_absence() {
+        let admit = |text: &str| url::Url::parse(text).map_err(|_| DiscoveryStoreError::Decode);
+        let missing = |_: &str| Ok(ObjectResponse::Missing { proof: [2; 32] });
+        let work = || NugetMetadataWork {
+            bytes: 0,
+            documents: 0,
+            leaves: 0,
+            visited: BTreeSet::new(),
+            proof: blake3::Hasher::new(),
+        };
+        let bytes = serde_json::to_vec(
+            &serde_json::json!({"count":1,"items":[{"@id":"https://example.test/page","count":1}]}),
+        )
+        .unwrap();
+        assert!(
+            nuget_find_exact(
+                "https://example.test/index",
+                bytes,
+                "Widget",
+                "1.2.3",
+                &admit,
+                &missing,
+                &mut work()
+            )
+            .is_err()
+        );
+        let invalid = br#"{"count":2,"items":[]}"#.to_vec();
+        assert!(
+            nuget_find_exact(
+                "https://example.test/index",
+                invalid,
+                "Widget",
+                "1.2.3",
+                &admit,
+                &missing,
+                &mut work()
+            )
+            .is_err()
+        );
+        let cycle =
+            br#"{"count":1,"items":[{"@id":"https://example.test/index","count":1}]}"#.to_vec();
+        let fetch_cycle = |_: &str| {
+            Ok(ObjectResponse::Modified {
+                bytes: cycle.clone(),
+                etag: None,
+            })
+        };
+        assert!(
+            nuget_find_exact(
+                "https://example.test/index",
+                cycle.clone(),
+                "Widget",
+                "1.2.3",
+                &admit,
+                &fetch_cycle,
+                &mut work()
+            )
+            .is_err()
+        );
     }
 }
