@@ -3166,7 +3166,9 @@ pub(super) fn finish_deferred_profile_for_snapshot(
             }
         };
     if profile.csharp_unit_claim_only {
-        let matches_selected = job.csharp_selected_source.as_ref().is_some_and(|witness| {
+        let current_attempt = semantic_authority.recover_candidate_attempt(&profile.attempt.recovery_claim())
+            .is_ok_and(|attempt| attempt == profile.attempt);
+        let matches_selected = current_attempt && job.csharp_selected_source.as_ref().is_some_and(|witness| {
             witness.key() == &profile.key
                 && witness.matches_staged_invocation(&staged, *profile.attempt.input_digest())
         });

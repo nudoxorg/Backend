@@ -205,9 +205,12 @@ impl CSharpUnitAdmission {
         base: &WorkspaceSnapshot,
         witness: std::sync::Arc<super::commands::index::CapturedCSharpUnitAdmission>,
         attempt: backend_extension_turso::CandidateAttempt,
+        authority: &super::semantic_authority::SemanticAuthority,
         replacement: &[([u8; 32], CSharpReceiptRecord)],
         cancellation: std::sync::Arc<AtomicBool>,
     ) -> Result<Self, String> {
+        let recovered = authority.recover_candidate_attempt(&attempt.recovery_claim()).map_err(|error| error.to_string())?;
+        if recovered != attempt { return Err("C# candidate attempt changed".into()); }
         let capture = witness.pending_capture().ok_or("C# Pending capture missing")?;
         let key = witness.key();
         let namespace = super::semantic_authority::SemanticAuthority::namespace(key.package(), key.coordinate(), key.profile())
@@ -245,6 +248,16 @@ impl CSharpUnitAdmission {
             || capture.input_digest() != self.attempt.input_digest()
             || capture.observation_sequence() != self.attempt.observation().sequence()
         { return Err("C# attempt changed".into()); }
+        Ok(())
+    }
+
+    /// Reopen the current authoritative attempt. This check must be repeated
+    /// at the owner barrier when execution and SDK leases are available.
+    pub(super) fn revalidate_attempt(&self, authority: &super::semantic_authority::SemanticAuthority) -> Result<(), String> {
+        let recovered = authority.recover_candidate_attempt(&self.attempt.recovery_claim()).map_err(|error| error.to_string())?;
+        if recovered != self.attempt || self.cancellation.load(Ordering::Acquire) {
+            return Err("C# candidate attempt changed".into());
+        }
         Ok(())
     }
 
