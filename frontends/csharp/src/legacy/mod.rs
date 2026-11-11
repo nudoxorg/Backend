@@ -11,8 +11,8 @@
 mod image;
 mod oracle;
 mod producer;
-mod sdk;
 mod restore;
+mod sdk;
 
 pub use self::image::{
     Atom, Attribute, CSharpImage, Declaration, DeclarationFlags, DeclarationIter, DeclarationKind,
@@ -33,8 +33,11 @@ pub use self::producer::{
     DEFAULT_OUTPUT_LIMIT, DEFAULT_SOURCE_LIMIT,
 };
 
-pub use self::sdk::{
-    observe_csharp_sdk, observe_csharp_sdk_with, CSharpSdkKind, CSharpSdkObservation,
-    CSharpSdkProbe, CSharpSdkProjectProperties,
+pub use self::restore::{
+    RestoreClosure, RestoreError, resolve_project_assets, resolve_project_assets_checked,
+    resolve_project_assets_with_metadata,
 };
-pub use self::restore::{resolve_project_assets, resolve_project_assets_checked, RestoreClosure, RestoreError};
+pub use self::sdk::{
+    CSharpSdkKind, CSharpSdkObservation, CSharpSdkProbe, CSharpSdkProjectProperties,
+    observe_csharp_sdk, observe_csharp_sdk_with,
+};

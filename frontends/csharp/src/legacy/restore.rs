@@ -3,10 +3,11 @@
 //! This deliberately reads the restore result only. It never runs MSBuild,
 //! evaluates package targets, or scans a NuGet directory: every assembly is an
 //! explicit compile asset selected by the restore graph.
+use backend_platform::durable::read_regular_bounded_stable;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{BTreeSet, HashSet},
     fs,
     path::{Component, Path, PathBuf},
 };
@@ -66,6 +67,27 @@ pub fn resolve_project_assets_checked(
     expected_packages: &[(&str, &str)],
     expected_projects: &[&str],
 ) -> Result<RestoreClosure, RestoreError> {
+    resolve_project_assets_with_metadata(
+        assets_path,
+        project_root,
+        target_framework,
+        expected_packages,
+        expected_projects,
+        &[],
+    )
+}
+
+/// Checked resolver with authored IncludeAssets declarations. A package that
+/// excludes `compile` must never contribute a compile assembly from stale
+/// restore output.
+pub fn resolve_project_assets_with_metadata(
+    assets_path: &Path,
+    project_root: &Path,
+    target_framework: &str,
+    expected_packages: &[(&str, &str)],
+    expected_projects: &[&str],
+    expected_include_assets: &[(&str, &str)],
+) -> Result<RestoreClosure, RestoreError> {
     let metadata = fs::metadata(assets_path)
         .map_err(|e| RestoreError::Unavailable(format!("{} ({e})", assets_path.display())))?;
     if !metadata.is_file() || metadata.len() > MAX_BYTES {
@@ -74,6 +96,13 @@ pub fn resolve_project_assets_checked(
     let bytes = read_bounded(assets_path, MAX_BYTES)?;
     let root = fs::canonicalize(project_root)
         .map_err(|e| RestoreError::Unavailable(format!("{} ({e})", project_root.display())))?;
+    let project_dir = assets_path
+        .parent()
+        .and_then(Path::parent)
+        .map(fs::canonicalize)
+        .transpose()
+        .map_err(|e| RestoreError::Unavailable(e.to_string()))?
+        .unwrap_or_else(|| root.clone());
     let value: Value = serde_json::from_slice(&bytes)?;
     let folders = value
         .get("packageFolders")
@@ -83,12 +112,10 @@ pub fn resolve_project_assets_checked(
         .get("targets")
         .and_then(Value::as_object)
         .ok_or(RestoreError::Missing("targets"))?;
-    let target_name = targets
-        .keys()
-        .find(|name| name.split('/').next() == Some(target_framework))
-        .ok_or(RestoreError::Missing("targets for target framework"))?;
+    // The RID-independent compile graph is required; choosing the first RID
+    // graph would silently change a project's compile inputs.
     let target = targets
-        .get(target_name)
+        .get(target_framework)
         .and_then(Value::as_object)
         .ok_or(RestoreError::Missing("target graph"))?;
     let libraries = value
@@ -96,6 +123,53 @@ pub fn resolve_project_assets_checked(
         .and_then(Value::as_object)
         .ok_or(RestoreError::Missing("libraries"))?;
     let mut files = Vec::new();
+    if !expected_packages.is_empty() || !expected_projects.is_empty() {
+        let dependencies = value
+            .get("project")
+            .and_then(|project| project.get("frameworks"))
+            .and_then(|frameworks| frameworks.get(target_framework))
+            .and_then(|framework| framework.get("dependencies"))
+            .and_then(Value::as_object);
+        let actual = dependencies
+            .map(|dependencies| {
+                dependencies
+                    .keys()
+                    .map(|name| name.to_ascii_lowercase())
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        let expected = expected_packages
+            .iter()
+            .map(|(name, _)| name.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        if actual != expected {
+            return Err(RestoreError::Unavailable("direct package dependencies changed; run dotnet restore for the current project on this operating system".to_owned()));
+        }
+        for (name, _) in expected_packages {
+            let dependency = dependencies
+                .and_then(|dependencies| {
+                    dependencies
+                        .iter()
+                        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                        .map(|(_, value)| value)
+                })
+                .ok_or(RestoreError::Missing("direct package metadata"))?;
+            let authored = expected_include_assets
+                .iter()
+                .find(|(id, _)| id.eq_ignore_ascii_case(name))
+                .map(|(_, include)| *include)
+                .unwrap_or("all");
+            let restored = dependency
+                .get("include")
+                .and_then(Value::as_str)
+                .unwrap_or("all");
+            if asset_tokens(authored) != asset_tokens(restored) {
+                return Err(RestoreError::Unavailable(format!(
+                    "package {name} IncludeAssets changed; run dotnet restore for the current project"
+                )));
+            }
+        }
+    }
     for (name, version) in expected_packages {
         let found = target.keys().any(|identity| {
             identity
@@ -106,6 +180,32 @@ pub fn resolve_project_assets_checked(
             return Err(RestoreError::Unavailable(format!(
                 "package reference {name}@{version} is absent from restore graph"
             )));
+        }
+    }
+    for (name, include) in expected_include_assets {
+        let excludes_compile = !include.split(';').any(|token| {
+            matches!(
+                token.trim().to_ascii_lowercase().as_str(),
+                "compile" | "all"
+            )
+        });
+        if excludes_compile {
+            let has_compile = target.iter().any(|(identity, item)| {
+                identity
+                    .split_once('/')
+                    .is_some_and(|(n, _)| n.eq_ignore_ascii_case(name))
+                    && item.get("compile").is_some_and(|v| {
+                        v.as_object().is_some_and(|o| {
+                            o.keys()
+                                .any(|path| !path.ends_with("/_._") && path != "_._")
+                        })
+                    })
+            });
+            if has_compile {
+                return Err(RestoreError::Unavailable(format!(
+                    "package {name} has compile assets despite IncludeAssets={include}"
+                )));
+            }
         }
     }
     for project in expected_projects {
@@ -146,14 +246,20 @@ pub fn resolve_project_assets_checked(
             .and_then(Value::as_str)
             .ok_or_else(|| RestoreError::Unavailable(format!("path for {identity}")))?;
         for (relative, present) in compile {
-            if present.is_null() || relative == "_._" {
+            if present.is_null()
+                || Path::new(relative)
+                    .file_name()
+                    .is_some_and(|name| name == "_._")
+            {
                 continue;
             }
             if files.len() >= MAX_FILES {
                 return Err(RestoreError::Limit);
             }
             checked_relative(relative)?;
-            checked_relative(relative_base)?;
+            if kind != "project" {
+                checked_relative(relative_base)?;
+            }
             let path = if kind == "project" {
                 // Project libraries are rooted at the restore root. Their
                 // compile asset is generally bin/<config>/<tfm>/<name>.dll.
@@ -162,14 +268,61 @@ pub fn resolve_project_assets_checked(
                 } else {
                     Path::new(relative_base)
                 };
-                root.join(project_base).join(relative)
+                let referenced_project = project_dir.join(relative_base);
+                let canonical_project = fs::canonicalize(&referenced_project).map_err(|e| {
+                    RestoreError::Unavailable(format!(
+                        "referenced project {} ({e})",
+                        referenced_project.display()
+                    ))
+                })?;
+                if !canonical_project.starts_with(&root) {
+                    return Err(RestoreError::OutsideRoot(
+                        referenced_project.display().to_string(),
+                    ));
+                }
+                let base = project_dir.join(project_base);
+                if relative.starts_with("bin/placeholder/") {
+                    let name = Path::new(relative)
+                        .file_name()
+                        .ok_or(RestoreError::Missing("project reference assembly filename"))?;
+                    let framework = item
+                        .get("framework")
+                        .and_then(Value::as_str)
+                        .unwrap_or(target_framework);
+                    checked_relative(framework)?;
+                    let reference = base
+                        .join("obj/Debug")
+                        .join(framework)
+                        .join("ref")
+                        .join(name);
+                    let implementation = base.join("bin/Debug").join(framework).join(name);
+                    if reference.is_file() {
+                        reference
+                    } else if implementation.is_file() {
+                        implementation
+                    } else {
+                        return Err(RestoreError::Unavailable(format!(
+                            "project reference {} has restore metadata but no built Debug reference assembly; build the referenced project with the selected dotnet SDK before indexing",
+                            referenced_project.display()
+                        )));
+                    }
+                } else {
+                    base.join(relative)
+                }
             } else {
                 let mut found = None;
                 for folder in folders.keys() {
                     let folder = checked_path(folder)?;
                     let candidate = PathBuf::from(folder).join(relative_base).join(relative);
                     if candidate.is_file() {
-                        found = Some(candidate);
+                        let folder = fs::canonicalize(folder)
+                            .map_err(|e| RestoreError::Unavailable(e.to_string()))?;
+                        let canonical = fs::canonicalize(&candidate)
+                            .map_err(|e| RestoreError::Unavailable(e.to_string()))?;
+                        if !canonical.starts_with(&folder) {
+                            return Err(RestoreError::OutsideRoot(candidate.display().to_string()));
+                        }
+                        found = Some(canonical);
                         break;
                     }
                 }
@@ -193,6 +346,7 @@ pub fn resolve_project_assets_checked(
     let directory = tempfile::tempdir().map_err(|e| RestoreError::Unavailable(e.to_string()))?;
     let mut names = HashSet::new();
     let mut snapshot = Vec::with_capacity(files.len());
+    let mut total_bytes = bytes.len() as u64;
     for source in &files {
         let name = source
             .file_name()
@@ -205,7 +359,13 @@ pub fn resolve_project_assets_checked(
             )));
         }
         let destination = directory.path().join(&name);
-        let content = read_bounded(source, MAX_BYTES)?;
+        let content = read_bounded(source, 32 * 1024 * 1024)?;
+        total_bytes = total_bytes
+            .checked_add(content.len() as u64)
+            .ok_or(RestoreError::Limit)?;
+        if total_bytes > 256 * 1024 * 1024 {
+            return Err(RestoreError::Limit);
+        }
         fs::write(&destination, &content).map_err(|e| RestoreError::Unavailable(e.to_string()))?;
         snapshot.push(destination);
     }
@@ -214,7 +374,7 @@ pub fn resolve_project_assets_checked(
     digest.update((bytes.len() as u64).to_le_bytes());
     digest.update(&bytes);
     for file in &files {
-        let rel = file.strip_prefix(&root).unwrap_or(file);
+        let rel = file.file_name().unwrap_or_default();
         digest.update(rel.to_string_lossy().as_bytes());
         digest.update([0]);
         let content = read_bounded(file, MAX_BYTES)?;
@@ -231,9 +391,37 @@ pub fn resolve_project_assets_checked(
     })
 }
 
+fn asset_tokens(value: &str) -> BTreeSet<String> {
+    let tokens = value
+        .split([',', ';'])
+        .map(|token| token.trim().to_ascii_lowercase())
+        .filter(|token| !token.is_empty() && token != "none")
+        .collect::<BTreeSet<_>>();
+    if tokens.contains("all") {
+        [
+            "runtime",
+            "compile",
+            "build",
+            "native",
+            "contentfiles",
+            "analyzers",
+            "buildtransitive",
+            "buildmultitargeting",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    } else {
+        tokens
+    }
+}
+
 fn checked_path(path: &str) -> Result<&Path, RestoreError> {
     let p = Path::new(path);
-    if path.is_empty() || path.contains(':') || path.contains('\\') {
+    if path.is_empty()
+        || !p.is_absolute()
+        || (!cfg!(windows) && (path.contains(':') || path.contains('\\')))
+    {
         return Err(RestoreError::ForeignPath(path.to_owned()));
     }
     Ok(p)
@@ -268,26 +456,15 @@ fn project_ref_matches(path: &str, expected: &str) -> bool {
 }
 
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, RestoreError> {
-    let before = fs::metadata(path)
-        .map_err(|e| RestoreError::Unavailable(format!("{} ({e})", path.display())))?;
-    if !before.is_file() || before.len() > limit {
-        return Err(RestoreError::Limit);
-    }
-    let content = fs::read(path).map_err(|e| RestoreError::Unavailable(e.to_string()))?;
-    let after = fs::metadata(path).map_err(|e| RestoreError::Unavailable(e.to_string()))?;
-    if before.len() != content.len() as u64 || after.len() != before.len() {
-        return Err(RestoreError::Unavailable(format!(
-            "{} changed during read",
-            path.display()
-        )));
-    }
-    Ok(content)
+    read_regular_bounded_stable(path, limit as usize)
+        .map_err(|e| RestoreError::Unavailable(format!("{} ({e})", path.display())))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+    #[cfg(not(windows))]
     #[test]
     fn rejects_windows_package_folder() {
         let dir = tempfile::tempdir().unwrap();
@@ -296,6 +473,39 @@ mod tests {
         assert!(matches!(
             resolve_project_assets(&assets, dir.path(), "net10.0"),
             Err(RestoreError::ForeignPath(_))
+        ));
+    }
+
+    #[test]
+    fn snapshots_package_assets_with_stable_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = dir.path().join("packages/p/1.0");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("p.dll"), b"assembly").unwrap();
+        let assets = dir.path().join("project.assets.json");
+        fs::write(&assets, format!(r#"{{"packageFolders":{{"{}":{{}}}},"targets":{{"net10.0":{{"P/1.0":{{"compile":{{"p.dll":{{}}}}}}}}}},"libraries":{{"P/1.0":{{"type":"package","path":"p/1.0"}}}}}}"#, dir.path().join("packages").display())).unwrap();
+        let first = resolve_project_assets(&assets, dir.path(), "net10.0").unwrap();
+        let second = resolve_project_assets(&assets, dir.path(), "net10.0").unwrap();
+        assert_eq!(first.digest, second.digest);
+        assert_eq!(
+            fs::read(first.reference_directory().join("p.dll")).unwrap(),
+            b"assembly"
+        );
+        fs::write(package.join("p.dll"), b"changed").unwrap();
+        assert_eq!(
+            fs::read(first.reference_directory().join("p.dll")).unwrap(),
+            b"assembly"
+        );
+    }
+
+    #[test]
+    fn rejects_compile_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().join("project.assets.json");
+        fs::write(&assets, r#"{"packageFolders":{"/tmp":""},"targets":{"net10.0":{"P/1.0":{"compile":{"../x.dll":{}}}}},"libraries":{"P/1.0":{"type":"package","path":"p/1.0"}}}"#).unwrap();
+        assert!(matches!(
+            resolve_project_assets(&assets, dir.path(), "net10.0"),
+            Err(RestoreError::OutsideRoot(_))
         ));
     }
 }

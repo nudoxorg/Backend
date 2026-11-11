@@ -2464,6 +2464,9 @@ pub enum PackageSemanticError {
         /// Bounded, non-sensitive refusal reason.
         reason: &'static str,
     },
+    /// Restored compile references are unavailable or do not match the captured project.
+    #[error("C# restored references unavailable: {0}")]
+    CSharpRestore(#[source] backend_frontend_csharp::legacy::RestoreError),
     /// A checked size computation overflowed or exceeded the package budget.
     #[error("package semantic publication exceeds its {lane} byte budget")]
     Capacity {
@@ -4288,18 +4291,27 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         // observed paths/options remain attempt-local and never inherit a
         // startup fingerprint or establish input-closure authority.
         let mut sdk_fingerprint: Option<[u8; 32]> = None;
+        let mut restored_csharp_references = None;
         let sdk_observation = if let Some(probes) = package.csharp_sdk_probes {
             let config = package.csharp_config.ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "captured C# project configuration" })?;
             let options = super::csharp_sdk_options::simple_csharp_sdk_options(
                 config.first().and_then(|entry| entry.text).ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "captured C# project configuration" })?,
                 config.iter().skip(1).all(|entry| entry.text.is_none()),
             ).ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "unsupported C# SDK project options" })?;
-            if !options.package_references.is_empty() || !options.project_references.is_empty() {
-                return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "restored package and project reference inputs must be captured before compiling this C# project" });
-            }
             let CompilationUnitKeyV2::CSharpProject { project_path } = package.package_target.unit_key() else {
                 return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK project unit" });
             };
+            if !options.package_references.is_empty() || !options.project_references.is_empty() {
+                let project = package.package_root.join(project_path.as_ref());
+                let directory = project.parent().ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "C# project directory unavailable" })?;
+                let expected_packages = options.package_references.iter().map(|(id, version)| (id.as_str(), version.as_str())).collect::<Vec<_>>();
+                let expected_projects = options.project_references.iter().map(String::as_str).collect::<Vec<_>>();
+                let expected_include_assets = options.include_assets.iter().map(|(id, assets)| (id.as_str(), assets.as_str())).collect::<Vec<_>>();
+                restored_csharp_references = Some(backend_frontend_csharp::legacy::resolve_project_assets_with_metadata(
+                    &directory.join("obj/project.assets.json"), package.package_root, &options.target_framework,
+                    &expected_packages, &expected_projects, &expected_include_assets,
+                ).map_err(PackageSemanticError::CSharpRestore)?);
+            }
             let toolchain = match self.toolchain(first_application_request) {
                 Ok(ToolchainSelection::ResolvedNative(toolchain)) => toolchain.external().map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" })?,
                 _ => return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK host unavailable" }),
@@ -4325,10 +4337,21 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             // no portable execution identity may stand for them. They are
             // sealed into the host-local plane identity below instead.
             execution_identity = None;
-            sdk_fingerprint = Some(csharp_sdk_observation_fingerprint(&observed, probes, config, &options.target_framework));
+            let mut fingerprint = csharp_sdk_observation_fingerprint(&observed, probes, config, &options.target_framework);
+            if let Some(references) = restored_csharp_references.as_ref() {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(b"compiler.csharp.restored-sdk-observation.v1\0");
+                hasher.update(&fingerprint);
+                hasher.update(&references.digest);
+                fingerprint = *hasher.finalize().as_bytes();
+            }
+            sdk_fingerprint = Some(fingerprint);
             Some(observed)
         } else { None };
-        let sdk_reference_paths = sdk_observation.as_ref().map(|observation| observation.targeting_directories.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+        let mut sdk_reference_paths = sdk_observation.as_ref().map(|observation| observation.targeting_directories.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+        if let (Some(paths), Some(references)) = (sdk_reference_paths.as_mut(), restored_csharp_references.as_ref()) {
+            paths.push(references.reference_directory());
+        }
         let mut sdk_using_names = sdk_observation.as_ref().map(|observation| observation.usings.iter().map(String::as_str).collect::<Vec<_>>());
         let mut sdk_define_names = sdk_observation.as_ref().map(|observation| observation.defines.iter().map(String::as_str).collect::<Vec<_>>());
         let mut package_authority_configuration = self.package_authority;
