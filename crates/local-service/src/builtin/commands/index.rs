@@ -3749,7 +3749,7 @@ impl CapturedCSharpUnitAdmission {
                 || !matches!(row.outcome(), ProductSemanticCaptureOutcome::Pending { .. })) {
                 return Ok(false);
             }
-        } else if !cfg!(test) { return Ok(false); }
+        } else { return Ok(false); }
         let (project, files, frontier) = bounded_csharp_project_frontier(snapshot, self.project_key, cancellation.as_ref())?;
         if selected_project_commitment(self.project_key, &project)? != self.project_commitment { return Ok(false); }
         let source = checked_csharp_selected_sources(snapshot, self.project_key, &files, &self.sources,

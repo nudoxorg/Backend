@@ -1937,10 +1937,17 @@ mod csharp_project_discovery_tests {
         let mut daemon = crate::Locald::open_with_dispatcher_and_registry(&workspace, BuiltinModel, crate::builtin::genesis().map_err(|e| e.to_string())?, dispatcher,
             backend_engine::DaemonConfig::default(), crate::builtin::product_relation_registry().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         let operation = backend_library::IndexOperationKey::from_bytes([0x41; 32]).map_err(|e| e.to_string())?;
-        let intent = BuiltinIntent::index_with_semantics(package, label, vec![
+        let coordinate = selected_project_coordinate(package, profile, Some(&PackageUrl::parse(label).map_err(|e| format!("{e:?}"))?), Some("App.csproj")).map_err(|e| e.to_string())?;
+        let key = ProductSemanticPublicationKey::new(backend_engine::PackageReference::parse(label.to_owned()).map_err(|e| format!("{e:?}"))?, coordinate, profile).map_err(str::to_owned)?;
+        let mut authority = crate::builtin::semantic_authority::SemanticAuthority::open(&workspace).map_err(|e| e.to_string())?;
+        let observation = authority.observe(&key, [0x52; 32], 1).map_err(|e| e.to_string())?;
+        let capture = SemanticSourceCapture::new(Some(operation.to_bytes()), [0x31; 32], [0x52; 32], observation.sequence(), 1)?;
+        let intent = BuiltinIntent::index_with_capture(package, label, vec![
             BuiltinSourceChange { key: project_key, after: Some(project) },
             BuiltinSourceChange { key: source_key, after: Some(file) },
-        ], Vec::new()).map_err(|e| e.to_string())?.with_operation_key(operation).map_err(|e| e.to_string())?;
+        ], Vec::new(), vec![BuiltinCaptureChange { cargo_target: None, key: key.clone(), expected: None, capture,
+            outcome: ProductSemanticCaptureOutcome::Pending { prior: None }, compiler_failure: None }])
+            .map_err(|e| e.to_string())?.with_operation_key(operation).map_err(|e| e.to_string())?;
         super::super::super::adapter::commit_builtin_intent(&mut daemon, 1, &intent).map_err(|e| e.to_string())?;
         let snapshot = daemon.engine().daemon().owner().snapshot();
         let receipt = super::super::super::adapter::SelectedCSharpSourceCommit::from_selected_test(&snapshot, Some(operation)).map_err(|e| e.to_string())?;
@@ -1955,7 +1962,7 @@ mod csharp_project_discovery_tests {
             }),
             csharp_parked: false,
             package, label: label.to_owned(), project_key, coordinate: Some(PackageUrl::parse(label).map_err(|e| format!("{e:?}"))?), request_id: 1,
-            source_root: source_root.clone(), revision_fence: fence, sources: Vec::new(), observations: BTreeMap::new(), captures: BTreeMap::new(),
+            source_root: source_root.clone(), revision_fence: fence, sources: Vec::new(), observations: BTreeMap::from([(profile, observation)]), captures: BTreeMap::from([(key, capture)]),
             native_frontier: Vec::new(), native_candidate_profiles: ingest::NativeCandidateProfiles::default(), reused_profiles: BTreeSet::new(),
             operation_key: Some(operation), reuse_only: false, python_environment: None, cancellation: Arc::clone(&cancellation),
             workspace_snapshot: None, route: None, execution_intent: CompileExecutionIntent::Interactive,
@@ -2284,7 +2291,6 @@ impl SourceCompilePlan {
         // receipt. Bind it to this selected key and operation before carrying it
         // into the deferred compiler; the empty pair is used by source fixtures.
         match (self.captures.get(&key), self.observations.get(&shape.profile)) {
-            (None, None) if self.captures.is_empty() && self.observations.is_empty() => {},
             (Some(capture), Some(observation)) if self.captures.len() == 1 && self.observations.len() == 1
                 && capture.operation_key().copied() == self.operation_key.map(|key| key.to_bytes())
                 && capture.observation_sequence() == observation.sequence()
