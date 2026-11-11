@@ -103,6 +103,26 @@ fn fake_npm_and_pypi_discovery_to_pinned_product_reads() {
         let search_json = serde_json::to_string(&search).expect("search JSON");
         assert!(search_json.contains(purl), "{search_json}");
         assert!(search_json.contains("discovered"), "{search_json}");
+        let explored = command(
+            &mut state,
+            SurfaceCommand::Explore {
+                query: Some(ProductText::new("fixture").expect("query")),
+                limit: 10,
+            },
+        ).expect("explore discovered package");
+        assert_eq!(explored.id(), backend_library::CommandId::Explore);
+        explored.admit().expect("admitted explore evidence");
+        let SurfaceReply::ExploredSearchPage(page) = &explored else {
+            panic!("explore must retain discovery authority");
+        };
+        let SurfaceReply::IndexSearchPage(search_page) = &search else {
+            panic!("search page");
+        };
+        assert_eq!(page.hits, search_page.hits);
+        let encoded = serde_json::to_vec(&explored).expect("encode explored reply");
+        let decoded: SurfaceReply = serde_json::from_slice(&encoded).expect("decode explored reply");
+        assert_eq!(decoded.id(), backend_library::CommandId::Explore);
+
 
         let reply = command(
             &mut state,

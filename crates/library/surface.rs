@@ -5507,6 +5507,8 @@ pub enum SurfaceReply {
     Explored(Box<[RegistryPackageRecord]>),
     /// Declarations explored within one selected local project.
     ExploredDeclarations(Box<[LocalDeclarationSearchRecord]>),
+    /// Search across acquired and discovered packages, retaining evidence and paging.
+    ExploredSearchPage(IndexSearchPage),
     /// Exact package records.
     Package(Box<[RegistryPackageRecord]>),
     /// Exact source metadata, kept separate from acquired package authority.
@@ -5662,7 +5664,7 @@ impl SurfaceReply {
             Self::Read(_) => CommandId::Read,
             Self::References { .. } => CommandId::References,
             Self::Diff(_) => CommandId::Diff,
-            Self::Explored(_) | Self::ExploredDeclarations(_) => CommandId::Explore,
+            Self::Explored(_) | Self::ExploredDeclarations(_) | Self::ExploredSearchPage(_) => CommandId::Explore,
             Self::Package(_) => CommandId::Package,
             Self::PackageDiscovery { .. } => CommandId::Package,
             Self::PackageDetails { .. } => CommandId::Package,
@@ -5793,7 +5795,7 @@ impl SurfaceReply {
                 _ => 1,
             },
             Self::PackageDetails { registry, forge } => registry.len().saturating_add(forge.len()),
-            Self::IndexSearchPage(page) => page.hits.len(),
+            Self::IndexSearchPage(page) | Self::ExploredSearchPage(page) => page.hits.len(),
             Self::Dependencies(DependencyFacts::Known(v)) => v.len(),
             Self::PackageGraphPage(page) => {
                 page.admit()
@@ -6035,7 +6037,7 @@ impl SurfaceReply {
                         }
                     }
                 }
-                Self::IndexSearchPage(page) => {
+                Self::IndexSearchPage(page) | Self::ExploredSearchPage(page) => {
                     if page.hits.len() > MAX_PRODUCT_ROWS {
                         return Err(ProductAdmissionError::RowBound);
                     }
@@ -6171,7 +6173,7 @@ impl SurfaceReply {
                         .saturating_add(serde_json::to_vec(group).map_or(0, |bytes| bytes.len())),
                 })
             }),
-            Self::IndexSearchPage(page) => fixed_record_bound()
+            Self::IndexSearchPage(page) | Self::ExploredSearchPage(page) => fixed_record_bound()
                 .saturating_add(serde_json::to_vec(page).map_or(0, |bytes| bytes.len())),
             Self::PackageDiscovery {
                 package,

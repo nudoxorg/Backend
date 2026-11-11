@@ -642,12 +642,23 @@ impl ProductState {
                         limit,
                     )?)
                 } else {
-                    SurfaceReply::Explored(catalog_page(
-                        catalog,
-                        catalog_index,
-                        query.as_ref(),
-                        limit,
-                    )?)
+                    // A text exploration uses the same selected discovery and
+                    // acquisition evidence as index-search. Discovery must not
+                    // silently disappear merely because the route is explore.
+                    if let Some(query) = query {
+                        let (reply, _) = self.execute_admitted(
+                            SurfaceCommand::IndexSearch { query, limit, cursor: None },
+                            view, catalog, catalog_index, dependency_graph, workspace,
+                            discovery, selected_catalog_snapshot, forge_records,
+                            forge_catalog_revision,
+                        )?;
+                        let SurfaceReply::IndexSearchPage(page) = reply else {
+                            return Err("explore search returned an unexpected reply".to_owned());
+                        };
+                        SurfaceReply::ExploredSearchPage(page)
+                    } else {
+                        SurfaceReply::Explored(catalog_page(catalog, catalog_index, None, limit)?)
+                    }
                 };
                 (reply, false)
             }

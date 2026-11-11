@@ -1757,6 +1757,11 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
             "explore",
             records.iter().map(local_declaration_search_row).collect(),
         ),
+        SurfaceReply::ExploredSearchPage(page) => ProductView::rows(
+            "explore",
+            page.hits.iter().map(registry_search_hit_row).collect(),
+        )
+        .with_index_search_page(page),
         SurfaceReply::Package(records) => ProductView::rows("package", registry_rows(records)),
         SurfaceReply::PackageDiscovery {
             package,
