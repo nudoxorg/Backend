@@ -18,6 +18,13 @@ anchor=$(cargo run --locked --offline -q -p backend-compile --example sql_worker
 test ${#anchor} -eq 64
 export NUDOX_BUILD_SQLITE_WORKER_ID=$anchor
 export NUDOX_TEST_SQLITE_WORKER="$output/bundle/backend-sqlite-worker"
+# Compile every focused test target and public binary first. Compilation is a
+# prerequisite, so a compiler failure exits before independent behavior checks.
+cargo test -p backend-library --lib --locked --offline --no-run
+cargo test -p backend-present --lib --locked --offline --no-run
+cargo test --manifest-path frontends/sqlite/Cargo.toml --test outline --locked --offline --no-run
+cargo test -p backend-local-service --lib --locked --offline --no-run
+cargo build --locked --offline -p backend-locald -p backend-cli -p backend-mcp
 # Independent checks keep running after a behavioral failure so one regression
 # does not hide the worker/no-worker and cold-reopen outcomes. Build failure
 # still stops the run, and the final exit remains nonzero for any failed check.
@@ -39,7 +46,6 @@ check native-upsert cargo test --manifest-path frontends/sqlite/Cargo.toml --tes
 for test in shared_upsert_syntax_does_not_select_postgres_or_poison_project_consensus sqlite_project_indexes_publishes_queries_reindexes_and_survives_cold_reopen unsupported_statement_and_unparseable_file_are_reported_as_gaps_never_as_empty flat_sql_upsert_and_renamed_objects_keep_precise_owner_edges; do
     check "$test" cargo test -p backend-local-service --lib --locked --offline "$test" -- --nocapture --test-threads=1
 done
-cargo build --locked --offline -p backend-locald -p backend-cli -p backend-mcp
 for name in backend-locald backend-cli backend-mcp; do
     cp "$target/debug/$name" "$output/bundle/$name"
 done
