@@ -107,12 +107,30 @@ mod source_excerpt_tests {
         let class_binding = analysis
             .declarations()
             .iter()
-            .find(|row| row.name() == "BankAccount")
+            .find(|row| {
+                row.name() == "BankAccount"
+                    && row.kind() != backend_compile::DeclarationKind::Module
+            })
             .and_then(|row| match row.binding_identity() {
                 backend_compile::SourceBindingIdentity::Exact(capture) => Some(capture.binding()),
                 backend_compile::SourceBindingIdentity::Legacy => None,
             })
             .ok_or_else(|| "missing exact class binding".to_owned())?;
+        let bindings = ["First", "Second"].map(|name| {
+            analysis
+                .declarations()
+                .iter()
+                .find(|row| row.name() == name)
+                .and_then(|row| match row.binding_identity() {
+                    backend_compile::SourceBindingIdentity::Exact(capture) => Some(capture),
+                    backend_compile::SourceBindingIdentity::Legacy => None,
+                })
+        });
+        let [Some(first), Some(second)] = bindings else {
+            return Err("missing field bindings".to_owned());
+        };
+        assert_ne!(first.binding(), second.binding());
+        assert_eq!(first.owner(), second.owner());
         for (name, expected) in [
             ("BankAccount", source.lines().skip(1).collect::<Vec<_>>().join("\n")),
             ("MissingFields", "private static bool MissingFields(string value) {\n        return value.Length == 0;\n    }".to_owned()),
