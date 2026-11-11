@@ -108,6 +108,22 @@ pub fn resolve_references_with_sdk(
         return Err("invalid SDK reference candidates");
     }
     let scratch = tempfile::tempdir().map_err(|_| "SDK scratch unavailable")?;
+    let candidate_root = scratch.path().join("candidates");
+    fs::create_dir(&candidate_root).map_err(|_| "SDK snapshot unavailable")?;
+    let mut captured_candidates = Vec::with_capacity(candidates.len());
+    for (index, source) in candidates.iter().enumerate() {
+        if !source.is_absolute() || !source.is_file() {
+            return Err("SDK candidate unavailable");
+        }
+        let bytes =
+            backend_platform::durable::read_regular_bounded_stable(source, 32 * 1024 * 1024)
+                .map_err(|_| "SDK candidate unavailable")?;
+        let name = source.file_name().ok_or("SDK candidate filename")?;
+        let destination = candidate_root.join(format!("{index}-{}", name.to_string_lossy()));
+        fs::write(&destination, bytes).map_err(|_| "SDK snapshot unavailable")?;
+        captured_candidates.push(destination);
+    }
+    let candidates = captured_candidates.as_slice();
     if let Some(assets_file) = assets_file {
         if !assets_file.is_absolute() || !assets_file.is_file() {
             return Err("SDK assets unavailable");
@@ -242,7 +258,10 @@ pub fn resolve_references_with_sdk(
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     for path in &owned {
-        hash.update(path.as_os_str().as_encoded_bytes());
+        hash.update(path.file_name().unwrap_or_default().as_encoded_bytes());
+        let bytes = fs::read(path).map_err(|_| "SDK snapshot unavailable")?;
+        hash.update((bytes.len() as u64).to_le_bytes());
+        hash.update(&bytes);
     }
     Ok(CSharpResolvedReferenceSnapshot {
         directory: scratch,
