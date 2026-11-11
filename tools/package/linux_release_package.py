@@ -623,14 +623,14 @@ def admit_stylo_bound_owner(receipt_path: Path, *, source: tuple[str, str, str],
                 fail("SQLite relocation tool differs from owner admission")
         if sqlite.get("tools", {}).get("loader", {}).get("sha256") != loader["sha256"]:
             fail("SQLite source loader differs from owner admission")
-        if sqlite.get("execution", {}).get("exit") != 0 or sqlite.get("execution", {}).get("process_group_retired") is not True:
+        if type(sqlite.get("execution", {}).get("exit")) is not int or sqlite["execution"]["exit"] != 0 or sqlite["execution"].get("process_group_retired") is not True:
             fail("SQLite phase build did not complete")
         if (sqlite.get("dependency", {}).get("bytes"), sqlite.get("dependency", {}).get("sha256")) != (dependency["bytes"], dependency["sha256"]):
             fail("SQLite and Stylo have different private libgcc bytes")
         sqlite_phase.verify_after_owner(sqlite, source=Path(source_path), env=receipt["observer_environment"], deadline=time.monotonic() + 30)
     desktop = receipt.get("desktop")
     if desktop is not None:
-        if sqlite is None or not isinstance(desktop, dict) or desktop.get("argv") != ["cargo", "build", "--release", "--locked", "-p", "backend-desktop", "--bin", "backend-desktop"] or desktop.get("execution", {}).get("exit") != 0 or desktop.get("execution", {}).get("process_group_retired") is not True:
+        if sqlite is None or not isinstance(desktop, dict) or desktop.get("argv") != ["cargo", "build", "--release", "--locked", "-p", "backend-desktop", "--bin", "backend-desktop"] or type(desktop.get("execution", {}).get("exit")) is not int or desktop["execution"]["exit"] != 0 or desktop["execution"].get("process_group_retired") is not True:
             fail("desktop companion build recipe is invalid")
         image = desktop.get("artifact")
         if not isinstance(image, dict) or image.get("path") != str(Path(env["CARGO_TARGET_DIR"]) / TARGET / "release/backend-desktop") or image.get("architecture") != "x86_64" or admit_file_digest(Path(image["path"]), MAX_BINARY_BYTES) != (image.get("bytes"), image.get("sha256")):
