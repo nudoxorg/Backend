@@ -405,6 +405,15 @@ def mcp_typed(seq, tool, arguments, kind):
         fail(f"{tool}: missing typed MCP response: {reply}")
     return typed(result["structuredContent"], kind, tool)
 
+def mcp_search_matches(seq, name, expected):
+    reply = rpc(seq, "tools/call", {"name": "backend.search", "arguments": {"query": name, "detail": "full"}})
+    result = reply.get("result", {})
+    records = result.get("structuredContent", {}).get("records", [])
+    if result.get("isError") or not any(r.get("signature") == expected.get("signature") and r.get("identity") == expected.get("identity") for r in records):
+        fail(f"MCP search {name} differs from CLI: {reply}")
+
+for seq, name, expected in zip((11, 12, 13), ("list_price_cents", "book_sales", "order_lines"), bookshop_discovery_before):
+    mcp_search_matches(seq, name, expected)
 mcp_defs = mcp_typed(3, "backend.sql_query", {"role": "definition", "kind": "table", "limit": 128}, "sql-query")
 mcp_diag = mcp_typed(4, "backend.sql_query", {"role": "diagnostic", "limit": 128}, "sql-query")
 mcp_impact = mcp_typed(5, "backend.impact", {"sql_column": "books.list_price_cents", "limit": 200}, "impact")
@@ -469,6 +478,8 @@ mcp = subprocess.Popen([str(bundle / "backend-mcp"), "--project", str(project), 
 rpc(6, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "sql-public-journey", "version": "1"}})
 mcp.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
 mcp.stdin.flush()
+for seq, name, expected in zip((14, 15, 16), ("list_price_cents", "book_sales", "order_lines"), bookshop_discovery_after):
+    mcp_search_matches(seq, name, expected)
 cold_diag = mcp_typed(7, "backend.sql_query", {"role": "diagnostic", "limit": 128}, "sql-query")
 cold_impact = mcp_typed(8, "backend.impact", {"sql_column": "books.list_price_cents", "limit": 200}, "impact")
 cold_table = mcp_typed(10, "backend.impact", {"sql_table": "order_lines", "limit": 200}, "impact")
