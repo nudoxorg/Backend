@@ -602,28 +602,6 @@ pub fn function_headers(
         .map_err(|error| format!("native TSZ header parse stopped: {error:?}"))?;
     if !parser.get_diagnostics().is_empty() { return Ok(Vec::new()); }
     let arena = &parser.arena;
-    // TSZ stores `async` separately and starts the function node at `function`.
-    // The native scanner supplies its token position; this is only a candidate
-    // until the selected compiler image proves the complete matching extent.
-    let mut scanner = tsz::ScannerState::new(text.to_owned(), true);
-    let mut preceding_async = BTreeMap::new();
-    let mut previous = None;
-    loop {
-        poll(checkpoint, 1)?;
-        let kind = scanner.scan();
-        if kind == SyntaxKind::EndOfFileToken { break; }
-        let start = u32::try_from(scanner.get_token_start()).map_err(|_| "native token offset overflow")?;
-        if kind == SyntaxKind::FunctionKeyword {
-            if let Some((SyntaxKind::AsyncKeyword, async_start, async_end)) = previous {
-                if let Some(between) = text.get(async_end as usize..start as usize)
-                    && !between.contains(['\n', '\r', '\u{2028}', '\u{2029}']) {
-                    preceding_async.insert(start, async_start);
-                }
-            }
-        }
-        let end = u32::try_from(scanner.get_token_end()).map_err(|_| "native token offset overflow")?;
-        previous = Some((kind, start, end));
-    }
     let mut export_starts = BTreeMap::<u32, Option<u32>>::new();
     for (index, node) in arena.nodes.iter().enumerate() {
         poll(checkpoint, 1)?;
@@ -643,15 +621,30 @@ pub fn function_headers(
         let Some((body_start, _)) = arena.pos_end_at(function.body) else { continue };
         let Some((name_start, name_end)) = arena.pos_end_at(function.name) else { continue };
         if !(start <= name_start && name_start < name_end && name_end <= body_start && body_start < end) { continue; }
-        let compiler_start = if function.is_async {
-            let Some(start) = preceding_async.get(&start).copied() else { continue };
-            start
-        } else { start };
         let header_start = match export_starts.get(&index.0) {
             Some(Some(start)) => *start,
             Some(None) => continue,
-            None => compiler_start,
+            None if function.is_async => continue,
+            None => start,
         };
+        let compiler_start = if function.is_async {
+            // Only scan the TSZ-owned wrapper prefix, never a context-free
+            // whole file: regex, JSX and templates require parser rescans.
+            let Some(prefix) = text.get(header_start as usize..start as usize) else { continue };
+            let mut scanner = tsz::ScannerState::new(prefix.to_owned(), true);
+            let mut last = None;
+            loop {
+                poll(checkpoint, 1)?;
+                let kind = scanner.scan();
+                if kind == SyntaxKind::EndOfFileToken { break; }
+                last = Some((kind, scanner.get_token_start(), scanner.get_token_end()));
+            }
+            let Some((SyntaxKind::AsyncKeyword, offset, end)) = last else { continue };
+            let Some(gap) = prefix.get(end..) else { continue };
+            if gap.contains(['\n', '\r', '\u{2028}', '\u{2029}']) { continue; }
+            let Some(offset) = u32::try_from(offset).ok().and_then(|offset| header_start.checked_add(offset)) else { continue };
+            offset
+        } else { start };
         if header_start > start || text.get(header_start as usize..body_start as usize).is_none()
             || text.get(start as usize..end as usize).is_none() { continue; }
         if headers.len() == MAX_HEADERS { return Ok(Vec::new()); }
