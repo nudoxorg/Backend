@@ -588,9 +588,14 @@ pub(in crate::builtin) fn admitted_native_evidence<'a>(
                 else {
                     continue;
                 };
-                // The raw source row is not a compiler receipt. Header
-                // resolution is performed only after opening its selected
-                // closure witness in the command adapter.
+                if let Some(reference) = &row.headers {
+                    let identity = *backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref()).as_ref();
+                    if reference.image_identity != identity || reference.image_byte_len != image.as_ref().len() as u64 {
+                        return Err(BuiltinModelError("native header reference differs from selected image".into()));
+                    }
+                }
+                // A row reference alone is not a compiler receipt. Header
+                // resolution opens the selected closure witness separately.
                 let header_extent = None;
                 if found
                     .replace(AdmittedNativeEvidence {

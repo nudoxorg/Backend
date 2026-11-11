@@ -5768,12 +5768,25 @@ impl CommandAdapter {
         let qualification = issue_observed_native_source_policy(
             &snapshot, selection, &evidence, &root, authority, source_budget,
         )?;
-        let signature = if let Some(header_extent) = evidence.header_extent() {
-            *source_budget = source_budget.checked_sub((evidence.claim().byte_length as usize).saturating_add(1))
-                .ok_or_else(unavailable)?;
-            Some(super::super::ingest::read_indexed_native_evidence_header(
-                &root, evidence.claim(), evidence.image_source(), header_extent,
-            ).map_err(|_| unavailable())?)
+        let signature = if evidence.claim().headers.is_some() {
+            let (aggregate, digest) = self.semantic_authority.selected_native_header_aggregate(
+                evidence.publication_key(), evidence.publication_claim(), source_budget,
+            ).map_err(|_| unavailable())?.ok_or_else(unavailable)?;
+            let file = super::super::native_ts_headers::witnessed_file(evidence.claim(), &aggregate, digest)
+                .map_err(|_| unavailable())?;
+            if file.producer_recipe != super::super::native_ts_headers::producer_recipe() {
+                None
+            } else {
+                let entry = file.entry(evidence.entity_id().raw).ok_or_else(unavailable)?;
+                if entry.identity != evidence.declaration_identity() || Some(entry.compiler_extent) != evidence.primary_extent() {
+                    return Err(unavailable());
+                }
+                *source_budget = source_budget.checked_sub((evidence.claim().byte_length as usize).saturating_add(1))
+                    .ok_or_else(unavailable)?;
+                Some(super::super::ingest::read_indexed_native_evidence_header(
+                    &root, evidence.claim(), evidence.image_source(), entry.header_extent,
+                ).map_err(|_| unavailable())?)
+            }
         } else { None };
         let explicit_range = request.is_some();
         let implicit_range = recover_excerpt && !explicit_range && evidence.primary_extent().is_some();
