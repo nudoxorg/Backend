@@ -1,6 +1,6 @@
 //! Bounded SDK observation using a generated project; never evaluates user project XML.
 //! The result is a claim, not proof of MSBuild closure or selected compiler authority.
-use backend_platform::child_output::{CaptureCommand, CaptureEnvironment, CaptureLimits, capture};
+use backend_platform::child_output::{capture, CaptureCommand, CaptureEnvironment, CaptureLimits};
 use serde_json::Value;
 use sha2::Digest;
 use std::{
@@ -128,6 +128,20 @@ impl CSharpResolverReceipt {
         }
         hash.finalize().into()
     }
+
+    /// Candidate-set identity retained for binding a replay to the exact
+    /// inputs observed by this resolver attempt.
+    #[must_use]
+    pub const fn candidate_digest(&self) -> [u8; 32] {
+        self.candidate_digest
+    }
+
+    /// Selected-byte identity retained for binding a replay to the owned
+    /// output snapshot, rather than to a path or assembly-name claim.
+    #[must_use]
+    pub const fn selected_digest(&self) -> [u8; 32] {
+        self.selected_digest
+    }
 }
 
 struct CandidateSnapshot {
@@ -234,6 +248,26 @@ impl CSharpResolvedReferenceSnapshot {
             && self.receipt.target_framework == target_framework
             && self.receipt.global_json_digest == global_json_digest
             && self.receipt.candidate_digest == candidate_digest
+    }
+
+    /// Replays a persisted typed receipt only against this same-attempt
+    /// selected snapshot. Decoding a sidecar alone never grants authority:
+    /// the receipt must be byte-identical to the in-memory receipt and the
+    /// owned selected files must still pass custody checks.
+    pub fn replay_receipt(
+        &self,
+        persisted: &CSharpResolverReceipt,
+        sdk_directory: &Path,
+        target_framework: &str,
+        global_json_digest: Option<[u8; 32]>,
+    ) -> bool {
+        persisted == &self.receipt
+            && self.receipt_matches(
+                sdk_directory,
+                target_framework,
+                global_json_digest,
+                persisted.candidate_digest,
+            )
     }
 }
 
@@ -1253,6 +1287,100 @@ mod tests {
         fs::write(&snapshot.references[0], b"changed").unwrap();
         assert!(!snapshot.receipt_is_consistent());
     }
+
+    #[test]
+    fn persisted_receipt_replay_requires_same_selected_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let selected = directory.path().join("selected");
+        fs::create_dir(&selected).unwrap();
+        let file = selected.join("A.dll");
+        fs::write(&file, b"selected").unwrap();
+        let bytes = fs::read(&file).unwrap();
+        let mut hash = sha2::Sha256::new();
+        hash.update(b"csharp.sdk-reference-snapshot.v2\0");
+        hash.update(1_u64.to_le_bytes());
+        hash.update(5_u64.to_le_bytes());
+        hash.update(b"A.dll");
+        hash.update((bytes.len() as u64).to_le_bytes());
+        hash.update(&bytes);
+        let selected_digest: [u8; 32] = hash.finalize().into();
+        let sdk = tempfile::tempdir().unwrap();
+        let receipt = CSharpResolverReceipt {
+            sdk_directory: sdk.path().canonicalize().unwrap(),
+            target_framework: "net10.0".to_owned(),
+            global_json_digest: None,
+            candidate_digest: [8; 32],
+            selected_digest,
+            selected_names: vec!["A.dll".into()].into_boxed_slice(),
+        };
+        let snapshot = CSharpResolvedReferenceSnapshot {
+            directory,
+            references: vec![file].into_boxed_slice(),
+            digest: selected_digest,
+            receipt: receipt.clone(),
+        };
+        let encoded = receipt.encode().unwrap();
+        let decoded = CSharpResolverReceipt::decode(&encoded).unwrap();
+        assert!(snapshot.replay_receipt(&decoded, sdk.path(), "net10.0", None));
+        fs::write(&snapshot.references[0], b"tampered").unwrap();
+        assert!(!snapshot.replay_receipt(&decoded, sdk.path(), "net10.0", None));
+    }
+
+    /// Native fixture driver. Set `R35_CSHARP_SDK_DOTNET`,
+    /// `R35_CSHARP_SDK_DIR`, `R35_CSHARP_SDK_TARGET`, and a platform-separated
+    /// `R35_CSHARP_SDK_CANDIDATES` to run against the exact restored fixture.
+    /// This remains ignored by default because it invokes the selected SDK;
+    /// campaign orchestration owns the build/test slot.
+    #[test]
+    #[ignore = "requires the campaign's restored SDK fixture and allocated test slot"]
+    fn native_fixture_resolver_captures_selected_receipt() {
+        let dotnet = std::env::var_os("R35_CSHARP_SDK_DOTNET").expect("dotnet fixture path");
+        let sdk = std::env::var_os("R35_CSHARP_SDK_DIR").expect("SDK fixture path");
+        let target = std::env::var("R35_CSHARP_SDK_TARGET").expect("target framework");
+        let candidate_text =
+            std::env::var_os("R35_CSHARP_SDK_CANDIDATES").expect("candidate paths");
+        let candidates = std::env::split_paths(&candidate_text).collect::<Vec<_>>();
+        assert!(!candidates.is_empty());
+        let assets = std::env::var_os("R35_CSHARP_SDK_ASSETS").map(PathBuf::from);
+        let assets_digest = assets.as_ref().map(|path| {
+            let bytes = fs::read(path).expect("assets");
+            sha2::Sha256::digest(bytes).into()
+        });
+        let global_json = std::env::var_os("R35_CSHARP_SDK_GLOBAL_JSON")
+            .map(PathBuf::from)
+            .map(|path| fs::read_to_string(path).expect("global.json"));
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let snapshot = resolve_references_with_sdk(
+            Path::new(&dotnet),
+            &target,
+            Path::new(&sdk),
+            global_json.as_deref(),
+            &candidates,
+            assets.as_deref(),
+            assets_digest,
+            Instant::now() + Duration::from_secs(120),
+            &cancelled,
+        )
+        .expect("native SDK resolver");
+        assert!(snapshot.receipt_is_consistent());
+        let persisted = CSharpResolverReceipt::decode(&snapshot.receipt().encode().unwrap())
+            .expect("typed receipt");
+        assert!(snapshot.replay_receipt(
+            &persisted,
+            Path::new(&sdk),
+            &target,
+            global_json
+                .as_deref()
+                .map(|text| sha2::Sha256::digest(text.as_bytes()).into()),
+        ));
+        if let Ok(expected) = std::env::var("R35_CSHARP_SDK_EXPECTED_NAMES") {
+            let mut actual = snapshot.receipt().selected_names.to_vec();
+            actual.sort();
+            for name in expected.split(',').filter(|name| !name.is_empty()) {
+                assert!(actual.iter().any(|actual| actual.as_ref() == name));
+            }
+        }
+    }
     use super::*;
     use std::time::Duration;
 
@@ -1283,13 +1411,11 @@ mod tests {
         let second = tempfile::tempdir().unwrap();
         fs::write(first.path().join("Core.dll"), b"first").unwrap();
         fs::write(second.path().join("core.dll"), b"second").unwrap();
-        assert!(
-            CSharpTargetingSnapshot::capture(&[
-                first.path().to_path_buf(),
-                second.path().to_path_buf()
-            ])
-            .is_err()
-        );
+        assert!(CSharpTargetingSnapshot::capture(&[
+            first.path().to_path_buf(),
+            second.path().to_path_buf()
+        ])
+        .is_err());
     }
 
     #[test]
@@ -1342,22 +1468,18 @@ mod tests {
 
     #[test]
     fn global_json_refuses_duplicate_and_unknown_sdk_keys() {
-        assert!(
-            serde_json::from_str::<GlobalJson>(
-                r#"{"sdk":{"version":"10.0.403","rollForward":"disable"}}"#
-            )
-            .is_ok()
-        );
+        assert!(serde_json::from_str::<GlobalJson>(
+            r#"{"sdk":{"version":"10.0.403","rollForward":"disable"}}"#
+        )
+        .is_ok());
         assert!(
             serde_json::from_str::<GlobalJson>(r#"{"sdk":{},"sdk":{"version":"10.0.403"}}"#)
                 .is_err()
         );
-        assert!(
-            serde_json::from_str::<GlobalJson>(
-                r#"{"sdk":{"version":"10.0.403","version":"9.0.100"}}"#
-            )
-            .is_err()
-        );
+        assert!(serde_json::from_str::<GlobalJson>(
+            r#"{"sdk":{"version":"10.0.403","version":"9.0.100"}}"#
+        )
+        .is_err());
         assert!(serde_json::from_str::<GlobalJson>(r#"{"sdk":{"paths":["/tmp"]}}"#).is_err());
         assert!(serde_json::from_str::<GlobalJson>(r#"{"sdk":{},"unknown":true}"#).is_err());
     }
@@ -1390,12 +1512,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(observation.targeting_directories.len(), 2);
-        assert!(
-            observation
-                .usings
-                .iter()
-                .any(|item| item == "Microsoft.AspNetCore.Builder")
-        );
+        assert!(observation
+            .usings
+            .iter()
+            .any(|item| item == "Microsoft.AspNetCore.Builder"));
         assert!(observation.outside_root_unknown);
         assert!(observation.defines.iter().any(|item| item == "NET10_0"));
         let missing = [
@@ -1408,19 +1528,17 @@ mod tests {
                 text: None,
             },
         ];
-        assert!(
-            observe_csharp_sdk(
-                &dotnet,
-                "src/App.csproj",
-                &missing,
-                CSharpSdkKind::Web,
-                "net10.0",
-                true,
-                Instant::now() + Duration::from_secs(60),
-                &cancelled
-            )
-            .is_err()
-        );
+        assert!(observe_csharp_sdk(
+            &dotnet,
+            "src/App.csproj",
+            &missing,
+            CSharpSdkKind::Web,
+            "net10.0",
+            true,
+            Instant::now() + Duration::from_secs(60),
+            &cancelled
+        )
+        .is_err());
         let custom_path = [
             CSharpSdkProbe {
                 path: "src/global.json",
@@ -1431,18 +1549,16 @@ mod tests {
                 text: None,
             },
         ];
-        assert!(
-            observe_csharp_sdk(
-                &dotnet,
-                "src/App.csproj",
-                &custom_path,
-                CSharpSdkKind::Web,
-                "net10.0",
-                true,
-                Instant::now() + Duration::from_secs(60),
-                &cancelled
-            )
-            .is_err()
-        );
+        assert!(observe_csharp_sdk(
+            &dotnet,
+            "src/App.csproj",
+            &custom_path,
+            CSharpSdkKind::Web,
+            "net10.0",
+            true,
+            Instant::now() + Duration::from_secs(60),
+            &cancelled
+        )
+        .is_err());
     }
 }

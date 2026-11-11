@@ -34,7 +34,7 @@ use backend_frontend_python::legacy::checker::{
     PythonProjectReport, PythonProjectSource,
 };
 use backend_frontend_python::legacy::{
-    CheckerError as PyreflyError, CheckerReport as PythonReport, ExtractionError, Pyrefly, extract,
+    extract, CheckerError as PyreflyError, CheckerReport as PythonReport, ExtractionError, Pyrefly,
 };
 use backend_frontend_rust::legacy::{
     RustAnalysisControl, RustAuthorityError, RustCargoMetadataPolicy, RustFeatureControl,
@@ -254,6 +254,8 @@ pub enum PackageAuthorityOwner<'workspace> {
         image: Box<[u8]>,
         /// Same-invocation evidence claim; not selected authority.
         evidence: Option<Box<[u8]>>,
+        /// SDK resolver receipt retained with this exact invocation image.
+        resolver_receipt: Option<backend_frontend_csharp::legacy::CSharpResolverReceipt>,
     },
     /// Java authority image and its doclet session retained until lowering.
     Java {
@@ -334,6 +336,19 @@ impl PackageAuthorityOwner<'_> {
             | Self::CSharp { profile, .. }
             | Self::Java { profile, .. } => *profile,
             Self::TypeScript { profile, .. } => LanguageProfile::TypeScript(*profile),
+        }
+    }
+
+    /// Returns the same-attempt SDK resolver receipt retained with a C# image.
+    #[must_use]
+    pub fn csharp_resolver_receipt(
+        &self,
+    ) -> Option<&backend_frontend_csharp::legacy::CSharpResolverReceipt> {
+        match self {
+            Self::CSharp {
+                resolver_receipt, ..
+            } => resolver_receipt.as_ref(),
+            _ => None,
         }
     }
 }
@@ -1079,7 +1094,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         configuration: configuration.configuration,
                     })
                     .map_err(PackageAuthorityError::CSharp)?;
-                let (image, evidence) = image.into_parts();
+                let (image, evidence, resolver_receipt) = image.into_parts_with_resolver_receipt();
                 let image = retain_image(
                     image.into_vec(),
                     request.configuration.maximum_image_bytes,
@@ -1095,6 +1110,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                     profile: request.profile,
                     image,
                     evidence,
+                    resolver_receipt,
                 }
             }
         };

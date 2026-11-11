@@ -252,6 +252,7 @@ pub struct CSharpOracle {
 pub struct CSharpAuthorityImage {
     bytes: Box<[u8]>,
     evidence: Option<Box<[u8]>>,
+    resolver_receipt: Option<crate::legacy::sdk::CSharpResolverReceipt>,
 }
 
 impl CSharpAuthorityImage {
@@ -260,6 +261,13 @@ impl CSharpAuthorityImage {
     #[must_use]
     pub fn captured_evidence(&self) -> Option<&[u8]> {
         self.evidence.as_deref()
+    }
+
+    /// SDK resolver custody carried with this same-attempt image, when the
+    /// caller supplied an SDK-selected reference snapshot.
+    #[must_use]
+    pub fn resolver_receipt(&self) -> Option<&crate::legacy::sdk::CSharpResolverReceipt> {
+        self.resolver_receipt.as_ref()
     }
 
     /// Borrows the exact validated image bytes for the next compiler boundary.
@@ -278,6 +286,19 @@ impl CSharpAuthorityImage {
     #[must_use]
     pub fn into_parts(self) -> (Box<[u8]>, Option<Box<[u8]>>) {
         (self.bytes, self.evidence)
+    }
+
+    /// Separates image, helper evidence, and the same-attempt SDK resolver
+    /// receipt for callers that persist a typed invocation sidecar.
+    #[must_use]
+    pub fn into_parts_with_resolver_receipt(
+        self,
+    ) -> (
+        Box<[u8]>,
+        Option<Box<[u8]>>,
+        Option<crate::legacy::sdk::CSharpResolverReceipt>,
+    ) {
+        (self.bytes, self.evidence, self.resolver_receipt)
     }
 
     /// Reopens the retained bytes through the typed image reader.
@@ -746,10 +767,14 @@ impl CSharpOracle {
         &self,
         request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
     ) -> Result<CSharpAuthorityImage, CSharpAuthorityError> {
+        let resolver_receipt = request
+            .resolved_reference_snapshot
+            .map(|snapshot| snapshot.receipt().clone());
         self.authority_image_with_evidence(request)
             .map(|(bytes, evidence)| CSharpAuthorityImage {
                 bytes: bytes.into_boxed_slice(),
                 evidence,
+                resolver_receipt,
             })
     }
 }
@@ -1279,7 +1304,7 @@ fn stderr_tail(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use backend_semantic::vocabulary::{MAX_NATIVE_WORKER_PANIC_BYTES, NativeWorkerPanicClass};
+    use backend_semantic::vocabulary::{NativeWorkerPanicClass, MAX_NATIVE_WORKER_PANIC_BYTES};
     use std::sync::atomic::AtomicBool;
 
     #[test]
