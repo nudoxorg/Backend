@@ -149,8 +149,8 @@ impl NativeSourceEvidence {
                 || headers.entries.iter().any(|entry| {
                     let (start, end) = entry.compiler_extent;
                     let (head_start, head_end) = entry.header_extent;
-                    start >= end || end > self.byte_length || head_start < start
-                        || head_start >= head_end || head_end > end
+                    start >= end || end > self.byte_length || head_start > start
+                        || start >= head_end || head_end > end
                 }) { return Err("invalid native header evidence"); }
         }
         native_source_evidence_key(self.project, self.profile, &self.path).map(|_| ())
@@ -478,7 +478,7 @@ mod tests {
         invalid.headers.as_mut().unwrap().entries.push(duplicate);
         assert!(invalid.validate().is_err());
         let mut invalid = claim.clone();
-        invalid.headers.as_mut().unwrap().entries[0].header_extent = (0, 12);
+        invalid.headers.as_mut().unwrap().entries[0].header_extent = (2, 12);
         assert!(invalid.validate().is_err());
         invalid.kind = NativeSourceEvidenceKind::ProgramMember;
         assert!(invalid.validate().is_err());
