@@ -3590,18 +3590,20 @@ impl ResolvedCSharpProjectGraph {
 
     fn closure(&self, root: &str) -> Result<Vec<&ResolvedCSharpProjectNode>, BuiltinModelError> {
         fn visit<'a>(graph: &'a ResolvedCSharpProjectGraph, path: &str, depth: usize,
-            visiting: &mut BTreeSet<String>, visited: &mut BTreeSet<String>, output: &mut Vec<&'a ResolvedCSharpProjectNode>) -> Result<(), BuiltinModelError> {
+            visiting: &mut BTreeSet<String>, deepest: &mut BTreeMap<String, usize>,
+            emitted: &mut BTreeSet<String>, output: &mut Vec<&'a ResolvedCSharpProjectNode>) -> Result<(), BuiltinModelError> {
             if depth > 16 || visiting.contains(path) { return Err(BuiltinModelError("C# graph cycle or depth limit".to_owned())); }
-            if !visited.insert(path.to_owned()) { return Ok(()); }
+            if deepest.get(path).is_some_and(|previous| *previous >= depth) { return Ok(()); }
+            deepest.insert(path.to_owned(), depth);
             let node = graph.node(path).ok_or_else(|| BuiltinModelError("C# graph reference is missing".to_owned()))?;
             visiting.insert(path.to_owned());
-            for dependency in &node.project_references { visit(graph, dependency, depth + 1, visiting, visited, output)?; }
+            for dependency in &node.project_references { visit(graph, dependency, depth + 1, visiting, deepest, emitted, output)?; }
             visiting.remove(path);
-            output.push(node);
+            if emitted.insert(path.to_owned()) { output.push(node); }
             Ok(())
         }
         let mut output = Vec::new();
-        visit(self, root, 0, &mut BTreeSet::new(), &mut BTreeSet::new(), &mut output)?;
+        visit(self, root, 0, &mut BTreeSet::new(), &mut BTreeMap::new(), &mut BTreeSet::new(), &mut output)?;
         Ok(output)
     }
 
@@ -3610,16 +3612,17 @@ impl ResolvedCSharpProjectGraph {
     fn source_project_path(&self, path: &str) -> Option<&str> {
         let mut selected = None;
         let mut depth = None;
+        let mut tied = false;
         for node in &self.nodes {
             let directory = node.project_path.rsplit_once('/').map_or("", |(directory, _)| directory);
             if !directory.is_empty() && !path.strip_prefix(directory).is_some_and(|suffix| suffix.starts_with('/')) { continue; }
             let candidate_depth = directory.len();
-            if depth == Some(candidate_depth) { return None; }
+            if depth == Some(candidate_depth) { tied = true; }
             if depth.is_none_or(|current| candidate_depth > current) {
-                selected = Some(node.project_path.as_str()); depth = Some(candidate_depth);
+                selected = Some(node.project_path.as_str()); depth = Some(candidate_depth); tied = false;
             }
         }
-        selected
+        if tied { None } else { selected }
     }
 
     fn retained_bytes(&self) -> Option<usize> {
