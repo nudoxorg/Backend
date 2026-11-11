@@ -111,7 +111,7 @@ fn fake_npm_and_pypi_discovery_to_pinned_product_reads() {
             },
         ).expect("explore discovered package");
         assert_eq!(explored.id(), backend_library::CommandId::Explore);
-        explored.admit().expect("admitted explore evidence");
+        explored.admit(backend_library::CommandId::Explore).expect("admitted explore evidence");
         let SurfaceReply::ExploredSearchPage(page) = &explored else {
             panic!("explore must retain discovery authority");
         };

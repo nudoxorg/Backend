@@ -4462,6 +4462,52 @@ pub struct RegistryPackageRecord {
     pub advisory: AdvisoryPackageDto,
 }
 
+/// A bounded current file observation from a project-local installed package.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstalledPackageFile {
+    /// Project-relative local source path, observed without executing package code.
+    pub path: ProductText,
+    /// Digest of the complete bounded file.
+    pub digest: [u8; 32],
+    /// Complete source byte length.
+    pub bytes: u64,
+    /// UTF-8 prefix, bounded to the product text budget.
+    pub excerpt: ProductText,
+    /// Whether the source exceeds the returned prefix.
+    pub truncated: bool,
+}
+
+/// Local installation evidence, distinct from registry or compiler authority.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstalledPackageFacts {
+    /// Indexed project root containing this installation.
+    pub project: ProductText,
+    /// Exact identity read from installed metadata, never inferred from the request.
+    pub package: PackageCoordinate,
+    /// Installed metadata file, documentation, and API entrypoint observations.
+    pub files: Box<[InstalledPackageFile]>,
+    /// Raw dependency constraints recorded by the installation metadata.
+    pub requirements: Box<[ProductText]>,
+    /// Runtime constraints recorded by the installation metadata.
+    pub engines: Box<[ProductText]>,
+}
+
+
+fn admit_installed_package(facts: &InstalledPackageFacts) -> Result<(), ProductAdmissionError> {
+    if facts.files.is_empty() || facts.files.len() > 8 || facts.requirements.len() > 128 || facts.engines.len() > 16 {
+        return Err(ProductAdmissionError::RowBound);
+    }
+    for text in std::iter::once(&facts.project).chain(facts.requirements.iter()).chain(facts.engines.iter()).chain(facts.files.iter().flat_map(|file| [&file.path, &file.excerpt])) {
+        ProductText::new(text.as_str()).map_err(|_| ProductAdmissionError::RowBound)?;
+    }
+    if facts.files.iter().any(|file| file.bytes > 4 * 1024 * 1024) {
+        return Err(ProductAdmissionError::RowBound);
+    }
+    Ok(())
+}
+
 /// Freshness of an unacquired package claim returned by catalog discovery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "kebab-case")]
@@ -5511,6 +5557,12 @@ pub enum SurfaceReply {
     ExploredSearchPage(IndexSearchPage),
     /// Exact package records.
     Package(Box<[RegistryPackageRecord]>),
+    /// Current project-local installation facts and bounded API source excerpts.
+    PackageInstalled(InstalledPackageFacts),
+    /// Dependency constraints read from project-local installation metadata.
+    DependenciesInstalled(InstalledPackageFacts),
+    /// Only installed versions observed locally; this is not a registry version catalog.
+    PackageVersionsInstalled(Box<[InstalledPackageFacts]>),
     /// Exact source metadata, kept separate from acquired package authority.
     PackageDiscovery {
         /// Exact version-pinned package requested by the caller.
@@ -5665,19 +5717,19 @@ impl SurfaceReply {
             Self::References { .. } => CommandId::References,
             Self::Diff(_) => CommandId::Diff,
             Self::Explored(_) | Self::ExploredDeclarations(_) | Self::ExploredSearchPage(_) => CommandId::Explore,
-            Self::Package(_) => CommandId::Package,
+            Self::Package(_) | Self::PackageInstalled(_) => CommandId::Package,
             Self::PackageDiscovery { .. } => CommandId::Package,
             Self::PackageDetails { .. } => CommandId::Package,
             Self::ForgePackageAdded(_) => CommandId::ForgeAdd,
             Self::ForgePackageReferenced(_) => CommandId::ForgeReference,
             Self::Dependents(_) => CommandId::Dependents,
-            Self::Dependencies(_) => CommandId::Dependencies,
+            Self::Dependencies(_) | Self::DependenciesInstalled(_) => CommandId::Dependencies,
             Self::PackageGraphPage(_) => CommandId::PackageGraphPage,
             Self::Owner(_) => CommandId::Owner,
             Self::IndexSearch(_) => CommandId::IndexSearch,
             Self::IndexSearchWithDiscovery(_) => CommandId::IndexSearch,
             Self::IndexSearchPage(_) => CommandId::IndexSearch,
-            Self::PackageVersions(_) => CommandId::PackageVersions,
+            Self::PackageVersions(_) | Self::PackageVersionsInstalled(_) => CommandId::PackageVersions,
             Self::SemanticVersions(_) | Self::SemanticVersionsPage(_) => {
                 CommandId::SemanticVersions
             }
@@ -5780,6 +5832,14 @@ impl SurfaceReply {
                     .checked_add(row.links.len())
                     .ok_or(ProductAdmissionError::RowBound)
             })?,
+            Self::PackageInstalled(facts) | Self::DependenciesInstalled(facts) => {
+                admit_installed_package(facts)?;
+                1
+            }
+            Self::PackageVersionsInstalled(facts) => {
+                for fact in facts { admit_installed_package(fact)?; }
+                facts.len()
+            }
             Self::ExploredDeclarations(v) => v.len(),
             Self::Explored(v)
             | Self::Package(v)
@@ -6151,6 +6211,10 @@ impl SurfaceReply {
             | Self::Owner(RegistryMetadata::Partial { value, reason }) => {
                 registry_records_bound(value).saturating_add(text_bound(reason))
             }
+            Self::PackageInstalled(facts) | Self::DependenciesInstalled(facts) => fixed_record_bound()
+                .saturating_add(serde_json::to_vec(facts).map_or(0, |bytes| bytes.len())),
+            Self::PackageVersionsInstalled(facts) => fixed_record_bound()
+                .saturating_add(serde_json::to_vec(facts).map_or(0, |bytes| bytes.len())),
             Self::ExploredDeclarations(records) => fixed_record_bound()
                 .saturating_add(serde_json::to_vec(records).map_or(0, |bytes| bytes.len())),
             Self::IndexSearchWithDiscovery(hits) => hits.iter().fold(0_usize, |bound, hit| {

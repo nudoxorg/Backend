@@ -1325,8 +1325,13 @@ impl CommandAdapter {
                     BuiltinModelError(format!("select forge metadata authority: {error:?}"))
                 })?
                 .is_empty();
+            let installed = !super::super::installed_packages::find(
+                daemon.engine().daemon().library().view(),
+                &backend_library::PackageReference::Purl(package.clone()), false,
+            ).map_err(BuiltinModelError)?.is_empty();
             if !acquired
                 && !forged
+                && !installed
                 && let Some(discovery) = self.discovery.as_ref()
                 && let crate::discovery::package_metadata::PackageMetadataPreparation::Fetch(
                     metadata,
@@ -5688,8 +5693,11 @@ impl CommandAdapter {
                 }
                 None => {
                     return Err(backend_library::CommandFailure::InvalidQuery(
-                        "indexed source freshness could not be verified; reindex and retry"
-                            .to_owned(),
+                        if row.label.contains("::external::") {
+                            "external library source is not indexed; use package <version-pinned PURL> for installed metadata and API excerpts, or index the installed package directory".to_owned()
+                        } else {
+                            "indexed source freshness could not be verified; reindex and retry".to_owned()
+                        },
                     ));
                 }
             }

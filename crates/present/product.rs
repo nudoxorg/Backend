@@ -1763,6 +1763,17 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         )
         .with_index_search_page(page),
         SurfaceReply::Package(records) => ProductView::rows("package", registry_rows(records)),
+        SurfaceReply::PackageInstalled(facts) => installed_package_view("package", facts, true),
+        SurfaceReply::DependenciesInstalled(facts) => installed_package_view("dependencies", facts, false),
+        SurfaceReply::PackageVersionsInstalled(facts) => {
+            let mut view = ProductView::rows("package-versions", facts.iter().map(|fact| ProductRecord::new(
+                fact.package.as_str(), Some(fact.package.as_str().to_owned()),
+                vec![format!("installed locally in {}", fact.project.as_str()), fact.engines.iter().map(|e| e.as_str()).collect::<Vec<_>>().join("; ")],
+            )).collect());
+            view.note = Some("Only locally installed versions are shown; registry version availability and compiler compatibility are not established.".to_owned());
+            view
+        }
+
         SurfaceReply::PackageDiscovery {
             package,
             observation,
@@ -3688,6 +3699,21 @@ fn metadata_view(
             ),
         ),
     }
+}
+
+fn installed_package_view(heading: &str, facts: &backend_library::InstalledPackageFacts, include_files: bool) -> ProductView {
+    let mut rows = vec![ProductRecord::new(facts.package.as_str(), Some(facts.package.as_str().to_owned()), vec![format!("local installation in {}", facts.project.as_str()), "registry standing and advisories unknown".to_owned()])];
+    rows.extend(facts.engines.iter().map(|engine| ProductRecord::new("runtime constraint", None, vec![engine.as_str().to_owned()])));
+    rows.extend(facts.requirements.iter().map(|requirement| ProductRecord::new("declared dependency", None, vec![requirement.as_str().to_owned()])));
+    if include_files {
+        rows.extend(facts.files.iter().map(|file| ProductRecord::new(file.path.as_str(), None, vec![
+            format!("observed {} bytes · digest {} · {}", file.bytes, file.digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>(), if file.truncated { "partial source excerpt" } else { "complete source excerpt" }),
+            file.excerpt.as_str().to_owned(),
+        ])));
+    }
+    let mut view = ProductView::rows(heading, rows);
+    view.note = Some("Current local metadata and bounded API entrypoint excerpts; files were read without executing package code. API coverage is partial; no compiler graph or registry acquisition is implied.".to_owned());
+    view
 }
 
 fn dependency_view(

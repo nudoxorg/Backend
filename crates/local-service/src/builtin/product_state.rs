@@ -752,7 +752,10 @@ impl ProductState {
                     }
                     PackageReference::Local(_) => Vec::new(),
                 };
-                if forge_details.is_empty() {
+                let mut installed = super::installed_packages::find(view, &package, false)?;
+                if !installed.is_empty() {
+                    (SurfaceReply::PackageInstalled(installed.remove(0)), false)
+                } else if forge_details.is_empty() {
                     let reply = match package_page(view, catalog, catalog_index, &package) {
                         Ok(rows) => SurfaceReply::Package(rows),
                         Err(error) => discovered_package(discovery, &package)?.ok_or(error)?,
@@ -774,10 +777,14 @@ impl ProductState {
                     "forge acquisition authority is not configured in this owner".to_owned(),
                 );
             }
-            SurfaceCommand::Dependencies { package } => (
-                SurfaceReply::Dependencies(dependencies(dependency_graph, &package)?),
-                false,
-            ),
+            SurfaceCommand::Dependencies { package } => {
+                let mut installed = super::installed_packages::find(view, &package, false)?;
+                if installed.is_empty() {
+                    (SurfaceReply::Dependencies(dependencies(dependency_graph, &package)?), false)
+                } else {
+                    (SurfaceReply::DependenciesInstalled(installed.remove(0)), false)
+                }
+            }
             SurfaceCommand::PackageGraphPage { .. } => {
                 return Err(
                     "package graph pages must be read by the durable snapshot projection"
@@ -800,6 +807,10 @@ impl ProductState {
                 return Err("native SQL reads require the durable owner snapshot adapter".to_owned());
             }
             SurfaceCommand::PackageVersions { package } => {
+                let installed = super::installed_packages::find(view, &package, true)?;
+                if !installed.is_empty() {
+                    return Ok((SurfaceReply::PackageVersionsInstalled(installed.into_boxed_slice()), false));
+                }
                 let rows =
                     package_versions(view, catalog, catalog_index, &package, workspace)?.rows;
                 if rows.is_empty() {
@@ -4146,6 +4157,7 @@ fn subject_title(subject: &TreeSubject) -> ProductText {
 mod tests {
     use super::*;
     include!("product_state/discovery_journey_test.rs");
+    include!("product_state/installed_package_tests.rs");
     include!("product_state/advisory_matrix_tests.rs");
     use backend_engine::registry::{
         DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryFact, DiscoveryObservedAt,

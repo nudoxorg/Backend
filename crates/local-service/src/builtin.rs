@@ -208,6 +208,7 @@ use product_state::ProductState;
 mod coverage;
 #[path = "builtin/local_manifest.rs"]
 mod local_manifest;
+mod installed_packages;
 #[path = "builtin/project_root_residence.rs"]
 mod project_root_residence;
 #[path = "builtin/search_source_page.rs"]
