@@ -1140,8 +1140,10 @@ pub(super) fn admit_replayed_native_evidence(
                 || !program.image_matches(path, backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref()).as_ref()) {
                 return Err(BuiltinModelError("native replay image differs from Program or evidence".into()));
             }
-            super::native_ts_headers::admit_image(row, &view, image.as_ref())
-                .map_err(|error| BuiltinModelError(format!("native replay header: {error}")))?;
+            if let Some(headers) = &row.headers {
+                super::native_ts_headers::admit_image(row, headers, &view, image.as_ref())
+                    .map_err(|error| BuiltinModelError(format!("native replay header: {error}")))?;
+            }
         }
         for (path, row) in remaining {
             // Non-emitted inputs still bind the exact Program, but cannot

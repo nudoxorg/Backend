@@ -35,10 +35,10 @@ pub(super) struct NativeTsHeader {
 /// publication; these checks do not manufacture that authority.
 pub(super) fn admit_image(
     claim: &NativeSourceEvidence,
+    headers: &backend_engine::builtin::NativeHeaderEvidence,
     image: &SemanticImageView<'_>,
     encoded: &[u8],
 ) -> Result<(), String> {
-    let Some(headers) = &claim.headers else { return Ok(()) };
     let identity = *backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(encoded).as_ref();
     if headers.image_identity != identity || headers.image_byte_len != encoded.len() as u64 {
         return Err("native header image differs".into());

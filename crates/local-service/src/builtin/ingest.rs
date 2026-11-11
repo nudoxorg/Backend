@@ -593,14 +593,17 @@ impl NativeTsCapture {
                 if header.source != source
                     || header.headers.producer_recipe != super::native_ts_headers::producer_recipe()
                 { return Err("native header producer or source differs".into()); }
-                let mut row = captured_source.evidence.clone();
-                row.headers = Some(header.headers.clone());
-                row.validate().map_err(str::to_owned)?;
-                super::native_ts_headers::admit_image(&row, &view, image.as_ref())?;
-                // Keep the source/line evidence when optional headers cannot
-                // fit the canonical relation row; never publish a partial list.
-                if row.checked_encoded_len().is_some_and(|len| len <= backend_engine::builtin::MAX_NATIVE_EVIDENCE_STORED_VALUE) {
-                    admitted_headers.insert(path.to_owned(), header.headers.clone());
+                super::native_ts_headers::admit_image(&captured_source.evidence, &header.headers, &view, image.as_ref())?;
+                // NSE3 adds kind/count to NSE1, then its fixed header framing
+                // and fixed-size entries. Forecast without cloning or encoding.
+                let base = captured_source.evidence.checked_encoded_len().ok_or("native source evidence size overflow")?;
+                let legacy_extra = usize::from(captured_source.evidence.line_starts.is_none()) * 5;
+                let header_bytes = header.headers.entries.len().checked_mul(52)
+                    .and_then(|n| n.checked_add(76)).ok_or("native header framing overflow")?;
+                let total = base.checked_add(legacy_extra).and_then(|n| n.checked_add(header_bytes))
+                    .ok_or("native header evidence size overflow")?;
+                if total <= backend_engine::builtin::MAX_NATIVE_EVIDENCE_STORED_VALUE {
+                    admitted_headers.insert(path, &header.headers);
                 }
             }
         }
@@ -608,15 +611,23 @@ impl NativeTsCapture {
         // A mapped program input is source evidence even when this profile
         // did not emit an image for it. Keep that weaker fact distinct from
         // an admitted image; consumers must not infer declarations from it.
+        let mut candidate_budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
         let mut evidence = members.keys().map(|path| {
-            let mut row = captured.get(path)
-                .ok_or("native program member lost its captured source")?.evidence.clone();
+            let source = captured.get(path).ok_or("native program member lost its captured source")?;
+            let mut charge = source.evidence.checked_heap_bytes().and_then(|n| n.checked_add(256))
+                .ok_or("native source evidence resident overflow")?;
+            if let Some(headers) = admitted_headers.get(path) {
+                charge = charge.checked_add(headers.entries.capacity().checked_mul(std::mem::size_of::<backend_engine::builtin::NativeHeaderEntry>()).ok_or("native header resident overflow")?)
+                    .and_then(|n| n.checked_add(128)).ok_or("native header resident overflow")?;
+            }
+            candidate_budget = candidate_budget.checked_sub(charge).ok_or("native evidence candidate budget exceeded")?;
+            let mut row = source.evidence.clone();
             row.kind = if witnessed.contains(*path) {
                 backend_engine::builtin::NativeSourceEvidenceKind::Image
             } else {
                 backend_engine::builtin::NativeSourceEvidenceKind::ProgramMember
             };
-            row.headers = admitted_headers.remove(*path);
+            row.headers = admitted_headers.remove(*path).cloned();
             Ok(row)
         }).collect::<Result<Vec<_>, &str>>()?;
         evidence.sort_unstable_by(|left, right| left.path.cmp(&right.path));
