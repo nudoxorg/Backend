@@ -140,6 +140,8 @@ impl CSharpResolvedReferenceSnapshot {
     pub fn receipt_is_consistent(&self) -> bool {
         if self.receipt.selected_digest != self.digest
             || self.references.len() != self.receipt.selected_names.len()
+            || !self.receipt.sdk_directory.is_absolute()
+            || !self.receipt.sdk_directory.is_dir()
         {
             return false;
         }
@@ -320,6 +322,39 @@ pub fn resolve_references_with_sdk(
         OsString::from("-p:MSBuildEnableWorkloadResolver=false"),
         OsString::from("-p:ImportDirectoryBuildProps=false"),
         OsString::from("-p:ImportDirectoryBuildTargets=false"),
+        OsString::from("-p:ImportDirectoryPackagesProps=false"),
+        OsString::from("-p:ImportByWildcardBeforeMicrosoftCommonProps=false"),
+        OsString::from("-p:ImportByWildcardAfterMicrosoftCommonProps=false"),
+        OsString::from("-p:ImportUserLocationsByWildcardBeforeMicrosoftCommonProps=false"),
+        OsString::from("-p:ImportUserLocationsByWildcardAfterMicrosoftCommonProps=false"),
+        OsString::from("-p:ImportByWildcardBeforeMicrosoftCommonTargets=false"),
+        OsString::from("-p:ImportByWildcardAfterMicrosoftCommonTargets=false"),
+        OsString::from("-p:ImportUserLocationsByWildcardBeforeMicrosoftCommonTargets=false"),
+        OsString::from("-p:ImportUserLocationsByWildcardAfterMicrosoftCommonTargets=false"),
+        OsString::from("-p:ImportByWildcardBeforeMicrosoftCSharpTargets=false"),
+        OsString::from("-p:ImportByWildcardAfterMicrosoftCSharpTargets=false"),
+        OsString::from("-p:ImportUserLocationsByWildcardBeforeMicrosoftCSharpTargets=false"),
+        OsString::from("-p:ImportUserLocationsByWildcardAfterMicrosoftCSharpTargets=false"),
+        OsString::from("-p:ImportByWildcardBeforeMicrosoftCommonCrossTargetingTargets=false"),
+        OsString::from("-p:ImportByWildcardAfterMicrosoftCommonCrossTargetingTargets=false"),
+        OsString::from(
+            "-p:ImportUserLocationsByWildcardBeforeMicrosoftCommonCrossTargetingTargets=false",
+        ),
+        OsString::from(
+            "-p:ImportUserLocationsByWildcardAfterMicrosoftCommonCrossTargetingTargets=false",
+        ),
+        OsString::from("-p:ImportByWildcardBeforeMicrosoftNetFrameworkProps=false"),
+        OsString::from("-p:ImportByWildcardAfterMicrosoftNetFrameworkProps=false"),
+        OsString::from("-p:ImportUserLocationsByWildcardBeforeMicrosoftNetFrameworkProps=false"),
+        OsString::from("-p:ImportUserLocationsByWildcardAfterMicrosoftNetFrameworkProps=false"),
+        OsString::from("-p:ImportByWildcardBeforeMicrosoftNetFrameworkTargets=false"),
+        OsString::from("-p:ImportByWildcardAfterMicrosoftNetFrameworkTargets=false"),
+        OsString::from("-p:ImportUserLocationsByWildcardBeforeMicrosoftNetFrameworkTargets=false"),
+        OsString::from("-p:ImportUserLocationsByWildcardAfterMicrosoftNetFrameworkTargets=false"),
+        OsString::from("-p:ImportByWildcardBeforeMicrosoftVisualBasicTargets=false"),
+        OsString::from("-p:ImportByWildcardAfterMicrosoftVisualBasicTargets=false"),
+        OsString::from("-p:ImportUserLocationsByWildcardBeforeMicrosoftVisualBasicTargets=false"),
+        OsString::from("-p:ImportUserLocationsByWildcardAfterMicrosoftVisualBasicTargets=false"),
     ];
     let command = CaptureCommand {
         program: dotnet.as_os_str().to_owned(),
@@ -331,6 +366,18 @@ pub fn resolve_references_with_sdk(
             (
                 "DOTNET_CLI_HOME".into(),
                 Some(scratch.path().as_os_str().to_owned()),
+            ),
+            (
+                "NUGET_PACKAGES".into(),
+                Some(scratch.path().as_os_str().to_owned()),
+            ),
+            (
+                "DOTNET_CLI_TELEMETRY_OPTOUT".into(),
+                Some(OsString::from("1")),
+            ),
+            (
+                "DOTNET_SKIP_FIRST_TIME_EXPERIENCE".into(),
+                Some(OsString::from("1")),
             ),
             ("DOTNET_NOLOGO".into(), Some(OsString::from("1"))),
         ]
@@ -1101,6 +1148,40 @@ pub fn observe_csharp_sdk_with(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resolver_receipt_rejects_selected_file_mutation() {
+        let directory = tempfile::tempdir().unwrap();
+        let selected = directory.path().join("selected");
+        fs::create_dir(&selected).unwrap();
+        let file = selected.join("System.Runtime.dll");
+        fs::write(&file, b"immutable reference").unwrap();
+        let bytes = fs::read(&file).unwrap();
+        let mut hash = sha2::Sha256::new();
+        hash.update(b"csharp.sdk-reference-snapshot.v2\0");
+        hash.update(1_u64.to_le_bytes());
+        let name = b"System.Runtime.dll";
+        hash.update((name.len() as u64).to_le_bytes());
+        hash.update(name);
+        hash.update((bytes.len() as u64).to_le_bytes());
+        hash.update(&bytes);
+        let digest: [u8; 32] = hash.finalize().into();
+        let snapshot = CSharpResolvedReferenceSnapshot {
+            directory,
+            references: vec![file].into_boxed_slice(),
+            digest,
+            receipt: CSharpResolverReceipt {
+                sdk_directory: std::env::temp_dir(),
+                target_framework: "net10.0".to_owned(),
+                global_json_digest: None,
+                candidate_digest: [7; 32],
+                selected_digest: digest,
+                selected_names: vec!["System.Runtime.dll".into()].into_boxed_slice(),
+            },
+        };
+        assert!(snapshot.receipt_is_consistent());
+        fs::write(&snapshot.references[0], b"changed").unwrap();
+        assert!(!snapshot.receipt_is_consistent());
+    }
     use super::*;
     use std::time::Duration;
 
