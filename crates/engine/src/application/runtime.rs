@@ -413,22 +413,25 @@ impl OwnedCSharpProjectGraph {
         }) {
             return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
         }
-        fn visit(path: &str, depth: usize, nodes: &[OwnedCSharpProjectNode], active: &mut std::collections::HashSet<String>, done: &mut std::collections::HashSet<String>) -> bool {
+        fn visit(path: &str, depth: usize, nodes: &[OwnedCSharpProjectNode], active: &mut std::collections::HashSet<String>, done: &mut std::collections::HashSet<String>, seen_depth: &mut std::collections::HashMap<String, usize>) -> bool {
             if depth > 16 { return false; }
             if active.contains(path) { return false; }
-            // Do not memoize traversal completion: the same node can be
-            // reached at different depths in a DAG, and a shallow first visit
-            // must not bypass the depth-16 check on a later deeper path.
+            if seen_depth.get(path).is_some_and(|previous| *previous >= depth) {
+                done.insert(path.to_owned());
+                return true;
+            }
+            seen_depth.insert(path.to_owned(), depth);
             done.insert(path.to_owned());
             let Some(node) = nodes.iter().find(|node| node.project_path.as_ref() == path) else { return false; };
             active.insert(path.to_owned());
-            let valid = node.project_references.iter().all(|dependency| visit(dependency, depth + 1, nodes, active, done));
+            let valid = node.project_references.iter().all(|dependency| visit(dependency, depth + 1, nodes, active, done, seen_depth));
             active.remove(path);
             valid
         }
         let mut active = std::collections::HashSet::new();
         let mut done = std::collections::HashSet::new();
-        if !visit(&self.root_project, 0, &nodes, &mut active, &mut done) || done.len() != nodes.len() {
+        let mut seen_depth = std::collections::HashMap::new();
+        if !visit(&self.root_project, 0, &nodes, &mut active, &mut done, &mut seen_depth) || done.len() != nodes.len() {
             return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
         }
         let source_count = nodes.iter().try_fold(0usize, |total, node| total.checked_add(node.sources.len()));
