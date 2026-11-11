@@ -17,6 +17,7 @@ use std::path::Path;
 /// One uniquely joined compiler entity and exact source byte ranges.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct NativeTsHeader {
+    pub(super) entity_id: u32,
     pub(super) identity: DeclarationIdentity,
     pub(super) compiler_extent: (u32, u32),
     pub(super) header_extent: (u32, u32),
@@ -29,8 +30,17 @@ pub(super) fn capture(
     image: &SemanticImageView<'_>,
     bytes: &[u8],
     checkpoint: &dyn TszExecutionCheckpoint,
+    remaining_bytes: &mut usize,
 ) -> Result<Vec<NativeTsHeader>, String> {
     const MAX_HEADERS: usize = 4096;
+    const MAX_SOURCE: usize = 256 * 1024;
+    if bytes.len() > MAX_SOURCE { return Ok(Vec::new()); }
+    // Precharge parser source/arena, row collections and B-tree slack before
+    // any allocations. The capture shares this budget across all files.
+    let charge = bytes.len().checked_mul(128)
+        .and_then(|value| value.checked_add(MAX_HEADERS * 512))
+        .ok_or("native header capture byte charge overflow")?;
+    *remaining_bytes = remaining_bytes.checked_sub(charge).ok_or("native header capture byte budget exceeded")?;
     checkpoint.checkpoint(0).map_err(|e| format!("native header capture stopped: {e:?}"))?;
     let ImageProvenance::Captured { source, recipe, scope, .. } = image.image_facts().provenance else {
         return Ok(Vec::new());
@@ -46,7 +56,7 @@ pub(super) fn capture(
     )?;
     let session = DocumentationSession::new(image);
     // Poison equal compiler extent/name slots; they cannot prove one owner.
-    let mut slots = BTreeMap::<(u32, u32, &str), Option<DeclarationIdentity>>::new();
+    let mut slots = BTreeMap::<(u32, u32, &str), Option<(u32, DeclarationIdentity)>>::new();
     for item in session.publication_entities() {
         checkpoint.checkpoint(1).map_err(|e| format!("native header capture stopped: {e:?}"))?;
         let item = item.map_err(|e| format!("native header entity: {e}"))?;
@@ -60,20 +70,21 @@ pub(super) fn capture(
         let Some(name) = item.name.named_bytes().and_then(|name| std::str::from_utf8(name).ok()) else { continue };
         if slots.len() >= MAX_HEADERS { return Ok(Vec::new()); }
         let identity = item.entity.version.identity();
+        let entity_id = item.entity.id.raw;
         slots.entry((span.start(), span.end(), name))
-            .and_modify(|slot| *slot = None).or_insert(Some(identity));
+            .and_modify(|slot| *slot = None).or_insert(Some((entity_id, identity)));
     }
     let mut result = Vec::new();
     for ((start, end, name), identity) in slots {
         checkpoint.checkpoint(1).map_err(|e| format!("native header capture stopped: {e:?}"))?;
-        let Some(identity) = identity else { continue };
+        let Some((entity_id, identity)) = identity else { continue };
         let Some(header_extent) = backend_frontend_typescript::native_project::selected_function_header_range(
             &written, text, (start, end), name, checkpoint,
         )? else { continue };
-        result.push(NativeTsHeader { identity, compiler_extent: (start, end), header_extent });
+        result.push(NativeTsHeader { entity_id, identity, compiler_extent: (start, end), header_extent });
     }
-    result.sort_unstable_by_key(|entry| entry.identity);
-    if result.windows(2).any(|pair| pair[0].identity == pair[1].identity) { return Ok(Vec::new()); }
+    result.sort_unstable_by_key(|entry| entry.entity_id);
+    if result.windows(2).any(|pair| pair[0].entity_id == pair[1].entity_id) { return Ok(Vec::new()); }
     checkpoint.checkpoint(0).map_err(|e| format!("native header capture stopped: {e:?}"))?;
     Ok(result)
 }
