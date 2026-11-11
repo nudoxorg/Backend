@@ -44,6 +44,7 @@ pub struct CSharpGraphEvidence {
     pub config_digest: [u8; 32],
     pub source_digest: [u8; 32],
     pub reference_digest: [u8; 32],
+    #[serde(deserialize_with = "bounded_evidence_vec")]
     pub nodes: Vec<CSharpGraphEvidenceNode>,
 }
 
@@ -51,6 +52,7 @@ pub struct CSharpGraphEvidence {
 #[serde(deny_unknown_fields)]
 pub struct CSharpGraphEvidenceNode {
     pub project_path: String,
+    #[serde(deserialize_with = "bounded_evidence_vec")]
     pub project_references: Vec<String>,
     pub config_digest: [u8; 32],
     pub source_digest: [u8; 32],
@@ -150,6 +152,10 @@ mod graph_evidence_tests {
         let mut stale = graph.clone();
         stale.nodes[1].config_digest[0] ^= 1;
         assert!(mint_selected_graph_witness(&graph, stale).is_none());
+        let mut oversized = graph.clone();
+        oversized.nodes[0].project_references = (0..65).map(|_| "".to_owned()).collect();
+        let encoded = encode_csharp_graph_evidence(&oversized);
+        assert!(encoded.is_none());
     }
 }
 
