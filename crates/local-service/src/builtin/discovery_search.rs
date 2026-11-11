@@ -4123,7 +4123,9 @@ fn combined_search_snapshot_root(
     forge_fingerprint: [u8; 32],
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"backend-discovery-search-revision-v2\0");
+    hasher.update(b"backend-discovery-search-revision-v3\0");
+    // Continuations must not cross a posting recipe or ordering change.
+    hasher.update(&search_projection_recipe());
     hasher.update(&registry_fingerprint);
     hasher.update(&forge_fingerprint);
     *hasher.finalize().as_bytes()
