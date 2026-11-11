@@ -416,7 +416,10 @@ impl OwnedCSharpProjectGraph {
         fn visit(path: &str, depth: usize, nodes: &[OwnedCSharpProjectNode], active: &mut std::collections::HashSet<String>, done: &mut std::collections::HashSet<String>) -> bool {
             if depth > 16 { return false; }
             if active.contains(path) { return false; }
-            if !done.insert(path.to_owned()) { return true; }
+            // Do not memoize traversal completion: the same node can be
+            // reached at different depths in a DAG, and a shallow first visit
+            // must not bypass the depth-16 check on a later deeper path.
+            done.insert(path.to_owned());
             let Some(node) = nodes.iter().find(|node| node.project_path.as_ref() == path) else { return false; };
             active.insert(path.to_owned());
             let valid = node.project_references.iter().all(|dependency| visit(dependency, depth + 1, nodes, active, done));
@@ -7114,9 +7117,15 @@ fn run_lane(
                             let captured_csharp_config = request.csharp_config.as_ref().map(|probes| probes.iter().map(|probe| backend_frontend_csharp::legacy::CSharpCapturedConfig {
                                 path: &probe.path, text: probe.text.as_deref(),
                             }).collect::<Vec<_>>());
-                            let package = match captured_csharp_config.as_deref() {
-                                Some(config) => package.with_csharp_config(config)?,
-                                None => package,
+                            let package = if request.csharp_project_graph.is_some() {
+                                // Graph mode carries per-node config probes;
+                                // root-only config is forbidden by the helper.
+                                package
+                            } else {
+                                match captured_csharp_config.as_deref() {
+                                    Some(config) => package.with_csharp_config(config)?,
+                                    None => package,
+                                }
                             };
                             let captured_sdk_probes = request.csharp_sdk_probes.as_ref().map(|probes| probes.iter().map(|probe| backend_frontend_csharp::legacy::CSharpSdkProbe {
                                 path: &probe.path, text: probe.text.as_deref(),

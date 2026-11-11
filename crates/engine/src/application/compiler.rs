@@ -705,6 +705,7 @@ impl<'source> PackageSourceSet<'source> {
             || graph.projects.is_empty()
             || graph.projects.len() > 64
             || graph.root_project != project_path.as_ref()
+            || self.csharp_config.is_some()
         {
             return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
         }
