@@ -409,7 +409,7 @@ fn assert_current_search(page: &Value, proof: &[u8; 32], source: &Value, time: u
 fn wait_for_discovery(endpoint: &Path, workspace: &Path, purl: &str) -> Value {
     let deadline = Instant::now() + INDEX_DEADLINE;
     loop {
-        let page = cli_json(endpoint, workspace, &["index-search", "fixture"]);
+        let page = cli_json_after_start(endpoint, workspace, &["index-search", "fixture"]);
         if page.to_string().contains(purl) {
             return page;
         }

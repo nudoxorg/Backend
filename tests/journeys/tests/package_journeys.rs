@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 /// Bound on one CLI or MCP process.
 const PROCESS_DEADLINE: Duration = Duration::from_secs(120);
 /// Bound on a package becoming searchable after `add` returns.
-const INDEX_DEADLINE: Duration = Duration::from_secs(150);
+const INDEX_DEADLINE: Duration = Duration::from_secs(600);
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
 /// What a reader must see for one declaration of a lane's package.
@@ -346,7 +346,16 @@ impl Daemon {
     }
 
     fn wait_ready(&mut self) {
-        let end = Instant::now() + Duration::from_secs(60);
+        // The owner opens its durable workspace and journals before it listens,
+        // which is a few hundred fsyncs. On a shared host whose disk takes
+        // 100 to 200 ms per synced create that is about two minutes, so the
+        // wait is bounded by the process itself (it asserts below if locald
+        // exits) and by a generous ceiling, never by a short fixed guess.
+        let ceiling = std::env::var("BACKEND_JOURNEY_READY_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(420);
+        let end = Instant::now() + Duration::from_secs(ceiling);
         while Instant::now() < end {
             let exited = self
                 .child
@@ -485,6 +494,35 @@ fn cli(endpoint: &Path, workspace: &Path, format: &str, words: &[&str]) -> Outpu
         .env("NO_COLOR", "1")
         .env("COLUMNS", "120");
     run_bounded(command, &format!("CLI {words:?}"), None)
+}
+
+/// Like [`cli_json`] for the first read after an owner starts: the owner
+/// prepares its search projection on first use, and a CLI read that outlasts
+/// its deadline is reported as a retryable `endpoint` fault ("the read changes
+/// nothing and can be repeated on a new connection"). Any other failure, and
+/// the end of `INDEX_DEADLINE`, still fails the test.
+fn cli_json_after_start(endpoint: &Path, workspace: &Path, words: &[&str]) -> Value {
+    let end = Instant::now() + INDEX_DEADLINE;
+    loop {
+        let output = cli(endpoint, workspace, "json", words);
+        if output.status.success() {
+            return serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+                panic!(
+                    "CLI {words:?} printed no JSON ({error}): {}",
+                    text(&output.stdout)
+                )
+            });
+        }
+        let retryable = serde_json::from_slice::<Value>(&output.stdout)
+            .is_ok_and(|fault| fault["slug"] == "endpoint" && fault["cause"] == "unreachable");
+        assert!(
+            retryable && Instant::now() < end,
+            "CLI {words:?} failed ({}): stdout={} stderr={}",
+            output.status,
+            text(&output.stdout),
+            text(&output.stderr)
+        );
+    }
 }
 
 fn cli_json(endpoint: &Path, workspace: &Path, words: &[&str]) -> Value {
