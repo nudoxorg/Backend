@@ -351,6 +351,26 @@ def bookshop_claims(label):
 
 
 bookshop_before = bookshop_claims("bookshop")
+def bookshop_search(label, name, signature, path):
+    code, raw = cli(label, ["search", name])
+    if code != 0:
+        fail(f"{label}: search failed: {raw[:800]}")
+    body = json.loads(raw)
+    rows = [r for r in body.get("records", []) if r.get("signature") == signature]
+    if len(rows) != 1 or rows[0].get("identity", {}).get("path") != sql_path(path):
+        fail(f"{label}: expected one SQL declaration with its selected path: {rows}")
+    return rows[0]
+
+
+def bookshop_discovery(label):
+    return [
+        bookshop_search(label + "-price", "list_price_cents", "SQL column books.list_price_cents", "db/migrations/0010_bookshop.sql"),
+        bookshop_search(label + "-view", "book_sales", "SQL view book_sales", "db/migrations/0010_bookshop.sql"),
+        bookshop_search(label + "-table", "order_lines", "SQL table order_lines", "db/migrations/0010_bookshop.sql"),
+    ]
+
+
+bookshop_discovery_before = bookshop_discovery("bookshop-search")
 
 # 4. The same through MCP over stdio.
 mcp = subprocess.Popen([str(bundle / "backend-mcp"), "--project", str(project), "--workspace", str(workspace),
@@ -423,6 +443,7 @@ expect(text, ["NOT proof of absence"], "uses-nothing")
 
 # 7. Cold restart: kill the owner without ceremony and ask again.
 bookshop_pre_cold = bookshop_claims("bookshop-pre-cold")
+bookshop_discovery_pre_cold = bookshop_discovery("bookshop-search-pre-cold")
 before = query("pre-kill", "--role", "definition", "--kind", "column", "--parent", "accounts")[1]
 os.killpg(owner.pid, signal.SIGKILL)
 owner.wait(timeout=10)
@@ -433,6 +454,10 @@ if before != after:
 # Compare the same selected generation across the cold restart; prior edits may
 # legitimately change its fact identities or context.
 bookshop_after = bookshop_claims("bookshop-cold")
+bookshop_discovery_after = bookshop_discovery("bookshop-search-cold")
+for before_row, after_row in zip(bookshop_discovery_pre_cold, bookshop_discovery_after):
+    if before_row.get("identity") != after_row.get("identity"):
+        fail("SQL discovery identity changed after cold reopen")
 for before_page, after_page in zip(bookshop_pre_cold[:2], bookshop_after[:2]):
     before_hits = {tuple(h["id"]): h["fact"] for h in before_page["hits"] if "bookshop" in h["path"]}
     after_hits = {tuple(h["id"]): h["fact"] for h in after_page["hits"] if "bookshop" in h["path"]}
