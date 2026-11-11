@@ -270,6 +270,11 @@ impl DiscoveryGateway {
                     1024 * 1024,
                 )
             }
+            RegistryEcosystem::Nuget => {
+                let root = endpoint.as_str().trim_end_matches('/');
+                let root = root.strip_suffix("/catalog0/index.json").unwrap_or(root);
+                (format!("{root}/registration5-semver1/{}/index.json", percent_encode_component(name).to_ascii_lowercase()), MAX_SOURCE_BODY_BYTES)
+            }
             _ => {
                 return Err(unavailable(
                     None,
@@ -708,8 +713,40 @@ fn parse_object(
                 true,
             ))
         }
+        RegistryEcosystem::Nuget => parse_nuget_registration(bytes, name, package),
         _ => Err(DiscoveryStoreError::Decode),
     }
+}
+
+fn parse_nuget_registration(bytes: &[u8], name: &str, package: &PackageCoordinate) -> Result<(Vec<DiscoveryReleaseObservation>, bool), DiscoveryStoreError> {
+    let root: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| DiscoveryStoreError::Decode)?;
+    let version = admit_registry_coordinate(package).map_err(|_| DiscoveryStoreError::Decode)?.version().as_str().to_owned();
+    let mut found: Option<serde_json::Value> = None;
+    let mut visit = |item: &serde_json::Value| {
+        let Some(entry) = item.get("catalogEntry") else { return };
+        if entry.get("id").and_then(serde_json::Value::as_str)
+            .is_some_and(|id| !id.eq_ignore_ascii_case(name)) { return; }
+        let Some(v) = entry.get("version").and_then(serde_json::Value::as_str) else { return };
+        if v.eq_ignore_ascii_case(&version) { found = Some(entry.clone()); }
+    };
+    if let Some(items) = root.get("items").and_then(serde_json::Value::as_array) {
+        for item in items { visit(item); }
+        for page in items {
+            if let Some(inner) = page.get("items").and_then(serde_json::Value::as_array) {
+                for item in inner { visit(item); }
+            }
+        }
+    }
+    let Some(entry) = found else { return Ok((Vec::new(), false)); };
+    let yanked = entry.get("listed").and_then(serde_json::Value::as_bool) == Some(false);
+    let mut metadata = DiscoveryMetadata { yanked: DiscoveryFacet::Known(yanked), ..DiscoveryMetadata::default() };
+    if let Some(v) = entry.get("description").and_then(serde_json::Value::as_str) { metadata.description = DiscoveryFacet::Known(v.to_owned()); }
+    if let Some(v) = entry.get("licenseExpression").and_then(serde_json::Value::as_str) { metadata.license = DiscoveryFacet::Known(v.to_owned()); }
+    if let Some(v) = entry.get("published").and_then(serde_json::Value::as_str) { metadata.published_at = DiscoveryFacet::Known(v.to_owned()); }
+    if let Some(v) = entry.get("downloads").and_then(serde_json::Value::as_u64) { metadata.downloads = DiscoveryFacet::Known(v); }
+    metadata.admit().map_err(|_| DiscoveryStoreError::Bounds)?;
+    let coordinate = PackageCoordinate::parse(format!("pkg:nuget/{name}@{version}")).map_err(|_| DiscoveryStoreError::Decode)?;
+    Ok((vec![DiscoveryReleaseObservation { coordinate, standing: if yanked { DiscoveryStanding::Yanked } else { DiscoveryStanding::Published }, source_event_time: entry.get("published").and_then(serde_json::Value::as_str).map(str::to_owned), proof: *blake3::hash(bytes).as_bytes(), metadata }], true))
 }
 
 /// Parse the whole bounded JSON object, then retain only the exact target for
