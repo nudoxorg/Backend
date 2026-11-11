@@ -30,7 +30,6 @@ pub(super) fn references(sources: &IndexedSources, view: &backend_engine::ViewRo
             let target_range = call.target.byte_range();
             if (target_range.start as u32, target_range.end as u32) != name_range { continue }
             let span = call.site.byte_range();
-            let line = bytes[..span.start].iter().filter(|byte| **byte == b'\n').count() + 1;
             let owner = parsed.declarations.iter().filter(|declaration| {
                 let owner = declaration.owner.byte_range(); owner.start <= span.start && span.end <= owner.end
             }).min_by_key(|declaration| declaration.owner.byte_range().len());
@@ -47,7 +46,6 @@ pub(super) fn references(sources: &IndexedSources, view: &backend_engine::ViewRo
                 evidence: SemanticLinkEvidence { confidence: SemanticConfidence::Syntactic,
                     source: Some(SemanticSourceSpan { file: ProductText::new(&path).map_err(|e| BuiltinModelError(e.to_string()))?, start: span.start as u32, end: span.end as u32 }) },
             });
-            let _ = line;
             if references.len() >= backend_library::MAX_PRODUCT_ROWS { return Err(BuiltinModelError("Vue references exceed the bounded result contract".into())) }
         }
     }

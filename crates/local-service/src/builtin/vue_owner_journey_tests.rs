@@ -4,8 +4,8 @@ use backend_library::{CommandReply, CompileExecutionIntent, IndexOperationKey, I
 use std::{error::Error, fs, time::{Duration, Instant}};
 
 fn index(session: &mut Session, project: &std::path::Path, byte: u8) -> Result<(), Box<dyn Error>> {
-    let key = IndexOperationKey::from_bytes([byte; 32])?;
-    let package = PackageReference::parse(project.to_string_lossy().into_owned())?;
+    let key = IndexOperationKey::from_bytes([byte; 32]).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let package = PackageReference::parse(project.to_string_lossy().into_owned()).map_err(|e| std::io::Error::other(e.to_string()))?;
     let mut status = session.start_index_operation(key, package, CompileExecutionIntent::Interactive)?;
     let deadline = Instant::now() + Duration::from_secs(600);
     loop {
@@ -25,7 +25,7 @@ fn verify(session: &mut Session, project: &std::path::Path) -> Result<(), Box<dy
     let CommandReply::Document(document) = session.source(&coordinate)?.reply else { return Err("source reply".into()) };
     assert!(document.excerpt.text().is_some_and(|text| text.contains("return 'é漢'")), "{document:?}");
     assert!(!document.excerpt.text().unwrap().contains("<template>"));
-    let reply = session.surface(SurfaceCommand::References { target: ProductText::new(&coordinate)? })?;
+    let reply = session.surface(SurfaceCommand::References { target: ProductText::new(&coordinate).map_err(|e| std::io::Error::other(e.to_string()))? })?;
     let SurfaceReply::References { references, coverage, .. } = reply else { return Err("references reply".into()) };
     assert_eq!(references.len(), 2, "two bound calls, excluding the shadowed parameter call");
     assert!(matches!(coverage, backend_library::ReferenceCoverage::Partial { .. }));
