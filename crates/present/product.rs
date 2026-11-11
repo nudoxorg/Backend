@@ -1757,11 +1757,19 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
             "explore",
             records.iter().map(local_declaration_search_row).collect(),
         ),
-        SurfaceReply::ExploredSearchPage(page) => ProductView::rows(
-            "explore",
-            page.hits.iter().map(registry_search_hit_row).collect(),
-        )
-        .with_index_search_page(page),
+        SurfaceReply::ExploredSearchPage(page) => {
+            let mut view = ProductView::rows(
+                "explore",
+                page.hits.iter().map(registry_search_hit_row).collect(),
+            ).with_index_search_page(page);
+            if page.next_cursor.is_some() {
+                // Explore has no cursor operand; MCP also binds its token to
+                // this invocation, so it cannot be replayed as index-search.
+                view.index_search_page.as_mut().expect("page just attached").next_cursor = None;
+                view.note = Some("More matches exist. Start index-search with the same query to page through them.".to_owned());
+            }
+            view
+        },
         SurfaceReply::Package(records) => ProductView::rows("package", registry_rows(records)),
         SurfaceReply::PackageInstalled(facts) => installed_package_view("package", facts, true),
         SurfaceReply::DependenciesInstalled(facts) => installed_package_view("dependencies", facts, false),
@@ -5149,6 +5157,23 @@ mod tests {
         let dto = crate::dto::ProductDto::new(&projected);
         assert_eq!(dto.records.len(), 1);
         assert!(dto.note.is_some());
+    }
+
+    #[test]
+    fn explore_partial_search_offers_a_restart_not_an_unusable_cursor() {
+        let reply = SurfaceReply::ExploredSearchPage(IndexSearchPage {
+            snapshot: [7; 32],
+            evaluated_at_millis: 11,
+            hits: Box::new([]),
+            next_cursor: Some(IndexSearchCursor::new("owner-v4-token").unwrap()),
+            result_count: IndexSearchResultCount::AtLeast(1),
+        });
+        let view = product_view(&reply);
+        assert!(view.cursor_family().is_none());
+        assert!(view.note().unwrap().contains("Start index-search"));
+        let dto = crate::dto::ProductDto::new(&view);
+        assert!(dto.index_search_page.unwrap().next_cursor.is_none());
+        assert!(!crate::markdown::product(&view).contains("owner-v4-token"));
     }
 
     #[test]
