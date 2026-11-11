@@ -154,10 +154,39 @@ impl fmt::Display for ForgeGatewayError {
             Self::RetryAfter(millis) => {
                 write!(formatter, "forge source requested retry after {millis} ms")
             }
+            Self::Rejected(ForgeRejectReason::HttpStatus(status)) => {
+                write!(formatter, "forge provider returned HTTP {status}; {}", match status {
+                    401 | 403 => "check repository access and the configured forge token; the provider may also be rate limiting this client",
+                    300..=399 => "provider redirects are refused; use the canonical repository URL",
+                    500..=599 => "provider failed; retry later",
+                    _ => "check the repository URL and pinned revision",
+                })
+            }
+            Self::Rejected(ForgeRejectReason::Policy) => formatter.write_str(
+                "forge acquisition denied by transport policy; check the configured forge credentials and supported repository provider",
+            ),
+            Self::Rejected(ForgeRejectReason::Protocol) => formatter.write_str(
+                "forge revision response did not satisfy the provider protocol; check the repository URL and commit:, tag:, or branch: revision",
+            ),
             Self::Rejected(reason) => write!(formatter, "forge acquisition rejected: {reason:?}"),
             Self::Corrupt => formatter.write_str("forge cache or journal is corrupt"),
             Self::Transport(error) => write!(formatter, "forge transport unavailable: {error:?}"),
             Self::ProductProjection => formatter.write_str("forge result could not be projected"),
         }
+    }
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+
+    #[test]
+    fn provider_refusals_identify_status_and_action() {
+        let error = ForgeGatewayError::Rejected(ForgeRejectReason::HttpStatus(403)).to_string();
+        assert!(error.contains("HTTP 403"));
+        assert!(error.contains("forge token"));
+        assert!(!error.contains("rejected: Policy"));
+        let error = ForgeGatewayError::Rejected(ForgeRejectReason::Protocol).to_string();
+        assert!(error.contains("provider protocol"));
     }
 }
