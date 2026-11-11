@@ -296,6 +296,14 @@ def bookshop_claims(label):
         fail(f"{label}: missing renamed table claims: {names}")
     if any(n["entity"] != names[0]["entity"] for n in names):
         fail(f"{label}: rename split the exact table entity: {names}")
+    columns = sql_page(label + "-price-definitions", "--role", "definition", "--kind", "column", "--parent", "books")
+    price_defs = [h["fact"] for h in columns["hits"] if h["fact"].get("head_name") == "list_price_cents"]
+    if not price_defs or price_defs[0].get("entity") is None or any(d.get("entity") != price_defs[0]["entity"] for d in price_defs):
+        fail(f"{label}: renamed price column has no single entity: {price_defs}")
+    price_refs = sql_page(label + "-price-references", "--role", "reference", "--kind", "column", "--uses", "books.list_price_cents")
+    for path in ("db/queries/book_by_isbn.sql", "db/queries/reprice_book.sql", "db/queries/place_order_line.sql"):
+        if not any(h["path"] == sql_path(path) and h["fact"].get("resolution") == {"Resolved": {"target": price_defs[0]["entity"], "live": True}} for h in price_refs["hits"]):
+            fail(f"{label}: {path} does not bind the exact price entity: {price_refs['hits']}")
     diagnostics = sql_page(label + "-diagnostics", "--role", "diagnostic")
     refs = [h for h in diagnostics["hits"] if h["path"] == sql_path("db/queries/bookshop.sql") and h["fact"].get("fact") == "Reference"]
     expected = {"price_cents": "NoSuchColumn", "order_items": "NoSuchObject"}
@@ -305,7 +313,7 @@ def bookshop_claims(label):
     column = impact_page(label + "-column-impact", "--sql-column", "books.list_price_cents")
     nodes = [r["node"] for r in column["rows"]]
     for path in ("db/queries/book_by_isbn.sql", "db/queries/reprice_book.sql", "db/queries/place_order_line.sql"):
-        if not any(n.get("kind") == "query" and n.get("path") == sql_path(path) for n in nodes):
+        if not any(r["node"].get("kind") == "query" and r["node"].get("path") == sql_path(path) and r.get("strength") == "exact" for r in column["rows"]):
             fail(f"{label}: {path} missing from price impact: {nodes}")
     if not any(n.get("kind") == "trigger" and n.get("name") == "reprice_book" for n in nodes):
         fail(f"{label}: price trigger missing from impact: {nodes}")
