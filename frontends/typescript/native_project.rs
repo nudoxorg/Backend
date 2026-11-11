@@ -1202,6 +1202,8 @@ mod tests {
             ("const async = 1; async; function plain() {}", Some("function plain()")),
             ("export /* comment */ default async function* plain(): Promise<number> { yield 1; }", Some("export /* comment */ default async function* plain(): Promise<number>")),
             ("export async /* comment */ function plain(): Promise<number> { return 1; }", Some("export async /* comment */ function plain(): Promise<number>")),
+            ("const pattern = /`/; export async function plain() {}", Some("export async function plain()")),
+            ("const text = `before ${1}`; export async function plain() {}", Some("export async function plain()")),
         ] {
             let rows = function_headers(Path::new("src/main.ts"), source, &Unlimited)?;
             let Some(expected) = expected else {
