@@ -213,12 +213,26 @@ if code != 0:
     fail(f"index exited {code}: {raw[:600]} (a typed account refusal means this is a gate-on build)")
 
 if a.expect_no_worker:
-    before = query("no-worker-gaps", "--role", "gap")[1]
-    expect(before, [sql_path("db/queries/upsert.sql"), sql_path("db/migrations/0001_init.sql")], "no-worker-gaps")
+    def unavailable_gaps(label):
+        body, _ = query(label, "--role", "gap", "--limit", "128")
+        data = body.get("semantic_data", {})
+        if data.get("kind") != "sql-query":
+            fail(f"{label}: missing full typed SQL page")
+        page = data["value"]
+        if page.get("terminal", {}).get("state") != "complete":
+            fail(f"{label}: incomplete gap page")
+        expected = {path for path in FILES if path.endswith(".sql")}
+        gaps = page.get("host_gaps", [])
+        if {gap.get("path") for gap in gaps} != expected or len(gaps) != len(expected):
+            fail(f"{label}: selected SQL file gaps differ: {gaps}")
+        if any(gap.get("reason") != {"state": "unavailable", "reason": "EngineNotAdmitted"} for gap in gaps):
+            fail(f"{label}: worker terminal reasons differ: {gaps}")
+        return gaps
+    before = unavailable_gaps("no-worker-gaps")
     os.killpg(owner.pid, signal.SIGKILL)
     owner.wait(timeout=10)
     start_owner()
-    after = query("no-worker-cold-gaps", "--role", "gap")[1]
+    after = unavailable_gaps("no-worker-cold-gaps")
     if before != after:
         fail("unavailable SQL host gaps changed after cold reopen")
     cleanup()

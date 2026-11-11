@@ -48,4 +48,9 @@ check public-python python3 "$here/sql_public_journey.py" --bundle "$output/bund
 check public-flat python3 "$here/sql_public_journey.py" --bundle "$output/bundle" --output "$output/flat" --python --flat
 check minimal-worker python3 "$here/sql_minimal_publication.py" --bundle "$output/bundle" --output "$output/minimal-worker"
 check minimal-no-worker python3 "$here/sql_minimal_publication.py" --bundle "$output/bundle" --output "$output/minimal-no-worker" --without-worker
+mkdir "$output/no-worker-bundle"
+for name in backend-locald backend-cli backend-mcp; do
+    cp "$output/bundle/$name" "$output/no-worker-bundle/$name"
+done
+check public-no-worker python3 "$here/sql_public_journey.py" --bundle "$output/no-worker-bundle" --output "$output/no-worker" --python --expect-no-worker
 exit "$failed"
