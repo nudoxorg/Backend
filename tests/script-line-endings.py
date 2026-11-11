@@ -69,7 +69,7 @@ class ScriptCheckoutTests(unittest.TestCase):
             linker.parent.mkdir(parents=True)
             # Exact pre-fix linker bytes: changing only attributes does not
             # cause Git to rewrite this already checked-out file on upgrade.
-            old = (ROOT / "tests/fixtures/cargo-linker-pre-lf-policy.txt").read_bytes()
+            old = (ROOT / "tests/cargo-linker-pre-lf-policy.txt").read_bytes()
             linker.write_bytes(old)
             linker.chmod(0o755)
             git("add", ".")
