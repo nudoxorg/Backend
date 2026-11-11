@@ -1791,6 +1791,14 @@ impl StagedSemanticPackage {
         &self.staged.csharp_evidence
     }
 
+    pub fn csharp_graph_evidence(&self) -> Option<&crate::application::CSharpGraphEvidence> {
+        self.staged.csharp_graph_evidence.as_ref()
+    }
+
+    pub fn csharp_graph_evidence_frame(&self) -> Option<Vec<u8>> {
+        self.staged.csharp_graph_evidence.as_ref().and_then(crate::application::encode_csharp_graph_evidence)
+    }
+
     /// Builds a bounded claim-only C# evidence aggregate tied to these staged
     /// image bytes and this exact input. Publication selection is still required.
     pub fn csharp_invocation_evidence_object(&self, input: [u8; 32]) -> Option<Vec<u8>> {
@@ -3553,6 +3561,7 @@ pub(crate) struct StagedPackageCompilation {
     image_plan: Box<[crate::publication::manifest::SemanticImageRegion]>,
     semantic_images: Box<[u8]>,
     csharp_evidence: Box<[StagedCSharpInvocationEvidence]>,
+    csharp_graph_evidence: Option<crate::application::CSharpGraphEvidence>,
     csharp_config: Box<[StagedCSharpConfigProbe]>,
     csharp_unit: Option<Box<str>>,
     package_identity: [u8; 32],
@@ -6410,6 +6419,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             image_plan: image_plan.into_boxed_slice(),
             semantic_images: semantic_images.into_boxed_slice(),
             csharp_evidence: csharp_evidence.into_boxed_slice(),
+            csharp_graph_evidence: package.csharp_graph_evidence(),
             csharp_config: csharp_config.into_boxed_slice(),
             csharp_unit: match package.package_target.unit_key() {
                 CompilationUnitKeyV2::CSharpProject { project_path } if package.csharp_config.is_some() => Some(project_path.clone()),
