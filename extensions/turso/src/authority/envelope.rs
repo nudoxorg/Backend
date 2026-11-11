@@ -1610,7 +1610,8 @@ fn reopen_native_headers_bounded(store: &FileStore, closure: &backend_store::Dur
     let Some(member) = metadata.native_headers() else { return Ok(None) };
     let len = member.byte_length() as usize;
     if len == 0 || len > MAX_COMPILER_NATIVE_HEADERS_BYTES || len > max_bytes { return Err("header aggregate extent invalid".into()); }
-    let mut decoded_budget = max_bytes - len;
+    let encoded_and_key = len.checked_mul(2).ok_or("header aggregate budget overflow")?;
+    let mut decoded_budget = max_bytes.checked_sub(encoded_and_key).ok_or("header aggregate exceeds caller budget")?;
     let claim = UntrustedObjectId::from_bytes(*member.object_id());
     closure.admit_claim(claim).map_err(|e| format!("admit header aggregate: {e:?}"))?.ok_or("header aggregate absent from selected closure")?;
     let mut bytes = Vec::new();
