@@ -265,6 +265,72 @@ fn require_relocatable_elf_host(bytes: &[u8]) -> Result<(), CSharpAuthorityError
     Err(CSharpAuthorityError::Configuration)
 }
 
+// Patch only the interpreter program header in a private host copy. The
+// kernel still execs the host itself, so /proc/self/exe remains the copied
+// host rather than the loader. This operation alone does not confine the
+// loader's library lookup or later dlopen calls and must not enable execution.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+fn relocate_elf_interpreter(
+    host: &[u8],
+    interpreter: &Path,
+) -> Result<Vec<u8>, CSharpAuthorityError> {
+    let invalid = || CSharpAuthorityError::Configuration;
+    if elf_runtime_requirements(host)?.interpreter.is_none() || !interpreter.is_absolute() {
+        return Err(invalid());
+    }
+    if interpreter.components().any(|component| {
+        !matches!(
+            component,
+            std::path::Component::RootDir | std::path::Component::Normal(_)
+        )
+    }) {
+        return Err(invalid());
+    }
+    let path = interpreter.as_os_str().as_encoded_bytes();
+    if path.len() < 2 || path.len() >= 4096 || path.contains(&0) {
+        return Err(invalid());
+    }
+    let phoff = usize::try_from(u64::from_le_bytes(
+        host[32..40].try_into().map_err(|_| invalid())?,
+    ))
+    .map_err(|_| invalid())?;
+    let phentsize = usize::from(u16::from_le_bytes(
+        host[54..56].try_into().map_err(|_| invalid())?,
+    ));
+    let phnum = usize::from(u16::from_le_bytes(
+        host[56..58].try_into().map_err(|_| invalid())?,
+    ));
+    let mut header = None;
+    for index in 0..phnum {
+        let base = phoff
+            .checked_add(index.checked_mul(phentsize).ok_or_else(invalid)?)
+            .ok_or_else(invalid)?;
+        let kind = u32::from_le_bytes(
+            host.get(base..base + 4)
+                .ok_or_else(invalid)?
+                .try_into()
+                .map_err(|_| invalid())?,
+        );
+        if kind == 3 && header.replace(base).is_some() {
+            return Err(invalid());
+        }
+    }
+    let base = header.ok_or_else(invalid)?;
+    let mut result = host.to_vec();
+    let offset = u64::try_from(result.len()).map_err(|_| invalid())?;
+    let length = u64::try_from(path.len() + 1).map_err(|_| invalid())?;
+    result.extend_from_slice(path);
+    result.push(0);
+    result[base + 8..base + 16].copy_from_slice(&offset.to_le_bytes());
+    result[base + 32..base + 40].copy_from_slice(&length.to_le_bytes());
+    result[base + 40..base + 48].copy_from_slice(&length.to_le_bytes());
+    if elf_runtime_requirements(&result)?.interpreter.as_deref() != interpreter.to_str() {
+        return Err(invalid());
+    }
+    Ok(result)
+}
+
 // A preparatory snapshot of an explicitly supplied ELF dependency graph.
 // This is intentionally not used to launch: a DT_NEEDED graph does not bound
 // dlopen, glibc cache/default/hwcaps lookup, or preserve host executable
@@ -2104,6 +2170,25 @@ mod tests {
         let mut bytes = sectionless_elf_fixture();
         bytes[264..272].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(elf_runtime_requirements(&bytes).is_err()); // unmapped DT_STRTAB
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn private_host_relocation_patches_only_interpreter_header_and_appends_path() {
+        let host = sectionless_elf_fixture();
+        let relocated = relocate_elf_interpreter(&host, Path::new("/private/runtime/ld.so"))
+            .expect("relocated host");
+        let requirements = elf_runtime_requirements(&relocated).unwrap();
+        assert_eq!(
+            requirements.interpreter.as_deref(),
+            Some("/private/runtime/ld.so")
+        );
+        assert_eq!(&*requirements.needed, &[Box::<str>::from("libfoo.so")]);
+        assert_eq!(&host[..184], &relocated[..184]);
+        assert_eq!(&host[224..], &relocated[224..host.len()]);
+        assert!(relocate_elf_interpreter(&host, Path::new("relative/ld.so")).is_err());
+        assert!(relocate_elf_interpreter(&host, Path::new("/private/../ld.so")).is_err());
+        assert!(require_relocatable_elf_host(&relocated).is_err());
     }
 
     #[cfg(target_os = "linux")]
