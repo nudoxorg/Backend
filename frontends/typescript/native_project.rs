@@ -614,11 +614,15 @@ pub fn function_headers(
         if kind == SyntaxKind::EndOfFileToken { break; }
         let start = u32::try_from(scanner.get_token_start()).map_err(|_| "native token offset overflow")?;
         if kind == SyntaxKind::FunctionKeyword {
-            if let Some((SyntaxKind::AsyncKeyword, async_start)) = previous {
-                preceding_async.insert(start, async_start);
+            if let Some((SyntaxKind::AsyncKeyword, async_start, async_end)) = previous {
+                let between = text.get(async_end as usize..start as usize).unwrap_or("");
+                if !between.contains(['\n', '\r', '\u{2028}', '\u{2029}']) {
+                    preceding_async.insert(start, async_start);
+                }
             }
         }
-        previous = Some((kind, start));
+        let end = u32::try_from(scanner.get_token_end()).map_err(|_| "native token offset overflow")?;
+        previous = Some((kind, start, end));
     }
     let mut export_starts = BTreeMap::<u32, Option<u32>>::new();
     for (index, node) in arena.nodes.iter().enumerate() {
@@ -1201,11 +1205,16 @@ mod tests {
         )?.ok_or("compiler function missing")?;
         assert_eq!(header.compiler_extent, compiler_extent, "TSZ token candidate and emitted function extent must agree");
         for (source, expected) in [
-            ("const async = 1; async\nfunction plain() {}", "function plain()"),
-            ("export /* comment */ default async function* plain(): Promise<number> { yield 1; }", "export /* comment */ default async function* plain(): Promise<number>"),
-            ("export async /* comment */ function plain(): Promise<number> { return 1; }", "export async /* comment */ function plain(): Promise<number>"),
+            ("const async = 1; async\nfunction plain() {}", None),
+            ("const async = 1; async; function plain() {}", Some("function plain()")),
+            ("export /* comment */ default async function* plain(): Promise<number> { yield 1; }", Some("export /* comment */ default async function* plain(): Promise<number>")),
+            ("export async /* comment */ function plain(): Promise<number> { return 1; }", Some("export async /* comment */ function plain(): Promise<number>")),
         ] {
             let rows = function_headers(Path::new("src/main.ts"), source, &Unlimited)?;
+            let Some(expected) = expected else {
+                assert!(rows.is_empty(), "ambiguous async newline must not supply a header: {source}");
+                continue;
+            };
             assert_eq!(rows.len(), 1, "{source}");
             let row = rows[0];
             assert_eq!(source[row.header.0 as usize..row.header.1 as usize].trim(), expected);
