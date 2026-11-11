@@ -61,7 +61,7 @@ pub struct CSharpGraphEvidenceNode {
 /// same-attempt snapshot through `mint_selected_graph_witness`.
 pub struct SelectedCSharpGraphWitness(CSharpGraphEvidence);
 
-pub(crate) fn mint_selected_graph_witness(
+fn mint_selected_graph_witness(
     staged: &CSharpGraphEvidence,
     selected: CSharpGraphEvidence,
 ) -> Option<SelectedCSharpGraphWitness> {
