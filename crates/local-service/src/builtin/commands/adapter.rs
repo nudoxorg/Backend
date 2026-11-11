@@ -8460,13 +8460,29 @@ mod tests {
         let empty = Library::new();
         let basis = empty.view().basis();
         let symbol = symbol_key("Thing");
-        let row = Row::new(RowId::Symbol(symbol), basis, "Thing")
-            .with_document(vec![Fragment::Text(text.to_owned())]);
+        // Exercise the reply ceiling with individually admissible canonical
+        // rows. A single multi-megabyte document is rejected by the relation
+        // row capacity before the reply encoder can see it.
+        assert!(text.is_ascii(), "fixture chunks use ASCII byte boundaries");
+        let count = usize::from(QueryLimit::MAX);
+        let package = backend_library::package_key("bounded-encode-catalog");
+        let rows = (0..count).map(|index| {
+            let label = if index == 0 { "Thing".to_owned() }
+                else { format!("entry_{index:03}::Thing") };
+            let mut row = Row::in_package(
+                RowId::Symbol(symbol_key(&label)), basis, package, label,
+            ).with_document(vec![Fragment::Text(
+                text[index * text.len() / count..(index + 1) * text.len() / count].to_owned(),
+            )]);
+            if index != 0 { row.parent = Some(symbol); }
+            row
+        }).collect();
+        let limit = QueryLimit::new(QueryLimit::MAX).expect("bounded catalog page");
         let root = ViewRoot::new_incomplete(
             view_key(b"bounded-encode-catalog"),
             basis,
             Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
-            vec![row],
+            rows,
             empty.view().coverage().to_vec(),
         )
         .expect("incomplete source fixture");
@@ -8476,16 +8492,16 @@ mod tests {
             0 => backend_library::Command::Name(NameQuery::new(
                 "Thing",
                 library.revision_root(),
-                QueryLimit::default(),
+                limit,
             )),
             1 => backend_library::Command::Search(Query::new(
                 "Thing",
                 library.revision_root(),
-                QueryLimit::default(),
+                limit,
             )),
             _ => backend_library::Command::GraphPage {
                 symbol: SymbolAddress::canonical(symbol),
-                page: PageRequest::new(library.revision_root(), QueryLimit::default()),
+                page: PageRequest::new(library.revision_root(), limit),
             },
         };
         let reply = backend_library::ReplyDto::new(

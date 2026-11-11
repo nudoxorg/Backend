@@ -52,7 +52,7 @@ const MAX_LINEAGE_FACET_VALUES: usize = 16_384;
 const SEARCH_PROJECTION_DIRECTORY: &str = "v1";
 const SEARCH_PROJECTION_MANIFEST: &str = "selected-root-v1";
 const SEARCH_PROJECTION_ROOT_LEASE: &str = ".backend-root-reader.lock";
-const SEARCH_PROJECTION_SCHEMA: &[u8] = b"backend-discovery-tantivy-v6\0";
+const SEARCH_PROJECTION_SCHEMA: &[u8] = b"backend-discovery-tantivy-v7\0";
 const MAX_RETAINED_SEARCH_PROJECTIONS: usize = 4;
 const MAX_SEARCH_PROJECTION_FILES: usize = 196_608;
 const MAX_SEARCH_PROJECTION_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
@@ -3463,6 +3463,12 @@ fn local_search_content(row: &Row) -> Vec<&str> {
     if let Some(excerpt) = row.excerpt.text() {
         content.push(excerpt);
     }
+    // Row::new supplies the coordinate as its fallback document. It is
+    // already indexed as an explicit address; treating that metadata as prose
+    // fans every checkout-path term out to every declaration in the project.
+    if matches!(row.document.as_ref(), [Fragment::Text(value)] if value == &row.label) {
+        return content;
+    }
     for fragment in &row.document {
         match fragment {
             Fragment::Text(value) | Fragment::Code(value) => content.push(value.as_str()),
@@ -4123,7 +4129,9 @@ fn combined_search_snapshot_root(
     forge_fingerprint: [u8; 32],
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"backend-discovery-search-revision-v2\0");
+    hasher.update(b"backend-discovery-search-revision-v3\0");
+    // Continuations must not cross a posting recipe or ordering change.
+    hasher.update(&search_projection_recipe());
     hasher.update(&registry_fingerprint);
     hasher.update(&forge_fingerprint);
     *hasher.finalize().as_bytes()
@@ -5313,6 +5321,8 @@ fn discovery_lineage_key(
 }
 
 /// Deterministic stored sort key shared by discovery and acquired projections.
+/// Hex fields preserve lexical byte order and keep field separators unambiguous;
+/// length prefixes would incorrectly rank shorter package names first.
 pub(crate) fn lineage_sort_key(key: &LineageKey) -> String {
     let (source_kind, source_id, authority_marker) = match &key.source {
         LineageSearchSource::Discovery(DiscoverySearchSource::Registry(source)) => {
@@ -5328,15 +5338,14 @@ pub(crate) fn lineage_sort_key(key: &LineageKey) -> String {
         ),
     };
     let base = format!(
-        "{source_kind}\u{1f}{}\u{1f}{}\u{1f}{authority_marker}\u{1f}{}:{}",
+        "{source_kind}\u{1f}{}\u{1f}{}\u{1f}{authority_marker}\u{1f}{}",
         key.ecosystem.as_str(),
         hex(&source_id),
-        key.lineage.len(),
-        key.lineage,
+        hex(key.lineage.as_bytes()),
     );
     key.coordinate_suffix.as_ref().map_or_else(
         || base.clone(),
-        |suffix| format!("{base}\u{1f}{}:{suffix}", suffix.len()),
+        |suffix| format!("{base}\u{1f}{}", hex(suffix.as_bytes())),
     )
 }
 
@@ -8527,6 +8536,26 @@ mod tests {
     }
 
     #[test]
+    fn lineage_sort_keys_preserve_names_and_suffixes_in_lexical_order() {
+        let cargo = source(RegistryEcosystem::Cargo, "https://index.crates.io");
+        let keys = ["alpha", "beta", "widget", "widget-small", "widget-tiny"]
+            .map(|name| discovery_lineage_key(
+                &DiscoverySearchSource::Registry(cargo), RegistryEcosystem::Cargo, name,
+            ));
+        assert!(keys.windows(2).all(|pair|
+            lineage_sort_key(&pair[0]) < lineage_sort_key(&pair[1])));
+        let mut first = keys[0].clone();
+        first.coordinate_suffix = Some("alpha".to_owned());
+        let mut second = first.clone();
+        second.coordinate_suffix = Some("beta".to_owned());
+        assert!(lineage_sort_key(&keys[0]) < lineage_sort_key(&first));
+        assert!(lineage_sort_key(&first) < lineage_sort_key(&second));
+        let mut embedded_separator = keys[0].clone();
+        embedded_separator.lineage.push_str("\u{1f}alpha");
+        assert_ne!(lineage_sort_key(&first), lineage_sort_key(&embedded_separator));
+    }
+
+    #[test]
     fn grouped_search_keeps_tail_substring_rank_across_keyword_cursors() {
         let cargo = source(RegistryEcosystem::Cargo, "https://index.crates.io");
         const TEST_FACET_VALUE_LIMIT: usize = 2;
@@ -10199,8 +10228,10 @@ mod tests {
         let imported = format!("{project}::external::symbol:imported::httpie");
         let parse_args = format!("{project}::semantic::parse-args::parse_args");
         let mut labels = vec![parser.clone(), imported.clone(), parse_args.clone()];
+        // Fill the largest admitted patch including the three queried rows.
         labels.extend(
-            (0..256).map(|at| format!("{project}::external::symbol:{at:064x}::sleep_{at}")),
+            (0..backend_library::MAX_VIEW_PATCH_ROWS - labels.len())
+                .map(|at| format!("{project}::external::symbol:{at:064x}::sleep_{at}")),
         );
         let mut changes = labels
             .iter()
@@ -10238,14 +10269,17 @@ mod tests {
             first.posting_candidates < 16,
             "project path cannot expand posting work"
         );
-        let second = local
-            .page_after("httpie", 1, first.next_cursor.as_ref())
-            .expect("second name page");
-        assert!(second.next_cursor.is_none());
+        assert!(first.next_cursor.is_none(), "one local declaration matches");
+        let external = local
+            .page_external_after("httpie", 1, None)
+            .expect("external name page");
+        assert!(external.next_cursor.is_none());
+        assert!(external.posting_candidates < 16,
+            "external coordinates cannot fan out inherited project terms");
         let selected = first
             .hits
             .into_iter()
-            .chain(second.hits)
+            .chain(external.hits)
             .map(|hit| hit.key)
             .collect::<BTreeSet<_>>();
         assert_eq!(
@@ -10269,8 +10303,13 @@ mod tests {
             [RowId::Symbol(backend_engine::symbol_key(&parse_args))]
         );
         for coordinate in &labels {
+            let page = if coordinate.contains("::external::symbol:") {
+                local.page_external_after(coordinate, 8, None)
+            } else {
+                local.page(coordinate, 8)
+            }.expect("exact coordinate in its authority lane");
             assert_eq!(
-                hit_keys(local.page(coordinate, 8).expect("exact coordinate").hits).first(),
+                hit_keys(page.hits).first(),
                 Some(&RowId::Symbol(backend_engine::symbol_key(coordinate)))
             );
         }
