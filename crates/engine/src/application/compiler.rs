@@ -82,6 +82,7 @@ use backend_replication::{
     ProducedSemanticTypedPlaneContentV3, SemanticTypedPlaneBoundaryPoliciesV3,
     produce_semantic_typed_plane_content_v3,
 };
+use sha2::{Digest, Sha256};
 
 use crate::application::executor::StagedOutputLease;
 use crate::application::package_authority::{
@@ -4405,9 +4406,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         }
         let sdk_reference_paths = targeting_snapshot.as_ref().map(|snapshot| snapshot.directories().iter().map(PathBuf::as_path).collect::<Vec<_>>());
         let mut resolver_owner = None;
-        if let (Some(observed), Some(snapshot)) = (sdk_observation.as_ref(), targeting_snapshot.as_ref()) {
+        if let Some(observed) = sdk_observation.as_ref() {
             let mut candidates = Vec::new();
-            for directory in snapshot.directories() {
+            for directory in &observed.targeting_directories {
                 for entry in fs::read_dir(directory).map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK candidate directory unavailable" })? {
                     let path = entry.map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK candidate unavailable" })?.path();
                     if path.extension().is_some_and(|extension| extension == "dll") { candidates.push(path); }
@@ -4425,7 +4426,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 global_json,
                 &candidates,
                 assets.as_deref(),
-                restored_csharp_references.as_ref().map(|references| references.digest),
+                assets.as_ref().and_then(|path| fs::read(path).ok()).map(|bytes| Sha256::digest(bytes).into()),
                 control.deadline,
                 cancelled,
             ).map_err(|_| PackageSemanticError::CSharpSdkUnavailable { reason: "C# SDK reference resolution unavailable" })?;
