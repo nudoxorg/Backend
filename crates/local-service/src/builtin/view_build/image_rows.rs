@@ -1589,6 +1589,7 @@ mod tests {
             path: PATH,
             site_declarations: sites,
             native_source,
+            native_ts_evidence: None,
         };
         append_resident_image_rows(
             image,
