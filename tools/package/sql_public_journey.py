@@ -565,6 +565,10 @@ if [(r["node"], r["strength"], r["relation"]) for r in cold_impact["rows"]] != [
     fail("cold MCP typed column impact differs from CLI")
 if [(r["node"], r["strength"], r["relation"]) for r in cold_table["rows"]] != [(r["node"], r["strength"], r["relation"]) for r in bookshop_after[3]["rows"]]:
     fail("cold MCP typed renamed table impact differs from CLI")
+listed = rpc(17, "tools/list", {}).get("result", {}).get("tools", [])
+sql_tools = [tool for tool in listed if tool.get("name") == "backend.sql_query"]
+if len(sql_tools) != 1 or "package" not in sql_tools[0].get("inputSchema", {}).get("properties", {}):
+    fail(f"MCP tools/list does not expose usable SQL query schema: {sql_tools}")
 mcp.stdin.close()
 mcp.wait(timeout=10)
 code, raw = cli("outline-cold", ["outline", str(project)])
