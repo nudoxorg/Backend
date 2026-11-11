@@ -20,7 +20,8 @@ use crate::driver::{
 use backend_frontend_clang::ClangAuthorityEnvironment;
 use backend_frontend_csharp::legacy::{
     CSharpAuthorityConfiguration, CSharpAuthorityControl, CSharpAuthorityError,
-    CSharpAuthorityRequest, CSharpCapturedConfig, CSharpCapturedSource, CSharpOracle,
+    CSharpAuthorityRequest, CSharpCapturedConfig, CSharpCapturedProjectGraph,
+    CSharpCapturedSource, CSharpOracle,
 };
 use backend_frontend_go::legacy::oracle::{
     GoPackageAuthorityWitness, GoPackageAuthorityWitnessError,
@@ -177,6 +178,10 @@ pub struct PackageAuthorityRequest<'request, 'config> {
     pub csharp_sources: Option<&'request [CSharpCapturedSource<'request>]>,
     /// Owner-captured C# project and configuration probes, if admitted.
     pub csharp_config: Option<&'request [CSharpCapturedConfig<'request>]>,
+    /// Exact captured multi-project C# graph, when the selected unit carries
+    /// dependency source custody. None keeps the legacy single-project path
+    /// fail-closed in the adapter.
+    pub csharp_project_graph: Option<&'request CSharpCapturedProjectGraph<'request>>,
     /// Exact native compilation unit selected by the admitted package target.
     pub unit_key: &'request CompilationUnitKeyV2,
     /// Closed language profile that determines the one allowed authority.
@@ -1068,7 +1073,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         source: request.source,
                         captured_sources: request.csharp_sources,
                         captured_config: request.csharp_config,
-                        captured_project_graph: None,
+                        captured_project_graph: request.csharp_project_graph,
                         profile,
                         native_tool: resolved.tool,
                         toolchain: resolved.as_ref(),
@@ -1616,6 +1621,7 @@ mod tests {
             java_sourcepath: &[],
             csharp_sources: None,
             csharp_config: None,
+            csharp_project_graph: None,
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::Go(GoVersion::Go125),
             toolchain: ToolchainSelection::ResolvedNative(go_toolchain()),
@@ -1657,6 +1663,7 @@ mod tests {
             java_sourcepath: &[],
             csharp_sources: None,
             csharp_config: None,
+            csharp_project_graph: None,
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::C(CStandard::C11),
             toolchain: ToolchainSelection::ResolvedNative(clang_toolchain()),
@@ -1688,6 +1695,7 @@ mod tests {
             java_sourcepath: &[],
             csharp_sources: None,
             csharp_config: None,
+            csharp_project_graph: None,
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::C(CStandard::C11),
             toolchain: ToolchainSelection::ResolvedNative(clang_toolchain()),
@@ -1720,6 +1728,7 @@ mod tests {
             java_sourcepath: &[],
             csharp_sources: None,
             csharp_config: None,
+            csharp_project_graph: None,
             unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
             toolchain: ToolchainSelection::ResolvedNative(csharp_toolchain()),

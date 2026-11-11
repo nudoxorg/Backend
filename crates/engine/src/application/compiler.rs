@@ -574,6 +574,7 @@ pub struct PackageSourceSet<'source> {
     package_root: &'source Path,
     sources: &'source [PackageSource<'source>],
     csharp_config: Option<&'source [backend_frontend_csharp::legacy::CSharpCapturedConfig<'source>]>,
+    csharp_project_graph: Option<&'source backend_frontend_csharp::legacy::CSharpCapturedProjectGraph<'source>>,
     csharp_sdk_probes: Option<&'source [backend_frontend_csharp::legacy::CSharpSdkProbe<'source>]>,
     python_raw_sources: Option<
         &'source [backend_frontend_python::legacy::checker::PythonProjectBytesSource<'source>],
@@ -654,6 +655,7 @@ impl<'source> PackageSourceSet<'source> {
             package_root,
             sources,
             csharp_config: None,
+            csharp_project_graph: None,
             csharp_sdk_probes: None,
             python_raw_sources: None,
             input_claim: None,
@@ -685,6 +687,28 @@ impl<'source> PackageSourceSet<'source> {
         }).ok_or(PackageSourceSetError::NativeCSharpProfileMismatch)?;
         if size > 2 * 1024 * 1024 { return Err(PackageSourceSetError::NativeCSharpProfileMismatch); }
         self.csharp_config = Some(config);
+        Ok(self)
+    }
+
+    /// Attaches a closed captured project graph to the exact C# unit. The
+    /// adapter still validates node/source/reference custody before authority
+    /// entry; this method only preserves the typed graph through the owner.
+    pub fn with_csharp_project_graph(
+        mut self,
+        graph: &'source backend_frontend_csharp::legacy::CSharpCapturedProjectGraph<'source>,
+    ) -> Result<Self, PackageSourceSetError> {
+        let backend_engine::application::CompilationUnitKeyV2::CSharpProject { project_path } = self.package_target.unit_key() else {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        };
+        if !matches!(self.request.target.profile, LanguageProfile::CSharp(_))
+            || graph.format != 1
+            || graph.projects.is_empty()
+            || graph.projects.len() > 64
+            || graph.root_project != project_path.as_ref()
+        {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        self.csharp_project_graph = Some(graph);
         Ok(self)
     }
 
@@ -4029,6 +4053,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             java_sourcepath: &[],
             csharp_sources: None,
             csharp_config: None,
+            csharp_project_graph: None,
             unit_key: &unit_key,
             profile: application_request.profile,
             toolchain,
@@ -4757,6 +4782,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         java_sourcepath: &[],
                         csharp_sources: None,
                         csharp_config: None,
+                        csharp_project_graph: None,
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
                         toolchain,
@@ -5329,6 +5355,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         java_sourcepath: &[],
                         csharp_sources: None,
                         csharp_config: None,
+                        csharp_project_graph: None,
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
                         toolchain,
@@ -5397,6 +5424,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         java_sourcepath: &[],
                         csharp_sources: None,
                         csharp_config: None,
+                        csharp_project_graph: None,
                         unit_key: package.package_target.unit_key(),
                         profile: target.profile,
                         toolchain,
@@ -5634,6 +5662,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             java_sourcepath: &java_sourcepath,
                             csharp_sources: csharp_sources.as_deref(),
                             csharp_config: package.csharp_config,
+                            csharp_project_graph: package.csharp_project_graph,
                             unit_key: package.package_target.unit_key(),
                             profile: target.profile,
                             toolchain,
