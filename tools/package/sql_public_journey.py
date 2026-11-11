@@ -225,7 +225,7 @@ if a.expect_no_worker:
         gaps = page.get("host_gaps", [])
         if {gap.get("path") for gap in gaps} != expected or len(gaps) != len(expected):
             fail(f"{label}: selected SQL file gaps differ: {gaps}")
-        if any(gap.get("reason") != {"state": "unavailable", "reason": "EngineNotAdmitted"} for gap in gaps):
+        if any(gap.get("reason") != {"state": "unavailable", "reason": "engine_not_admitted"} for gap in gaps):
             fail(f"{label}: worker terminal reasons differ: {gaps}")
         return gaps
     before = unavailable_gaps("no-worker-gaps")
