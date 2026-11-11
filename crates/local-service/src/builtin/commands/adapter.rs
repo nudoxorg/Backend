@@ -5963,14 +5963,18 @@ impl CommandAdapter {
             &mut self.generations,
         )
         .map_err(|_| unavailable())?;
-        let native = native.or(if row.kind == Some(backend_library::DeclarationKind::Module) {
+        let vue_host = if native.is_none() && row.kind == Some(backend_library::DeclarationKind::Module) {
             super::vue_source::extent(&sources, row).map_err(|_| unavailable())?
-        } else { None });
+        } else { None };
+        let vue_host_scope = vue_host.is_some();
+        let native = native.or(vue_host);
         let structural = if native.is_none() {
             super::structural_source::admit(&sources, row).map_err(|_| unavailable())?
         } else { None };
         let (native_path, source_identity, extent, scope) = match (native, structural.as_ref()) {
-            (Some((path, identity, extent)), _) => (path, identity, extent, backend_library::SourceRangeScope::NativePrimaryDeclaration),
+            (Some((path, identity, extent)), _) => (path, identity, extent,
+                if vue_host_scope { backend_library::SourceRangeScope::StructuralDeclaration }
+                else { backend_library::SourceRangeScope::NativePrimaryDeclaration }),
             (None, Some(source)) => (source.path.clone(), source.identity, source.binding.owner(), backend_library::SourceRangeScope::StructuralDeclaration),
             _ => return Err(unavailable()),
         };
