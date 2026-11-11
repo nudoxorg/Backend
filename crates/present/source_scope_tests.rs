@@ -47,7 +47,11 @@ fn source_scope_json_text_and_markdown_preserve_bytes_and_evidence() {
     invalid["scope"] = serde_json::json!("complete_declaration");
     assert!(serde_json::from_value::<SourceRangePage>(invalid).is_err());
 
-    for (page, expected) in [(legacy, "unknown"), (native, "native_primary_declaration")] {
+    for (page, expected) in [
+        (legacy, "unknown"),
+        (native, "native_primary_declaration"),
+        (page(raw, SourceRangeScope::StructuralDeclaration), "structural_declaration"),
+    ] {
         let scope = page.scope;
         let answer = answer(page);
         let encoded = encode_answer(
