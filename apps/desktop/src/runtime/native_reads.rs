@@ -621,9 +621,21 @@ fn sql(engine: &mut dyn Engine, subject: &NativeSubject, usage: &dyn UsageLinks,
             verified: read.verified,
         });
     }
+    // Files the analysis could not read may be the very ones that define it:
+    // with none found, that is "could not look", never "not there".
+    let unread_files = object_page.basis.gaps.unavailable_hosts + object_page.basis.gaps.native_error_hosts;
+    let mut coverage = coverage;
     let object = match (&coverage, kind) {
         (Coverage { analysed: false, notes, .. }, _) => SqlObject::Unavailable(notes.first().cloned().unwrap_or_else(|| Arc::from("SQL was not analysed."))),
         (_, Some(kind)) => SqlObject::Defined { kind, live, dialect },
+        (_, None) if unread_files > 0 => {
+            let why: Arc<str> = Arc::from(format!(
+                "{unread_files} SQL {} could not be read by the analysis, so whether {object_name} is defined cannot be said.",
+                if unread_files == 1 { "file" } else { "files" }
+            ));
+            coverage.analysed = false;
+            SqlObject::Unavailable(why)
+        }
         (_, None) => SqlObject::NotDefined,
     };
     let analysed = coverage.analysed;
@@ -1204,3 +1216,6 @@ fn join_names(names: &[String]) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod owner_tests;

@@ -1069,3 +1069,12 @@ pub(super) fn find_leaves(query: &crate::model::pages::SearchQuery, store: &Page
         }
     }
 }
+
+/// The door a declaration page offers when the declaration is a component of
+/// one of your projects: what changes if you change it.
+pub(super) fn declaration_door(route: &Route, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Option<Leaf> {
+    let subject = NativeSubject::for_route(route)?;
+    let mut leaves = Vec::new();
+    impact_door(&subject, &mut leaves, ctx, cx);
+    leaves.pop()
+}

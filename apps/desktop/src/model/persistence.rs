@@ -2013,6 +2013,37 @@ mod tests {
         }
     }
 
+    fn project_subject(kind: crate::navigation::NativeKind, name: &str, path: Option<&str>) -> crate::navigation::NativeSubject {
+        crate::navigation::NativeSubject::new(LocalProjectId::new("/tmp/nudox-shop").expect("project"), kind, name, path).expect("subject")
+    }
+
+    #[test]
+    fn a_saved_sql_css_or_impact_page_that_no_longer_admits_returns_home() {
+        let bad = |page: &str, kind: &str, name: &str, path: Option<&str>| PersistedRoute::Native {
+            page: page.to_owned(), project: "/tmp/nudox-shop".to_owned(), kind: kind.to_owned(), name: name.to_owned(),
+            path: path.map(str::to_owned), pages: 1,
+        };
+        for route in [
+            bad("sql", "css-class", "card", None),
+            bad("css", "sql-table", "orders", None),
+            bad("impact", "nonsense", "x", None),
+            bad("elsewhere", "sql-table", "orders", None),
+            bad("impact", "sql-table", "orders", Some("../escape.sql")),
+            bad("impact", "sql-table", "", None),
+        ] {
+            let state = PersistedDesktopState { route: route.clone(), ..PersistedDesktopState::default() };
+            let reopened = PersistentState::at("unused").cold_reload(&state);
+            assert_eq!(reopened.route, Route::Orbit(crate::navigation::OrbitRoute::Home), "{route:?}");
+        }
+        // Pages held are clamped, never trusted.
+        let state = PersistedDesktopState { route: PersistedRoute::Native {
+            page: "impact".into(), project: "/tmp/nudox-shop".into(), kind: "sql-table".into(), name: "orders".into(), path: None, pages: 200,
+        }, ..PersistedDesktopState::default() };
+        let reopened = PersistentState::at("unused").cold_reload(&state);
+        assert!(matches!(reopened.route, Route::Orbit(crate::navigation::OrbitRoute::Browse(BrowseRoute::Impact(ref impact)))
+            if impact.pages == crate::navigation::IMPACT_MAX_PAGES));
+    }
+
     #[test]
     fn browsing_places_and_settings_overlay_survive_a_cold_restart() {
         let snapshot = AppSnapshot::empty(crate::core::VersionedRoot::synthetic(
@@ -2027,6 +2058,9 @@ mod tests {
                 crate::model::pages::PackageRef::parse("pkg:cargo/toml@0.8.23").expect("first"),
                 crate::model::pages::PackageRef::parse("pkg:cargo/serde@1.0.0").expect("second"),
             ]).expect("compare")),
+            BrowseRoute::Sql(project_subject(crate::navigation::NativeKind::SqlColumn, "orders.total", None)),
+            BrowseRoute::Css(project_subject(crate::navigation::NativeKind::CssCustomProperty, "--brand", None)),
+            BrowseRoute::Impact(crate::navigation::ImpactRoute::new(project_subject(crate::navigation::NativeKind::CssClass, "card", Some("src/card.css"))).with_pages(3)),
         ];
         for place in browse {
             let route = Route::Orbit(crate::navigation::OrbitRoute::Browse(place));

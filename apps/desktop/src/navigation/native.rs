@@ -287,7 +287,8 @@ impl NativeSubject {
 
     /// The thing a person on `route` means by "what changes if I change
     /// this": the SQL or CSS subject of a page, or a component of a local
-    /// project named like the declaration they are reading. The owner says
+    /// project named like the TypeScript or JavaScript declaration they are
+    /// reading. The owner says
     /// whether the project has such a thing; this only asks.
     #[must_use]
     pub fn for_route(route: &Route) -> Option<Self> {
@@ -297,6 +298,14 @@ impl NativeSubject {
             Route::Symbol(symbol) => {
                 let package = symbol.package.as_str();
                 if !std::path::Path::new(package).is_absolute() {
+                    return None;
+                }
+                // Components are what the owner follows into CSS and SQL; a
+                // declaration in another language has no such question yet.
+                let file = symbol.id.as_str().strip_prefix(package)?.strip_prefix("::")?.split("::").next()?;
+                let file = file.rsplit_once(':').map_or(file, |(file, _)| file);
+                let extension = std::path::Path::new(file).extension()?.to_str()?.to_ascii_lowercase();
+                if !matches!(extension.as_str(), "tsx" | "jsx" | "ts" | "js" | "mjs" | "vue") {
                     return None;
                 }
                 let project = LocalProjectId::new(package).ok()?;

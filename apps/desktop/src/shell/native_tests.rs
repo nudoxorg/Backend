@@ -52,6 +52,14 @@ struct Reader(Canned);
 
 impl PageReader for Reader {
     fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+        // A declaration page for whichever declaration was asked for: the
+        // fixture's page, said to be at that coordinate.
+        if let ReadRequest::Symbol(symbol) = request {
+            if let Ok(PageValue::Symbol(mut page)) = Fixture.read(request, context) {
+                page.identity.coordinate = symbol.clone();
+                return Ok(PageValue::Symbol(page));
+            }
+        }
         if let ReadRequest::Browse(key @ (BrowseKey::Impact(_) | BrowseKey::Sql(_) | BrowseKey::Css(_) | BrowseKey::FindNative(_))) = request {
             self.0.reads.lock().expect("reads").push(key.clone());
             let answer = Arc::clone(&self.0.answer.lock().expect("answer"));
@@ -949,30 +957,45 @@ fn i_where_there_is_nothing_to_ask_about_changes_nothing(cx: &mut TestAppContext
     assert_eq!(canned.reads_of(|_| true), 0);
 }
 
+fn declaration(package: &str, file: &str, name: &str) -> Route {
+    Route::Symbol(crate::navigation::SymbolRoute {
+        project: None,
+        package: crate::core::PackageId::new(package).expect("package"),
+        id: crate::navigation::Coordinate::new(&format!("{package}::{file}:7::{name}")).expect("coordinate"),
+        at: None,
+        view: crate::navigation::View::Page,
+        line: None,
+        selected: None,
+    })
+}
+
 #[test]
-fn a_declaration_of_a_local_project_asks_about_a_component_of_that_name() {
-    // A registry release is not a project of yours: there is nothing of yours to ask about.
-    let registry = Route::Symbol(crate::navigation::SymbolRoute {
-        project: None,
-        package: crate::core::PackageId::new("pkg:cargo/toml@0.8.23").expect("package"),
-        id: crate::navigation::Coordinate::new("pkg:cargo/toml@0.8.23::src/de.rs:1::Value").expect("coordinate"),
-        at: None,
-        view: crate::navigation::View::Page,
-        line: None,
-        selected: None,
-    });
-    assert_eq!(NativeSubject::for_route(&registry), None);
-    let local = Route::Symbol(crate::navigation::SymbolRoute {
-        project: None,
-        package: crate::core::PackageId::new("/workspace/shop").expect("package"),
-        id: crate::navigation::Coordinate::new("/workspace/shop::src/Card.tsx:7::Card").expect("coordinate"),
-        at: None,
-        view: crate::navigation::View::Page,
-        line: None,
-        selected: None,
-    });
-    let asked = NativeSubject::for_route(&local).expect("a local declaration asks about a component");
+fn only_a_component_of_one_of_your_projects_asks_what_changes() {
+    // A registry release is not a project of yours.
+    assert_eq!(NativeSubject::for_route(&declaration("pkg:cargo/toml@0.8.23", "src/de.rs", "Value")), None);
+    // A Rust declaration of your own project has no such question yet.
+    assert_eq!(NativeSubject::for_route(&declaration("/workspace/shop", "src/lib.rs", "Card")), None);
+    let asked = NativeSubject::for_route(&declaration("/workspace/shop", "src/Card.tsx", "Card")).expect("a component asks");
     assert_eq!((asked.kind, &*asked.name), (NativeKind::CodeComponent, "Card"));
+    assert_eq!(asked.project, project());
+}
+
+#[gpui::test]
+fn a_components_page_offers_what_changes_and_the_key_asks_it(cx: &mut TestAppContext) {
+    let canned = serve_impact(ImpactModel { subject: subject(NativeKind::CodeComponent, "Card"), seeds: Vec::new(), ..card_impact(1) });
+    let mut rig = open(cx, &canned, 1440.0, 1000.0);
+    // The fixture's declaration pages are Rust: no door there.
+    rig.go(Intent::Navigate(super::tests::page_route("RelationLabel")));
+    assert!(!targets(&mut rig).iter().any(|label| label.starts_with("What changes")), "{:#?}", targets(&mut rig));
+    // The component's own page (the fixture answers any declaration of its package).
+    let route = declaration("/fixture/present", "src/Card.tsx", "RelationLabel");
+    assert_eq!(NativeSubject::for_route(&route).map(|subject| subject.written()).as_deref(), Some("RelationLabel"));
+    rig.go(Intent::Navigate(route.clone()));
+    assert!(targets(&mut rig).iter().any(|label| label == "What changes if I change RelationLabel"), "{:#?}", targets(&mut rig));
+    let nodes = native(&mut rig);
+    assert!(has(&nodes, gpui::Role::Button, "What changes if I change RelationLabel"));
+    rig.keys("i");
+    assert!(matches!(rig.route(), Route::Orbit(OrbitRoute::Browse(BrowseRoute::Impact(impact))) if &*impact.subject.name == "RelationLabel"), "{:?}", rig.route());
 }
 
 // ---- Narrow and wide -------------------------------------------------------------------

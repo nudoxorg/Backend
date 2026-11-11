@@ -164,6 +164,10 @@ pub(super) fn body(
     if let Some(section) = upgrade(route, ctx, cx) {
         leaves.push(Leaf::new(section));
     }
+    // A component of one of your projects can ask what changing it affects.
+    if let Some(door) = super::native::declaration_door(place, ctx, cx) {
+        leaves.push(door);
+    }
     leaves
 }
 

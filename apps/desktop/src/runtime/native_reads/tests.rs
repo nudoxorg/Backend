@@ -467,6 +467,19 @@ fn partial_and_missing_analysis_says_so_and_stops_asking() {
     assert!(matches!(model.users.state, UsersState::Unavailable(_)));
     assert_eq!(engine.asked, ["sql-query Definition"], "an unanalysed project is asked once");
 
+    // Analysed, but the files that might define it could not be read: could not look, not "not there".
+    let mut engine = Scripted::new(|command| match command {
+        SurfaceCommand::SqlQuery { .. } => {
+            let mut basis = sql_basis(SqlAttemptState::LatestObserved);
+            basis.gaps = SqlGapCounts { unavailable_hosts: 2, ..SqlGapCounts::default() };
+            Ok(SurfaceReply::SqlQuery(sql_page_of(basis, Vec::new())))
+        }
+        other => panic!("unexpected {other:?}"),
+    });
+    let model = sql(&mut engine, &subject(NativeKind::SqlTable, "orders"), &QueryTimeLinks, &CancellationToken::new()).expect("model");
+    assert!(matches!(&model.object, SqlObject::Unavailable(why) if why.contains("2 SQL files could not be read")), "{:?}", model.object);
+    assert!(!model.coverage.analysed);
+
     // Analysed, and the name is not there: not defined, in words that are not proof.
     let mut engine = Scripted::new(|command| match command {
         SurfaceCommand::SqlQuery { .. } => Ok(SurfaceReply::SqlQuery(sql_page_of(sql_basis(SqlAttemptState::LatestObserved), Vec::new()))),
