@@ -413,6 +413,11 @@ mod tests {
         }
         fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
             self.surfaces += 1;
+            if matches!(command, SurfaceCommand::PackageCoverageCurrent { .. }) {
+                // This fixture records no source receipt; the shelf must treat that as
+                // "no language evidence", never as a failure.
+                return Err(ClientError::Protocol("no source receipt recorded".to_owned()));
+            }
             let SurfaceCommand::PackageProfile {
                 package,
                 compiler_outcome: Some(read),
@@ -558,7 +563,12 @@ mod tests {
             }
             assert_eq!((engine.surfaces, engine.package_reads), (0, 0));
             let _ = crate::answer(&mut engine, &crate::Request::Shelf).expect("shelf");
-            assert_eq!(engine.surfaces, 0);
+            // `packages` reads one source receipt per ready local project to name its
+            // languages; a project that is still loading is not read, and no
+            // compiler-cause read is made for any of these. The shelf itself takes one
+            // packages probe.
+            assert_eq!(engine.surfaces, usize::from(matches!(state, RowState::Ready)));
+            assert_eq!(engine.package_reads, 1);
         }
     }
 

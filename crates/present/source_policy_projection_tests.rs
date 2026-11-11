@@ -323,11 +323,11 @@ fn references_keep_each_unverified_policy_with_its_own_site() {
         let value: serde_json::Value = serde_json::from_slice(&encoded.bytes).expect("JSON");
         assert_eq!(
             value["records"][0]["site_symbol"],
-            serde_json::to_value(first_symbol).expect("first id")
+            serde_json::json!(backend_library::encode_id(&first_symbol))
         );
         assert_eq!(
             value["records"][2]["site_symbol"],
-            serde_json::to_value(second_symbol).expect("second id")
+            serde_json::json!(backend_library::encode_id(&second_symbol))
         );
         assert_eq!(
             value["records"][0]["source_policy"],

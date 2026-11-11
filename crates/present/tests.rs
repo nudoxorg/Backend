@@ -2656,13 +2656,13 @@ fn outline_projection_preserves_exact_selectors_for_colliding_coordinates() {
         assert_eq!(
             root["semantic_data"],
             serde_json::json!({
-                "kind": "selected-symbol-id", "value": first.as_bytes(),
+                "kind": "selected-symbol-id", "value": backend_library::encode_id(first.as_bytes()),
             })
         );
         assert_eq!(
             child["semantic_data"],
             serde_json::json!({
-                "kind": "selected-symbol-id", "value": second.as_bytes(),
+                "kind": "selected-symbol-id", "value": backend_library::encode_id(second.as_bytes()),
             })
         );
         assert_ne!(root["semantic_data"], child["semantic_data"]);
@@ -2768,7 +2768,7 @@ fn selected_symbol_ids_and_site_symbols_are_hex_and_old_arrays_still_read() {
         encoded,
         serde_json::json!({"kind":"selected-symbol-id","value":"ab".repeat(32)})
     );
-    assert!(serde_json::to_vec(&encoded).expect("bytes").len() < 100);
+    assert!(serde_json::to_vec(&encoded).expect("bytes").len() < 110);
     for spelling in [
         encoded.clone(),
         serde_json::json!({"kind":"selected-symbol-id","value":vec![0xab_u8; 32]}),

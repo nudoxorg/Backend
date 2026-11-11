@@ -1521,8 +1521,8 @@ mod tests {
         let worst_answer = Answer::Records(Box::new(worst.clone()));
         let worst = encode_answer(&worst_answer, Detail::Full, None, 256 * 1024)
             .expect("worst typed page fits hard cap");
-        assert_eq!(worst.bytes.len(), 134_052);
-        assert_eq!(worst.budget.estimated_tokens, 33_513);
+        assert_eq!(worst.bytes.len(), 124_225);
+        assert_eq!(worst.budget.estimated_tokens, 31_057);
         assert_eq!(
             worst.bytes.as_ref(),
             include_bytes!("fixtures/worst-200-full-records-selected-id.json")
@@ -1555,7 +1555,7 @@ mod tests {
                 selected,
                 serde_json::json!({
                     "kind": "selected-symbol-id",
-                    "value": backend_library::symbol_key(&format!("typed-budget-{index}")).to_bytes(),
+                    "value": backend_library::encode_id(&backend_library::symbol_key(&format!("typed-budget-{index}")).to_bytes()),
                 })
             );
         }
@@ -1567,7 +1567,7 @@ mod tests {
         let refused = encode_answer(&worst_answer, Detail::Full, None, 48 * 1024)
             .expect_err("an oversized complete page is refused before allocation");
         assert_eq!(refused.budget, 48 * 1024);
-        assert_eq!(refused.bytes, 134_052);
+        assert_eq!(refused.bytes, 124_225);
     }
 
     #[test]
@@ -1856,7 +1856,7 @@ mod tests {
                         .expect("typed worst fixture fits"),
                 );
             });
-            assert_eq!(result.expect("encoded result").bytes.len(), 134_052);
+            assert_eq!(result.expect("encoded result").bytes.len(), 124_225);
             timings.push(start.elapsed().as_nanos());
             allocations.push(info.bytes_total);
         }

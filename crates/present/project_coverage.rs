@@ -639,10 +639,24 @@ mod tests {
             .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
         let mut receipt = owner_summary(&package, view_root, source_root, [62; 32], 63, false);
         if let PackageCoverageCurrentResult::Current {
-            outcomes: PackageCompilerOutcomes::Summary { source_capture, .. },
+            outcomes:
+                PackageCompilerOutcomes::Summary {
+                    source_capture,
+                    refusals,
+                    ..
+                },
             ..
         } = &mut receipt
         {
+            // The owner lists every refused profile beside the capture.
+            *refusals = vec![backend_library::PackageCompilerProfileRefusal {
+                profile: backend_library::SemanticLanguageProfile::new(LanguageProfile::CSharp(
+                    CSharpVersion::CSharp14,
+                )),
+                reason: backend_library::IndexOperationSemanticUnavailableReason::Toolchain,
+                diagnostic: backend_library::PackageCompilerDiagnostic::NotRecorded,
+            }]
+            .into_boxed_slice();
             let mut profiles = source_capture.profiles.to_vec();
             profiles.push(IndexOperationSourceProfile {
                 profile: backend_library::SemanticLanguageProfile::new(LanguageProfile::CSharp(
