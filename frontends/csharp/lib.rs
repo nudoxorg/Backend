@@ -32,7 +32,7 @@ pub fn syntax_frontend() -> Result<SyntaxFrontend, SyntaxError> {
     );
     SyntaxFrontend::new(
         SourceLanguage::CSharp,
-        b"tree-sitter-c-sharp-0.23.5/tags-v4-record-kinds",
+        b"tree-sitter-c-sharp-0.23.5/tags-v5-record-kinds-exact-owners",
         vec![GrammarVariant::new(
             &["cs"],
             tree_sitter_c_sharp::LANGUAGE.into(),
@@ -113,6 +113,10 @@ mod source_excerpt_tests {
                 .ok_or_else(|| format!("missing authored declaration {name}"))?;
             assert_eq!(declaration.source_excerpt().text(), Some(expected.as_str()));
             assert_eq!(declaration.source_excerpt().extent(), Some(backend_compile::SourceExcerptExtent::Complete));
+            assert!(matches!(
+                declaration.binding_identity(),
+                backend_compile::SourceBindingIdentity::Exact(_)
+            ));
         }
         Ok(())
     }
