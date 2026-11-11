@@ -1152,19 +1152,15 @@ fn cat_authority() -> (PathBuf, Vec<String>) {
     } else {
         required_test_tool("cat")
     };
-    // Coreutils can dispatch by argv[0]; execute its actual named path after
-    // the supervised shell is admitted rather than staging the multicall binary.
-    (
-        PathBuf::from("/bin/sh"),
-        vec![
-            "-c".into(),
-            "exec \"$1\"".into(),
-            "fixture".into(),
-            cat.into_os_string()
-                .into_string()
-                .expect("cat path must be UTF-8 for command arguments"),
-        ],
-    )
+    // Multicall coreutils changes its dispatch name when the authority is
+    // leased. Its explicit applet option preserves the actual native binary.
+    let resolved = std::fs::canonicalize(&cat).expect("cat must resolve");
+    let arguments = if resolved.file_name().is_some_and(|name| name == "coreutils") {
+        vec!["--coreutils-prog=cat".into()]
+    } else {
+        Vec::new()
+    };
+    (cat, arguments)
 }
 
 #[cfg(unix)]
@@ -1516,13 +1512,13 @@ fn supervisor_enforces_unix_process_count_limit() -> Result<(), Box<dyn Error>> 
         python,
         &[
             "-c",
-            "import os\nos.write(1, b'authority-reached')\ntry:\n os.fork()\nexcept OSError:\n os._exit(1)\nos._exit(0)",
+            "import errno, os\nos.write(1, b'authority-reached')\ntry:\n os.fork()\nexcept OSError as error:\n os._exit(1 if error.errno == errno.EAGAIN else 2)\nos._exit(0)",
         ],
         limits(128, 128, Duration::from_secs(2), 256)?.with_process_count_limit(1)?,
     )?;
     let receipt = process.run()?;
     assert_eq!(receipt.terminal(), ProcessTerminal::Exit);
-    assert_ne!(receipt.status(), Some(0));
+    assert_eq!(receipt.status(), Some(1));
     assert!(receipt.stdout().starts_with(b"authority-reached"));
     assert!(receipt.reaped());
     Ok(())
