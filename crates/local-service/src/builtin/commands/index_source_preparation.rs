@@ -2100,6 +2100,36 @@ mod csharp_project_discovery_tests {
         )
         .is_ok());
     }
+
+    #[test]
+    fn captured_project_graph_retains_reachable_project_edges() -> Result<(), String> {
+        let path = std::env::temp_dir().join(format!(
+            "csharp-graph-{}-{}",
+            std::process::id(),
+            SERIAL.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(path.join("Api")).map_err(|error| error.to_string())?;
+        let result = (|| {
+            std::fs::write(path.join("Api/Api.csproj"), b"<Project/>")
+                .map_err(|error| error.to_string())?;
+            std::fs::write(
+                path.join("Tests.csproj"),
+                br#"<Project><ItemGroup><ProjectReference Include="Api/Api.csproj"/></ItemGroup></Project>"#,
+            )
+            .map_err(|error| error.to_string())?;
+            let snapshot = ingest::CompilerWorkspaceSnapshot::open(&path)?;
+            let graph = capture_csharp_project_graph(
+                &snapshot,
+                &["Tests.csproj".to_owned()],
+            )
+            .map_err(|error| error.to_string())?;
+            assert_eq!(graph.nodes.len(), 2);
+            assert_eq!(graph.closure("Tests.csproj").map_err(|error| error.to_string())?.len(), 2);
+            Ok(())
+        })();
+        let _ = std::fs::remove_dir_all(path);
+        result
+    }
 }
 
 #[cfg(test)]
