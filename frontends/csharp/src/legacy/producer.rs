@@ -197,6 +197,7 @@ fn snapshot_execution(
         }
     }
     declared.insert(PathBuf::from(format!("{oracle_stem}.dll")));
+    let mut flattened_names = std::collections::BTreeMap::<std::ffi::OsString, PathBuf>::new();
     for relative in declared {
         // A published helper's deps file records the package-relative asset
         // (`lib/net8.0/Foo.dll`), while `dotnet publish` may flatten that
@@ -204,14 +205,21 @@ fn snapshot_execution(
         // flattened basename when it is an unambiguous regular file in the
         // same confined publish directory.  Never search outside that root or
         // choose among multiple candidates.
+        let name = relative
+            .file_name()
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        if let Some(previous) = flattened_names.insert(name.to_owned(), relative.clone()) {
+            if previous != relative {
+                // Distinct package-relative assets with one basename cannot
+                // safely share a flattened publish location.
+                return Err(CSharpAuthorityError::Configuration);
+            }
+        }
         let source = {
             let recorded = oracle_parent.join(&relative);
             if recorded.is_file() {
                 recorded
             } else {
-                let name = relative
-                    .file_name()
-                    .ok_or(CSharpAuthorityError::Configuration)?;
                 let flattened = oracle_parent.join(name);
                 if !flattened.is_file() {
                     return Err(CSharpAuthorityError::Configuration);
