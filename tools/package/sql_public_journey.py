@@ -66,6 +66,7 @@ FILES.update({
     "db/migrations/0010_bookshop.sql": (
         "CREATE TABLE books (id INTEGER PRIMARY KEY, price_cents INTEGER, title TEXT);\n"
         "CREATE TABLE order_items (book_id INTEGER REFERENCES books(id));\n"
+        "CREATE TABLE price_audit (book_id INTEGER REFERENCES books(id));\n"
         "CREATE INDEX books_by_title ON books(title);\n"
         "CREATE VIEW book_sales AS SELECT title FROM books;\n"
     ),
@@ -76,11 +77,13 @@ FILES.update({
         "BEGIN SELECT new.list_price_cents; END;\n"
     ),
     "db/queries/bookshop.sql": (
-        "SELECT list_price_cents FROM books;\n"
-        "SELECT title FROM books;\n"
         "SELECT price_cents FROM books;\n"
         "SELECT * FROM order_items;\n"
     ),
+    "db/queries/book_by_isbn.sql": "SELECT list_price_cents FROM books WHERE id = ?1;\n",
+    "db/queries/reprice_book.sql": "UPDATE books SET list_price_cents = ?1 WHERE id = ?2;\n",
+    "db/queries/place_order_line.sql": "SELECT list_price_cents FROM books WHERE id = ?1;\n",
+    "db/queries/unrelated_title.sql": "SELECT title FROM books;\n",
 })
 
 def sql_path(path):
@@ -301,9 +304,12 @@ def bookshop_claims(label):
             fail(f"{label}: missing typed unbound {name}/{reason}: {refs}")
     column = impact_page(label + "-column-impact", "--sql-column", "books.list_price_cents")
     nodes = [r["node"] for r in column["rows"]]
-    if not any(n.get("kind") == "query" and n.get("path") == sql_path("db/queries/bookshop.sql") for n in nodes):
-        fail(f"{label}: price query missing from impact: {nodes}")
-    if any(n.get("kind") in ("table", "index") or n.get("name") in ("book_sales", "books_by_title", "order_items", "order_lines") for n in nodes):
+    for path in ("db/queries/book_by_isbn.sql", "db/queries/reprice_book.sql", "db/queries/place_order_line.sql"):
+        if not any(n.get("kind") == "query" and n.get("path") == sql_path(path) for n in nodes):
+            fail(f"{label}: {path} missing from price impact: {nodes}")
+    if not any(n.get("kind") == "trigger" and n.get("name") == "reprice_book" for n in nodes):
+        fail(f"{label}: price trigger missing from impact: {nodes}")
+    if any(n.get("path") in (sql_path("db/queries/unrelated_title.sql"), sql_path("db/queries/bookshop.sql")) or n.get("kind") in ("table", "index") or n.get("name") in ("book_sales", "books_by_title", "order_items", "order_lines", "price_audit") for n in nodes):
         fail(f"{label}: column impact spread to unrelated objects: {nodes}")
     table = impact_page(label + "-table-impact", "--sql-table", "order_lines")
     if any(n.get("name") == "order_items" for n in table["seeds"] + [r["node"] for r in table["rows"]]):
