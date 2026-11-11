@@ -4414,6 +4414,13 @@ mod tests {
     }
 
     #[test]
+    fn discovered_release_listing_orders_versions_numerically_newest_first() {
+        let mut versions = ["0.9.0", "0.10.0", "0.2.1", "1.0.0"];
+        versions.sort_by(|left, right| natural_version_order(right, left));
+        assert_eq!(versions, ["1.0.0", "0.10.0", "0.9.0", "0.2.1"]);
+    }
+
+    #[test]
     fn unacquired_release_queries_explain_the_local_evidence_gap() {
         let root = fixture("unacquired-release");
         let mut state = ProductState::open(root.join("state.json")).expect("state");
