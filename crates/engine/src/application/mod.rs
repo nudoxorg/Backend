@@ -112,7 +112,7 @@ pub use self::runtime::{
     LocalRuntimePackageRoot, LocalRuntimePackageRootFacts, LocalRuntimePythonCheckerAdmission,
     LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority,
     LocalRuntimeRustAuthorityFailure, LocalRuntimeRustToolchainSelection, LocalRuntimeToolchain,
-    LocalRuntimeToolchainFacts, LocalRuntimeToolchainState, OwnedCSharpConfigProbe, OwnedCSharpProjectGraph, OwnedCSharpSdkProbe, OwnedCSharpSourceClaim, OwnedCSharpUnitClaim, OwnedPackageSource,
+    LocalRuntimeToolchainFacts, LocalRuntimeToolchainState, OwnedCSharpConfigProbe, OwnedCSharpProjectGraph, OwnedCSharpProjectNode, OwnedCSharpSdkProbe, OwnedCSharpSourceClaim, OwnedCSharpUnitClaim, OwnedPackageSource,
     OwnedPackageSourceAdmission, OwnedPackageSourceSet, PackageSemanticRuntimeError,
     PyreflyToolchainIdentity, TypeScriptSnapshotReuse,
 };

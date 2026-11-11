@@ -284,6 +284,64 @@ impl OwnedCSharpUnitClaim {
 pub struct OwnedCSharpProjectGraph {
     root_project: Box<str>,
     project_paths: Box<[Box<str>]>,
+    nodes: Box<[OwnedCSharpProjectNode]>,
+}
+
+/// Complete per-node custody required before a graph can be borrowed into the
+/// Roslyn authority request. Missing metadata is rejected at construction.
+#[derive(Clone, Debug)]
+pub struct OwnedCSharpProjectNode {
+    project_path: Box<str>,
+    assembly_name: Box<str>,
+    target_framework: Box<str>,
+    language_version: Box<str>,
+    define_symbols: Box<[Box<str>]>,
+    nullable: Box<str>,
+    allow_unsafe: bool,
+    output_type: Box<str>,
+    usings: Box<[Box<str>]>,
+    config: Box<[OwnedCSharpConfigProbe]>,
+    sources: Box<[OwnedCSharpSourceClaim]>,
+    reference_directories: Box<[Box<Path>]>,
+    project_references: Box<[Box<str>]>,
+}
+
+impl OwnedCSharpProjectNode {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        project_path: &str,
+        assembly_name: &str,
+        target_framework: &str,
+        language_version: &str,
+        define_symbols: Box<[Box<str>]>,
+        nullable: &str,
+        allow_unsafe: bool,
+        output_type: &str,
+        usings: Box<[Box<str>]>,
+        config: Box<[OwnedCSharpConfigProbe]>,
+        sources: Box<[OwnedCSharpSourceClaim]>,
+        reference_directories: Box<[Box<Path>]>,
+        project_references: Box<[Box<str>]>,
+    ) -> Result<Self, PackageSourceSetError> {
+        PackageSource::validate_path(project_path)?;
+        if !project_path.to_ascii_lowercase().ends_with(".csproj")
+            || assembly_name.is_empty() || assembly_name.len() > 256
+            || target_framework.len() < 4 || !target_framework.starts_with("net")
+            || language_version.is_empty() || nullable.is_empty() || output_type.is_empty()
+            || config.is_empty() || sources.is_empty() || reference_directories.is_empty()
+            || project_references.len() > 64
+            || reference_directories.iter().any(|path| !path.is_absolute())
+            || project_references.iter().any(|path| PackageSource::validate_path(path).is_err())
+        {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        Ok(Self {
+            project_path: project_path.into(), assembly_name: assembly_name.into(),
+            target_framework: target_framework.into(), language_version: language_version.into(),
+            define_symbols, nullable: nullable.into(), allow_unsafe, output_type: output_type.into(),
+            usings, config, sources, reference_directories, project_references,
+        })
+    }
 }
 
 impl OwnedCSharpProjectGraph {
@@ -302,11 +360,26 @@ impl OwnedCSharpProjectGraph {
         }
         project_paths.sort();
         project_paths.dedup();
-        Ok(Self { root_project: root_project.into(), project_paths: project_paths.into_boxed_slice() })
+        Ok(Self {
+            root_project: root_project.into(),
+            project_paths: project_paths.into_boxed_slice(),
+            nodes: Box::new([]),
+        })
     }
 
     pub fn root_project(&self) -> &str { &self.root_project }
     pub fn project_paths(&self) -> &[Box<str>] { &self.project_paths }
+
+    pub fn with_nodes(mut self, nodes: Box<[OwnedCSharpProjectNode]>) -> Result<Self, PackageSourceSetError> {
+        if nodes.len() != self.project_paths.len()
+            || nodes.iter().any(|node| !self.project_paths.iter().any(|path| path == &node.project_path))
+            || !nodes.iter().any(|node| node.project_path.as_ref() == self.root_project.as_ref())
+        {
+            return Err(PackageSourceSetError::NativeCSharpProfileMismatch);
+        }
+        self.nodes = nodes;
+        Ok(self)
+    }
 }
 
 /// Complete owned package frontier transferred through the bounded runtime channel.
