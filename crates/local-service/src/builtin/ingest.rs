@@ -6415,7 +6415,7 @@ mod tests {
         }
         assert_eq!(
             rows.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["api/Program.cs", "core/lib.rs", "web/app.ts"],
+            ["api/Program.cs", "core/lib.rs", "web/Card.vue", "web/app.ts"],
         );
         for (path, expected) in [
             ("api/Program.cs", "OrderService"),
