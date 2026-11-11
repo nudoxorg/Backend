@@ -835,7 +835,7 @@ pub(super) fn selected_nse_program_files(
         let structural_input = structural_files
             .get(path)
             .and_then(|(identity, input)| (*identity == row.source.identity).then_some(*input));
-        let evidence_row = lookup_native_evidence(evidence, package, profile, path, row.source)?;
+        let evidence_row = lookup_native_evidence(evidence, package, profile, path, row.source, image_budget)?;
         let evidence_input = evidence_row.as_ref().map(|value| value.input_digest);
         let input = match (structural_input, evidence_input) {
             (Some(a), Some(b)) if a == b => a,
@@ -992,7 +992,7 @@ pub(super) fn selected_nse_program_files(
         if recipe.profile != profile {
             return Ok(None);
         }
-        if let Some(row) = lookup_native_evidence(evidence, package, profile, path, source)?
+        if let Some(row) = lookup_native_evidence(evidence, package, profile, path, source, image_budget)?
             && row.admits_image()
         {
             // Image-level projection must not make legacy Unavailable entities
@@ -1008,9 +1008,10 @@ pub(super) fn selected_nse_program_files(
                     projection_safe = false;
                 }
             }
-            if let Some(prior) = positive.insert(path.to_owned(), (row.clone(), source)) {
-                if prior != (row, source) {
-                    return Ok(None);
+            match positive.entry(path.to_owned()) {
+                std::collections::btree_map::Entry::Vacant(entry) => { entry.insert((row, source)); }
+                std::collections::btree_map::Entry::Occupied(entry) => {
+                    if entry.get() != &(row, source) { return Ok(None); }
                 }
             }
         }
@@ -1254,6 +1255,7 @@ fn lookup_native_evidence(
     profile: backend_semantic::vocabulary::LanguageProfile,
     path: &str,
     image_source: backend_semantic::ir::SourceIdentity,
+    budget: &mut usize,
 ) -> Result<Option<backend_engine::builtin::NativeSourceEvidence>, BuiltinModelError> {
     let key =
         backend_engine::builtin::native_source_evidence_key(package.to_bytes(), profile, path)
@@ -1264,6 +1266,15 @@ fn lookup_native_evidence(
     else {
         return Ok(None);
     };
+    // Relation lookup decodes a bounded line map. Charge every decoded
+    // allocation, including repeated lookups across profiles, against the
+    // same request-wide budget as the retained images.
+    let map_bytes = row.line_starts.as_ref().map_or(Some(0), |lines| {
+        lines.capacity().checked_mul(std::mem::size_of::<u32>())
+    }).and_then(|bytes| bytes.checked_add(row.path.capacity()))
+      .ok_or_else(|| BuiltinModelError("native evidence allocation overflow".into()))?;
+    *budget = budget.checked_sub(map_bytes)
+        .ok_or_else(|| BuiltinModelError("native evidence budget exceeded".into()))?;
     if row.key().ok() != Some(key)
         || row.project != package.to_bytes()
         || row.profile != profile
