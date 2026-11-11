@@ -419,6 +419,15 @@ pub fn resolve_references_with_sdk(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<CSharpResolvedReferenceSnapshot, &'static str> {
+    if !valid_sdk_property(nullable, &["enable", "disable", "annotations"])
+        || !valid_sdk_property(language_version, &["default", "latest"])
+        || !valid_sdk_property(output_type, &["Library", "Exe", "WinExe", "Module"])
+        || nullable.len() > 32
+        || language_version.len() > 32
+        || output_type.len() > 32
+    {
+        return Err("SDK compiler property invalid");
+    }
     if candidates.is_empty()
         || candidates.len() > 8192
         || !target_framework.starts_with("net")
@@ -545,6 +554,7 @@ pub fn resolve_references_with_sdk(
     }
     for reference in framework_references {
         if reference.is_empty()
+            || reference.len() > 256
             || !reference
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.')
@@ -789,6 +799,17 @@ pub fn resolve_references_with_sdk(
             selected_fusion_names: selected_fusion_names.into_boxed_slice(),
         },
     })
+}
+
+fn valid_sdk_property(value: &str, words: &[&str]) -> bool {
+    (!value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.'))
+        && (words.contains(&value)
+            || value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || byte == b'.'))
 }
 
 /// Private copies of the observed targeting assemblies used by one compile.
