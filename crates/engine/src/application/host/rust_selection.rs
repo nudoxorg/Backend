@@ -178,13 +178,15 @@ mod tests {
         let cache = home.join(".cargo");
         assert!(!cache.exists(), "capture does not create the Cargo home");
         std::fs::create_dir(&cache).expect("simulate a preexisting Cargo home");
+        // The invoking process may use a private umask. Set the user's existing
+        // permissions explicitly before checking that capture preserves them.
+        std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o755))
+            .expect("existing user permissions");
         assert_eq!(
             std::fs::metadata(&cache).unwrap().permissions().mode() & 0o777,
             0o755
         );
         std::fs::write(cache.join("owned-marker"), "preserve").expect("user content");
-        std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o755))
-            .expect("existing user permissions");
         make(None, None)
             .capture_installed_rust_paths(&mut Vec::new(), Some(&home), &mut deferred_default)
             .expect("repeat capture");
