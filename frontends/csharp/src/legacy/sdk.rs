@@ -499,6 +499,12 @@ pub fn resolve_references_with_sdk(
     }
     let candidates = captured_candidates.as_slice();
     let private_pack_root = copy_pack_layout(&snapshots, scratch.path(), deadline, cancelled)?;
+    let original_pack_root = snapshots
+        .iter()
+        .flat_map(|snapshot| snapshot.canonical.ancestors())
+        .find(|path| path.file_name().is_some_and(|name| name == "packs"))
+        .map(Path::to_path_buf)
+        .ok_or("SDK pack layout unavailable")?;
     if let Some(assets_file) = assets_file {
         if !assets_file.is_absolute() || !assets_file.is_file() {
             return Err("SDK assets unavailable");
@@ -690,7 +696,6 @@ pub fn resolve_references_with_sdk(
         .and_then(Value::as_array)
         .ok_or("SDK resolution missing ReferencePath")?;
     let mut selected = Vec::new();
-    let mut selected_fusion_names = Vec::new();
     let mut selected_indices = std::collections::HashSet::new();
     for item in items {
         if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
@@ -702,9 +707,18 @@ pub fn resolve_references_with_sdk(
             .and_then(Value::as_str)
             .ok_or("SDK resolution path missing")?;
         let path = fs::canonicalize(path).map_err(|_| "SDK resolution path unavailable")?;
+        let mapped_pack_path = path
+            .strip_prefix(&private_pack_root)
+            .ok()
+            .map(|relative| original_pack_root.join(relative));
         let index = by_original
             .get(&path)
             .copied()
+            .or_else(|| {
+                mapped_pack_path
+                    .as_ref()
+                    .and_then(|path| by_original.get(path).copied())
+            })
             .or_else(|| snapshots.iter().position(|snapshot| snapshot.owned == path))
             .ok_or("SDK selected an unrequested reference")?;
         if !selected_indices.insert(index) {
@@ -720,14 +734,13 @@ pub fn resolve_references_with_sdk(
         if current_digest != snapshot.digest {
             return Err("SDK candidate changed during resolution");
         }
-        selected.push(snapshot.owned.clone());
-        selected_fusion_names.push(
-            item.get("FusionName")
-                .and_then(Value::as_str)
-                .ok_or("SDK selected assembly identity missing")?
-                .to_owned()
-                .into_boxed_str(),
-        );
+        let fusion_name = item
+            .get("FusionName")
+            .and_then(Value::as_str)
+            .ok_or("SDK selected assembly identity missing")?
+            .to_owned()
+            .into_boxed_str();
+        selected.push((snapshot.owned.clone(), fusion_name));
     }
     if selected.is_empty() {
         return Err("SDK selected no references");
@@ -735,7 +748,8 @@ pub fn resolve_references_with_sdk(
     let selected_dir = scratch.path().join("selected");
     fs::create_dir(&selected_dir).map_err(|_| "SDK snapshot unavailable")?;
     let mut owned = Vec::with_capacity(selected.len());
-    for source in selected {
+    let mut owned = Vec::with_capacity(selected.len());
+    for (source, fusion_name) in selected {
         if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
             return Err("SDK snapshot cancelled");
         }
@@ -745,12 +759,12 @@ pub fn resolve_references_with_sdk(
             backend_platform::durable::read_regular_bounded_stable(&source, 32 * 1024 * 1024)
                 .map_err(|_| "SDK snapshot unavailable")?;
         fs::write(&destination, bytes).map_err(|_| "SDK snapshot unavailable")?;
-        owned.push(destination);
+        owned.push((destination, fusion_name));
     }
-    owned.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    owned.sort_by(|a, b| a.0.file_name().cmp(&b.0.file_name()));
     if owned.windows(2).any(|pair| {
-        pair[0].file_name().map(|v| v.to_ascii_lowercase())
-            == pair[1].file_name().map(|v| v.to_ascii_lowercase())
+        pair[0].0.file_name().map(|v| v.to_ascii_lowercase())
+            == pair[1].0.file_name().map(|v| v.to_ascii_lowercase())
     }) {
         return Err("SDK snapshot duplicate assembly");
     }
@@ -758,7 +772,7 @@ pub fn resolve_references_with_sdk(
     let mut hash = Sha256::new();
     hash.update(b"csharp.sdk-reference-snapshot.v2\0");
     hash.update((owned.len() as u64).to_le_bytes());
-    for path in &owned {
+    for (path, _) in &owned {
         let name = path.file_name().unwrap_or_default().as_encoded_bytes();
         hash.update((name.len() as u64).to_le_bytes());
         hash.update(name);
@@ -769,7 +783,7 @@ pub fn resolve_references_with_sdk(
     let selected_digest: [u8; 32] = hash.finalize().into();
     let selected_names = owned
         .iter()
-        .map(|path| {
+        .map(|(path, _)| {
             path.file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
@@ -777,9 +791,10 @@ pub fn resolve_references_with_sdk(
                 .into_boxed_str()
         })
         .collect::<Box<[_]>>();
+    let selected_fusion_names = owned.iter().map(|(_, fusion)| fusion.clone()).collect();
     Ok(CSharpResolvedReferenceSnapshot {
         directory: scratch,
-        references: owned.into_boxed_slice(),
+        references: owned.iter().map(|(path, _)| path.clone()).collect(),
         digest: selected_digest,
         receipt: CSharpResolverReceipt {
             sdk_directory: observed_sdk_directory,
