@@ -3463,6 +3463,12 @@ fn local_search_content(row: &Row) -> Vec<&str> {
     if let Some(excerpt) = row.excerpt.text() {
         content.push(excerpt);
     }
+    // Row::new supplies the coordinate as its fallback document. It is
+    // already indexed as an explicit address; treating that metadata as prose
+    // fans every checkout-path term out to every declaration in the project.
+    if matches!(row.document.as_ref(), [Fragment::Text(value)] if value == &row.label) {
+        return content;
+    }
     for fragment in &row.document {
         match fragment {
             Fragment::Text(value) | Fragment::Code(value) => content.push(value.as_str()),
