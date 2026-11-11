@@ -303,6 +303,23 @@ fn t_on_world_over_a_package_starts_its_tour_with_nothing_focused(cx: &mut TestA
 }
 
 
+/// A refresh of this unchanged fixture returns the same owner revision.
+/// Advancing the cursor would require publishing matching new graph facts.
+struct StableCanaryRoot;
+
+impl crate::runtime::actor::EngineClient for StableCanaryRoot {
+    fn execute(&mut self, request: &crate::runtime::actor::EngineRequest) -> Result<crate::runtime::actor::EngineDto, crate::runtime::actor::EngineFault> {
+        use crate::runtime::actor::{EngineDto, EngineFault, EngineRequest};
+        match request {
+            EngineRequest::Root { request, basis, .. } => Ok(EngineDto::Root {
+                request: *request, basis: *basis, key: *basis, revision: basis.revision(),
+                delta: None, project: None, catalog: None,
+            }),
+            _ => Err(EngineFault::Cancelled),
+        }
+    }
+}
+
 /// Source-fixture rows reconstructed from Run19's two physical files. These
 /// are not claimed to be a decoded owner response. They exercise the exact
 /// production row mapper and identity adapter, then real native activation.
@@ -317,7 +334,7 @@ pub(super) fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32,
     let launch_root = VersionedRoot::synthetic(view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
     let gate = crate::runtime::owner::OwnerGate::ready(launch_root, crate::model::ServiceMode::Attached);
     let mut rig = super::tests::rig_with_engine_gate(cx, None, width, 900.0,
-        ReadPool::start(2, |_| super::tests::Fixture).expect("fixture pool"), super::tests::RootOnly, Some(gate.clone()));
+        ReadPool::start(2, |_| super::tests::Fixture).expect("fixture pool"), StableCanaryRoot, Some(gate.clone()));
     let preference = match appearance {
         facet::tokens::Appearance::Abyss => crate::model::AppearancePreference::Abyss,
         facet::tokens::Appearance::Glacier => crate::model::AppearancePreference::Glacier,
@@ -754,6 +771,29 @@ fn graph_painted_modes_revoke_on_owner_renewal_and_modal_cover(cx: &mut TestAppC
     rig.cx.simulate_click(action.center(), gpui::Modifiers::none());
     rig.settle();
     assert!(matches!(rig.route(), Route::Symbol(route) if route.view == View::Code));
+}
+
+#[gpui::test]
+fn graph_does_not_start_a_projection_without_an_owner_attachment(cx: &mut TestAppContext) {
+    use crate::runtime::indexed_world::TestProjectionGate;
+    let (mut rig, owner) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
+    let key = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let projection = Arc::new(TestProjectionGate::default());
+    rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture_with_gate(key, Some(projection.clone()), cx));
+    owner.publish(crate::runtime::owner::OwnerState::Starting);
+    rig.cx.run_until_parked();
+    let published = std::collections::BTreeSet::from([PackageRef::parse(PACKAGE).expect("package")]);
+    rig.graph.store.update(rig.cx, |store, cx| store.packages_published(&published, cx));
+    rig.cx.run_until_parked();
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment()).is_none());
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none(), "publication retires the prior scene");
+    assert!(!projection.entered(), "no projection may begin while the owner is unavailable");
+    owner.publish(crate::runtime::owner::OwnerState::Ready { key, mode: crate::model::ServiceMode::Attached });
+    rig.cx.run_until_parked();
+    assert!(projection.entered(), "the admitted owner starts the pending projection");
+    projection.release();
+    rig.cx.run_until_parked();
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_some());
 }
 
 #[gpui::test]
