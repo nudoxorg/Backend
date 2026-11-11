@@ -7378,7 +7378,7 @@ fn publish_lane_completion(
                     let result = publish_on_success(staged, |staged| {
                         match catch_unwind(AssertUnwindSafe(|| {
                             compiler
-                                .publish_staged_package(staged, &cancelled, &mut |_| {})
+                                .publish_staged_package(staged, &cancelled, &mut |_| {}, None)
                                 .map_err(PackageSemanticRuntimeError::from)
                         })) {
                             Ok(result) => result,
