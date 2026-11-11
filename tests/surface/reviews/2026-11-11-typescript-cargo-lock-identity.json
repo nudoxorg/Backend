@@ -1,0 +1,25 @@
+{
+  "accepted_answer_paths": [
+    "cli outline/json/page/source_root",
+    "cli packages/json/revision",
+    "mcp/calls/2/reply/structuredContent/page/source_root"
+  ],
+  "cause_sha": "31d322f87",
+  "cause": "B1 (sign in with a Nudox API key) changed Cargo.lock on 2026-10-27. frontends/typescript/build.rs hashes the root Cargo.toml and Cargo.lock bytes into the native TypeScript authority, so the derived publication root moved with it. T2 has reported exactly this diff on every Backend PR since.",
+  "new_root": "747082aaaf86eda9a479e8c6dcb6f4a20b9cd735e04683969a8154d52b84a8c9",
+  "old_root": "fae4f8583b5873ed8999e3c755cfbd116940ca86d5c5830831cbc7044543b683",
+  "observed_t2_build": 869059,
+  "observed_source_sha": "94ae953908f87a687f38a7ad52bd89dec2b307ea",
+  "release_note": "A workspace.package.version bump changes Cargo.toml and Cargo.lock too, so it moves this root the same way; the bump PR takes the root its own T2 run reports.",
+  "required_before_merge": "Normal full T2 on the final exact head must match this root and pass every other correctness and performance check.",
+  "reviewers": [
+    "Claude Code / Opus 5.5"
+  ],
+  "task": "B8",
+  "unchanged": {
+    "other_nested_answers": true,
+    "package_rows": 3175,
+    "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
+    "tolerances_deadlines_coverage": true
+  }
+}

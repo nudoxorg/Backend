@@ -1,8 +1,8 @@
 # GUI libraries the Linux desktop loads through LD_LIBRARY_PATH or dlopen(), so
 # ldd on backend-desktop does not list them. linux_formal_release.py bundles these
 # and their closure: the set the early-access and v0.2.0 desktops shipped with,
-# minus HOST_SONAMES (audio, mount, blkid, selinux), which come from the host.
-libatopology.so.2
+# minus ALSA and glib, which nothing in Backend uses (no alsa/glib crates), and the
+# HOST_SONAMES guard keeps ALSA, mount, blkid and selinux from coming back in.
 libbrotlicommon.so.1
 libbrotlidec.so.1
 libbz2.so.1
@@ -11,12 +11,6 @@ libffi.so.8
 libfontconfig.so.1
 libfreetype.so.6
 libgcc_s.so.1
-libgio-2.0.so.0
-libgirepository-2.0.so.0
-libglib-2.0.so.0
-libgmodule-2.0.so.0
-libgobject-2.0.so.0
-libgthread-2.0.so.0
 libpcre2-8.so.0
 libpng16.so.16
 libvulkan.so.1

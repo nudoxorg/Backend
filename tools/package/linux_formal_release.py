@@ -55,9 +55,11 @@ MINIMUM_OS = "Linux glibc"
 GUI_SONAMES = Path(__file__).with_name("linux-gui-sonames.txt")
 MAX_GUI_LIBRARIES = 192
 NIX_STORE = "/nix/store/"
-# Every glibc desktop already has these, and the nixpkgs builds need a newer
-# glibc than our executables (GLIBC_ABI_GNU2_TLS), so the host's copy is used.
-HOST_SONAMES = frozenset({"libasound.so.2", "libblkid.so.1", "libmount.so.1", "libselinux.so.1"})
+# Never bundled: their nixpkgs builds need glibc 2.42 (GLIBC_ABI_GNU2_TLS) and a
+# host copy is older than what our other libraries link against (glib needs
+# util-linux 2.40, libatopology ALSA 1.2.15; Ubuntu 24.04 has 2.39 and 1.2.11).
+# Nothing in Backend uses them; anything that does takes the host's copy.
+HOST_SONAMES = frozenset({"libasound.so.2", "libatopology.so.2", "libblkid.so.1", "libmount.so.1", "libselinux.so.1"})
 # Installed command names, as the v0.2.0 archive and installer ship them.
 LAUNCHERS = {"nudox": "backend-cli", "nudox-desktop": "backend-desktop", "nudox-mcp": "backend-mcp"}
 LAUNCHER = """#!/bin/sh
