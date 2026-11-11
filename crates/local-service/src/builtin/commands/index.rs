@@ -2675,7 +2675,9 @@ impl DeferredIndex {
     ) -> Result<bool, BuiltinModelError> {
         if !ticket.csharp_unit_claim_only { return Ok(true); }
         let Some(witness) = &self.csharp_selected_source else { return Ok(false); };
-        if witness.key() != &ticket.key || !witness.revalidate(snapshot, cancellation)? { return Ok(false); }
+        if witness.key() != &ticket.key
+            || witness.pending_capture.as_ref().is_none_or(|capture| capture.input_digest() != ticket.attempt.input_digest())
+            || !witness.revalidate(snapshot, cancellation)? { return Ok(false); }
         let selected = self.csharp_capture.as_ref().ok_or_else(|| BuiltinModelError("C# capture custody is missing".to_owned()))?;
         selected.revalidate(&self.revision_fence, cancellation.as_ref()).map_err(BuiltinModelError)
     }
