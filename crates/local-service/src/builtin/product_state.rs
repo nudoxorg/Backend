@@ -3795,6 +3795,23 @@ fn profile(
     package: &PackageReference,
     workspace: Option<&Path>,
 ) -> Result<SurfaceReply, String> {
+    // A local indexed project can have compiler outcomes without a root
+    // package manifest (for example a repository with nested projects).
+    // Keep registry version metadata empty in that case, rather than refusing
+    // the profile before the owner can attach its compiler evidence.
+    if let PackageReference::Local(label) = package {
+        let root = Path::new(label.as_str());
+        let indexed = view.row_refs().any(|row| matches!(row.id, RowId::Package(_)) && row.label == label.as_str());
+        if indexed && root.is_dir()
+            && super::local_manifest::read_local_manifest(root)?.is_none()
+            && !super::local_manifest::has_python_manifest(root)
+        {
+            return Ok(SurfaceReply::PackageProfile {
+                latest: None, versions: 0, candidate_authority: None,
+                source_metadata: None, compiler_outcomes: None,
+            });
+        }
+    }
     let ordered = package_versions(view, catalog, catalog_index, package, workspace)?;
     let latest = latest_available_version(&ordered);
     let candidate_authority = latest
