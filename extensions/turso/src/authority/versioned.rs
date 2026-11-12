@@ -113,11 +113,12 @@ impl VersionedPlaneArtifactMetadata {
         manifest_bytes: &[u8],
         mut members: Vec<VersionedPlaneMember>,
     ) -> Result<Self, VersionedPlaneError> {
-        let manifest_object = manifest_object(manifest_bytes);
+        let manifest_id = backend_store::untrusted_object_id_for_encoded_value(VERSIONED_PLANE_MANIFEST_SCHEMA, manifest_bytes)
+            .map_err(|_| VersionedPlaneError::ManifestObject)?;
         Self::from_parts(
             artifact_ordinal,
             manifest_bytes,
-            *manifest_object.id().as_bytes(),
+            *manifest_id.as_bytes(),
             &mut members,
         )
     }
