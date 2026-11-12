@@ -350,6 +350,10 @@ impl VersionedPlaneMetadata {
         if artifact_count == 0 || artifact_count > MAX_ARTIFACTS {
             return Err(VersionedPlaneError::ArtifactCount);
         }
+        // Each artifact has a fixed header, at least one manifest byte, and
+        // at least one fixed-size member. Check framing before reserving rows.
+        let minimum = artifact_count.checked_mul(4 + 32 * 3 + 4 + 1 + 4 + 72).ok_or(VersionedPlaneError::Truncated)?;
+        if decoder.bytes.len().saturating_sub(decoder.offset) < minimum { return Err(VersionedPlaneError::Truncated); }
         let mut artifacts = Vec::new();
         artifacts
             .try_reserve_exact(artifact_count)
@@ -389,6 +393,8 @@ impl VersionedPlaneMetadata {
             if total_segments > MAX_SEGMENTS || total_output_members > MAX_SEGMENTS {
                 return Err(VersionedPlaneError::MemberCount);
             }
+            let required = member_count.checked_mul(72).ok_or(VersionedPlaneError::Truncated)?;
+            if decoder.bytes.len().saturating_sub(decoder.offset) < required { return Err(VersionedPlaneError::Truncated); }
             let mut members = Vec::new();
             members
                 .try_reserve_exact(member_count)
@@ -864,6 +870,17 @@ impl<'a> Decoder<'a> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn truncated_artifact_count_refuses_before_count_sized_allocation() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(super::MAGIC);
+        bytes.extend_from_slice(&super::VERSION.to_le_bytes());
+        bytes.extend_from_slice(&[0; 32]);
+        bytes.extend_from_slice(&(super::MAX_ARTIFACTS as u32).to_le_bytes());
+        let measured = allocation_counter::measure(|| assert!(matches!(super::VersionedPlaneMetadata::decode(&bytes), Err(super::VersionedPlaneError::Truncated))));
+        assert!(measured.bytes_max < 32 * 1024, "versioned preflight: {measured:?}");
+    }
+
     #![allow(clippy::expect_used, clippy::panic)]
 
     use super::*;

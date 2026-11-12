@@ -908,7 +908,10 @@ impl CompilerPublicationMetadata {
         if count == 0 || count > MAX_MEMBER_IDS {
             return Err(CompilerEnvelopeError::MemberCount);
         }
-        let mut images = Vec::with_capacity(count);
+        let required = count.checked_mul(72).and_then(|n| n.checked_add(1)).ok_or(CompilerEnvelopeError::Truncated)?;
+        if input.bytes.len().saturating_sub(input.offset) < required { return Err(CompilerEnvelopeError::Truncated); }
+        let mut images = Vec::new();
+        images.try_reserve_exact(count).map_err(|_| CompilerEnvelopeError::MemberCount)?;
         for _ in 0..count {
             images.push(CompilerImageMember {
                 artifact_ordinal: input.u32()?,
@@ -1317,7 +1320,10 @@ impl CompilerPublicationEnvelope {
         if member_count == 0 || member_count > MAX_MEMBER_IDS {
             return Err(CompilerEnvelopeError::MemberCount);
         }
-        let mut member_ids = Vec::with_capacity(member_count);
+        let required = member_count.checked_mul(32).ok_or(CompilerEnvelopeError::Truncated)?;
+        if input.bytes.len().saturating_sub(input.offset) < required { return Err(CompilerEnvelopeError::Truncated); }
+        let mut member_ids = Vec::new();
+        member_ids.try_reserve_exact(member_count).map_err(|_| CompilerEnvelopeError::MemberCount)?;
         for _ in 0..member_count {
             member_ids.push(input.array::<32>()?);
         }
@@ -3419,6 +3425,25 @@ mod tests {
         drop(closure);
         drop(store);
         std::fs::remove_dir_all(directory).expect("cleanup");
+    }
+
+    #[test]
+    fn truncated_maximum_inventories_refuse_before_count_sized_allocation() {
+        use allocation_counter::measure;
+        let record = metadata(compiler_image().0);
+        let mut bytes = record.canonical_bytes();
+        let offset = METADATA_MAGIC.len() + 2 + 4 + record.manifest_bytes().len() + COMPILATION_BINDING_BYTES;
+        bytes[offset..offset + 4].copy_from_slice(&(MAX_MEMBER_IDS as u32).to_le_bytes());
+        bytes.truncate(offset + 4);
+        let measured = measure(|| assert!(matches!(CompilerPublicationMetadata::decode(&bytes), Err(CompilerEnvelopeError::Truncated))));
+        assert!(measured.bytes_max < 32 * 1024, "metadata preflight: {measured:?}");
+        let envelope = CompilerPublicationEnvelope::new(&attempt(), &record).unwrap();
+        let mut bytes = envelope.canonical_bytes();
+        let offset = bytes.len() - envelope.member_ids().len() * 32 - 4;
+        bytes[offset..offset + 4].copy_from_slice(&(MAX_MEMBER_IDS as u32).to_le_bytes());
+        bytes.truncate(offset + 4);
+        let measured = measure(|| assert!(matches!(CompilerPublicationEnvelope::decode(&bytes), Err(CompilerEnvelopeError::Truncated))));
+        assert!(measured.bytes_max < 32 * 1024, "envelope preflight: {measured:?}");
     }
 
     #[test]
