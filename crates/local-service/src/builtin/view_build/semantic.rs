@@ -2171,6 +2171,14 @@ fn semantic_rows(
                 backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(witness.as_bytes(), &mut |_| line_budget.checkpoint(1, &line_stopped))
                     .map_err(|e| BuiltinModelError(format!("selected native line map: {e:?}")))
             }).transpose()?;
+            let line_index = if let Some(view) = line_view.as_ref() {
+                let bytes = view.len().checked_mul(std::mem::size_of::<u32>()).ok_or_else(|| BuiltinModelError("native line index size overflow".into()))?;
+                line_budget.reserve_retained(bytes).map_err(|e| BuiltinModelError(format!("native line index budget: {e:?}")))?;
+                let mut credit = bytes;
+                let mut slots = backend_store::try_allocate_exact_zeroed_u32_budgeted(view.len(), &mut credit).map_err(|e| BuiltinModelError(format!("native line index allocation: {e:?}")))?;
+                view.index_files(&mut slots, &mut |_| line_budget.checkpoint(1, &line_stopped)).map_err(|e| BuiltinModelError(format!("native line index stopped: {e:?}")))?;
+                Some(slots)
+            } else { None };
             // Observed policy is a separate capability: it never becomes an
             // unqualified current program or a complete source inventory.
             let (selected, observed) = match nse_positive.as_ref() {
@@ -2503,7 +2511,7 @@ fn semantic_rows(
                 let native_ts_lines = if nse_current {
                     if let (Some(view), Some((claim, source))) = (line_view.as_ref(), nse_positive.as_ref().and_then(|proof| proof.positive.get(&path))) {
                         if claim.admits_image() && claim.line_starts.is_none() {
-                            let file = view.find_file(&path, &mut |_| line_budget.checkpoint(1, &line_stopped))
+                            let file = view.find_file_indexed(line_index.as_deref().expect("index for selected view"), &path, &mut |_| line_budget.checkpoint(1, &line_stopped))
                                 .map_err(|e| BuiltinModelError(format!("native line lookup stopped: {e:?}")))?;
                             if let Some(file) = file {
                                 if super::super::ingest::native_line_map_matches_host(std::path::Path::new(&project.label), claim, *source, file, &mut line_budget, &line_stopped).map_err(BuiltinModelError)? {
