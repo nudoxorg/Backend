@@ -806,6 +806,14 @@ impl<R: CanonicalRelation> WorkspaceRelationHandle<R> {
             .map_err(|error| map_tree_error::<R>(error, Some(RelationKeyPrefix::of::<R>(key))))
     }
 
+    /// Prepares a delta under the caller's explicit metadata envelope.
+    pub fn prepare_update_bounded(
+        &self, changes: &[TreeChange<R>], budget: backend_version::LazyTreeUpdateBudget,
+    ) -> Result<LazyPreparedUpdate<R>, WorkspaceRelationError> {
+        self.tree().prepare_update_bounded(changes, budget)
+            .map_err(|error| refine_rejection::<R>(map_tree_error::<R>(error, None), changes))
+    }
+
     /// Prepares one canonical multi-key delta while loading only affected
     /// paths and retaining a checked in-memory overlay for the evolving
     /// frontier.

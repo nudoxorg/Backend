@@ -4736,6 +4736,56 @@ fn precharge_native_evidence_delta(
     Ok(target_rows)
 }
 
+// The bounded tree API requires a relation-specific shape. All selected and
+// target rows have already been scanned; a larger unseen sibling is rejected
+// by the tree's per-node shape check rather than decoded without a limit.
+fn native_evidence_update_budget(
+    relation: &WorkspaceRelationHandle<backend_engine::builtin::NativeSourceEvidenceRelation>,
+    rows: &[([u8; 32], backend_engine::builtin::NativeSourceEvidence)],
+    changes: &[NativeEvidenceChange], available: usize,
+) -> Result<backend_version::LazyTreeUpdateBudget, BuiltinModelError> {
+    let mut width = 1usize;
+    for row in rows.iter().map(|(_, row)| row).chain(changes.iter().filter_map(|c| c.expected.as_ref())) {
+        width = width.max(row.checked_encoded_len().ok_or_else(|| BuiltinModelError("native update width overflow".into()))?);
+    }
+    let entry = width.checked_add(48).ok_or_else(|| BuiltinModelError("native update width overflow".into()))?;
+    let minimum = 64usize.min((16_384usize - 32) / entry).max(1);
+    let spill = 1024 / minimum + 2;
+    let count = rows.len().checked_add(changes.len()).ok_or_else(|| BuiltinModelError("native update count overflow".into()))?;
+    let mut levels = 1usize;
+    let mut nodes = count.max(1);
+    if minimum == 1 && nodes > 1 { levels = 32; } else {
+        while nodes > 1 { nodes = nodes.div_ceil(minimum.max(2)); levels += 1; }
+    }
+    levels = levels.max(usize::from(relation.root_handle().evidence().node().level()) + 2);
+    if levels > 32 { return Err(BuiltinModelError("native update depth exceeded".into())); }
+    let shape = backend_version::LazyTreeMetadataShape::new(32, width, 64, 1024, spill, levels);
+    Ok(backend_version::LazyTreeUpdateBudget::new(changes.len(), available / 2, shape))
+}
+
+fn charge_native_change_clones(changes: &[NativeEvidenceChange], budget: &mut usize) -> Result<(), BuiltinModelError> {
+    let mut required = changes.len().checked_mul(std::mem::size_of::<TreeChange<backend_engine::builtin::NativeSourceEvidenceRelation>>() + 64)
+        .ok_or_else(|| BuiltinModelError("native change clone overflow".into()))?;
+    for row in changes.iter().filter_map(|c| c.after.as_ref()) {
+        required = required.checked_add(row.checked_heap_bytes().ok_or_else(|| BuiltinModelError("native change clone overflow".into()))?)
+            .and_then(|n| n.checked_add(128)).ok_or_else(|| BuiltinModelError("native change clone overflow".into()))?;
+    }
+    *budget = budget.checked_sub(required).ok_or_else(|| BuiltinModelError("native change clone budget exceeded".into()))?;
+    Ok(())
+}
+
+fn charge_native_initial_build(rows: &[([u8; 32], backend_engine::builtin::NativeSourceEvidence)], budget: &mut usize) -> Result<(), BuiltinModelError> {
+    let mut required = 0usize;
+    for (_, row) in rows {
+        let value = row.checked_encoded_len().and_then(|n| n.checked_add(row.checked_heap_bytes()?))
+            .and_then(|n| n.checked_add(512)).ok_or_else(|| BuiltinModelError("native initial build overflow".into()))?;
+        required = required.checked_add(value.checked_mul(8).ok_or_else(|| BuiltinModelError("native initial build overflow".into()))?)
+            .ok_or_else(|| BuiltinModelError("native initial build overflow".into()))?;
+    }
+    *budget = budget.checked_sub(required).ok_or_else(|| BuiltinModelError("native initial build budget exceeded".into()))?;
+    Ok(())
+}
+
 fn prepare_native_evidence_relation_update(
     base: &WorkspaceSnapshot,
     intent: &BuiltinIntent,
@@ -4776,6 +4826,7 @@ fn prepare_native_evidence_relation_update(
     let target_rows = precharge_native_evidence_delta(
         selected.as_ref(), owner, &intent.native_evidence_changes, &mut read_budget,
     )?;
+    charge_native_change_clones(&intent.native_evidence_changes, &mut read_budget)?;
     let changes = intent
         .native_evidence_changes
         .iter()
@@ -4785,7 +4836,10 @@ fn prepare_native_evidence_relation_update(
         })
         .collect::<Vec<_>>();
     if let Some(relation) = selected {
-        let update = relation.prepare_update(&changes).map_err(|error| {
+        let scratch = backend_engine::builtin::NATIVE_EVIDENCE_READ_SCRATCH;
+        read_budget = read_budget.checked_sub(scratch).ok_or_else(|| BuiltinModelError("native update scratch budget exceeded".into()))?;
+        let update_budget = native_evidence_update_budget(&relation, &target_rows, &intent.native_evidence_changes, read_budget)?;
+        let update = relation.prepare_update_bounded(&changes, update_budget).map_err(|error| {
             BuiltinModelError(format!("prepare native evidence delta: {error}"))
         })?;
         let node_objects = update
@@ -4811,6 +4865,7 @@ fn prepare_native_evidence_relation_update(
                 "invalid initial native evidence delta".into(),
             ));
         }
+        charge_native_initial_build(&target_rows, &mut read_budget)?;
         let state = backend_engine::RelationState::<NativeSourceEvidenceRelation>::from_entries(
             target_rows,
             super::admitted_coverage()?,
@@ -6650,6 +6705,7 @@ fn validate_persisted_native_evidence(
         base.as_ref(), intent.package.to_bytes(), &intent.native_evidence_changes, &mut read_budget,
     )?;
     if !intent.native_evidence_changes.is_empty() {
+        charge_native_change_clones(&intent.native_evidence_changes, &mut read_budget)?;
         let changes = intent
             .native_evidence_changes
             .iter()
@@ -6659,8 +6715,11 @@ fn validate_persisted_native_evidence(
             })
             .collect::<Vec<_>>();
         let computed = if let Some(relation) = &base {
+            let scratch = backend_engine::builtin::NATIVE_EVIDENCE_READ_SCRATCH;
+            read_budget = read_budget.checked_sub(scratch).ok_or_else(|| BuiltinModelError("native replay update scratch budget exceeded".into()))?;
+            let update_budget = native_evidence_update_budget(relation, &bounded_target, &intent.native_evidence_changes, read_budget)?;
             *relation
-                .prepare_update(&changes)
+                .prepare_update_bounded(&changes, update_budget)
                 .map_err(|error| {
                     BuiltinModelError(format!("recompute native evidence delta: {error}"))
                 })?
@@ -6677,6 +6736,7 @@ fn validate_persisted_native_evidence(
                     "invalid initial native evidence delta".into(),
                 ));
             }
+            charge_native_initial_build(&bounded_target, &mut read_budget)?;
             *backend_engine::RelationState::<NativeSourceEvidenceRelation>::from_entries(
                 bounded_target,
                 super::admitted_coverage()?,
@@ -6687,6 +6747,10 @@ fn validate_persisted_native_evidence(
             .root()
             .as_bytes()
         };
+        if base.is_some() {
+            read_budget = read_budget.checked_add(backend_engine::builtin::NATIVE_EVIDENCE_READ_SCRATCH)
+                .ok_or_else(|| BuiltinModelError("native replay budget overflow".into()))?;
+        }
         if computed != root {
             return Err(BuiltinModelError(
                 "native evidence target differs from exact delta".into(),
@@ -6695,13 +6759,13 @@ fn validate_persisted_native_evidence(
         for change in &intent.native_evidence_changes {
             let before = base
                 .as_ref()
-                .map(|tree| tree.lookup(&change.key))
+                .map(|tree| backend_engine::builtin::native_source_evidence_lookup_budgeted(tree, &change.key, &mut read_budget))
                 .transpose()
                 .map_err(|error| {
                     BuiltinModelError(format!("read native evidence before row: {error}"))
                 })?
                 .flatten();
-            let after = target.lookup(&change.key).map_err(|error| {
+            let after = backend_engine::builtin::native_source_evidence_lookup_budgeted(&target, &change.key, &mut read_budget).map_err(|error| {
                 BuiltinModelError(format!("read native evidence after row: {error}"))
             })?;
             if before != change.expected || after != change.after {
