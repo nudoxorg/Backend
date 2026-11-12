@@ -1536,6 +1536,9 @@ mod bounded_catalog_tests {
     #[test]
     fn chunked_sort_checks_completeness_duplicates_and_cancellation() {
         let mut budget = 8 * 1024 * 1024;
+        let initial = budget;
+        assert!(Slots::<usize>::new(1025, &mut budget, 64, &|| true).is_err());
+        assert_eq!(budget, initial);
         let mut slots = Slots::new(1025, &mut budget, 64, &|| false).unwrap();
         for i in 0..1025 {
             slots.put(i, 1024 - i).unwrap();
