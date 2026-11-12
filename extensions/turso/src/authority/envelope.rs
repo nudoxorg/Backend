@@ -4587,7 +4587,7 @@ mod tests {
         assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(high, 100_000), &|| false).is_ok());
         assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(high - 1, 100_000), &|| false).is_err());
         assert!(reopen_selected_native_lines_budgeted(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| true).is_err());
-        let mut missing = vec![image_object, program_object, metadata.typed_object(), envelope.typed_object()];
+        let mut missing = vec![image_object, program_object.clone(), metadata.typed_object(), envelope.typed_object()];
         missing.sort_by_key(|o| (o.schema(), *o.key(), *o.version()));
         let policy = ArtifactBudget::new(16, 64, 8 * 1024 * 1024, 1024 * 1024, 64);
         let verifier = FileStoreCompilerPublicationVerifier::new(&store, policy, &envelope, &metadata);
