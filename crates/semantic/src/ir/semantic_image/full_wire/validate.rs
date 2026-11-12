@@ -87,11 +87,12 @@ pub(crate) struct ValidatedFullImage {
 /// `work` must check the live cancellation/deadline as well as debit work.
 /// `reserve` must debit memory before the corresponding allocation.
 pub trait SemanticImageAdmissionMeter {
-    /// Debits work and checks cancellation and deadline.
+    /// Debits work and checks cancellation and deadline, including for zero units.
+    /// A false result stops admission.
     fn work(&self, units: u64) -> bool;
-    /// Debits bytes before allocation.
+    /// Debits bytes before allocation; false must leave the credit unchanged.
     fn reserve(&self, bytes: usize) -> bool;
-    /// Releases previously reserved temporary memory.
+    /// Releases exactly the previously reserved bytes, after the allocation drops.
     fn release(&self, bytes: usize);
 }
 
