@@ -2532,7 +2532,19 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                 }
                 backend_library::IndexOperationState::Published(receipt) => {
                     let _published_root = receipt.view_root();
-                    "published".to_owned()
+                    let partial = status.source_capture.as_ref().map(|capture| {
+                        capture.profiles().iter().filter_map(|profile| match profile.state {
+                            backend_library::IndexOperationSemanticProfileState::Published {
+                                coverage: backend_library::IndexOperationSemanticCoverage::Partial { completed, total }, ..
+                            } => Some(format!("{}: {completed} of {total} files", profile.profile.name().unwrap_or("unknown profile"))),
+                            _ => None,
+                        }).collect::<Vec<_>>()
+                    }).unwrap_or_default();
+                    if partial.is_empty() {
+                        "published".to_owned()
+                    } else {
+                        format!("published with partial compiler coverage ({}); read package-profile and its compiler-outcome selector for per-file reasons", partial.join("; "))
+                    }
                 }
                 backend_library::IndexOperationState::PartiallyPublished {
                     refused_profiles,
@@ -5513,6 +5525,34 @@ mod tests {
             .into_boxed_slice(),
         })
         .with_source_capture(Some(partial_capture));
+        let captured_partial = IndexOperationSourceCaptureReceipt::from_checked_parts(
+            key, [0x67; 32], [0x68; 32], 8,
+            vec![IndexOperationSourceProfile {
+                profile: typescript_profile,
+                source_version: [0x69; 32], input_digest: [0x6a; 32],
+                observation_sequence: 14, source_count: 106,
+                state: IndexOperationSemanticProfileState::Published {
+                    generation: [0x6b; 32],
+                    coverage: IndexOperationSemanticCoverage::Partial { completed: 50, total: 106 },
+                },
+            }].into_boxed_slice(),
+        ).expect("checked partially covered capture");
+        let partial_coverage = IndexOperationObservation::Known(
+            status(IndexOperationState::Published(receipt.clone())).with_source_capture(Some(captured_partial))
+        );
+        for reply in [SurfaceReply::IndexOperationStarted(partial_coverage.clone()),
+                      SurfaceReply::IndexOperationStatus(partial_coverage.clone())] {
+            let view = product_view(&reply);
+            assert_eq!(view.index_operation(), Some(&partial_coverage));
+            let title = view.records()[0].title();
+            assert!(title.contains("published with partial compiler coverage"), "{title}");
+            assert!(title.contains("typescript: 50 of 106 files"), "{title}");
+            assert!(title.contains("compiler-outcome selector for per-file reasons"), "{title}");
+            assert!(crate::render::text::product(&view, crate::Theme::plain()).contains("50 of 106 files"));
+            assert!(crate::render::markdown::product(&view).contains("50 of 106 files"));
+            let dto = serde_json::to_value(crate::dto::ProductDto::new(&view)).unwrap();
+            assert!(dto.to_string().contains("50 of 106 files"));
+        }
         let scoped = IndexOperationObservation::Known(partial_status.clone());
         let scoped_view = product_view(&SurfaceReply::IndexOperationStatus(scoped.clone()));
         assert!(scoped_view.records()[0].tags().iter().any(|tag|
