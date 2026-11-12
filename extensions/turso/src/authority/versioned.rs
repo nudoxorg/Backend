@@ -832,6 +832,36 @@ impl fmt::Display for VersionedPlaneError {
 
 impl std::error::Error for VersionedPlaneError {}
 
+/// Sum of requested owned and temporary allocations in the versioned decode
+/// path. Caller separately charges the input wire and outer metadata output.
+pub(super) fn versioned_decode_allocation_bound(bytes: &[u8]) -> Result<usize, VersionedPlaneError> {
+    preflight_versioned_framing(bytes)?;
+    let mut scan = Decoder::new(bytes);
+    scan.take(MAGIC.len() + 2 + 32)?;
+    let artifacts = scan.u32()? as usize;
+    let mut bound = bytes.len(); // final versioned canonical encoding
+    let mut add = |amount: usize| -> Result<(), VersionedPlaneError> {
+        bound = bound.checked_add(amount).ok_or(VersionedPlaneError::Allocation)?; Ok(())
+    };
+    add(artifacts.checked_mul(std::mem::size_of::<VersionedPlaneArtifactMetadata>()).ok_or(VersionedPlaneError::Allocation)?)?;
+    add(artifacts.checked_mul(std::mem::size_of::<SemanticPlaneCatalogEntry>()).ok_or(VersionedPlaneError::Allocation)?)?;
+    let catalog = artifacts.checked_mul(4 + 32 + 32 + 4).and_then(|n| n.checked_add(7 + 4)).ok_or(VersionedPlaneError::Allocation)?;
+    add(catalog.checked_mul(2).ok_or(VersionedPlaneError::Allocation)?)?; // construction + retained canonical catalog
+    for _ in 0..artifacts {
+        scan.take(4 + 32 * 3)?;
+        let len = scan.u32()? as usize;
+        let manifest = scan.take(len)?;
+        let members = scan.u32()? as usize;
+        scan.take(members.checked_mul(MEMBER_BYTES).ok_or(VersionedPlaneError::Allocation)?)?;
+        add(len)?; // retained canonical manifest
+        add(len)?; // semantic manifest canonical comparison
+        add(SemanticPlaneManifest::decode_allocation_bound(manifest)?)?;
+        add(members.checked_mul(std::mem::size_of::<VersionedPlaneMember>()).ok_or(VersionedPlaneError::Allocation)?)?;
+        add(members.checked_mul(std::mem::size_of::<(UntrustedSemanticSegmentId, u64)>()).ok_or(VersionedPlaneError::Allocation)?)?;
+    }
+    Ok(bound)
+}
+
 /// Checks all variable framing and count geometry without allocating rows.
 pub(super) fn preflight_versioned_framing(bytes: &[u8]) -> Result<(), VersionedPlaneError> {
     let mut scan = Decoder::new(bytes);
