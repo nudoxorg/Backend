@@ -14,6 +14,42 @@ use std::{
     io::{Read, Write},
 };
 
+// Independent of the mutation/GC locks: immutable writers may run both inside
+// and outside a process-locked publication. Never acquire the process lock
+// while holding this lease. Recovery holds the process lock before taking it
+// exclusively; the OS releases a crashed writer's shared lease automatically.
+pub(in crate::durable) struct TempNamespaceLease(File);
+
+impl TempNamespaceLease {
+    fn open(root: &Path) -> Result<File, StoreError> {
+        OpenOptions::new().create(true).truncate(false).read(true).write(true)
+            .open(root.join("TEMP-WRITERS.lock")).map_err(|error| io_error(&error))
+    }
+
+    pub(in crate::durable) fn writer(directory: &Path) -> Result<Self, StoreError> {
+        let root = directory.parent().ok_or(StoreError::Corrupt)?;
+        let file = Self::open(root)?;
+        file.lock_shared().map_err(|error| io_error(&error))?;
+        Ok(Self(file))
+    }
+
+    fn recovery(root: &Path) -> Result<Self, StoreError> {
+        let file = Self::open(root)?;
+        file.lock().map_err(|error| io_error(&error))?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for TempNamespaceLease {
+    fn drop(&mut self) { let _ = self.0.unlock(); }
+}
+
+#[cfg(test)]
+thread_local! {
+    static AFTER_IMMUTABLE_TEMP: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None);
+    static BEFORE_TEMP_RECOVERY: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None);
+}
+
 /// A fully authenticated object whose payload borrows the bounded envelope
 /// buffer for the duration of a `FileStore` callback.
 ///
@@ -80,6 +116,9 @@ impl<'a> VerifiedObjectView<'a> {
 
 /// Removes crash-orphaned files only from the store writer's private temp namespace.
 pub(super) fn scavenge_store_temps(root: &Path) -> Result<usize, StoreError> {
+    #[cfg(test)]
+    BEFORE_TEMP_RECOVERY.with(|hook| { if let Some(hook) = hook.borrow_mut().take() { hook(); } });
+    let _temp_lease = TempNamespaceLease::recovery(root)?;
     let mut removed = 0usize;
     // Relation-reference writers also hold the process lease. A crashed pre-link publication
     // can leave its final reference with a second temporary link until this recovery pass.
@@ -201,6 +240,8 @@ fn write_immutable_with_status_inner(
     bytes: &[u8],
     directory: Option<&Path>,
 ) -> Result<bool, StoreError> {
+    let parent = path.parent().ok_or(StoreError::Corrupt)?;
+    let _temp_lease = TempNamespaceLease::writer(parent)?;
     if let Ok(existing) = fs::read(path) {
         return if existing == bytes {
             Ok(false)
@@ -209,6 +250,8 @@ fn write_immutable_with_status_inner(
         };
     }
     let (temporary, mut file) = create_temp(path)?;
+    #[cfg(test)]
+    AFTER_IMMUTABLE_TEMP.with(|hook| { if let Some(hook) = hook.borrow_mut().take() { hook(); } });
     let written = file.write_all(bytes).and_then(|()| {
         // Seal the private inode before its existing pre-link durability
         // barrier. Its first admitted read then needs no permission change
@@ -711,6 +754,44 @@ mod tests {
     fn bytes_object(bytes: Vec<u8>) -> TypedObject {
         let key = ObjectKey::<BytesSchema>::from_value(&bytes);
         TypedObject::from_value(&key, &bytes)
+    }
+
+    #[test]
+    fn reopen_waits_for_live_immutable_temp_then_scavenges_orphans() {
+        let (store, root) = test_store("live-temp");
+        let object = bytes_object(b"live object".to_vec());
+        let id = object.id();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            AFTER_IMMUTABLE_TEMP.with(|hook| *hook.borrow_mut() = Some(Box::new(move || {
+                ready_tx.send(()).expect("writer ready");
+                release_rx.recv().expect("release writer");
+            })));
+            store.write_object(&object)
+        });
+        ready_rx.recv_timeout(Duration::from_secs(10)).expect("live temporary created");
+        let orphan = root.join("objects/.orphan.12345.67890.tmp");
+        fs::write(&orphan, b"orphan").expect("create orphan");
+        let (opened_tx, opened_rx) = mpsc::channel();
+        let (scanning_tx, scanning_rx) = mpsc::channel();
+        let reopen_root = root.clone();
+        let opener = std::thread::spawn(move || {
+            BEFORE_TEMP_RECOVERY.with(|hook| *hook.borrow_mut() = Some(Box::new(move || {
+                scanning_tx.send(()).expect("recovery reached scanner");
+            })));
+            opened_tx.send(FileStore::open(&reopen_root, 1024 * 1024)).expect("send reopen result");
+        });
+        scanning_rx.recv_timeout(Duration::from_secs(10)).expect("recovery entered scanner");
+        assert!(matches!(opened_rx.recv_timeout(Duration::from_millis(200)), Err(mpsc::RecvTimeoutError::Timeout)));
+        release_tx.send(()).expect("release writer");
+        assert_eq!(writer.join().expect("writer thread").expect("write object"), id);
+        let reopened = opened_rx.recv_timeout(Duration::from_secs(10)).expect("reopen finished").expect("cold reopen");
+        opener.join().expect("opener thread");
+        assert_eq!(reopened.read_object(id).expect("read durable object").id(), id);
+        assert!(!orphan.exists(), "crash orphan must still be scavenged");
+        drop(reopened);
+        fs::remove_dir_all(root).expect("remove fixture");
     }
 
     fn replace_fixture(path: &Path, bytes: &[u8]) {
