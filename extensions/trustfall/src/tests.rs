@@ -178,10 +178,11 @@ fn budgeted_corpus_reserves_qualification_error_allocation() {
     let limits = Limits::default();
     let retained = measure_semantic_query_facts_with_quota_controlled(&facts, facts.capacity(), limits, 64, &|| false).unwrap();
     let overhead = semantic_query_corpus_admission_overhead(facts.len(), 64).unwrap();
+    let root = workspace();
     let mut result = None;
     let measured = allocation_counter::measure(|| {
         result = Some(SemanticQueryCorpus::admit_with_budget_controlled(
-            workspace(), facts, limits,
+            root, facts, limits,
             SemanticQueryAdmissionBudget { maximum_requested_bytes: retained + overhead, allocation_quota_per_allocation: 64 },
             &|| false,
         ));
