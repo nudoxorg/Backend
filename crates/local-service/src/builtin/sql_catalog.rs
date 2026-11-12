@@ -781,6 +781,8 @@ fn verify_fact(
 /// Read selected SQL projects using one shared requested-allocation ledger.
 /// All retained arrays use fixed-size boxed chunks charged before allocation;
 /// the caller supplies its explicit per-allocation bookkeeping allowance.
+/// The input project set and snapshot are caller-owned and must already be
+/// accounted for in the caller's remaining budget.
 pub(super) fn load_projects_bounded(
     snapshot: &WorkspaceSnapshot,
     projects: &std::collections::BTreeSet<[u8; 32]>,
