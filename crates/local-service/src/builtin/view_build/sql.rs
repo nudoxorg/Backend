@@ -5,6 +5,10 @@ use super::super::{BuiltinModelError, IndexedSources, MAX_REBUILD_PACKAGES};
 use backend_engine::{DeclarationKind, Fragment, Row, RowId, ViewRoot, WorkspaceSnapshot};
 use backend_semantic::sql_analysis::{SqlDefinitionAction, SqlFact, SqlObjectKind};
 
+// Requested-allocation quota allowance per allocation. This is not a bound
+// on allocator overhead or process RSS.
+const SQL_ALLOCATION_QUOTA_PER_ALLOCATION: usize = 64;
+
 /// Conservative byte precharge before projection allocates owned strings.
 fn projection_bound(
     label: &str,
@@ -84,6 +88,7 @@ pub(super) fn append(
         &projects,
         &|| false,
         remaining,
+        SQL_ALLOCATION_QUOTA_PER_ALLOCATION,
     )
     .map_err(BuiltinModelError)?;
     for (project, indexed) in &sources.projects {
@@ -154,6 +159,7 @@ pub(super) fn append_query(
         &projects,
         &|| cancelled.is_some_and(|c| c.load(std::sync::atomic::Ordering::Acquire)),
         remaining_bytes,
+        SQL_ALLOCATION_QUOTA_PER_ALLOCATION,
     )
     .map_err(BuiltinModelError)?;
     let mut projected_bytes = catalog_bytes;
