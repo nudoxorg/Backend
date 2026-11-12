@@ -232,20 +232,31 @@ fn admit_inner(
         backend_semantic::native_source_lines::NativeSourceLineAggregateView::parse(wire, &mut checkpoint)
             .map_err(|e| format!("native replay line maps: {e:?}"))
     }).transpose()?;
-    for (i, row) in rows.iter().enumerate() {
-        if plan.flags[i] & 1 == 0 { continue; }
-        // Older selected metadata has no separate line aggregate; preserve
-        // the already-admitted inline evidence in that case. When v10 names
-        // an aggregate, an inline claim must match its exact selected file.
-        if let (Some(expected), Some(aggregate)) = (&row.line_starts, &lines) {
-            let mut checkpoint = |n| charge_native_header_work(budget, stopped, n);
-            let file = aggregate.find_file(&row.path, &mut checkpoint)?.ok_or("native replay line file absent")?;
+    // Older selected metadata has no separate line aggregate; retain its
+    // already-admitted inline evidence. For v10, walk the selected aggregate
+    // once and match each file through the precharged sorted evidence index.
+    if let Some(aggregate) = &lines {
+        let mut files = aggregate.files();
+        while files.len() != 0 {
+            step(budget, stopped, 1)?;
+            let file = files.next().ok_or("native replay line iteration ended early")?;
+            let Some(i) = find_index(rows, &source_index, count, file.path.as_bytes(), budget, stopped)? else { continue; };
+            let row = rows[i];
+            let Some(expected) = &row.line_starts else { continue; };
             if file.source.byte_len != row.byte_length || file.source.identity.as_ref() != row.source_digest.as_slice() || file.line_count() != expected.len() {
                 return Err("native replay line source differs".into());
             }
             for (index, expected) in expected.iter().copied().enumerate() {
                 step(budget, stopped, 1)?;
                 if file.line_start(index) != Some(expected) { return Err("native replay line offsets differ".into()); }
+            }
+            plan.flags[i] |= 16;
+        }
+        for i in 0..count {
+            step(budget, stopped, 1)?;
+            let ordinal = index_at(&source_index, i);
+            if rows[ordinal].line_starts.is_some() && plan.flags[ordinal] & 16 == 0 {
+                return Err("native replay line file absent".into());
             }
         }
     }
