@@ -16,6 +16,7 @@ pub(super) struct BorrowedCompilerMetadata<'a> {
     pub(super) semantic_catalog_root: Option<AuthorityHash>,
     pub(super) native_program_sources: Option<CompilerProgramSourceMember>,
     pub(super) native_headers: Option<CompilerNativeHeadersMember>,
+    pub(super) native_lines: Option<CompilerNativeLinesMember>,
     image_rows: &'a [u8],
     versioned: Option<BorrowedVersionedMetadata<'a>>,
 }
@@ -51,19 +52,22 @@ fn marked<E>(cells: &[u8], bitmap: &[u8], id: &[u8;32], checkpoint: &mut impl Fn
     Ok(false)
 }
 
-fn stage_identity<E>(common: &[u8], version: u16, program: Option<CompilerProgramSourceMember>, coverage: Option<CompilerSourceCoverageMember>, snapshot: Option<CompilerTypeScriptSnapshotMember>, checkpoint: &mut impl FnMut(usize)->Result<(),E>) -> Result<[u8;32], BorrowedMetadataError<E>> {
-    let mut program_wire=[0u8;68]; let mut coverage_wire=[0u8;68]; let mut snapshot_wire=[0u8;36];
+fn stage_identity<E>(common: &[u8], version: u16, program: Option<CompilerProgramSourceMember>, coverage: Option<CompilerSourceCoverageMember>, snapshot: Option<CompilerTypeScriptSnapshotMember>, headers: Option<CompilerNativeHeadersMember>, checkpoint: &mut impl FnMut(usize)->Result<(),E>) -> Result<[u8;32], BorrowedMetadataError<E>> {
+    let mut program_wire=[0u8;68]; let mut coverage_wire=[0u8;68]; let mut snapshot_wire=[0u8;36]; let mut header_wire=[0u8;36];
     if let Some(p)=program {program_wire[..32].copy_from_slice(&p.object_id); program_wire[32..64].copy_from_slice(&p.program); program_wire[64..].copy_from_slice(&p.byte_length.to_le_bytes());}
     if let Some(c)=coverage {coverage_wire[..32].copy_from_slice(&c.object_id); coverage_wire[32..64].copy_from_slice(&c.identity); coverage_wire[64..].copy_from_slice(&c.byte_length.to_le_bytes());}
     if let Some(s)=snapshot {snapshot_wire[..32].copy_from_slice(&s.object_id); snapshot_wire[32..].copy_from_slice(&s.byte_length.to_le_bytes());}
+    if let Some(h)=headers {header_wire[..32].copy_from_slice(&h.object_id); header_wire[32..].copy_from_slice(&h.byte_length.to_le_bytes());}
     let version_bytes=version.to_le_bytes(); let yes=[1u8]; let no=[0u8]; let mut parts: [&[u8];10]=[&[];10]; let mut n=0usize;
     parts[n]=METADATA_MAGIC; n+=1; parts[n]=&version_bytes; n+=1; parts[n]=common; n+=1;
-    if version==COVERAGE_METADATA_VERSION || version==TYPESCRIPT_SNAPSHOT_METADATA_VERSION { parts[n]=if program.is_some(){&yes}else{&no}; n+=1; }
+    if matches!(version,COVERAGE_METADATA_VERSION|TYPESCRIPT_SNAPSHOT_METADATA_VERSION|NATIVE_HEADERS_METADATA_VERSION|NATIVE_LINES_METADATA_VERSION) { parts[n]=if program.is_some(){&yes}else{&no}; n+=1; }
     if program.is_some() {parts[n]=&program_wire; n+=1;}
-    if version==TYPESCRIPT_SNAPSHOT_METADATA_VERSION {parts[n]=if coverage.is_some(){&yes}else{&no}; n+=1;}
+    if matches!(version,TYPESCRIPT_SNAPSHOT_METADATA_VERSION|NATIVE_HEADERS_METADATA_VERSION) {parts[n]=if coverage.is_some(){&yes}else{&no}; n+=1;}
     if coverage.is_some() {parts[n]=&coverage_wire; n+=1;}
+    if version==NATIVE_HEADERS_METADATA_VERSION {parts[n]=if snapshot.is_some(){&yes}else{&no}; n+=1;}
     if snapshot.is_some() {parts[n]=&snapshot_wire; n+=1;}
-    let schema=match version {METADATA_VERSION=>COMPILER_PUBLICATION_METADATA_SCHEMA,PROGRAM_METADATA_VERSION=>COMPILER_PROGRAM_METADATA_SCHEMA,COVERAGE_METADATA_VERSION=>COMPILER_COVERAGE_METADATA_SCHEMA,TYPESCRIPT_SNAPSHOT_METADATA_VERSION=>COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA,_=>return Err(CompilerEnvelopeError::MetadataVersion.into())};
+    if headers.is_some() {parts[n]=&header_wire; n+=1;}
+    let schema=match version {METADATA_VERSION=>COMPILER_PUBLICATION_METADATA_SCHEMA,PROGRAM_METADATA_VERSION=>COMPILER_PROGRAM_METADATA_SCHEMA,COVERAGE_METADATA_VERSION=>COMPILER_COVERAGE_METADATA_SCHEMA,TYPESCRIPT_SNAPSHOT_METADATA_VERSION=>COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA,NATIVE_HEADERS_METADATA_VERSION=>COMPILER_NATIVE_HEADERS_METADATA_SCHEMA,_=>return Err(CompilerEnvelopeError::MetadataVersion.into())};
     let id=backend_store::untrusted_object_id_for_encoded_parts_checkpointed(schema,&parts[..n],checkpoint).map_err(|e|match e {backend_store::IdentityHashError::Bounds=>BorrowedMetadataError::Invalid(CompilerEnvelopeError::ByteLengthOverflow),backend_store::IdentityHashError::Stopped(e)=>BorrowedMetadataError::Stopped(e)})?;
     Ok(*id.as_bytes())
 }
@@ -87,7 +91,7 @@ impl<'a> BorrowedCompilerMetadata<'a> {
         let mut d=Decoder::new(bytes);
         if d.take(METADATA_MAGIC.len())? != METADATA_MAGIC { return Err(CompilerEnvelopeError::MetadataMagic.into()); }
         let version=d.u16()?;
-        if !matches!(version, METADATA_VERSION | PROGRAM_METADATA_VERSION | COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | CSHARP_EVIDENCE_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION) { return Err(CompilerEnvelopeError::MetadataVersion.into()); }
+        if !matches!(version, METADATA_VERSION | PROGRAM_METADATA_VERSION | COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | CSHARP_EVIDENCE_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION | NATIVE_LINES_METADATA_VERSION) { return Err(CompilerEnvelopeError::MetadataVersion.into()); }
         let manifest_len=d.u32()? as usize;
         if manifest_len < SEMANTIC_MANIFEST_HEADER_BYTES || manifest_len > MAX_MANIFEST_BYTES { return Err(CompilerEnvelopeError::ManifestFacts.into()); }
         let manifest=d.take(manifest_len)?;
@@ -133,17 +137,19 @@ impl<'a> BorrowedCompilerMetadata<'a> {
             _ => return Err(CompilerEnvelopeError::VersionedPlaneMetadata.into()),
         };
         let common_end=d.offset;
-        let has_program=if matches!(version,COVERAGE_METADATA_VERSION|TYPESCRIPT_SNAPSHOT_METADATA_VERSION|NATIVE_HEADERS_METADATA_VERSION) { match d.u8()? {0=>false,1=>true,_=>return Err(CompilerEnvelopeError::NativeProgramSources.into())} } else { version==PROGRAM_METADATA_VERSION };
+        let has_program=if matches!(version,COVERAGE_METADATA_VERSION|TYPESCRIPT_SNAPSHOT_METADATA_VERSION|NATIVE_HEADERS_METADATA_VERSION|NATIVE_LINES_METADATA_VERSION) { match d.u8()? {0=>false,1=>true,_=>return Err(CompilerEnvelopeError::NativeProgramSources.into())} } else { version==PROGRAM_METADATA_VERSION };
         let program=if has_program { let m=CompilerProgramSourceMember {object_id:d.array::<32>()?,program:d.array::<32>()?,byte_length:d.u32()?}; if m.byte_length==0 || m.byte_length as usize>backend_semantic::ir::MAX_NATIVE_PROGRAM_MANIFEST_BYTES {return Err(CompilerEnvelopeError::NativeProgramSources.into());} Some(m) } else {None};
-        let has_coverage=match version { COVERAGE_METADATA_VERSION=>true, TYPESCRIPT_SNAPSHOT_METADATA_VERSION|NATIVE_HEADERS_METADATA_VERSION=>match d.u8()? {0=>false,1=>true,_=>return Err(CompilerEnvelopeError::SourceCoverage.into())}, _=>false };
+        let has_coverage=match version { COVERAGE_METADATA_VERSION=>true, TYPESCRIPT_SNAPSHOT_METADATA_VERSION|NATIVE_HEADERS_METADATA_VERSION|NATIVE_LINES_METADATA_VERSION=>match d.u8()? {0=>false,1=>true,_=>return Err(CompilerEnvelopeError::SourceCoverage.into())}, _=>false };
         let coverage=if has_coverage {let m=CompilerSourceCoverageMember {object_id:d.array::<32>()?,identity:d.array::<32>()?,byte_length:d.u32()?}; if m.byte_length==0 || m.byte_length as usize>backend_semantic::ir::MAX_SOURCE_COVERAGE_BYTES {return Err(CompilerEnvelopeError::SourceCoverage.into());} Some(m)} else {None};
-        let has_snapshot=match version { TYPESCRIPT_SNAPSHOT_METADATA_VERSION=>true,NATIVE_HEADERS_METADATA_VERSION=>match d.u8()? {0=>false,1=>true,_=>return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness.into())},_=>false};
+        let has_snapshot=match version { TYPESCRIPT_SNAPSHOT_METADATA_VERSION=>true,NATIVE_HEADERS_METADATA_VERSION|NATIVE_LINES_METADATA_VERSION=>match d.u8()? {0=>false,1=>true,_=>return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness.into())},_=>false};
         let snapshot=if has_snapshot {let m=CompilerTypeScriptSnapshotMember {object_id:d.array::<32>()?,byte_length:d.u32()?}; if m.byte_length==0 || m.byte_length as usize>backend_semantic::ir::MAX_TYPESCRIPT_SNAPSHOT_WITNESS_BYTES {return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness.into());} Some(m)} else {None};
         let csharp=if version==CSHARP_EVIDENCE_METADATA_VERSION {let m=CompilerCSharpEvidenceMember {object_id:d.array::<32>()?,byte_length:d.u32()?}; if m.byte_length==0 || m.byte_length as usize>backend_semantic::ir::MAX_CSHARP_INVOCATION_EVIDENCE_BYTES {return Err(CompilerEnvelopeError::CSharpInvocationEvidence.into());} Some(m)} else {None};
-        let headers=if version==NATIVE_HEADERS_METADATA_VERSION {let m=CompilerNativeHeadersMember {object_id:d.array::<32>()?,byte_length:d.u32()?}; if m.byte_length==0 || m.byte_length as usize>MAX_COMPILER_NATIVE_HEADERS_BYTES {return Err(CompilerEnvelopeError::NativeHeaders.into());} Some(m)} else {None};
+        let has_headers=if version==NATIVE_LINES_METADATA_VERSION {match d.u8()? {0=>false,1=>true,_=>return Err(CompilerEnvelopeError::NativeHeaders.into())}} else {version==NATIVE_HEADERS_METADATA_VERSION};
+        let headers=if has_headers {let m=CompilerNativeHeadersMember {object_id:d.array::<32>()?,byte_length:d.u32()?}; if m.byte_length==0 || m.byte_length as usize>MAX_COMPILER_NATIVE_HEADERS_BYTES {return Err(CompilerEnvelopeError::NativeHeaders.into());} Some(m)} else {None};
+        let lines=if version==NATIVE_LINES_METADATA_VERSION {let m=CompilerNativeLinesMember {object_id:d.array::<32>()?,byte_length:d.u32()?}; if m.byte_length==0 || m.byte_length as usize>MAX_COMPILER_NATIVE_LINES_BYTES {return Err(CompilerEnvelopeError::NativeHeaders.into());} Some(m)} else {None};
         if !d.is_empty() { return Err(CompilerEnvelopeError::TrailingBytes.into()); }
-        if (coverage.is_some() || snapshot.is_some() || headers.is_some()) && program.is_none() { return Err(CompilerEnvelopeError::NativeProgramSources.into()); }
-        let schema=match version { METADATA_VERSION=>COMPILER_PUBLICATION_METADATA_SCHEMA, PROGRAM_METADATA_VERSION=>COMPILER_PROGRAM_METADATA_SCHEMA, COVERAGE_METADATA_VERSION=>COMPILER_COVERAGE_METADATA_SCHEMA, TYPESCRIPT_SNAPSHOT_METADATA_VERSION=>COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA, CSHARP_EVIDENCE_METADATA_VERSION=>COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA, NATIVE_HEADERS_METADATA_VERSION=>COMPILER_NATIVE_HEADERS_METADATA_SCHEMA, _=>return Err(CompilerEnvelopeError::MetadataVersion.into()) };
+        if (coverage.is_some() || snapshot.is_some() || headers.is_some() || lines.is_some()) && program.is_none() { return Err(CompilerEnvelopeError::NativeProgramSources.into()); }
+        let schema=match version { METADATA_VERSION=>COMPILER_PUBLICATION_METADATA_SCHEMA, PROGRAM_METADATA_VERSION=>COMPILER_PROGRAM_METADATA_SCHEMA, COVERAGE_METADATA_VERSION=>COMPILER_COVERAGE_METADATA_SCHEMA, TYPESCRIPT_SNAPSHOT_METADATA_VERSION=>COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA, CSHARP_EVIDENCE_METADATA_VERSION=>COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA, NATIVE_HEADERS_METADATA_VERSION=>COMPILER_NATIVE_HEADERS_METADATA_SCHEMA, NATIVE_LINES_METADATA_VERSION=>COMPILER_NATIVE_LINES_METADATA_SCHEMA, _=>return Err(CompilerEnvelopeError::MetadataVersion.into()) };
         let id=backend_store::untrusted_object_id_for_encoded_value_checkpointed(schema,bytes,checkpoint).map_err(|e| match e {backend_store::IdentityHashError::Bounds=>BorrowedMetadataError::Invalid(CompilerEnvelopeError::ByteLengthOverflow),backend_store::IdentityHashError::Stopped(e)=>BorrowedMetadataError::Stopped(e)})?;
         if id.as_bytes()!=&metadata_id { return Err(CompilerEnvelopeError::MetadataMismatch.into()); }
         checkpoint(needed).map_err(BorrowedMetadataError::Stopped)?;
@@ -161,19 +167,20 @@ impl<'a> BorrowedCompilerMetadata<'a> {
         // before each optional attachment. Recompute each intermediate wire
         // identity without allocating; physical collisions are counted exactly.
         let common=&bytes[METADATA_MAGIC.len()+2..common_end];
-        let mut previous: [Option<[u8;32]>;4]=[None;4]; let mut previous_len=0usize;
+        let mut previous: [Option<[u8;32]>;5]=[None;5]; let mut previous_len=0usize;
         for (present, stage, optional) in [
             (program.is_some(), METADATA_VERSION, program.map(|v|v.object_id)),
             (coverage.is_some(), PROGRAM_METADATA_VERSION, coverage.map(|v|v.object_id)),
             (snapshot.is_some(), if coverage.is_some(){COVERAGE_METADATA_VERSION}else{PROGRAM_METADATA_VERSION}, snapshot.map(|v|v.object_id)),
             (csharp.is_some(), METADATA_VERSION, csharp.map(|v|v.object_id)),
             (headers.is_some(), if snapshot.is_some(){TYPESCRIPT_SNAPSHOT_METADATA_VERSION}else if coverage.is_some(){COVERAGE_METADATA_VERSION}else{PROGRAM_METADATA_VERSION}, headers.map(|v|v.object_id)),
+            (lines.is_some(), if headers.is_some(){NATIVE_HEADERS_METADATA_VERSION}else if snapshot.is_some(){TYPESCRIPT_SNAPSHOT_METADATA_VERSION}else if coverage.is_some(){COVERAGE_METADATA_VERSION}else{PROGRAM_METADATA_VERSION}, lines.map(|v|v.object_id)),
         ] {
             if !present {continue;}
             let stage_program=if stage==METADATA_VERSION {None}else{program};
-            let stage_coverage=if stage==COVERAGE_METADATA_VERSION || stage==TYPESCRIPT_SNAPSHOT_METADATA_VERSION {coverage}else{None};
-            let stage_snapshot=if stage==TYPESCRIPT_SNAPSHOT_METADATA_VERSION {snapshot}else{None};
-            let stage_id=stage_identity(common,stage,stage_program,stage_coverage,stage_snapshot,checkpoint)?;
+            let stage_coverage=if matches!(stage,COVERAGE_METADATA_VERSION|TYPESCRIPT_SNAPSHOT_METADATA_VERSION|NATIVE_HEADERS_METADATA_VERSION) {coverage}else{None};
+            let stage_snapshot=if matches!(stage,TYPESCRIPT_SNAPSHOT_METADATA_VERSION|NATIVE_HEADERS_METADATA_VERSION) {snapshot}else{None};
+            let stage_id=stage_identity(common,stage,stage_program,stage_coverage,stage_snapshot,if stage==NATIVE_HEADERS_METADATA_VERSION {headers}else{None},checkpoint)?;
             let mut count=base_unique + usize::from(!marked(members,bitmap,&stage_id,checkpoint)?);
             for i in 0..previous_len { if let Some(id)=previous[i] {
                 if id != stage_id && !marked(members,bitmap,&id,checkpoint)? && !previous[..i].contains(&Some(id)) {count+=1;}
@@ -183,12 +190,12 @@ impl<'a> BorrowedCompilerMetadata<'a> {
         }
         let mut unique=base_unique;
         if bitmap_mark(members,bitmap,&metadata_id,checkpoint)? { unique+=1; }
-        for optional in [program.map(|v|v.object_id),coverage.map(|v|v.object_id),snapshot.map(|v|v.object_id),csharp.map(|v|v.object_id),headers.map(|v|v.object_id)].into_iter().flatten() {
+        for optional in [program.map(|v|v.object_id),coverage.map(|v|v.object_id),snapshot.map(|v|v.object_id),csharp.map(|v|v.object_id),headers.map(|v|v.object_id),lines.map(|v|v.object_id)].into_iter().flatten() {
             if bitmap_mark(members,bitmap,&optional,checkpoint)? {unique+=1;}
         }
         if unique!=member_count {return Err(CompilerEnvelopeError::MetadataMismatch.into());}
         let _ = format;
-        Ok(Self { binding_identity, semantic_catalog_root: versioned.as_ref().map(|v|*v.catalog_root().as_bytes()), native_program_sources: program, native_headers: headers, image_rows, versioned })
+        Ok(Self { binding_identity, semantic_catalog_root: versioned.as_ref().map(|v|*v.catalog_root().as_bytes()), native_program_sources: program, native_headers: headers, native_lines: lines, image_rows, versioned })
     }
     pub(super) fn visit_image_ids<E>(&self, visit: &mut impl FnMut([u8;32])->Result<(),E>) -> Result<(),E> {
         for row in self.image_rows.chunks_exact(72) { let mut id=[0;32]; id.copy_from_slice(&row[4..36]); visit(id)?; } Ok(())
@@ -219,6 +226,36 @@ mod tests {
         binding[12..44].copy_from_slice(root.as_ref()); binding[44..76].copy_from_slice(dependencies.as_ref());
         binding[76..108].copy_from_slice(manifest_id.as_ref());
         CompilerPublicationMetadata::new(&manifest, binding, vec![image]).unwrap()
+    }
+
+    #[test]
+    fn borrowed_v10_lines_all_optional_combinations_and_stage_identity() {
+        let program = CompilerProgramSourceMember { object_id: [0x11;32], program: [0x22;32], byte_length: 8 };
+        let coverage = CompilerSourceCoverageMember { object_id: [0x33;32], identity: [0x44;32], byte_length: 8 };
+        let snapshot = CompilerTypeScriptSnapshotMember { object_id: [0x55;32], byte_length: 8 };
+        let headers = CompilerNativeHeadersMember { object_id: [0x77;32], byte_length: 8 };
+        let lines = CompilerNativeLinesMember { object_id: [0x88;32], byte_length: 16 };
+        for has_coverage in [false,true] { for has_snapshot in [false,true] { for has_headers in [false,true] {
+            let mut metadata=base().with_native_program_sources(program).unwrap();
+            if has_coverage {metadata=metadata.with_source_coverage(coverage).unwrap();}
+            if has_snapshot {metadata=metadata.with_typescript_snapshot_witness(snapshot).unwrap();}
+            if has_headers {metadata=metadata.with_native_headers(headers).unwrap();}
+            metadata=metadata.with_native_lines(lines).unwrap();
+            let wire=metadata.canonical_bytes();let id=metadata.object_id();
+            let ids=metadata_member_ids_checked(&metadata).unwrap();let mut members=Vec::new();for id in ids {members.extend_from_slice(&id);}
+            let mut bitmap=vec![0u8;(MAX_MEMBER_IDS+7)/8];let mut view=None;
+            let peak=allocation_counter::measure(|| {view=Some(BorrowedCompilerMetadata::parse(&wire,id,&members,&mut bitmap,&mut |_|Ok::<(),()>(())).unwrap());});
+            assert_eq!(peak.bytes_max,0);let view=view.unwrap();
+            assert_eq!(view.native_lines,Some(lines));assert_eq!(view.native_headers,if has_headers{Some(headers)}else{None});
+            assert_eq!(CompilerPublicationMetadata::decode(&wire).unwrap(),metadata);
+            let header_flag=wire.len()-36-if has_headers{36}else{0}-1;
+            let mut bad=wire.clone();bad[header_flag]=2;
+            assert!(BorrowedCompilerMetadata::parse(&bad,id,&members,&mut bitmap,&mut |_|Ok::<(),()>(())).is_err());
+            let mut bad=wire.clone();let last=bad.len();bad[last-4..].copy_from_slice(&0u32.to_le_bytes());
+            assert!(BorrowedCompilerMetadata::parse(&bad,id,&members,&mut bitmap,&mut |_|Ok::<(),()>(())).is_err());
+            let mut calls=0;let stopped=BorrowedCompilerMetadata::parse(&wire,id,&members,&mut bitmap,&mut |_|{calls+=1;if calls==4{Err(())}else{Ok(())}});
+            assert!(matches!(stopped,Err(BorrowedMetadataError::Stopped(()))));
+        }}}
     }
 
     #[test]
