@@ -808,6 +808,29 @@ mod tests {
     }
 
     #[test]
+    fn bounded_nonrelation_large_payload_has_one_wire_allocation() {
+        const LENGTH: usize = 64 * 1024 * 1024;
+        let root = std::env::temp_dir().join(format!("backend-store-large-bounded-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let store = FileStore::open(&root, LENGTH + 4096).expect("store");
+        let object = bytes_object(vec![42; LENGTH]);
+        store.write_object(&object).expect("write");
+        let pin = store.pin_garbage_collection().expect("pin");
+        let claim = UntrustedObjectId::from_bytes(*object.id().as_bytes());
+        let mut credit = LENGTH;
+        let measurement = allocation_counter::measure(|| {
+            store.with_verified_nonrelation_object_bounded(&pin, claim, &[object.schema()], Some(*object.key()), LENGTH, &mut credit,
+                |_| Ok(()), |_,_,len,_| { assert_eq!(len, LENGTH); Ok(()) },
+                |view,_| { assert_eq!(view.bytes().len(), LENGTH); Ok(()) }).expect("read");
+        });
+        assert_eq!(credit, 0);
+        assert!(usize::try_from(measurement.bytes_max).unwrap() <= LENGTH + 4096,
+            "requested allocation peak {} exceeds payload plus fixture opener allowance", measurement.bytes_max);
+        drop(pin);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn bounded_nonrelation_read_preflights_before_payload_and_authenticates() {
         use std::cell::Cell;
         let (store, root) = test_store("bounded-nonrelation");
