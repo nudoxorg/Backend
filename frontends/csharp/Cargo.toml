@@ -22,3 +22,9 @@ path = "lib.rs"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "=0.4.7"
+
+[[bin]]
+name = "csharp-landlock-launcher-prototype"
+path = "src/landlock_launcher_prototype.rs"
+test = false
+bench = false

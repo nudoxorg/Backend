@@ -18,7 +18,11 @@ use landlock::{
 /// files only: directory subtree grants would allow unenumerated native loads.
 /// This function does not perform process isolation, close inherited FDs, or
 /// prove that the files will remain immutable while the child runs.
-fn prepare(read_files: &[File], executable_files: &[File]) -> Result<RulesetCreated, ()> {
+pub(super) fn prepare(
+    read_files: &[File],
+    executable_files: &[File],
+    enumerate_directories: &[File],
+) -> Result<RulesetCreated, ()> {
     if read_files.len().saturating_add(executable_files.len()) > 8192 {
         return Err(());
     }
@@ -47,12 +51,20 @@ fn prepare(read_files: &[File], executable_files: &[File]) -> Result<RulesetCrea
             ))
             .map_err(|_| ())?;
     }
+    for directory in enumerate_directories {
+        if !directory.metadata().map_err(|_| ())?.is_dir() {
+            return Err(());
+        }
+        ruleset = ruleset
+            .add_rule(PathBeneath::new(directory, AccessFs::ReadDir))
+            .map_err(|_| ())?;
+    }
     Ok(ruleset)
 }
 
 /// Enforce the previously prepared ruleset in the dedicated private child.
 /// Failure must terminate the child; it must never continue to the workload.
-fn enforce(ruleset: RulesetCreated) -> Result<(), ()> {
+pub(super) fn enforce(ruleset: RulesetCreated) -> Result<(), ()> {
     let status = ruleset.restrict_self().map_err(|_| ())?;
     if status.ruleset != RulesetStatus::FullyEnforced || !status.no_new_privs {
         return Err(());
@@ -76,7 +88,7 @@ mod tests {
             let outside = root.join("outside");
             let fd = File::open(&allowed).expect("open allowed file");
             let mut inherited = File::open(&outside).expect("open before confinement");
-            let rules = match prepare(&[fd], &[]) {
+            let rules = match prepare(&[fd], &[], &[]) {
                 Ok(rules) => rules,
                 Err(()) => std::process::exit(77),
             };
