@@ -76,7 +76,6 @@ fn stage_identity<E>(common: &[u8], version: u16, program: Option<CompilerProgra
 }
 
 impl<'a> BorrowedCompilerMetadata<'a> {
-    pub(super) fn versioned(&self) -> Option<&BorrowedVersionedMetadata<'a>> { self.versioned.as_ref() }
     /// Validates canonical semantics against an authenticated sorted envelope.
     /// Bitmap is caller-owned scratch; both metadata and member cells must
     /// remain alive while this view is used. It grants no source authority.
