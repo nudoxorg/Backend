@@ -279,15 +279,23 @@ impl<'a> BorrowedNativeProgramSourceManifest<'a> {
         };
         for _ in 0..self.count {
             checkpoint(1)?;
-            let row = rows.next().expect("validated manifest");
-            for _ in row.program_path.as_bytes().chunks(4096) {
+            let remaining = rows.input.0;
+            let path_len =
+                u32::from_le_bytes(remaining[..4].try_into().expect("validated row")) as usize;
+            let tag = 4 + path_len + 32 + 4;
+            let package_len = if remaining[tag] == 1 {
+                u32::from_le_bytes(
+                    remaining[tag + 1..tag + 5]
+                        .try_into()
+                        .expect("validated row"),
+                ) as usize
+            } else {
+                0
+            };
+            for _ in 0..path_len.saturating_add(package_len).saturating_add(4095) / 4096 {
                 checkpoint(1)?;
             }
-            if let Some(path) = row.package_path {
-                for _ in path.as_bytes().chunks(4096) {
-                    checkpoint(1)?;
-                }
-            }
+            let row = rows.next().expect("validated manifest");
             visit(row)?;
         }
         Ok(())

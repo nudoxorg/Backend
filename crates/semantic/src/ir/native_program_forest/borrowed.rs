@@ -515,13 +515,12 @@ impl<'a, 's> BorrowedProgramGraph<'a, 's> {
                     high = mid;
                 }
             }
-            if low < row_count {
-                charge_row(bytes, rows, low, &mut checkpoint).map_err(Stopped)?;
+            if low == row_count {
+                return Err(Manifest(invalid));
             }
-            if low == row_count
-                || row_at(bytes, rows, low).package_path != Some(path)
-                || row_at(bytes, rows, low).node != Some(recorded_node)
-            {
+            charge_row(bytes, rows, low, &mut checkpoint).map_err(Stopped)?;
+            let row = row_at(bytes, rows, low);
+            if row.package_path != Some(path) || row.node != Some(recorded_node) {
                 return Err(Manifest(invalid));
             }
             put_u32(
