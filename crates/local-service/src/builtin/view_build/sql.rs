@@ -22,6 +22,13 @@ fn exact_query_id(prefix: &str, id: &[u8; 32]) -> Result<String, BuiltinModelErr
     plan.allocate(format_args!("{prefix}:{encoded}")).map_err(|e| BuiltinModelError(e.into()))
 }
 
+fn query_text_quota(lengths: &[usize; 8]) -> Option<usize> {
+    lengths.iter().try_fold(0usize, |n, len| n.checked_add(*len))?
+        .checked_mul(2)?
+        .checked_add(292)?
+        .checked_add(lengths.iter().filter(|n| **n != 0).count().checked_mul(SQL_ALLOCATION_QUOTA_PER_ALLOCATION)?)
+}
+
 #[cfg(test)]
 /// Legacy projection estimate retained only for comparison tests.
 fn projection_bound(
@@ -291,10 +298,7 @@ pub(super) fn append_query(
             // Symbol/package IDs are fixed 7+64 and 8+64 ASCII bytes; their
             // hexadecimal staging lives on the stack, not in a String.
             let strings = [coordinate.len(), identity.len(), signature.len(), document.len(), name_plan.len(), kind_plan.len(), 71, 72];
-            let payload = strings.iter().try_fold(0usize, |n, len| n.checked_add(*len))
-                .and_then(|n| n.checked_mul(2))
-                .and_then(|n| n.checked_add(292))
-                .and_then(|n| n.checked_add(strings.iter().filter(|n| **n != 0).count().checked_mul(SQL_ALLOCATION_QUOTA_PER_ALLOCATION)?))
+            let payload = query_text_quota(&strings)
                 .ok_or_else(|| BuiltinModelError("SQL query quota overflow".into()))?;
             projected_bytes = projected_bytes.checked_add(payload).filter(|n| *n <= remaining_bytes)
                 .ok_or_else(|| BuiltinModelError("SQL query facts exceed byte bound".into()))?;
@@ -396,5 +400,19 @@ mod tests {
         let package = backend_engine::package_key("SQL package");
         assert_eq!(exact_query_id("symbol", symbol.as_bytes()).unwrap(), RowId::Symbol(symbol).stable_key());
         assert_eq!(exact_query_id("package", package.as_bytes()).unwrap(), RowId::Package(package).stable_key());
+    }
+
+    #[test]
+    fn query_text_quota_rejects_short_credit_before_allocation() {
+        use super::super::super::row_admission::RequestedLayoutBudget;
+        let lengths = [3020, 3026, 20, 3100, 1, 5, 71, 72];
+        let quota = query_text_quota(&lengths).unwrap();
+        let mut short = RequestedLayoutBudget::new(0, quota - 1).unwrap();
+        let measured = allocation_counter::measure(|| assert!(short.retain(quota, 0).is_err()));
+        assert_eq!(measured.count_total, 0);
+        let mut exact = RequestedLayoutBudget::new(0, quota).unwrap();
+        exact.retain(quota, 0).unwrap();
+        assert_eq!(exact.retained(), quota);
+        assert!(query_text_quota(&[usize::MAX; 8]).is_none());
     }
 }
