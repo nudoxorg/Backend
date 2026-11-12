@@ -134,11 +134,12 @@ class StrictJourney(Journey):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--bin-dir', required=True)
+    parser.add_argument('--source-root', type=pathlib.Path, default=pathlib.Path(__file__).resolve().parents[3])
     parser.add_argument('--output', required=True)
     parser.add_argument('--source-commit', required=True)
     parser.add_argument('--build-receipt', required=True, type=pathlib.Path)
     args = parser.parse_args()
-    repo = pathlib.Path(__file__).resolve().parents[3]
+    repo = args.source_root.resolve(strict=True)
     git = lambda *cmd: subprocess.check_output(['git', '-C', str(repo), *cmd], text=True).strip()
     head = git('rev-parse', 'HEAD')
     if head != args.source_commit or git('status', '--porcelain'):
@@ -269,7 +270,7 @@ def main():
                 shutil.rmtree(journey.root)
             except Exception as error:
                 checks.append({'name': 'fixture cleanup', 'pass': False, 'detail': repr(error)})
-    receipt = {'source_commit': head, 'source_tree': tree, 'cargo_lock_sha256': digest(repo / 'Cargo.lock'), 'binary_sha256': {name: item['sha256'] for name, item in build['artifacts'].items()}, 'build_receipt': {'path': build['receipt_path'], 'sha256': build['receipt_sha256']}, 'records': journey.records, 'fixture_root_if_preserved': str(journey.root) if journey.root.exists() else None, 'mode': 'development assumed; authenticated account not exercised', 'account_gate_environment_set': 'NUDOX_ACCOUNT_GATE' in journey.env, 'fixture': 'synthetic; package code not executed', 'nuget_public_journey': 'not exercised', 'checks': checks}
+    receipt = {'driver_path': str(pathlib.Path(__file__).resolve()), 'driver_sha256': digest(pathlib.Path(__file__).resolve()), 'source_commit': head, 'source_tree': tree, 'cargo_lock_sha256': digest(repo / 'Cargo.lock'), 'binary_sha256': {name: item['sha256'] for name, item in build['artifacts'].items()}, 'build_receipt': {'path': build['receipt_path'], 'sha256': build['receipt_sha256']}, 'records': journey.records, 'fixture_root_if_preserved': str(journey.root) if journey.root.exists() else None, 'mode': 'development assumed; authenticated account not exercised', 'account_gate_environment_set': 'NUDOX_ACCOUNT_GATE' in journey.env, 'fixture': 'synthetic; package code not executed', 'nuget_public_journey': 'not exercised', 'checks': checks}
     (output / 'receipt.json').write_text(json.dumps(receipt, indent=2))
     print(json.dumps(receipt, indent=2))
     return 0 if checks and all(check['pass'] for check in checks) else 1
