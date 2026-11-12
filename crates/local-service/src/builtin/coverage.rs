@@ -759,20 +759,41 @@ pub(super) fn view_coverage(
         }
     }
     let mut coverage = tally.coverage();
-    if let Some(sql) = backend_engine::builtin::sql_analysis_relation(snapshot)
+    if let Some(sql) = backend_engine::builtin::sql_analysis_preflight_relation(snapshot)
         .map_err(|error| BuiltinModelError(error.to_string()))? {
         let mut after = None;
+        // Requested-layout quota; the per-allocation allowance is not an RSS
+        // or allocator-overhead bound.
+        let prior = coverage.capacity().checked_mul(std::mem::size_of::<ViewCoverage>())
+            .and_then(|n| n.checked_add(if coverage.capacity() == 0 { 0 } else { 64 }))
+            .ok_or_else(|| BuiltinModelError("SQL coverage quota overflow".into()))?;
+        let mut remaining = super::MAX_REBUILD_BYTES.checked_sub(prior)
+            .ok_or_else(|| BuiltinModelError("SQL coverage quota exhausted".into()))?;
+        let mut rows = 0usize;
         loop {
-            let page = sql.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
-                .map_err(|error| BuiltinModelError(error.to_string()))?;
-            for (_, row) in page.entries() {
-                let sql_incomplete = sql_row_incomplete(row);
+            let next = backend_engine::builtin::sql_visit_preflighted(
+                &sql, after.as_ref(), 64, &mut remaining, 64,
+                &mut |_, row, budget| {
+                rows = rows.checked_add(1).ok_or(backend_store::StoreError::Bounds)?;
+                if rows > 262_144 { return Err(backend_store::StoreError::Bounds); }
+                let sql_incomplete = sql_row_incomplete(&row);
                 if sql_incomplete && !coverage.contains(&ViewCoverage::Gapped { lane: Lane::Names }) {
+                    if coverage.len() == coverage.capacity() {
+                        let requested = coverage.len().checked_add(1)
+                            .and_then(|n| n.checked_mul(std::mem::size_of::<ViewCoverage>()))
+                            .and_then(|n| n.checked_add(64)).ok_or(backend_store::StoreError::Bounds)?;
+                        *budget = budget.checked_sub(requested).ok_or(backend_store::StoreError::Bounds)?;
+                        coverage.try_reserve_exact(1).map_err(|_| backend_store::StoreError::Bounds)?;
+                    }
                     coverage.push(ViewCoverage::Gapped { lane: Lane::Names });
                 }
+                Ok(())
+            }).map_err(|error| BuiltinModelError(error.to_string()))?;
+            match next {
+                Some(next) if after != Some(next) => after = Some(next),
+                Some(_) => return Err(BuiltinModelError("SQL coverage cursor did not advance".into())),
+                None => break,
             }
-            let Some(next) = page.next().copied() else { break };
-            after = Some(next);
         }
     }
     Ok(coverage)
