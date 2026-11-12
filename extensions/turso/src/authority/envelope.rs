@@ -1104,10 +1104,12 @@ fn compiler_metadata_decode_bound(bytes: &[u8]) -> Result<usize, CompilerEnvelop
         .and_then(|n| n.checked_add(std::mem::size_of::<Option<(AuthorityHash, u32)>>()))
         .ok_or(CompilerEnvelopeError::MemberCount)?;
     bound = bound.checked_add(count.checked_mul(per_image).ok_or(CompilerEnvelopeError::MemberCount)?).ok_or(CompilerEnvelopeError::MemberCount)?;
+    let mut nested_wire_len = 0usize;
     match input.u8()? {
         0 => {},
         1 => {
             let n = input.u32()? as usize;
+            nested_wire_len = n;
             let nested = input.take(n)?;
             let nested_bound = super::versioned::versioned_decode_allocation_bound(nested).map_err(CompilerEnvelopeError::VersionedPlane)?;
             // Outer canonical encoding asks for the versioned wire once when
@@ -1136,6 +1138,15 @@ fn compiler_metadata_decode_bound(bytes: &[u8]) -> Result<usize, CompilerEnvelop
     if has_snapshot { input.take(36)?; }
     if version == CSHARP_EVIDENCE_METADATA_VERSION || version == NATIVE_HEADERS_METADATA_VERSION { input.take(36)?; }
     if !input.is_empty() { return Err(CompilerEnvelopeError::TrailingBytes); }
+    // Each optional setter checks an exact member inventory. Its canonical
+    // metadata object ID is streamed from one temporary canonical encoding;
+    // inventory capacity is at most the schema's member limit.
+    let setters = usize::from(has_program) + usize::from(has_coverage) + usize::from(has_snapshot)
+        + usize::from(version == CSHARP_EVIDENCE_METADATA_VERSION)
+        + usize::from(version == NATIVE_HEADERS_METADATA_VERSION);
+    let per_setter = bytes.len().checked_add(nested_wire_len.checked_mul(2).ok_or(CompilerEnvelopeError::MemberCount)?)
+        .and_then(|v| v.checked_add(MAX_MEMBER_IDS.checked_mul(32)?)).ok_or(CompilerEnvelopeError::MemberCount)?;
+    bound = bound.checked_add(setters.checked_mul(per_setter).ok_or(CompilerEnvelopeError::MemberCount)?).ok_or(CompilerEnvelopeError::MemberCount)?;
     Ok(bound)
 }
 
@@ -1914,7 +1925,13 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
 }
 
 fn metadata_member_ids(metadata: &CompilerPublicationMetadata) -> Vec<AuthorityHash> {
-    metadata_member_ids_with_id(metadata, metadata.object_id())
+    // Hash the canonical record directly instead of constructing a typed
+    // object and three independent schema encodings just to obtain its ID.
+    let bytes = metadata.canonical_bytes();
+    let id = backend_store::untrusted_object_id_for_encoded_value(metadata.schema(), &bytes)
+        .map(|id| *id.as_bytes()).unwrap_or_else(|_| metadata.object_id());
+    drop(bytes);
+    metadata_member_ids_with_id(metadata, id)
 }
 
 fn metadata_member_ids_with_id(metadata: &CompilerPublicationMetadata, metadata_id: AuthorityHash) -> Vec<AuthorityHash> {
