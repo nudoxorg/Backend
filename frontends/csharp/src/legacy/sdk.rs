@@ -449,8 +449,9 @@ impl CSharpResolvedReferenceSnapshot {
 }
 
 /// Ask the selected SDK's ResolveAssemblyReference target to choose among
-/// package/framework candidates. The generated project has no user imports or
-/// restore inputs; only explicit, confined HintPath references are admitted.
+/// package/framework candidates. The generated project has no user imports;
+/// framework references come from the private admitted pack layout and only
+/// package candidates become explicit, confined HintPath references.
 /// Missing or ambiguous SDK metadata is a hard failure.
 pub fn resolve_references_with_sdk(
     dotnet: &Path,
@@ -587,7 +588,9 @@ pub fn resolve_references_with_sdk(
     let mut xml = format!(
         "<Project Sdk=\"{sdk_name}\"><PropertyGroup><TargetFramework>{target_framework}</TargetFramework><Nullable>{nullable}</Nullable><LangVersion>{language_version}</LangVersion><OutputType>{output_type}</OutputType><NetCoreTargetingPackRoot>{}</NetCoreTargetingPackRoot><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets></PropertyGroup><ItemGroup>", private_pack_root.display()
     );
-    for path in candidates {
+    // Framework assemblies are supplied by the SDK's implicit framework
+    // references. Adding them as explicit references changes RAR precedence.
+    for path in &candidates[pack_candidates.len()..] {
         if !path.is_absolute() || !path.is_file() {
             return Err("SDK candidate unavailable");
         }
