@@ -1314,9 +1314,13 @@ impl CompilerPublicationEnvelope {
     /// Returns the canonical, versioned envelope bytes.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut output = Vec::with_capacity(
-            MAGIC.len() + 2 + 16 * 4 + 4 * 5 + 16 + 32 * 6 + 1 + self.member_ids.len() * 32,
-        );
+        let capacity = MAGIC.len() + 2 + 5 * 4
+            + self.namespace.package().len() + self.namespace.source().len()
+            + self.namespace.branch().len() + self.namespace.environment().len() + self.profile().len()
+            + 1 + 16 + 8 + 32 * 4 + 1
+            + usize::from(self.semantic_manifest_root.is_some()) * 32
+            + 32 + 4 + self.member_ids.len() * 32;
+        let mut output = Vec::with_capacity(capacity);
         self.encode_into(&mut output);
         output
     }
