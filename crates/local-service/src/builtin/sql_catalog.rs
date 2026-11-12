@@ -660,6 +660,32 @@ struct FactDigestRow {
     json: Box<[u8]>,
 }
 
+fn host_inventory_digest(
+    hosts: &Slots<BoundedSqlHost>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<[u8; 32], &'static str> {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nudox.sql-analysis.v1.inventory\0");
+    let mut previous: Option<&str> = None;
+    for host in hosts {
+        if cancelled() {
+            return Err("SQL read cancelled");
+        }
+        if previous.is_some_and(|value| value >= host.path.as_str()) {
+            return Err("duplicate or unsorted SQL host path");
+        }
+        hash.update(&(host.path.len() as u64).to_be_bytes());
+        hash.update(host.path.as_bytes());
+        hash.update(&[match host.dialect {
+            SqlDialect::Sqlite => 1,
+            SqlDialect::Postgres => 2,
+        }]);
+        previous = Some(&host.path);
+    }
+    hash.update(&(hosts.capacity as u64).to_be_bytes());
+    Ok(*hash.finalize().as_bytes())
+}
+
 fn verify_fact(
     key: &[u8; 32],
     host: &BoundedSqlHost,
@@ -1049,8 +1075,9 @@ pub(super) fn load_projects_bounded(
             return Err("SQL selection or host slot missing".into());
         }
         sql.hosts.sort_by(|a, b| a.path.cmp(&b.path), cancelled)?;
-        let mut inventory = blake3::Hasher::new();
-        inventory.update(b"nudox.sql-analysis.v1.inventory\0");
+        if host_inventory_digest(&sql.hosts, cancelled)? != plan.inventory_digest {
+            return Err("SQL selected inventory digest mismatch".into());
+        }
         for h in 0..sql.hosts.capacity {
             if cancelled() {
                 return Err("SQL read cancelled".into());
@@ -1059,12 +1086,6 @@ pub(super) fn load_projects_bounded(
                 return Err("duplicate SQL host path".into());
             }
             let host = sql.hosts.get_mut(h).ok_or("missing SQL host slot")?;
-            inventory.update(&(host.path.len() as u64).to_be_bytes());
-            inventory.update(host.path.as_bytes());
-            inventory.update(&[match host.dialect {
-                SqlDialect::Sqlite => 1,
-                SqlDialect::Postgres => 2,
-            }]);
             host_index.put(
                 host_index_count,
                 HostIndex {
@@ -1093,10 +1114,6 @@ pub(super) fn load_projects_bounded(
                 }
                 host.seen_ordinals.put(word, 0)?;
             }
-        }
-        inventory.update(&(sql.hosts.capacity as u64).to_be_bytes());
-        if *inventory.finalize().as_bytes() != plan.inventory_digest {
-            return Err("SQL selected inventory digest mismatch".into());
         }
     }
     if host_index_count != total_hosts || !host_index.is_full() {
@@ -1436,6 +1453,42 @@ mod bounded_catalog_tests {
             *hash.finalize().as_bytes(),
             backend_engine::builtin::sql_host_fact_digest(&[(key, &row)]).unwrap()
         );
+    }
+
+    #[test]
+    fn fixed_slots_inventory_matches_owner_digest_and_rejects_order_change() {
+        fn host(path: &str, dialect: SqlDialect) -> BoundedSqlHost {
+            BoundedSqlHost {
+                key: [1; 32],
+                path: path.into(),
+                dialect,
+                input: None,
+                source: None,
+                producer: None,
+                settings: None,
+                context: None,
+                fact_digest: [2; 32],
+                length: None,
+                terminal: SqlHostTerminal::Unavailable(
+                    backend_engine::builtin::SqlUnavailable::Read,
+                ),
+                expected_facts: 0,
+                seen_facts: 0,
+                seen_ordinals: Slots::empty(),
+            }
+        }
+        let mut budget = 1024 * 1024;
+        let mut hosts = Slots::new(2, &mut budget, 64, &|| false).unwrap();
+        hosts.put(0, host("a.sql", SqlDialect::Sqlite)).unwrap();
+        hosts.put(1, host("b.sql", SqlDialect::Postgres)).unwrap();
+        let expected = backend_engine::builtin::sql_inventory_digest(&[
+            ("a.sql".into(), SqlDialect::Sqlite),
+            ("b.sql".into(), SqlDialect::Postgres),
+        ])
+        .unwrap();
+        assert_eq!(host_inventory_digest(&hosts, &|| false).unwrap(), expected);
+        hosts.swap(0, 1);
+        assert!(host_inventory_digest(&hosts, &|| false).is_err());
     }
 
     #[test]
