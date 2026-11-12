@@ -426,6 +426,13 @@ mod tests {
             line_starts: None, headers: None,
         }).collect();
         let refs: Vec<_> = evidence.iter().collect();
+        let mut row_proofs = vec![0; refs.len()];
+        let mut retirement_proofs = vec![0];
+        let flags = vec![2; refs.len()];
+        let retirement_index = 0u32.to_le_bytes();
+        let stopped_budget = SelectedNativeHeaderBudget::new(1024, 100_000);
+        assert!(merge_proofs(&refs, &flags, &retirement_index, 1, &mut row_proofs, &mut retirement_proofs, &stopped_budget, &|| true).is_err());
+        assert!(row_proofs.iter().all(|proof| *proof == 0) && retirement_proofs == [0], "late stop leaves proof buffers unchanged");
         let mut budget = SelectedNativeHeaderBudget::new(64 * 1024 * 1024, super::super::NATIVE_HEADER_WORK_UNITS);
         let retained = copy(manifest.as_bytes(), &mut budget, &|| false).expect("Program bytes");
         let scratch_len = BorrowedNativeProgramSourceManifest::scratch_bytes(&retained).expect("Program scratch");
