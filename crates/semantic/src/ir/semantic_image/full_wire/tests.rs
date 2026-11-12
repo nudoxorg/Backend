@@ -527,7 +527,12 @@ fn clang_declared_name_round_trips_and_pre_v6_facts_stay_absent()
             .try_into()
             .expect("declared-name start"),
     );
-    invalid_span[value_start + 32..value_start + 36].copy_from_slice(&start.to_le_bytes());
+    // Empty half-open spans are valid; only a reversed range is malformed.
+    let mut empty_span = invalid_span.clone();
+    empty_span[value_start + 32..value_start + 36].copy_from_slice(&start.to_le_bytes());
+    assert!(SemanticImageView::reopen(&empty_span).is_ok());
+    let reversed_end = start.checked_sub(1).expect("fixture start is nonzero");
+    invalid_span[value_start + 32..value_start + 36].copy_from_slice(&reversed_end.to_le_bytes());
     assert!(SemanticImageView::reopen(&invalid_span).is_err());
 
     // Schemas 1–5 used the fixed Clang payload without a name span. Keep that
