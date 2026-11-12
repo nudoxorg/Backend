@@ -1086,12 +1086,10 @@ fn compiler_metadata_decode_bound(bytes: &[u8]) -> Result<usize, CompilerEnvelop
     if count == 0 || count > MAX_MEMBER_IDS { return Err(CompilerEnvelopeError::MemberCount); }
     input.take(count.checked_mul(72).ok_or(CompilerEnvelopeError::Truncated)?)?;
     let mut bound = bytes.len().checked_add(manifest_len).ok_or(CompilerEnvelopeError::MemberCount)?; // canonical output + retained manifest
-    let per_image = std::mem::size_of::<CompilerImageMember>().checked_mul(2)
-        .and_then(|n| n.checked_add(std::mem::size_of::<u32>()))
-        .and_then(|n| n.checked_add(std::mem::size_of::<(AuthorityHash, u32)>()))
-        .and_then(|n| n.checked_add(std::mem::size_of::<Option<(AuthorityHash, u32)>>()))
-        .ok_or(CompilerEnvelopeError::MemberCount)?;
-    bound = bound.checked_add(count.checked_mul(per_image).ok_or(CompilerEnvelopeError::MemberCount)?).ok_or(CompilerEnvelopeError::MemberCount)?;
+    let per_image = std::mem::size_of::<CompilerImageMember>().checked_mul(2).ok_or(CompilerEnvelopeError::MemberCount)?;
+    let bitmap = count.checked_add(7).ok_or(CompilerEnvelopeError::MemberCount)? / 8;
+    bound = bound.checked_add(count.checked_mul(per_image).ok_or(CompilerEnvelopeError::MemberCount)?)
+        .and_then(|n| n.checked_add(bitmap)).ok_or(CompilerEnvelopeError::MemberCount)?;
     let mut nested_wire_len = 0usize;
     let mut nested_physical_slots = 0usize;
     match input.u8()? {
@@ -2982,8 +2980,7 @@ fn verify_manifest_image_inventory(
     if usize::try_from(fragment_count).ok() != Some(images.len()) {
         return Err(CompilerEnvelopeError::ManifestFacts);
     }
-    // Validate every manifest fact before comparing rows, preserving the
-    // original error ordering without retaining an image-sized tuple vector.
+    // Validate manifest facts without retaining an image-sized tuple vector.
     for ordinal in 0..images.len() {
         let entry_start = SEMANTIC_MANIFEST_HEADER_BYTES + ordinal * SEMANTIC_MANIFEST_ENTRY_BYTES;
         let image_start = entry_start + SEMANTIC_MANIFEST_IMAGE_IDENTITY_OFFSET;
