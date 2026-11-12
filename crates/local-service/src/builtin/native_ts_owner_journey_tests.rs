@@ -17,6 +17,13 @@ use std::{
 pub(super) fn start_owner(
     paths: &backend_runtime::WorkspacePaths,
 ) -> Result<EmbeddedLocalService, Box<dyn Error>> {
+    start_owner_with_frame_budget(paths, None)
+}
+
+fn start_owner_with_frame_budget(
+    paths: &backend_runtime::WorkspacePaths,
+    budget: Option<usize>,
+) -> Result<EmbeddedLocalService, Box<dyn Error>> {
     let mut config = ProcessConfig::parse([
         "--endpoint".to_owned(),
         paths.endpoint().to_string_lossy().into_owned(),
@@ -28,9 +35,38 @@ pub(super) fn start_owner(
         "--forge-offline".to_owned(),
     ])?;
     config.profile = "builtin".to_owned();
+    if let Some(budget) = budget { config.listener.limits.max_frames_per_connection = budget; }
     config.worker_endpoint = None;
     config.authority_secret = Some(paths.authority_secret().to_path_buf());
     Ok(EmbeddedLocalService::start(config)?)
+}
+
+#[test]
+#[ignore = "real owner index with a one-frame connection budget"]
+fn native_ts_index_polling_reconnects_without_resubmitting() -> Result<(), Box<dyn Error>> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("tsx-poll-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o700));
+    }
+    let fixture = builder.tempdir_in("/tmp")?;
+    let project = fixture.path().join("project");
+    fs::create_dir(&project)?;
+    fs::write(project.join("view.ts"), "export function greeting() { return 1; }\n")?;
+    let paths = backend_runtime::WorkspacePaths::discover(Some(fixture.path().join("owner")), Some(fixture.path().join("state")), Some(fixture.path().join("owner.sock")))?;
+    paths.initialize()?;
+    let owner = start_owner_with_frame_budget(&paths, Some(1))?;
+    let mut session = Session::connect(owner.endpoint())?;
+    index(&mut session, &project, 0x53)?;
+    let key = IndexOperationKey::from_bytes([0x53; 32]).map_err(|e| io::Error::other(e.to_string()))?;
+    assert!(matches!(session.index_operation_status(key)?, IndexOperationObservation::Known(known) if matches!(known.state, IndexOperationState::Published(_))));
+    drop(session);
+    let report = owner.close()?;
+    assert!(report.connections >= 2, "one-frame budget must rotate connections");
+    assert_eq!(report.failures, 0);
+    Ok(())
 }
 
 fn index(session: &mut Session, project: &Path, byte: u8) -> Result<(), Box<dyn Error>> {
