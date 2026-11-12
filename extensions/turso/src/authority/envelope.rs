@@ -1450,15 +1450,15 @@ impl CompilerPublicationEnvelope {
             physical_pack_id: expected_physical_pack_id,
             member_ids: member_ids.into_boxed_slice(),
         };
-        if envelope
-            .member_ids
-            .binary_search(&envelope.object_id())
-            .is_ok()
-        {
-            return Err(CompilerEnvelopeError::SelfMember);
-        }
         if envelope.canonical_bytes() != bytes {
             return Err(CompilerEnvelopeError::NonCanonical);
+        }
+        // Canonicality is established above. Derive the physical identity
+        // directly from those bytes without rebuilding key/version payloads.
+        let object_id = backend_store::untrusted_object_id_for_encoded_value(COMPILER_PUBLICATION_ENVELOPE_SCHEMA, bytes)
+            .map_err(|_| CompilerEnvelopeError::ByteLengthOverflow)?;
+        if envelope.member_ids.binary_search(object_id.as_bytes()).is_ok() {
+            return Err(CompilerEnvelopeError::SelfMember);
         }
         Ok(envelope)
     }
@@ -3649,6 +3649,25 @@ mod tests {
         bytes.resize(offset + 4 + MAX_MEMBER_IDS * 32 - 1, 0);
         let measured = measure(|| assert!(matches!(CompilerPublicationEnvelope::decode(&bytes), Err(CompilerEnvelopeError::Truncated))));
         assert!(measured.bytes_max < 32 * 1024, "envelope final row preflight: {measured:?}");
+    }
+
+    #[test]
+    fn large_envelope_decode_obeys_shape_bound() {
+        let record = metadata(compiler_image().0);
+        let mut envelope = CompilerPublicationEnvelope::new(&attempt(), &record).unwrap();
+        let mut ids = (0..8191u64).map(|value| {
+            let mut id = [0u8; 32]; id[24..].copy_from_slice(&value.to_be_bytes()); id
+        }).collect::<Vec<_>>();
+        ids.push(*envelope.metadata_id());
+        ids.sort_unstable(); ids.dedup();
+        envelope.physical_pack_id = physical_pack_id(&ids);
+        envelope.member_ids = ids.into_boxed_slice();
+        let bytes = envelope.canonical_bytes();
+        let bound = compiler_envelope_decode_bound(&bytes).unwrap();
+        let mut decoded = None;
+        let peak = allocation_counter::measure(|| decoded = Some(CompilerPublicationEnvelope::decode(&bytes).unwrap()));
+        assert_eq!(decoded.unwrap(), envelope);
+        assert!(peak.bytes_max as usize <= bound, "large envelope decode peak {peak:?}, bound {bound}");
     }
 
     #[test]
