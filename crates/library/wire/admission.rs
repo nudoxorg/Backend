@@ -2186,11 +2186,10 @@ mod query_preparation_tests {
 
         #[cfg(unix)]
         {
-            use std::os::unix::{fs::PermissionsExt, net::{UnixListener, UnixStream}};
+            use std::os::unix::{fs::{DirBuilderExt, PermissionsExt}, net::{UnixListener, UnixStream}};
             let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos();
-            let directory = std::env::temp_dir().join(format!("nudox-graph-page-{}-{stamp}", std::process::id()));
-            std::fs::create_dir(&directory).expect("private directory");
-            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).expect("directory mode");
+            let directory = std::path::Path::new("/tmp").join(format!("ng-{:x}-{stamp:x}", std::process::id()));
+            std::fs::DirBuilder::new().mode(0o700).create(&directory).expect("private directory");
             let path = directory.join("owner.sock");
             let listener = UnixListener::bind(&path).expect("listener");
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("socket mode");
