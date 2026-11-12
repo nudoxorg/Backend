@@ -2351,6 +2351,7 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
             return Err("compiler coverage input differs from admitted attempt".to_owned());
         }
         verify_semantic_image_members(self.store, &manifest, &observed_metadata)?;
+        verify_native_lines_for_admission(self.store, &manifest, &observed_metadata, self.budget)?;
         verify_versioned_plane_members(&manifest, &observed_metadata)?;
         verify_exact_member_set(
             &manifest,
@@ -2360,6 +2361,41 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
         )?;
         Ok(())
     }
+}
+
+/// The candidate verifier admits c00f as a typed member before selection.
+/// This operation is distinct from metadata-only reopen and does not make
+/// line claims authoritative for a host source.
+fn verify_native_lines_for_admission(
+    store: &FileStore, manifest: &backend_store::DurableManifest,
+    metadata: &CompilerPublicationMetadata, policy: ArtifactBudget,
+) -> Result<(), String> {
+    let Some(member) = metadata.native_lines() else { return Ok(()) };
+    let length = member.byte_length() as usize;
+    if length == 0 || length > MAX_COMPILER_NATIVE_LINES_BYTES || length as u64 > policy.max_payload_bytes {
+        return Err("native line member extent exceeds candidate budget".into());
+    }
+    manifest.admit_claim(UntrustedObjectId::from_bytes(*member.object_id()))
+        .map_err(|e| format!("admit candidate line member: {e:?}"))?
+        .ok_or("candidate line member absent from closure")?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let stopped = || std::time::Instant::now() >= deadline;
+    let mut budget = SelectedNativeHeaderBudget::new(MAX_COMPILER_NATIVE_LINES_BYTES + 4 * 1024 * 1024, 128 * 1024 * 1024);
+    let pin = store.pin_garbage_collection_bounded(&mut budget.memory, |_| header_checkpoint(&budget.work, &stopped))
+        .map_err(|e| format!("pin candidate line member: {e:?}"))?;
+    let reader = store.open_bounded_nonrelation_object(&pin, UntrustedObjectId::from_bytes(*member.object_id()),
+        &[COMPILER_NATIVE_LINES_SCHEMA], None, length, &mut budget.memory, |_| header_checkpoint(&budget.work, &stopped))
+        .map_err(|e| format!("open candidate line member: {e:?}"))?;
+    if reader.payload_len() != length { return Err("candidate line member extent differs".into()); }
+    let mut bytes = backend_store::try_allocate_exact_zeroed_bytes_budgeted(length, &mut budget.memory)
+        .map_err(|e| format!("allocate candidate line member: {e:?}"))?;
+    let admitted = reader.read_into(&mut bytes, &mut budget.memory,
+        |_, _| header_checkpoint(&budget.work, &stopped),
+        |view, _| CompilerNativeLinesMember::from_verified_view(view, &mut |_| header_checkpoint(&budget.work, &stopped).map_err(|_| CompilerEnvelopeError::Stopped))
+            .map_err(|e| match e { CompilerEnvelopeError::Stopped => backend_store::StoreError::Bounds, _ => backend_store::StoreError::Corrupt }))
+        .map_err(|e| format!("verify candidate line member: {e:?}"))?;
+    if &admitted != member { return Err("candidate line member differs".into()); }
+    Ok(())
 }
 
 fn metadata_member_ids(metadata: &CompilerPublicationMetadata) -> Vec<AuthorityHash> {
