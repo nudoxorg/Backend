@@ -5748,6 +5748,9 @@ mod tests {
             .verify_closure(&ClosureClaim::for_candidate(&candidate))
             .expect("plane manifest names exact canonical image generation");
         let selected = selected_generation(&initial_attempt, &candidate, 1);
+        let mut visited = 0usize;
+        visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 1_000_000), &|| false, 8 * 1024 * 1024, 1, |_, _| { visited += 1; Ok(()) }).expect("bounded selected versioned publication");
+        assert!(visited >= 2);
         let reopened = reopen_selected_compiler_metadata(&store, &selected)
             .expect("cold reopen selected versioned plane metadata");
         let reopened_manifest = backend_semantic::ir::SemanticPlaneManifest::decode(
@@ -5786,7 +5789,7 @@ mod tests {
             false,
         );
         let candidate = envelope
-            .candidate(second_attempt, *receipt.closure().as_bytes())
+            .candidate(second_attempt.clone(), *receipt.closure().as_bytes())
             .expect("candidate with mismatched plane generation");
         let verifier = FileStoreCompilerPublicationVerifier::new(
             &store,
@@ -5799,6 +5802,8 @@ mod tests {
                 .verify_closure(&ClosureClaim::for_candidate(&candidate))
                 .is_err()
         );
+        let selected = selected_generation(&second_attempt, &candidate, 1);
+        assert!(visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(64 * 1024 * 1024, 1_000_000), &|| false, 8 * 1024 * 1024, 1, |_, _| Ok(())).is_err());
         drop(store);
         std::fs::remove_dir_all(directory).expect("remove mismatched plane store");
     }

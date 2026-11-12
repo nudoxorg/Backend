@@ -75,6 +75,8 @@ where F: for<'a> FnMut(SelectedPublicationWire<'a>, &mut SelectedNativeHeaderBud
     drop(images);
     if payload_total>max_payload_bytes{return Err("selected payload exceeds residence limit".into());}
     for id in envelope.members(){if header_member_bounded(store,&pin,closure,id,budget,cancelled)?!=count{return Err("selected closure count changed".into());}}
+    let generations_len = if metadata.versioned().is_some() { metadata.image_count().checked_mul(32).ok_or("generation index overflow")? } else { 0 };
+    let mut generations = backend_store::try_allocate_exact_zeroed_bytes_budgeted(generations_len, &mut budget.memory).map_err(|e|format!("allocate generation index: {e:?}"))?;
     let frame_charge=frame_before.checked_sub(budget.memory).ok_or("selected frame charge underflow")?;
     visit(SelectedPublicationWire::Metadata { manifest_bytes: metadata.manifest_bytes, binding_bytes: metadata.binding_bytes, declared_fragment_count: metadata.fragment_count },budget)?;
     if let Some(member)=metadata.native_program_sources {
@@ -96,10 +98,21 @@ where F: for<'a> FnMut(SelectedPublicationWire<'a>, &mut SelectedNativeHeaderBud
         let mut identity=backend_version::ArtifactHasher::<IrSemanticImageEncoding,IrSemanticImageDomain>::new();
         for chunk in wire.chunks(64*1024){header_checkpoint(&budget.work,cancelled).map_err(|e|format!("selected image identity stopped: {e:?}"))?;identity.write_chunk(chunk);}
         if identity.finalize().as_ref()!=member.semantic_image_identity(){return Err("selected image identity differs".into());}
+        if !generations.is_empty() {
+            let mut hash=blake3::Hasher::new();
+            for chunk in wire.chunks(64*1024) { header_checkpoint(&budget.work,cancelled).map_err(|e|format!("image generation stopped: {e:?}"))?; hash.update(chunk); }
+            let start=(member.artifact_ordinal() as usize).checked_mul(32).ok_or("generation ordinal overflow")?;
+            let end=start.checked_add(32).ok_or("generation ordinal overflow")?;
+            generations.get_mut(start..end).ok_or("generation ordinal out of bounds")?.copy_from_slice(hash.finalize().as_bytes());
+        }
         visit(SelectedPublicationWire::Image{member,bytes:&wire},budget)?;
         drop(wire);budget.memory=budget.memory.checked_add(temporary).ok_or("image refund overflow")?;
     }
     drop(images);
+    if let Some(versioned) = metadata.versioned() {
+        verify_versioned_members(store, &pin, versioned, &generations, budget, cancelled)?;
+    }
+    drop(generations);
     if let Some(member)=metadata.native_headers {
         let before=budget.memory;
         let (wire,schema,key)=header_object_bounded(store,&pin,*member.object_id(),&[COMPILER_NATIVE_HEADERS_SCHEMA],member.byte_length() as usize,budget,cancelled)?;
@@ -123,4 +136,55 @@ where F: for<'a> FnMut(SelectedPublicationWire<'a>, &mut SelectedNativeHeaderBud
     drop(metadata);drop(metadata_wire);drop(envelope);drop(envelope_wire);drop(pin);
     budget.memory=budget.memory.checked_add(frame_charge).ok_or("selected frame refund overflow")?;
     Ok(())
+}
+
+fn verify_versioned_members(
+    store: &FileStore, pin: &backend_store::GcPinGuard,
+    versioned: &super::super::versioned::borrowed_versioned::BorrowedVersionedMetadata<'_>,
+    generations: &[u8], budget: &mut SelectedNativeHeaderBudget, cancelled: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    use backend_semantic::ir::BorrowedSemanticManifest;
+    let ledger = std::cell::RefCell::new(budget);
+    let mut checkpoint = |_| header_checkpoint(&ledger.borrow().work, cancelled).map_err(|e|format!("versioned scan stopped: {e:?}"));
+    versioned.visit_artifacts(&mut checkpoint, &mut |artifact| {
+        let at=(artifact.ordinal as usize).checked_mul(32).ok_or("versioned ordinal overflow")?;
+        let end=at.checked_add(32).ok_or("versioned ordinal overflow")?;
+        if generations.get(at..end) != Some(artifact.generation.as_bytes().as_slice()) { return Err("plane generation differs from selected image".to_owned()); }
+        {
+            let mut budget=ledger.borrow_mut();
+            let before=budget.memory;
+            let (wire,schema,key)=header_object_bounded(store,pin,artifact.manifest_id,&[VERSIONED_PLANE_MANIFEST_SCHEMA],artifact.manifest.len(),&mut budget,cancelled)?;
+            let temporary=before.checked_sub(budget.memory).ok_or("plane manifest charge underflow")?;
+            if wire.as_ref()!=artifact.manifest { return Err("plane manifest object differs from selected bytes".into()); }
+            verified_payload_key_checkpointed(schema,&wire,&key,&mut budget,cancelled)?;
+            drop(wire); budget.memory=budget.memory.checked_add(temporary).ok_or("plane manifest refund overflow")?;
+        }
+        let mut nested_checkpoint = |_| header_checkpoint(&ledger.borrow().work,cancelled).map_err(|e|format!("versioned scan stopped: {e:?}"));
+        let view=BorrowedSemanticManifest::parse(artifact.manifest,&mut nested_checkpoint).map_err(|e|format!("plane manifest validation: {e:?}"))?;
+        view.visit_segments(&mut nested_checkpoint,&mut |kind,segment| {
+            let members=artifact.members;
+            let mut low=0usize; let mut high=members.len()/72;
+            let id=segment.id_claim();
+            let cell=loop {
+                header_checkpoint(&ledger.borrow().work,cancelled).map_err(|e|format!("segment search stopped: {e:?}"))?;
+                if low>=high { return Err("segment absent from selected inventory".to_owned()); }
+                let mid=low+(high-low)/2; let cell=&members[mid*72..(mid+1)*72];
+                match cell[..32].cmp(id.as_bytes().as_slice()) { std::cmp::Ordering::Less=>low=mid+1, std::cmp::Ordering::Greater=>high=mid, std::cmp::Ordering::Equal=>break cell }
+            };
+            let object_id: [u8;32]=cell[32..64].try_into().map_err(|_|"segment ID length")?;
+            let length=u64::from_le_bytes(cell[64..72].try_into().map_err(|_|"segment length")?);
+            let length=usize::try_from(length).map_err(|_|"segment length overflow")?;
+            let mut budget=ledger.borrow_mut(); let before=budget.memory;
+            let (wire,schema,key)=header_object_bounded(store,pin,object_id,&[VERSIONED_PLANE_SEGMENT_SCHEMA],length,&mut budget,cancelled)?;
+            let temporary=before.checked_sub(budget.memory).ok_or("segment charge underflow")?;
+            if wire.len()!=length { return Err("segment extent differs".into()); }
+            verified_payload_key_checkpointed(schema,&wire,&key,&mut budget,cancelled)?;
+            let mut verifier=segment.streaming_admission(kind);
+            for chunk in wire.chunks(64*1024) { header_checkpoint(&budget.work,cancelled).map_err(|e|format!("segment scan stopped: {e:?}"))?; verifier.update(chunk).map_err(|e|format!("segment payload: {e}"))?; }
+            verifier.finish().map_err(|e|format!("segment admission: {e}"))?;
+            drop(wire); budget.memory=budget.memory.checked_add(temporary).ok_or("segment refund overflow")?;
+            Ok(())
+        }).map_err(|e|format!("versioned segments: {e:?}"))?;
+        Ok(())
+    }).map_err(|e|format!("versioned artifact: {e:?}"))
 }
