@@ -22,6 +22,7 @@ export NUDOX_BUILD_SQLITE_WORKER_ID=$anchor
 export NUDOX_TEST_SQLITE_WORKER="$output/bundle/backend-sqlite-worker"
 # Compile every focused test target and public binary first. Compilation is a
 # prerequisite, so a compiler failure exits before independent behavior checks.
+cargo test -p backend-extension-trustfall --lib --locked --offline --no-run
 cargo test -p backend-library --lib --locked --offline --no-run
 cargo test -p backend-present --lib --locked --offline --no-run
 cargo test --manifest-path frontends/sqlite/Cargo.toml --test outline --locked --offline --no-run
@@ -62,10 +63,12 @@ check() {
         failed=1
     fi
 }
+check sql-native-evidence cargo test -p backend-extension-trustfall --lib --locked --offline sql_native_evidence_binds_projection_and_host_basis -- --nocapture
 check status-wire cargo test -p backend-library --lib --locked --offline sql_analysis_progress_round_trips_and_rejects_empty_or_overflow -- --nocapture
 check status-render cargo test -p backend-present --lib --locked --offline status_exposes_selected_sql_analysis_at_every_detail -- --nocapture
 check native-upsert cargo test --manifest-path frontends/sqlite/Cargo.toml --test outline --locked --offline excluded_upsert_without_update_where_has_valid_native_outline -- --nocapture
-for test in sql_stage_scope_rejects_missing_duplicate_and_cancelled_members shared_upsert_syntax_does_not_select_postgres_or_poison_project_consensus sqlite_project_indexes_publishes_queries_reindexes_and_survives_cold_reopen unsupported_statement_and_unparseable_file_are_reported_as_gaps_never_as_empty flat_sql_upsert_and_renamed_objects_keep_precise_owner_edges; do
+check alias-gap cargo test --manifest-path frontends/sqlite/Cargo.toml --test outline --locked --offline alias_shadowing_omission_is_partial_not_a_complete_negative -- --nocapture
+for test in sql_stage_scope_rejects_missing_duplicate_and_cancelled_members opaque_peer_never_turns_a_possible_column_into_an_exact_binding omitted_ambiguous_candidates_are_disclosed creating_fact_identity_separates_epochs statement_identity_does_not_depend_on_line_availability shared_upsert_syntax_does_not_select_postgres_or_poison_project_consensus sqlite_project_indexes_publishes_queries_reindexes_and_survives_cold_reopen unsupported_statement_and_unparseable_file_are_reported_as_gaps_never_as_empty flat_sql_upsert_and_renamed_objects_keep_precise_owner_edges sql_impact_distinguishes_drop_recreate_epochs; do
     check "$test" cargo test -p backend-local-service --lib --locked --offline "$test" -- --nocapture --test-threads=1
 done
 sha256sum "$output/bundle/"*

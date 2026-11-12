@@ -922,16 +922,31 @@ impl Row {
     #[must_use]
     pub fn new(id: RowId, basis: Basis, label: impl Into<String>) -> Self {
         let label = label.into();
+        let document = vec![Fragment::Text(label.clone())].into_boxed_slice();
+        Self::new_with_document(id, basis, label, document)
+    }
+
+    /// Creates a ready row with its complete document already owned.
+    ///
+    /// Producers that have a document use this constructor to avoid allocating
+    /// a second copy of the label for a default document they immediately replace.
+    #[must_use]
+    pub fn new_with_document(
+        id: RowId,
+        basis: Basis,
+        label: impl Into<String>,
+        document: impl Into<Box<[Fragment]>>,
+    ) -> Self {
         Self {
             id,
             identity_preimage: None,
             basis,
             state: RowState::Ready,
-            label: label.clone(),
+            label: label.into(),
             score: None,
             package: None,
             parent: None,
-            document: vec![Fragment::Text(label)].into_boxed_slice(),
+            document: document.into(),
             signature: None,
             kind: None,
             source: SourceAvailability::NotCaptured,

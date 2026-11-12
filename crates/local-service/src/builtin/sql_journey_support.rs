@@ -16,6 +16,7 @@ pub(super) struct Reopened {
     pub(super) analysis: bool,
     pub(super) tables: Vec<String>,
     pub(super) balance_dropped: bool,
+    pub(super) sql_root_level: u16,
 }
 
 pub(super) fn reopen_and_query(workspace: &Path, project: &Path) -> Result<Reopened, Box<dyn Error>> {
@@ -67,8 +68,38 @@ pub(super) fn reopen_and_query(workspace: &Path, project: &Path) -> Result<Reope
         }
     };
     let Some(table_hits) = page(SqlObjectKind::Table)? else {
-        return Ok(Reopened { analysis: false, tables: Vec::new(), balance_dropped: false });
+        return Ok(Reopened { analysis: false, tables: Vec::new(), balance_dropped: false, sql_root_level: 0 });
     };
+    // Exercise the actual selected catalog after a cold owner reopen. Tiny
+    // credit and cancellation must not produce a partial catalog.
+    let project_key = backend_library::package_key(package.as_str()).to_bytes();
+    if super::sql_catalog::load_projects_bounded(&snapshot, std::iter::once(&project_key), &|| false, 0, 64).is_ok() {
+        return Err("zero-credit SQL catalog unexpectedly admitted".into());
+    }
+    if super::sql_catalog::load_projects_bounded(&snapshot, std::iter::once(&project_key), &|| true, 64 * 1024 * 1024, 64).is_ok() {
+        return Err("cancelled SQL catalog unexpectedly admitted".into());
+    }
+    let (catalog, _) = super::sql_catalog::load_projects_bounded(
+        &snapshot, std::iter::once(&project_key), &|| false, 64 * 1024 * 1024, 64,
+    )?;
+    let selected = catalog.get(&project_key).ok_or("cold selected SQL catalog missing")?;
+    let mut expected_live = table_hits.iter().filter_map(|hit| match &hit.fact {
+        SqlFact::Definition(d) if d.live_at_head && matches!(d.action, SqlDefinitionAction::Create) => Some(d.head_name.as_deref().unwrap_or(&d.name).to_owned()),
+        _ => None,
+    }).collect::<Vec<_>>();
+    let mut actual_live = selected.facts.iter().filter_map(|(host, _, fact)| match fact {
+        SqlFact::Definition(d) if d.kind == SqlObjectKind::Table && d.live_at_head && matches!(d.action, SqlDefinitionAction::Create) => {
+            let basis = &selected.hosts[*host];
+            assert!(basis.input.is_some() && basis.source.is_some() && basis.producer.is_some() && basis.settings.is_some());
+            Some(d.head_name.as_deref().unwrap_or(&d.name).to_owned())
+        }
+        _ => None,
+    }).collect::<Vec<_>>();
+    expected_live.sort();
+    actual_live.sort();
+    if expected_live != actual_live {
+        return Err("cold selected catalog table identities differ from SQL query".into());
+    }
     let mut tables = table_hits
         .into_iter()
         .filter_map(|hit| match hit.fact {
@@ -80,5 +111,7 @@ pub(super) fn reopen_and_query(workspace: &Path, project: &Path) -> Result<Reope
     let balance_dropped = page(SqlObjectKind::Column)?.unwrap_or_default().into_iter().any(|hit| {
         matches!(hit.fact, SqlFact::Definition(d) if d.name == "balance" && matches!(d.action, SqlDefinitionAction::AddColumn | SqlDefinitionAction::Create) && !d.live_at_head)
     });
-    Ok(Reopened { analysis: true, tables, balance_dropped })
+    let sql_root_level = backend_engine::builtin::sql_analysis_relation(&snapshot)?
+        .ok_or("cold SQL relation missing")?.root_node()?.level();
+    Ok(Reopened { analysis: true, tables, balance_dropped, sql_root_level })
 }

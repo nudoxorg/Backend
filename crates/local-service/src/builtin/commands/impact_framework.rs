@@ -66,6 +66,8 @@ pub(super) struct Node {
     pub within: Option<String>,
     /// Executable source-read follow-up, when the adapter has one.
     pub read: Option<String>,
+    /// Whether a named seed may resolve to this retained node.
+    pub seedable: bool,
     /// Further nodes which a seed on this node also changes (for example the
     /// rules which mention a class). They are followed with the seed itself.
     pub companions: Vec<Key>,
@@ -81,6 +83,7 @@ impl Node {
             line: None,
             within: None,
             read: None,
+            seedable: true,
             companions: Vec::new(),
         }
     }
@@ -240,7 +243,7 @@ fn freshness(files: &BTreeMap<&str, &FileWitness>, wanted: &BTreeSet<String>) ->
 /// Stylesheets and scripts on disk which no domain knows. A bounded walk which
 /// skips dot-directories and common build output, so a hit is a likely new
 /// source, never proof of one.
-fn untracked_sources(root: &std::path::Path, known: &BTreeSet<String>) -> Vec<String> {
+fn untracked_sources(root: &std::path::Path, known: &BTreeSet<String>, include_sql: bool) -> Vec<String> {
     const WATCHED: &[&str] = &["css", "tsx", "ts", "jsx", "js", "mjs", "cjs", "mts", "cts"];
     const SKIPPED: &[&str] = &["node_modules", "target", "dist", "build", "out", "coverage", "vendor", "__pycache__"];
     const MAX_ENTRIES: usize = 20_000;
@@ -264,7 +267,7 @@ fn untracked_sources(root: &std::path::Path, known: &BTreeSet<String>) -> Vec<St
                 }
             } else if kind.is_file()
                 && !name.ends_with(".d.ts")
-                && entry.path().extension().and_then(|e| e.to_str()).is_some_and(|e| WATCHED.contains(&e))
+                && entry.path().extension().and_then(|e| e.to_str()).is_some_and(|e| WATCHED.contains(&e) || (include_sql && e == "sql"))
             {
                 if let Ok(relative) = entry.path().strip_prefix(root) {
                     let relative = relative.to_string_lossy().replace('\\', "/");
@@ -435,9 +438,11 @@ pub(super) fn answer(
     let mut gaps: Vec<ImpactGap> = Vec::new();
     let mut files: Vec<FileWitness> = Vec::new();
     let mut known: BTreeSet<String> = BTreeSet::new();
+    let mut sql_known: BTreeSet<String> = BTreeSet::new();
     let mut loaded_domains = BTreeSet::new();
     for (domain, load) in loads {
         loaded_domains.insert(domain);
+        if domain == ImpactDomain::Sql { sql_known.extend(load.known_paths.iter().cloned()); }
         known.extend(load.known_paths);
         domains.push(load.basis);
         gaps.extend(load.gaps);
@@ -754,10 +759,16 @@ pub(super) fn answer(
             }
         }
     }
+    // SQL binding depends on the whole ordered project catalog, not only the
+    // paths in the returned graph. Compare all selected hosts within the
+    // existing bounded freshness policy.
+    let sql_involved = seed_keys.iter().any(|key| nodes.get(key).is_some_and(|node| node.domain == ImpactDomain::Sql))
+        || pending.iter().any(|item| nodes.get(&item.node).is_some_and(|node| node.domain == ImpactDomain::Sql));
+    if sql_involved { touched.extend(sql_known); }
     let by_path: BTreeMap<&str, &FileWitness> = files.iter().map(|f| (f.path.as_str(), f)).collect();
     let mut freshness = freshness(&by_path, &touched);
     if let Some(root_dir) = files.first().map(|f| f.root.clone()) {
-        let untracked = untracked_sources(&root_dir, &known);
+        let untracked = untracked_sources(&root_dir, &known, sql_involved);
         if !untracked.is_empty() {
             let mut changed = match &freshness {
                 ImpactFreshness::Stale { changed, .. } => changed.clone(),
@@ -775,6 +786,11 @@ pub(super) fn answer(
                 action: "re-index the project, then ask again".to_owned(),
             };
         }
+    }
+    if sql_involved && matches!(freshness, ImpactFreshness::Current { .. }) {
+        // The bounded walk above can identify a new file, but it is not an
+        // authenticated replay of SQL discovery/ignore policy or config.
+        freshness = ImpactFreshness::Unknown { why: "selected SQL hosts match, but current SQL inventory and selection policy were not revalidated".to_owned() };
     }
     let mut next = Vec::new();
     if let Some(first) = rows.iter().find_map(|row| row.read.as_ref()) {
@@ -824,7 +840,9 @@ mod tests {
             std::fs::write(full, b"x").expect("file");
         }
         let known: BTreeSet<String> = ["src/a.css".to_owned(), "src/App.tsx".to_owned()].into();
-        assert_eq!(untracked_sources(&root, &known), vec!["src/new.css".to_owned()]);
+        std::fs::write(root.join("src/new.sql"), b"SELECT 1;").expect("SQL file");
+        assert_eq!(untracked_sources(&root, &known, false), vec!["src/new.css".to_owned()]);
+        assert_eq!(untracked_sources(&root, &known, true), vec!["src/new.css".to_owned(), "src/new.sql".to_owned()]);
         std::fs::remove_dir_all(&root).expect("cleanup");
     }
 

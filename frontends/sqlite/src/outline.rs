@@ -44,8 +44,8 @@
 //! references. An unqualified name that equals a result-column alias of the same query block is
 //! not emitted when it appears in WHERE, GROUP BY, HAVING or ORDER BY (SQLite resolves such a
 //! name to the alias in ORDER BY and, when no FROM column has that name, elsewhere). The cost
-//! is that a real column of the same name used there is not listed; the select list nearly
-//! always mentions it too. Bare names in a compound SELECT's ORDER BY name output columns and
+//! is that a real column of the same name used there may be omitted. Such a
+//! statement is marked partial until native evidence can resolve the ambiguity. Bare names in a compound SELECT's ORDER BY name output columns and
 //! are skipped. A bare name in a DEFAULT expression cannot be a column in SQLite and is skipped.
 //!
 //! # Double-quoted identifiers (DQS)
@@ -479,6 +479,9 @@ impl<'a> Cx<'a> {
                 return;
             }
             if ctx.aliases.is_some_and(|a| a.contains(&column.norm)) {
+                // SQLite can prefer a FROM column over a result alias in these
+                // clauses. This syntax alone cannot establish which one won.
+                self.gap(Gap::UnmodeledConstruct);
                 return;
             }
         }

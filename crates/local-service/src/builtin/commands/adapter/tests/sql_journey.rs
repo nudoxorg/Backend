@@ -237,6 +237,35 @@ fn sqlite_project_indexes_publishes_queries_reindexes_and_survives_cold_reopen()
     let project = wire.source.parent().expect("project").to_owned();
     let mut session = Session::connect(&wire.endpoint).expect("listener");
 
+    // Ordinary name search must join selected SQL view rows with their own
+    // native query evidence rather than silently excluding them.
+    for (name, suffix) in [
+        (
+            "account_spend",
+            "db/migrations/0003_views.sql::account_spend",
+        ),
+        ("balance", "db/migrations/0001_init.sql::accounts::balance"),
+    ] {
+        let reply = session
+            .surface(backend_library::SurfaceCommand::IndexSearch {
+                query: backend_library::ProductText::new(name).expect("query"),
+                limit: 20,
+                cursor: None,
+            })
+            .expect("ordinary SQL name search");
+        let backend_library::SurfaceReply::IndexSearchPage(page) = reply else {
+            panic!("search page")
+        };
+        assert!(
+            page.hits.iter().any(|hit| matches!(hit,
+                backend_library::RegistrySearchHit::LocalDeclaration(record)
+                    if record.name.as_str() == name && record.coordinate.as_str().ends_with(suffix)
+            )),
+            "SQL declaration {name} missing from search: {:?}",
+            page.hits
+        );
+    }
+
     // Tables, columns, views, triggers, indexes: definitions across files.
     let tables = definitions(&mut session, &project, SqlObjectKind::Table, None);
     assert_eq!(tables, [("accounts".to_owned(), true), ("orders".to_owned(), true)]);
@@ -356,6 +385,70 @@ fn sqlite_project_indexes_publishes_queries_reindexes_and_survives_cold_reopen()
     assert!(reopened.analysis);
     assert_eq!(reopened.tables, ["accounts", "orders"]);
     assert!(reopened.balance_dropped);
+}
+
+#[test]
+fn many_sql_facts_publish_discover_and_reopen_with_bounded_catalog() {
+    // Populate definitions and references so the selected catalog exercises
+    // repeated scans and digest staging over a substantial mixed fact set.
+    let mut schema = String::new();
+    let mut queries = String::new();
+    for index in 0..180 {
+        use std::fmt::Write as _;
+        writeln!(&mut schema, "CREATE TABLE catalog_item_{index:03} (id INTEGER, value TEXT);").unwrap();
+        writeln!(&mut queries, "SELECT value FROM catalog_item_{index:03} WHERE id = ?1;").unwrap();
+    }
+    let workers = admitted_workers(Some(frontend_worker("sqlite", "sqlite-worker")), None);
+    let mut wire = SourceWire::start_sql(
+        TestStage::BeforeSourcePreparation,
+        true,
+        SqlFixture { files: vec![("db/0001_schema.sql".into(), schema.into_bytes()), ("db/0002_queries.sql".into(), queries.into_bytes())], workers },
+    );
+    wire.wait_at_source_within(TERMINAL_WAIT);
+    wire.release();
+    wire.wait_terminal_within(TERMINAL_WAIT);
+    mixed_published(&wire);
+    wire.commands.lock().expect("adapter").source_test_hook = None;
+    let project = wire.source.parent().expect("project").to_owned();
+    let mut session = Session::connect(&wire.endpoint).expect("listener");
+    let reply = session.surface(backend_library::SurfaceCommand::IndexSearch {
+        query: backend_library::ProductText::new("catalog_item_179").unwrap(), limit: 20, cursor: None,
+    }).expect("ordinary SQL search");
+    let backend_library::SurfaceReply::IndexSearchPage(page) = reply else { panic!("search page") };
+    assert!(page.hits.iter().any(|hit| matches!(hit,
+        backend_library::RegistrySearchHit::LocalDeclaration(row) if row.name.as_str() == "catalog_item_179")));
+    drop(session);
+    let root = TempTree(std::mem::take(&mut wire.fixture.root.0));
+    drop(wire);
+    let started = std::time::Instant::now();
+    let reopened = crate::builtin::sql_journey_support::reopen_and_query(&root.0.join("workspace"), &project)
+        .expect("cold bounded catalog reopen");
+    eprintln!("many SQL facts cold catalog and query: {:?}", started.elapsed());
+    assert!(reopened.analysis);
+    assert_eq!(reopened.tables.len(), 180);
+    assert!(reopened.tables.iter().any(|name| name == "catalog_item_179"));
+    assert!(reopened.sql_root_level > 0, "SQL relation must physically span multiple leaves");
+
+    // Reopen the production adapter and use its ordinary search surface.
+    let mut fixture = AdapterFixture::open(root, false);
+    let view = fixture.parts().1.engine().daemon().library().view().clone();
+    let deadline = std::time::Instant::now() + TERMINAL_WAIT;
+    let (adapter, daemon) = fixture.parts();
+    loop {
+        assert!(std::time::Instant::now() < deadline, "cold search preparation deadline");
+        match adapter.local_search_lane.prepare(&view, &mut adapter.product_state) {
+            None => break,
+            Some(backend_library::CommandFailure::QueryPreparation { basis, .. }) if basis == view.root() =>
+                std::thread::sleep(std::time::Duration::from_millis(2)),
+            other => panic!("cold search preparation: {other:?}"),
+        }
+    }
+    let (reply, _) = adapter.surface(daemon, backend_library::SurfaceCommand::IndexSearch {
+        query: backend_library::ProductText::new("catalog_item_179").unwrap(), limit: 20, cursor: None,
+    }, 0xc500).expect("cold ordinary SQL search");
+    let CommandReply::Surface(backend_library::SurfaceReply::IndexSearchPage(page)) = reply else { panic!("cold search page") };
+    assert!(page.hits.iter().any(|hit| matches!(hit,
+        backend_library::RegistrySearchHit::LocalDeclaration(row) if row.name.as_str() == "catalog_item_179")));
 }
 
 #[test]
@@ -598,4 +691,29 @@ fn flat_sql_upsert_and_renamed_objects_keep_precise_owner_edges() {
     assert!(column.rows.iter().all(|row| row.node.kind != "table" && row.node.kind != "index"), "column impact cannot spread through containment: {:?}", column.rows);
     let table = impact(&mut session, "table", "order_lines");
     assert!(table.rows.iter().all(|row| row.node.name != "order_items"), "the old table spelling must share the renamed entity");
+}
+
+#[test]
+fn sql_impact_distinguishes_drop_recreate_epochs() {
+    use backend_library::impact::{ImpactDomain, ImpactRequest, ImpactSeed, ImpactSeedSpec};
+    let workers = admitted_workers(Some(frontend_worker("sqlite", "sqlite-worker")), None);
+    let files = [
+        ("db/0001.sql", "CREATE TABLE books (id INTEGER, price INTEGER);\nCREATE VIEW old_book AS SELECT price FROM books;"),
+        ("db/0002.sql", "DROP TABLE books; CREATE TABLE books (id INTEGER, price INTEGER); CREATE VIEW new_book AS SELECT price FROM books;"),
+    ].into_iter().map(|(path, text)| (path.to_owned(), text.as_bytes().to_vec())).collect();
+    let mut wire = SourceWire::start_sql(TestStage::BeforeSourcePreparation, true, SqlFixture { files, workers });
+    wire.wait_at_source_within(TERMINAL_WAIT);
+    wire.release();
+    wire.wait_terminal_within(TERMINAL_WAIT);
+    mixed_published(&wire);
+    let project = wire.source.parent().expect("project").to_owned();
+    let mut session = Session::connect(&wire.endpoint).expect("listener");
+    let request = ImpactRequest::new(
+        backend_library::PackageReference::parse(project.to_str().unwrap().to_owned()).unwrap(),
+        ImpactSeed::Named(ImpactSeedSpec { domain: ImpactDomain::Sql, kind: "column".into(), name: "books.price".into(), path: None }),
+    );
+    let backend_library::SurfaceReply::Impact(report) = session.surface(backend_library::SurfaceCommand::Impact { request }).expect("public impact") else { panic!("impact reply") };
+    assert_eq!(report.seeds.len(), 1, "only the live epoch is seedable");
+    assert!(report.rows.iter().any(|row| row.node.name == "new_book"), "new view must follow live column: {:?}", report.rows);
+    assert!(report.rows.iter().all(|row| row.node.name != "old_book"), "old view cannot be reached through the recreated column: {:?}", report.rows);
 }

@@ -323,6 +323,8 @@ if a.expect_no_worker:
                 fail(f"{label}: MCP {method} response timed out")
             reply = json.loads(mcp.stdout.readline())
             records.append({"label": label + ":" + method, "reply": reply})
+            if reply.get("id") != seq or "error" in reply or not isinstance(reply.get("result"), dict):
+                fail(f"{label}: uncorrelated or failed MCP response: {reply}")
             return reply
         exchange(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "sql-public-journey", "version": "1"}})
         mcp.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
@@ -359,6 +361,27 @@ if a.expect_no_worker:
     finish()
     print("PASS: SQL without worker publishes with named gaps and survives cold restart")
     sys.exit(0)
+
+def check_worker_status(label):
+    code, raw = cli(label + "-status", ["status"])
+    if code != 0:
+        fail(f"{label}: status failed: {raw[:800]}")
+    summary = json.loads(raw).get("sql_analysis")
+    body, _ = query(label + "-gap-basis", "--role", "gap", "--limit", "128")
+    semantic = body.get("semantic_data", {})
+    if semantic.get("kind") != "sql-query":
+        fail(f"{label}: missing typed SQL gap page")
+    page = semantic["value"]
+    if page.get("terminal", {}).get("state") != "complete":
+        fail(f"{label}: incomplete SQL gap page")
+    gaps = page["basis"]["gaps"]
+    expected_total = sum(1 for path in project.rglob("*.sql") if path.is_file())
+    if not isinstance(summary, dict) or summary.get("no_worker_files") != 0 or summary.get("unsupported_dialect_files") != 0 or summary.get("other_unavailable_files") != 0 or summary.get("rejected_files") != gaps["native_error_hosts"] or gaps["unavailable_hosts"] != 0 or sum(summary.values()) != expected_total:
+        fail(f"{label}: selected status and SQL gaps disagree: {summary}, {gaps}, {expected_total}")
+    return summary
+
+
+check_worker_status("worker")
 
 # 1. Definitions across files, through the CLI.
 _, text = query("tables", "--role", "definition", "--kind", "table")
@@ -521,6 +544,8 @@ def rpc(seq, method, params):
     line = mcp.stdout.readline()
     reply = json.loads(line)
     records.append({"label": "mcp:" + method, "reply": reply})
+    if reply.get("id") != seq or "error" in reply or not isinstance(reply.get("result"), dict):
+        fail(f"MCP {method}: uncorrelated or failed response: {reply}")
     return reply
 
 
@@ -591,6 +616,7 @@ bookshop_discovery_pre_cold = bookshop_discovery("bookshop-search-pre-cold")
 before = query("pre-kill", "--role", "definition", "--kind", "column", "--parent", "accounts")[1]
 processes.retire(owner, crash=True)
 start_owner()
+check_worker_status("worker-cold")
 after = query("post-kill", "--role", "definition", "--kind", "column", "--parent", "accounts")[1]
 if before != after:
     fail("definitions differ after a cold restart:\nBEFORE\n%s\nAFTER\n%s" % (before[:800], after[:800]))
@@ -623,6 +649,29 @@ if [(r["node"], r["strength"], r["relation"]) for r in cold_impact["rows"]] != [
     fail("cold MCP typed column impact differs from CLI")
 if [(r["node"], r["strength"], r["relation"]) for r in cold_table["rows"]] != [(r["node"], r["strength"], r["relation"]) for r in bookshop_after[3]["rows"]]:
     fail("cold MCP typed renamed table impact differs from CLI")
+# A mixed dialect project must keep SQLite upsert analysis while naming the
+# unsupported PostgreSQL host and the FTS5 partial statement.
+fts_path = sql_path("db/search/fts.sql")
+pg_path = sql_path("db/postgres/analytics.sql")
+for path, text in ((fts_path, "CREATE VIRTUAL TABLE book_search USING fts5(title);\n"),
+                   (pg_path, "SELECT DISTINCT ON (id) id::text FROM books;\n")):
+    destination = project / path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(text)
+code, raw = cli("reindex-mixed-dialect", ["add", str(project), "--wait", "--wait-timeout", "600"], timeout=720)
+if code != 0:
+    fail("mixed-dialect reindex failed: " + raw[:800])
+mixed_gaps = sql_page("mixed-dialect-gaps", "--role", "gap")
+if not any(g.get("path") == pg_path and g.get("dialect") == "Postgres" and g.get("reason") == {"state": "unavailable", "reason": "unsupported_dialect"} for g in mixed_gaps.get("host_gaps", [])):
+    fail(f"PostgreSQL host was not named with its unsupported dialect: {mixed_gaps}")
+if not any(h.get("path") == fts_path and h.get("fact", {}).get("support") == {"Partial": "UnmodeledConstruct"} for h in mixed_gaps.get("hits", [])):
+    fail(f"FTS5 partial statement was not identified: {mixed_gaps}")
+mixed_mcp = mcp_typed(18, "backend.sql_query", {"role": "gap", "limit": 128}, "sql-query")
+if mixed_mcp.get("host_gaps") != mixed_gaps.get("host_gaps") or mixed_mcp.get("hits") != mixed_gaps.get("hits"):
+    fail("mixed-dialect MCP gap claims differ from CLI")
+upsert_after_pg = sql_page("mixed-dialect-upsert", "--role", "reference", "--uses", "authors.name")
+if not any(h.get("path") == sql_path("db/queries/upsert.sql") and h.get("fact", {}).get("qualifier") == "excluded" for h in upsert_after_pg.get("hits", [])):
+    fail("PostgreSQL signal poisoned the valid SQLite upsert")
 listed = rpc(17, "tools/list", {}).get("result", {}).get("tools", [])
 sql_tools = [tool for tool in listed if tool.get("name") == "backend.sql_query"]
 if len(sql_tools) != 1 or "package" not in sql_tools[0].get("inputSchema", {}).get("properties", {}):

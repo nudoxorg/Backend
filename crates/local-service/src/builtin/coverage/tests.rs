@@ -1050,3 +1050,13 @@ fn observed_native_scope_is_gapped_without_changing_legacy_coverage() {
         lane: Lane::Semantic, completed: 0, total: 1,
     }]);
 }
+
+#[test]
+fn failed_latest_sql_attempt_leaves_names_gapped() {
+    use backend_engine::builtin::{SqlAnalysisRecord, SqlAttemptOutcome, SqlUnavailable};
+    let attempt = |outcome| SqlAnalysisRecord::Attempt {
+        project: [1; 32], outcome, served_selection: Some([2; 32]),
+    };
+    assert!(super::sql_row_incomplete(&attempt(SqlAttemptOutcome::Unavailable(SqlUnavailable::Deadline))));
+    assert!(!super::sql_row_incomplete(&attempt(SqlAttemptOutcome::Observed)));
+}
