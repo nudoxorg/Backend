@@ -9,7 +9,21 @@ use backend_semantic::sql_analysis::{SqlDefinitionAction, SqlFact, SqlObjectKind
 // on allocator overhead or process RSS.
 const SQL_ALLOCATION_QUOTA_PER_ALLOCATION: usize = 64;
 
-/// Conservative byte precharge before projection allocates owned strings.
+fn exact_query_id(prefix: &str, id: &[u8; 32]) -> Result<String, BuiltinModelError> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = [0u8; 64];
+    for (index, byte) in id.iter().enumerate() {
+        encoded[index * 2] = HEX[(byte >> 4) as usize];
+        encoded[index * 2 + 1] = HEX[(byte & 15) as usize];
+    }
+    let encoded = std::str::from_utf8(&encoded).map_err(|_| BuiltinModelError("SQL identity encoding failed".into()))?;
+    let plan = super::super::row_admission::ExactText::measure(format_args!("{prefix}:{encoded}"))
+        .map_err(|e| BuiltinModelError(e.into()))?;
+    plan.allocate(format_args!("{prefix}:{encoded}")).map_err(|e| BuiltinModelError(e.into()))
+}
+
+#[cfg(test)]
+/// Legacy projection estimate retained only for comparison tests.
 fn projection_bound(
     label: &str,
     path: &str,
@@ -34,7 +48,8 @@ fn projection_bound(
         .ok_or_else(|| BuiltinModelError("SQL projection byte overflow".into()))
 }
 
-/// Shared projection identity for the view row and native query evidence.
+#[cfg(test)]
+/// Reference projection identity used to compare the exact formatting paths.
 pub(super) fn projection(
     label: &str,
     path: &str,
@@ -194,6 +209,7 @@ pub(super) fn append_query(
             .checked_mul(std::mem::size_of::<
                 backend_extension_trustfall::SemanticQueryFact,
             >())
+            .and_then(|n| n.checked_add(SQL_ALLOCATION_QUOTA_PER_ALLOCATION))
             .ok_or_else(|| BuiltinModelError("SQL query allocation overflow".into()))?;
         projected_bytes = projected_bytes
             .checked_add(new_buffer)
@@ -251,23 +267,50 @@ pub(super) fn append_query(
                     "selected SQL fact lacks parsed host terminal".into(),
                 ));
             }
-            projected_bytes = projected_bytes
-                .checked_add(projection_bound(&indexed.label, &host.path, definition)?)
-                .filter(|n| *n <= remaining_bytes)
+            use super::super::row_admission::ExactText;
+            let name = definition.head_name.as_deref().unwrap_or(&definition.name);
+            let parent = if definition.kind == SqlObjectKind::Column {
+                definition.head_parent.as_deref().or(definition.parent.as_deref())
+            } else { None };
+            let prefix = parent.unwrap_or("");
+            let coordinate_sep = if parent.is_some() { "::" } else { "" };
+            let display_sep = if parent.is_some() { "." } else { "" };
+            let kind = match definition.kind {
+                SqlObjectKind::Column => "column", SqlObjectKind::Table => "table", SqlObjectKind::View => "view",
+                SqlObjectKind::Index => "index", SqlObjectKind::Trigger => "trigger", SqlObjectKind::Function => "function",
+                SqlObjectKind::Schema => "schema", SqlObjectKind::Type => "type", SqlObjectKind::Sequence => "sequence",
+            };
+            let row_kind = if definition.kind == SqlObjectKind::Column { "field" } else { "unknown" };
+            let coordinate = ExactText::measure(format_args!("{}::{}::{prefix}{coordinate_sep}{name}", indexed.label, host.path)).map_err(|e| BuiltinModelError(e.into()))?;
+            let identity = ExactText::measure(format_args!("{}::{}::{prefix}{coordinate_sep}{name}\0sql:{ordinal}", indexed.label, host.path)).map_err(|e| BuiltinModelError(e.into()))?;
+            let signature = ExactText::measure(format_args!("SQL {kind} {prefix}{display_sep}{name}")).map_err(|e| BuiltinModelError(e.into()))?;
+            let document = ExactText::measure(format_args!("SQL {kind} in {}; use sql-query for binding, migration history and checked source", host.path)).map_err(|e| BuiltinModelError(e.into()))?;
+            let name_plan = ExactText::measure(format_args!("{name}")).map_err(|e| BuiltinModelError(e.into()))?;
+            let kind_plan = ExactText::measure(format_args!("{row_kind}")).map_err(|e| BuiltinModelError(e.into()))?;
+            // Both wire admission and retained requested strings are charged.
+            // Symbol/package IDs are fixed 7+64 and 8+64 ASCII bytes; their
+            // hexadecimal staging lives on the stack, not in a String.
+            let strings = [coordinate.len(), identity.len(), signature.len(), document.len(), name_plan.len(), kind_plan.len(), 71, 72];
+            let payload = strings.iter().try_fold(0usize, |n, len| n.checked_add(*len))
+                .and_then(|n| n.checked_mul(2))
+                .and_then(|n| n.checked_add(292))
+                .and_then(|n| n.checked_add(strings.iter().filter(|n| **n != 0).count().checked_mul(SQL_ALLOCATION_QUOTA_PER_ALLOCATION)?))
+                .ok_or_else(|| BuiltinModelError("SQL query quota overflow".into()))?;
+            projected_bytes = projected_bytes.checked_add(payload).filter(|n| *n <= remaining_bytes)
                 .ok_or_else(|| BuiltinModelError("SQL query facts exceed byte bound".into()))?;
-            let (coordinate, preimage, display, kind) =
-                projection(&indexed.label, &host.path, *ordinal, definition)?;
-            let row_id = RowId::Symbol(backend_engine::symbol_key(&preimage));
-            let name = definition
-                .head_name
-                .as_deref()
-                .unwrap_or(&definition.name)
-                .to_owned();
+            let coordinate = coordinate.allocate(format_args!("{}::{}::{prefix}{coordinate_sep}{name}", indexed.label, host.path)).map_err(|e| BuiltinModelError(e.into()))?;
+            let preimage = identity.allocate(format_args!("{}::{}::{prefix}{coordinate_sep}{name}\0sql:{ordinal}", indexed.label, host.path)).map_err(|e| BuiltinModelError(e.into()))?;
+            let signature = signature.allocate(format_args!("SQL {kind} {prefix}{display_sep}{name}")).map_err(|e| BuiltinModelError(e.into()))?;
+            let documentation = document.allocate(format_args!("SQL {kind} in {}; use sql-query for binding, migration history and checked source", host.path)).map_err(|e| BuiltinModelError(e.into()))?;
+            let name = name_plan.allocate(format_args!("{name}")).map_err(|e| BuiltinModelError(e.into()))?;
+            let row_kind = kind_plan.allocate(format_args!("{row_kind}")).map_err(|e| BuiltinModelError(e.into()))?;
+            let symbol = backend_engine::symbol_key(&preimage);
+            let id = exact_query_id("symbol", symbol.as_bytes())?;
+            let project = exact_query_id("package", indexed.package.as_bytes())?;
             facts.push(SemanticQueryFact::new(
                 SemanticQueryEvidence::SqlNative(SqlNativeQueryEvidence::new(indexed.package, sql.selection_digest, sql.inventory_digest, host.key, input, source, producer, settings, host.fact_digest, *ordinal, preimage)),
-                SemanticQueryPresentation { id: row_id.stable_key(), kind: if definition.kind == SqlObjectKind::Column { "field" } else { "unknown" }.to_owned(), coordinate, name,
-                    signature: Some(format!("SQL {kind} {display}")), documentation: format!("SQL {kind} in {}; use sql-query for binding, migration history and checked source", host.path),
-                    score: None, project: Some(super::identity::query_package_id(indexed.package)), parent: None, related: Box::new([]) },
+                SemanticQueryPresentation { id, kind: row_kind, coordinate, name, signature: Some(signature), documentation,
+                    score: None, project: Some(project), parent: None, related: Box::new([]) },
             ));
         }
     }
@@ -345,5 +388,13 @@ mod tests {
         assert!(rows.capacity() >= needed);
         assert_eq!(measured.count_total, 1);
         assert_eq!(measured.bytes_total, (needed * std::mem::size_of::<Row>()) as u64);
+    }
+
+    #[test]
+    fn exact_query_ids_match_existing_stable_keys() {
+        let symbol = backend_engine::symbol_key("SQL identity");
+        let package = backend_engine::package_key("SQL package");
+        assert_eq!(exact_query_id("symbol", symbol.as_bytes()).unwrap(), RowId::Symbol(symbol).stable_key());
+        assert_eq!(exact_query_id("package", package.as_bytes()).unwrap(), RowId::Package(package).stable_key());
     }
 }
