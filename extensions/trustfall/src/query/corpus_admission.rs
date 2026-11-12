@@ -9,7 +9,8 @@ use std::sync::atomic::AtomicUsize;
 pub struct SemanticQueryAdmissionBudget {
     /// Maximum measured fact storage plus admission scratch and owner layouts.
     pub maximum_requested_bytes: usize,
-    /// An explicit policy credit for each new allocation during admission.
+    /// An explicit policy credit for each retained input allocation and each
+    /// new allocation during admission.
     /// This is separate from allocation layouts and is not allocator overhead.
     pub allocation_quota_per_allocation: usize,
 }
@@ -21,7 +22,8 @@ pub struct SemanticQueryAdmissionBudget {
 /// string while validation still owns the facts and index. Physical allocator
 /// metadata, size-class rounding and later query-adapter construction are not
 /// part of this quota. The source fact storage is measured separately by
-/// `measure_semantic_query_facts`.
+/// `measure_semantic_query_facts_with_quota_controlled` when policy credits
+/// apply to retained input allocations as well.
 pub fn semantic_query_corpus_admission_overhead(
     fact_count: usize,
     allocation_quota_per_allocation: usize,
