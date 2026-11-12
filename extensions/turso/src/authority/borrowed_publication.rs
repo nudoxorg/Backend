@@ -22,7 +22,11 @@ pub enum SelectedPublicationWire<'a> {
 /// The callback must separately reserve and validate every retained Program,
 /// image, source and auxiliary allocation against `budget` before allocating;
 /// it must use the live request's cancellation/deadline for semantic decoding.
-/// Its output must be discarded on any error. Successful return means wire
+/// The callback must build a detached plan and discard it on any error; later
+/// objects have not yet been authenticated when an earlier callback executes.
+/// A closure-membership work token represents one bounded worst-shape node,
+/// while payload scan tokens represent bounded chunks; they are not byte counts.
+/// Successful return means wire
 /// transport only; no semantic decode or source authority is asserted here.
 /// `max_payload_bytes` and `max_images` apply to declared Program+image
 /// inventory before any of those payloads are read.

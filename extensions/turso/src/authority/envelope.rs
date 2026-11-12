@@ -4509,6 +4509,14 @@ mod tests {
         }).unwrap();
         assert_eq!(delivered, (1, 1, 1));
         assert_eq!(visitor_budget.remaining_memory(), 8 * 1024 * 1024 - 3);
+        let stopped = std::cell::Cell::new(false);
+        let mut detached = Vec::new();
+        let late = visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| stopped.get(), 8 * 1024 * 1024, 1, |wire, _| {
+            if let SelectedPublicationWire::Program { .. } = wire { detached.push(1); stopped.set(true); }
+            Ok(())
+        });
+        assert!(late.is_err());
+        assert_eq!(detached, [1]); // This partial plan is never published after failure.
         let visitor_work = 100_000 - visitor_budget.remaining_work();
         assert!(visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, visitor_work - 1), &|| false, 8 * 1024 * 1024, 1, |_, _| Ok(())).is_err());
         assert!(visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| true, 8 * 1024 * 1024, 1, |_, _| Ok(())).is_err());
