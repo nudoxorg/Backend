@@ -5774,8 +5774,8 @@ impl CommandAdapter {
         )?;
         let signature = if evidence.claim().headers.is_some() {
             // Synchronous Source/Read currently has no transport cancellation
-            // capability. Bound this operation by the real client request
-            // deadline as well as a finite shared traversal ledger.
+            // capability. Bound this handler by its own deadline and a finite
+            // shared traversal ledger; this is not a client-arrival deadline.
             let stopped = || std::time::Instant::now() >= header_deadline;
             header_budget.restrict_memory(*source_budget);
             let witness = self.semantic_authority.selected_native_header_aggregate(
