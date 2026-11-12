@@ -478,12 +478,6 @@ pub(crate) fn install_test_production_delivery(key: &Key, gate: Arc<TestProjecti
     cx.set_global(TestProductionDelivery { owner: key.owner.clone(), authority: key.authority, gate });
 }
 
-/// Stop gating new reads while an already-started read retains its own gate.
-#[cfg(test)]
-pub(crate) fn clear_test_production_delivery(cx: &mut App) {
-    cx.remove_global::<TestProductionDelivery>();
-}
-
 #[cfg(test)]
 static NEXT_TEST_PROJECTION: AtomicU64 = AtomicU64::new(1);
 

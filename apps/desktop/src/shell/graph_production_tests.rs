@@ -137,30 +137,6 @@ fn exercise(fixture: &OwnerFixture) {
     let camera = graph.read_with(rig.cx, |graph, _| graph.camera().expect("actual resource-enabled wheel camera"));
     assert_ne!(camera, fitted, "positive native wheel at the exact later stale-frame point");
 
-    // Delay an actual successful projection, after real rows were assembled.
-    // This gate supplies no root, facts, Ready state, or composition receipt.
-    let delivery = Arc::new(TestProjectionGate::default());
-    rig.cx.update(|_, cx| {
-        indexed_world::install_test_production_delivery(&old_key, delivery.clone(), cx);
-        indexed_world::invalidate_publication(fixture.root.authority(), cx);
-    });
-    let requester = rig.cx.new(|_| ());
-    let held_key = requester.update(rig.cx, |_, cx| {
-        let key = indexed_world::key(fixture.root, old_key.preferred().cloned(), cx).expect("real serving key");
-        assert!(matches!(indexed_world::get(&key, cx), State::Reading));
-        key
-    });
-    let deadline = Instant::now() + Duration::from_secs(120);
-    while !delivery.entered() {
-        rig.cx.run_until_parked();
-        assert!(Instant::now() < deadline, "actual production projection must reach its delivery gate");
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    assert!(delivery.production_rows().is_some_and(|rows| rows > 0), "held value contains actual indexed rows");
-    // Keep the captured old reply held, but let a renewed attachment perform
-    // its own projection while we exercise the retirement sequence.
-    rig.cx.update(|_, cx| indexed_world::clear_test_production_delivery(cx));
-
     super::tab_to_graph_control(&mut rig, "Declarations");
     let resource_origin = rig.cx.update(|window, cx| {
         let origin = window.focused(cx).expect("actual production resource receiver");
@@ -204,6 +180,27 @@ fn exercise(fixture: &OwnerFixture) {
     let target = targets.native_keys().into_iter().next().expect("registered production Shelf receiver");
     rig.cx.update(|window, cx| assert!(targets.focus_native(&target, window, cx)));
     let later_origin = rig.cx.update(|window, cx| window.focused(cx)).expect("later real Shelf focus");
+    // Delay an actual successful projection, after real rows were assembled.
+    // This gate supplies no root, facts, Ready state, or composition receipt.
+    let delivery = Arc::new(TestProjectionGate::default());
+    rig.cx.update(|_, cx| {
+        indexed_world::install_test_production_delivery(&old_key, delivery.clone(), cx);
+        indexed_world::invalidate_publication(fixture.root.authority(), cx);
+    });
+    let requester = rig.cx.new(|_| ());
+    let held_key = requester.update(rig.cx, |_, cx| {
+        let key = indexed_world::key(fixture.root, old_key.preferred().cloned(), cx).expect("real serving key");
+        assert!(matches!(indexed_world::get(&key, cx), State::Reading));
+        key
+    });
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while !delivery.entered() {
+        rig.cx.run_until_parked();
+        assert!(Instant::now() < deadline, "actual production projection must reach its delivery gate");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(delivery.production_rows().is_some_and(|rows| rows > 0), "held value contains actual indexed rows");
+
     assert!(gate.attached_lost_at(gate.attached_ready_epoch().expect("renewed attachment"), "actual renewed attachment withdrawn".into()));
     rig.settle();
     assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), Some(later_origin),
