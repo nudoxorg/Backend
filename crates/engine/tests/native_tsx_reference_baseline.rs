@@ -370,7 +370,6 @@ fn native_jsx_type_only_import_does_not_bind_runtime_button() -> TestResult<()> 
 }
 
 #[test]
-#[ignore = "raw TSZ recovery binds private barrel target; publication admission remains unverified"]
 fn native_jsx_private_button_is_not_exported_by_barrel() -> TestResult<()> {
     assert_no_button_use(
         "private",
