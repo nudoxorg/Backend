@@ -22,6 +22,75 @@ fn eq(a: &[u8], b: &[u8], budget: &SelectedNativeHeaderBudget, stopped: &dyn Fn(
     }
     Ok(true)
 }
+fn cmp(a: &[u8], b: &[u8], budget: &SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool) -> Result<std::cmp::Ordering> {
+    for (a, b) in a.chunks(1024).zip(b.chunks(1024)) {
+        step(budget, stopped, 1)?;
+        let order = a.cmp(b);
+        if order != std::cmp::Ordering::Equal { return Ok(order); }
+    }
+    Ok(a.len().cmp(&b.len()))
+}
+fn index_at(index: &[u8], position: usize) -> usize {
+    let at = position * 4;
+    u32::from_le_bytes(index[at..at + 4].try_into().expect("bounded index")) as usize
+}
+fn swap_index(index: &mut [u8], a: usize, b: usize) {
+    for offset in 0..4 { index.swap(a * 4 + offset, b * 4 + offset); }
+}
+fn build_index(
+    capture: &BuiltinCaptureChange, rows: &[&NativeSourceEvidence], project: &[u8; 32], duplicate_error: &'static str,
+    budget: &mut SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool,
+) -> Result<(Box<[u8]>, usize)> {
+    let bytes = rows.len().checked_mul(4).ok_or("native replay index overflow")?;
+    let mut index = allocate(bytes, budget, stopped)?;
+    let mut count = 0usize;
+    for (ordinal, row) in rows.iter().enumerate() {
+        step(budget, stopped, 1)?;
+        if applies(capture, row, project) {
+            let value = u32::try_from(ordinal).map_err(|_| "native replay row overflow")?;
+            index[count * 4..count * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            count += 1;
+        }
+    }
+    fn sift(index: &mut [u8], rows: &[&NativeSourceEvidence], mut root: usize, end: usize, budget: &SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool) -> Result<()> {
+        loop {
+            step(budget, stopped, 1)?;
+            let Some(mut child) = root.checked_mul(2).and_then(|n| n.checked_add(1)) else { return Ok(()); };
+            if child >= end { return Ok(()); }
+            let key = |pos| rows[index_at(index, pos)].path.as_bytes();
+            if child + 1 < end && cmp(key(child), key(child + 1), budget, stopped)?.is_lt() { child += 1; }
+            if !cmp(key(root), key(child), budget, stopped)?.is_lt() { return Ok(()); }
+            swap_index(index, root, child);
+            root = child;
+        }
+    }
+    for root in (0..count / 2).rev() { sift(&mut index, rows, root, count, budget, stopped)?; }
+    for end in (1..count).rev() {
+        step(budget, stopped, 1)?;
+        swap_index(&mut index, 0, end);
+        sift(&mut index, rows, 0, end, budget, stopped)?;
+    }
+    for i in 1..count {
+        if cmp(rows[index_at(&index, i - 1)].path.as_bytes(), rows[index_at(&index, i)].path.as_bytes(), budget, stopped)?.is_eq() {
+            return Err(duplicate_error.into());
+        }
+    }
+    Ok((index, count))
+}
+fn find_index(rows: &[&NativeSourceEvidence], index: &[u8], count: usize, path: &[u8], budget: &SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool) -> Result<Option<usize>> {
+    let mut low = 0usize;
+    let mut high = count;
+    while low < high {
+        step(budget, stopped, 1)?;
+        let middle = low + (high - low) / 2;
+        if cmp(rows[index_at(index, middle)].path.as_bytes(), path, budget, stopped)?.is_lt() { low = middle + 1; } else { high = middle; }
+    }
+    if low < count {
+        let ordinal = index_at(index, low);
+        if cmp(rows[ordinal].path.as_bytes(), path, budget, stopped)?.is_eq() { return Ok(Some(ordinal)); }
+    }
+    Ok(None)
+}
 fn allocate(len: usize, budget: &mut SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool) -> Result<Box<[u8]>> {
     step(budget, stopped, u64::try_from(len.div_ceil(1024)).unwrap_or(u64::MAX))?;
     budget.reserve_retained(len).map_err(|e| format!("native replay memory: {e:?}"))?;
@@ -90,30 +159,16 @@ fn admit_inner(
     if selected.input_digest() != capture.capture.input_digest() { return Err("native replay selected input differs".into()); }
     let project = capture.key.package_key().to_bytes();
     let mut flags = allocate(rows.len(), budget, stopped)?;
-    let mut count = 0usize;
-    for (i, row) in rows.iter().enumerate() {
-        step(budget, stopped, 1)?;
-        if !applies(capture, row, &project) { continue; }
-        for previous in &rows[..i] {
-            step(budget, stopped, 1)?;
-            if applies(capture, previous, &project) && eq(previous.path.as_bytes(), row.path.as_bytes(), budget, stopped)? { return Err("duplicate native replay source path".into()); }
-        }
-        flags[i] = 1;
-        count += 1;
-    }
-    for (i, row) in retirements.iter().enumerate() {
-        step(budget, stopped, 1)?;
-        if !applies(capture, row, &project) { continue; }
-        for previous in &retirements[..i] {
-            step(budget, stopped, 1)?;
-            if applies(capture, previous, &project) && eq(previous.path.as_bytes(), row.path.as_bytes(), budget, stopped)? { return Err("duplicate native replay retirement path".into()); }
-        }
-        for source in rows {
-            step(budget, stopped, 1)?;
-            if applies(capture, source, &project) && eq(source.path.as_bytes(), row.path.as_bytes(), budget, stopped)? { return Err("duplicate native replay retirement path".into()); }
-        }
-    }
+    let (source_index, count) = build_index(capture, rows, &project, "duplicate native replay source path", budget, stopped)?;
+    let (retired_index, retired_count) = build_index(capture, retirements, &project, "duplicate native replay retirement path", budget, stopped)?;
     if count == 0 { return Err("native replay retirement requires a nonempty selected Program".into()); }
+    for i in 0..count {
+        let ordinal = index_at(&source_index, i);
+        flags[ordinal] = 1;
+        if find_index(retirements, &retired_index, retired_count, rows[ordinal].path.as_bytes(), budget, stopped)?.is_some() {
+            return Err("duplicate native replay retirement path".into());
+        }
+    }
     let mut plan = Plan { claim: false, program: None, headers: None, lines: None, flags, scratch_credit: 0 };
     visit_selected_publication_wire(store, selected, budget, stopped, 128 * 1024 * 1024, 4096, |item, budget| {
         match item {
@@ -159,15 +214,11 @@ fn admit_inner(
     // The flags borrow the existing evidence rows; no caller data is copied.
     program.visit(budget, stopped, |entry| {
         let Some(path) = entry.package_path else { return Ok(()); };
-        for row in retirements {
-            step(budget, stopped, 1)?;
-            if applies(capture, row, &project) && eq(path, row.path.as_bytes(), budget, stopped)? {
-                return Err("native replay retired path remains in Program".into());
-            }
+        if find_index(retirements, &retired_index, retired_count, path, budget, stopped)?.is_some() {
+            return Err("native replay retired path remains in Program".into());
         }
-        for (i, row) in rows.iter().enumerate() {
-            step(budget, stopped, 1)?;
-            if plan.flags[i] & 1 == 0 || !eq(path, row.path.as_bytes(), budget, stopped)? { continue; }
+        if let Some(i) = find_index(rows, &source_index, count, path, budget, stopped)? {
+            let row = rows[i];
             if plan.flags[i] & 2 != 0 || entry.source.byte_len != row.byte_length || entry.source.identity.as_ref() != row.source_digest.as_slice() {
                 return Err("native replay Program source differs from evidence".into());
             }
@@ -245,12 +296,7 @@ fn admit_inner(
                     return Err("selected program differs from image source or recipe".into());
                 }
                 if !program.image_matches_bytes(path, member.semantic_image_identity(), budget, stopped)? { return Err("native replay image differs from sealed Program".into()); }
-                let mut matched = None;
-                for (i, row) in rows.iter().enumerate() {
-                    step(budget, stopped, 1)?;
-                    if plan.flags[i] & 1 != 0 && eq(path, row.path.as_bytes(), budget, stopped)? { matched = Some(i); break; }
-                }
-                let Some(index) = matched else { return Ok(()); };
+                let Some(index) = find_index(rows, &source_index, count, path, budget, stopped)? else { return Ok(()); };
                 let row = rows[index];
                 if plan.flags[index] & 4 != 0 { return Err("duplicate native replay image path".into()); }
                 if !row.admits_image() { return Err("native replay Program member unexpectedly has an image".into()); }
@@ -278,11 +324,8 @@ fn admit_inner(
     if let Some((aggregate, _)) = &headers {
         for file in aggregate.files() {
             step(budget, stopped, 1)?;
-            let mut found = false;
-            for (i, row) in rows.iter().enumerate() {
-                step(budget, stopped, 1)?;
-                if plan.flags[i] & 8 != 0 && eq(file.path.as_bytes(), row.path.as_bytes(), budget, stopped)? { found = true; break; }
-            }
+            let found = find_index(rows, &source_index, count, file.path.as_bytes(), budget, stopped)?
+                .is_some_and(|i| plan.flags[i] & 8 != 0);
             if !found { return Err("native replay did not consume compiler header files".into()); }
         }
     }
