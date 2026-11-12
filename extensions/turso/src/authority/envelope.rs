@@ -7,6 +7,9 @@
 
 #[path = "borrowed_metadata.rs"]
 mod borrowed_metadata;
+#[path = "borrowed_publication.rs"]
+mod borrowed_publication;
+pub use borrowed_publication::{visit_selected_publication_wire, SelectedPublicationWire};
 
 use super::types::{
     AuthorityHash, AuthorityNamespace, AuthorityPlane, CandidateAttempt, CandidateGeneration,
