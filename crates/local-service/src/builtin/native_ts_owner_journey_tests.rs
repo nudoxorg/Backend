@@ -1451,10 +1451,10 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
         let observed = super::ingest::TEST_NATIVE_PROGRAMS.lock().map_err(|_| "program lock")?;
         let selected = observed.iter().find(|entry| entry.membership == membership && entry.binding == binding).ok_or("selected Program was not observed at admitted image join")?;
         let digest = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(member.as_bytes());
-        assert_eq!(selected.sources.iter().filter(|(path, id, len)| path.ends_with("src/app/layout.tsx") && id == digest.as_ref() && *len as usize == member.len()).count(), 1);
+        assert_eq!(selected.sources.iter().filter(|(path, _, id, len)| path.ends_with("src/app/layout.tsx") && id == digest.as_ref() && *len as usize == member.len()).count(), 1);
         if mixed {
             let digest = backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(shared.as_bytes());
-            assert_eq!(selected.sources.iter().filter(|(path, id, len)| path.ends_with("src/types/shared.ts") && id == digest.as_ref() && *len as usize == shared.len()).count(), 1, "TSX selected Program must include exact imported TS source");
+            assert_eq!(selected.sources.iter().filter(|(path, _, id, len)| path.ends_with("src/types/shared.ts") && id == digest.as_ref() && *len as usize == shared.len()).count(), 1, "TSX selected Program must include exact imported TS source");
         }
     }
     drop(session);
@@ -1523,24 +1523,31 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
         cargo_target: None, key: selected_key.clone(), expected: Some(selected_capture.clone()),
         capture: selected_capture.capture(), outcome: selected_capture.outcome(), compiler_failure: None,
     };
+    let mut changes = vec![change.clone()];
+    if mixed {
+        let ts_profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+        let (key, capture) = capture_page.entries().iter().find(|(key, capture)| key.package_key().to_bytes() == project_key && key.profile() == ts_profile && key.is_selected() && matches!(capture.outcome(), backend_engine::builtin::ProductSemanticCaptureOutcome::Published { .. })).ok_or("published selected TS capture")?;
+        changes.push(super::profile::BuiltinCaptureChange { cargo_target: None, key: key.clone(), expected: Some(capture.clone()), capture: capture.capture(), outcome: capture.outcome(), compiler_failure: None });
+    }
     let store = backend_engine::FileStore::open(paths.data().join("objects"), 8 * 1024 * 1024)
         .map_err(|error| io::Error::other(format!("open selected object store: {error:?}")))?;
     let page = relation.page(None, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)?;
     assert!(page.next().is_none(), "fixture evidence page must be complete");
     let rows = page.entries().iter().map(|(_, row)| row.clone())
-        .filter(|row| row.project == project_key && row.profile == ts).collect::<Vec<_>>();
+        .filter(|row| row.project == project_key && (row.profile == ts || (mixed && row.profile == LanguageProfile::TypeScript(TypeScriptSource::TypeScript)))).collect::<Vec<_>>();
     assert!(rows.iter().any(|row| row == &member_row));
     assert!(rows.iter().any(|row| row == &image_row));
-    let mut refs = rows.iter().collect::<Vec<_>>();
-    let shared_row = if mixed { Some(relation.lookup(&native_source_evidence_key(project_key, LanguageProfile::TypeScript(TypeScriptSource::TypeScript), "src/types/shared.ts")?)?.ok_or("missing cross-profile TS ProgramMember")?) } else { None };
-    if let Some(row) = &shared_row { assert_eq!(row.kind, NativeSourceEvidenceKind::ProgramMember); refs.push(row); }
-    super::semantic_authority::admit_replayed_native_evidence(&store, std::slice::from_ref(&change), &refs, &[])?;
-    if let Some(row) = &shared_row {
-        let mut wrong_shared = row.clone();
-        wrong_shared.source_digest[0] ^= 1;
-        let mut altered_refs = rows.iter().collect::<Vec<_>>();
-        altered_refs.push(&wrong_shared);
-        let error = super::semantic_authority::admit_replayed_native_evidence(&store, std::slice::from_ref(&change), &altered_refs, &[]).err().ok_or("altered cross-profile source unexpectedly admitted")?;
+    let refs = rows.iter().collect::<Vec<_>>();
+    if mixed {
+        let shared_row = rows.iter().find(|row| row.path == "src/types/shared.ts" && row.profile == LanguageProfile::TypeScript(TypeScriptSource::TypeScript)).ok_or("missing cross-profile TS ProgramMember")?;
+        assert_eq!(shared_row.kind, NativeSourceEvidenceKind::ProgramMember);
+    }
+    super::semantic_authority::admit_replayed_native_evidence(&store, &changes, &refs, &[])?;
+    if mixed {
+        let mut altered = rows.clone();
+        altered.iter_mut().find(|row| row.path == "src/types/shared.ts").ok_or("shared row")?.source_digest[0] ^= 1;
+        let altered_refs = altered.iter().collect::<Vec<_>>();
+        let error = super::semantic_authority::admit_replayed_native_evidence(&store, &changes, &altered_refs, &[]).err().ok_or("altered cross-profile source unexpectedly admitted")?;
         assert_eq!(error.0, "native replay Program source differs from evidence");
     }
     for (path, kind_only, expected) in [
@@ -1557,7 +1564,7 @@ fn omitted_program_member_cold_replay(mixed: bool) -> Result<(), Box<dyn Error>>
             row.source_digest[0] ^= 1;
         }
         let refs = altered.iter().collect::<Vec<_>>();
-        let error = super::semantic_authority::admit_replayed_native_evidence(&store, std::slice::from_ref(&change), &refs, &[]).err().ok_or("tampered replay unexpectedly admitted")?;
+        let error = super::semantic_authority::admit_replayed_native_evidence(&store, &changes, &refs, &[]).err().ok_or("tampered replay unexpectedly admitted")?;
         assert_eq!(error.0, expected, "tamper path {path}");
     }
     drop(relation);

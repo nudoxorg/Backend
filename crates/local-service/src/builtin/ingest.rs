@@ -2401,7 +2401,7 @@ fn producer_version(frontend: &SyntaxFrontend) -> [u8; 32] {
 pub(super) struct TestNativeProgramObservation {
     pub binding: [u8; 32],
     pub membership: [u8; 32],
-    pub sources: Vec<(String, [u8; 32], u32)>,
+    pub sources: Vec<(String, Option<String>, [u8; 32], u32)>,
 }
 #[cfg(test)]
 pub(super) static TEST_CAPTURE_NATIVE_PROGRAMS: AtomicBool = AtomicBool::new(false);
@@ -2415,7 +2415,7 @@ pub(super) fn test_observe_native_program(binding: [u8; 32], program: &backend_s
             binding,
             membership: program.membership_identity(),
             sources: program.sources().map(|row| (
-                row.program_path.to_owned(), *row.source.identity.as_ref(), row.source.byte_len,
+                row.program_path.to_owned(), row.package_path.map(str::to_owned), *row.source.identity.as_ref(), row.source.byte_len,
             )).collect(),
         };
         TEST_NATIVE_PROGRAMS.lock().map_err(|_| "test native Program observation poisoned")?.push(observation);
