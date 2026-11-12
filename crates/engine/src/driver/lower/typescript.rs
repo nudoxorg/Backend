@@ -15445,6 +15445,44 @@ describe('suite', () => {\n\
     }
 
     #[test]
+    fn native_tsz_cross_file_ts_call_keeps_exact_target_and_caller() -> Result<(), LaneError> {
+        let callee = "export function loadSectionsCsv(): string { return 'csv'; }\n";
+        let caller = "import { loadSectionsCsv } from './csv';\nexport function generateSchedule(): string { return loadSectionsCsv(); }\n";
+        let resolutions = [module_resolution(
+            "src/scheduler.ts", "./csv", TszProjectModuleRequestKind::EsmImport,
+            TszProjectModuleResolutionTarget::File { path: "src/csv.ts".to_owned() },
+        )];
+        let authority = native_tsz_project_with_resolutions(
+            &[("src/csv.ts", callee), ("src/scheduler.ts", caller)], &resolutions,
+        )?;
+        let project = authority.project().ok_or(LaneError::Missing("call project"))?;
+        let target_facts = collect_native_tsz_file(project, "src/csv.ts", callee)?;
+        let target = (0..target_facts.len()).find(|&i| target_facts.names[i] == b"loadSectionsCsv"
+            && target_facts.kinds[i] == EntityKind::Function).expect("callee declaration");
+        let target_span = target_facts.provenance.source_spans()[target].expect("callee extent");
+        let facts = collect_native_tsz_file(project, "src/scheduler.ts", caller)?;
+        let call_start = caller.rfind("loadSectionsCsv()").expect("call site") as u32;
+        let calls = (0..facts.occurrence_len).filter(|&i| {
+            let owner = facts.occurrence_owners[i] as usize;
+            facts.names[owner] == b"generateSchedule"
+                && facts.occurrences[i].kind == ReferenceKind::FunctionCall
+                && facts.provenance.source_spans()[owner].is_some_and(|span|
+                    span.start + facts.occurrences[i].span.start == call_start
+                        && span.start + facts.occurrences[i].span.end == call_start + "loadSectionsCsv".len() as u32)
+        }).collect::<Vec<_>>();
+        assert_eq!(calls.len(), 1, "one exact call owned by generateSchedule");
+        let index = calls[0];
+        assert_eq!(facts.occurrences[index].confidence, OccurrenceConfidence::Oracle);
+        let slot = facts.occurrence_source_coordinate_slot[index].expect("callee coordinate");
+        let coordinate = TypeScriptSourceCoordinate::decode(&facts.foreign_source_coordinate_text[slot as usize])
+            .expect("typed callee coordinate");
+        assert_eq!(coordinate.path, "src/csv.ts");
+        assert_eq!((coordinate.declaration_start, coordinate.declaration_end), (target_span.start, target_span.end));
+        assert!(matches!(facts.occurrences[index].target, OccurrenceTarget::Foreign(_)));
+        Ok(())
+    }
+
+    #[test]
     fn native_tsz_named_import_sites_and_bare_uses_keep_exact_local_targets() -> Result<(), LaneError> {
         use backend_compile::SourceBindingIdentity;
         let scheduler = "export interface Workout { name: string; }\nexport function generateSchedule(request: Workout): string { return request.name; }\nexport const scheduleVersion = 1;\n";
