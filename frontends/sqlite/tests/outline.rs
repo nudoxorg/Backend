@@ -85,7 +85,7 @@ fn every_fixture_validates_and_every_name_extent_is_the_written_spelling() {
     for name in FIXTURES {
         let src = fixture(name);
         let o = outline(&src);
-        let expect_complete = *name != "unmodeled";
+        let expect_complete = !matches!(*name, "unmodeled" | "queries");
         assert_eq!(
             o.coverage == OutlineCoverage::Complete,
             expect_complete,
@@ -641,7 +641,7 @@ fn indexes_and_drops() {
 fn queries_select_insert_update_delete_returning() {
     let src = fixture("queries");
     let o = outline(&src);
-    assert_eq!(o.coverage, OutlineCoverage::Complete);
+    assert_eq!(o.coverage, OutlineCoverage::Partial);
     let kinds: Vec<_> = o.statements.iter().map(|s| s.kind).collect();
     use StatementKind as K;
     assert_eq!(
@@ -662,6 +662,7 @@ fn queries_select_insert_update_delete_returning() {
     // Aggregates are functions, the result alias is not a column, and HAVING/ORDER BY on it
     // adds nothing.
     let s0 = &o.statements[0];
+    assert_eq!(s0.support, StatementSupport::Partial(Gap::UnmodeledConstruct));
     assert_eq!(refs(s0, RefKind::Function, RefRole::Read)[0].1, "count");
     assert!(!s0.references.iter().any(|r| r.name == "n_orders"));
     assert_eq!(
@@ -1229,4 +1230,15 @@ fn excluded_upsert_without_update_where_has_valid_native_outline() {
     assert_eq!(s.support, StatementSupport::Full);
     assert!(col(s, RefRole::Read).contains(&"excluded.name".to_owned()));
     assert!(col(s, RefRole::Read).contains(&"excluded.country".to_owned()));
+}
+
+#[test]
+fn alias_shadowing_omission_is_partial_not_a_complete_negative() {
+    let ambiguous = "SELECT price AS title FROM books WHERE title > 0";
+    let result = outline(ambiguous);
+    assert_eq!(result.coverage, OutlineCoverage::Partial);
+    assert_eq!(result.statements[0].support, StatementSupport::Partial(Gap::UnmodeledConstruct));
+    assert!(result.statements[0].references.iter().any(|r| r.name == "price"));
+    let unambiguous = outline("SELECT price AS renamed FROM books WHERE price > 0");
+    assert_eq!(unambiguous.coverage, OutlineCoverage::Complete);
 }
