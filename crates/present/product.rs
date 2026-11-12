@@ -2543,7 +2543,7 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                     if partial.is_empty() {
                         "published".to_owned()
                     } else {
-                        format!("published with partial compiler coverage ({}); read package-profile and its compiler-outcome selector for per-file reasons", partial.join("; "))
+                        format!("published with partial compiler coverage ({}); inspect package-profile for compiler coverage details", partial.join("; "))
                     }
                 }
                 backend_library::IndexOperationState::PartiallyPublished {
@@ -5547,7 +5547,7 @@ mod tests {
             let title = view.records()[0].title();
             assert!(title.contains("published with partial compiler coverage"), "{title}");
             assert!(title.contains("typescript: 50 of 106 files"), "{title}");
-            assert!(title.contains("compiler-outcome selector for per-file reasons"), "{title}");
+            assert!(title.contains("package-profile for compiler coverage details"), "{title}");
             assert!(crate::render::text::product(&view, crate::Theme::plain()).contains("50 of 106 files"));
             assert!(crate::render::markdown::product(&view).contains("50 of 106 files"));
             let dto = serde_json::to_value(crate::dto::ProductDto::new(&view)).unwrap();

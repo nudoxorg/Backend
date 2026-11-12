@@ -33,9 +33,9 @@ call coordinates. Projection and public reference acceptance remain pending.
 Named default-export headers and parser-cache format compatibility are implemented;
 their final combined owner/public checks remain open.
 
-The partial-coverage receipt now includes explicit compiler file counts and a
-per-file outcome route. Its typed JSON, text and Markdown component regression
-passes. The navigation/document changes passed a production compiler check and
+The partial-coverage receipt now includes explicit compiler file counts. Its
+typed JSON, text and Markdown count regression passes on the recorded source;
+per-file compiler-outcome lookup remains under repair. The navigation/document changes passed a production compiler check and
 three presentation controls on their recorded source revision; certified alias
 wire and combined public acceptance remain required.
 
