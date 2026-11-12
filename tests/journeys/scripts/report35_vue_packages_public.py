@@ -223,19 +223,23 @@ def main():
             require(phase + ' exact span', filename == 'App.vue' and (journey.project / filename).read_bytes()[start:end] == b'mounted', (filename, start, end))
         result = mcp('backend.references', {'coordinate': coord}, phase + '-mcp-refs')
         require(phase + ' MCP reference parity', spans(result) == observed and coverage_word(result) == 'partial', result)
-        purl = 'pkg:npm/vue@3.5.44'
-        for command, tool, witnesses in [
-            ('package', 'backend.package', ('createApp', 'local installation', 'partial')),
-            ('dependencies', 'backend.dependencies', ('@vue/runtime-dom', 'local installation', 'partial')),
-            ('package-versions', 'backend.package_versions', ('3.5.44', 'installed')),
+        for ecosystem, purl, api, dependency, version in [
+            ('npm', 'pkg:npm/vue@3.5.44', 'createApp', '@vue/runtime-dom', '3.5.44'),
+            ('pypi', 'pkg:pypi/fastapi@0.162.0', 'class FastAPI', 'starlette', '0.162.0'),
         ]:
-            rc, _, raw = journey.cli(phase + '-' + command, [command, purl])
-            require(phase + ' CLI ' + command, rc == 0 and all(w.lower() in raw.lower() for w in witnesses), raw)
-            require(phase + ' CLI confinement ' + command, 'PRIVATE_SYMLINK_SENTINEL' not in raw, raw)
-            result = mcp(tool, {'package': purl}, phase + '-mcp-' + command)
-            rendered = json.dumps(result, ensure_ascii=False).lower()
-            require(phase + ' MCP ' + command, all(w.lower() in rendered for w in witnesses), result)
-            require(phase + ' MCP confinement ' + command, 'private_symlink_sentinel' not in rendered, result)
+            for command, tool, witnesses in [
+                ('package', 'backend.package', (api, 'local installation', 'partial')),
+                ('dependencies', 'backend.dependencies', (dependency, 'local installation', 'partial')),
+                ('package-versions', 'backend.package_versions', (version, 'installed')),
+            ]:
+                label = phase + '-' + ecosystem + '-' + command
+                rc, parsed, raw = journey.cli(label, [command, purl])
+                require(label + ' CLI', rc == 0 and isinstance(parsed, dict) and parsed.get('answer') != 'fault' and all(w.lower() in raw.lower() for w in witnesses), raw)
+                require(label + ' CLI confinement', 'PRIVATE_SYMLINK_SENTINEL' not in raw, raw)
+                result = mcp(tool, {'package': purl}, label + '-mcp')
+                rendered = json.dumps(result, ensure_ascii=False).lower()
+                require(label + ' MCP', all(w.lower() in rendered for w in witnesses), result)
+                require(label + ' MCP confinement', 'private_symlink_sentinel' not in rendered, result)
         return observed
 
     try:
@@ -251,6 +255,16 @@ def main():
         outside = journey.root / 'private.js'
         outside.write_text('PRIVATE_SYMLINK_SENTINEL')
         (package / 'leak.js').symlink_to(outside)
+        site = project / 'backend/.venv/lib/python3.14/site-packages'
+        metadata = site / 'fastapi-0.162.0.dist-info'
+        metadata.mkdir(parents=True)
+        python_api = site / 'fastapi'
+        python_api.mkdir()
+        (metadata / 'METADATA').write_text('Metadata-Version: 2.4\nName: fastapi\nVersion: 0.162.0\nRequires-Python: >=3.10\nRequires-Dist: starlette>=0.40\n\nInstalled documentation\n')
+        (metadata / 'RECORD').write_text('fastapi/__init__.py,,\nfastapi/applications.py,,\nfastapi/leak.py,,\n')
+        (python_api / '__init__.py').write_text('from .applications import FastAPI\n')
+        (python_api / 'applications.py').write_text('class FastAPI:\n    def get(self, path: str): ...\n')
+        (python_api / 'leak.py').symlink_to(outside)
         (project / 'App.vue').write_bytes('<template><button @click="mounted">Run</button></template>\r\n<script setup lang="ts">\r\n// é漢\r\nfunction mounted() { return \'é漢\'; }\r\nmounted();\r\nfunction wrapper() { mounted(); }\r\nfunction shadow(mounted: () => void) { mounted(); }\r\n</script>\r\n'.encode())
         journey.start_owner(project)
         journey.start_mcp()
