@@ -555,6 +555,30 @@ mod tests {
     }
 
     #[test]
+    fn bounded_update_accepts_small_existing_row() {
+        use backend_store::{FileStore, RelationAdmissionRegistry};
+        use backend_version::{CoverageWitness, RelationState, ScopeRoot, UntrustedCoverageScope, LazyTreeMetadataShape, LazyTreeUpdateBudget, TreeChange};
+        use std::sync::Arc;
+        let directory = tempfile::tempdir().unwrap();
+        let registry = RelationAdmissionRegistry::new().with_relation::<NativeSourceEvidenceRelation>().unwrap();
+        let store = FileStore::open_with_registry(directory.path(), 1024 * 1024, registry).unwrap();
+        let mut value=row(); let key=value.key().unwrap();
+        let coverage=CoverageWitness::Partial(UntrustedCoverageScope::from_scope_root(ScopeRoot::from_u64(1)));
+        let state=RelationState::<NativeSourceEvidenceRelation>::from_entries([(key,value.clone())],coverage).unwrap();
+        store.write_relation_state(&state).unwrap();
+        let relation=WorkspaceRelationHandle::<NativeSourceEvidenceRelation>::open(Arc::new(store),*state.root().as_bytes()).unwrap();
+        value.input_digest[0]^=1;
+        let width=value.checked_encoded_len().unwrap();
+        let changes=[TreeChange::<NativeSourceEvidenceRelation>{key,after:Some(value.clone())}];
+        let shape=LazyTreeMetadataShape::new(32,width,2,2,3,3);
+        let charge=LazyTreeUpdateBudget::new(1,usize::MAX,shape).update_charge::<NativeSourceEvidenceRelation>(1).unwrap();
+        assert!(relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,charge-1,shape)).is_err());
+        let update=relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,charge,shape)).unwrap();
+        let expected=RelationState::<NativeSourceEvidenceRelation>::from_entries([(key,value)],coverage).unwrap();
+        assert_eq!(update.target().root(),expected.root());
+    }
+
+    #[test]
     fn claims_roundtrip_and_reject_noncanonical_input() {
         let row = row();
         let mut bytes = Vec::new();
