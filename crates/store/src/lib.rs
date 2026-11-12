@@ -22,6 +22,27 @@ pub(crate) use std::{
 /// Fixed-width digest used by physical pack and raw value references.
 pub type Hash = [u8; 32];
 
+/// Fallibly allocates a zeroed byte slice with an exact requested allocation
+/// layout. Callers must reserve `len` bytes before calling and retain that
+/// reservation while the returned buffer lives. Allocator bookkeeping and
+/// usable-size overhead are separate from the requested layout.
+///
+/// The pinned bytemuck implementation requests `Layout::array::<u8>(len)`
+/// directly from the global allocator; it does not grow an intermediate Vec.
+pub fn try_allocate_exact_zeroed_bytes(len: usize) -> Result<Box<[u8]>, StoreError> {
+    bytemuck::allocation::try_zeroed_slice_box::<u8>(len).map_err(|_| StoreError::Bounds)
+}
+
+/// Reserves the exact requested byte layout before allocating and leaves the
+/// credit debited until the caller releases the returned buffer.
+pub fn try_allocate_exact_zeroed_bytes_budgeted(len: usize, budget: &mut usize) -> Result<Box<[u8]>, StoreError> {
+    *budget = budget.checked_sub(len).ok_or(StoreError::Bounds)?;
+    match try_allocate_exact_zeroed_bytes(len) {
+        Ok(buffer) => Ok(buffer),
+        Err(error) => { *budget += len; Err(error) }
+    }
+}
+
 fn digest(domain: &[u8], bytes: &[u8]) -> Hash {
     let mut h = blake3::Hasher::new();
     h.update(domain);

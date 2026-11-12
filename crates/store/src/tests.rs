@@ -418,6 +418,31 @@ fn weak_root_handle_expires_with_its_map_generation() {
 }
 
 #[test]
+fn exact_zeroed_scratch_charges_before_allocation() {
+    const LEN: usize = 1_048_577;
+    let mut short = LEN - 1;
+    let allocation = allocation_counter::measure(|| {
+        assert!(matches!(try_allocate_exact_zeroed_bytes_budgeted(LEN, &mut short), Err(StoreError::Bounds)));
+    });
+    assert_eq!(short, LEN - 1);
+    assert_eq!(allocation.bytes_max, 0);
+    let mut exact = LEN;
+    let mut buffer = None;
+    let allocation = allocation_counter::measure(|| {
+        buffer = Some(must(try_allocate_exact_zeroed_bytes_budgeted(LEN, &mut exact)));
+    });
+    assert_eq!(exact, 0);
+    assert_eq!(allocation.bytes_max, LEN as u64);
+    let buffer = buffer.unwrap();
+    assert_eq!(buffer.len(), LEN);
+    assert!(buffer.iter().all(|b| *b == 0));
+    let mut credit = usize::MAX;
+    let before = credit;
+    assert!(matches!(try_allocate_exact_zeroed_bytes_budgeted(usize::MAX, &mut credit), Err(StoreError::Bounds)));
+    assert_eq!(credit, before);
+}
+
+#[test]
 fn bounded_closure_membership_preflights_path_and_denies_zero_credit() {
     use std::cell::Cell;
     let mut objects = (0u64..1024).map(|value| {
