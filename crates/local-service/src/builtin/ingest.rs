@@ -12646,6 +12646,7 @@ pub(super) fn native_line_map_matches_host(
     SourceAdmissionPolicy::from_environment().map_err(|e| format!("native line source policy: {e}"))?
         .admit_actual_file(expected).map_err(|e| format!("native line source bound: {e:?}"))?;
     budget.checkpoint(1, stopped).map_err(|e| format!("native line source stopped: {e:?}"))?;
+    if !root.is_absolute() || root.components().any(|part| !matches!(part, std::path::Component::RootDir | std::path::Component::Normal(_))) { return Ok(false); }
     let root_bytes = root.as_os_str().as_bytes();
     if root_bytes.is_empty() || root_bytes.len() > 4096 || root_bytes.contains(&0) { return Ok(false); }
     let mut root_name = [0u8; 4097];
