@@ -114,7 +114,7 @@ pub(in crate::builtin) fn semantic_query_corpus_controlled(
         ..backend_extension_trustfall::Limits::default()
     };
     let is_cancelled = || cancelled.is_some_and(|c| c.load(std::sync::atomic::Ordering::Acquire));
-    let prior_bytes = backend_extension_trustfall::measure_semantic_query_facts_controlled(&facts, facts.capacity(), limits, &is_cancelled)
+    let prior_bytes = backend_extension_trustfall::measure_semantic_query_facts_with_quota_controlled(&facts, facts.capacity(), limits, 64, &is_cancelled)
         .map_err(|error| BuiltinModelError(error.to_string()))?;
     let remaining = MAX_REBUILD_BYTES.checked_sub(prior_bytes)
         .ok_or_else(|| BuiltinModelError("semantic query budget exhausted".into()))?;
