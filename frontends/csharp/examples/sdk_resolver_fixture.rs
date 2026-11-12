@@ -3,7 +3,7 @@
 //! This is intentionally an example instead of an auto-run test: invoking
 //! dotnet is campaign-controlled and requires an allocated host slot.
 
-use backend_frontend_csharp::legacy::{resolve_references_with_sdk, CSharpSdkKind};
+use backend_frontend_csharp::legacy::{resolve_references_with_sdk_diagnostics, CSharpSdkKind};
 use sha2::{Digest, Sha256};
 use std::{
     env, fs,
@@ -49,7 +49,7 @@ fn main() {
     let started = Instant::now();
     eprintln!("SDK fixture: resolver start; pack candidates={}, package candidates={}, assets bytes={}",
         candidates.len(), package_candidates.len(), assets_bytes.as_ref().map_or(0, Vec::len));
-    let snapshot = resolve_references_with_sdk(
+    let snapshot = resolve_references_with_sdk_diagnostics(
         &dotnet,
         &target.to_string_lossy(),
         &sdk,
@@ -64,6 +64,7 @@ fn main() {
         assets_bytes.as_deref(),
         Instant::now() + Duration::from_secs(120),
         &cancelled,
+        Some(&mut |message| eprintln!("{message}")),
     )
     .unwrap_or_else(|error| panic!("native SDK resolver failed after {:?}: {error}", started.elapsed()));
     eprintln!("SDK fixture: resolver returned after {:?}; selected={}", started.elapsed(), snapshot.references().len());

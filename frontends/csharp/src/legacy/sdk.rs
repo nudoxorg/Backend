@@ -504,6 +504,31 @@ pub fn resolve_references_with_sdk(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<CSharpResolvedReferenceSnapshot, &'static str> {
+    resolve_references_with_sdk_diagnostics(dotnet, target_framework, observed_sdk_directory,
+        captured_global_json, sdk_kind, nullable, language_version, output_type,
+        framework_references, pack_candidates, package_candidates, assets_bytes,
+        deadline, cancelled, None)
+}
+
+/// Diagnostic variant for private fixture runs. Callback contents can contain
+/// SDK process output and must not be forwarded to product user-facing flows.
+pub fn resolve_references_with_sdk_diagnostics(
+    dotnet: &Path,
+    target_framework: &str,
+    observed_sdk_directory: &Path,
+    captured_global_json: Option<&str>,
+    sdk_kind: CSharpSdkKind,
+    nullable: &str,
+    language_version: &str,
+    output_type: &str,
+    framework_references: &[String],
+    pack_candidates: &[PathBuf],
+    package_candidates: &[PathBuf],
+    assets_bytes: Option<&[u8]>,
+    deadline: Instant,
+    cancelled: &AtomicBool,
+    mut diagnostics: Option<&mut dyn FnMut(&str)>,
+) -> Result<CSharpResolvedReferenceSnapshot, &'static str> {
     if !valid_sdk_property(nullable, &["enable", "disable", "annotations"])
         || !valid_sdk_property(language_version, &["default", "latest"])
         || !valid_sdk_property(output_type, &["Library", "Exe", "WinExe", "Module"])
@@ -724,8 +749,22 @@ pub fn resolve_references_with_sdk(
         },
         cancelled,
     )
-    .map_err(|_| "SDK resolution failed")?;
+    .map_err(|error| {
+        if let Some(emit) = diagnostics.as_deref_mut() {
+            emit(&format!("SDK child capture failed: {error:?}"));
+        }
+        "SDK resolution failed"
+    })?;
     if !output.status.success() {
+        if let Some(emit) = diagnostics.as_deref_mut() {
+            emit(&format!("SDK child status: {}", output.status));
+            // MSBuild may report errors to either stream. The child capture is
+            // bounded independently; expose at most 4 KiB from each tail.
+            for (label, bytes) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
+                let tail = &bytes[bytes.len().saturating_sub(4096)..];
+                emit(&format!("SDK child {label} tail: {}", String::from_utf8_lossy(tail)));
+            }
+        }
         return Err("SDK resolution failed");
     }
     // Revalidate every input, including candidates not selected by RAR: an

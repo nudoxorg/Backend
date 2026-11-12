@@ -42,5 +42,6 @@ pub use self::sdk::{
     CSharpResolvedReferenceSnapshot, CSharpResolverReceipt, CSharpSdkKind, CSharpSdkObservation,
     CSharpSdkProbe, CSharpSdkProjectProperties, CSharpTargetingReference, CSharpTargetingSnapshot,
     observe_csharp_sdk, observe_csharp_sdk_with, resolve_references_with_sdk,
+    resolve_references_with_sdk_diagnostics,
     resolve_sdk_owned_references,
 };
