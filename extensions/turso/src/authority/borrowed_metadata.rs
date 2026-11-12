@@ -233,13 +233,14 @@ mod tests {
             if has_snapshot { metadata = metadata.with_typescript_snapshot_witness(snapshot).unwrap(); }
             metadata = metadata.with_native_headers(headers).unwrap();
             let bytes = metadata.canonical_bytes();
+            let metadata_id = metadata.object_id();
             let ids = metadata_member_ids_checked(&metadata).unwrap();
             let mut members = Vec::new(); for id in &ids { members.extend_from_slice(id); }
             let mut bitmap = vec![0u8; (MAX_MEMBER_IDS + 7)/8];
             let mut calls = 0usize;
             let mut result = None;
             let allocation = allocation_counter::measure(|| {
-                result = Some(BorrowedCompilerMetadata::parse(&bytes, metadata.object_id(), &members, &mut bitmap, &mut |_| { calls += 1; Ok::<(), ()>(()) }).unwrap());
+                result = Some(BorrowedCompilerMetadata::parse(&bytes, metadata_id, &members, &mut bitmap, &mut |_| { calls += 1; Ok::<(), ()>(()) }).unwrap());
             });
             assert_eq!(allocation.bytes_max, 0);
             let view = result.unwrap();
@@ -249,13 +250,13 @@ mod tests {
             assert_eq!(CompilerPublicationMetadata::decode(&bytes).unwrap(), metadata);
             for cutoff in [1, calls/2, calls.saturating_sub(1)] {
                 let mut seen = 0usize;
-                let stopped = BorrowedCompilerMetadata::parse(&bytes, metadata.object_id(), &members, &mut bitmap, &mut |_| { seen += 1; if seen == cutoff { Err(()) } else { Ok(()) } });
+                let stopped = BorrowedCompilerMetadata::parse(&bytes, metadata_id, &members, &mut bitmap, &mut |_| { seen += 1; if seen == cutoff { Err(()) } else { Ok(()) } });
                 assert!(matches!(stopped, Err(BorrowedMetadataError::Stopped(()))));
             }
             let mut corrupt = bytes.clone(); corrupt[METADATA_MAGIC.len()+2] ^= 0x80;
-            assert!(BorrowedCompilerMetadata::parse(&corrupt, metadata.object_id(), &members, &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
+            assert!(BorrowedCompilerMetadata::parse(&corrupt, metadata_id, &members, &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
             let mut incomplete = members.clone(); incomplete.truncate(incomplete.len()-32);
-            assert!(BorrowedCompilerMetadata::parse(&bytes, metadata.object_id(), &incomplete, &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
+            assert!(BorrowedCompilerMetadata::parse(&bytes, metadata_id, &incomplete, &mut bitmap, &mut |_| Ok::<(), ()>(())).is_err());
         }}
     }
 }
