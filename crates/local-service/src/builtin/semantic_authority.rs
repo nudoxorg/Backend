@@ -1173,10 +1173,13 @@ pub(super) fn admit_replayed_native_evidence(
     for capture in captures {
         let project = capture.key.package_key().to_bytes();
         let mut has_matching = false;
+        let mut has_image = false;
         let mut has_retirement = false;
         for row in rows {
             header_budget.checkpoint(1, &stopped).map_err(|e| BuiltinModelError(format!("native replay stopped: {e:?}")))?;
-            has_matching |= row.project == project && row.profile == capture.key.profile();
+            let matches = row.project == project && row.profile == capture.key.profile();
+            has_matching |= matches;
+            has_image |= matches && row.admits_image();
         }
         for row in retirements {
             header_budget.checkpoint(1, &stopped).map_err(|e| BuiltinModelError(format!("native replay stopped: {e:?}")))?;
@@ -1185,6 +1188,9 @@ pub(super) fn admit_replayed_native_evidence(
         if !has_matching && !has_retirement { continue; }
         if !has_matching { return Err(BuiltinModelError("native replay retirement requires a nonempty selected Program".into())); }
         let backend_engine::builtin::ProductSemanticCaptureOutcome::Published { claim, .. } = capture.outcome else {
+            // A source without an image can be proven by another selected
+            // same-project Program, including one with a different TS profile.
+            if !has_image && !has_retirement { continue; }
             return Err(BuiltinModelError("native replay capture is not published".into()));
         };
         let namespace = SemanticAuthority::namespace(capture.key.package(), capture.key.coordinate(), capture.key.profile())?;
