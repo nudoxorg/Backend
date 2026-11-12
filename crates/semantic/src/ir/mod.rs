@@ -356,12 +356,12 @@ pub use view::{
 };
 
 pub use native_program_forest::{
-    BorrowedProgramGraph, BorrowedProgramGraphScratch, RetainedProgramGraph,
+    BorrowedOwnedNativeProgramSourceRef, BorrowedProgramGraph, BorrowedProgramGraphScratch, RetainedProgramGraph,
     MAX_NATIVE_PROGRAM_NODES, NativeProgramForestSchema, NativeProgramNode,
     NativeProgramOwnedSourceRef, NativeProgramSources,
 };
 pub use native_program_sources::{
-    BorrowedNativeProgramError, BorrowedNativeProgramSourceManifest,
+    BorrowedNativeProgramError, BorrowedNativeProgramSourceManifest, BorrowedNativeProgramSourceRef,
     MAX_NATIVE_PROGRAM_MANIFEST_BYTES, MAX_NATIVE_PROGRAM_SOURCES, NativeProgramSource,
     NativeProgramSourceManifest, NativeProgramSourceManifestError,
     NativeProgramSourceManifestSchema, NativeProgramSourceRef, RetainedNativeProgramSourceManifest,

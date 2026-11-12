@@ -11,7 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 mod borrowed;
-pub use borrowed::{BorrowedProgramGraph, BorrowedProgramGraphScratch, RetainedProgramGraph};
+pub use borrowed::{
+    BorrowedOwnedNativeProgramSourceRef, BorrowedProgramGraph, BorrowedProgramGraphScratch,
+    RetainedProgramGraph,
+};
 
 const MAGIC: &[u8; 8] = b"BKNPSF01";
 const PROJECT_SET_MAGIC: &[u8; 8] = b"BKNPSU01";
@@ -599,6 +602,19 @@ impl<'a> Input<'a> {
 mod tests {
     use super::*;
     use crate::ir::{NativeProgramSource, SourceIdentity};
+    fn as_borrowed(
+        row: NativeProgramOwnedSourceRef<'_>,
+    ) -> BorrowedOwnedNativeProgramSourceRef<'_> {
+        BorrowedOwnedNativeProgramSourceRef {
+            program: row.program,
+            node: row.node,
+            row: super::super::native_program_sources::BorrowedNativeProgramSourceRef {
+                program_path: row.row.program_path.as_bytes(),
+                source: row.row.source,
+                package_path: row.row.package_path.map(str::as_bytes),
+            },
+        }
+    }
     #[test]
     fn borrowed_graph_matches_owned_and_stops_on_budget() {
         let toolchain = ContentId::from_canonical_bytes(b"compiler");
@@ -635,7 +651,7 @@ mod tests {
             },
         )
         .unwrap();
-        let mut owned = graph.sources().collect::<Vec<_>>();
+        let mut owned = graph.sources().map(as_borrowed).collect::<Vec<_>>();
         borrowed.sort_by(|a, b| a.row.program_path.cmp(b.row.program_path));
         owned.sort_by(|a, b| a.row.program_path.cmp(b.row.program_path));
         assert_eq!(borrowed, owned);
@@ -760,7 +776,7 @@ mod tests {
             },
         )
         .unwrap();
-        let mut expected = graph.sources().collect::<Vec<_>>();
+        let mut expected = graph.sources().map(as_borrowed).collect::<Vec<_>>();
         actual.sort_by(|a, b| {
             (a.row.program_path, a.node, a.program).cmp(&(b.row.program_path, b.node, b.program))
         });

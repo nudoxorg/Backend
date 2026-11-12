@@ -52,6 +52,68 @@ pub struct NativeProgramSourceRef<'a> {
     pub package_path: Option<&'a str>,
 }
 
+/// Validated source membership with paths borrowed as UTF-8 bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BorrowedNativeProgramSourceRef<'a> {
+    /// Validated UTF-8 native Program path bytes.
+    pub program_path: &'a [u8],
+    /// Exact captured source identity and extent.
+    pub source: SourceIdentity,
+    /// Validated UTF-8 package path bytes, when owned by the package.
+    pub package_path: Option<&'a [u8]>,
+}
+
+/// Validate a canonical path without any uninterruptible input-sized scan.
+pub(super) fn validate_borrowed_path<E>(
+    bytes: &[u8],
+    checkpoint: &mut impl FnMut(u64) -> Result<(), E>,
+) -> Result<(), BorrowedNativeProgramError<E>> {
+    use BorrowedNativeProgramError::{Manifest, Stopped};
+    let invalid = || Manifest(NativeProgramSourceManifestError::Encoding);
+    if bytes.is_empty() || bytes[0] == b'/' {
+        return Err(invalid());
+    }
+    let mut offset = 0;
+    let mut part_len = 0usize;
+    let mut only_dots = true;
+    while offset < bytes.len() {
+        checkpoint(1).map_err(Stopped)?;
+        let mut end = (offset + 4096).min(bytes.len());
+        if end < bytes.len() {
+            let mut back = 0;
+            while end > offset && bytes[end] & 0xc0 == 0x80 && back < 4 {
+                end -= 1;
+                back += 1;
+            }
+            if end == offset || back == 4 {
+                return Err(invalid());
+            }
+        }
+        let chunk = &bytes[offset..end];
+        std::str::from_utf8(chunk).map_err(|_| invalid())?;
+        for &byte in chunk {
+            if byte == b'\\' || byte == 0 {
+                return Err(invalid());
+            }
+            if byte == b'/' {
+                if part_len == 0 || (only_dots && part_len <= 2) {
+                    return Err(invalid());
+                }
+                part_len = 0;
+                only_dots = true;
+            } else {
+                part_len += 1;
+                only_dots &= byte == b'.';
+            }
+        }
+        offset = end;
+    }
+    if part_len == 0 || (only_dots && part_len <= 2) {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 /// Validated canonical bytes of one full native TypeScript program.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeProgramSourceManifest {
@@ -144,13 +206,15 @@ impl<'a> BorrowedNativeProgramSourceManifest<'a> {
         input.u32().map_err(Manifest)?;
         let mut hash = blake3::Hasher::new();
         hash.update(b"typescript-tsz-program-source-manifest-v1\0");
-        let mut prior = None;
+        let mut prior: Option<&[u8]> = None;
         let mut packages = 0;
         for _ in 0..count {
             checkpoint(1).map_err(Stopped)?;
-            let row = input.row().map_err(Manifest)?;
-            if prior.is_some_and(|path| path >= row.program_path) {
-                return Err(Manifest(NativeProgramSourceManifestError::Encoding));
+            let row = checked_borrowed_row(&mut input, &mut checkpoint)?;
+            if let Some(path) = prior {
+                if !less(path, row.program_path, &mut checkpoint).map_err(Stopped)? {
+                    return Err(Manifest(NativeProgramSourceManifestError::Encoding));
+                }
             }
             prior = Some(row.program_path);
             if let Some(path) = row.package_path {
@@ -161,7 +225,7 @@ impl<'a> BorrowedNativeProgramSourceManifest<'a> {
                 packages += 1;
             }
             hash.update(&(row.program_path.len() as u32).to_le_bytes());
-            for chunk in row.program_path.as_bytes().chunks(4096) {
+            for chunk in row.program_path.chunks(4096) {
                 checkpoint(1).map_err(Stopped)?;
                 hash.update(chunk);
             }
@@ -272,31 +336,12 @@ impl<'a> BorrowedNativeProgramSourceManifest<'a> {
     pub fn visit_sources<E>(
         &self,
         mut checkpoint: impl FnMut(u64) -> Result<(), E>,
-        mut visit: impl FnMut(NativeProgramSourceRef<'a>) -> Result<(), E>,
+        mut visit: impl FnMut(BorrowedNativeProgramSourceRef<'a>) -> Result<(), E>,
     ) -> Result<(), E> {
-        let mut rows = Sources {
-            input: Input(&self.bytes[HEADER..]),
-            remaining: self.count,
-        };
+        let mut input = Input(&self.bytes[HEADER..]);
         for _ in 0..self.count {
             checkpoint(1)?;
-            let remaining = rows.input.0;
-            let path_len =
-                u32::from_le_bytes(remaining[..4].try_into().expect("validated row")) as usize;
-            let tag = 4 + path_len + 32 + 4;
-            let package_len = if remaining[tag] == 1 {
-                u32::from_le_bytes(
-                    remaining[tag + 1..tag + 5]
-                        .try_into()
-                        .expect("validated row"),
-                ) as usize
-            } else {
-                0
-            };
-            for _ in 0..path_len.saturating_add(package_len).saturating_add(4095) / 4096 {
-                checkpoint(1)?;
-            }
-            let row = rows.next().expect("validated manifest");
+            let row = raw_borrowed_row(&mut input).expect("validated manifest");
             visit(row)?;
         }
         Ok(())
@@ -341,7 +386,7 @@ impl RetainedNativeProgramSourceManifest {
     pub fn visit_sources<'a, E>(
         &'a self,
         checkpoint: impl FnMut(u64) -> Result<(), E>,
-        visit: impl FnMut(NativeProgramSourceRef<'a>) -> Result<(), E>,
+        visit: impl FnMut(BorrowedNativeProgramSourceRef<'a>) -> Result<(), E>,
     ) -> Result<(), E> {
         BorrowedNativeProgramSourceManifest {
             bytes: &self.bytes,
@@ -501,11 +546,42 @@ fn valid_path(path: &str) -> bool {
             .split('/')
             .any(|part| part == ".." || part.is_empty() || part == ".")
 }
-struct Input<'a>(&'a [u8]);
-pub(super) fn borrowed_row(
-    bytes: &[u8],
-) -> Result<NativeProgramSourceRef<'_>, NativeProgramSourceManifestError> {
-    Input(bytes).row()
+pub(super) struct Input<'a>(&'a [u8]);
+fn raw_borrowed_row<'a>(
+    input: &mut Input<'a>,
+) -> Result<BorrowedNativeProgramSourceRef<'a>, NativeProgramSourceManifestError> {
+    fn path<'a>(input: &mut Input<'a>) -> Result<&'a [u8], NativeProgramSourceManifestError> {
+        let length = input.u32()? as usize;
+        input.take(length)
+    }
+    let program_path = path(input)?;
+    let identity = ContentId::<SourceFactDomain>::try_from(input.take(32)?)
+        .map_err(|_| NativeProgramSourceManifestError::Encoding)?;
+    let byte_len = input.u32()?;
+    let package_path = match input.take(1)?[0] {
+        0 => None,
+        1 => Some(path(input)?),
+        _ => return Err(NativeProgramSourceManifestError::Encoding),
+    };
+    Ok(BorrowedNativeProgramSourceRef {
+        program_path,
+        source: SourceIdentity { identity, byte_len },
+        package_path,
+    })
+}
+fn checked_borrowed_row<'a, E>(
+    input: &mut Input<'a>,
+    checkpoint: &mut impl FnMut(u64) -> Result<(), E>,
+) -> Result<BorrowedNativeProgramSourceRef<'a>, BorrowedNativeProgramError<E>> {
+    let row = raw_borrowed_row(input).map_err(BorrowedNativeProgramError::Manifest)?;
+    validate_borrowed_path(row.program_path, checkpoint)?;
+    if let Some(path) = row.package_path {
+        validate_borrowed_path(path, checkpoint)?;
+    }
+    Ok(row)
+}
+pub(super) fn admitted_borrowed_row(bytes: &[u8]) -> BorrowedNativeProgramSourceRef<'_> {
+    raw_borrowed_row(&mut Input(bytes)).expect("validated row")
 }
 impl<'a> Input<'a> {
     fn take(&mut self, count: usize) -> Result<&'a [u8], NativeProgramSourceManifestError> {
@@ -583,6 +659,31 @@ impl ExactSizeIterator for Sources<'_> {}
 mod tests {
     use super::*;
     #[test]
+    fn borrowed_path_validation_handles_utf8_chunk_boundaries_and_stop() {
+        let mut path = vec![b'a'; 4095];
+        path.extend_from_slice("é/name.ts".as_bytes());
+        assert!(validate_borrowed_path(&path, &mut |_| Ok::<_, ()>(())).is_ok());
+        assert!(valid_path(std::str::from_utf8(&path).unwrap()));
+        let mut checks = 0;
+        assert!(matches!(
+            validate_borrowed_path(&path, &mut |_| {
+                checks += 1;
+                if checks == 2 { Err(()) } else { Ok(()) }
+            }),
+            Err(BorrowedNativeProgramError::Stopped(()))
+        ));
+        path[4096] = b'x';
+        assert!(matches!(
+            validate_borrowed_path(&path, &mut |_| Ok::<_, ()>(())),
+            Err(BorrowedNativeProgramError::Manifest(
+                NativeProgramSourceManifestError::Encoding
+            ))
+        ));
+        for invalid in [b"/x".as_slice(), b"a/../b", b"a//b", b"a/.", b"a\\b"] {
+            assert!(validate_borrowed_path(invalid, &mut |_| Ok::<_, ()>(())).is_err());
+        }
+    }
+    #[test]
     fn borrowed_admission_matches_owned_and_checks_budget() {
         let owned = NativeProgramSourceManifest::from_sources(
             ContentId::from_canonical_bytes(b"compiler"),
@@ -607,7 +708,15 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(visited, owned.sources().collect::<Vec<_>>());
+        let expected = owned
+            .sources()
+            .map(|row| BorrowedNativeProgramSourceRef {
+                program_path: row.program_path.as_bytes(),
+                source: row.source,
+                package_path: row.package_path.map(str::as_bytes),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(visited, expected);
         let retained = RetainedNativeProgramSourceManifest::admit(
             owned.as_bytes().into(),
             &mut scratch,
