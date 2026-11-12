@@ -1762,12 +1762,23 @@ impl StagedSemanticPackage {
         &self.staged.csharp_evidence
     }
 
-    /// Actual immutable helper/runtime custody retained with this staged C# attempt.
+    /// Exact source-bound helper/runtime owners retained by this staged attempt.
+    /// These leases alone are not publication or read-completeness authority.
+    #[must_use]
+    pub fn csharp_execution_leases(
+        &self,
+    ) -> &[backend_frontend_csharp::legacy::CSharpSourceExecutionLease] {
+        self.staged.csharp_execution.entries()
+    }
+
+    /// The execution lease only when exactly one source owner was retained.
+    /// Multi-source callers must inspect [`Self::csharp_execution_leases`].
     #[must_use]
     pub fn csharp_execution_lease(
         &self,
     ) -> Option<&backend_frontend_csharp::legacy::CSharpExecutionLease> {
-        self.staged.csharp_execution.as_ref()
+        let [only] = self.staged.csharp_execution.entries() else { return None; };
+        Some(only.execution())
     }
 
     /// Builds a bounded claim-only C# evidence aggregate tied to these staged
@@ -3532,7 +3543,7 @@ pub(crate) struct StagedPackageCompilation {
     image_plan: Box<[crate::publication::manifest::SemanticImageRegion]>,
     semantic_images: Box<[u8]>,
     csharp_evidence: Box<[StagedCSharpInvocationEvidence]>,
-    csharp_execution: Option<backend_frontend_csharp::legacy::CSharpExecutionLease>,
+    csharp_execution: backend_frontend_csharp::legacy::CSharpSourceExecutionLeases,
     csharp_config: Box<[StagedCSharpConfigProbe]>,
     csharp_unit: Option<Box<str>>,
     package_identity: [u8; 32],
@@ -3579,6 +3590,7 @@ pub struct StagedCSharpInvocationEvidence {
     input_content: [u8; 32],
     source_sha256: [u8; 32],
     evidence: Box<[u8]>,
+    execution: backend_frontend_csharp::legacy::CSharpExecutionLease,
 }
 impl StagedCSharpInvocationEvidence {
     /// Captured package-relative source binding.
@@ -3596,6 +3608,9 @@ impl StagedCSharpInvocationEvidence {
     /// Checked helper sidecar; selected authority requires a separate owner join.
     #[must_use]
     pub fn evidence(&self) -> &[u8] { &self.evidence }
+    /// The exact execution owner of the invocation that produced this evidence.
+    #[must_use]
+    pub fn execution_lease(&self) -> &backend_frontend_csharp::legacy::CSharpExecutionLease { &self.execution }
 }
 
 struct StagedPythonProjectWitness {
@@ -5010,6 +5025,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             .map_err(PackageSemanticError::Allocation)?;
         let mut semantic_images = Vec::new();
         let mut csharp_evidence = Vec::new();
+        let mut csharp_execution = backend_frontend_csharp::legacy::CSharpSourceExecutionLeases::default();
         let csharp_config = package.csharp_config.map_or_else(Vec::new, |probes| {
             probes.iter().map(|probe| StagedCSharpConfigProbe {
                 path: probe.path.into(), text: probe.text.map(Into::into),
@@ -5883,6 +5899,19 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     continue;
                 }
             };
+            // Each C# source creates its own private execution snapshot. Keep
+            // the exact owner that produced this source's image; equal manifest
+            // digests cannot substitute for the actual owner-held lease.
+            if matches!(target.profile, LanguageProfile::CSharp(_)) {
+                let execution = match transient_authority.as_ref() {
+                    Some(super::package_authority::PackageAuthorityOwner::CSharp { execution, .. }) => execution,
+                    _ => return Err(PackageSemanticError::CSharpSdkUnavailable { reason: "C# execution owner unavailable" }),
+                };
+                use sha2::{Digest, Sha256};
+                let source_sha256 = Sha256::digest(source.source.as_bytes()).into();
+                csharp_execution.retain(source.relative_path, source_sha256, execution)
+                    .map_err(|_| PackageSemanticError::Capacity { lane: "C# source execution custody" })?;
+            }
             if let Some(snapshot) = targeting_snapshot.as_ref() {
                 let evidence = match transient_authority.as_ref() {
                     Some(super::package_authority::PackageAuthorityOwner::CSharp { evidence: Some(evidence), .. }) => evidence,
@@ -5895,7 +5924,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             // Retain same-invocation claims for both caller-supplied and
             // SDK-observed references. The aggregate is not closure authority.
             if let Some(super::package_authority::PackageAuthorityOwner::CSharp {
-                evidence: Some(evidence), ..
+                evidence: Some(evidence), execution, ..
             }) = transient_authority.as_ref() {
                 csharp_evidence_bytes = csharp_evidence_bytes
                     .checked_add(evidence.len())
@@ -5917,12 +5946,20 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     return Err(PackageSemanticError::Capacity { lane: "C# invocation source identity" });
                 }
                 use sha2::{Digest, Sha256};
+                let source_sha256 = Sha256::digest(source.source.as_bytes()).into();
+                if !csharp_execution.get(source.relative_path, source_sha256)
+                    .is_some_and(|retained| retained.same_snapshot(execution)) {
+                    return Err(PackageSemanticError::CSharpSdkUnavailable {
+                        reason: "C# evidence execution owner mismatch",
+                    });
+                }
                 csharp_evidence.push(StagedCSharpInvocationEvidence {
                     path: source.relative_path.into(),
                     source: source_identity,
                     input_content: verified.content().to_bytes(),
-                    source_sha256: Sha256::digest(source.source.as_bytes()).into(),
+                    source_sha256,
                     evidence: copy.into_boxed_slice(),
+                    execution: execution.clone(),
                 });
             }
             let fragment_length = compiled.fragment.len();
@@ -6378,12 +6415,6 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             None
         };
 
-        let csharp_execution = match transient_authority.as_ref() {
-            Some(super::package_authority::PackageAuthorityOwner::CSharp { execution, .. }) => {
-                Some(execution.clone())
-            }
-            _ => None,
-        };
         let staged = StagedPackageCompilation {
             compilation_attempt_id,
             artifacts,

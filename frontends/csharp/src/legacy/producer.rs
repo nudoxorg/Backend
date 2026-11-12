@@ -63,9 +63,112 @@ struct CSharpExecutionSnapshot {
 pub struct CSharpExecutionLease(Arc<CSharpExecutionSnapshot>);
 
 impl CSharpExecutionLease {
+    /// Digest of this snapshot's captured file manifest. A digest alone is
+    /// not the identity of the owner-held execution snapshot.
     #[must_use]
-    pub const fn digest(&self) -> [u8; 32] {
+    pub fn digest(&self) -> [u8; 32] {
         self.0.digest
+    }
+
+    /// Whether both leases hold the exact same private snapshot owner.
+    #[must_use]
+    pub fn same_snapshot(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// One source's owner-held execution snapshot. A digest does not substitute
+/// for this exact lease; equal bytes may have separate snapshot owners.
+#[derive(Clone, Debug)]
+pub struct CSharpSourceExecutionLease {
+    path: Box<str>,
+    source_sha256: [u8; 32],
+    execution: CSharpExecutionLease,
+}
+
+impl CSharpSourceExecutionLease {
+    /// Captured package-relative source path.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+    /// Digest of the exact source bytes supplied to the invocation.
+    #[must_use]
+    pub const fn source_sha256(&self) -> [u8; 32] {
+        self.source_sha256
+    }
+    /// The exact private snapshot owner for that source invocation.
+    #[must_use]
+    pub const fn execution(&self) -> &CSharpExecutionLease {
+        &self.execution
+    }
+}
+
+/// Bounded retention of each staged source's actual execution owner. This is
+/// custody only, not a completeness or publication authority capability.
+#[derive(Default, Debug)]
+pub struct CSharpSourceExecutionLeases {
+    entries: Vec<CSharpSourceExecutionLease>,
+    paths: std::collections::BTreeMap<Box<str>, usize>,
+    charged_bytes: usize,
+}
+
+impl CSharpSourceExecutionLeases {
+    /// Retain one exact source/owner pair; duplicate paths fail closed.
+    pub fn retain(
+        &mut self,
+        path: &str,
+        source_sha256: [u8; 32],
+        execution: &CSharpExecutionLease,
+    ) -> Result<(), CSharpAuthorityError> {
+        let parsed = Path::new(path);
+        if path.is_empty()
+            || path.as_bytes().contains(&0)
+            || path
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+            || path.len() > 4096
+            || parsed.is_absolute()
+            || parsed
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+            || self.entries.len() >= 16_384
+            || self.paths.contains_key(path)
+        {
+            return Err(CSharpAuthorityError::Configuration);
+        }
+        let charge = path
+            .len()
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(std::mem::size_of::<CSharpSourceExecutionLease>() + 96))
+            .and_then(|n| self.charged_bytes.checked_add(n))
+            .filter(|n| *n <= 32 * 1024 * 1024)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        self.entries
+            .try_reserve(1)
+            .map_err(|_| CSharpAuthorityError::Configuration)?;
+        self.paths.insert(path.into(), self.entries.len());
+        self.entries.push(CSharpSourceExecutionLease {
+            path: path.into(),
+            source_sha256,
+            execution: execution.clone(),
+        });
+        self.charged_bytes = charge;
+        Ok(())
+    }
+
+    /// Exact retained entries, in successful source-staging order.
+    #[must_use]
+    pub fn entries(&self) -> &[CSharpSourceExecutionLease] {
+        &self.entries
+    }
+
+    /// Return the exact owner for this source only when both path and source
+    /// bytes match the captured pair.
+    #[must_use]
+    pub fn get(&self, path: &str, source_sha256: [u8; 32]) -> Option<&CSharpExecutionLease> {
+        let entry = self.entries.get(*self.paths.get(path)?)?;
+        (entry.source_sha256 == source_sha256).then_some(&entry.execution)
     }
 }
 
@@ -273,7 +376,7 @@ fn snapshot_execution(
     let directory = tempfile::tempdir().map_err(|_| CSharpAuthorityError::Configuration)?;
     let copied_root = directory.path().join("dotnet");
     let mut files = 0;
-    let mut bytes = 0;
+    let mut bytes: usize = 0;
     let mut manifest = SnapshotManifest::new();
     let mut entries = 0;
     let mut path_bytes = 0;
@@ -1842,6 +1945,63 @@ mod tests {
     use super::*;
     use backend_semantic::vocabulary::{MAX_NATIVE_WORKER_PANIC_BYTES, NativeWorkerPanicClass};
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn staged_sources_retain_each_exact_execution_owner_even_with_equal_digests() {
+        fn fixture(digest: [u8; 32]) -> (CSharpExecutionLease, PathBuf) {
+            let directory = tempfile::tempdir().expect("private execution snapshot");
+            let root = directory.path().to_owned();
+            let snapshot = CSharpExecutionSnapshot {
+                toolchain: root.join("dotnet"),
+                oracle: root.join("oracle.dll"),
+                _directory: directory,
+                digest,
+            };
+            (CSharpExecutionLease(Arc::new(snapshot)), root)
+        }
+        let (first, first_root) = fixture([7; 32]);
+        let (second, second_root) = fixture([7; 32]);
+        assert_eq!(first.digest(), second.digest());
+        assert!(!first.same_snapshot(&second));
+        assert!(first.same_snapshot(&first.clone()));
+        let mut retained = CSharpSourceExecutionLeases::default();
+        retained
+            .retain("A.cs", [1; 32], &first)
+            .expect("first source");
+        retained
+            .retain("B.cs", [2; 32], &second)
+            .expect("second source");
+        assert!(retained.get("A.cs", [1; 32]).unwrap().same_snapshot(&first));
+        assert!(
+            retained
+                .get("B.cs", [2; 32])
+                .unwrap()
+                .same_snapshot(&second)
+        );
+        assert!(
+            !retained
+                .get("A.cs", [1; 32])
+                .unwrap()
+                .same_snapshot(&second)
+        );
+        assert!(retained.get("A.cs", [2; 32]).is_none());
+        assert!(retained.get("missing.cs", [1; 32]).is_none());
+        assert!(retained.retain("A.cs", [3; 32], &second).is_err());
+        assert!(retained.retain("../outside.cs", [3; 32], &second).is_err());
+        assert!(
+            retained
+                .retain("nested//file.cs", [3; 32], &second)
+                .is_err()
+        );
+        assert_eq!(retained.entries().len(), 2);
+        drop(first);
+        drop(second);
+        assert!(first_root.is_dir());
+        assert!(second_root.is_dir());
+        drop(retained);
+        assert!(!first_root.exists());
+        assert!(!second_root.exists());
+    }
 
     #[test]
     fn execution_closure_rejects_changed_helper_bytes() {
