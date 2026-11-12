@@ -2169,6 +2169,21 @@ impl SemanticAuthority {
         self.native_header_aggregate_for_admitted(&selected, budget, stopped)
     }
 
+    /// Reopens the exact selected compiler's bounded source-line claim.
+    /// Consumers must independently join the returned map to exact host bytes.
+    pub(super) fn selected_native_lines(
+        &self, key: &ProductSemanticPublicationKey, claim: SemanticPublicationClaim,
+        budget: &mut backend_extension_turso::SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool,
+    ) -> Result<Option<backend_extension_turso::VerifiedNativeLinesWitness>, BuiltinModelError> {
+        if !key.is_selected() || !matches!(key.profile(), LanguageProfile::TypeScript(_)) {
+            return Err(BuiltinModelError("native line publication is not selected TypeScript".into()));
+        }
+        let (actual, selected) = self.read_selected_pair(key)?;
+        if actual != claim { return Err(BuiltinModelError("native line selected claim differs".into())); }
+        backend_extension_turso::reopen_selected_native_lines_budgeted(&self.store, &selected, budget, stopped)
+            .map_err(|error| BuiltinModelError(format!("reopen selected native lines: {error}")))
+    }
+
     /// Caller must have admitted this exact generation against the pending
     /// capture, publication claim and compiler input before invoking this.
     pub(super) fn native_header_aggregate_for_admitted(
