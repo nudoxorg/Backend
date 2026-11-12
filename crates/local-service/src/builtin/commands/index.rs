@@ -3166,11 +3166,11 @@ pub(super) fn finish_deferred_profile_for_snapshot(
             }
         };
     if profile.csharp_unit_claim_only {
-        let current_attempt = semantic_authority.recover_candidate_attempt(&profile.attempt.recovery_claim())
-            .is_ok_and(|attempt| attempt == profile.attempt);
-        let matches_selected = current_attempt && job.csharp_selected_source.as_ref().is_some_and(|witness| {
-            witness.key() == &profile.key
-                && witness.matches_staged_invocation(&staged, *profile.attempt.input_digest())
+        let matches_selected = job.csharp_selected_source.as_ref().is_some_and(|witness| {
+            witness.key() == &profile.key && super::super::csharp_admission::CSharpSelectedCompile::capture(
+                snapshot, Arc::clone(witness), &profile.attempt, &staged, semantic_authority,
+                witness.cancellation_token(),
+            ).is_ok()
         });
         semantic_authority.retire_candidate_attempt(&profile.attempt, backend_extension_turso::CandidateAttemptRetirementReason::Refused)?;
         return Err(BuiltinModelError(if matches_selected {
@@ -3714,6 +3714,7 @@ impl CapturedCSharpUnitAdmission {
     pub(in crate::builtin) fn source_request(&self) -> [u8; 32] { self.receipt.request_identity() }
     pub(in crate::builtin) fn operation_key(&self) -> Option<[u8; 32]> { self.receipt.operation_key().map(|key| key.to_bytes()) }
     pub(in crate::builtin) fn shares_cancellation(&self, cancellation: &Arc<AtomicBool>) -> bool { Arc::ptr_eq(&self.cancellation, cancellation) }
+    pub(in crate::builtin) fn cancellation_token(&self) -> &Arc<AtomicBool> { &self.cancellation }
 
     pub(in crate::builtin) fn target(&self) -> &CompilerPackageTargetV2 { &self.target }
     pub(in crate::builtin) fn project_key(&self) -> [u8; 32] { self.project_key }
@@ -3753,7 +3754,7 @@ impl CapturedCSharpUnitAdmission {
     /// Joins a compiler's claim-only CSE1 aggregate to this exact selected
     /// source and configuration custody. This is necessary but does not prove
     /// SDK, helper, runtime or reference execution custody.
-    fn matches_staged_invocation(&self, staged: &StagedSemanticPackage, input: [u8; 32]) -> bool {
+    pub(in crate::builtin) fn matches_staged_invocation(&self, staged: &StagedSemanticPackage, input: [u8; 32]) -> bool {
         use sha2::Digest;
         if self.cancellation.load(Ordering::Acquire) { return false; }
         let Some(bytes) = staged.csharp_invocation_evidence_object(input) else { return false; };

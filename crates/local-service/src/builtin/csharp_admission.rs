@@ -189,6 +189,46 @@ pub(super) fn plan_untrusted_csharp_replacement(
     Ok(changes)
 }
 
+/// Ephemeral handoff from the selected-source worker. This borrows the actual
+/// staged compiler output and cannot be reconstructed from a durable claim.
+/// It proves source and attempt correlation only; SDK and execution custody
+/// are still required before any publication grant.
+pub(super) struct CSharpSelectedCompile<'a> {
+    witness: std::sync::Arc<super::commands::index::CapturedCSharpUnitAdmission>,
+    attempt: &'a backend_extension_turso::CandidateAttempt,
+    staged: &'a backend_engine::application::StagedSemanticPackage,
+    cancellation: std::sync::Arc<AtomicBool>,
+}
+
+impl<'a> CSharpSelectedCompile<'a> {
+    pub(super) fn capture(
+        base: &WorkspaceSnapshot,
+        witness: std::sync::Arc<super::commands::index::CapturedCSharpUnitAdmission>,
+        attempt: &'a backend_extension_turso::CandidateAttempt,
+        staged: &'a backend_engine::application::StagedSemanticPackage,
+        authority: &super::semantic_authority::SemanticAuthority,
+        cancellation: &std::sync::Arc<AtomicBool>,
+    ) -> Result<Self, String> {
+        let capture = witness.pending_capture().ok_or("C# Pending capture missing")?;
+        let key = witness.key();
+        let namespace = super::semantic_authority::SemanticAuthority::namespace(key.package(), key.coordinate(), key.profile())
+            .map_err(|error| error.to_string())?;
+        if !witness.shares_cancellation(cancellation) || cancellation.load(Ordering::Acquire)
+            || witness.operation_key().is_none() || capture.operation_key().copied() != witness.operation_key()
+            || capture.input_digest() != attempt.input_digest()
+            || capture.observation_sequence() != attempt.observation().sequence()
+            || attempt.namespace() != &namespace || attempt.observation().observation().namespace() != &namespace
+            || authority.recover_candidate_attempt(&attempt.recovery_claim()).map_err(|error| error.to_string())? != *attempt
+            || !witness.revalidate(base, cancellation).map_err(|error| error.to_string())?
+            || !witness.matches_staged_invocation(staged, *attempt.input_digest())
+            || !witness.revalidate(base, cancellation).map_err(|error| error.to_string())?
+            || authority.recover_candidate_attempt(&attempt.recovery_claim()).map_err(|error| error.to_string())? != *attempt
+            || cancellation.load(Ordering::Acquire)
+        { return Err("C# staged invocation or selected attempt changed".into()); }
+        Ok(Self { witness, attempt, staged, cancellation: std::sync::Arc::clone(cancellation) })
+    }
+}
+
 /// Live source/attempt custody for one planned unit delta. It is intentionally
 /// insufficient to authorize publication without the execution and SDK leases.
 /// Serialized intent bytes cannot construct this value.
@@ -203,12 +243,16 @@ pub(super) struct CSharpUnitAdmission {
 impl CSharpUnitAdmission {
     pub(super) fn capture(
         base: &WorkspaceSnapshot,
-        witness: std::sync::Arc<super::commands::index::CapturedCSharpUnitAdmission>,
-        attempt: backend_extension_turso::CandidateAttempt,
+        selected: &CSharpSelectedCompile<'_>,
         authority: &super::semantic_authority::SemanticAuthority,
         replacement: &[([u8; 32], CSharpReceiptRecord)],
-        cancellation: std::sync::Arc<AtomicBool>,
     ) -> Result<Self, String> {
+        let witness = std::sync::Arc::clone(&selected.witness);
+        let attempt = selected.attempt.clone();
+        let cancellation = std::sync::Arc::clone(&selected.cancellation);
+        if !witness.matches_staged_invocation(selected.staged, *attempt.input_digest()) {
+            return Err("C# staged invocation changed".into());
+        }
         let recovered = authority.recover_candidate_attempt(&attempt.recovery_claim()).map_err(|error| error.to_string())?;
         if recovered != attempt { return Err("C# candidate attempt changed".into()); }
         let capture = witness.pending_capture().ok_or("C# Pending capture missing")?;

@@ -1971,6 +1971,12 @@ mod csharp_project_discovery_tests {
         let (_plan, witness) = plan.capture_csharp_admission(&snapshot, receipt).map_err(|e| e.to_string())?;
         assert!(witness.revalidate(&snapshot, &cancellation).map_err(|e| e.to_string())?);
         assert!(!witness.revalidate(&snapshot, &Arc::new(AtomicBool::new(false))).map_err(|e| e.to_string())?);
+        let stale = crate::builtin::genesis().map_err(|e| e.to_string())?.snapshot();
+        assert!(!witness.revalidate(&stale, &cancellation).map_err(|e| e.to_string())?);
+        cancellation.store(true, Ordering::Release);
+        assert!(!witness.revalidate(&snapshot, &cancellation).map_err(|e| e.to_string())?);
+        cancellation.store(false, Ordering::Release);
+        assert!(witness.revalidate(&snapshot, &cancellation).map_err(|e| e.to_string())?);
         std::fs::write(source_root.join("App.cs"), "class Else {}\n").map_err(|error| error.to_string())?;
         assert!(!witness.revalidate(&snapshot, &cancellation).map_err(|error| error.to_string())?);
         Ok(())
