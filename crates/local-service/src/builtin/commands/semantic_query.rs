@@ -13329,16 +13329,18 @@ mod references_tests {
         let package = backend_engine::package_key("fixture");
         let caller = backend_engine::RowId::Symbol(view_build::semantic_symbol(package, fixture_version(1).identity()));
         let callee = backend_engine::RowId::Symbol(view_build::semantic_symbol(package, fixture_version(2).identity()));
+        let missing = backend_engine::RowId::Symbol(view_build::semantic_symbol(package, fixture_version(3).identity()));
         let first = fixture_image()?;
         let second = fixture_image()?;
         let images = [&first, &second].into_iter()
             .map(|bytes| backend_semantic::ir::SemanticImageView::reopen(bytes))
             .collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
-        let unique = observed_page_node_origins(&images[..1], &[7], package, &BTreeSet::from([caller]))
+        let unique = observed_page_node_origins(&images[..1], &[7], package, &BTreeSet::from([caller, missing]))
             .map_err(|error| error.to_string())?;
         assert_eq!(unique.len(), 1);
         assert_eq!(unique.get(&caller).and_then(|entry| *entry).map(|entry| entry.0), Some(7));
         assert!(!unique.contains_key(&callee));
+        assert!(!unique.contains_key(&missing));
         let ambiguous = observed_page_node_origins(&images, &[7, 8], package, &BTreeSet::from([caller, callee]))
             .map_err(|error| error.to_string())?;
         assert!(matches!(ambiguous.get(&caller), Some(None)));
