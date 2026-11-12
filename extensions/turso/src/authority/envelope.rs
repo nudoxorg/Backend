@@ -4486,6 +4486,22 @@ mod tests {
         let selected = selected_generation(&attempt, &envelope.candidate(attempt.clone(), *closure.as_bytes()).unwrap(), 1);
         drop(store);
         let store = FileStore::open(&directory, 8 * 1024 * 1024).unwrap();
+        let mut delivered = (0usize, 0usize);
+        let mut visitor_budget = SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000);
+        visit_selected_publication_wire(&store, &selected, &mut visitor_budget, &|| false, 8 * 1024 * 1024, 1, |wire, budget| {
+            match wire {
+                SelectedPublicationWire::Program { bytes, .. } => { assert!(!bytes.is_empty()); delivered.0 += 1; }
+                SelectedPublicationWire::Image { bytes, .. } => { assert!(!bytes.is_empty()); delivered.1 += 1; }
+            }
+            budget.reserve_retained(1).map_err(|e| format!("{e:?}"))?;
+            Ok(())
+        }).unwrap();
+        assert_eq!(delivered, (1, 1));
+        assert_eq!(visitor_budget.remaining_memory(), 8 * 1024 * 1024 - 2);
+        let visitor_work = 100_000 - visitor_budget.remaining_work();
+        assert!(visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, visitor_work - 1), &|| false, 8 * 1024 * 1024, 1, |_, _| Ok(())).is_err());
+        assert!(visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| true, 8 * 1024 * 1024, 1, |_, _| Ok(())).is_err());
+        assert!(visit_selected_publication_wire(&store, &selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| false, 0, 1, |_, _| Ok(())).is_err());
         let mut credit = SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000);
         let witness = reopen_selected_native_lines_budgeted(&store, &selected, &mut credit, &|| false).unwrap().unwrap();
         assert_eq!(witness.object_id(), line_member.object_id());
@@ -4503,6 +4519,7 @@ mod tests {
         let missing_closure = store.write_closure(&ClosureManifest::new(missing).unwrap()).unwrap();
         let missing_selected = selected_generation(&attempt, &envelope.candidate(attempt.clone(), *missing_closure.as_bytes()).unwrap(), 2);
         assert!(reopen_selected_native_lines_budgeted(&store, &missing_selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| false).is_err());
+        assert!(visit_selected_publication_wire(&store, &missing_selected, &mut SelectedNativeHeaderBudget::new(8 * 1024 * 1024, 100_000), &|| false, 8 * 1024 * 1024, 1, |_, _| Ok(())).is_err());
         drop(store);
         std::fs::remove_dir_all(directory).unwrap();
     }
