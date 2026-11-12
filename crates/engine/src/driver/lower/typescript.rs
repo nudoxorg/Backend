@@ -15446,39 +15446,48 @@ describe('suite', () => {\n\
 
     #[test]
     fn native_tsz_cross_file_ts_call_keeps_exact_target_and_caller() -> Result<(), LaneError> {
-        let callee = "export function loadSectionsCsv(): string { return 'csv'; }\n";
-        let caller = "import { loadSectionsCsv } from './csv';\nexport function generateSchedule(): string { return loadSectionsCsv(); }\n";
+        let csv = "export function loadSectionsCsv(): string { return 'csv'; }\n";
+        let scheduler = "import { loadSectionsCsv } from './csv';\nexport async function generateSchedule(): Promise<string> { return loadSectionsCsv(); }\n";
+        let route = "import { generateSchedule } from '@/scheduler';\nexport async function POST(): Promise<string> { return generateSchedule(); }\n";
         let resolutions = [module_resolution(
             "src/scheduler.ts", "./csv", TszProjectModuleRequestKind::EsmImport,
             TszProjectModuleResolutionTarget::File { path: "src/csv.ts".to_owned() },
+        ), module_resolution(
+            "src/route.ts", "@/scheduler", TszProjectModuleRequestKind::EsmImport,
+            TszProjectModuleResolutionTarget::File { path: "src/scheduler.ts".to_owned() },
         )];
         let authority = native_tsz_project_with_resolutions(
-            &[("src/csv.ts", callee), ("src/scheduler.ts", caller)], &resolutions,
+            &[("src/csv.ts", csv), ("src/scheduler.ts", scheduler), ("src/route.ts", route)], &resolutions,
         )?;
         let project = authority.project().ok_or(LaneError::Missing("call project"))?;
-        let target_facts = collect_native_tsz_file(project, "src/csv.ts", callee)?;
-        let target = (0..target_facts.len()).find(|&i| target_facts.names[i] == b"loadSectionsCsv"
+        for (callee_name, callee_path, callee_text, caller_name, caller_path, caller_text) in [
+            ("loadSectionsCsv", "src/csv.ts", csv, "generateSchedule", "src/scheduler.ts", scheduler),
+            ("generateSchedule", "src/scheduler.ts", scheduler, "POST", "src/route.ts", route),
+        ] {
+        let target_facts = collect_native_tsz_file(project, callee_path, callee_text)?;
+        let target = (0..target_facts.len()).find(|&i| target_facts.names[i] == callee_name.as_bytes()
             && target_facts.kinds[i] == EntityKind::Function).expect("callee declaration");
         let target_span = target_facts.provenance.source_spans()[target].expect("callee extent");
-        let facts = collect_native_tsz_file(project, "src/scheduler.ts", caller)?;
-        let call_start = caller.rfind("loadSectionsCsv()").expect("call site") as u32;
+        let facts = collect_native_tsz_file(project, caller_path, caller_text)?;
+        let call_start = caller_text.rfind(&format!("{callee_name}()")).expect("call site") as u32;
         let calls = (0..facts.occurrence_len).filter(|&i| {
             let owner = facts.occurrence_owners[i] as usize;
-            facts.names[owner] == b"generateSchedule"
+            facts.names[owner] == caller_name.as_bytes()
                 && facts.occurrences[i].kind == ReferenceKind::FunctionCall
                 && facts.provenance.source_spans()[owner].is_some_and(|span|
                     span.start + facts.occurrences[i].span.start == call_start
-                        && span.start + facts.occurrences[i].span.end == call_start + "loadSectionsCsv".len() as u32)
+                        && span.start + facts.occurrences[i].span.end == call_start + callee_name.len() as u32)
         }).collect::<Vec<_>>();
-        assert_eq!(calls.len(), 1, "one exact call owned by generateSchedule");
+        assert_eq!(calls.len(), 1, "one exact call owned by {caller_name}");
         let index = calls[0];
         assert_eq!(facts.occurrences[index].confidence, OccurrenceConfidence::Oracle);
         let slot = facts.occurrence_source_coordinate_slot[index].expect("callee coordinate");
         let coordinate = TypeScriptSourceCoordinate::decode(&facts.foreign_source_coordinate_text[slot as usize])
             .expect("typed callee coordinate");
-        assert_eq!(coordinate.path, "src/csv.ts");
+        assert_eq!(coordinate.path, callee_path);
         assert_eq!((coordinate.declaration_start, coordinate.declaration_end), (target_span.start, target_span.end));
         assert!(matches!(facts.occurrences[index].target, OccurrenceTarget::Foreign(_)));
+        }
         Ok(())
     }
 
