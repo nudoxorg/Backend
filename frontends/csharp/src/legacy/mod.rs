@@ -41,6 +41,7 @@ pub use self::restore::{
 pub use self::sdk::{
     CSharpResolvedReferenceSnapshot, CSharpResolverReceipt, CSharpSdkKind, CSharpSdkObservation,
     CSharpSdkProbe, CSharpSdkProjectProperties, CSharpTargetingReference, CSharpTargetingSnapshot,
+    CSHARP_GLOBALIZATION_POLICY_ID,
     observe_csharp_sdk, observe_csharp_sdk_with, resolve_references_with_sdk,
     resolve_references_with_sdk_diagnostics,
     resolve_sdk_owned_references,

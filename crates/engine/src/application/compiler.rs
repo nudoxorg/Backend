@@ -3451,7 +3451,8 @@ fn csharp_sdk_observation_fingerprint(
         hasher.update(value.as_bytes());
     }
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"compiler.csharp.sdk-observation.v1\0");
+    hasher.update(b"compiler.csharp.sdk-observation.v2\0");
+    text(&mut hasher, backend_frontend_csharp::legacy::CSHARP_GLOBALIZATION_POLICY_ID);
     text(&mut hasher, &observed.sdk_directory.to_string_lossy());
     text(&mut hasher, requested_framework);
     text(&mut hasher, &observed.target_framework);

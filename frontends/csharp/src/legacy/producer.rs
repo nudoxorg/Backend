@@ -44,7 +44,7 @@ pub const DEFAULT_IMAGE_LIMIT: usize = 32 * 1024 * 1024;
 pub const DEFAULT_SOURCE_LIMIT: usize = 16 * 1024 * 1024;
 /// Versioned identity of the isolated Roslyn host-process environment.
 pub const CSHARP_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str =
-    "csharp-package-child-environment.v1";
+    "csharp-package-child-environment.v2;dotnet-globalization-invariant.v1";
 /// Captured compilation-unit input and image-fidelity policy, used to invalidate
 /// producer caches made by the earlier live source-directory walk.
 pub const CSHARP_CAPTURED_UNIT_POLICY_ID_V1: &str = "csharp-captured-unit.v1";
@@ -1360,6 +1360,8 @@ fn join_stream<T>(
 /// Package and reference roots are already carried in the command arguments.
 fn isolate_authority_environment(command: &mut Command) {
     command.env_clear();
+    command.env(crate::legacy::sdk::CSHARP_GLOBALIZATION_ENV_NAME,
+        crate::legacy::sdk::CSHARP_GLOBALIZATION_ENV_VALUE);
     #[cfg(windows)]
     if let Some(system_root) = std::env::var_os("SystemRoot") {
         command.env("SystemRoot", system_root);
@@ -1376,6 +1378,30 @@ mod tests {
     use super::*;
     use backend_semantic::vocabulary::{NativeWorkerPanicClass, MAX_NATIVE_WORKER_PANIC_BYTES};
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn captured_source_retains_unicode_path_and_text() {
+        let source = CSharpCapturedSource {
+            path: "项目/δοκιμή.cs",
+            text: "namespace Δοκιμή; public class 東京 {}",
+        };
+        let encoded = serde_json::to_vec(&source).unwrap();
+        let decoded: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded["Path"], source.path);
+        assert_eq!(decoded["Text"], source.text);
+    }
+
+    #[test]
+    fn authority_environment_uses_fixed_invariant_policy() {
+        let mut command = Command::new("dotnet");
+        command.env("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "0");
+        isolate_authority_environment(&mut command);
+        let values = command.get_envs().collect::<Vec<_>>();
+        assert!(values.iter().any(|(key, value)| *key == "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"
+            && *value == Some(std::ffi::OsStr::new("1"))));
+        assert!(CSHARP_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1.contains(
+            crate::legacy::sdk::CSHARP_GLOBALIZATION_POLICY_ID));
+    }
 
     #[test]
     fn captured_graph_protocol_keeps_project_edges_and_buffers_separate() {

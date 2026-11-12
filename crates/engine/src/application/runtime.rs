@@ -2051,6 +2051,9 @@ fn compiler_environment_identity_for_projection(
     let mut environment = blake3::Hasher::new();
     environment.update(b"compiler-application.execution-environment.v3\0");
     environment.update(&<[u8; 2]>::from(profile));
+    if matches!(profile, LanguageProfile::CSharp(_)) {
+        environment.update(backend_frontend_csharp::legacy::CSHARP_GLOBALIZATION_POLICY_ID.as_bytes());
+    }
     environment.update(crate::application::NATIVE_COMPILER_ENVIRONMENT_POLICY_ID);
     environment.update(&backend_compile::NATIVE_PAYLOAD_VERSION.to_be_bytes());
     environment.update(&semantic_projection_version.to_be_bytes());

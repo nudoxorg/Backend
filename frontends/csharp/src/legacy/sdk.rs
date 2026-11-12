@@ -11,6 +11,11 @@ use std::{
     time::Instant,
 };
 
+/// Fixed child runtime policy. This identifies configuration, not runtime closure.
+pub const CSHARP_GLOBALIZATION_POLICY_ID: &str = "dotnet-globalization-invariant.v1";
+pub const CSHARP_GLOBALIZATION_ENV_NAME: &str = "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT";
+pub const CSHARP_GLOBALIZATION_ENV_VALUE: &str = "1";
+
 // A deliberately narrow global.json grammar prevents custom SDK search paths
 // and rejects duplicate keys before handing the same bytes to dotnet.
 #[derive(serde::Deserialize)]
@@ -78,6 +83,7 @@ pub struct CSharpResolvedReferenceSnapshot {
 /// Canonical identity of one SDK reference-resolution observation.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CSharpResolverReceipt {
+    pub globalization_policy: Box<str>,
     pub sdk_directory: PathBuf,
     pub sdk_kind: Box<str>,
     pub nullable: Box<str>,
@@ -113,7 +119,9 @@ impl CSharpResolverReceipt {
     /// Stable digest used by compiler-plane identity and persisted replay.
     pub fn digest(&self) -> [u8; 32] {
         let mut hash = sha2::Sha256::new();
-        hash.update(b"csharp.sdk-resolver-receipt.v1\0");
+        hash.update(b"csharp.sdk-resolver-receipt.v2\0");
+        hash.update((self.globalization_policy.len() as u64).to_le_bytes());
+        hash.update(self.globalization_policy.as_bytes());
         let sdk = self.sdk_directory.as_os_str().as_encoded_bytes();
         hash.update((sdk.len() as u64).to_le_bytes());
         hash.update(sdk);
@@ -394,7 +402,8 @@ impl CSharpResolvedReferenceSnapshot {
         let Some((digest, names)) = self.selected_owner_evidence() else {
             return false;
         };
-        self.receipt.selected_digest == digest
+        self.receipt.globalization_policy.as_ref() == CSHARP_GLOBALIZATION_POLICY_ID
+            && self.receipt.selected_digest == digest
             && self.digest == digest
             && self.receipt.selected_names.as_ref() == names.as_slice()
             && self.receipt.sdk_directory.is_absolute()
@@ -473,7 +482,8 @@ impl CSharpResolvedReferenceSnapshot {
         let Ok(sdk_directory) = fs::canonicalize(sdk_directory) else {
             return false;
         };
-        persisted.sdk_directory == sdk_directory
+        persisted.globalization_policy.as_ref() == CSHARP_GLOBALIZATION_POLICY_ID
+            && persisted.sdk_directory == sdk_directory
             && persisted.target_framework == target_framework
             && persisted.global_json_digest == global_json_digest
             && persisted.candidate_digest == candidate_digest
@@ -895,6 +905,7 @@ pub fn resolve_references_with_sdk_diagnostics(
         references: owned.iter().map(|(path, _)| path.clone()).collect(),
         digest: selected_digest,
         receipt: CSharpResolverReceipt {
+            globalization_policy: CSHARP_GLOBALIZATION_POLICY_ID.into(),
             sdk_directory: observed_sdk_directory,
             sdk_kind: sdk_name.into(),
             nullable: nullable.into(),
@@ -921,6 +932,7 @@ fn resolver_command(dotnet: &Path, args: Vec<OsString>, scratch: &Path) -> Captu
         cwd: Some(scratch.to_path_buf()),
         environment: CaptureEnvironment::Clear,
         overrides: [
+            (CSHARP_GLOBALIZATION_ENV_NAME.into(), Some(CSHARP_GLOBALIZATION_ENV_VALUE.into())),
             (
                 "DOTNET_CLI_HOME".into(),
                 Some(scratch.as_os_str().to_owned()),
@@ -1379,7 +1391,7 @@ pub fn observe_csharp_sdk_with(
         ),
         environment: CaptureEnvironment::Clear,
         overrides: [
-            ("HOME", root.as_os_str()),
+            (CSHARP_GLOBALIZATION_ENV_NAME, std::ffi::OsStr::new(CSHARP_GLOBALIZATION_ENV_VALUE)),
             ("DOTNET_CLI_HOME", root.as_os_str()),
             ("NUGET_PACKAGES", root.as_os_str()),
             ("DOTNET_CLI_TELEMETRY_OPTOUT", std::ffi::OsStr::new("1")),
@@ -1654,7 +1666,9 @@ mod tests {
     #[test]
     fn resolver_child_environment_is_private_without_home_override() {
         let scratch = tempfile::tempdir().unwrap();
-        let command = resolver_command(Path::new("/usr/bin/env"), Vec::new(), scratch.path());
+        let project_directory = scratch.path().join("プロジェクト-Δοκιμή");
+        fs::create_dir(&project_directory).unwrap();
+        let command = resolver_command(Path::new("/usr/bin/env"), Vec::new(), &project_directory);
         let output = capture(&command, CaptureLimits {
             deadline: Instant::now() + Duration::from_secs(10),
             stdout_bytes: 8192,
@@ -1663,9 +1677,10 @@ mod tests {
         assert!(output.status.success());
         let text = std::str::from_utf8(&output.stdout).unwrap();
         assert!(!text.lines().any(|line| line.starts_with("HOME=")));
-        assert!(text.lines().any(|line| line == format!("DOTNET_CLI_HOME={}", scratch.path().display())));
-        assert!(text.lines().any(|line| line == format!("NUGET_PACKAGES={}", scratch.path().display())));
-        assert!(text.lines().any(|line| line == format!("NUGET_HTTP_CACHE_PATH={}", scratch.path().join("nuget-http-cache").display())));
+        assert!(text.lines().any(|line| line == "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1"));
+        assert!(text.lines().any(|line| line == format!("DOTNET_CLI_HOME={}", project_directory.display())));
+        assert!(text.lines().any(|line| line == format!("NUGET_PACKAGES={}", project_directory.display())));
+        assert!(text.lines().any(|line| line == format!("NUGET_HTTP_CACHE_PATH={}", project_directory.join("nuget-http-cache").display())));
     }
 
     #[test]
@@ -1690,6 +1705,7 @@ mod tests {
             references: vec![file].into_boxed_slice(),
             digest,
             receipt: CSharpResolverReceipt {
+                globalization_policy: CSHARP_GLOBALIZATION_POLICY_ID.into(),
                 sdk_directory: std::env::temp_dir(),
                 sdk_kind: "Microsoft.NET.Sdk".into(),
                 nullable: "enable".into(),
@@ -1744,6 +1760,7 @@ mod tests {
         let selected_digest: [u8; 32] = hash.finalize().into();
         let sdk = tempfile::tempdir().unwrap();
         let receipt = CSharpResolverReceipt {
+            globalization_policy: CSHARP_GLOBALIZATION_POLICY_ID.into(),
             sdk_directory: sdk.path().canonicalize().unwrap(),
             sdk_kind: "Microsoft.NET.Sdk".into(),
             nullable: "enable".into(),
@@ -1766,6 +1783,10 @@ mod tests {
         let encoded = receipt.encode().unwrap();
         let decoded = CSharpResolverReceipt::decode(&encoded).unwrap();
         assert!(snapshot.replay_receipt(&decoded, sdk.path(), "net10.0", None, [8; 32]));
+        let mut wrong_environment = decoded.clone();
+        wrong_environment.globalization_policy = "ambient-culture".into();
+        assert_ne!(wrong_environment.digest(), decoded.digest());
+        assert!(!snapshot.replay_receipt(&wrong_environment, sdk.path(), "net10.0", None, [8; 32]));
         fs::write(&snapshot.references[0], b"tampered").unwrap();
         assert!(!snapshot.replay_receipt(&decoded, sdk.path(), "net10.0", None, [8; 32]));
     }
