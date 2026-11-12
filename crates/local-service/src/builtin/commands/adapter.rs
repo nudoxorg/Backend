@@ -5769,11 +5769,24 @@ impl CommandAdapter {
             &snapshot, selection, &evidence, &root, authority, source_budget,
         )?;
         let signature = if evidence.claim().headers.is_some() {
-            let (aggregate, digest) = self.semantic_authority.selected_native_header_aggregate(
-                evidence.publication_key(), evidence.publication_claim(), source_budget,
+            // Synchronous Source/Read currently has no transport cancellation
+            // capability. Bound this operation by the real client request
+            // deadline as well as a finite shared traversal ledger.
+            let deadline = std::time::Instant::now() + backend_client::CLIENT_REQUEST_TIMEOUT;
+            let stopped = || std::time::Instant::now() >= deadline;
+            let mut header_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(
+                *source_budget, super::super::semantic_authority::NATIVE_HEADER_WORK_UNITS,
+            );
+            let witness = self.semantic_authority.selected_native_header_aggregate(
+                evidence.publication_key(), evidence.publication_claim(), &mut header_budget, &stopped,
             ).map_err(|_| unavailable())?.ok_or_else(unavailable)?;
-            let file = super::super::native_ts_headers::witnessed_file(evidence.claim(), &aggregate, digest)
+            *source_budget = header_budget.remaining_memory();
+            let mut checkpoint = |bytes| super::super::semantic_authority::charge_native_header_work(&header_budget, &stopped, bytes);
+            let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical_checkpointed(witness.as_bytes(), &mut checkpoint)
                 .map_err(|_| unavailable())?;
+            let file = super::super::native_ts_headers::witnessed_file_borrowed(evidence.claim(), &aggregate, *witness.object_id(), &mut checkpoint)
+                .map_err(|_| unavailable())?;
+            checkpoint(52 * 15).map_err(|_| unavailable())?;
             if file.producer_recipe != super::super::native_ts_headers::producer_recipe() {
                 None
             } else if let Some(entry) = file.entry(evidence.entity_id().raw) {
