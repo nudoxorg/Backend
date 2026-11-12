@@ -47,6 +47,9 @@ fn refuse_selected_csharp(
     selected: &super::super::super::csharp_admission::CSharpSelectedCompile<'_>,
     authority: &mut super::super::super::semantic_authority::SemanticAuthority,
 ) -> Result<(), DeferredProfileFailure> {
+    // Keep the checked package (and any custody it owns) borrowed at the
+    // closed handoff. Presence of a package alone never opens this guard.
+    let _staged = selected.staged();
     refuse_csharp_attempt(selected.attempt(), authority,
         "selected C# project output awaits SDK and execution closure admission")
 }

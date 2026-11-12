@@ -226,6 +226,13 @@ impl<'a> CSharpSelectedCompile<'a> {
         self.completed.attempt()
     }
 
+    /// The same worker-owned package whose CSE1 was checked at capture. Its
+    /// eventual SDK and execution custody must be read from this package,
+    /// never supplied separately alongside the selected-source witness.
+    pub(super) fn staged(&self) -> &backend_engine::application::StagedSemanticPackage {
+        self.completed.staged().expect("selected compiler output remains owned")
+    }
+
     pub(super) fn capture(
         base: &WorkspaceSnapshot,
         completed: &'a super::commands::adapter::index_profile_worker::CSharpCompletedWorkerResult,
