@@ -3324,6 +3324,18 @@ impl<'bytes> Decoder<'bytes> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn selected_header_consumer_work_uses_same_ledger() {
+        let budget = super::SelectedNativeHeaderBudget::new(0, 3);
+        assert!(budget.checkpoint(2, &|| false).is_ok());
+        assert_eq!(budget.remaining_work(), 1);
+        assert!(budget.checkpoint(2, &|| false).is_err());
+        assert_eq!(budget.remaining_work(), 1);
+        assert!(budget.checkpoint(1, &|| true).is_err());
+        assert_eq!(budget.remaining_work(), 1);
+        assert!(budget.checkpoint(1, &|| false).is_ok());
+        assert_eq!(budget.remaining_work(), 0);
+    }
     #![allow(clippy::expect_used, clippy::panic)]
 
     use super::*;
