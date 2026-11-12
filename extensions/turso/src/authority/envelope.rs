@@ -3485,6 +3485,27 @@ mod tests {
     }
 
     #[test]
+    fn metadata_versions_four_through_nine_preserve_canonical_roundtrip() {
+        let base = metadata(compiler_image().0);
+        let program = CompilerProgramSourceMember { object_id: [0x11; 32], program: [0x22; 32], byte_length: 8 };
+        let coverage = CompilerSourceCoverageMember { object_id: [0x33; 32], identity: [0x44; 32], byte_length: 8 };
+        let snapshot = CompilerTypeScriptSnapshotMember { object_id: [0x55; 32], byte_length: 8 };
+        let csharp = CompilerCSharpEvidenceMember { object_id: [0x66; 32], byte_length: 8 };
+        let headers = CompilerNativeHeadersMember { object_id: [0x77; 32], byte_length: 8 };
+        let v5 = base.clone().with_native_program_sources(program).unwrap();
+        let v6 = v5.clone().with_source_coverage(coverage).unwrap();
+        let v7 = v6.clone().with_typescript_snapshot_witness(snapshot).unwrap();
+        let v8 = base.clone().with_csharp_evidence(csharp).unwrap();
+        let v9 = v7.clone().with_native_headers(headers).unwrap();
+        for (expected_version, value) in [(4, base), (5, v5), (6, v6), (7, v7), (8, v8), (9, v9)] {
+            let bytes = value.canonical_bytes();
+            assert_eq!(u16::from_le_bytes(bytes[METADATA_MAGIC.len()..METADATA_MAGIC.len()+2].try_into().unwrap()), expected_version);
+            assert_eq!(CompilerPublicationMetadata::decode(&bytes).unwrap(), value);
+            assert!(CompilerPublicationMetadata::decode(&bytes[..bytes.len()-1]).is_err());
+        }
+    }
+
+    #[test]
     fn truncated_maximum_inventories_refuse_before_count_sized_allocation() {
         use allocation_counter::measure;
         let record = metadata(compiler_image().0);
