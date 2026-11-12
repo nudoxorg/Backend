@@ -296,4 +296,32 @@ mod tests {
         assert!(requested <= bound, "projection requested {requested}, quota {bound}");
         assert!(preimage.ends_with("\0sql:4294967295"));
     }
+
+    #[test]
+    fn long_path_query_presentation_fits_precharged_quota() {
+        use backend_extension_trustfall::{SemanticQueryEvidence, SemanticQueryFact, SemanticQueryPresentation, SqlNativeQueryEvidence};
+        let definition = SqlDefinition {
+            kind: SqlObjectKind::Column, action: SqlDefinitionAction::Create,
+            conditional: false, schema: None, name: "x".into(), parent: Some("t".into()),
+            parent_schema: None, name_extent: SqlByteRange { start: 0, end: 1 },
+            extent: SqlByteRange { start: 0, end: 1 }, detail: None, statement: 0,
+            entity: None, parent_entity: None, live_at_head: true, head_name: None, head_parent: None,
+        };
+        let path = vec!["d".repeat(250); 12].join("/");
+        let bound = projection_bound("p", &path, &definition).unwrap();
+        let (coordinate, preimage, display, kind) = projection("p", &path, 4, &definition).unwrap();
+        let package = backend_engine::package_key("p");
+        let id = RowId::Symbol(backend_engine::symbol_key(&preimage)).stable_key();
+        let fact = SemanticQueryFact::new(
+            SemanticQueryEvidence::SqlNative(SqlNativeQueryEvidence::new(package, [1;32], [2;32], [3;32], [4;32], [5;32], [6;32], 4, preimage)),
+            SemanticQueryPresentation { id, kind: "field".into(), coordinate, name: "x".into(),
+                signature: Some(format!("SQL {kind} {display}")),
+                documentation: format!("SQL {kind} in {path}; use sql-query for binding, migration history and checked source"),
+                score: None, project: None, parent: None, related: Box::new([]) },
+        );
+        let measured = backend_extension_trustfall::measure_semantic_query_facts(
+            &[fact], 1, backend_extension_trustfall::Limits::default(),
+        ).unwrap();
+        assert!(measured + display.capacity() <= bound, "presentation quota {bound}, measured {measured}");
+    }
 }
