@@ -307,9 +307,9 @@ def self_check():
     candidate={'coordinate':PURL,'standing':'published','source':[1]*32,'proof':[2]*32,'metadata':{'yanked':{'state':'known','value':False},'description':{'state':'known','value':DESCRIPTION},'license':{'state':'known','value':'MIT'},'published_at':{'state':'known','value':'2026-11-01T00:00:00Z'}},'freshness':{'state':'current','observed_at_millis':10,'valid_until_millis':20}}
     good={'package_discovery':{'package':PURL,'observation':{'state':'observed','candidates':[candidate]}},'records':[{'tags':['discovered · unacquired']}],'note':DESCRIPTION}
     selected_candidate(good)
-    for case in ('description','proof','yanked','acquired'):
+    for case in ('description','license','published_at','proof','yanked','acquired'):
         malformed=json.loads(json.dumps(good))
-        if case=='description':malformed['package_discovery']['observation']['candidates'][0]['metadata'].pop('description')
+        if case in ('description','license','published_at'):malformed['package_discovery']['observation']['candidates'][0]['metadata'].pop(case)
         if case=='proof':malformed['package_discovery']['observation']['candidates'][0]['proof']=[2]
         if case=='yanked':malformed['package_discovery']['observation']['candidates'][0]['metadata']['yanked']={'state':'unknown'}
         if case=='acquired':malformed['records'][0]['tags']=['acquired']
