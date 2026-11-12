@@ -1592,9 +1592,18 @@ mod bounded_catalog_tests {
             host_count: 0,
         };
         let mut scratch = [0u8; backend_engine::builtin::MAX_SQL_ROW_BYTES];
+        let selected_digest = selection_digest(project, &selection, &mut scratch).unwrap();
         assert_eq!(
-            selection_digest(project, &selection, &mut scratch).unwrap(),
+            selected_digest,
             backend_engine::builtin::sql_selection_digest(project, &selection).unwrap()
+        );
+        let mut changed = selection.clone();
+        if let SqlAnalysisRecord::Selection { config_input, .. } = &mut changed {
+            *config_input = [9; 32];
+        }
+        assert_ne!(
+            selected_digest,
+            selection_digest(project, &changed, &mut scratch).unwrap()
         );
         assert_eq!(
             HostFactDigest::new().finish(),
@@ -1612,10 +1621,14 @@ mod bounded_catalog_tests {
         let len = encode_sql_json(&row, &mut scratch).unwrap();
         let mut hash = HostFactDigest::new();
         hash.push(&key, &scratch[..len]).unwrap();
+        let digest = hash.finish();
         assert_eq!(
-            hash.finish(),
+            digest,
             backend_engine::builtin::sql_host_fact_digest(&[(key, &row)]).unwrap()
         );
+        let mut changed_key = HostFactDigest::new();
+        changed_key.push(&[6; 32], &scratch[..len]).unwrap();
+        assert_ne!(digest, changed_key.finish());
     }
 
     #[test]
