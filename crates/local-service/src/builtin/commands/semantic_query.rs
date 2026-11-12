@@ -2701,6 +2701,9 @@ fn execute_observed_native_edge_page(
     request: &backend_library::RelatedPageRequest,
     secret: &[u8; 32],
 ) -> Result<Option<QualifiedNativeGraphEdgePage>, BuiltinModelError> {
+    let trace = std::env::var_os("NUDOX_RELATED_TRACE").is_some();
+    let started = std::time::Instant::now();
+    if trace { eprintln!("related-trace owner start"); }
     if *snapshot != daemon.engine().daemon().owner().snapshot() {
         return Err(BuiltinModelError("related graph page workspace snapshot is stale".to_owned()));
     }
@@ -2718,6 +2721,7 @@ fn execute_observed_native_edge_page(
     let (publications, publication_gap) = collect_observed_query_publications(
         snapshot, &sources, package, &available, compiler, generations, image_rows,
     )?;
+    if trace { eprintln!("related-trace owner publications elapsed_ms={} publications={}", started.elapsed().as_millis(), publications.len()); }
     if !observed_typescript_target_present(&publications, package, center)? { return Ok(None) }
     let scope = &request.scope;
     if scope.root != view.root().to_bytes()
@@ -2753,11 +2757,13 @@ fn execute_observed_native_edge_page(
         &images, view, package, center, center_row, include_incoming,
         &project_paths_for_package(&sources, package), &scopes, &[], &observed, after, limit,
     )?;
+    if trace { eprintln!("related-trace owner edge-window elapsed_ms={} candidates={}", started.elapsed().as_millis(), projected.len()); }
     let mut budget = backend_engine::builtin::MAX_NATIVE_EVIDENCE_BYTES;
     let (mut edges, edge_gap) = qualify_projected_observed_graph_edges(
         &publications, snapshot, view, package, &images, &image_publications, &programs,
         projected, workspace, compiler, generations, authority, &mut budget,
     )?;
+    if trace { eprintln!("related-trace owner edge-qualification elapsed_ms={} edges={}", started.elapsed().as_millis(), edges.len()); }
     edges.sort_by_key(|edge| backend_library::RelatedEdgeKey::new(edge.relation));
     let mut wanted = BTreeSet::from([center_row]);
     for edge in &edges { wanted.insert(edge.relation.from); wanted.insert(edge.relation.to); }
@@ -2794,6 +2800,7 @@ fn execute_observed_native_edge_page(
         }
     }
     edges.retain(|edge| admitted.contains(&edge.relation.from) && admitted.contains(&edge.relation.to));
+    if trace { eprintln!("related-trace owner node-qualification elapsed_ms={} nodes={}", started.elapsed().as_millis(), nodes.len()); }
     let mut gaps = BTreeSet::from([
         OBSERVED_POLICY_GAP.to_owned(),
         "Graph relation joins are not certified exhaustive; search source for additional relations".to_owned(),

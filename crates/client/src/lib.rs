@@ -1857,6 +1857,9 @@ impl Session {
     ) -> Result<ReplyDto, ClientError> {
         // Resolve coordinate aliases through an admitted document, then use its
         // selected identity. The opaque continuation never mints that identity.
+        let trace = std::env::var_os("NUDOX_RELATED_TRACE").is_some();
+        let started = std::time::Instant::now();
+        if trace { eprintln!("related-trace client document-start"); }
         let selected = if let DeclarationSelector::Coordinate(coordinate) = selector {
             let document = self.document(coordinate)?;
             let CommandReply::Document(document) = document.reply else {
@@ -1870,7 +1873,9 @@ impl Session {
             let id = backend_library::SelectedSymbolId::new(document.symbol.to_bytes()).ok_or_else(|| ClientError::Protocol("invalid selected center".to_owned()))?;
             Some((DeclarationSelector::Selected(id), selection.source()))
         } else { None };
+        if trace { eprintln!("related-trace client document-complete elapsed_ms={}", started.elapsed().as_millis()); }
         let revision = self.revision()?;
+        if trace { eprintln!("related-trace client revision-complete elapsed_ms={}", started.elapsed().as_millis()); }
         if selected.as_ref().is_some_and(|(_, source)| source.root != revision.root) { return Err(ClientError::StaleCursor); }
         let selector = selected.as_ref().map_or(selector, |(selector, _)| selector);
         let symbol = selector.address();
@@ -1883,9 +1888,11 @@ impl Session {
             return Err(ClientError::StaleCursor);
         }
         let certificate = declaration_certificate(revision.certificate, selector);
+        if trace { eprintln!("related-trace client edge-request elapsed_ms={}", started.elapsed().as_millis()); }
         let reply = self.send_success(Command::RelatedEdgePage {
             symbol, request: backend_library::RelatedPageRequest { scope, cursor: continuation },
         }, Some(certificate))?;
+        if trace { eprintln!("related-trace client edge-complete elapsed_ms={}", started.elapsed().as_millis()); }
         if let Some((_, source)) = selected.as_ref() {
             let CommandReply::RelatedEdgePage(page) = &reply.reply else {
                 return Err(ClientError::Protocol("related edge page changed shape".to_owned()));
