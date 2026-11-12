@@ -122,7 +122,9 @@ fn verify(session: &mut Session, project: &std::path::Path) -> Result<(), Box<dy
             .connection_frames_remaining()
             .is_some_and(|remaining| remaining < 2)
         {
-            session.reconnect()?;
+            session.reconnect().map_err(|e| {
+                std::io::Error::other(format!("lexical search connection rotation: {e}"))
+            })?;
         }
         match session
             .search("mounted", 100)
@@ -226,40 +228,42 @@ fn verify(session: &mut Session, project: &std::path::Path) -> Result<(), Box<dy
     }
     let package = PackageReference::parse("pkg:npm/vue@3.5.44")
         .map_err(|e| std::io::Error::other(e.to_string()))?;
-    let installed = session.surface(SurfaceCommand::Package {
-        package: package.clone(),
-    })?;
+    let installed = session
+        .surface(SurfaceCommand::Package {
+            package: package.clone(),
+        })
+        .map_err(|e| std::io::Error::other(format!("installed package: {e}")))?;
     let SurfaceReply::PackageInstalled(facts) = installed else {
         return Err("installed package owner reply".into());
     };
-    assert!(
-        facts
-            .files
-            .iter()
-            .any(|file| file.excerpt.as_str().contains("createApp"))
-    );
-    assert!(
-        facts
-            .engines
-            .iter()
-            .any(|engine| engine.as_str() == "node >=22")
-    );
+    assert!(facts
+        .files
+        .iter()
+        .any(|file| file.excerpt.as_str().contains("createApp")));
+    assert!(facts
+        .engines
+        .iter()
+        .any(|engine| engine.as_str() == "node >=22"));
     assert!(matches!(
-        session.surface(SurfaceCommand::Dependencies {
-            package: package.clone()
-        })?,
+        session
+            .surface(SurfaceCommand::Dependencies {
+                package: package.clone()
+            })
+            .map_err(|e| std::io::Error::other(format!("installed dependencies: {e}")))?,
         SurfaceReply::DependenciesInstalled(_)
     ));
     assert!(matches!(
-        session.surface(SurfaceCommand::PackageVersions { package })?,
+        session
+            .surface(SurfaceCommand::PackageVersions { package })
+            .map_err(|e| std::io::Error::other(format!("installed versions: {e}")))?,
         SurfaceReply::PackageVersionsInstalled(_)
     ));
     Ok(())
 }
 
 #[test]
-fn vue_scripts_answer_search_source_references_after_cold_owner_reopen()
--> Result<(), Box<dyn Error>> {
+fn vue_scripts_answer_search_source_references_after_cold_owner_reopen(
+) -> Result<(), Box<dyn Error>> {
     let fixture = tempfile::Builder::new()
         .prefix("vue-owner-")
         .tempdir_in("/tmp")?;
