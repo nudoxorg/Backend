@@ -4484,6 +4484,15 @@ mod tests {
         objects.sort_by_key(|o| (o.schema(), *o.key(), *o.version()));
         let closure = store.write_closure(&ClosureManifest::new(objects).unwrap()).unwrap();
         let selected = selected_generation(&attempt, &envelope.candidate(attempt.clone(), *closure.as_bytes()).unwrap(), 1);
+        let mut scratch_credit = 8 * 1024 * 1024;
+        let pin = store.pin_garbage_collection_bounded(&mut scratch_credit, |_| Ok(())).unwrap();
+        let reader = store.open_bounded_nonrelation_object(&pin, UntrustedObjectId::from_bytes(*object.id().as_bytes()), &[COMPILER_NATIVE_LINES_SCHEMA], None, object.bytes().len(), &mut scratch_credit, |_| Ok(())).unwrap();
+        let mut wire = vec![0; object.bytes().len()];
+        let admitted = reader.read_into(&mut wire, &mut scratch_credit, |_, _| Ok(()), |view, _| {
+            CompilerNativeLinesMember::from_verified_view(view, &mut |_| Ok(())).map_err(|_| backend_store::StoreError::Corrupt)
+        }).unwrap();
+        assert_eq!(admitted, line_member);
+        drop(pin);
         drop(store);
         let store = FileStore::open(&directory, 8 * 1024 * 1024).unwrap();
         let mut delivered = (0usize, 0usize, 0usize);
