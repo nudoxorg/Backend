@@ -38,15 +38,17 @@ fn index(session: &mut Session, project: &Path, byte: u8) -> Result<(), Box<dyn 
         .map_err(|e| io::Error::other(e.to_string()))?;
     let key =
         IndexOperationKey::from_bytes([byte; 32]).map_err(|e| io::Error::other(e.to_string()))?;
-    let mut status =
-        session.start_index_operation(key, package, CompileExecutionIntent::Interactive)?;
+    eprintln!("native owner: start index request");
+    let mut status = session.start_index_operation(key, package, CompileExecutionIntent::Interactive)
+        .map_err(|e| io::Error::other(format!("start index request: {e:?}")))?;
+    eprintln!("native owner: index accepted; polling status");
     let deadline = Instant::now() + Duration::from_secs(600);
     loop {
         let IndexOperationObservation::Known(known) = status else {
             return Err("unknown index operation".into());
         };
         match known.state {
-            IndexOperationState::Published(_) => return Ok(()),
+            IndexOperationState::Published(_) => { eprintln!("native owner: index published"); return Ok(()) },
             IndexOperationState::Accepted | IndexOperationState::Active { .. } => {}
             state => return Err(io::Error::other(format!("index refused: {state:?}")).into()),
         }
@@ -54,7 +56,8 @@ fn index(session: &mut Session, project: &Path, byte: u8) -> Result<(), Box<dyn 
             return Err("index deadline".into());
         }
         thread::sleep(Duration::from_millis(30));
-        status = session.index_operation_status(key)?;
+        status = session.index_operation_status(key)
+            .map_err(|e| io::Error::other(format!("index status request: {e:?}")))?;
     }
 }
 
@@ -529,13 +532,17 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
     )?;
     paths.initialize()?;
     let authority = backend_engine::read_authority_secret(paths.authority_secret())?;
-    let owner = start_owner(&paths)?;
-    let mut session = Session::connect(owner.endpoint())?;
-    index(&mut session, &project, 0x51)?;
+    eprintln!("native owner: start warm owner");
+    let owner = start_owner(&paths).map_err(|e| io::Error::other(format!("start warm owner: {e:?}")))?;
+    let mut session = Session::connect(owner.endpoint()).map_err(|e| io::Error::other(format!("connect warm owner: {e:?}")))?;
+    index(&mut session, &project, 0x51).map_err(|e| io::Error::other(format!("warm index: {e:?}")))?;
+    eprintln!("native owner: select warm document");
     let (coordinate, document) =
-        select_native_document(&mut session, &authority, "Greeting", "view.ts")?;
+        select_native_document(&mut session, &authority, "Greeting", "view.ts")
+            .map_err(|e| io::Error::other(format!("select warm document: {e:?}")))?;
     assert_eq!(document.signature.as_deref(), Some(expected_signature));
-    let CommandReply::Document(shown) = session.document(&coordinate)?.reply else {
+    eprintln!("native owner: warm document");
+    let CommandReply::Document(shown) = session.document(&coordinate).map_err(|e| io::Error::other(format!("warm document: {e:?}")))?.reply else {
         return Err("document reply".into());
     };
     assert_eq!(shown.signature.as_deref(), Some(expected_signature));
@@ -558,8 +565,9 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
         limit: 12,
         source_identity: None,
     };
+    eprintln!("native owner: first source range");
     let CommandReply::Document(ranged) = session
-        .declaration_source_range(&selector, None, request)?
+        .declaration_source_range(&selector, None, request).map_err(|e| io::Error::other(format!("first source range: {e:?}")))?
         .reply
     else {
         return Err("range page document".into());
@@ -585,8 +593,9 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
         limit: 12,
         source_identity: Some(page.source_identity),
     };
+    eprintln!("native owner: source continuation");
     let CommandReply::Document(next) = session
-        .declaration_source_range(&selector, None, continuation)?
+        .declaration_source_range(&selector, None, continuation).map_err(|e| io::Error::other(format!("source continuation: {e:?}")))?
         .reply
     else {
         return Err("range continuation document".into());
@@ -608,8 +617,9 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
         .map_err(|error| io::Error::other(format!("{error:?}")))?;
     let target =
         ProductText::new(coordinate.clone()).map_err(|e| io::Error::other(e.to_string()))?;
+    eprintln!("native owner: references");
     let SurfaceReply::References { coverage, .. } =
-        session.surface(SurfaceCommand::References { target })?
+        session.surface(SurfaceCommand::References { target }).map_err(|e| io::Error::other(format!("references: {e:?}")))?
     else {
         return Err("references coverage reply".into());
     };
@@ -621,11 +631,14 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
         "unavailable native reference coverage cannot claim completeness"
     );
     drop(session);
+    eprintln!("native owner: close warm owner");
     assert_eq!(owner.close()?.failures, 0);
-    let owner = start_owner(&paths)?;
-    let mut session = Session::connect(owner.endpoint())?;
+    eprintln!("native owner: start cold owner");
+    let owner = start_owner(&paths).map_err(|e| io::Error::other(format!("start cold owner: {e:?}")))?;
+    let mut session = Session::connect(owner.endpoint()).map_err(|e| io::Error::other(format!("connect cold owner: {e:?}")))?;
+    eprintln!("native owner: cold source");
     let CommandReply::Document(cold) = session
-        .declaration(&selector, DeclarationRead::Source)?
+        .declaration(&selector, DeclarationRead::Source).map_err(|e| io::Error::other(format!("cold source: {e:?}")))?
         .reply
     else {
         return Err("cold retained selection reply".into());
@@ -635,8 +648,9 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
     cold.source_policy
         .verify_owner(&authority, &original)
         .map_err(|error| io::Error::other(format!("{error:?}")))?;
+    eprintln!("native owner: cold continuation");
     let CommandReply::Document(cold_range) = session
-        .declaration_source_range(&selector, None, continuation)?
+        .declaration_source_range(&selector, None, continuation).map_err(|e| io::Error::other(format!("cold continuation: {e:?}")))?
         .reply
     else {
         return Err("cold continuation reply".into());
@@ -654,6 +668,7 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
         project.join("view.ts"),
         "export async function Greeting(): Promise<string> { return 'afters'; }\n",
     )?;
+    eprintln!("native owner: stale continuation");
     if let Ok(reply) = session.declaration_source_range(&selector, None, continuation) {
         let CommandReply::Document(stale) = reply.reply else {
             return Err("stale range reply".into());
@@ -676,6 +691,7 @@ fn native_ts_owner_explicit_range_retained_selection_and_stale_refusal()
         );
     }
     drop(session);
+    eprintln!("native owner: close cold owner");
     assert_eq!(owner.close()?.failures, 0);
     Ok(())
 }
