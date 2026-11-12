@@ -9,7 +9,7 @@
 //! binds to several objects is a candidate edge, never an exact one. Mentions
 //! the binder could not bind are counted as a gap, not dropped.
 use super::impact_framework::{
-    DomainLoad, Edge, FileWitness, ImpactAdapter, ImpactContext, Key, Node, node_key,
+    DomainLoad, Edge, FileWitness, ImpactAdapter, ImpactContext, Key, Node,
 };
 use crate::builtin::sql_catalog::{ProjectSql, load_project};
 use backend_engine::builtin::SqlHostTerminal;
@@ -35,6 +35,16 @@ fn entity_key(entity: &SqlEntityRef) -> Key {
     hash.update(&(entity.path.len() as u64).to_le_bytes());
     hash.update(entity.path.as_bytes());
     hash.update(&entity.ordinal.to_le_bytes());
+    *hash.finalize().as_bytes()
+}
+
+// Statement identity is the selected host key plus native statement ordinal;
+// a line number is presentation only and may collide or be unavailable.
+fn statement_key(host: &[u8; 32], ordinal: u32) -> Key {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"backend.impact.sql-statement.v1\0");
+    hash.update(host);
+    hash.update(&ordinal.to_le_bytes());
     *hash.finalize().as_bytes()
 }
 
@@ -261,7 +271,7 @@ fn build(loaded: ProjectSql) -> DomainLoad {
         let owner_key = reference.in_object.as_ref()
             .filter(|_| !matches!(class, SqlStatementKind::AlterTable | SqlStatementKind::Drop))
             .and_then(|_| object_owners.get(&(*host, reference.statement)).copied())
-            .unwrap_or_else(|| node_key(DOMAIN, owner_kind, &owner_scope, &owner_name));
+            .unwrap_or_else(|| statement_key(&loaded.hosts[*host].key, reference.statement));
         nodes.entry(owner_key).or_insert_with(|| {
             let mut node = Node::new(DOMAIN, owner_kind, &owner_scope, &owner_name);
             if reference.in_object.is_none() || matches!(class, SqlStatementKind::AlterTable | SqlStatementKind::Drop) {
@@ -417,6 +427,13 @@ mod sql_impact_regression_tests {
         };
         let result = build(loaded);
         assert!(result.gaps.iter().any(|gap| gap.facet == "sql.candidate-limit" && gap.count == Some(1)));
+    }
+
+    #[test]
+    fn statement_identity_does_not_depend_on_line_availability() {
+        let host = [8; 32];
+        assert_ne!(statement_key(&host, 1), statement_key(&host, 2), "same-line or unknown-line statements remain distinct");
+        assert_ne!(statement_key(&host, 1), statement_key(&[9; 32], 1), "different hosts remain distinct");
     }
 
     #[test]
