@@ -50,6 +50,7 @@ impl<'a> BorrowedVersionedMetadata<'a> {
             let members = d.take(count.checked_mul(MEMBER_BYTES).ok_or(VersionedPlaneError::Truncated)?)?;
             let needed = count.checked_add(7).ok_or(VersionedPlaneError::MemberCount)? / 8;
             if bitmap.len() < needed { return Err(VersionedPlaneError::Allocation.into()); }
+            checkpoint(needed).map_err(BorrowedVersionedError::Stopped)?;
             bitmap[..needed].fill(0);
             let mut previous: Option<[u8;32]> = None;
             for cell in members.chunks_exact(MEMBER_BYTES) {

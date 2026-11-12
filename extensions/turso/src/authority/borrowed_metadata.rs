@@ -109,6 +109,7 @@ impl<'a> BorrowedCompilerMetadata<'a> {
         let image_rows=d.take(images.checked_mul(72).ok_or(CompilerEnvelopeError::MemberCount)?)?;
         let bitmap_need=images.checked_add(7).ok_or(CompilerEnvelopeError::MemberCount)?/8;
         if bitmap.len() < bitmap_need { return Err(CompilerEnvelopeError::MemberCount.into()); }
+        checkpoint(bitmap_need).map_err(BorrowedMetadataError::Stopped)?;
         bitmap[..bitmap_need].fill(0);
         let mut previous=None;
         for row in image_rows.chunks_exact(72) {
@@ -145,6 +146,7 @@ impl<'a> BorrowedCompilerMetadata<'a> {
         let schema=match version { METADATA_VERSION=>COMPILER_PUBLICATION_METADATA_SCHEMA, PROGRAM_METADATA_VERSION=>COMPILER_PROGRAM_METADATA_SCHEMA, COVERAGE_METADATA_VERSION=>COMPILER_COVERAGE_METADATA_SCHEMA, TYPESCRIPT_SNAPSHOT_METADATA_VERSION=>COMPILER_TYPESCRIPT_SNAPSHOT_METADATA_SCHEMA, CSHARP_EVIDENCE_METADATA_VERSION=>COMPILER_CSHARP_EVIDENCE_METADATA_SCHEMA, NATIVE_HEADERS_METADATA_VERSION=>COMPILER_NATIVE_HEADERS_METADATA_SCHEMA, _=>return Err(CompilerEnvelopeError::MetadataVersion.into()) };
         let id=backend_store::untrusted_object_id_for_encoded_value_checkpointed(schema,bytes,checkpoint).map_err(|e| match e {backend_store::IdentityHashError::Bounds=>BorrowedMetadataError::Invalid(CompilerEnvelopeError::ByteLengthOverflow),backend_store::IdentityHashError::Stopped(e)=>BorrowedMetadataError::Stopped(e)})?;
         if id.as_bytes()!=&metadata_id { return Err(CompilerEnvelopeError::MetadataMismatch.into()); }
+        checkpoint(needed).map_err(BorrowedMetadataError::Stopped)?;
         bitmap[..needed].fill(0);
         let mut unique_versioned=0usize;
         if let Some(planes)=&versioned {
