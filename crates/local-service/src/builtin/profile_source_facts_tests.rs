@@ -599,6 +599,51 @@ fn assert_complete_structural_query_corpus(
 }
 
 #[test]
+fn vue_script_query_facts_are_structural_and_not_compiler_members() -> Result<(), String> {
+    use backend_engine::application::{LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths, LocalCompilerScratch, LocalCompilerTimeout, LocalRuntimePackageAuthority, LocalRuntimeToolchain};
+    use backend_extension_trustfall::SemanticQueryEvidence;
+    use backend_semantic::vocabulary::NativeTool;
+    use std::collections::BTreeMap;
+    use std::num::NonZeroUsize;
+
+    let workspace = TempWorkspace::new();
+    let project = workspace.0.path().join("vue-project");
+    std::fs::create_dir(&project).test_value()?;
+    std::fs::write(project.join("App.vue"), "<script setup lang=\"ts\">function mounted() { return 1; }</script>").test_value()?;
+    std::fs::write(project.join("sibling.ts"), "export const sibling = 1;").test_value()?;
+    let label = project.to_str().ok_or("project path")?;
+    let package = PackageKey::from_value(label);
+    let scan = super::super::ingest::scan_project(label, package.to_bytes(), &BTreeMap::new())?;
+    assert_eq!(scan.compiler_sources.len(), 1, "only sibling TS is a compiler member");
+    assert_eq!(scan.compiler_sources[0].relative_path, "sibling.ts");
+    let files = scan.files.iter().map(|(key, record)| {
+        let facts = scan.source_facts.iter().find(|facts| facts.manifest().file_key() == *key).cloned();
+        (record.clone(), facts)
+    }).collect::<Vec<_>>();
+    let mut daemon = open_daemon(workspace.0.path());
+    commit_files(&mut daemon, package, label, 1, &files);
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let sources = crate::builtin::read_indexed_sources(&snapshot).test_value()?;
+    let root = workspace.0.path().join("vue-query-compiler");
+    let compiler = LocalCompilerClient::start(LocalCompilerRuntimeConfiguration::new(
+        LocalCompilerRuntimePaths::new(root.join("artifacts"), root.join("journal"), root.join("native-work")).test_value()?,
+        vec![LocalRuntimeToolchain::unavailable(NativeTool::Python)].into_boxed_slice(),
+        Box::new([]), LocalRuntimePackageAuthority::default(),
+        LocalCompilerTimeout::new(std::time::Duration::from_secs(2)).test_value()?,
+        backend_store::journal::PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN).test_value()?,
+        LocalCompilerScratch::with_fragment_capacity(NonZeroUsize::new(1024 * 1024).test_value()?).test_value()?,
+    ).test_value()?).test_value()?;
+    let corpus = view_build::semantic_query_corpus(&snapshot, &compiler, &sources,
+        &mut crate::builtin::generation_residence::SemanticGenerationResidence::default(),
+        &mut view_build::ImageRowResidence::default()).test_value()?;
+    let found = corpus.facts().iter().filter(|fact| fact.presentation().name == "mounted").collect::<Vec<_>>();
+    assert_eq!(found.len(), 1);
+    assert!(matches!(found[0].evidence(), SemanticQueryEvidence::StructuralFallback(_)),
+        "Vue query evidence cannot be compiler or external authority");
+    Ok(())
+}
+
+#[test]
 fn structural_query_reads_names_only_prose_from_persisted_complete_facts() -> Result<(), String> {
     let prose = "Documented source contract. ".repeat(40);
     let source = (0..160).map(|index| format!(
