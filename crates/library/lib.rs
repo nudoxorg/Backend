@@ -137,7 +137,7 @@ pub use canonical::{
     admit_delta_transition, admit_intent_value, admit_key_against, admit_key_value,
     admit_root_against, admit_root_bytes, admit_version_against, admit_version_value, branch_key,
     decode_id, empty_view_relation_preimage, encode_id, intent_id, log_key, object_version,
-    package_key, relation_row_key, symbol_key, view_identity_bytes, view_key, view_state_root,
+    package_key, relation_row_key, symbol_key, symbol_key_borrowed, view_identity_bytes, view_key, view_state_root,
     view_version, view_version_preimage, wire_delta, wire_intent, wire_key, wire_root,
     wire_version,
 };
