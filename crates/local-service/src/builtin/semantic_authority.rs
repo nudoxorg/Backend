@@ -60,6 +60,17 @@ const MAX_OBJECTS: usize = 100_002;
 const MAX_PAYLOAD_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_OBJECT_BYTES: usize = 512 * 1024 * 1024;
 const MAX_METADATA_BYTES: u64 = 64 * 1024 * 1024;
+pub(super) const NATIVE_HEADER_WORK_UNITS: u64 = 16_000_000;
+
+pub(super) fn charge_native_header_work(
+    budget: &backend_extension_turso::SelectedNativeHeaderBudget,
+    stopped: &dyn Fn() -> bool,
+    bytes: usize,
+) -> Result<(), String> {
+    let units = bytes.saturating_add(65535) / 65536;
+    budget.checkpoint(u64::try_from(units.max(1)).map_err(|_| "native header work overflow")?, stopped)
+        .map_err(|error| format!("native header work stopped: {error:?}"))
+}
 
 fn native_header_reader_admissible(bytes: &[u8], reader_budget: usize, writer_budget: usize) -> bool {
     let Some(mut credit) = bytes.len().checked_mul(2)
@@ -1078,7 +1089,9 @@ pub(super) fn admit_replayed_native_evidence(
         .map_err(|error| BuiltinModelError(format!("open bounded native replay metadata CAS: {error:?}")))?;
     let store = FileStore::open(cas_path, 128 * 1024 * 1024)
         .map_err(|error| BuiltinModelError(format!("open native replay compiler CAS: {error:?}")))?;
-    let mut header_budget = super::MAX_REBUILD_BYTES;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
+    let stopped = || std::time::Instant::now() >= deadline;
+    let mut header_budget = backend_extension_turso::SelectedNativeHeaderBudget::new(super::MAX_REBUILD_BYTES, NATIVE_HEADER_WORK_UNITS);
     for capture in captures {
         let matching = rows.iter().copied().filter(|row| {
             row.project == capture.key.package_key().to_bytes() && row.profile == capture.key.profile()
@@ -1136,15 +1149,14 @@ pub(super) fn admit_replayed_native_evidence(
                 return Err(BuiltinModelError("native replay Program source differs from evidence".into()));
             }
         }
-        let witness = backend_extension_turso::reopen_selected_native_headers(&store, &selected, header_budget)
+        let witness = backend_extension_turso::reopen_selected_native_headers_budgeted(&store, &selected, &mut header_budget, &stopped)
             .map_err(|error| BuiltinModelError(format!("open replay native headers: {error}")))?;
-        let header_aggregate = if let Some(witness) = witness {
-            header_budget = header_budget.checked_sub(witness.as_bytes().len().saturating_add(2 * std::mem::size_of::<usize>()))
-                .ok_or_else(|| BuiltinModelError("replay native header budget exceeded".into()))?;
-            let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(witness.as_bytes(), &mut header_budget)
-                .map_err(|error| BuiltinModelError(format!("decode replay native headers: {error}")))?;
-            Some((aggregate, *witness.object_id()))
-        } else { None };
+        let mut checkpoint = |bytes| charge_native_header_work(&header_budget, &stopped, bytes);
+        let header_aggregate = witness.as_ref().map(|witness| {
+            backend_semantic::native_ts_headers::NativeTsHeaderAggregateView::parse_canonical_checkpointed(witness.as_bytes(), &mut checkpoint)
+                .map(|view| (view, *witness.object_id()))
+                .map_err(|error| BuiltinModelError(format!("decode replay native headers: {error:?}")))
+        }).transpose()?;
         let mut header_paths = std::collections::BTreeSet::new();
         let mut witnessed = std::collections::BTreeSet::new();
         for image in &loaded.images {
@@ -1168,17 +1180,24 @@ pub(super) fn admit_replayed_native_evidence(
             }
             if let Some(headers) = &row.headers {
                 let (aggregate, digest) = header_aggregate.as_ref().ok_or_else(|| BuiltinModelError("native replay header witness absent".into()))?;
-                let file = super::native_ts_headers::witnessed_file(row, aggregate, *digest)
+                let file = super::native_ts_headers::witnessed_file_borrowed(row, aggregate, *digest, &mut checkpoint)
                     .map_err(|error| BuiltinModelError(format!("native replay header: {error}")))?;
-                super::native_ts_headers::admit_image(row, headers, file, &view, image.as_ref())
+                super::native_ts_headers::admit_image_borrowed(row, headers, file, &view, image.as_ref(), &mut checkpoint)
                     .map_err(|error| BuiltinModelError(format!("native replay header: {error}")))?;
                 header_paths.insert(path.to_owned());
-            } else if header_aggregate.as_ref().is_some_and(|(aggregate, _)| aggregate.file(path).is_some()) {
-                return Err(BuiltinModelError("native replay lost compiler header reference".into()));
+            } else if let Some((aggregate, _)) = header_aggregate.as_ref() {
+                if aggregate.find_file_checkpointed(path, &mut checkpoint).map_err(BuiltinModelError)?.is_some() {
+                    return Err(BuiltinModelError("native replay lost compiler header reference".into()));
+                }
             }
         }
-        if header_aggregate.as_ref().is_some_and(|(aggregate, _)| aggregate.files.iter().any(|file| !header_paths.contains(&file.path))) {
-            return Err(BuiltinModelError("native replay did not consume compiler header files".into()));
+        if let Some((aggregate, _)) = header_aggregate.as_ref() {
+            let mut files = aggregate.files();
+            while files.len() != 0 {
+                checkpoint(4210).map_err(BuiltinModelError)?;
+                let file = files.next().ok_or_else(|| BuiltinModelError("native replay header iteration ended early".into()))?;
+                if !header_paths.contains(file.path) { return Err(BuiltinModelError("native replay did not consume compiler header files".into())); }
+            }
         }
         for (path, row) in remaining {
             // Non-emitted inputs still bind the exact Program, but cannot
@@ -2110,14 +2129,15 @@ impl SemanticAuthority {
         &self,
         key: &ProductSemanticPublicationKey,
         claim: SemanticPublicationClaim,
-        budget: &mut usize,
-    ) -> Result<Option<(backend_semantic::native_ts_headers::NativeTsHeaderAggregate, [u8; 32])>, BuiltinModelError> {
+        budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Option<backend_extension_turso::VerifiedNativeHeadersWitness>, BuiltinModelError> {
         if !key.is_selected() || !matches!(key.profile(), LanguageProfile::TypeScript(_)) {
             return Err(BuiltinModelError("native header publication is not selected TypeScript".into()));
         }
         let (actual, selected) = self.read_selected_pair(key)?;
         if actual != claim { return Err(BuiltinModelError("native header selected claim differs".into())); }
-        self.native_header_aggregate_for_admitted(&selected, budget)
+        self.native_header_aggregate_for_admitted(&selected, budget, stopped)
     }
 
     /// Caller must have admitted this exact generation against the pending
@@ -2125,16 +2145,11 @@ impl SemanticAuthority {
     pub(super) fn native_header_aggregate_for_admitted(
         &self,
         selected: &backend_extension_turso::SelectedGeneration,
-        budget: &mut usize,
-    ) -> Result<Option<(backend_semantic::native_ts_headers::NativeTsHeaderAggregate, [u8; 32])>, BuiltinModelError> {
-        let witness = backend_extension_turso::reopen_selected_native_headers(&self.store, selected, *budget)
-            .map_err(|error| BuiltinModelError(format!("reopen selected native headers: {error}")))?;
-        let Some(witness) = witness else { return Ok(None) };
-        *budget = budget.checked_sub(witness.as_bytes().len().saturating_add(2 * std::mem::size_of::<usize>()))
-            .ok_or_else(|| BuiltinModelError("native header witness budget exceeded".into()))?;
-        let aggregate = backend_semantic::native_ts_headers::NativeTsHeaderAggregate::decode_canonical_budgeted(witness.as_bytes(), budget)
-            .map_err(|error| BuiltinModelError(format!("decode selected native headers: {error}")))?;
-        Ok(Some((aggregate, *witness.object_id())))
+        budget: &mut backend_extension_turso::SelectedNativeHeaderBudget,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Option<backend_extension_turso::VerifiedNativeHeadersWitness>, BuiltinModelError> {
+        backend_extension_turso::reopen_selected_native_headers_budgeted(&self.store, selected, budget, stopped)
+            .map_err(|error| BuiltinModelError(format!("reopen selected native headers: {error}")))
     }
 
     /// Reopens only a structurally correlated C# evidence claim from the exact
