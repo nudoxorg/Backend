@@ -386,16 +386,18 @@ fn admit_inner(
             return Err("native replay source lacks its claimed Program evidence".into());
         }
     }
-    // Only publish proof flags after every selected member and final check passed.
+    merge_proofs(rows, &plan.flags, &retired_index, retired_count, row_proofs, retirement_proofs, budget, stopped)
+}
+
+fn merge_proofs(rows: &[&NativeSourceEvidence], flags: &[u8], retired_index: &[u8], retired_count: usize,
+    row_proofs: &mut [u8], retirement_proofs: &mut [u8], budget: &SelectedNativeHeaderBudget, stopped: &dyn Fn() -> bool) -> Result<()> {
+    let work = rows.len().checked_add(retired_count).and_then(|n| n.checked_add(1)).ok_or("native replay proof merge overflow")?;
+    step(budget, stopped, u64::try_from(work).map_err(|_| "native replay proof merge overflow")?)?;
+    // After the final live stop check, the bounded merge cannot fail.
     for (i, row) in rows.iter().enumerate() {
-        step(budget, stopped, 1)?;
-        if plan.flags[i] & 2 != 0 && (!row.admits_image() || plan.flags[i] & 4 != 0) { row_proofs[i] = 1; }
+        if flags[i] & 2 != 0 && (!row.admits_image() || flags[i] & 4 != 0) { row_proofs[i] = 1; }
     }
-    for i in 0..retired_count {
-        step(budget, stopped, 1)?;
-        retirement_proofs[index_at(&retired_index, i)] = 1;
-    }
-    step(budget, stopped, 1)?;
+    for i in 0..retired_count { retirement_proofs[index_at(retired_index, i)] = 1; }
     Ok(())
 }
 
