@@ -2615,6 +2615,13 @@ fn bounded_reopen_charges_work_scratch_and_retained_backing() -> Result<(), crat
     corrupt[0] ^= 1;
     assert!(matches!(SemanticImageView::reopen_bounded(&corrupt, &Meter::new(u64::MAX, usize::MAX, u64::MAX)),
         Err(FullSemanticImageError::Full(FullSemanticImageFault::Magic { .. }))));
+    let mut corrupt_target = bytes.clone();
+    let target = lane_payload_offset(&bytes, FullDirectoryKind::SignatureCarrierBindingTargets);
+    set_u32(&mut corrupt_target, target, u32::MAX);
+    let invalid_meter = Meter::new(u64::MAX, usize::MAX, u64::MAX);
+    let invalid = SemanticImageView::reopen_bounded(&corrupt_target, &invalid_meter);
+    assert!(invalid.is_err() && !stopped(invalid));
+    assert_eq!(invalid_meter.used.get(), 0);
     Ok(())
 }
 
