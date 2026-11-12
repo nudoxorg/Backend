@@ -244,7 +244,8 @@ impl LazyTreeMetadataShape {
         let map_changes = member_count.checked_mul(
             size_of::<MapChange<R>>()
                 .checked_add(self.max_key_bytes)?
-                .checked_add(self.max_value_bytes)?,
+                .checked_add(self.max_value_bytes)?
+                .checked_add(64)?,
         )?;
         let nodes = node_count
             .checked_mul(size_of::<CanonicalNode<R>>().checked_mul(2)?)?
