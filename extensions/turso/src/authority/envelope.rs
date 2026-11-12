@@ -2350,8 +2350,8 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
         {
             return Err("compiler coverage input differs from admitted attempt".to_owned());
         }
-        verify_semantic_image_members(self.store, &manifest, &observed_metadata)?;
         verify_native_lines_for_admission(self.store, &manifest, &observed_metadata, self.budget)?;
+        verify_semantic_image_members(self.store, &manifest, &observed_metadata)?;
         verify_versioned_plane_members(&manifest, &observed_metadata)?;
         verify_exact_member_set(
             &manifest,
@@ -4581,8 +4581,9 @@ mod tests {
         missing.sort_by_key(|o| (o.schema(), *o.key(), *o.version()));
         let policy = ArtifactBudget::new(16, 64, 8 * 1024 * 1024, 1024 * 1024, 64);
         let verifier = FileStoreCompilerPublicationVerifier::new(&store, policy, &envelope, &metadata);
-        let valid_candidate = envelope.candidate(attempt.clone(), *closure.as_bytes()).unwrap();
-        verifier.verify_closure(&ClosureClaim::for_candidate(&valid_candidate)).unwrap();
+        let valid_manifest = store.open_closure(closure).unwrap();
+        verify_native_lines_for_admission(&store, &valid_manifest, &metadata, policy).unwrap();
+        drop(valid_manifest);
         // These physically valid object IDs are not sufficient to admit an
         // incorrectly typed or malformed line member before selection.
         struct TestLineBytes;
@@ -4606,7 +4607,8 @@ mod tests {
             let bad_closure = store.write_closure(&ClosureManifest::new(payloads).unwrap()).unwrap();
             let bad_candidate = bad_envelope.candidate(attempt.clone(), *bad_closure.as_bytes()).unwrap();
             let bad_verifier = FileStoreCompilerPublicationVerifier::new(&store, policy, &bad_envelope, &bad_metadata);
-            assert!(bad_verifier.verify_closure(&ClosureClaim::for_candidate(&bad_candidate)).is_err());
+            let error = bad_verifier.verify_closure(&ClosureClaim::for_candidate(&bad_candidate)).unwrap_err();
+            assert!(error.contains("candidate line member"), "must reach typed line validation: {error}");
         }
         let missing_closure = store.write_closure(&ClosureManifest::new(missing).unwrap()).unwrap();
         let missing_selected = selected_generation(&attempt, &envelope.candidate(attempt.clone(), *missing_closure.as_bytes()).unwrap(), 2);
