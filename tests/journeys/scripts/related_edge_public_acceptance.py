@@ -17,8 +17,6 @@ from runtime_build_receipt import stable_file, verify_runtime_build_receipt
 
 COUNT = 5000
 LIMIT = 137
-ALIAS = "@/src/center.ts:1::related_hub"
-CALLER_ALIAS = "@/src/callers_00.ts:2::related_caller_0000_x"
 NAME = re.compile(r"related_caller_(\d{4})_")
 
 
@@ -50,7 +48,9 @@ def identity(edge):
     return tuple(json.dumps(edge[field], sort_keys=True) for field in ("from", "to", "relation"))
 
 
-def run_pages(j, surface, label, alias=ALIAS, first_cursor=None):
+def run_pages(j, surface, label, alias=None, first_cursor=None):
+    if alias is None:
+        alias = f"{j.project}::src/center.ts:1::related_hub"
     token = first_cursor
     seen_cursors, seen_edges = set(), set()
     callers = set()
@@ -129,6 +129,8 @@ def main():
         project = j.root / "project"
         fixture(project)
         j.project = project
+        alias = f"{project}::src/center.ts:1::related_hub"
+        caller_alias = f"{project}::src/callers_00.ts:2::related_caller_0000_x"
         j.start_owner(project)
         j.start_mcp(project)
         index(j, project, "initial-index")
@@ -139,8 +141,8 @@ def main():
         check(mcp_callers == expected, f"MCP callers {len(mcp_callers)}/{COUNT}, missing {sorted(expected-mcp_callers)[:20]}")
         check(cli == mcp, f"CLI/MCP edge sets differ: {len(cli-mcp)} / {len(mcp-cli)}")
         check(cli_cursor and mcp_cursor, "fixture did not produce continuation")
-        outgoing_cli, _, _ = run_pages(j, "cli", "outgoing-cli", alias=CALLER_ALIAS)
-        outgoing_mcp, _, _ = run_pages(j, "mcp", "outgoing-mcp", alias=CALLER_ALIAS)
+        outgoing_cli, _, _ = run_pages(j, "cli", "outgoing-cli", alias=caller_alias)
+        outgoing_mcp, _, _ = run_pages(j, "mcp", "outgoing-mcp", alias=caller_alias)
         def has_caller_edge(edges):
             return any("related_caller_0000_x" in json.loads(edge[0])
                        and "related_hub" in json.loads(edge[1])
@@ -156,21 +158,21 @@ def main():
         cold_mcp, cold_mcp_callers, mcp_cursor = run_pages(j, "mcp", "cold-mcp")
         check(cold_mcp == cli and cold_mcp_callers == expected and mcp_cursor,
               "cold MCP reopen changed related edges or omitted continuation")
-        cold_out_cli, _, _ = run_pages(j, "cli", "cold-outgoing-cli", alias=CALLER_ALIAS)
-        cold_out_mcp, _, _ = run_pages(j, "mcp", "cold-outgoing-mcp", alias=CALLER_ALIAS)
+        cold_out_cli, _, _ = run_pages(j, "cli", "cold-outgoing-cli", alias=caller_alias)
+        cold_out_mcp, _, _ = run_pages(j, "mcp", "cold-outgoing-mcp", alias=caller_alias)
         check(cold_out_cli == outgoing_cli and cold_out_mcp == outgoing_mcp,
               "cold reopen changed caller-centered outgoing edges")
         # A cursor issued before restart must resume against the same owner scope.
         tail, _, _ = run_pages(j, "cli", "cold-resume", first_cursor=cli_cursor)
         check(tail and tail.issubset(cli), "cold resumed frontier did not retain prior edges")
-        rc, data, raw = j.cli("wrong-credit", ["related", ALIAS, "--limit", str(LIMIT - 1), "--cursor", cli_cursor])
+        rc, data, raw = j.cli("wrong-credit", ["related", alias, "--limit", str(LIMIT - 1), "--cursor", cli_cursor])
         check(rc != 0, f"CLI accepted changed issued credit: {data!r} {raw[:500]}")
         with (project / "src" / "center.ts").open("a") as source:
             source.write("\nexport const related_revision_marker = 1;\n")
         index(j, project, "changed-index")
-        rc, data, raw = j.cli("stale-cli", ["related", ALIAS, "--limit", str(LIMIT), "--cursor", cli_cursor])
+        rc, data, raw = j.cli("stale-cli", ["related", alias, "--limit", str(LIMIT), "--cursor", cli_cursor])
         check(rc != 0, f"stale CLI cursor was accepted: {data!r} {raw[:500]}")
-        stale = j.tool("backend.related", {"coordinate": ALIAS, "limit": LIMIT, "cursor": mcp_cursor}, allow_error=True)
+        stale = j.tool("backend.related", {"coordinate": alias, "limit": LIMIT, "cursor": mcp_cursor}, allow_error=True)
         check(stale.get("isError") or "rpc_error" in stale, f"stale MCP cursor was accepted: {stale!r}")
         result.update(status="passed", cli_edges=len(cli), mcp_edges=len(mcp), callers=len(cli_callers), records=j.records)
     except Exception as error:
