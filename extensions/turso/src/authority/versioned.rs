@@ -834,12 +834,13 @@ impl std::error::Error for VersionedPlaneError {}
 
 /// Sum of requested owned and temporary allocations in the versioned decode
 /// path. Caller separately charges the input wire and outer metadata output.
-pub(super) fn versioned_decode_allocation_bound(bytes: &[u8]) -> Result<usize, VersionedPlaneError> {
+pub(super) fn versioned_decode_allocation_bound(bytes: &[u8]) -> Result<(usize, usize), VersionedPlaneError> {
     preflight_versioned_framing(bytes)?;
     let mut scan = Decoder::new(bytes);
     scan.take(MAGIC.len() + 2 + 32)?;
     let artifacts = scan.u32()? as usize;
     let mut bound = bytes.len(); // final versioned canonical encoding
+    let mut physical_slots = artifacts;
     let mut add = |amount: usize| -> Result<(), VersionedPlaneError> {
         bound = bound.checked_add(amount).ok_or(VersionedPlaneError::Allocation)?; Ok(())
     };
@@ -854,6 +855,7 @@ pub(super) fn versioned_decode_allocation_bound(bytes: &[u8]) -> Result<usize, V
         let len = scan.u32()? as usize;
         let manifest = scan.take(len)?;
         let members = scan.u32()? as usize;
+        physical_slots = physical_slots.checked_add(members).ok_or(VersionedPlaneError::Allocation)?;
         scan.take(members.checked_mul(MEMBER_BYTES).ok_or(VersionedPlaneError::Allocation)?)?;
         add(len)?; // retained canonical manifest
         add(len)?; // semantic manifest canonical comparison
@@ -862,7 +864,7 @@ pub(super) fn versioned_decode_allocation_bound(bytes: &[u8]) -> Result<usize, V
         add(members.checked_mul(32).ok_or(VersionedPlaneError::Allocation)?)?;
         add(members.checked_mul(std::mem::size_of::<(UntrustedSemanticSegmentId, u64)>()).ok_or(VersionedPlaneError::Allocation)?)?;
     }
-    Ok(bound)
+    Ok((bound, physical_slots))
 }
 
 /// Checks all variable framing and count geometry without allocating rows.

@@ -1105,13 +1105,15 @@ fn compiler_metadata_decode_bound(bytes: &[u8]) -> Result<usize, CompilerEnvelop
         .ok_or(CompilerEnvelopeError::MemberCount)?;
     bound = bound.checked_add(count.checked_mul(per_image).ok_or(CompilerEnvelopeError::MemberCount)?).ok_or(CompilerEnvelopeError::MemberCount)?;
     let mut nested_wire_len = 0usize;
+    let mut nested_physical_slots = 0usize;
     match input.u8()? {
         0 => {},
         1 => {
             let n = input.u32()? as usize;
             nested_wire_len = n;
             let nested = input.take(n)?;
-            let nested_bound = super::versioned::versioned_decode_allocation_bound(nested).map_err(CompilerEnvelopeError::VersionedPlane)?;
+            let (nested_bound, slots) = super::versioned::versioned_decode_allocation_bound(nested).map_err(CompilerEnvelopeError::VersionedPlane)?;
+            nested_physical_slots = slots;
             // Outer canonical encoding asks for the versioned wire once when
             // sizing and once when emitting it.
             bound = bound.checked_add(nested_bound).and_then(|v| v.checked_add(n.checked_mul(2)?)).ok_or(CompilerEnvelopeError::MemberCount)?;
@@ -1140,12 +1142,13 @@ fn compiler_metadata_decode_bound(bytes: &[u8]) -> Result<usize, CompilerEnvelop
     if !input.is_empty() { return Err(CompilerEnvelopeError::TrailingBytes); }
     // Each optional setter checks an exact member inventory. Its canonical
     // metadata object ID is streamed from one temporary canonical encoding;
-    // inventory capacity is at most the schema's member limit.
+    // The inventory reserves raw image/plane/optional slots before deduping.
     let setters = usize::from(has_program) + usize::from(has_coverage) + usize::from(has_snapshot)
         + usize::from(version == CSHARP_EVIDENCE_METADATA_VERSION)
         + usize::from(version == NATIVE_HEADERS_METADATA_VERSION);
+    let inventory_slots = count.checked_add(nested_physical_slots).and_then(|v| v.checked_add(6)).ok_or(CompilerEnvelopeError::MemberCount)?;
     let per_setter = bytes.len().checked_add(nested_wire_len.checked_mul(2).ok_or(CompilerEnvelopeError::MemberCount)?)
-        .and_then(|v| v.checked_add(MAX_MEMBER_IDS.checked_mul(32)?)).ok_or(CompilerEnvelopeError::MemberCount)?;
+        .and_then(|v| v.checked_add(inventory_slots.checked_mul(32)?)).ok_or(CompilerEnvelopeError::MemberCount)?;
     bound = bound.checked_add(setters.checked_mul(per_setter).ok_or(CompilerEnvelopeError::MemberCount)?).ok_or(CompilerEnvelopeError::MemberCount)?;
     Ok(bound)
 }
