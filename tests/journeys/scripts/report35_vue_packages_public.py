@@ -25,6 +25,13 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def is_full_search(reply, query):
+    return (isinstance(reply, dict) and reply.get('answer') == 'records'
+            and reply.get('query') == query and isinstance(reply.get('records'), list)
+            and reply.get('search_scope') is None
+            and reply.get('full_search') in (None, 'ready'))
+
+
 class StrictJourney(Journey):
     """Retire only process groups started by this journey, and report failures."""
     def _stop(self, proc):
@@ -95,6 +102,9 @@ class StrictJourney(Journey):
                 timed_out = True
                 self._stop(proc)
                 out, err = proc.communicate()
+            except BaseException:
+                self._stop(proc)
+                raise
             else:
                 self._stop(proc)
             raw, stderr = out.decode('utf-8', 'replace'), err.decode('utf-8', 'replace')
@@ -118,9 +128,10 @@ class StrictJourney(Journey):
 
     def close(self, preserve_fixture):
         errors = []
-        for stop in (self.stop_mcp, self.stop_owner):
+        for attribute, stop in (('mcp', self.stop_mcp), ('owner', self.stop_owner)):
             try:
-                stop()
+                if getattr(self, attribute, None) is not None:
+                    stop()
             except Exception as error:
                 errors.append(repr(error))
         if not preserve_fixture and not errors:
@@ -134,11 +145,12 @@ class StrictJourney(Journey):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--bin-dir', required=True)
+    parser.add_argument('--source-root', type=pathlib.Path, default=pathlib.Path(__file__).resolve().parents[3])
     parser.add_argument('--output', required=True)
     parser.add_argument('--source-commit', required=True)
     parser.add_argument('--build-receipt', required=True, type=pathlib.Path)
     args = parser.parse_args()
-    repo = pathlib.Path(__file__).resolve().parents[3]
+    repo = args.source_root.resolve(strict=True)
     git = lambda *cmd: subprocess.check_output(['git', '-C', str(repo), *cmd], text=True).strip()
     head = git('rev-parse', 'HEAD')
     if head != args.source_commit or git('status', '--porcelain'):
@@ -154,7 +166,9 @@ def main():
         raise SystemExit('output must be outside the source checkout')
     output.mkdir(parents=True, exist_ok=False)
     checks = []
-    journey = StrictJourney(binary_dir, output, label='vue-packages')
+    journey = StrictJourney.__new__(StrictJourney)
+    driver_path = pathlib.Path(__file__).resolve(strict=True)
+    driver_before = digest(driver_path)
 
     def require(name, condition, detail=''):
         checks.append({'name': name, 'pass': bool(condition), 'detail': str(detail)[:500]})
@@ -162,18 +176,32 @@ def main():
             raise AssertionError(f'{name}: {detail}')
 
     def mcp(name, arguments, label):
-        result = journey.tool(name, dict(arguments, detail='full'))
-        (output / f'{label}.json').write_text(json.dumps(result, indent=2))
-        require(label + ' MCP success', not result.get('isError') and isinstance(result.get('structuredContent'), dict), result)
-        return result['structuredContent']
+        for attempt in range(1, 7):
+            result = journey.tool(name, dict(arguments, detail='full'))
+            (output / f'{label}-attempt-{attempt}.json').write_text(json.dumps(result, indent=2))
+            content = result.get('structuredContent')
+            repeatable = (result.get('isError') is True and isinstance(content, dict)
+                          and content.get('slug') == 'endpoint'
+                          and content.get('cause') == 'unreachable'
+                          and 're-run the same command' in str(content.get('shell', '')))
+            if not repeatable or attempt == 6:
+                break
+            time.sleep(10)
+        require(label + ' MCP success', ('isError' not in result or result['isError'] is False) and isinstance(content, dict) and content.get('answer') != 'fault', result)
+        return content
+
+    def require_full_search(label, reply, query):
+        require(label + ' typed full lexical search', is_full_search(reply, query), reply)
 
     def verify(phase):
         rc, search, raw = journey.cli(phase + '-search', ['search', 'mounted', '--limit', '100'])
+        require_full_search(phase + ' CLI', search, 'mounted')
         rows = declarations(search, 'mounted', {'function'}, None)
         rows = [row for row in rows if 'App.vue' in str(row.get('identity', {}))]
         require(phase + ' CLI search', rc == 0 and len(rows) == 1, raw)
         coord = rows[0]['identity']['coordinate']
         result = mcp('backend.search', {'query': 'mounted', 'limit': 100}, phase + '-mcp-search')
+        require_full_search(phase + ' MCP', result, 'mounted')
         require(phase + ' MCP search', coord in json.dumps(result), result)
         rc, _, raw = journey.cli(phase + '-source', ['source', coord])
         require(phase + ' CLI source', rc == 0 and "return 'é漢'" in raw and '<template>' not in raw, raw)
@@ -198,22 +226,27 @@ def main():
             require(phase + ' exact span', filename == 'App.vue' and (journey.project / filename).read_bytes()[start:end] == b'mounted', (filename, start, end))
         result = mcp('backend.references', {'coordinate': coord}, phase + '-mcp-refs')
         require(phase + ' MCP reference parity', spans(result) == observed and coverage_word(result) == 'partial', result)
-        purl = 'pkg:npm/vue@3.5.44'
-        for command, tool, witnesses in [
-            ('package', 'backend.package', ('createApp', 'local installation', 'partial')),
-            ('dependencies', 'backend.dependencies', ('@vue/runtime-dom', 'local installation', 'partial')),
-            ('package-versions', 'backend.package_versions', ('3.5.44', 'installed')),
+        for ecosystem, purl, api, dependency, version in [
+            ('npm', 'pkg:npm/vue@3.5.44', 'createApp', '@vue/runtime-dom', '3.5.44'),
+            ('pypi', 'pkg:pypi/fastapi@0.162.0', 'class FastAPI', 'starlette', '0.162.0'),
         ]:
-            rc, _, raw = journey.cli(phase + '-' + command, [command, purl])
-            require(phase + ' CLI ' + command, rc == 0 and all(w.lower() in raw.lower() for w in witnesses), raw)
-            require(phase + ' CLI confinement ' + command, 'PRIVATE_SYMLINK_SENTINEL' not in raw, raw)
-            result = mcp(tool, {'package': purl}, phase + '-mcp-' + command)
-            rendered = json.dumps(result, ensure_ascii=False).lower()
-            require(phase + ' MCP ' + command, all(w.lower() in rendered for w in witnesses), result)
-            require(phase + ' MCP confinement ' + command, 'private_symlink_sentinel' not in rendered, result)
+            for command, tool, witnesses in [
+                ('package', 'backend.package', (api, 'local installation', 'partial')),
+                ('dependencies', 'backend.dependencies', (dependency, 'local installation', 'partial')),
+                ('package-versions', 'backend.package_versions', (version, 'installed')),
+            ]:
+                label = phase + '-' + ecosystem + '-' + command
+                rc, parsed, raw = journey.cli(label, [command, purl])
+                require(label + ' CLI', rc == 0 and isinstance(parsed, dict) and parsed.get('answer') != 'fault' and all(w.lower() in raw.lower() for w in witnesses), raw)
+                require(label + ' CLI confinement', 'PRIVATE_SYMLINK_SENTINEL' not in raw, raw)
+                result = mcp(tool, {'package': purl}, label + '-mcp')
+                rendered = json.dumps(result, ensure_ascii=False).lower()
+                require(label + ' MCP', all(w.lower() in rendered for w in witnesses), result)
+                require(label + ' MCP confinement', 'private_symlink_sentinel' not in rendered, result)
         return observed
 
     try:
+        StrictJourney.__init__(journey, binary_dir, output, label='vue-packages')
         project = journey.root / 'project'
         project.mkdir()
         journey.project = project
@@ -225,6 +258,16 @@ def main():
         outside = journey.root / 'private.js'
         outside.write_text('PRIVATE_SYMLINK_SENTINEL')
         (package / 'leak.js').symlink_to(outside)
+        site = project / 'backend/.venv/lib/python3.14/site-packages'
+        metadata = site / 'fastapi-0.162.0.dist-info'
+        metadata.mkdir(parents=True)
+        python_api = site / 'fastapi'
+        python_api.mkdir()
+        (metadata / 'METADATA').write_text('Metadata-Version: 2.4\nName: fastapi\nVersion: 0.162.0\nRequires-Python: >=3.10\nRequires-Dist: starlette>=0.40\n\nInstalled documentation\n')
+        (metadata / 'RECORD').write_text('fastapi/__init__.py,,\nfastapi/applications.py,,\nfastapi/leak.py,,\n')
+        (python_api / '__init__.py').write_text('from .applications import FastAPI\n')
+        (python_api / 'applications.py').write_text('class FastAPI:\n    def get(self, path: str): ...\n')
+        (python_api / 'leak.py').symlink_to(outside)
         (project / 'App.vue').write_bytes('<template><button @click="mounted">Run</button></template>\r\n<script setup lang="ts">\r\n// é漢\r\nfunction mounted() { return \'é漢\'; }\r\nmounted();\r\nfunction wrapper() { mounted(); }\r\nfunction shadow(mounted: () => void) { mounted(); }\r\n</script>\r\n'.encode())
         journey.start_owner(project)
         journey.start_mcp()
@@ -241,9 +284,11 @@ def main():
         rc, state, raw = index_published(journey, project, 'edited')
         require('edit published', rc == 0 and state == 'published', raw)
         rc, result, raw = journey.cli('edited-search', ['search', 'mounted', '--limit', '100'])
-        require('edit retires declaration', rc == 0 and not declarations(result, 'mounted', {'function'}, None), raw)
+        require_full_search('edit CLI', result, 'mounted')
+        require('edit retires declaration', rc == 0 and result.get('more') is False and not declarations(result, 'mounted', {'function'}, None), raw)
         result = mcp('backend.search', {'query': 'mounted', 'limit': 100}, 'edited-mcp-search')
-        require('MCP edit retires declaration', not declarations(result, 'mounted', {'function'}, None), result)
+        require_full_search('edit MCP', result, 'mounted')
+        require('MCP edit retires declaration', result.get('more') is False and not declarations(result, 'mounted', {'function'}, None), result)
     except Exception as error:
         checks.append({'name': 'journey completed', 'pass': False, 'detail': repr(error)})
     finally:
@@ -251,7 +296,9 @@ def main():
         checks.append({'name': 'owned process cleanup', 'pass': not cleanup_errors, 'detail': str(cleanup_errors)})
         try:
             after = verify_runtime_build_receipt(args.build_receipt, repo)
-            unchanged = after['receipt_sha256'] == build['receipt_sha256'] and after['artifacts'] == build['artifacts']
+            unchanged = (after['receipt_sha256'] == build['receipt_sha256']
+                         and after['artifacts'] == build['artifacts']
+                         and digest(driver_path) == driver_before)
             checks.append({'name': 'build provenance unchanged', 'pass': unchanged, 'detail': ''})
         except Exception as error:
             checks.append({'name': 'build provenance unchanged', 'pass': False, 'detail': repr(error)})
@@ -260,7 +307,7 @@ def main():
                 shutil.rmtree(journey.root)
             except Exception as error:
                 checks.append({'name': 'fixture cleanup', 'pass': False, 'detail': repr(error)})
-    receipt = {'source_commit': head, 'source_tree': tree, 'cargo_lock_sha256': digest(repo / 'Cargo.lock'), 'binary_sha256': {name: item['sha256'] for name, item in build['artifacts'].items()}, 'build_receipt': {'path': build['receipt_path'], 'sha256': build['receipt_sha256']}, 'records': journey.records, 'fixture_root_if_preserved': str(journey.root) if journey.root.exists() else None, 'mode': 'development assumed; authenticated account not exercised', 'account_gate_environment_set': 'NUDOX_ACCOUNT_GATE' in journey.env, 'fixture': 'synthetic; package code not executed', 'nuget_public_journey': 'not exercised', 'checks': checks}
+    receipt = {'driver_path': str(driver_path), 'driver_sha256': driver_before, 'source_commit': head, 'source_tree': tree, 'cargo_lock_sha256': digest(repo / 'Cargo.lock'), 'binary_sha256': {name: item['sha256'] for name, item in build['artifacts'].items()}, 'build_receipt': {'path': build['receipt_path'], 'sha256': build['receipt_sha256']}, 'records': getattr(journey, 'records', []), 'fixture_root_if_preserved': str(journey.root) if hasattr(journey, 'root') and journey.root.exists() else None, 'mode': 'development assumed; authenticated account not exercised', 'account_gate_environment_set': 'NUDOX_ACCOUNT_GATE' in getattr(journey, 'env', {}), 'fixture': 'synthetic; package code not executed', 'nuget_public_journey': 'not exercised', 'checks': checks}
     (output / 'receipt.json').write_text(json.dumps(receipt, indent=2))
     print(json.dumps(receipt, indent=2))
     return 0 if checks and all(check['pass'] for check in checks) else 1
