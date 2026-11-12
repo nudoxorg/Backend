@@ -3463,6 +3463,17 @@ mod tests {
         bytes.truncate(offset + 4);
         let measured = measure(|| assert!(matches!(CompilerPublicationMetadata::decode(&bytes), Err(CompilerEnvelopeError::Truncated))));
         assert!(measured.bytes_max < 32 * 1024, "metadata preflight: {measured:?}");
+        bytes.resize(offset + 4 + MAX_MEMBER_IDS * 72 - 1, 0);
+        let measured = measure(|| assert!(matches!(CompilerPublicationMetadata::decode(&bytes), Err(CompilerEnvelopeError::Truncated))));
+        assert!(measured.bytes_max < 32 * 1024, "metadata final row preflight: {measured:?}");
+        bytes.resize(offset + 4 + MAX_MEMBER_IDS * 72, 0);
+        bytes[METADATA_MAGIC.len()..METADATA_MAGIC.len() + 2].copy_from_slice(&NATIVE_HEADERS_METADATA_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&[0, 1]); // no versioned planes, program present
+        bytes.extend_from_slice(&[0; 68]);
+        bytes.extend_from_slice(&[0, 0]); // no coverage or snapshot
+        bytes.extend_from_slice(&[0; 35]); // header pointer lacks its final byte
+        let measured = measure(|| assert!(matches!(CompilerPublicationMetadata::decode(&bytes), Err(CompilerEnvelopeError::Truncated))));
+        assert!(measured.bytes_max < 32 * 1024, "metadata optional tail preflight: {measured:?}");
         let envelope = CompilerPublicationEnvelope::new(&attempt(), &record).unwrap();
         let mut bytes = envelope.canonical_bytes();
         let offset = bytes.len() - envelope.member_ids().len() * 32 - 4;
@@ -3470,6 +3481,9 @@ mod tests {
         bytes.truncate(offset + 4);
         let measured = measure(|| assert!(matches!(CompilerPublicationEnvelope::decode(&bytes), Err(CompilerEnvelopeError::Truncated))));
         assert!(measured.bytes_max < 32 * 1024, "envelope preflight: {measured:?}");
+        bytes.resize(offset + 4 + MAX_MEMBER_IDS * 32 - 1, 0);
+        let measured = measure(|| assert!(matches!(CompilerPublicationEnvelope::decode(&bytes), Err(CompilerEnvelopeError::Truncated))));
+        assert!(measured.bytes_max < 32 * 1024, "envelope final row preflight: {measured:?}");
     }
 
     #[test]
