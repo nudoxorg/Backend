@@ -75,12 +75,15 @@ pub(super) fn append(
     rows: &mut Vec<Row>,
 ) -> Result<(), BuiltinModelError> {
     let mut bytes = super::super::admitted_view_bytes(rows)?;
+    let remaining = super::super::MAX_REBUILD_BYTES
+        .checked_sub(bytes)
+        .ok_or_else(|| BuiltinModelError("SQL view exceeds byte bound".into()))?;
     let projects = sources.projects.keys().copied().collect();
     let (selected, catalog_bytes) = super::super::sql_catalog::load_projects_bounded(
         snapshot,
         &projects,
         &|| false,
-        super::super::MAX_REBUILD_BYTES,
+        remaining,
     )
     .map_err(BuiltinModelError)?;
     for (project, indexed) in &sources.projects {
