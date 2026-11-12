@@ -580,6 +580,10 @@ mod tests {
         let width=value.checked_encoded_len().unwrap();
         let changes=[TreeChange::<NativeSourceEvidenceRelation>{key,after:Some(value.clone())}];
         let shape=LazyTreeMetadataShape::new(32,width,2,2,3,3);
+        let measured=allocation_counter::measure(|| {
+            assert!(relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,0,shape)).is_err());
+        });
+        assert_eq!(measured.count_total,0, "zero credit must fail before node cloning or decoding");
         let baseline=relation.prepare_update_bounded(&changes,LazyTreeUpdateBudget::new(1,usize::MAX,shape)).unwrap();
         let charge=baseline.work().peak_metadata_bytes;
         assert!(charge > 0);
