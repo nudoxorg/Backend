@@ -3191,6 +3191,16 @@ fn collect_selected_documents(
         let presentation = fact.presentation();
         let Some((row, source)) = selected_rows.remove(&presentation.id) else {
             left_out.evidence_without_row += 1;
+            if std::env::var_os("NUDOX_TRACE").is_some() {
+                let origin = match fact.evidence() {
+                    SemanticQueryEvidence::SqlNative(_) => "sql_native",
+                    SemanticQueryEvidence::Package(_) => "package",
+                    SemanticQueryEvidence::Compiler(_) => "compiler",
+                    SemanticQueryEvidence::CompilerExternalTarget(_) => "compiler_external",
+                    SemanticQueryEvidence::StructuralFallback(_) => "structural",
+                };
+                eprintln!("locald search: unmatched evidence {origin} {}", presentation.id);
+            }
             continue;
         };
         {
