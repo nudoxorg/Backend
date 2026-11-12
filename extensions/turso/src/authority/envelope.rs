@@ -1083,6 +1083,62 @@ impl CompilerPublicationMetadata {
     }
 }
 
+/// Requested retained and temporary allocations of metadata decoding. The
+/// authenticated input buffer and closure/member traversal are separate charges.
+fn compiler_metadata_decode_bound(bytes: &[u8]) -> Result<usize, CompilerEnvelopeError> {
+    let mut input = Decoder::new(bytes);
+    if input.take(METADATA_MAGIC.len())? != METADATA_MAGIC { return Err(CompilerEnvelopeError::MetadataMagic); }
+    let version = input.u16()?;
+    if !matches!(version, METADATA_VERSION | PROGRAM_METADATA_VERSION | COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | CSHARP_EVIDENCE_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION) { return Err(CompilerEnvelopeError::MetadataVersion); }
+    let manifest_len = input.u32()? as usize;
+    if manifest_len < SEMANTIC_MANIFEST_HEADER_BYTES || manifest_len > MAX_MANIFEST_BYTES { return Err(CompilerEnvelopeError::ManifestFacts); }
+    input.take(manifest_len)?;
+    input.take(COMPILATION_BINDING_BYTES)?;
+    let count = input.u32()? as usize;
+    if count == 0 || count > MAX_MEMBER_IDS { return Err(CompilerEnvelopeError::MemberCount); }
+    input.take(count.checked_mul(72).ok_or(CompilerEnvelopeError::Truncated)?)?;
+    let mut bound = bytes.len().checked_add(manifest_len).ok_or(CompilerEnvelopeError::MemberCount)?; // canonical output + retained manifest
+    let per_image = std::mem::size_of::<CompilerImageMember>().checked_mul(2)
+        .and_then(|n| n.checked_add(std::mem::size_of::<u32>()))
+        .and_then(|n| n.checked_add(std::mem::size_of::<(AuthorityHash, u32)>()))
+        .and_then(|n| n.checked_add(std::mem::size_of::<Option<(AuthorityHash, u32)>>()))
+        .ok_or(CompilerEnvelopeError::MemberCount)?;
+    bound = bound.checked_add(count.checked_mul(per_image).ok_or(CompilerEnvelopeError::MemberCount)?).ok_or(CompilerEnvelopeError::MemberCount)?;
+    match input.u8()? {
+        0 => {},
+        1 => {
+            let n = input.u32()? as usize;
+            let nested = input.take(n)?;
+            let nested_bound = super::versioned::versioned_decode_allocation_bound(nested).map_err(CompilerEnvelopeError::VersionedPlane)?;
+            // Outer canonical encoding asks for the versioned wire once when
+            // sizing and once when emitting it.
+            bound = bound.checked_add(nested_bound).and_then(|v| v.checked_add(n.checked_mul(2)?)).ok_or(CompilerEnvelopeError::MemberCount)?;
+        },
+        _ => return Err(CompilerEnvelopeError::VersionedPlaneMetadata),
+    }
+    // The ordinary decoder performs the full optional-tail preflight before
+    // materialization. This scan checks the same flags and extents here.
+    let has_program = if matches!(version, COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION) {
+        match input.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::NativeProgramSources) }
+    } else { version == PROGRAM_METADATA_VERSION };
+    if has_program { input.take(68)?; }
+    let has_coverage = match version {
+        COVERAGE_METADATA_VERSION => true,
+        TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION => match input.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::SourceCoverage) },
+        _ => false,
+    };
+    if has_coverage { input.take(68)?; }
+    let has_snapshot = match version {
+        TYPESCRIPT_SNAPSHOT_METADATA_VERSION => true,
+        NATIVE_HEADERS_METADATA_VERSION => match input.u8()? { 0 => false, 1 => true, _ => return Err(CompilerEnvelopeError::TypeScriptSnapshotWitness) },
+        _ => false,
+    };
+    if has_snapshot { input.take(36)?; }
+    if version == CSHARP_EVIDENCE_METADATA_VERSION || version == NATIVE_HEADERS_METADATA_VERSION { input.take(36)?; }
+    if !input.is_empty() { return Err(CompilerEnvelopeError::TrailingBytes); }
+    Ok(bound)
+}
+
 /// Canonical package compiler output identity admitted before head selection.
 ///
 /// `member_ids` contains sorted identities of the typed metadata and semantic
