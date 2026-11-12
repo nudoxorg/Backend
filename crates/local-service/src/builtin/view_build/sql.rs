@@ -2,7 +2,7 @@
 //! These rows are a name projection; detailed binding and source handles stay
 //! on sql-query. Files rejected by the worker never produce declarations.
 use super::super::{BuiltinModelError, IndexedSources, MAX_REBUILD_PACKAGES};
-use backend_engine::{DeclarationKind, Fragment, Row, RowId, ViewRoot, WorkspaceSnapshot};
+use backend_engine::{DeclarationKind, Row, RowId, ViewRoot, WorkspaceSnapshot};
 use backend_semantic::sql_analysis::{SqlDefinitionAction, SqlFact, SqlObjectKind};
 
 // Requested-allocation quota allowance per allocation. This is not a bound
@@ -85,62 +85,72 @@ pub(super) fn append(
     sources: &IndexedSources,
     rows: &mut Vec<Row>,
 ) -> Result<(), BuiltinModelError> {
-    let mut bytes = super::super::admitted_view_bytes(rows)?;
-    let remaining = super::super::MAX_REBUILD_BYTES
-        .checked_sub(bytes)
+    use super::super::row_admission::{ExactText, ProjectedRowPlan, ProjectedRowTexts, RequestedLayoutBudget};
+    let prior = super::super::admitted_view_bytes(rows)?
+        .checked_add(rows.capacity().saturating_sub(rows.len()).checked_mul(std::mem::size_of::<Row>())
+            .ok_or_else(|| BuiltinModelError("SQL view row buffer overflow".into()))?)
+        .and_then(|n| n.checked_add(if rows.capacity() == 0 { 0 } else { SQL_ALLOCATION_QUOTA_PER_ALLOCATION }))
+        .ok_or_else(|| BuiltinModelError("SQL view quota overflow".into()))?;
+    let mut budget = RequestedLayoutBudget::new(prior, super::super::MAX_REBUILD_BYTES)
+        .map_err(|error| BuiltinModelError(error.into()))?;
+    let remaining = super::super::MAX_REBUILD_BYTES.checked_sub(prior)
         .ok_or_else(|| BuiltinModelError("SQL view exceeds byte bound".into()))?;
     let (selected, catalog_bytes) = super::super::sql_catalog::load_projects_bounded(
-        snapshot,
-        sources.projects.keys(),
-        &|| false,
-        remaining,
-        SQL_ALLOCATION_QUOTA_PER_ALLOCATION,
-    )
-    .map_err(|error| BuiltinModelError(error.to_string()))?;
+        snapshot, sources.projects.keys(), &|| false, remaining, SQL_ALLOCATION_QUOTA_PER_ALLOCATION,
+    ).map_err(|error| BuiltinModelError(error.to_string()))?;
+    let added = selected.values().try_fold(0usize, |n, sql| {
+        let count = sql.facts.iter().filter(|(_, _, fact)| matches!(fact,
+            SqlFact::Definition(d) if d.live_at_head && matches!(d.action, SqlDefinitionAction::Create | SqlDefinitionAction::AddColumn))).count();
+        n.checked_add(count).ok_or_else(|| BuiltinModelError("SQL row count overflow".into()))
+    })?;
+    let needed = rows.len().checked_add(added).filter(|n| *n <= MAX_REBUILD_PACKAGES)
+        .ok_or_else(|| BuiltinModelError("SQL declarations exceed the view row bound".into()))?;
+    if needed > rows.capacity() {
+        // The old buffer remains charged while the complete requested new
+        // buffer is admitted. Keeping both charges afterwards is conservative.
+        let new_buffer = needed.checked_mul(std::mem::size_of::<Row>())
+            .and_then(|n| n.checked_add(SQL_ALLOCATION_QUOTA_PER_ALLOCATION))
+            .ok_or_else(|| BuiltinModelError("SQL row buffer overflow".into()))?;
+        budget.retain(new_buffer, catalog_bytes).map_err(|e| BuiltinModelError(e.into()))?;
+        rows.try_reserve_exact(added).map_err(|_| BuiltinModelError("SQL row buffer allocation failed".into()))?;
+    }
     for (project, indexed) in &sources.projects {
-        let Some(sql) = selected.get(project) else {
-            continue;
-        };
+        let Some(sql) = selected.get(project) else { continue; };
         for (host, ordinal, fact) in &sql.facts {
-            let SqlFact::Definition(definition) = fact else {
-                continue;
-            };
-            if !definition.live_at_head
-                || !matches!(
-                    definition.action,
-                    SqlDefinitionAction::Create | SqlDefinitionAction::AddColumn
-                )
-            {
-                continue;
-            }
-            if rows.len() >= MAX_REBUILD_PACKAGES {
-                return Err(BuiltinModelError(
-                    "SQL declarations exceed the view row bound".into(),
-                ));
-            }
+            let SqlFact::Definition(definition) = fact else { continue; };
+            if !definition.live_at_head || !matches!(definition.action, SqlDefinitionAction::Create | SqlDefinitionAction::AddColumn) { continue; }
             let path = &sql.hosts[*host].path;
-            let prospective = bytes
-                .checked_add(catalog_bytes)
-                .and_then(|n| {
-                    n.checked_add(projection_bound(&indexed.label, path, definition).ok()?)
-                })
-                .ok_or_else(|| BuiltinModelError("SQL projection byte overflow".into()))?;
-            super::super::finish_admitted_bytes(prospective)?;
-            let (coordinate, preimage, display, kind) =
-                projection(&indexed.label, path, *ordinal, definition)?;
-            let row = Row::in_package(RowId::Symbol(backend_engine::symbol_key(&preimage)), initial.basis(), indexed.package, coordinate)
-                .try_with_identity_preimage(&preimage)
-                .map_err(|error| BuiltinModelError(format!("SQL discovery identity: {error}")))?
-                .with_kind(if definition.kind == SqlObjectKind::Column { DeclarationKind::Field } else { DeclarationKind::Unknown })
-                .with_signature(format!("SQL {kind} {display}"))
-                .with_document(vec![Fragment::Text(format!("SQL {kind} in {path}; use sql-query for binding, migration history and checked source"))]);
-            bytes = bytes
-                .checked_add(
-                    super::super::row_admission_bytes(&row)
-                        .ok_or_else(|| BuiltinModelError("SQL discovery byte overflow".into()))?,
-                )
-                .ok_or_else(|| BuiltinModelError("SQL discovery byte overflow".into()))?;
-            super::super::finish_admitted_bytes(bytes)?;
+            let name = definition.head_name.as_deref().unwrap_or(&definition.name);
+            let parent = if definition.kind == SqlObjectKind::Column {
+                definition.head_parent.as_deref().or(definition.parent.as_deref())
+            } else { None };
+            let prefix = parent.unwrap_or("");
+            let coordinate_sep = if parent.is_some() { "::" } else { "" };
+            let display_sep = if parent.is_some() { "." } else { "" };
+            let kind = match definition.kind {
+                SqlObjectKind::Column => "column", SqlObjectKind::Table => "table", SqlObjectKind::View => "view",
+                SqlObjectKind::Index => "index", SqlObjectKind::Trigger => "trigger", SqlObjectKind::Function => "function",
+                SqlObjectKind::Schema => "schema", SqlObjectKind::Type => "type", SqlObjectKind::Sequence => "sequence",
+            };
+            let label = ExactText::measure(format_args!("{}::{path}::{prefix}{coordinate_sep}{name}", indexed.label)).map_err(|e| BuiltinModelError(e.into()))?;
+            let identity = ExactText::measure(format_args!("{}::{path}::{prefix}{coordinate_sep}{name}\0sql:{ordinal}", indexed.label)).map_err(|e| BuiltinModelError(e.into()))?;
+            let signature = ExactText::measure(format_args!("SQL {kind} {prefix}{display_sep}{name}")).map_err(|e| BuiltinModelError(e.into()))?;
+            let document = ExactText::measure(format_args!("SQL {kind} in {path}; use sql-query for binding, migration history and checked source")).map_err(|e| BuiltinModelError(e.into()))?;
+            let plan = ProjectedRowPlan::new(label.len(), identity.len(), signature.len(), document.len())
+                .map_err(|e| BuiltinModelError(e.into()))?;
+            let retained = plan.retained_payload_requested_bytes().checked_add(
+                plan.allocation_count().checked_mul(SQL_ALLOCATION_QUOTA_PER_ALLOCATION)
+                    .ok_or_else(|| BuiltinModelError("SQL row quota overflow".into()))?)
+                .ok_or_else(|| BuiltinModelError("SQL row quota overflow".into()))?;
+            budget.retain(retained, catalog_bytes).map_err(|e| BuiltinModelError(e.into()))?;
+            let label = label.allocate(format_args!("{}::{path}::{prefix}{coordinate_sep}{name}", indexed.label)).map_err(|e| BuiltinModelError(e.into()))?;
+            let identity = identity.allocate(format_args!("{}::{path}::{prefix}{coordinate_sep}{name}\0sql:{ordinal}", indexed.label)).map_err(|e| BuiltinModelError(e.into()))?;
+            let signature = signature.allocate(format_args!("SQL {kind} {prefix}{display_sep}{name}")).map_err(|e| BuiltinModelError(e.into()))?;
+            let document = document.allocate(format_args!("SQL {kind} in {path}; use sql-query for binding, migration history and checked source")).map_err(|e| BuiltinModelError(e.into()))?;
+            let id = RowId::Symbol(backend_engine::symbol_key(&identity));
+            let row = plan.build(id, initial.basis(), indexed.package,
+                if definition.kind == SqlObjectKind::Column { DeclarationKind::Field } else { DeclarationKind::Unknown },
+                ProjectedRowTexts { label, identity, signature, document }).map_err(|e| BuiltinModelError(e.into()))?;
             rows.push(row);
         }
     }
