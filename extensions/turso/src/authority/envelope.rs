@@ -915,7 +915,11 @@ impl CompilerPublicationMetadata {
         scan.take(count.checked_mul(72).ok_or(CompilerEnvelopeError::Truncated)?)?;
         match scan.u8()? {
             0 => {},
-            1 => { let n = scan.u32()? as usize; scan.take(n)?; },
+            1 => {
+                let n = scan.u32()? as usize;
+                let nested = scan.take(n)?;
+                super::versioned::preflight_versioned_framing(nested).map_err(CompilerEnvelopeError::VersionedPlane)?;
+            },
             _ => return Err(CompilerEnvelopeError::VersionedPlaneMetadata),
         }
         let has_program = if matches!(version, COVERAGE_METADATA_VERSION | TYPESCRIPT_SNAPSHOT_METADATA_VERSION | NATIVE_HEADERS_METADATA_VERSION) {
@@ -1216,6 +1220,10 @@ impl CompilerPublicationEnvelope {
     /// Checks that the envelope names the exact Turso-selected immutable tuple.
     #[must_use]
     pub fn matches_selected(&self, selected: &SelectedGeneration) -> bool {
+        self.matches_selected_with_verified_id(selected, &self.object_id())
+    }
+
+    fn matches_selected_with_verified_id(&self, selected: &SelectedGeneration, verified_id: &AuthorityHash) -> bool {
         let (attempt_id, attempt_epoch) = selected.attempt();
         self.namespace == *selected.namespace()
             && self.attempt_id == *attempt_id
@@ -1225,7 +1233,7 @@ impl CompilerPublicationEnvelope {
             && self.logical_generation == *selected.target_root()
             && self.physical_pack_id == *selected.pack_id()
             && self.semantic_manifest_root == selected.semantic_manifest_root().copied()
-            && self.object_id() == *selected.candidate_id()
+            && verified_id == selected.candidate_id()
     }
 
     /// Confirms metadata identity, logical root, and exact compiler member set.
@@ -1233,10 +1241,14 @@ impl CompilerPublicationEnvelope {
         &self,
         metadata: &CompilerPublicationMetadata,
     ) -> Result<(), CompilerEnvelopeError> {
-        if self.metadata_id != metadata.object_id()
+        self.validate_metadata_with_verified_id(metadata, &metadata.object_id())
+    }
+
+    fn validate_metadata_with_verified_id(&self, metadata: &CompilerPublicationMetadata, verified_id: &AuthorityHash) -> Result<(), CompilerEnvelopeError> {
+        if &self.metadata_id != verified_id
             || self.logical_generation != metadata.binding_identity
             || self.semantic_manifest_root != metadata.semantic_manifest_root().copied()
-            || self.member_ids.as_ref() != metadata_member_ids(metadata).as_slice()
+            || self.member_ids.as_ref() != metadata_member_ids_with_id(metadata, *verified_id).as_slice()
         {
             return Err(CompilerEnvelopeError::MetadataMismatch);
         }
@@ -1811,12 +1823,16 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
 }
 
 fn metadata_member_ids(metadata: &CompilerPublicationMetadata) -> Vec<AuthorityHash> {
+    metadata_member_ids_with_id(metadata, metadata.object_id())
+}
+
+fn metadata_member_ids_with_id(metadata: &CompilerPublicationMetadata, metadata_id: AuthorityHash) -> Vec<AuthorityHash> {
     let plane_count = metadata
         .versioned_planes
         .as_ref()
         .map_or(0, VersionedPlaneMetadata::segment_count);
     let mut members = Vec::with_capacity(metadata.images.len() + plane_count + 1);
-    members.push(metadata.object_id());
+    members.push(metadata_id);
     if let Some(member) = metadata.native_program_sources() {
         members.push(*member.object_id());
     }

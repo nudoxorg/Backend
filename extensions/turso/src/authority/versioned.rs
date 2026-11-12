@@ -829,6 +829,33 @@ impl fmt::Display for VersionedPlaneError {
 
 impl std::error::Error for VersionedPlaneError {}
 
+/// Checks all variable framing and count geometry without allocating rows.
+pub(super) fn preflight_versioned_framing(bytes: &[u8]) -> Result<(), VersionedPlaneError> {
+    let mut scan = Decoder::new(bytes);
+    if scan.take(MAGIC.len())? != MAGIC { return Err(VersionedPlaneError::Magic); }
+    if scan.u16()? != VERSION { return Err(VersionedPlaneError::Version); }
+    scan.take(32)?;
+    let artifacts = scan.u32()? as usize;
+    if artifacts == 0 || artifacts > MAX_ARTIFACTS { return Err(VersionedPlaneError::ArtifactCount); }
+    let mut manifest_total = 0usize;
+    let mut member_total = artifacts;
+    for _ in 0..artifacts {
+        scan.take(4 + 32 * 3)?;
+        let manifest_len = scan.u32()? as usize;
+        if manifest_len == 0 || manifest_len > MAX_MANIFEST_BYTES { return Err(VersionedPlaneError::ManifestLength); }
+        manifest_total = manifest_total.checked_add(manifest_len).ok_or(VersionedPlaneError::ManifestLength)?;
+        if manifest_total > MAX_TOTAL_MANIFEST_BYTES { return Err(VersionedPlaneError::ManifestLength); }
+        scan.take(manifest_len)?;
+        let members = scan.u32()? as usize;
+        if members == 0 || members > MAX_SEGMENTS { return Err(VersionedPlaneError::MemberCount); }
+        member_total = member_total.checked_add(members).ok_or(VersionedPlaneError::MemberCount)?;
+        if member_total > MAX_SEGMENTS { return Err(VersionedPlaneError::MemberCount); }
+        scan.take(members.checked_mul(MEMBER_BYTES).ok_or(VersionedPlaneError::Truncated)?)?;
+    }
+    if !scan.is_empty() { return Err(VersionedPlaneError::TrailingBytes); }
+    Ok(())
+}
+
 struct Decoder<'a> {
     bytes: &'a [u8],
     offset: usize,
