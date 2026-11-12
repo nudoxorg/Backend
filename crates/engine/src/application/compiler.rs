@@ -5644,6 +5644,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 },
                 None => None,
             };
+            // Reserve the maximum possible next C# snapshot before invoking
+            // its producer. Previously staged owners remain held throughout.
+            if matches!(target.profile, LanguageProfile::CSharp(_)) {
+                csharp_execution.ensure_capacity_for_next()
+                    .map_err(|_| PackageSemanticError::Capacity { lane: "C# execution snapshot budget" })?;
+            }
             let transient_authority = if go_owner.is_some() {
                 go_owner
             } else if rust_workspace_authority.is_none()

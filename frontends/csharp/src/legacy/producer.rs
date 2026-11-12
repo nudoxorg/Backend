@@ -39,6 +39,14 @@ use thiserror::Error;
 
 use crate::legacy::{CSharpImage, ImageError};
 
+// Snapshot bytes are charged conservatively even when a write later replaces
+// the same private path. These limits cover copied logical file content; OS
+// allocation metadata and transient read buffers have separate bounds.
+const MAX_EXECUTION_SNAPSHOT_BYTES: usize = 512 * 1024 * 1024;
+const MAX_RETAINED_EXECUTION_BYTES: usize = 1024 * 1024 * 1024;
+const MAX_EXECUTION_SNAPSHOT_NODES: usize = 32_768;
+const MAX_RETAINED_EXECUTION_NODES: usize = 65_536;
+
 /// Immutable custody for the executable files that participate in one Roslyn
 /// invocation.  The bytes are captured before spawning the helper and checked
 /// again immediately before use; a changed host/runtime fails closed.
@@ -54,6 +62,8 @@ struct CSharpExecutionSnapshot {
     toolchain: PathBuf,
     oracle: PathBuf,
     digest: [u8; 32],
+    copied_bytes: usize,
+    output_nodes: usize,
 }
 
 /// Owner-held custody for the exact private runtime/helper snapshot used by a
@@ -68,6 +78,18 @@ impl CSharpExecutionLease {
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
         self.0.digest
+    }
+
+    /// Conservatively counted logical bytes written into the snapshot.
+    #[must_use]
+    pub fn copied_bytes(&self) -> usize {
+        self.0.copied_bytes
+    }
+
+    /// Conservative count of files and directory path components written.
+    #[must_use]
+    pub fn output_nodes(&self) -> usize {
+        self.0.output_nodes
     }
 
     /// Whether both leases hold the exact same private snapshot owner.
@@ -111,9 +133,41 @@ pub struct CSharpSourceExecutionLeases {
     entries: Vec<CSharpSourceExecutionLease>,
     paths: std::collections::BTreeMap<Box<str>, usize>,
     charged_bytes: usize,
+    retained_snapshot_bytes: usize,
+    retained_snapshot_nodes: usize,
 }
 
 impl CSharpSourceExecutionLeases {
+    /// Refuse before spawning when the worst-case next private snapshot
+    /// would exceed the aggregate copied-content budget. The single-source
+    /// snapshot constructor independently enforces that worst-case bound.
+    pub fn ensure_capacity_for_next(&self) -> Result<(), CSharpAuthorityError> {
+        if self.entries.len() >= 16_384 {
+            return Err(CSharpAuthorityError::Configuration);
+        }
+        self.retained_snapshot_bytes
+            .checked_add(MAX_EXECUTION_SNAPSHOT_BYTES)
+            .filter(|n| *n <= MAX_RETAINED_EXECUTION_BYTES)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        self.retained_snapshot_nodes
+            .checked_add(MAX_EXECUTION_SNAPSHOT_NODES)
+            .filter(|n| *n <= MAX_RETAINED_EXECUTION_NODES)
+            .map(|_| ())
+            .ok_or(CSharpAuthorityError::Configuration)
+    }
+
+    /// Conservatively charged logical bytes of all retained snapshots.
+    #[must_use]
+    pub const fn retained_snapshot_bytes(&self) -> usize {
+        self.retained_snapshot_bytes
+    }
+
+    /// Conservative number of charged snapshot output nodes.
+    #[must_use]
+    pub const fn retained_snapshot_nodes(&self) -> usize {
+        self.retained_snapshot_nodes
+    }
+
     /// Retain one exact source/owner pair; duplicate paths fail closed.
     pub fn retain(
         &mut self,
@@ -144,6 +198,16 @@ impl CSharpSourceExecutionLeases {
             .and_then(|n| self.charged_bytes.checked_add(n))
             .filter(|n| *n <= 32 * 1024 * 1024)
             .ok_or(CSharpAuthorityError::Configuration)?;
+        let retained_snapshot_bytes = self
+            .retained_snapshot_bytes
+            .checked_add(execution.copied_bytes())
+            .filter(|n| *n <= MAX_RETAINED_EXECUTION_BYTES)
+            .ok_or(CSharpAuthorityError::Configuration)?;
+        let retained_snapshot_nodes = self
+            .retained_snapshot_nodes
+            .checked_add(execution.output_nodes())
+            .filter(|n| *n <= MAX_RETAINED_EXECUTION_NODES)
+            .ok_or(CSharpAuthorityError::Configuration)?;
         self.entries
             .try_reserve(1)
             .map_err(|_| CSharpAuthorityError::Configuration)?;
@@ -154,6 +218,8 @@ impl CSharpSourceExecutionLeases {
             execution: execution.clone(),
         });
         self.charged_bytes = charge;
+        self.retained_snapshot_bytes = retained_snapshot_bytes;
+        self.retained_snapshot_nodes = retained_snapshot_nodes;
         Ok(())
     }
 
@@ -353,7 +419,7 @@ fn copy_tree_bounded(
         manifest.push((source.to_path_buf(), digest, content.len()));
         *bytes = bytes
             .checked_add(content.len())
-            .filter(|size| *size <= 512 * 1024 * 1024)
+            .filter(|size| *size <= MAX_EXECUTION_SNAPSHOT_BYTES)
             .ok_or(CSharpAuthorityError::Configuration)?;
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).map_err(|_| CSharpAuthorityError::Configuration)?;
@@ -378,7 +444,9 @@ fn snapshot_execution(
     let mut files = 0;
     let mut bytes: usize = 0;
     let mut manifest = SnapshotManifest::new();
-    let mut entries = 0;
+    // Root, dotnet directory, host executable, helper and two companions.
+    // Repeated paths are deliberately charged more than once.
+    let mut entries = 6;
     let mut path_bytes = 0;
     // `dotnet exec` only needs the hostfxr and shared runtime trees. SDK packs,
     // templates, and workload caches are excluded from this execution closure.
@@ -398,7 +466,7 @@ fn snapshot_execution(
     ));
     bytes = bytes
         .checked_add(tool_bytes.len())
-        .filter(|size| *size <= 512 * 1024 * 1024)
+        .filter(|size| *size <= MAX_EXECUTION_SNAPSHOT_BYTES)
         .ok_or(CSharpAuthorityError::Configuration)?;
     fs::create_dir_all(&copied_root).map_err(|_| CSharpAuthorityError::Configuration)?;
     fs::write(&copied_tool, tool_bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
@@ -446,7 +514,7 @@ fn snapshot_execution(
     checkpoint(control, CSharpAuthorityPhase::Spawn)?;
     bytes = bytes
         .checked_add(oracle_bytes.len())
-        .filter(|size| *size <= 512 * 1024 * 1024)
+        .filter(|size| *size <= MAX_EXECUTION_SNAPSHOT_BYTES)
         .ok_or(CSharpAuthorityError::Configuration)?;
     fs::write(&copied_oracle, oracle_bytes).map_err(|_| CSharpAuthorityError::Configuration)?;
     let oracle_stem = oracle
@@ -466,7 +534,7 @@ fn snapshot_execution(
         ));
         bytes = bytes
             .checked_add(companion_bytes.len())
-            .filter(|size| *size <= 512 * 1024 * 1024)
+            .filter(|size| *size <= MAX_EXECUTION_SNAPSHOT_BYTES)
             .ok_or(CSharpAuthorityError::Configuration)?;
         fs::write(
             directory.path().join(format!("{oracle_stem}{suffix}")),
@@ -529,6 +597,16 @@ fn snapshot_execution(
     declared.insert(PathBuf::from(format!("{oracle_stem}.dll")));
     let mut flattened_names = std::collections::BTreeMap::<std::ffi::OsString, PathBuf>::new();
     for relative in declared {
+        // Count all path components as potentially new nodes. Shared parents
+        // and duplicate helper writes are intentionally over-counted.
+        let depth = relative.components().count();
+        if depth == 0 || depth > 32 {
+            return Err(CSharpAuthorityError::Configuration);
+        }
+        entries = entries
+            .checked_add(depth)
+            .filter(|count| *count <= MAX_EXECUTION_SNAPSHOT_NODES)
+            .ok_or(CSharpAuthorityError::Configuration)?;
         // A published helper's deps file records the package-relative asset
         // (`lib/net8.0/Foo.dll`), while `dotnet publish` may flatten that
         // asset beside the apphost.  Prefer the recorded path; only accept a
@@ -567,7 +645,7 @@ fn snapshot_execution(
         ));
         bytes = bytes
             .checked_add(content.len())
-            .filter(|size| *size <= 512 * 1024 * 1024)
+            .filter(|size| *size <= MAX_EXECUTION_SNAPSHOT_BYTES)
             .ok_or(CSharpAuthorityError::Configuration)?;
         let destination = directory.path().join(&relative);
         if let Some(parent) = destination.parent() {
@@ -606,6 +684,8 @@ fn snapshot_execution(
         toolchain: copied_tool,
         oracle: copied_oracle,
         digest: digest.finalize().into(),
+        copied_bytes: bytes,
+        output_nodes: entries,
     })
 }
 
@@ -1948,7 +2028,11 @@ mod tests {
 
     #[test]
     fn staged_sources_retain_each_exact_execution_owner_even_with_equal_digests() {
-        fn fixture(digest: [u8; 32]) -> (CSharpExecutionLease, PathBuf) {
+        fn fixture(
+            digest: [u8; 32],
+            copied_bytes: usize,
+            output_nodes: usize,
+        ) -> (CSharpExecutionLease, PathBuf) {
             let directory = tempfile::tempdir().expect("private execution snapshot");
             let root = directory.path().to_owned();
             let snapshot = CSharpExecutionSnapshot {
@@ -1956,11 +2040,13 @@ mod tests {
                 oracle: root.join("oracle.dll"),
                 _directory: directory,
                 digest,
+                copied_bytes,
+                output_nodes,
             };
             (CSharpExecutionLease(Arc::new(snapshot)), root)
         }
-        let (first, first_root) = fixture([7; 32]);
-        let (second, second_root) = fixture([7; 32]);
+        let (first, first_root) = fixture([7; 32], 123, 5);
+        let (second, second_root) = fixture([7; 32], 123, 5);
         assert_eq!(first.digest(), second.digest());
         assert!(!first.same_snapshot(&second));
         assert!(first.same_snapshot(&first.clone()));
@@ -1994,6 +2080,10 @@ mod tests {
                 .is_err()
         );
         assert_eq!(retained.entries().len(), 2);
+        // Equal digests are charged independently because they own distinct
+        // directories; duplicate-path failures must not change the charge.
+        assert_eq!(retained.retained_snapshot_bytes(), 246);
+        assert_eq!(retained.retained_snapshot_nodes(), 10);
         drop(first);
         drop(second);
         assert!(first_root.is_dir());
@@ -2001,6 +2091,35 @@ mod tests {
         drop(retained);
         assert!(!first_root.exists());
         assert!(!second_root.exists());
+
+        let (large_a, _) = fixture([9; 32], 400 * 1024 * 1024, 1);
+        let (large_b, _) = fixture([9; 32], 200 * 1024 * 1024, 1);
+        let (would_overflow, _) = fixture([9; 32], MAX_EXECUTION_SNAPSHOT_BYTES, 1);
+        let mut quota = CSharpSourceExecutionLeases::default();
+        assert!(quota.ensure_capacity_for_next().is_ok());
+        quota.retain("a.cs", [1; 32], &large_a).unwrap();
+        assert!(quota.ensure_capacity_for_next().is_ok());
+        quota.retain("b.cs", [2; 32], &large_b).unwrap();
+        assert_eq!(quota.retained_snapshot_bytes(), 600 * 1024 * 1024);
+        assert!(quota.ensure_capacity_for_next().is_err());
+        assert!(quota.retain("c.cs", [3; 32], &would_overflow).is_err());
+        assert_eq!(quota.retained_snapshot_bytes(), 600 * 1024 * 1024);
+        assert_eq!(quota.entries().len(), 2);
+
+        // Empty-file snapshots still consume a separately bounded number of
+        // output nodes. Reserve the worst case before beginning another one.
+        let (nodes_a, _) = fixture([8; 32], 0, 24_000);
+        let (nodes_b, _) = fixture([8; 32], 0, 12_000);
+        let (nodes_overflow, _) = fixture([8; 32], 0, 30_000);
+        let mut node_quota = CSharpSourceExecutionLeases::default();
+        node_quota.retain("a.cs", [1; 32], &nodes_a).unwrap();
+        assert!(node_quota.ensure_capacity_for_next().is_ok());
+        node_quota.retain("b.cs", [2; 32], &nodes_b).unwrap();
+        assert_eq!(node_quota.retained_snapshot_nodes(), 36_000);
+        assert!(node_quota.ensure_capacity_for_next().is_err());
+        assert!(node_quota.retain("c.cs", [3; 32], &nodes_overflow).is_err());
+        assert_eq!(node_quota.retained_snapshot_nodes(), 36_000);
+        assert_eq!(node_quota.entries().len(), 2);
     }
 
     #[test]
