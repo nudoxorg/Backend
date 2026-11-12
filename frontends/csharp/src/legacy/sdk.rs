@@ -476,6 +476,9 @@ impl CSharpResolvedReferenceSnapshot {
         global_json_digest: Option<[u8; 32]>,
         candidate_digest: [u8; 32],
     ) -> bool {
+        if persisted != &self.receipt || !self.receipt_is_consistent() {
+            return false;
+        }
         let Some((selected_digest, selected_names)) = self.selected_owner_evidence() else {
             return false;
         };
@@ -1787,6 +1790,21 @@ mod tests {
         wrong_environment.globalization_policy = "ambient-culture".into();
         assert_ne!(wrong_environment.digest(), decoded.digest());
         assert!(!snapshot.replay_receipt(&wrong_environment, sdk.path(), "net10.0", None, [8; 32]));
+        let mut changed = decoded.clone();
+        changed.nullable = "disable".into();
+        assert!(!snapshot.replay_receipt(&changed, sdk.path(), "net10.0", None, [8; 32]));
+        let mut changed = decoded.clone();
+        changed.language_version = "12.0".into();
+        assert!(!snapshot.replay_receipt(&changed, sdk.path(), "net10.0", None, [8; 32]));
+        let mut changed = decoded.clone();
+        changed.output_type = "Library".into();
+        assert!(!snapshot.replay_receipt(&changed, sdk.path(), "net10.0", None, [8; 32]));
+        let mut changed = decoded.clone();
+        changed.sdk_kind = "Microsoft.NET.Sdk.Web".into();
+        assert!(!snapshot.replay_receipt(&changed, sdk.path(), "net10.0", None, [8; 32]));
+        let mut changed = decoded.clone();
+        changed.framework_references = vec!["Microsoft.AspNetCore.App".into()].into_boxed_slice();
+        assert!(!snapshot.replay_receipt(&changed, sdk.path(), "net10.0", None, [8; 32]));
         fs::write(&snapshot.references[0], b"tampered").unwrap();
         assert!(!snapshot.replay_receipt(&decoded, sdk.path(), "net10.0", None, [8; 32]));
     }
