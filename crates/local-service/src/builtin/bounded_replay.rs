@@ -151,7 +151,7 @@ fn admit_inner(
             SelectedPublicationWire::Lines { bytes, .. } => { plan.lines = Some(copy(bytes, budget, stopped)?); }
         }
         Ok(())
-    }).map_err(|e| format!("native replay selected closure: {e}"))?;
+    })?;
     if !plan.claim { return Err("native replay metadata absent".into()); }
     let program = plan.program.as_ref().ok_or("native replay Program absent")?;
     // Program membership is a separate authority plane from image ownership.
@@ -197,20 +197,6 @@ fn admit_inner(
                 step(budget, stopped, 1)?;
                 if file.line_start(index) != Some(expected) { return Err("native replay line offsets differ".into()); }
             }
-        } else if let Some(aggregate) = &lines {
-            let mut checkpoint = |n| charge_native_header_work(budget, stopped, n);
-            if aggregate.find_file(&row.path, &mut checkpoint)?.is_some() { return Err("native replay lost line-map reference".into()); }
-        }
-    }
-    if let Some(aggregate) = &lines {
-        for file in aggregate.files() {
-            step(budget, stopped, 1)?;
-            let mut found = false;
-            for (i, row) in rows.iter().enumerate() {
-                step(budget, stopped, 1)?;
-                if plan.flags[i] & 1 != 0 && row.line_starts.is_some() && eq(file.path.as_bytes(), row.path.as_bytes(), budget, stopped)? { found = true; break; }
-            }
-            if !found { return Err("native replay did not consume line file".into()); }
         }
     }
     let mut seen_claim = false;
@@ -283,7 +269,7 @@ fn admit_inner(
             SelectedPublicationWire::Headers { .. } | SelectedPublicationWire::Lines { .. } => {}
         }
         Ok(())
-    }).map_err(|e| format!("native replay selected closure: {e}"))?;
+    })?;
     if !seen_claim || !seen_program { return Err("native replay selected members absent".into()); }
     if let Some((aggregate, _)) = &headers {
         for file in aggregate.files() {

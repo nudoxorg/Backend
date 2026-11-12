@@ -5960,6 +5960,12 @@ mod tests {
         assert!(admit_replayed_native_evidence(
             &workspace_store, std::slice::from_ref(&capture), &[&missing_header], &[],
         ).is_err(), "selected compiler header cannot be removed from evidence");
+        // The header mismatch occurs after the selected Program and image have
+        // already been inspected. A retry must observe the original selected
+        // publication, with no partial state from the failed detached plan.
+        assert!(admit_replayed_native_evidence(
+            &workspace_store, std::slice::from_ref(&capture), &[&current], &[&removed],
+        ).is_ok(), "late replay failure must leave the selected publication unchanged");
         for mutate_start in [false, true] {
             let mut altered = native_aggregate.clone();
             let file = altered.files.iter_mut().find(|file| file.path == "src/main.ts").expect("header file");
