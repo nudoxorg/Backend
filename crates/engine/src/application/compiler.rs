@@ -3440,6 +3440,11 @@ pub(crate) enum PackageExecutionAuthority {
 /// contributed to a C# compile: the installed SDK location, the selected
 /// framework and compiler options, reference directories, usings, defines,
 /// and the captured global.json and project configuration texts.
+fn captured_sdk_global_json<'a>(probes: &[backend_frontend_csharp::legacy::CSharpSdkProbe<'a>]) -> Option<&'a str> {
+    // SDK probe validation requires nearest-first project ancestor order.
+    probes.iter().find_map(|probe| probe.text)
+}
+
 fn csharp_sdk_observation_fingerprint(
     observed: &backend_frontend_csharp::legacy::CSharpSdkObservation,
     probes: &[backend_frontend_csharp::legacy::CSharpSdkProbe<'_>],
@@ -4325,7 +4330,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut captured_global_json: Option<&str> = None;
         let mut restored_csharp_references = None;
         let sdk_observation = if let Some(probes) = package.csharp_sdk_probes {
-            captured_global_json = probes.iter().find_map(|probe| probe.text);
+            captured_global_json = captured_sdk_global_json(probes);
             let config = package.csharp_config.ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "captured C# project configuration" })?;
             let options = super::csharp_sdk_options::simple_csharp_sdk_options(
                 config.first().and_then(|entry| entry.text).ok_or(PackageSemanticError::CSharpSdkUnavailable { reason: "captured C# project configuration" })?,
@@ -8495,6 +8500,19 @@ const fn toolchain_terminal(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nearest_present_captured_global_json_wins() {
+        use backend_frontend_csharp::legacy::CSharpSdkProbe;
+        let probes = [
+            CSharpSdkProbe { path: "a/b/global.json", text: None },
+            CSharpSdkProbe { path: "a/global.json", text: Some("ancestor pin") },
+            CSharpSdkProbe { path: "global.json", text: Some("root pin") },
+        ];
+        assert_eq!(super::captured_sdk_global_json(&probes), Some("ancestor pin"));
+        let absent = [CSharpSdkProbe { path: "global.json", text: None }];
+        assert_eq!(super::captured_sdk_global_json(&absent), None);
+    }
+
     use crate::test_support::host_path;
     use std::{
         error::Error as StdError,

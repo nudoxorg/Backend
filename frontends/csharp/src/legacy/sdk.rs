@@ -224,8 +224,11 @@ fn pack_layout_digest(root: &Path, deadline: Instant, cancelled: &AtomicBool) ->
     fn visit(root: &Path, dir: &Path, hash: &mut sha2::Sha256, count: &mut usize,
         total: &mut usize, depth: usize, deadline: Instant, cancelled: &AtomicBool) -> Result<(), &'static str> {
         if depth > 32 { return Err("SDK pack snapshot depth"); }
-        let mut entries = fs::read_dir(dir).map_err(|_| "SDK pack snapshot unavailable")?
-            .collect::<Result<Vec<_>, _>>().map_err(|_| "SDK pack snapshot unavailable")?;
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(dir).map_err(|_| "SDK pack snapshot unavailable")? {
+            if entries.len() >= 32768usize.saturating_sub(*count) { return Err("SDK pack snapshot limit"); }
+            entries.push(entry.map_err(|_| "SDK pack snapshot unavailable")?);
+        }
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
             if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline { return Err("SDK pack snapshot cancelled"); }
@@ -234,11 +237,15 @@ fn pack_layout_digest(root: &Path, deadline: Instant, cancelled: &AtomicBool) ->
             let path = entry.path();
             let kind = entry.file_type().map_err(|_| "SDK pack snapshot unavailable")?;
             if kind.is_symlink() { return Err("SDK pack snapshot symlink"); }
+            let relative = path.strip_prefix(root).map_err(|_| "SDK pack snapshot unavailable")?;
+            let name = relative.as_os_str().as_encoded_bytes();
             if kind.is_dir() {
+                hash.update([0]);
+                hash.update((name.len() as u64).to_le_bytes());
+                hash.update(name);
                 visit(root, &path, hash, count, total, depth + 1, deadline, cancelled)?;
             } else if kind.is_file() {
-                let relative = path.strip_prefix(root).map_err(|_| "SDK pack snapshot unavailable")?;
-                let name = relative.as_os_str().as_encoded_bytes();
+                hash.update([1]);
                 let bytes = backend_platform::durable::read_regular_bounded_stable(&path, 32 * 1024 * 1024)
                     .map_err(|_| "SDK pack snapshot unavailable")?;
                 account_pack_bytes(total, bytes.len())?;
