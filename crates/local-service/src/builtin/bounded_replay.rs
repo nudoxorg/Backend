@@ -266,10 +266,16 @@ fn admit_inner(
         while files.len() != 0 {
             step(budget, stopped, 1)?;
             let file = files.next().ok_or("native replay line iteration ended early")?;
+            if program.source_for_package_bytes(file.path.as_bytes(), budget, stopped)? != Some(file.source) {
+                return Err("native replay line source differs from Program".into());
+            }
             let Some(i) = find_index(rows, &source_index, count, file.path.as_bytes(), budget, stopped)? else { continue; };
             let row = rows[i];
+            if file.source.byte_len != row.byte_length || file.source.identity.as_ref() != row.source_digest.as_slice() {
+                return Err("native replay line source differs from evidence".into());
+            }
             let Some(expected) = &row.line_starts else { continue; };
-            if file.source.byte_len != row.byte_length || file.source.identity.as_ref() != row.source_digest.as_slice() || file.line_count() != expected.len() {
+            if file.line_count() != expected.len() {
                 return Err("native replay line source differs".into());
             }
             for (index, expected) in expected.iter().copied().enumerate() {
