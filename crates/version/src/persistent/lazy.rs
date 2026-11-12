@@ -176,7 +176,7 @@ impl LazyTreeMetadataShape {
               entries_before_anchor_limit(self.min_entries_per_node, branch)?))
     }
 
-    fn update_metadata_bytes<R: CanonicalRelation>(self, change_count: usize) -> Option<usize> {
+    fn update_metadata_bytes<R: CanonicalRelation>(self, change_count: usize, decoded_bounded: bool) -> Option<usize> {
         let node_bytes = self.max_node_bytes()?;
         // Charge the caller's edit structs plus the before/after records that
         // can be returned. Accumulated path copies are measured from their
@@ -190,7 +190,7 @@ impl LazyTreeMetadataShape {
             .checked_add(size_of::<R::Value>().checked_mul(2)?)?
             .checked_add(self.max_key_bytes.checked_mul(2)?)?
             .checked_add(self.max_value_bytes.checked_mul(3)?)?
-            .checked_add(192)?; // Before/after and key allocation headers.
+            .checked_add(if decoded_bounded { 192 } else { 0 })?;
         let changes = change_count.checked_mul(per_change)?;
 
         // A single edit can spill across several sibling nodes at any tree
@@ -200,20 +200,18 @@ impl LazyTreeMetadataShape {
         let spill_entries = self
             .max_entries_per_node
             .checked_mul(self.max_spill_nodes_per_level)?;
-        // Spill collection may retain an old and a grown Vec buffer while a
-        // sibling decode contributes a third cell buffer. Payload heaps move
-        // with their cells; edit before/after clones are charged separately.
-        let row_scratch = size_of::<R::Key>().checked_add(size_of::<R::Value>())?
-            .checked_mul(3)?
-            .checked_add(self.max_key_bytes.checked_mul(2)?)?
-            .checked_add(self.max_value_bytes)?
-            .checked_add(64)?;
-        // Branch rewriting holds children plus key and probe-key arrays; Vec
-        // growth can temporarily retain both old and new child buffers.
-        let branch_scratch = size_of::<CommittedChild<R>>().checked_mul(3)?
-            .checked_add(size_of::<R::Key>().checked_mul(2)?)?
-            .checked_add(self.max_key_bytes.checked_mul(3)?)?
-            .checked_add(64)?;
+        let (row_scratch, branch_scratch) = if decoded_bounded {
+            // Three cell buffers and both branch key arrays can coexist while
+            // spill vectors grow; retained payload heaps move with their cells.
+            (size_of::<R::Key>().checked_add(size_of::<R::Value>())?.checked_mul(3)?
+                .checked_add(self.max_key_bytes.checked_mul(2)?)?.checked_add(self.max_value_bytes)?.checked_add(64)?,
+             size_of::<CommittedChild<R>>().checked_mul(3)?.checked_add(size_of::<R::Key>().checked_mul(2)?)?
+                .checked_add(self.max_key_bytes.checked_mul(3)?)?.checked_add(64)?)
+        } else {
+            (size_of::<R::Key>().checked_mul(2)?.checked_add(size_of::<R::Value>())?
+                .checked_add(self.max_key_bytes.checked_mul(2)?)?.checked_add(self.max_value_bytes)?,
+             size_of::<CommittedChild<R>>().checked_add(size_of::<R::Key>())?.checked_add(self.max_key_bytes)?)
+        };
         let scratch_per_level = spill_entries
             .checked_mul(row_scratch.max(branch_scratch))?
             .checked_add(self.max_spill_nodes_per_level.checked_mul(node_bytes)?)?
@@ -222,13 +220,13 @@ impl LazyTreeMetadataShape {
         changes.checked_add(scratch)
     }
 
-    fn bulk_metadata_bytes<R: CanonicalRelation>(self, member_count: usize) -> Option<usize> {
+    fn bulk_metadata_bytes<R: CanonicalRelation>(self, member_count: usize, decoded_bounded: bool) -> Option<usize> {
         let node_bytes = self.max_node_bytes()?;
         let key_and_value = size_of::<R::Key>()
             .checked_add(size_of::<R::Value>())?
             .checked_add(self.max_key_bytes)?
             .checked_add(self.max_value_bytes)?
-            .checked_add(64)?; // Bounded per-row allocation headers.
+            .checked_add(if decoded_bounded { 64 } else { 0 })?;
         let leaf_entry = LENGTH_FRAME_BYTES
             .checked_add(self.max_key_bytes)?
             .checked_add(LENGTH_FRAME_BYTES)?
@@ -250,7 +248,7 @@ impl LazyTreeMetadataShape {
             size_of::<MapChange<R>>()
                 .checked_add(self.max_key_bytes)?
                 .checked_add(self.max_value_bytes)?
-                .checked_add(64)?,
+                .checked_add(if decoded_bounded { 64 } else { 0 })?,
         )?;
         let nodes = node_count
             .checked_mul(size_of::<CanonicalNode<R>>().checked_mul(2)?)?
@@ -302,13 +300,17 @@ impl LazyTreeUpdateBudget {
     /// Returns the conservative path-copy charge for a relation and change count.
     #[must_use]
     pub fn update_charge<R: CanonicalRelation>(self, change_count: usize) -> Option<usize> {
-        self.shape.update_metadata_bytes::<R>(change_count)
+        self.shape.update_metadata_bytes::<R>(change_count, false)
     }
 
     /// Returns the conservative genesis bulk-build charge for a relation and member count.
     #[must_use]
     pub fn bulk_charge<R: CanonicalRelation>(self, member_count: usize) -> Option<usize> {
-        self.shape.bulk_metadata_bytes::<R>(member_count)
+        self.shape.bulk_metadata_bytes::<R>(member_count, false)
+    }
+    /// Genesis charge including bounded decoder allocation headers.
+    pub fn decoded_bulk_charge<R: crate::BoundedCanonicalRelation>(self, member_count: usize) -> Option<usize> {
+        self.shape.bulk_metadata_bytes::<R>(member_count, true)
     }
 }
 
@@ -995,7 +997,7 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         changes: &[TreeChange<R>],
         budget: LazyTreeUpdateBudget,
     ) -> Result<LazyPreparedUpdate<R>, LazyTreeError<L::Error>> {
-        self.prepare_update_bounded_with_mode(changes, budget, false)
+        self.prepare_update_bounded_with_mode(changes, budget, false, false)
     }
 
     /// Reserves decoder scratch before any shape validation or node decoding.
@@ -1007,7 +1009,7 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         let scratch = R::NODE_DECODE_SCRATCH;
         budget.max_metadata_bytes = budget.max_metadata_bytes.checked_sub(scratch)
             .ok_or(LazyTreeError::MetadataBudgetExceeded { required_bytes: scratch, max_bytes: budget.max_metadata_bytes })?;
-        let mut update = self.prepare_update_bounded(changes, budget)?;
+        let mut update = self.prepare_update_bounded_with_mode(changes, budget, false, true)?;
         update.work.peak_metadata_bytes = update.work.peak_metadata_bytes.checked_add(scratch)
             .ok_or(LazyTreeError::MetadataBudgetExceeded { required_bytes: usize::MAX, max_bytes: budget.max_metadata_bytes })?;
         Ok(update)
@@ -1065,7 +1067,7 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             });
         }
         validate_node_shape(&self.root, shape).map_err(LazyTreeError::Node)?;
-        let Some(charge) = shape.update_metadata_bytes::<R>(replacements.len()) else {
+        let Some(charge) = shape.update_metadata_bytes::<R>(replacements.len(), false) else {
             return Err(LazyTreeError::MetadataBudgetExceeded {
                 required_bytes: usize::MAX,
                 max_bytes: budget.max_metadata_bytes,
@@ -1118,7 +1120,7 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             key: key.clone(),
             after: Some(value.clone()),
         }));
-        let prepared = self.prepare_update_bounded_with_mode(&changes, budget, true)?;
+        let prepared = self.prepare_update_bounded_with_mode(&changes, budget, true, false)?;
         if prepared
             .changes
             .iter()
@@ -1134,6 +1136,7 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         changes: &[TreeChange<R>],
         budget: LazyTreeUpdateBudget,
         batch_replacements: bool,
+        decoded_bounded: bool,
     ) -> Result<LazyPreparedUpdate<R>, LazyTreeError<L::Error>> {
         if changes
             .windows(2)
@@ -1184,9 +1187,9 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
                 }
             }
             if self.root.row_count() == 0 && changes.iter().all(|change| change.after.is_some()) {
-                shape.bulk_metadata_bytes::<R>(changes.len())
+                shape.bulk_metadata_bytes::<R>(changes.len(), decoded_bounded)
             } else {
-                shape.update_metadata_bytes::<R>(changes.len())
+                shape.update_metadata_bytes::<R>(changes.len(), decoded_bounded)
             }
         }
         .ok_or(LazyTreeError::MetadataBudgetExceeded {

@@ -4787,7 +4787,7 @@ fn charge_native_change_clones(changes: &[NativeEvidenceChange], budget: &mut us
 fn charge_native_initial_build(rows: &[([u8; 32], backend_engine::builtin::NativeSourceEvidence)], budget: &mut usize) -> Result<(), BuiltinModelError> {
     let shape = native_evidence_shape(rows, &[], 0)?;
     let policy = backend_version::LazyTreeUpdateBudget::new(rows.len(), *budget, shape);
-    let required = policy.bulk_charge::<backend_engine::builtin::NativeSourceEvidenceRelation>(rows.len())
+    let required = policy.decoded_bulk_charge::<backend_engine::builtin::NativeSourceEvidenceRelation>(rows.len())
         .ok_or_else(|| BuiltinModelError("native initial build bound overflow".into()))?;
     *budget = budget.checked_sub(required).ok_or_else(|| BuiltinModelError("native initial build budget exceeded".into()))?;
     Ok(())
