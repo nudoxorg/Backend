@@ -73,7 +73,12 @@ run_listed_test() {
     cargo test -p "$package" --lib --locked --offline "$filter" -- --list > "$list"
     cat "$list"
     grep -q ': test$' "$list" || return 1
-    cargo test -p "$package" --lib --locked --offline "$filter" -- --nocapture --test-threads=1
+    local result="$output/test-result-$filter.txt"
+    if ! cargo test -p "$package" --lib --locked --offline "$filter" -- --nocapture --test-threads=1 | tee "$result"; then
+        return 1
+    fi
+    # Listing a matching ignored test does not prove that it actually ran.
+    grep -Eq '^test result: ok\. [1-9][0-9]* passed;' "$result"
 }
 for test in sql_stage_scope_rejects_missing_duplicate_and_cancelled_members opaque_peer_never_turns_a_possible_column_into_an_exact_binding omitted_ambiguous_candidates_are_disclosed creating_fact_identity_separates_epochs statement_identity_does_not_depend_on_line_availability shared_upsert_syntax_does_not_select_postgres_or_poison_project_consensus sqlite_project_indexes_publishes_queries_reindexes_and_survives_cold_reopen unsupported_statement_and_unparseable_file_are_reported_as_gaps_never_as_empty flat_sql_upsert_and_renamed_objects_keep_precise_owner_edges sql_impact_distinguishes_drop_recreate_epochs many_sql_facts_publish_discover_and_reopen_with_bounded_catalog bounded_catalog_tests sql_catalog::snapshot_tests builtin::view_build::sql::tests row_admission failed_latest_sql_attempt_leaves_names_gapped; do
     check "$test" run_listed_test backend-local-service "$test"
