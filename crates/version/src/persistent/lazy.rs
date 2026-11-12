@@ -203,7 +203,8 @@ impl LazyTreeMetadataShape {
             .checked_mul(2)?
             .checked_add(size_of::<R::Value>())?
             .checked_add(self.max_key_bytes.checked_mul(2)?)?
-            .checked_add(self.max_value_bytes)?;
+            .checked_add(self.max_value_bytes)?
+            .checked_add(64)?; // Up to four bounded per-row allocation headers.
         let branch_scratch = size_of::<CommittedChild<R>>()
             .checked_add(size_of::<R::Key>())?
             .checked_add(self.max_key_bytes)?;
@@ -220,7 +221,8 @@ impl LazyTreeMetadataShape {
         let key_and_value = size_of::<R::Key>()
             .checked_add(size_of::<R::Value>())?
             .checked_add(self.max_key_bytes)?
-            .checked_add(self.max_value_bytes)?;
+            .checked_add(self.max_value_bytes)?
+            .checked_add(64)?; // Bounded per-row allocation headers.
         let leaf_entry = LENGTH_FRAME_BYTES
             .checked_add(self.max_key_bytes)?
             .checked_add(LENGTH_FRAME_BYTES)?
