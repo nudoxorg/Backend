@@ -162,10 +162,19 @@ def main():
             raise AssertionError(f'{name}: {detail}')
 
     def mcp(name, arguments, label):
-        result = journey.tool(name, dict(arguments, detail='full'))
-        (output / f'{label}.json').write_text(json.dumps(result, indent=2))
-        require(label + ' MCP success', not result.get('isError') and isinstance(result.get('structuredContent'), dict), result)
-        return result['structuredContent']
+        for attempt in range(1, 7):
+            result = journey.tool(name, dict(arguments, detail='full'))
+            (output / f'{label}-attempt-{attempt}.json').write_text(json.dumps(result, indent=2))
+            content = result.get('structuredContent')
+            repeatable = (result.get('isError') is True and isinstance(content, dict)
+                          and content.get('slug') == 'endpoint'
+                          and content.get('cause') == 'unreachable'
+                          and 're-run the same command' in str(content.get('shell', '')))
+            if not repeatable or attempt == 6:
+                break
+            time.sleep(10)
+        require(label + ' MCP success', not result.get('isError') and isinstance(content, dict), result)
+        return content
 
     def verify(phase):
         rc, search, raw = journey.cli(phase + '-search', ['search', 'mounted', '--limit', '100'])
