@@ -598,6 +598,7 @@ fn scan_sql(
     mut row_fn: impl FnMut(&[u8; 32], SqlAnalysisRecord, &mut usize) -> Result<(), &'static str>,
 ) -> Result<(), SqlCatalogError> {
     use backend_engine::builtin::sql_visit_preflighted;
+    let started = std::env::var_os("NUDOX_TRACE").map(|_| std::time::Instant::now());
     let mut after = None;
     let mut rows = 0usize;
     loop {
@@ -641,6 +642,9 @@ fn scan_sql(
             Some(key) if after.is_none_or(|previous| previous < key) => after = Some(key),
             Some(_) => return Err("SQL relation cursor did not advance".into()),
         }
+    }
+    if let Some(started) = started {
+        eprintln!("locald SQL catalog: scanned {rows} rows in {:?}", started.elapsed());
     }
     Ok(())
 }
