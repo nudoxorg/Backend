@@ -93,11 +93,12 @@ fn walk<E>(bytes: &[u8], checkpoint: &mut impl FnMut(usize) -> Result<(), E>, vi
     let planes = usize::from(reader.u16()?);
     if planes > MAX_PLANES { return Err(SemanticManifestError::TooManyPlanes { observed: planes, maximum: MAX_PLANES }.into()); }
     let mut previous_plane = None;
+    let mut plane_order_invalid = false;
     let mut total = 0usize;
     for _ in 0..planes {
         checkpoint(0).map_err(BorrowedSemanticManifestError::Stopped)?;
         let kind = decode_plane_kind(&mut reader)?;
-        if previous_plane.is_some_and(|previous| previous >= kind) { return Err(SemanticManifestError::PlaneOrder.into()); }
+        if previous_plane.is_some_and(|previous| previous >= kind) { plane_order_invalid = true; }
         previous_plane = Some(kind);
         let coverage = decode_coverage(&mut reader)?;
         let count = usize::try_from(reader.u32()?).map_err(|_| SemanticManifestError::CountOverflow)?;
@@ -110,6 +111,7 @@ fn walk<E>(bytes: &[u8], checkpoint: &mut impl FnMut(usize) -> Result<(), E>, vi
         update_plane_kind_hash(&mut hash, kind);
         hash.update(&(count as u32).to_be_bytes());
         let mut previous_last = None;
+        let mut segment_order_invalid = false;
         for _ in 0..count {
             checkpoint(SEGMENT_WIRE_BYTES).map_err(BorrowedSemanticManifestError::Stopped)?;
             let segment = SemanticPlaneSegment {
@@ -117,16 +119,18 @@ fn walk<E>(bytes: &[u8], checkpoint: &mut impl FnMut(usize) -> Result<(), E>, vi
                 id_claim: UntrustedSemanticSegmentId(reader.array32()?), admitted_id: None, input: decode_input_witness(&mut reader)?,
             };
             validate_segment_metadata(&segment)?;
-            if previous_last.is_some_and(|last| last >= segment.first_key) { return Err(SemanticManifestError::SegmentOrder.into()); }
+            if previous_last.is_some_and(|last| last >= segment.first_key) { segment_order_invalid = true; }
             previous_last = Some(segment.last_key);
             update_plane_segment_hash(&mut hash, &segment);
             visit(kind, segment).map_err(BorrowedSemanticManifestError::Stopped)?;
         }
+        if segment_order_invalid { return Err(SemanticManifestError::SegmentOrder.into()); }
         let root = SemanticPlaneRoot(*hash.finalize().as_bytes());
         let schema = SchemaIdentity::new(SemanticPlaneCoverageScope::DOMAIN, SemanticPlaneCoverageScope::TYPE, SemanticPlaneCoverageScope::VERSION);
         let expected = ScopeRoot::from_bytes(backend_version::object_version_digest(schema, root.as_bytes()).map_err(|_| SemanticManifestError::CountOverflow)?);
         if coverage.scope != expected { return Err(SemanticManifestError::PlaneScopeMismatch { expected, observed: coverage.scope }.into()); }
     }
     if !reader.is_empty() { return Err(SemanticManifestError::TrailingBytes(reader.remaining()).into()); }
+    if plane_order_invalid { return Err(SemanticManifestError::PlaneOrder.into()); }
     Ok((generation, total))
 }
