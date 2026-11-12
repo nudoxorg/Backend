@@ -820,7 +820,9 @@ impl GroupedEdges {
             cause,
         };
         let mut ordinals: Vec<(u64, u32)> = Vec::new();
-        ordinals.try_reserve_exact(count).map_err(|e| reserve(count, e))?;
+        ordinals
+            .try_reserve_exact(count)
+            .map_err(|e| reserve(count, e))?;
         for ordinal in 0..edges.count {
             let edge = edges.edge(ordinal)?;
             ordinals.push((Self::key(edge.role_tag, edge.role_index), ordinal));
@@ -829,14 +831,21 @@ impl GroupedEdges {
         // additional temporary allocation required by a stable sort.
         ordinals.sort_unstable();
         let mut keys = Vec::new();
-        keys.try_reserve_exact(count).map_err(|e| reserve(count, e))?;
+        keys.try_reserve_exact(count)
+            .map_err(|e| reserve(count, e))?;
         let mut starts = Vec::new();
-        let starts_count = count.checked_add(1).ok_or(FullSemanticImageFault::LengthOverflow {
-            field: FullSemanticImageField::TypedEdges,
-        })?;
-        starts.try_reserve_exact(starts_count).map_err(|e| reserve(starts_count, e))?;
+        let starts_count = count
+            .checked_add(1)
+            .ok_or(FullSemanticImageFault::LengthOverflow {
+                field: FullSemanticImageField::TypedEdges,
+            })?;
+        starts
+            .try_reserve_exact(starts_count)
+            .map_err(|e| reserve(starts_count, e))?;
         let mut order = Vec::new();
-        order.try_reserve_exact(count).map_err(|e| reserve(count, e))?;
+        order
+            .try_reserve_exact(count)
+            .map_err(|e| reserve(count, e))?;
         for (position, (key, ordinal)) in ordinals.into_iter().enumerate() {
             if keys.last().map_or(true, |previous| *previous != key) {
                 starts.push(u32::try_from(position).map_err(|_| {
