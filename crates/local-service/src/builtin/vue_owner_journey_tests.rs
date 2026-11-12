@@ -110,8 +110,23 @@ fn verify(session: &mut Session, project: &std::path::Path) -> Result<(), Box<dy
     assert_eq!(row.source.captured().unwrap().start_line(), 4);
     let coordinate = row.label.clone();
     let selected = row.id;
-    let CommandReply::Search(search) = session.search("mounted", 100)?.reply else {
-        return Err("Vue lexical search reply".into());
+    // Published-name fallback is useful but does not establish lexical
+    // coverage. Wait for the actual lexical reply at the selected view.
+    let deadline = Instant::now() + Duration::from_secs(600);
+    let search = loop {
+        if session
+            .connection_frames_remaining()
+            .is_some_and(|remaining| remaining < 2)
+        {
+            session.reconnect()?;
+        }
+        match session.search("mounted", 100)?.reply {
+            CommandReply::Search(search) => break search,
+            CommandReply::PublishedNameSearch(_) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            other => return Err(format!("Vue lexical search reply: {other:?}").into()),
+        }
     };
     assert!(
         search.root.rows().iter().any(|row| row.id == selected),
