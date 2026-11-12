@@ -278,6 +278,7 @@ impl<'a, 's> BorrowedProgramGraph<'a, 's> {
     }
 
     /// Validate graph topology, membership and sealed images in caller-owned scratch.
+    /// Checkpoints charge a bounded record step or at most 4096 bytes of path/hash work.
     pub fn decode<E>(
         bytes: &'a [u8],
         nodes: &mut [u8],

@@ -115,7 +115,8 @@ impl<'a> BorrowedNativeProgramSourceManifest<'a> {
 
     /// Validates without allocating. The caller supplies the pinned wire and
     /// accounted scratch; `checkpoint` debits the live operation and checks
-    /// its actual cancellation and deadline.
+    /// its actual cancellation and deadline. One work unit admits a bounded
+    /// record step or a chunk of at most 4096 bytes of path/hash work.
     pub fn decode<E>(
         bytes: &'a [u8],
         scratch: &mut [u8],
