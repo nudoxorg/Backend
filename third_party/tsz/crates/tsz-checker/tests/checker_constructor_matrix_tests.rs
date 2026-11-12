@@ -17,7 +17,7 @@
 use std::sync::Arc;
 use tsz_binder::BinderState;
 use tsz_checker::TypeCache;
-use tsz_checker::context::CheckerOptions;
+use tsz_checker::context::{CheckerContext, CheckerOptions};
 use tsz_checker::state::CheckerState;
 use tsz_parser::parser::ParserState;
 use tsz_solver::TypeId;
@@ -422,4 +422,45 @@ fn parent_and_sibling_arena_caches_are_isolated() {
         &child.ctx.definition_store,
         &parent.ctx.definition_store
     ));
+}
+
+#[test]
+fn inherited_store_preserves_identity_without_warming_child_caches() {
+    let f = fixture();
+    let types = TypeInterner::new();
+    let options = pinned_input_options();
+    let parent = CheckerContext::new(
+        f.parser.get_arena(),
+        &f.binder,
+        &types,
+        FILE_NAME.into(),
+        options.clone(),
+    );
+    let symbol = f.binder.file_locals.get("Box").expect("Box symbol");
+    let parent_def = parent.get_or_create_def_id(symbol);
+    let store = Arc::clone(&parent.definition_store);
+    let shared = CheckerContext::new_with_shared_def_store(
+        f.parser.get_arena(),
+        &f.binder,
+        &types,
+        FILE_NAME.into(),
+        options.clone(),
+        Arc::clone(&store),
+    );
+    assert!(shared.local_caches_warmed.get());
+    let generation = store.generation();
+    let child = CheckerContext::with_parent_cache(
+        f.parser.get_arena(),
+        &f.binder,
+        &types,
+        FILE_NAME.into(),
+        options,
+        &parent,
+    );
+    assert!(Arc::ptr_eq(&child.definition_store, &store));
+    assert_eq!(store.generation(), generation);
+    assert!(!child.local_caches_warmed.get());
+    assert!(child.symbol_to_def.borrow().is_empty());
+    assert!(child.def_to_symbol.borrow().is_empty());
+    assert_eq!(child.get_or_create_def_id(symbol), parent_def);
 }
