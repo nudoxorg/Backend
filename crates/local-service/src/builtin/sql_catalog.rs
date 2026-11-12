@@ -500,6 +500,8 @@ pub(super) struct BoundedProjectSql {
     pub(super) inventory_complete: bool,
     /// The latest attempt observed the retained selection rather than failing.
     pub(super) latest_observed: bool,
+    /// Exact latest attempt outcome, including its unavailability reason.
+    pub(super) latest_outcome: backend_engine::builtin::SqlAttemptOutcome,
     pub(super) implicit: bool,
     pub(super) gaps: SqlGapCounts,
     pub(super) hosts: Slots<BoundedSqlHost>,
@@ -511,6 +513,7 @@ struct ProjectPlan {
     filled_selection: bool,
     attempt_seen: bool,
     attempt_observed: bool,
+    attempt_outcome: Option<backend_engine::builtin::SqlAttemptOutcome>,
     served_selection: Option<[u8; 32]>,
     selection_digest: Option<[u8; 32]>,
     inventory_digest: [u8; 32],
@@ -865,6 +868,7 @@ fn plan_projects<'a>(
                 filled_selection: false,
                 attempt_seen: false,
                 attempt_observed: false,
+                attempt_outcome: None,
                 served_selection: None,
                 selection_digest: None,
                 inventory_digest: [0; 32],
@@ -973,6 +977,7 @@ pub(super) fn load_projects_bounded<'a>(
                             outcome,
                             backend_engine::builtin::SqlAttemptOutcome::Observed
                         );
+                        plan.attempt_outcome = Some(*outcome);
                         plan.served_selection = *served_selection;
                     }
                 }
@@ -1036,6 +1041,7 @@ pub(super) fn load_projects_bounded<'a>(
             inventory_digest: plan.inventory_digest,
             inventory_complete: false,
             latest_observed: plan.attempt_observed,
+            latest_outcome: plan.attempt_outcome.ok_or("SQL attempt outcome missing")?,
             implicit: false,
             gaps: SqlGapCounts::default(),
             hosts,
