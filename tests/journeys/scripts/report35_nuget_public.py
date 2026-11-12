@@ -36,6 +36,14 @@ def blake3_short(data):
     return bytes.fromhex(text)
 
 class Fixture:
+    @classmethod
+    def create(cls, scenario):
+        fixture=cls.__new__(cls)
+        try:fixture.__init__(scenario)
+        except BaseException:
+            fixture.close()
+            raise
+        return fixture
     def __init__(self, scenario):
         self.scenario=scenario; self.events=[]; self.bodies={}; self.trap_events=[]; self.nonce=secrets.token_hex(12)
         fixture=self
@@ -73,7 +81,14 @@ class Fixture:
         else:return b'{"error":"fixture not found"}',404
         return json.dumps(obj,separators=(',',':')).encode(),200
     def close(self):
-        self.server.shutdown();self.server.server_close();self.thread.join(timeout=5);self.trap.shutdown();self.trap.server_close();self.trap_thread.join(timeout=5)
+        for server_name,thread_name in (('server','thread'),('trap','trap_thread')):
+            server=getattr(self,server_name,None);thread=getattr(self,thread_name,None)
+            if server is None:continue
+            if thread is not None and thread.is_alive():
+                server.shutdown();thread.join(timeout=5)
+                check(not thread.is_alive(),'fixture HTTP thread survived shutdown')
+            server.server_close()
+
 
 def selected_candidate(page, require_description=True):
     check(isinstance(page,dict),'package response is not an object')
@@ -265,7 +280,7 @@ def negative(j,fixture):
 def self_check():
     # No binaries or account services are started by this mode.
     for scenario in ('positive','cross-origin','escape','encoded-separator','cycle','missing-page','wrong-id','count-mismatch','resource-limit'):
-        f=Fixture(scenario)
+        f=Fixture.create(scenario)
         try:
             h=http.client.HTTPConnection('127.0.0.1',f.server.server_port,timeout=3);h.request('GET','/v3/index.json');r=h.getresponse();service=json.loads(r.read());h.close();check(r.status==200 and service['resources'][0]['@id'].startswith(f.base+'/v3/'),'service fixture')
             reg=json.loads(f.answer('/v3/registrations/microsoft.entityframeworkcore/index.json')[0]);link=reg['items'][1]['@id'];check(f.nonce in link or scenario=='cycle','unpredictable link absent')
@@ -358,9 +373,10 @@ def main():
     receipt={'schema':'nudox.report35.nuget-public.v1','contract_source':CONTRACT_COMMIT,'contract_tree':CONTRACT_TREE,'source_commit':commit,'source_tree':tree,'cargo_lock_sha256':lock,'binaries_before':before,'blake3_helper':{'path':str(BLAKE3_HELPER),'sha256':helper_hash},'build_receipt_path':str(build_receipt),'build_receipt_sha256':build_receipt_hash,'receipt_verification':'full runtime build receipt verified against exact source and artifacts','network':network,'account_gate_environment_set':'NUDOX_ACCOUNT_GATE' in os.environ,'cases':[],'result':'failed','limits':['does not execute/acquire packages','no real account/fake credential','private loopback provider; external network namespace not asserted']}
     try:
         for scenario in ('positive','cross-origin','escape','encoded-separator','cycle','missing-page','wrong-id','count-mismatch','resource-limit'):
-            caseout=out/scenario;caseout.mkdir(mode=0o700);fixture=Fixture(scenario);j=None
+            caseout=out/scenario;caseout.mkdir(mode=0o700);fixture=None;j=None
             case={'scenario':scenario,'fixture_root':None,'processes':[],'status':'running'};receipt['cases'].append(case)
             try:
+                fixture=Fixture.create(scenario)
                 root=pathlib.Path(tempfile.mkdtemp(prefix='ndx-nuget-',dir=os.environ.get('TMPDIR','/tmp')));case['fixture_root']=str(root);os.chmod(root,0o700)
                 j=Journey(bins,caseout,fixture,args.timeout,root,case);j.start_owner()
                 if scenario=='positive':
@@ -383,8 +399,9 @@ def main():
                     check(all(p['retired'] for p in case['processes']),'owned process group not retired')
                     case['status']='retired'
                 finally:
-                    fixture.close()
-                    (caseout/'request-receipts.json').write_text(json.dumps({'source_requests':fixture.events,'cross_origin_trap_requests':fixture.trap_events},indent=2)+'\n')
+                    if fixture is not None:
+                        fixture.close()
+                        (caseout/'request-receipts.json').write_text(json.dumps({'source_requests':fixture.events,'cross_origin_trap_requests':fixture.trap_events},indent=2)+'\n')
         receipt['result']='pass'
     except Exception as exc:
         receipt['error']=repr(exc);raise
