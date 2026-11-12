@@ -778,24 +778,16 @@ fn verify_fact(
     Ok(())
 }
 
-/// Read selected SQL projects using one shared requested-allocation ledger.
-/// All retained arrays use fixed-size boxed chunks charged before allocation;
-/// the caller supplies its explicit per-allocation bookkeeping allowance.
-/// The sorted input project keys and snapshot are caller-owned and must already
-/// be accounted for in the caller's remaining budget.
-pub(super) fn load_projects_bounded<'a>(
-    snapshot: &WorkspaceSnapshot,
+fn plan_projects<'a>(
     projects: impl ExactSizeIterator<Item = &'a [u8; 32]>,
-    cancelled: &dyn Fn() -> bool,
-    max_bytes: usize,
+    remaining: &mut usize,
     allocation_bookkeeping_bytes: usize,
-) -> Result<(SqlProjects, usize), String> {
-    use backend_engine::builtin::{sql_analysis_preflight_relation, sql_host_key};
-    let mut remaining = max_bytes;
+    cancelled: &dyn Fn() -> bool,
+) -> Result<SqlProjects, String> {
     let mut result = SqlProjects {
         plans: Slots::new(
             projects.len(),
-            &mut remaining,
+            remaining,
             allocation_bookkeeping_bytes,
             cancelled,
         )?,
@@ -832,6 +824,29 @@ pub(super) fn load_projects_bounded<'a>(
     if !result.plans.is_full() {
         return Err("SQL project key count changed".into());
     }
+    Ok(result)
+}
+
+/// Read selected SQL projects using one shared requested-allocation ledger.
+/// All retained arrays use fixed-size boxed chunks charged before allocation;
+/// the caller supplies its explicit per-allocation bookkeeping allowance.
+/// The sorted input project keys and snapshot are caller-owned and must already
+/// be accounted for in the caller's remaining budget.
+pub(super) fn load_projects_bounded<'a>(
+    snapshot: &WorkspaceSnapshot,
+    projects: impl ExactSizeIterator<Item = &'a [u8; 32]>,
+    cancelled: &dyn Fn() -> bool,
+    max_bytes: usize,
+    allocation_bookkeeping_bytes: usize,
+) -> Result<(SqlProjects, usize), String> {
+    use backend_engine::builtin::{sql_analysis_preflight_relation, sql_host_key};
+    let mut remaining = max_bytes;
+    let mut result = plan_projects(
+        projects,
+        &mut remaining,
+        allocation_bookkeeping_bytes,
+        cancelled,
+    )?;
     let Some(relation) = sql_analysis_preflight_relation(snapshot).map_err(|e| e.to_string())?
     else {
         return Ok((result, max_bytes - remaining));
@@ -1371,6 +1386,48 @@ pub(super) fn load_projects_bounded<'a>(
 mod bounded_catalog_tests {
     use super::*;
     use backend_semantic::sql_analysis::SqlCoverage;
+
+    #[test]
+    fn borrowed_project_plan_rejects_duplicate_unordered_and_short_inputs() {
+        struct Short<'a> {
+            inner: std::slice::Iter<'a, [u8; 32]>,
+        }
+        impl<'a> Iterator for Short<'a> {
+            type Item = &'a [u8; 32];
+            fn next(&mut self) -> Option<Self::Item> {
+                self.inner.next()
+            }
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                (2, Some(2))
+            }
+        }
+        impl ExactSizeIterator for Short<'_> {
+            fn len(&self) -> usize {
+                2
+            }
+        }
+        let a = [1; 32];
+        let b = [2; 32];
+        let valid = [a, b];
+        let mut budget = 1024 * 1024;
+        let planned = plan_projects(valid.iter(), &mut budget, 64, &|| false).unwrap();
+        assert_eq!(planned.position(&a), Some(0));
+        assert_eq!(planned.position(&b), Some(1));
+        assert!(planned.get(&a).is_none());
+        assert!(plan_projects([a, a].iter(), &mut budget, 64, &|| false).is_err());
+        assert!(plan_projects([b, a].iter(), &mut budget, 64, &|| false).is_err());
+        assert!(
+            plan_projects(
+                Short {
+                    inner: valid[..1].iter()
+                },
+                &mut budget,
+                64,
+                &|| false
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn slot_arrays_precharge_exact_requested_layout_before_allocation() {
