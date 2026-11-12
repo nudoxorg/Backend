@@ -375,7 +375,9 @@ def main():
     from runtime_build_receipt import verify_runtime_build_receipt
     verified=verify_runtime_build_receipt(build_receipt,source);build_receipt_hash=verified['receipt_sha256']
     check(all(verified['artifacts'][name]['path']==str(bins[name]) and verified['artifacts'][name]['sha256']==before[name] for name in NAMES),'verified artifact mismatch')
-    out=pathlib.Path(tempfile.mkdtemp(prefix='report35-nuget-',dir=args.output_parent));os.chmod(out,0o700)
+    output_parent=args.output_parent.resolve(strict=True)
+    check(output_parent.is_dir() and output_parent!=source and source not in output_parent.parents,'output parent must be outside source checkout')
+    out=pathlib.Path(tempfile.mkdtemp(prefix='report35-nuget-',dir=output_parent));os.chmod(out,0o700)
     receipt={'schema':'nudox.report35.nuget-public.v1','contract_source':CONTRACT_COMMIT,'contract_tree':CONTRACT_TREE,'source_commit':commit,'source_tree':tree,'cargo_lock_sha256':lock,'binaries_before':before,'blake3_helper':{'path':str(BLAKE3_HELPER),'sha256':helper_hash},'build_receipt_path':str(build_receipt),'build_receipt_sha256':build_receipt_hash,'receipt_verification':'full runtime build receipt verified against exact source and artifacts','network':network,'account_gate_environment_set':'NUDOX_ACCOUNT_GATE' in os.environ,'cases':[],'result':'failed','limits':['does not execute/acquire packages','no real account/fake credential','private loopback provider; external network namespace not asserted']}
     try:
         for scenario in ('positive','cross-origin','escape','encoded-separator','cycle','missing-page','wrong-id','count-mismatch','resource-limit'):
