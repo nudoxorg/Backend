@@ -1539,6 +1539,16 @@ impl AdmittedCompilation {
             .map_err(BuiltinModelError)?;
             expected_members.insert(id);
         }
+        if let Some(member) = metadata.native_headers() {
+            // The optional aggregate is a declared compiler payload member.
+            // Source and entity authority is established only after reopening
+            // the exact selected closure and joining its claims.
+            let id = payload_index
+                .admit_claim(UntrustedObjectId::from_bytes(*member.object_id()))
+                .map_err(|error| BuiltinModelError(format!("admit native header membership: {error:?}")))?
+                .ok_or_else(|| BuiltinModelError("native headers are absent from their output closure".to_owned()))?;
+            expected_members.insert(id);
+        }
         let program_mappings = native_program.as_ref().map(|program| {
             program
                 .sources()
