@@ -3529,14 +3529,26 @@ mod tests {
         let candidate = envelope.candidate(attempt.clone(), *closure_id.as_bytes()).unwrap();
         let selected = selected_generation(&attempt, &candidate, 1);
         let reader_credit = 2 * bytes.len() + decoded;
+        // Measure payload work only after the metadata and closure are already open.
+        let closure = store.open_closure(closure_id).unwrap();
+        let mut payload = None;
+        let payload_peak = measure(|| {
+            payload = reopen_native_headers_bounded(&store, &closure, &metadata, reader_credit).unwrap();
+        });
+        assert_eq!(payload.as_deref(), Some(bytes.as_slice()));
+        assert!(payload_peak.bytes_max as usize <= reader_credit, "payload reopen peak: {payload_peak:?}");
+        drop(payload);
+        drop(closure);
         let mut witness = None;
-        let reopened = measure(|| {
+        let selected_peak = measure(|| {
             witness = Some(reopen_selected_native_headers(&store, &selected, reader_credit).unwrap().unwrap());
         });
         assert_eq!(witness.unwrap().as_bytes(), bytes.as_slice());
-        // Metadata, closure indexes, paths and I/O are outside the payload credit.
-        const FIXED_REOPEN_ALLOWANCE: usize = 256 * 1024;
-        assert!(reopened.bytes_max as usize <= reader_credit + FIXED_REOPEN_ALLOWANCE, "selected reopen peak: {reopened:?}");
+        // This end-to-end observation covers only this five-object, one-image
+        // fixture. The selected metadata/closure overhead is not bounded by
+        // reader_credit and needs a separate production budget.
+        const SMALL_FIXTURE_OVERHEAD: usize = 256 * 1024;
+        assert!(selected_peak.bytes_max as usize <= reader_credit + SMALL_FIXTURE_OVERHEAD, "small selected fixture peak: {selected_peak:?}");
         drop(store);
         std::fs::remove_dir_all(directory).unwrap();
     }
